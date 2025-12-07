@@ -1,0 +1,13 @@
+[project]
+name = "blueprint-capture-pipeline"
+version = "0.1.0"
+description = "Job payload stubs for the Blueprint Capture GPU pipeline"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pyyaml>=6.0"]
+
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
