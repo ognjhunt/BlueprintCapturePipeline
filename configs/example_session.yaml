@@ -1,0 +1,19 @@
+session_id: sample-session-001
+capture_start: 2025-02-01T10:00:00Z
+device:
+  platform: iOS
+  dat_sdk: meta-wearables-dat-ios
+  resolution: 1920x1080
+  fps: 30
+scale_anchors:
+  - anchor_type: aruco_board
+    size_meters: 0.21
+    notes: Printed A4 board shown at multiple spots
+clips:
+  - uri: gs://example-bucket/sessions/sample-session-001/raw/clip-01.mp4
+    fps: 30
+    notes: structure pass
+  - uri: gs://example-bucket/sessions/sample-session-001/raw/clip-02.mp4
+    fps: 30
+    notes: object micro-scan (countertop)
+user_notes: Initial mock session for pipeline tests.
