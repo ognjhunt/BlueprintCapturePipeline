@@ -6,6 +6,7 @@ from .mesh import MeshExtractionJob
 from .object_assetization import ObjectAssetizationJob
 from .reconstruction import ReconstructionJob
 from .usd_authoring import USDAuthoringJob
+from .articulation import ArticulationJob
 
 __all__ = [
     # Base classes
@@ -15,6 +16,7 @@ __all__ = [
     "JobResult",
     "JobStatus",
     # Job implementations
+    "ArticulationJob",
     "FrameExtractionJob",
     "MeshExtractionJob",
     "ObjectAssetizationJob",

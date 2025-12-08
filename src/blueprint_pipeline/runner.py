@@ -26,6 +26,7 @@ from .jobs.reconstruction import ReconstructionJob
 from .jobs.mesh import MeshExtractionJob
 from .jobs.object_assetization import ObjectAssetizationJob
 from .jobs.usd_authoring import USDAuthoringJob
+from .jobs.articulation import ArticulationJob
 from .pipeline import default_artifact_paths
 from .orchestrator import PipelineOrchestrator, PipelineStage
 from .utils.logging import setup_logging, get_logger
@@ -39,6 +40,7 @@ JOB_REGISTRY: Dict[str, type] = {
     "mesh-extraction": MeshExtractionJob,
     "object-assetization": ObjectAssetizationJob,
     "usd-authoring": USDAuthoringJob,
+    "articulation": ArticulationJob,
 }
 
 
