@@ -8,6 +8,7 @@ from .jobs.mesh import MeshExtractionJob
 from .jobs.object_assetization import ObjectAssetizationJob
 from .jobs.reconstruction import ReconstructionJob
 from .jobs.usd_authoring import USDAuthoringJob
+from .jobs.articulation import ArticulationJob
 
 
 DEFAULT_ARTIFACT_TEMPLATE = "gs://<bucket>/sessions/{session_id}"
@@ -23,6 +24,7 @@ def default_artifact_paths(session_id: str, base: str = DEFAULT_ARTIFACT_TEMPLAT
         meshes=f"{session_root}/meshes",
         objects=f"{session_root}/objects",
         reports=f"{session_root}/reports",
+        articulations=f"{session_root}/articulations",
     )
 
 
@@ -42,6 +44,7 @@ def build_default_pipeline(
     mesh_job = MeshExtractionJob()
     object_job = ObjectAssetizationJob()
     usd_job = USDAuthoringJob()
+    articulation_job = ArticulationJob()
 
     payloads: List[JobPayload] = [
         frame_job.build_payload(session, artifact_paths),
@@ -49,6 +52,7 @@ def build_default_pipeline(
         mesh_job.build_payload(session, artifact_paths),
         object_job.build_payload(session, artifact_paths),
         usd_job.build_payload(session, artifact_paths),
+        articulation_job.build_payload(session, artifact_paths),
     ]
     return payloads
 

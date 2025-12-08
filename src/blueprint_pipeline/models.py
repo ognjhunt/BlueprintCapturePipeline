@@ -41,6 +41,12 @@ class ArtifactPaths:
     meshes: str
     objects: str
     reports: str
+    articulations: str = ""  # Articulated objects with joints
+
+    def __post_init__(self):
+        """Auto-generate articulations path if not provided."""
+        if not self.articulations:
+            self.articulations = f"{self.session_root}/articulations"
 
 
 @dataclass

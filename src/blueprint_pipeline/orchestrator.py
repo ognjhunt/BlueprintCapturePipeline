@@ -16,6 +16,7 @@ from .jobs.reconstruction import ReconstructionJob
 from .jobs.mesh import MeshExtractionJob
 from .jobs.object_assetization import ObjectAssetizationJob
 from .jobs.usd_authoring import USDAuthoringJob
+from .jobs.articulation import ArticulationJob
 from .pipeline import default_artifact_paths
 from .utils.logging import get_logger, setup_logging
 
@@ -27,6 +28,7 @@ class PipelineStage(Enum):
     MESH_EXTRACTION = "mesh-extraction"
     OBJECT_ASSETIZATION = "object-assetization"
     USD_AUTHORING = "usd-authoring"
+    ARTICULATION = "articulation"
 
 
 # Mapping of stage names to job classes
@@ -36,15 +38,18 @@ STAGE_JOBS: Dict[PipelineStage, Type[BaseJob]] = {
     PipelineStage.MESH_EXTRACTION: MeshExtractionJob,
     PipelineStage.OBJECT_ASSETIZATION: ObjectAssetizationJob,
     PipelineStage.USD_AUTHORING: USDAuthoringJob,
+    PipelineStage.ARTICULATION: ArticulationJob,
 }
 
 # Default execution order (DAG-like dependencies)
+# Note: Articulation runs after USD_AUTHORING to process scene objects
 DEFAULT_PIPELINE_ORDER = [
     PipelineStage.FRAME_EXTRACTION,
     PipelineStage.RECONSTRUCTION,
     PipelineStage.MESH_EXTRACTION,
     PipelineStage.OBJECT_ASSETIZATION,
     PipelineStage.USD_AUTHORING,
+    PipelineStage.ARTICULATION,
 ]
 
 
