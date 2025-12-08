@@ -1,13 +1,186 @@
 [project]
 name = "blueprint-capture-pipeline"
 version = "0.1.0"
-description = "Job payload stubs for the Blueprint Capture GPU pipeline"
+description = "GPU-accelerated pipeline for converting video captures to SimReady 3D scenes"
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+license = {text = "MIT"}
+authors = [
+    {name = "Blueprint Team"}
+]
+keywords = [
+    "3d-reconstruction",
+    "gaussian-splatting",
+    "isaac-sim",
+    "robotics",
+    "simulation",
+    "usd",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "Pillow>=10.0.0",
+    "pyyaml>=6.0",
+]
 
 [project.optional-dependencies]
-dev = ["pyyaml>=6.0"]
+# Core pipeline dependencies (recommended for local development)
+core = [
+    "opencv-python>=4.8.0",
+    "open3d>=0.17.0",
+    "trimesh>=4.0.0",
+]
+
+# GCS/Cloud dependencies
+cloud = [
+    "google-cloud-storage>=2.10.0",
+    "google-cloud-run>=0.10.0",
+    "google-cloud-logging>=3.6.0",
+]
+
+# USD authoring (install separately due to size)
+usd = [
+    "usd-core>=24.0",
+]
+
+# SAM3 segmentation
+sam = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "segment-anything-2>=0.1.0",
+]
+
+# 3D Gaussian Splatting / Reconstruction
+reconstruction = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "plyfile>=1.0.0",
+    "scipy>=1.11.0",
+]
+
+# Hunyuan3D generation (install separately)
+generation = [
+    "torch>=2.0.0",
+    "diffusers>=0.25.0",
+    "transformers>=4.36.0",
+]
+
+# Full GPU pipeline (all dependencies)
+gpu = [
+    "blueprint-capture-pipeline[core,cloud,usd,sam,reconstruction,generation]",
+]
+
+# Development dependencies
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "pre-commit>=3.0.0",
+]
+
+# Documentation
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocstrings[python]>=0.23.0",
+]
+
+# All development dependencies
+all = [
+    "blueprint-capture-pipeline[gpu,dev,docs]",
+]
+
+[project.scripts]
+blueprint-pipeline = "blueprint_pipeline.runner:main"
+
+[project.urls]
+Homepage = "https://github.com/ognjhunt/BlueprintCapturePipeline"
+Documentation = "https://github.com/ognjhunt/BlueprintCapturePipeline#readme"
+Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"
+Issues = "https://github.com/ognjhunt/BlueprintCapturePipeline/issues"
 
 [build-system]
 requires = ["setuptools>=67", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+blueprint_pipeline = ["py.typed"]
+
+# Ruff configuration
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.isort]
+known-first-party = ["blueprint_pipeline"]
+
+# Black configuration
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# Pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests that require GPU",
+    "integration: marks integration tests",
+]
