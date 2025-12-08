@@ -1,0 +1,107 @@
+# Docker Compose for local development and testing
+#
+# Usage:
+#   # Build and run pipeline job
+#   docker-compose run --rm pipeline --manifest /workspace/session.yaml
+#
+#   # Run with GPU
+#   docker-compose run --rm pipeline-gpu --manifest /workspace/session.yaml
+#
+#   # Development shell
+#   docker-compose run --rm dev
+
+version: "3.8"
+
+services:
+  # CPU-only pipeline (for testing without GPU)
+  pipeline:
+    build:
+      context: .
+      target: base
+    volumes:
+      - ./src:/app/src:ro
+      - ./configs:/workspace/configs:ro
+      - ./data:/workspace/data
+      - ./outputs:/workspace/outputs
+      - /tmp/blueprint_pipeline:/tmp/blueprint_pipeline
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BLUEPRINT_ENV=development
+    working_dir: /app
+
+  # GPU-enabled pipeline
+  pipeline-gpu:
+    build:
+      context: .
+      target: production
+    volumes:
+      - ./src:/app/src:ro
+      - ./configs:/workspace/configs:ro
+      - ./data:/workspace/data
+      - ./outputs:/workspace/outputs
+      - /tmp/blueprint_pipeline:/tmp/blueprint_pipeline
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - BLUEPRINT_ENV=production
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    working_dir: /app
+
+  # Development environment with shell access
+  dev:
+    build:
+      context: .
+      target: development
+    volumes:
+      - ./:/app
+      - ./data:/workspace/data
+      - ./outputs:/workspace/outputs
+      - /tmp/blueprint_pipeline:/tmp/blueprint_pipeline
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BLUEPRINT_ENV=development
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    working_dir: /app
+    stdin_open: true
+    tty: true
+
+  # Jupyter notebook server for experimentation
+  jupyter:
+    build:
+      context: .
+      target: development
+    volumes:
+      - ./:/app
+      - ./notebooks:/workspace/notebooks
+      - ./data:/workspace/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - JUPYTER_ENABLE_LAB=yes
+    ports:
+      - "8888:8888"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      jupyter lab
+      --ip=0.0.0.0
+      --port=8888
+      --no-browser
+      --allow-root
+      --notebook-dir=/workspace/notebooks
