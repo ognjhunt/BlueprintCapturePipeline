@@ -124,7 +124,7 @@ class ReconstructionJob(GPUJob):
         )
 
     def _execute(self, ctx: JobContext) -> JobResult:
-        """Execute WildGS-SLAM reconstruction."""
+        """Execute WildGS-SLAM reconstruction or use ARKit poses if available."""
         result = JobResult(status=JobStatus.RUNNING)
 
         # Setup directories
@@ -150,7 +150,16 @@ class ReconstructionJob(GPUJob):
         ctx.logger.info(f"Loaded {total_frames} frames for reconstruction")
         ctx.tracker.log_metric("input_frames", total_frames)
 
-        # Prepare dynamic masks for exclusion
+        # Check if we should use ARKit poses instead of SLAM
+        use_arkit = ctx.parameters.get("use_arkit_poses", False)
+        arkit_data_uri = ctx.parameters.get("arkit_data_uri")
+        arkit_data = None
+
+        if use_arkit and arkit_data_uri:
+            ctx.logger.info("Using ARKit poses instead of SLAM reconstruction")
+            arkit_data = self._load_arkit_poses(ctx, arkit_data_uri)
+
+        # Prepare dynamic masks for exclusion (still needed for 3DGS training)
         dynamic_mask_map = {}
         if ctx.parameters.get("use_dynamic_masks", self.use_dynamic_masks):
             dynamic_mask_map = self._prepare_dynamic_masks(
@@ -158,15 +167,31 @@ class ReconstructionJob(GPUJob):
             )
             ctx.logger.info(f"Prepared {len(dynamic_mask_map)} dynamic masks")
 
-        # Run WildGS-SLAM
-        with ctx.tracker.stage("wildgs_slam", total_frames):
-            slam_result = self._run_wildgs_slam(
+        # Run reconstruction: either use ARKit poses or run SLAM
+        if arkit_data is not None and len(arkit_data.get("poses", [])) > 0:
+            ctx.logger.info(f"Using {len(arkit_data['poses'])} ARKit poses (skipping SLAM)")
+            ctx.tracker.log_metric("pose_source", "arkit")
+            slam_result = arkit_data
+            # Still need to train 3DGS with the ARKit poses
+            self._train_3dgs_from_arkit(
                 ctx=ctx,
                 frames_dir=frames_dir,
                 frame_index=frame_index,
+                poses=arkit_data["poses"],
                 dynamic_masks=dynamic_mask_map,
                 output_dir=output_dir,
             )
+        else:
+            # Run WildGS-SLAM
+            ctx.tracker.log_metric("pose_source", "slam")
+            with ctx.tracker.stage("wildgs_slam", total_frames):
+                slam_result = self._run_wildgs_slam(
+                    ctx=ctx,
+                    frames_dir=frames_dir,
+                    frame_index=frame_index,
+                    dynamic_masks=dynamic_mask_map,
+                    output_dir=output_dir,
+                )
 
         # Calibrate scale using anchors
         scale_factor = 1.0
@@ -601,6 +626,159 @@ class ReconstructionJob(GPUJob):
                 camera_id=1,
             ))
         return poses
+
+    def _load_arkit_poses(
+        self,
+        ctx: JobContext,
+        arkit_data_uri: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Load ARKit poses from iOS capture data.
+
+        ARKit poses are already in metric scale and world coordinates,
+        so they can skip the SLAM step entirely.
+
+        Args:
+            ctx: Job context
+            arkit_data_uri: GCS URI to the raw/ directory containing arkit/ subfolder
+
+        Returns:
+            Dictionary with "poses" key containing list of CameraPose objects,
+            or None if loading fails
+        """
+        try:
+            from ..arkit_loader import load_arkit_data_from_gcs, write_colmap_from_arkit
+            from ..utils.gcs import GCSPath
+            import tempfile
+
+            ctx.logger.info(f"Loading ARKit poses from {arkit_data_uri}")
+
+            # Parse the GCS URI
+            parsed = GCSPath.from_uri(arkit_data_uri)
+
+            # Download ARKit data to temp directory
+            arkit_local_dir = ctx.workspace / "arkit_data"
+            arkit_local_dir.mkdir(parents=True, exist_ok=True)
+
+            arkit_data = load_arkit_data_from_gcs(
+                parsed.bucket,
+                parsed.blob,
+                arkit_local_dir,
+                ctx.gcs,
+            )
+
+            if not arkit_data.has_poses:
+                ctx.logger.warning("No ARKit poses found in upload")
+                return None
+
+            ctx.logger.info(f"Loaded {len(arkit_data.poses)} ARKit poses")
+
+            # Convert ARKit poses to COLMAP format
+            colmap_poses = arkit_data.to_colmap_poses()
+
+            ctx.logger.info(f"Converted {len(colmap_poses)} poses to COLMAP format")
+
+            # Store intrinsics if available
+            intrinsics = None
+            if arkit_data.intrinsics:
+                intrinsics = {
+                    "fx": arkit_data.intrinsics.fx,
+                    "fy": arkit_data.intrinsics.fy,
+                    "cx": arkit_data.intrinsics.cx,
+                    "cy": arkit_data.intrinsics.cy,
+                    "width": arkit_data.intrinsics.width,
+                    "height": arkit_data.intrinsics.height,
+                }
+                ctx.logger.info(f"ARKit intrinsics: {intrinsics['width']}x{intrinsics['height']}")
+
+            return {
+                "poses": colmap_poses,
+                "intrinsics": intrinsics,
+                "arkit_data": arkit_data,
+            }
+
+        except Exception as e:
+            ctx.logger.error(f"Failed to load ARKit poses: {e}")
+            import traceback
+            ctx.logger.debug(traceback.format_exc())
+            return None
+
+    def _train_3dgs_from_arkit(
+        self,
+        ctx: JobContext,
+        frames_dir: Path,
+        frame_index: Dict[str, Any],
+        poses: List[CameraPose],
+        dynamic_masks: Dict[str, Path],
+        output_dir: Path,
+    ) -> None:
+        """Train 3D Gaussian Splatting using ARKit poses.
+
+        When ARKit poses are available, we can directly set up the COLMAP-style
+        directory structure and train 3DGS without running SfM.
+
+        Args:
+            ctx: Job context
+            frames_dir: Directory containing extracted frames
+            frame_index: Frame index metadata
+            poses: Camera poses from ARKit
+            dynamic_masks: Dynamic object masks for exclusion
+            output_dir: Output directory for reconstruction
+        """
+        ctx.logger.info("Training 3DGS using ARKit poses...")
+
+        colmap_dir = output_dir / "colmap"
+        gaussians_dir = output_dir / "gaussians"
+        colmap_dir.mkdir(exist_ok=True)
+        gaussians_dir.mkdir(exist_ok=True)
+
+        # Prepare images (apply dynamic masks)
+        images_dir = self._prepare_masked_images(
+            ctx, frames_dir, frame_index, dynamic_masks, colmap_dir / "images"
+        )
+
+        # Create COLMAP sparse model from ARKit poses
+        sparse_dir = colmap_dir / "sparse" / "0"
+        sparse_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write cameras.txt (assume single camera)
+        cameras_txt = sparse_dir / "cameras.txt"
+        arkit_data = ctx.parameters.get("_arkit_intrinsics")
+        if arkit_data:
+            with open(cameras_txt, "w") as f:
+                f.write("# Camera list\n")
+                f.write("# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
+                f.write(f"1 PINHOLE {arkit_data['width']} {arkit_data['height']} "
+                       f"{arkit_data['fx']} {arkit_data['fy']} "
+                       f"{arkit_data['cx']} {arkit_data['cy']}\n")
+        else:
+            # Default camera for typical iPhone
+            with open(cameras_txt, "w") as f:
+                f.write("# Camera list\n")
+                f.write("# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
+                f.write("1 PINHOLE 1920 1440 1500 1500 960 720\n")
+
+        # Write images.txt from poses
+        images_txt = sparse_dir / "images.txt"
+        with open(images_txt, "w") as f:
+            f.write("# Image list\n")
+            f.write(f"# Number of images: {len(poses)}\n")
+            for pose in poses:
+                qw, qx, qy, qz = pose.qvec
+                tx, ty, tz = pose.tvec
+                f.write(f"{pose.image_id} {qw} {qx} {qy} {qz} {tx} {ty} {tz} "
+                       f"{pose.camera_id} {pose.image_name}\n")
+                f.write("\n")  # Empty points line
+
+        # Write empty points3D.txt (3DGS will create points during training)
+        points_txt = sparse_dir / "points3D.txt"
+        with open(points_txt, "w") as f:
+            f.write("# 3D point list\n")
+            f.write("# Number of points: 0\n")
+
+        ctx.logger.info(f"Created COLMAP model with {len(poses)} images")
+
+        # Train 3D Gaussian Splatting
+        self._train_gaussian_splatting(ctx, colmap_dir, gaussians_dir)
 
     def _train_gaussian_splatting(
         self,
