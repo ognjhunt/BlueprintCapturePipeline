@@ -1,0 +1,4 @@
+# Cloud Function dependencies for storage trigger
+google-cloud-storage>=2.10.0
+google-cloud-pubsub>=2.18.0
+google-cloud-run>=0.10.0
