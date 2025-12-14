@@ -1,7 +1,7 @@
 [project]
 name = "blueprint-capture-pipeline"
-version = "0.1.0"
-description = "GPU-accelerated pipeline for converting video captures to SimReady 3D scenes"
+version = "0.2.0"
+description = "GPU-accelerated pipeline for converting walkthrough video captures to SimReady 3D scenes via ZeroScene format"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -55,11 +55,23 @@ usd = [
     "usd-core>=24.0",
 ]
 
-# SAM3 segmentation
+# SAM3 segmentation (https://github.com/facebookresearch/sam3)
 sam = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
-    "segment-anything-2>=0.1.0",
+    "segment-anything-2>=0.1.0",  # SAM2 fallback
+    # "sam3>=0.1.0",  # Install from GitHub when available
+]
+
+# Video2ZeroScene specific dependencies
+video2zeroscene = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "opencv-python>=4.8.0",
+    "open3d>=0.17.0",
+    "trimesh>=4.0.0",
+    "plyfile>=1.0.0",
+    "scipy>=1.11.0",
 ]
 
 # 3D Gaussian Splatting / Reconstruction
