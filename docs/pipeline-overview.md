@@ -1,38 +1,127 @@
 # Blueprint Capture Pipeline
 
-This document describes the proposed end-to-end pipeline for converting capture sessions from Meta smart glasses (via the iOS BlueprintCapture app) into two deliverables:
+This document describes the end-to-end pipeline for converting walkthrough video captures into SimReady 3D scenes for robotics simulation.
 
-1. **Perception Twin** — Dense, photorealistic reconstruction (Gaussian splats and mesh) suitable for rendering, dataset synthesis, and visual QA.
-2. **Sim Twin** — Object-centric USD assets with clean colliders, physics materials, and articulation metadata for robotics simulation (e.g., Isaac Sim).
+## Key Constraint: Meta Wearables DAT
 
-## High-level architecture
+**Meta Wearables DAT preview (as of Dec 2025) is primarily camera (and audio via Bluetooth), not a full VIO/depth stack.** The pipeline is designed to work well in **monocular RGB** conditions, treating metric scale as something that must be anchored during capture or calibrated post-hoc.
+
+## Two-Deliverable Strategy
+
+1. **Perception Twin** — Photoreal dense representation (Gaussian splats, mesh) for rendering and perception training.
+2. **Sim Twin** — Object-centric assets with colliders, physics materials, and semantics for interaction in Isaac Sim.
+
+## Architecture
 
 ```
-[Capture (iOS + Meta DAT)]
-        |
-        v
-[Upload to GCS]
-        |
-        v
-[Cloud Run: Orchestrator]
-        |
-        +--> [GPU Job: Frame extraction + SAM 3 masking]
-        |
-        +--> [GPU Job: WildGS-SLAM reconstruction]
-        |
-        +--> [GPU Job: SuGaR mesh extraction]
-        |
-        +--> [GPU Job: Object lifting & assetization]
-        |
-        v
-[USD authoring + packaging]
-        |
-        v
-[Outputs to GCS: perception twin (mesh/splats), sim twin (USD assets)]
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      BlueprintCapturePipeline (this repo)               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  [Capture (iOS/Meta DAT)]                                               │
+│         │                                                                │
+│         v                                                                │
+│  [Upload to GCS] ─────> [Cloud Function Trigger]                        │
+│         │                                                                │
+│         v                                                                │
+│  ┌──────────────────────────────────────────────────────────────┐       │
+│  │              video2zeroscene Pipeline                         │       │
+│  │                                                               │       │
+│  │  Stage 0: Ingest ──> CaptureManifest + keyframes             │       │
+│  │     │                                                         │       │
+│  │     v                                                         │       │
+│  │  Stage 1-early: SAM3 tracking ──> dynamic masks              │       │
+│  │     │                                                         │       │
+│  │     v                                                         │       │
+│  │  Stage 2: SLAM (sensor-conditional)                          │       │
+│  │     ├── RGB-only: WildGS-SLAM                                │       │
+│  │     ├── RGB-D: SplaTAM                                       │       │
+│  │     ├── Visual-Inertial: VIGS-SLAM                          │       │
+│  │     └── iOS ARKit: Direct pose import                        │       │
+│  │     │                                                         │       │
+│  │     v                                                         │       │
+│  │  Stage 3: Mesh ──> SuGaR extraction + decimation             │       │
+│  │     │                                                         │       │
+│  │     v                                                         │       │
+│  │  Stage 4: Tracks ──> SAM3 concept segmentation               │       │
+│  │     │                                                         │       │
+│  │     v                                                         │       │
+│  │  Stage 5: Lift ──> 2D tracks to 3D proposals                 │       │
+│  │     │                                                         │       │
+│  │     v                                                         │       │
+│  │  Stage 6: Assetize ──> tiered object assets                  │       │
+│  │     ├── Tier 1: Multi-view reconstruction                    │       │
+│  │     ├── Tier 2: Proxy geometry (box/hull)                    │       │
+│  │     └── Tier 3: Asset replacement (future)                   │       │
+│  │     │                                                         │       │
+│  │     v                                                         │       │
+│  │  Stage 7: Export ──> ZeroScene bundle                        │       │
+│  └──────────────────────────────────────────────────────────────┘       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ ZeroScene handoff
+                                    v
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        BlueprintPipeline (downstream)                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│  zeroscene_adapter ──> simready ──> usd_assembly ──> isaac_lab         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-* **Queueing/coordination:** Pub/Sub or Cloud Tasks fan out job stages. Cloud Run Jobs with GPU (e.g., L4) process heavy tasks.
-* **Artifacts in GCS:** Store raw video, extracted frames, per-frame masks, camera trajectories, Gaussian splats, meshes, per-object USDs, and logs.
+## Sensor-Conditional SLAM Selection
+
+| Sensor Type      | SLAM Backend   | When to Use                       |
+|------------------|----------------|-----------------------------------|
+| RGB-only         | WildGS-SLAM    | Meta glasses, generic cameras     |
+| RGB-D            | SplaTAM        | iPhone LiDAR, RealSense           |
+| Visual-Inertial  | VIGS-SLAM      | RGB + synchronized IMU            |
+| iOS ARKit        | Direct import  | iOS with ARKit tracking enabled   |
+
+## GCS Storage Layout
+
+```
+gs://bucket/captures/{capture_id}/
+├── raw/
+│   ├── video.mp4
+│   ├── metadata.json
+│   └── arkit/                    # iOS only
+│       ├── poses.jsonl
+│       └── intrinsics.json
+├── stage0_ingest/
+│   ├── capture_manifest.json
+│   └── frame_index.json
+├── stage1_frames/
+│   └── frames/*.png
+├── stage2_slam/
+│   ├── poses/
+│   └── gaussians/
+├── stage3_mesh/
+│   ├── environment_mesh.glb
+│   └── environment_collision.glb
+├── stage4_tracks/
+│   ├── masks/
+│   ├── tracks.json
+│   └── annotations.json
+├── stage5_proposals/
+│   └── proposals.json
+├── stage6_assets/
+│   └── {object_id}/
+├── zeroscene/                    # <- Handoff to BlueprintPipeline
+│   ├── scene_info.json
+│   ├── objects/
+│   ├── background/
+│   └── camera/
+└── blueprint/                    # <- Output from BlueprintPipeline
+    └── scene.usdc
+```
+
+## Cloud Deployment (GCP)
+
+* **Runtime:** Cloud Run Jobs with GPU (NVIDIA L4, 24GB VRAM)
+* **Storage:** GCS buckets with lifecycle rules
+* **Messaging:** Pub/Sub for stage transitions; Cloud Tasks for job dispatch
+* **Triggers:** Cloud Functions for Firebase Storage upload detection
 
 ## Capture requirements (iOS + Meta DAT)
 

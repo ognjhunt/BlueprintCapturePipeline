@@ -1,19 +1,78 @@
+# Example session manifest for BlueprintCapturePipeline
+# This format is for the legacy job-based pipeline.
+# For the new video2zeroscene pipeline, use CaptureManifest (JSON).
+
 session_id: sample-session-001
 capture_start: 2025-02-01T10:00:00Z
+
+# Device information
 device:
-  platform: iOS
+  platform: iOS  # iOS, meta_glasses, android, generic
+  model: iPhone 15 Pro
   dat_sdk: meta-wearables-dat-ios
   resolution: 1920x1080
   fps: 30
+
+# Sensor configuration (for video2zeroscene pipeline)
+sensor:
+  type: rgb_only  # rgb_only, rgb_depth, visual_inertial
+  has_depth: false
+  has_imu: false
+  has_arkit_poses: true
+
+# Scale anchors - REQUIRED for monocular captures
 scale_anchors:
   - anchor_type: aruco_board
     size_meters: 0.21
     notes: Printed A4 board shown at multiple spots
+  - anchor_type: known_object
+    size_meters: 0.33  # e.g., standard letter paper width
+    notes: Letter paper placed on table
+
+# Video clips
 clips:
-  - uri: gs://example-bucket/sessions/sample-session-001/raw/clip-01.mp4
+  - uri: gs://example-bucket/captures/sample-session-001/raw/walkthrough.mp4
     fps: 30
-    notes: structure pass
-  - uri: gs://example-bucket/sessions/sample-session-001/raw/clip-02.mp4
+    duration: 120.0
+    notes: Full room walkthrough (structure pass)
+  - uri: gs://example-bucket/captures/sample-session-001/raw/microscan.mp4
     fps: 30
-    notes: object micro-scan (countertop)
-user_notes: Initial mock session for pipeline tests.
+    duration: 30.0
+    notes: Object micro-scan (countertop items)
+
+# Optional ARKit data path (iOS captures)
+arkit_data_uri: gs://example-bucket/captures/sample-session-001/raw/arkit/
+
+user_notes: |
+  Initial mock session for pipeline tests.
+  Room: kitchen area with countertop and appliances.
+  Lighting: natural daylight.
+
+---
+# Pipeline configuration (optional overrides)
+pipeline_config:
+  # SLAM selection (auto if not specified)
+  slam_backend: null  # wildgs_slam, splatam, vigs_slam, arkit_direct, colmap
+
+  # Keyframe selection
+  target_fps: 2.0
+  blur_threshold: 100.0
+
+  # SAM3 concepts to segment
+  sam3_concepts:
+    - person
+    - hand
+    - chair
+    - table
+    - counter
+    - appliance
+    - bottle
+    - cup
+
+  # Object assetization
+  tier1_coverage_threshold: 0.6
+  enable_hunyuan3d: true
+
+  # Mesh extraction
+  mesh_decimation_target: 500000
+  collision_decimation_target: 50000
