@@ -9,6 +9,17 @@ This pipeline transforms video from Meta smart glasses (captured via the [Bluepr
 1. **Perception Twin:** Dense, photorealistic reconstruction (3D Gaussian Splatting + textured mesh) for rendering and visual QA.
 2. **Sim Twin:** Object-centric USD assets with clean colliders and physics materials for robotics simulation (e.g., NVIDIA Isaac Sim).
 
+### 🎯 NEW: DWM (Dexterous World Models) Compatible
+
+This pipeline now outputs **DWM-compatible** scene bundles that include:
+- **Raw 3D Gaussians** (PLY format) for high-quality rendering
+- **Camera trajectory** with metric-scale poses
+- **Camera intrinsics** for view synthesis
+
+DWM uses these to generate photorealistic egocentric interaction videos, enabling visual planning, action evaluation, and training data generation for robotics.
+
+👉 See [DWM Compatibility Guide](docs/DWM_COMPATIBILITY.md) for details.
+
 ## Pipeline Stages
 
 ```

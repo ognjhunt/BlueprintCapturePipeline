@@ -263,6 +263,7 @@ class Video2ZeroScenePipeline:
             manifest=manifest,
             background_mesh_path=mesh_result.render_mesh_path if mesh_result else None,
             collision_mesh_path=mesh_result.collision_mesh_path if mesh_result else None,
+            gaussians_path=slam_result.gaussians_path,
             objects=assetization_result.assets,
             poses=slam_result.poses,
             intrinsics=manifest.intrinsics,

@@ -58,6 +58,7 @@ class ZeroSceneExporter:
         manifest: CaptureManifest,
         background_mesh_path: Optional[Path],
         collision_mesh_path: Optional[Path],
+        gaussians_path: Optional[Path],
         objects: List[ObjectAssetBundle],
         poses: List[CameraPose],
         intrinsics: Optional[CameraIntrinsics],
@@ -70,6 +71,7 @@ class ZeroSceneExporter:
             manifest: Capture manifest
             background_mesh_path: Path to environment mesh
             collision_mesh_path: Path to collision mesh
+            gaussians_path: Path to 3D Gaussians PLY (for DWM compatibility)
             objects: List of object asset bundles
             poses: Camera poses
             intrinsics: Camera intrinsics
@@ -86,7 +88,11 @@ class ZeroSceneExporter:
 
         # Create scene_info.json
         scene_info = self._create_scene_info(
-            manifest, len(objects), background_mesh_path is not None, scale_factor
+            manifest,
+            len(objects),
+            background_mesh_path is not None,
+            gaussians_path is not None and gaussians_path.exists(),
+            scale_factor
         )
         scene_info_path = bundle_dir / "scene_info.json"
         scene_info_path.write_text(json.dumps(scene_info, indent=2))
@@ -138,10 +144,17 @@ class ZeroSceneExporter:
         if collision_mesh_path and collision_mesh_path.exists():
             self._copy_mesh(collision_mesh_path, background_dir / "collision.glb")
 
+        # Export 3D Gaussians for DWM compatibility
+        if gaussians_path and gaussians_path.exists():
+            import shutil
+            shutil.copy(gaussians_path, background_dir / "gaussians.ply")
+
         # Write background info
         bg_info = {
             "has_mesh": background_mesh_path is not None,
             "has_collision": collision_mesh_path is not None,
+            "has_gaussians": gaussians_path is not None and gaussians_path.exists(),
+            "gaussians_format": "3dgs_ply" if gaussians_path and gaussians_path.exists() else None,
         }
         (background_dir / "info.json").write_text(json.dumps(bg_info, indent=2))
 
@@ -202,6 +215,7 @@ class ZeroSceneExporter:
         manifest: CaptureManifest,
         object_count: int,
         has_background: bool,
+        has_gaussians: bool,
         scale_factor: float,
     ) -> Dict[str, Any]:
         """Create scene_info.json content."""
@@ -222,6 +236,9 @@ class ZeroSceneExporter:
             "meters_per_unit": 1.0,
             "object_count": object_count,
             "has_background": has_background,
+            "has_gaussians": has_gaussians,
+            "gaussians_format": "3dgs_ply" if has_gaussians else None,
+            "dwm_compatible": has_gaussians,  # DWM requires raw Gaussians
             "resolution": list(manifest.resolution),
             "total_frames": manifest.total_frames,
             "duration_seconds": manifest.estimated_duration_seconds,
@@ -286,6 +303,7 @@ def create_zeroscene_bundle(
     output_path: Path,
     background_mesh: Optional[str] = None,
     collision_mesh: Optional[str] = None,
+    gaussians_path: Optional[str] = None,
     objects: Optional[List[ObjectAssetBundle]] = None,
     intrinsics: Optional[CameraIntrinsics] = None,
     poses: Optional[List[CameraPose]] = None,
@@ -298,6 +316,7 @@ def create_zeroscene_bundle(
         output_path: Output directory path
         background_mesh: Path to background mesh
         collision_mesh: Path to collision mesh
+        gaussians_path: Path to 3D Gaussians PLY (for DWM compatibility)
         objects: List of object asset bundles
         intrinsics: Camera intrinsics
         poses: Camera trajectory
