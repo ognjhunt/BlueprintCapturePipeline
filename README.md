@@ -1,255 +1,223 @@
-# Blueprint Capture Pipeline
+# BlueprintCapture Pipeline
 
-A GPU-accelerated pipeline for converting Meta smart glasses video captures into SimReady 3D scenes for robotics simulation.
+**Phase 3: Video → High-Quality 3D Gaussian → DWM-Ready Output**
 
-## Overview
+A GPU-accelerated pipeline for converting video walkthroughs into 3D Gaussian representations, ready for DWM (Dexterous World Models) processing.
 
-This pipeline transforms video from Meta smart glasses (captured via the [BlueprintCapture iOS app](https://github.com/ognjhunt/BlueprintCapture)) into two outputs:
+## What is This?
 
-1. **Perception Twin:** Dense, photorealistic reconstruction (3D Gaussian Splatting + textured mesh) for rendering and visual QA.
-2. **Sim Twin:** Object-centric USD assets with clean colliders and physics materials for robotics simulation (e.g., NVIDIA Isaac Sim).
+BlueprintCapture is the **capture pipeline** in the Blueprint system:
 
-### 🎯 NEW: DWM (Dexterous World Models) Compatible
-
-This pipeline now outputs **DWM-compatible** scene bundles that include:
-- **Raw 3D Gaussians** (PLY format) for high-quality rendering
-- **Camera trajectory** with metric-scale poses
-- **Camera intrinsics** for view synthesis
-
-DWM uses these to generate photorealistic egocentric interaction videos, enabling visual planning, action evaluation, and training data generation for robotics.
-
-👉 See [DWM Compatibility Guide](docs/DWM_COMPATIBILITY.md) for details.
-
-### 🎬 NEW: 3DGS Static Scene Renderer
-
-This pipeline now includes a **full 3D Gaussian Splatting renderer** for generating static-scene videos from ZeroScene bundles:
-
-```bash
-# Render static scene for DWM
-python scripts/render_static_scene.py output/zeroscene -o static_scene.mp4
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            Blueprint System                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Phase 1: BlueprintPipeline ─── Image → SimReady 3D reconstruction          │
+│  Phase 2: DWM Data Layer ────── Scene → egocentric rollouts + training data │
+│  Phase 3: BlueprintCapture ──── Video → 3D Gaussian capture (THIS REPO)     │
+│  Phase 4: AR Platform ───────── Digital twins → AR Cloud                    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Or use the Python API:
-```python
-from blueprint_pipeline.video2zeroscene.rendering import GaussianRenderer
+### The Flow
 
-renderer = GaussianRenderer.from_zeroscene("output/zeroscene")
-frames = renderer.render_trajectory()
-renderer.save_video(frames, "static_scene.mp4")
 ```
-
-Supports multiple backends (diff-gaussian-rasterization, gsplat, CPU fallback).
-👉 See [Rendering Guide](docs/RENDERING.md) for full documentation.
+┌──────────────────┐     ┌──────────────────────────┐     ┌────────────────────┐
+│  Video Capture   │────▶│  BlueprintCapturePipeline │────▶│  BlueprintPipeline  │
+│ (Meta glasses,   │     │  (This Repo)              │     │  (DWM Processing)   │
+│  iPhone, etc.)   │     │                           │     │                     │
+└──────────────────┘     │  • Ingest video           │     │  • Generate DWM     │
+                         │  • SLAM reconstruction    │     │    training data    │
+                         │  • Export Gaussians +     │     │  • Egocentric       │
+                         │    camera data            │     │    rollouts         │
+                         └──────────────────────────┘     └────────────────────┘
+```
 
 ## Pipeline Stages
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        Blueprint Capture Pipeline                            │
+│                      BlueprintCapture Pipeline                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  ┌──────────────┐    ┌───────────────┐    ┌────────────────┐                │
-│  │    Frame     │───▶│ Reconstruction │───▶│     Mesh       │                │
-│  │  Extraction  │    │  (WildGS-SLAM) │    │   Extraction   │                │
-│  └──────────────┘    └───────────────┘    │    (SuGaR)     │                │
-│         │                                  └────────────────┘                │
-│         │                                          │                         │
-│         │  SAM3 Masks                              │                         │
-│         ▼                                          ▼                         │
-│  ┌──────────────┐                          ┌────────────────┐                │
-│  │    Object    │──────────────────────────│      USD       │                │
-│  │ Assetization │                          │   Authoring    │                │
-│  │ (Hunyuan3D)  │                          │  (Isaac Sim)   │                │
-│  └──────────────┘                          └────────────────┘                │
-│                                                    │                         │
-│                                                    ▼                         │
-│                                            ┌────────────────┐                │
-│                                            │   scene.usdc   │                │
-│                                            │  (SimReady)    │                │
-│                                            └────────────────┘                │
+│  ┌──────────────┐    ┌───────────────────┐    ┌──────────────────┐          │
+│  │   Stage 0    │───▶│     Stage 1       │───▶│     Stage 2      │          │
+│  │   Ingest     │    │      SLAM         │    │     Export       │          │
+│  │              │    │                   │    │                  │          │
+│  │ • Extract    │    │ • Pose estimation │    │ • gaussians.ply  │          │
+│  │   keyframes  │    │ • 3D Gaussian     │    │ • trajectory.json│          │
+│  │ • Metadata   │    │   reconstruction  │    │ • intrinsics.json│          │
+│  └──────────────┘    └───────────────────┘    └──────────────────┘          │
+│                                                        │                     │
+│                                                        ▼                     │
+│                                               ┌──────────────────┐          │
+│                                               │ DWM-Ready Output │          │
+│                                               │ → BlueprintPipeline│         │
+│                                               └──────────────────┘          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Frame Extraction (`FrameExtractionJob`)
-- Decode video clips from Meta smart glasses
-- Extract frames at configurable FPS
-- Run SAM 3 (Segment Anything Model) for object detection and tracking
-- Generate dynamic masks (people, hands) for reconstruction
+### Stage 0: Ingest
+- Decode video from Meta glasses, iPhone, or generic cameras
+- Extract keyframes at configurable FPS
+- Quality filtering (blur detection, exposure)
+- Generate CaptureManifest with device/sensor metadata
 
-### 2. Reconstruction (`ReconstructionJob`)
-- Run WildGS-SLAM for camera pose estimation and 3D Gaussian Splatting
-- Apply scale calibration using fiducials/anchors
-- Output: Gaussian splats, camera poses, point cloud
+### Stage 1: SLAM Reconstruction
+- **WildGS-SLAM** for RGB-only captures (Meta glasses)
+- **SplaTAM** for RGB-D captures (iPhone LiDAR)
+- **ARKit Direct** for iOS captures (uses ARKit poses directly)
+- **COLMAP Fallback** when other methods unavailable
+- Output: Camera poses + 3D Gaussian splats
 
-### 3. Mesh Extraction (`MeshExtractionJob`)
-- Extract textured mesh from Gaussian splats using SuGaR
-- Generate simplified collision mesh for physics simulation
-- Bake multi-view textures onto mesh
-- Export in USD format
+### Stage 2: Export for DWM
+Package the output for BlueprintPipeline/DWM processing:
 
-### 4. Object Assetization (`ObjectAssetizationJob`)
-- Lift SAM 3 2D tracks into 3D using camera poses
-- **Tier 1:** Reconstruct objects from multi-view when coverage is good
-- **Tier 2:** Generate objects using Hunyuan3D when coverage is poor
-- Output: Individual object USD files with placement info
-
-### 5. USD Authoring (`USDAuthoringJob`)
-- Compose final scene from environment mesh and objects
-- Add physics properties (rigid bodies, colliders, materials)
-- Set up Isaac Sim-compatible hierarchy
-- Validate SimReady compliance
+```
+output/
+├── gaussians.ply           # 3D Gaussian point cloud
+├── camera/
+│   ├── intrinsics.json     # Camera parameters
+│   └── trajectory.json     # Per-frame camera poses
+└── capture_info.json       # Metadata for handoff
+```
 
 ## Installation
 
-### Basic Installation
 ```bash
+# Basic install
 pip install -e .
-```
 
-### With GPU Support (Recommended)
-```bash
+# With GPU support (recommended)
 pip install -e ".[gpu]"
-```
 
-### Individual Components
-```bash
-# Core dependencies
-pip install -e ".[core]"
-
-# Cloud Run / GCS support
-pip install -e ".[cloud]"
-
-# SAM 3 segmentation
-pip install -e ".[sam]"
-
-# USD authoring
-pip install -e ".[usd]"
-
-# 3DGS rendering (for DWM static-scene videos)
-pip install -e ".[rendering]"
-# For CUDA acceleration (recommended):
-pip install gsplat  # Easy install
-# OR for best quality/speed, build from source:
-# https://github.com/graphdeco-inria/diff-gaussian-rasterization
-
-# Hunyuan3D generation
-pip install -e ".[generation]"
+# Development
+pip install -e ".[dev]"
 ```
 
 ## Quick Start
 
-### 1. Create a Session Manifest
-```yaml
-# session.yaml
-session_id: kitchen_001
-capture_start: "2024-01-15T10:30:00Z"
-device:
-  type: meta_ray_ban_stories
-  firmware: "1.0.0"
-scale_anchors:
-  - type: fiducial
-    anchor_id: aruco_42
-    known_size_meters: 0.15
-clips:
-  - clip_id: structure_pass
-    gcs_uri: gs://bucket/sessions/kitchen_001/video.mp4
-    purpose: structure
-```
+### Python API
 
-### 2. Run the Pipeline
-
-#### CLI
-```bash
-# Run full pipeline
-python -m blueprint_pipeline.runner --manifest session.yaml
-
-# Run single stage
-python -m blueprint_pipeline.runner --manifest session.yaml --stage reconstruction
-
-# With GCS bucket
-python -m blueprint_pipeline.runner --manifest session.yaml --gcs-bucket my-bucket
-```
-
-#### Python API
 ```python
-from blueprint_pipeline import (
-    PipelineOrchestrator,
-    SessionManifest,
+from pathlib import Path
+from blueprint_pipeline import CapturePipeline, run_capture_pipeline
+
+# Simple usage
+result = run_capture_pipeline(
+    video_paths=[Path("walkthrough.mp4")],
+    output_dir=Path("output"),
 )
 
-# Load session
-session = SessionManifest(
-    session_id="kitchen_001",
-    capture_start="2024-01-15T10:30:00Z",
-    device={"type": "meta_ray_ban_stories"},
-    clips=[...],
+if result.dwm_ready:
+    print(f"Success! Output at: {result.output_path}")
+    print(f"  - Gaussians: {result.export_result.gaussians_path}")
+    print(f"  - Trajectory: {result.export_result.trajectory_path}")
+
+# Or with more control
+from blueprint_pipeline import CapturePipeline, CaptureConfig
+
+config = CaptureConfig(
+    target_fps=2.0,  # Keyframes per second
+    slam_backend=None,  # Auto-select based on sensors
 )
 
+pipeline = CapturePipeline(config)
+result = pipeline.run(
+    capture_id="kitchen_scan_001",
+    video_paths=[Path("walkthrough.mp4")],
+    output_dir=Path("output"),
+    arkit_data_path=Path("arkit_data"),  # Optional: iOS ARKit poses
+)
+```
+
+### CLI
+
+```bash
 # Run pipeline
-orchestrator = PipelineOrchestrator(gcs_bucket="my-bucket")
-result = orchestrator.run_full_pipeline(session)
+blueprint-capture --manifest session.yaml
 
-print(f"Pipeline {'succeeded' if result.success else 'failed'}")
-print(f"Duration: {result.total_duration_seconds:.1f}s")
+# With GCS
+blueprint-capture --manifest session.yaml --gcs-bucket my-bucket
 ```
 
-## Docker
+### iOS Capture with ARKit
 
-### Build GPU Image
-```bash
-docker build -t blueprint-pipeline:latest .
+When using iPhone with ARKit tracking, the pipeline can skip SLAM entirely and use metric-scale poses directly:
+
+```python
+result = run_capture_pipeline(
+    video_paths=[Path("capture.mov")],
+    output_dir=Path("output"),
+    arkit_data_path=Path("arkit/"),  # Contains poses.jsonl
+)
+# result.slam_result.scale_factor == 1.0 (metric scale!)
 ```
 
-### Run Locally with GPU
-```bash
-docker run --gpus all \
-  -v $(pwd)/data:/workspace/data \
-  -v $(pwd)/outputs:/workspace/outputs \
-  blueprint-pipeline:latest \
-  --manifest /workspace/data/session.yaml
+## Output Format
+
+The pipeline produces a DWM-ready output:
+
+### `gaussians.ply`
+Standard 3D Gaussian Splatting point cloud format:
+- Position (x, y, z)
+- Covariance (6 parameters)
+- Spherical harmonics (colors)
+- Opacity
+
+### `camera/trajectory.json`
+```json
+{
+  "poses": [
+    {
+      "frame_id": "frame_0001",
+      "rotation": [0.9, 0.1, 0.0, 0.0],  // Quaternion (w, x, y, z)
+      "translation": [0.0, 0.0, 0.0],
+      "timestamp": 0.0
+    }
+  ],
+  "coordinate_system": "colmap",
+  "scale_factor": 1.0
+}
 ```
 
-### Docker Compose (Development)
-```bash
-# GPU-enabled development shell
-docker-compose run --rm dev
-
-# Run pipeline
-docker-compose run --rm pipeline-gpu --manifest /workspace/configs/session.yaml
+### `camera/intrinsics.json`
+```json
+{
+  "fx": 1500.0,
+  "fy": 1500.0,
+  "cx": 960.0,
+  "cy": 540.0,
+  "width": 1920,
+  "height": 1080,
+  "camera_model": "PINHOLE"
+}
 ```
 
-## Cloud Run Jobs Deployment
+### `capture_info.json`
+Metadata for BlueprintPipeline handoff, including:
+- Capture ID and timestamp
+- Device and sensor info
+- Reconstruction metrics
+- DWM readiness status
 
-### Build and Push
-```bash
-# Set project
-export PROJECT_ID=your-project
-export REGION=us-central1
+## Sensor Support
 
-# Build and push
-docker build -t gcr.io/$PROJECT_ID/blueprint-pipeline:latest .
-docker push gcr.io/$PROJECT_ID/blueprint-pipeline:latest
-```
+| Sensor Type | Device Examples | SLAM Backend | Notes |
+|-------------|-----------------|--------------|-------|
+| RGB-only | Meta Ray-Ban Stories | WildGS-SLAM | Handles dynamic objects |
+| RGB-D | iPhone LiDAR | SplaTAM | Metric-scale depth |
+| iOS ARKit | iPhone, iPad | Direct pose import | Skips SLAM entirely |
+| Visual-Inertial | RGB + IMU | VIGS-SLAM | Better under motion blur |
 
-### Create Cloud Run Job
-```bash
-gcloud run jobs create blueprint-pipeline \
-  --image gcr.io/$PROJECT_ID/blueprint-pipeline:latest \
-  --region $REGION \
-  --cpu 4 \
-  --memory 16Gi \
-  --task-timeout 60m \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID" \
-  --gpu 1 \
-  --gpu-type nvidia-l4
-```
+## Requirements
 
-### Execute Job
-```bash
-gcloud run jobs execute blueprint-pipeline \
-  --region $REGION \
-  --set-env-vars "JOB_PAYLOAD={\"job_name\":\"frame-extraction\",...}"
-```
+- Python 3.10+
+- NVIDIA GPU with CUDA 12.1+ (for SLAM/reconstruction)
+- 16GB+ GPU memory recommended
+- 32GB+ system RAM
 
 ## Project Structure
 
@@ -257,96 +225,62 @@ gcloud run jobs execute blueprint-pipeline \
 BlueprintCapturePipeline/
 ├── src/blueprint_pipeline/
 │   ├── __init__.py           # Package exports
-│   ├── models.py             # Data models (SessionManifest, etc.)
-│   ├── pipeline.py           # Pipeline builder utilities
+│   ├── video2zeroscene/      # Main capture pipeline
+│   │   ├── pipeline.py       # CapturePipeline
+│   │   ├── ingest.py         # Video ingestion
+│   │   ├── slam.py           # SLAM backends
+│   │   ├── export.py         # DWM export
+│   │   └── interfaces.py     # Data models
+│   ├── jobs/                 # Cloud Run job implementations
+│   ├── utils/                # Utilities (GCS, GPU, logging)
 │   ├── orchestrator.py       # Pipeline orchestration
-│   ├── runner.py             # CLI entry point
-│   ├── jobs/
-│   │   ├── base.py           # BaseJob, GPUJob classes
-│   │   ├── frame_extraction.py
-│   │   ├── reconstruction.py
-│   │   ├── mesh.py
-│   │   ├── object_assetization.py
-│   │   └── usd_authoring.py
-│   └── utils/
-│       ├── gcs.py            # GCS client utilities
-│       ├── gpu.py            # GPU detection/management
-│       ├── io.py             # File I/O utilities
-│       └── logging.py        # Logging/progress tracking
-├── configs/
-│   └── example_session.yaml
+│   └── runner.py             # CLI entry point
 ├── docs/
 │   ├── pipeline-overview.md
 │   └── job-stubs.md
 ├── Dockerfile
-├── docker-compose.yml
 └── pyproject.toml
 ```
 
-## Configuration
+## Docker
 
-### Job Parameters
-
-Each job accepts configuration parameters:
-
-```python
-# Frame Extraction
-parameters = {
-    "target_fps": 2.0,           # Frames per second to extract
-    "sam3_enabled": True,        # Run SAM 3 segmentation
-    "mask_dynamics": True,       # Mask dynamic objects
-}
-
-# Reconstruction
-parameters = {
-    "slam_method": "wildgs",     # SLAM method
-    "max_iterations": 30000,     # Training iterations
-    "apply_scale_correction": True,
-}
-
-# Mesh Extraction
-parameters = {
-    "decimation_target": 500000, # Target face count
-    "bake_textures": True,
-    "texture_resolution": 4096,
-}
-
-# Object Assetization
-parameters = {
-    "coverage_threshold": 0.6,   # Min coverage for reconstruction
-    "hunyuan_enabled": True,     # Enable AI generation fallback
-    "max_objects": 50,
-}
-
-# USD Authoring
-parameters = {
-    "convex_decomposition": True,
-    "enable_rigid_body": True,
-    "meters_per_unit": 1.0,
-}
+### Build
+```bash
+docker build -t blueprint-capture:latest .
 ```
 
-## Requirements
+### Run with GPU
+```bash
+docker run --gpus all \
+  -v $(pwd)/data:/workspace/data \
+  -v $(pwd)/output:/workspace/output \
+  blueprint-capture:latest \
+  --manifest /workspace/data/session.yaml
+```
 
-- Python 3.10+
-- NVIDIA GPU with CUDA 12.1+ (for full pipeline)
-- 16GB+ GPU memory recommended
-- 32GB+ system RAM
+## Cloud Run Jobs
 
-## Dependencies
+Deploy as a Cloud Run job for scalable processing:
 
-- **PyTorch 2.x** - Deep learning framework
-- **SAM 2** - Segment Anything Model for object segmentation
-- **Open3D** - 3D geometry processing
-- **OpenUSD** - Universal Scene Description
-- **Hunyuan3D** - Image-to-3D generation (optional)
+```bash
+# Build and push
+docker build -t gcr.io/$PROJECT_ID/blueprint-capture:latest .
+docker push gcr.io/$PROJECT_ID/blueprint-capture:latest
+
+# Create job
+gcloud run jobs create blueprint-capture \
+  --image gcr.io/$PROJECT_ID/blueprint-capture:latest \
+  --region us-central1 \
+  --cpu 4 --memory 16Gi \
+  --gpu 1 --gpu-type nvidia-l4
+```
+
+## Related Projects
+
+- [BlueprintPipeline](https://github.com/ognjhunt/BlueprintPipeline) - DWM processing and scene generation
+- [BlueprintCapture iOS](https://github.com/ognjhunt/BlueprintCapture) - iOS capture app with ARKit
+- [DWM (Dexterous World Models)](https://snuvclab.github.io/dwm/) - Visual world model for robotics
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
-
-## Related Projects
-
-- [BlueprintCapture](https://github.com/ognjhunt/BlueprintCapture) - iOS capture app
-- [BlueprintPipeline](https://github.com/ognjhunt/BlueprintPipeline) - Original pipeline design
-- [Meta Wearables DAT](https://github.com/facebook/meta-wearables-dat-ios) - Meta glasses SDK

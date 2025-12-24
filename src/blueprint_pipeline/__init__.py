@@ -1,41 +1,29 @@
-"""Blueprint Capture Pipeline - Video to SimReady 3D Reconstruction.
+"""BlueprintCapture Pipeline - Phase 3: Video to Gaussian for DWM.
 
 A GPU-accelerated pipeline for converting walkthrough video captures
-into realistic, physics-enabled 3D scenes for robotics simulation.
+into high-quality 3D Gaussian representations for DWM (Dexterous World
+Models) processing.
 
-This pipeline is designed to work with BlueprintPipeline for downstream
-SimReady USD assembly and Isaac Lab integration.
+This is Phase 3 of the Blueprint system:
+    Phase 1: BlueprintPipeline - Image → SimReady 3D reconstruction
+    Phase 2: DWM data layer - Scene → egocentric rollouts
+    Phase 3: BlueprintCapture (this repo) - Video → Gaussian capture
+    Phase 4: AR platform - Digital twins → AR Cloud
 
 Architecture:
     BlueprintCapturePipeline (this repo)
-        -> video2zeroscene: Converts video to ZeroScene format
-        -> Jobs: GPU-accelerated processing stages
+        -> CapturePipeline: Video → Gaussian + camera data
+        -> Output: Ready for DWM processing in BlueprintPipeline
 
-    BlueprintPipeline (downstream)
-        -> zeroscene_adapter: Imports ZeroScene bundles
-        -> simready: Physics property inference
-        -> usd_assembly: Final USD packaging
-        -> isaac_lab: Task scaffolding
-
-Pipeline Stages (video2zeroscene):
+Pipeline stages:
     0. Ingest - Video normalization, keyframe selection
-    1. SLAM - Sensor-conditional pose estimation (WildGS-SLAM/SplaTAM/VIGS-SLAM/ARKit)
-    2. Mesh - SuGaR mesh extraction from Gaussian splats
-    3. Tracks - SAM3 concept segmentation and tracking
-    4. Lift - 2D tracks to 3D object proposals
-    5. Assetize - Tiered object asset generation
-    6. Export - ZeroScene bundle for BlueprintPipeline
+    1. SLAM - Pose estimation + 3D Gaussian reconstruction
+    2. Export - Package for BlueprintPipeline/DWM handoff
 
-Sensor Support:
+Sensor support:
     - RGB-only: Meta glasses, generic cameras (WildGS-SLAM)
     - RGB-D: iPhone LiDAR, RealSense (SplaTAM)
-    - Visual-Inertial: RGB + IMU (VIGS-SLAM)
     - iOS ARKit: Direct pose import (skips SLAM)
-
-Scale Support:
-    - ArUco/AprilTag markers
-    - Known object dimensions
-    - Tape measure references
 """
 
 from .models import (
@@ -62,9 +50,6 @@ from .orchestrator import (
 from .jobs import (
     FrameExtractionJob,
     ReconstructionJob,
-    MeshExtractionJob,
-    ObjectAssetizationJob,
-    USDAuthoringJob,
 )
 from .jobs.base import (
     BaseJob,
@@ -89,28 +74,46 @@ from .arkit_loader import (
     can_skip_slam,
 )
 
-# Video2ZeroScene pipeline (new recommended interface)
+# Capture pipeline (main interface)
 from .video2zeroscene import (
-    Video2ZeroScenePipeline,
+    CapturePipeline,
+    CaptureResult,
+    run_capture_pipeline,
     CaptureManifest,
-    ZeroSceneBundle,
-    ObjectProposal,
-    TrackInfo,
+    CaptureExporter,
+    CaptureExportResult,
+    CameraPose,
+    SLAMResult,
+    SLAMBackend,
     Submap,
+    # Backward compatibility
+    Video2ZeroScenePipeline,
 )
 from .video2zeroscene.interfaces import (
-    SLAMBackend,
-    AssetizationTier,
-    PipelineConfig as V2ZConfig,
+    PipelineConfig as CaptureConfig,
 )
 
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 __all__ = [
     # Version
     "__version__",
-    # Models
+    # Capture Pipeline (main interface)
+    "CapturePipeline",
+    "CaptureResult",
+    "run_capture_pipeline",
+    "CaptureManifest",
+    "CaptureExporter",
+    "CaptureExportResult",
+    "CameraPose",
+    "SLAMResult",
+    "SLAMBackend",
+    "CaptureConfig",
+    "Submap",
+    # Backward compatibility
+    "Video2ZeroScenePipeline",
+    # Legacy Models
     "ArtifactPaths",
     "Clip",
     "JobPayload",
@@ -119,16 +122,6 @@ __all__ = [
     "SensorType",
     "SessionManifest",
     "create_artifact_paths",
-    # Video2ZeroScene (recommended)
-    "Video2ZeroScenePipeline",
-    "CaptureManifest",
-    "ZeroSceneBundle",
-    "ObjectProposal",
-    "TrackInfo",
-    "Submap",
-    "SLAMBackend",
-    "AssetizationTier",
-    "V2ZConfig",
     # Legacy Pipeline
     "build_default_pipeline",
     "default_artifact_paths",
@@ -145,9 +138,6 @@ __all__ = [
     "JobStatus",
     "FrameExtractionJob",
     "ReconstructionJob",
-    "MeshExtractionJob",
-    "ObjectAssetizationJob",
-    "USDAuthoringJob",
     # iOS Capture Support
     "IOSManifest",
     "IOSUploadInfo",

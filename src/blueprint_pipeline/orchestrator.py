@@ -13,38 +13,26 @@ from .models import ArtifactPaths, JobPayload, SessionManifest
 from .jobs.base import BaseJob, JobResult, JobStatus
 from .jobs.frame_extraction import FrameExtractionJob
 from .jobs.reconstruction import ReconstructionJob
-from .jobs.mesh import MeshExtractionJob
-from .jobs.object_assetization import ObjectAssetizationJob
-from .jobs.usd_authoring import USDAuthoringJob
 from .pipeline import default_artifact_paths
 from .utils.logging import get_logger, setup_logging
 
 
 class PipelineStage(Enum):
-    """Pipeline execution stages."""
+    """Pipeline execution stages for Phase 3: Capture."""
     FRAME_EXTRACTION = "frame-extraction"
     RECONSTRUCTION = "reconstruction"
-    MESH_EXTRACTION = "mesh-extraction"
-    OBJECT_ASSETIZATION = "object-assetization"
-    USD_AUTHORING = "usd-authoring"
 
 
 # Mapping of stage names to job classes
 STAGE_JOBS: Dict[PipelineStage, Type[BaseJob]] = {
     PipelineStage.FRAME_EXTRACTION: FrameExtractionJob,
     PipelineStage.RECONSTRUCTION: ReconstructionJob,
-    PipelineStage.MESH_EXTRACTION: MeshExtractionJob,
-    PipelineStage.OBJECT_ASSETIZATION: ObjectAssetizationJob,
-    PipelineStage.USD_AUTHORING: USDAuthoringJob,
 }
 
-# Default execution order (DAG-like dependencies)
+# Default execution order
 DEFAULT_PIPELINE_ORDER = [
     PipelineStage.FRAME_EXTRACTION,
     PipelineStage.RECONSTRUCTION,
-    PipelineStage.MESH_EXTRACTION,
-    PipelineStage.OBJECT_ASSETIZATION,
-    PipelineStage.USD_AUTHORING,
 ]
 
 
@@ -95,7 +83,11 @@ class PipelineResult:
 
 @dataclass
 class PipelineOrchestrator:
-    """Orchestrates execution of the Blueprint pipeline.
+    """Orchestrates execution of the BlueprintCapture pipeline.
+
+    This orchestrator handles Phase 3: Capture stages:
+    1. Frame Extraction - Video → keyframes
+    2. Reconstruction - SLAM → Gaussians + camera poses
 
     Can run locally for testing or dispatch to Cloud Run Jobs for production.
     """
@@ -114,7 +106,7 @@ class PipelineOrchestrator:
         parameters: Optional[Dict[str, Any]] = None,
         stages: Optional[List[PipelineStage]] = None,
     ) -> PipelineResult:
-        """Run the complete pipeline for a capture session.
+        """Run the complete capture pipeline for a session.
 
         Args:
             session: Session manifest with capture metadata.
@@ -139,7 +131,7 @@ class PipelineOrchestrator:
         # Determine stages to run
         stages_to_run = stages or DEFAULT_PIPELINE_ORDER
 
-        self.logger.info(f"Starting pipeline for session: {session.session_id}")
+        self.logger.info(f"Starting capture pipeline for session: {session.session_id}")
         self.logger.info(f"Stages to run: {[s.value for s in stages_to_run]}")
 
         # Create session workspace
