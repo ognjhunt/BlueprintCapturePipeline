@@ -82,6 +82,18 @@ reconstruction = [
     "scipy>=1.11.0",
 ]
 
+# 3DGS Rendering (for DWM static-scene video generation)
+# NOTE: diff-gaussian-rasterization requires manual install from:
+#       https://github.com/graphdeco-inria/diff-gaussian-rasterization
+rendering = [
+    "torch>=2.0.0",
+    "plyfile>=1.0.0",
+    "opencv-python>=4.8.0",
+    "scipy>=1.11.0",
+    # Optional: gsplat provides easier install than diff-gaussian-rasterization
+    # "gsplat>=0.1.0",
+]
+
 # Hunyuan3D generation (install separately)
 generation = [
     "torch>=2.0.0",
@@ -91,7 +103,7 @@ generation = [
 
 # Full GPU pipeline (all dependencies)
 gpu = [
-    "blueprint-capture-pipeline[core,cloud,usd,sam,reconstruction,generation]",
+    "blueprint-capture-pipeline[core,cloud,usd,sam,reconstruction,rendering,generation]",
 ]
 
 # Development dependencies
@@ -120,6 +132,7 @@ all = [
 
 [project.scripts]
 blueprint-pipeline = "blueprint_pipeline.runner:main"
+render-static-scene = "blueprint_pipeline.video2zeroscene.rendering.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ognjhunt/BlueprintCapturePipeline"
