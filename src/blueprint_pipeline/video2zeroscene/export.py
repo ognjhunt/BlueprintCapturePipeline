@@ -1,167 +1,103 @@
-"""ZeroScene export for BlueprintPipeline handoff.
+"""Capture export for BlueprintPipeline/DWM handoff.
 
-This module creates the ZeroScene-compatible folder structure that
-BlueprintPipeline's zeroscene_adapter_job.py expects.
+This module creates a simple output format containing:
+- 3D Gaussian splat (point_cloud.ply)
+- Camera trajectory and intrinsics
+- Capture metadata
 
-Structure:
-    zeroscene/
-        scene_info.json
-        objects/obj_i/{mesh.glb, pose.json, bounds.json, material.json}
-        background/mesh.glb
-        camera/intrinsics.json
+This output is ready for DWM (Dexterous World Models) processing
+in the BlueprintPipeline repository.
+
+Output structure:
+    capture_output/
+        gaussians.ply           # 3D Gaussian splatting point cloud
+        camera/
+            intrinsics.json     # Camera parameters
+            trajectory.json     # Per-frame camera poses
+        capture_info.json       # Metadata for handoff
 """
 
 from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .interfaces import (
     CameraIntrinsics,
     CaptureManifest,
-    ObjectAssetBundle,
-    PipelineConfig,
-    ZeroSceneBundle,
 )
 from .slam import CameraPose
 
 
 @dataclass
-class ExportResult:
-    """Result of ZeroScene export."""
-    bundle_path: Path
-    scene_info_path: Path
-    object_count: int
+class CaptureExportResult:
+    """Result of capture export."""
+    output_path: Path
+    gaussians_path: Optional[Path] = None
+    trajectory_path: Optional[Path] = None
+    intrinsics_path: Optional[Path] = None
+
     success: bool = True
-    errors: List[str] = None
-
-    def __post_init__(self):
-        if self.errors is None:
-            self.errors = []
+    errors: List[str] = field(default_factory=list)
 
 
-class ZeroSceneExporter:
-    """Export pipeline results to ZeroScene format for BlueprintPipeline.
+class CaptureExporter:
+    """Export capture results for BlueprintPipeline/DWM handoff.
 
-    This creates the folder structure expected by zeroscene_adapter_job.py
-    in the BlueprintPipeline repository.
+    Creates a minimal output format containing:
+    - 3D Gaussians (PLY format) from SLAM
+    - Camera trajectory (poses)
+    - Camera intrinsics
+    - Capture metadata
     """
-
-    def __init__(self, config: PipelineConfig):
-        self.config = config
 
     def export(
         self,
         manifest: CaptureManifest,
-        background_mesh_path: Optional[Path],
-        collision_mesh_path: Optional[Path],
         gaussians_path: Optional[Path],
-        objects: List[ObjectAssetBundle],
         poses: List[CameraPose],
         intrinsics: Optional[CameraIntrinsics],
         output_dir: Path,
         scale_factor: float = 1.0,
-    ) -> ExportResult:
-        """Export to ZeroScene format.
+        copy_frames: bool = False,
+        frames_dir: Optional[Path] = None,
+    ) -> CaptureExportResult:
+        """Export capture for DWM processing.
 
         Args:
-            manifest: Capture manifest
-            background_mesh_path: Path to environment mesh
-            collision_mesh_path: Path to collision mesh
-            gaussians_path: Path to 3D Gaussians PLY (for DWM compatibility)
-            objects: List of object asset bundles
-            poses: Camera poses
+            manifest: Capture manifest with metadata
+            gaussians_path: Path to 3D Gaussians PLY file
+            poses: Camera poses from SLAM
             intrinsics: Camera intrinsics
             output_dir: Output directory
-            scale_factor: Scale factor applied to scene
+            scale_factor: Scale factor applied during reconstruction
+            copy_frames: Whether to copy keyframes to output
+            frames_dir: Source directory for frames (if copying)
 
         Returns:
-            ExportResult with bundle path and metadata
+            CaptureExportResult with paths to exported files
         """
-        bundle_dir = output_dir / "zeroscene"
-        bundle_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        errors = []
+        result = CaptureExportResult(output_path=output_dir)
 
-        # Create scene_info.json
-        scene_info = self._create_scene_info(
-            manifest,
-            len(objects),
-            background_mesh_path is not None,
-            gaussians_path is not None and gaussians_path.exists(),
-            scale_factor
-        )
-        scene_info_path = bundle_dir / "scene_info.json"
-        scene_info_path.write_text(json.dumps(scene_info, indent=2))
-
-        # Export objects
-        objects_dir = bundle_dir / "objects"
-        objects_dir.mkdir(exist_ok=True)
-
-        for i, obj in enumerate(objects):
-            obj_dir = objects_dir / f"obj_{i:04d}"
-            obj_dir.mkdir(exist_ok=True)
-
-            # Copy/link mesh
-            mesh_exported = self._export_object_mesh(obj, obj_dir)
-            if not mesh_exported:
-                errors.append(f"Failed to export mesh for {obj.asset_id}")
-
-            # Write pose.json
-            pose_data = {
-                "position": list(obj.position),
-                "rotation": list(obj.rotation),
-                "scale": list(obj.scale),
-            }
-            (obj_dir / "pose.json").write_text(json.dumps(pose_data, indent=2))
-
-            # Write bounds.json
-            bounds_data = {
-                "min": list(obj.bounds_min),
-                "max": list(obj.bounds_max),
-            }
-            (obj_dir / "bounds.json").write_text(json.dumps(bounds_data, indent=2))
-
-            # Write material.json
-            material_data = {
-                "label": obj.concept_label,
-                "tier": obj.tier.value,
-                "source": obj.source,
-                "quality_score": obj.quality_score,
-            }
-            (obj_dir / "material.json").write_text(json.dumps(material_data, indent=2))
-
-        # Export background
-        background_dir = bundle_dir / "background"
-        background_dir.mkdir(exist_ok=True)
-
-        if background_mesh_path and background_mesh_path.exists():
-            self._copy_mesh(background_mesh_path, background_dir / "mesh.glb")
-
-        if collision_mesh_path and collision_mesh_path.exists():
-            self._copy_mesh(collision_mesh_path, background_dir / "collision.glb")
-
-        # Export 3D Gaussians for DWM compatibility
+        # Export 3D Gaussians
         if gaussians_path and gaussians_path.exists():
-            import shutil
-            shutil.copy(gaussians_path, background_dir / "gaussians.ply")
+            dst_gaussians = output_dir / "gaussians.ply"
+            shutil.copy(gaussians_path, dst_gaussians)
+            result.gaussians_path = dst_gaussians
+        else:
+            result.errors.append("No Gaussians file found")
+            result.success = False
 
-        # Write background info
-        bg_info = {
-            "has_mesh": background_mesh_path is not None,
-            "has_collision": collision_mesh_path is not None,
-            "has_gaussians": gaussians_path is not None and gaussians_path.exists(),
-            "gaussians_format": "3dgs_ply" if gaussians_path and gaussians_path.exists() else None,
-        }
-        (background_dir / "info.json").write_text(json.dumps(bg_info, indent=2))
-
-        # Export camera info
-        camera_dir = bundle_dir / "camera"
+        # Export camera data
+        camera_dir = output_dir / "camera"
         camera_dir.mkdir(exist_ok=True)
 
+        # Intrinsics
         if intrinsics:
             intrinsics_data = {
                 "fx": intrinsics.fx,
@@ -170,183 +106,139 @@ class ZeroSceneExporter:
                 "cy": intrinsics.cy,
                 "width": intrinsics.width,
                 "height": intrinsics.height,
+                "camera_model": getattr(intrinsics, 'camera_model', 'PINHOLE'),
             }
-            (camera_dir / "intrinsics.json").write_text(
-                json.dumps(intrinsics_data, indent=2)
-            )
+            intrinsics_path = camera_dir / "intrinsics.json"
+            intrinsics_path.write_text(json.dumps(intrinsics_data, indent=2))
+            result.intrinsics_path = intrinsics_path
 
+        # Trajectory (camera poses)
         if poses:
             trajectory = [
                 {
                     "frame_id": p.frame_id,
-                    "rotation": list(p.rotation),
+                    "image_name": p.image_name,
+                    "rotation": list(p.rotation),  # Quaternion (w, x, y, z)
                     "translation": list(p.translation),
                     "timestamp": p.timestamp,
                 }
                 for p in poses
             ]
-            (camera_dir / "trajectory.json").write_text(
-                json.dumps(trajectory, indent=2)
-            )
+            trajectory_path = camera_dir / "trajectory.json"
+            trajectory_path.write_text(json.dumps({
+                "poses": trajectory,
+                "coordinate_system": "colmap",  # World-to-camera convention
+                "scale_factor": scale_factor,
+            }, indent=2))
+            result.trajectory_path = trajectory_path
+
+        # Copy keyframes if requested
+        if copy_frames and frames_dir and frames_dir.exists():
+            frames_output = output_dir / "frames"
+            frames_output.mkdir(exist_ok=True)
+            for pose in poses:
+                src = frames_dir / pose.image_name
+                if src.exists():
+                    shutil.copy(src, frames_output / pose.image_name)
+
+        # Create capture info (metadata for handoff)
+        capture_info = self._create_capture_info(
+            manifest=manifest,
+            pose_count=len(poses),
+            has_gaussians=result.gaussians_path is not None,
+            scale_factor=scale_factor,
+        )
+        info_path = output_dir / "capture_info.json"
+        info_path.write_text(json.dumps(capture_info, indent=2))
 
         # Write completion marker
-        (bundle_dir / ".complete").touch()
+        (output_dir / ".complete").touch()
 
-        # Write BlueprintPipeline handoff marker
-        handoff_info = {
-            "source": "BlueprintCapturePipeline",
-            "capture_id": manifest.capture_id,
-            "format": "zeroscene",
-            "version": "1.0",
-            "ready_for_processing": True,
-        }
-        (bundle_dir / "handoff.json").write_text(json.dumps(handoff_info, indent=2))
+        return result
 
-        return ExportResult(
-            bundle_path=bundle_dir,
-            scene_info_path=scene_info_path,
-            object_count=len(objects),
-            success=len(errors) == 0,
-            errors=errors if errors else None,
-        )
-
-    def _create_scene_info(
+    def _create_capture_info(
         self,
         manifest: CaptureManifest,
-        object_count: int,
-        has_background: bool,
+        pose_count: int,
         has_gaussians: bool,
         scale_factor: float,
     ) -> Dict[str, Any]:
-        """Create scene_info.json content."""
+        """Create capture_info.json for BlueprintPipeline handoff."""
         return {
+            # Identification
             "capture_id": manifest.capture_id,
             "capture_timestamp": manifest.capture_timestamp,
+
+            # Source info
+            "source": "BlueprintCapturePipeline",
+            "version": "1.0",
+
+            # Device metadata
             "device": {
                 "platform": manifest.device_platform,
                 "model": manifest.device_model,
             },
+
+            # Sensor configuration
             "sensor": {
                 "type": manifest.sensor_type.value,
                 "has_depth": manifest.has_depth,
                 "has_imu": manifest.has_imu,
+                "has_arkit_poses": manifest.has_arkit_poses,
             },
-            "scale_factor": scale_factor,
-            "up_axis": "Y",
-            "meters_per_unit": 1.0,
-            "object_count": object_count,
-            "has_background": has_background,
-            "has_gaussians": has_gaussians,
-            "gaussians_format": "3dgs_ply" if has_gaussians else None,
-            "dwm_compatible": has_gaussians,  # DWM requires raw Gaussians
-            "resolution": list(manifest.resolution),
-            "total_frames": manifest.total_frames,
-            "duration_seconds": manifest.estimated_duration_seconds,
+
+            # Capture metrics
+            "metrics": {
+                "total_frames": manifest.total_frames,
+                "pose_count": pose_count,
+                "duration_seconds": manifest.estimated_duration_seconds,
+                "resolution": list(manifest.resolution),
+                "fps": manifest.fps,
+            },
+
+            # Reconstruction results
+            "reconstruction": {
+                "has_gaussians": has_gaussians,
+                "gaussians_format": "3dgs_ply",
+                "scale_factor": scale_factor,
+                "coordinate_system": "colmap",
+            },
+
+            # DWM compatibility
+            "dwm_ready": has_gaussians and pose_count > 0,
+
+            # Handoff status
+            "ready_for_pipeline": has_gaussians,
         }
 
-    def _export_object_mesh(
-        self,
-        obj: ObjectAssetBundle,
-        obj_dir: Path,
-    ) -> bool:
-        """Export object mesh to object directory."""
-        mesh_path = Path(obj.mesh_path)
 
-        if not mesh_path.exists():
-            return False
-
-        # Determine target filename
-        if mesh_path.suffix == ".glb":
-            target = obj_dir / "mesh.glb"
-        elif mesh_path.suffix == ".gltf":
-            target = obj_dir / "mesh.gltf"
-        elif mesh_path.suffix == ".usd":
-            target = obj_dir / "mesh.usd"
-        else:
-            # Try to convert to GLB
-            target = obj_dir / "mesh.glb"
-            try:
-                import trimesh
-                mesh = trimesh.load(str(mesh_path))
-                mesh.export(str(target))
-                return True
-            except Exception:
-                # Fall back to copying original
-                target = obj_dir / f"mesh{mesh_path.suffix}"
-
-        shutil.copy(mesh_path, target)
-        return True
-
-    def _copy_mesh(self, src: Path, dst: Path) -> bool:
-        """Copy mesh file, converting if necessary."""
-        if not src.exists():
-            return False
-
-        if src.suffix == dst.suffix:
-            shutil.copy(src, dst)
-            return True
-
-        # Try conversion
-        try:
-            import trimesh
-            mesh = trimesh.load(str(src))
-            mesh.export(str(dst))
-            return True
-        except Exception:
-            # Copy as-is with original extension
-            shutil.copy(src, dst.with_suffix(src.suffix))
-            return True
-
-
-def create_zeroscene_bundle(
-    capture_id: str,
-    output_path: Path,
-    background_mesh: Optional[str] = None,
-    collision_mesh: Optional[str] = None,
-    gaussians_path: Optional[str] = None,
-    objects: Optional[List[ObjectAssetBundle]] = None,
-    intrinsics: Optional[CameraIntrinsics] = None,
-    poses: Optional[List[CameraPose]] = None,
-    scale_factor: float = 1.0,
-) -> ZeroSceneBundle:
-    """Convenience function to create a ZeroSceneBundle.
+def export_capture(
+    manifest: CaptureManifest,
+    gaussians_path: Optional[Path],
+    poses: List[CameraPose],
+    intrinsics: Optional[CameraIntrinsics],
+    output_dir: Path,
+    **kwargs,
+) -> CaptureExportResult:
+    """Convenience function to export capture.
 
     Args:
-        capture_id: Unique capture identifier
-        output_path: Output directory path
-        background_mesh: Path to background mesh
-        collision_mesh: Path to collision mesh
-        gaussians_path: Path to 3D Gaussians PLY (for DWM compatibility)
-        objects: List of object asset bundles
+        manifest: Capture manifest
+        gaussians_path: Path to Gaussians PLY
+        poses: Camera poses
         intrinsics: Camera intrinsics
-        poses: Camera trajectory
-        scale_factor: Scale factor
+        output_dir: Output directory
+        **kwargs: Additional arguments passed to CaptureExporter.export()
 
     Returns:
-        ZeroSceneBundle ready for writing
+        CaptureExportResult
     """
-    camera_trajectory = []
-    if poses:
-        camera_trajectory = [
-            {
-                "frame_id": p.frame_id,
-                "rotation": list(p.rotation),
-                "translation": list(p.translation),
-                "timestamp": p.timestamp,
-            }
-            for p in poses
-        ]
-
-    return ZeroSceneBundle(
-        capture_id=capture_id,
-        output_path=output_path,
-        scene_info={
-            "scale_factor": scale_factor,
-        },
-        background_mesh_path=background_mesh,
-        background_collision_path=collision_mesh,
-        objects=objects or [],
+    exporter = CaptureExporter()
+    return exporter.export(
+        manifest=manifest,
+        gaussians_path=gaussians_path,
+        poses=poses,
         intrinsics=intrinsics,
-        camera_trajectory=camera_trajectory,
-        scale_factor=scale_factor,
+        output_dir=output_dir,
+        **kwargs,
     )

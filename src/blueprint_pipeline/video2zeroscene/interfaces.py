@@ -1,7 +1,7 @@
-"""Core interfaces and data models for the video2zeroscene pipeline.
+"""Core interfaces and data models for the BlueprintCapture pipeline.
 
-This module defines the contract between pipeline stages and the ZeroScene
-output format that BlueprintPipeline expects.
+This module defines the contract between pipeline stages for Phase 3: Capture.
+The output format is designed for handoff to BlueprintPipeline for DWM processing.
 """
 
 from __future__ import annotations
@@ -28,13 +28,6 @@ class SLAMBackend(Enum):
     VIGS_SLAM = "vigs_slam"         # For visual-inertial captures
     ARKIT_DIRECT = "arkit_direct"   # Direct ARKit pose import (iOS)
     COLMAP_FALLBACK = "colmap"      # Fallback SfM + 3DGS
-
-
-class AssetizationTier(Enum):
-    """Tier strategy for object asset generation."""
-    TIER_1_RECONSTRUCT = "reconstruct"  # Multi-view reconstruction
-    TIER_2_PROXY = "proxy"              # Proxy geometry (box/hull)
-    TIER_3_REPLACE = "replace"          # Asset replacement/retrieval
 
 
 @dataclass
@@ -232,7 +225,6 @@ class Submap:
     # Submap-local reconstruction results
     poses_path: Optional[str] = None
     gaussians_path: Optional[str] = None
-    mesh_path: Optional[str] = None
 
     # Transform to global coordinates (after alignment)
     global_transform: Optional[List[float]] = None  # 4x4 matrix flattened
@@ -244,230 +236,8 @@ class Submap:
 
 
 @dataclass
-class TrackInfo:
-    """Tracked object instance across frames (from SAM3).
-
-    This represents a 2D object track before lifting to 3D.
-    """
-    track_id: str
-    concept_label: str  # SAM3 concept (e.g., "chair", "table", "shelf")
-
-    # Per-frame detections
-    frame_ids: List[str]
-    bboxes: List[Tuple[int, int, int, int]]  # (x, y, w, h)
-    mask_paths: List[str]
-    confidences: List[float]
-
-    # Track properties
-    is_dynamic: bool = False  # Person, hand, pet, etc.
-    first_frame_index: int = 0
-    last_frame_index: int = 0
-    total_observations: int = 0
-
-    # Computed after lifting
-    coverage_score: float = 0.0
-    viewpoint_diversity: float = 0.0
-
-
-@dataclass
-class ObjectProposal:
-    """3D object proposal lifted from 2D tracks.
-
-    This is the intermediate representation before assetization.
-    """
-    proposal_id: str
-    track_id: str
-    concept_label: str
-
-    # 3D bounding box (oriented bounding box)
-    obb_center: Tuple[float, float, float]
-    obb_axes: List[List[float]]  # 3x3 rotation matrix
-    obb_extents: Tuple[float, float, float]
-
-    # World transform
-    position: Tuple[float, float, float]
-    rotation: Tuple[float, float, float, float]  # Quaternion (w, x, y, z)
-
-    # Support surface
-    support_surface: str  # "floor", "table", "shelf", "wall", "ceiling"
-    support_height: float = 0.0
-
-    # Quality metrics
-    confidence: float = 0.0
-    coverage_score: float = 0.0
-    reprojection_consistency: float = 0.0
-    num_observations: int = 0
-
-    # Assetization recommendation
-    recommended_tier: AssetizationTier = AssetizationTier.TIER_2_PROXY
-
-
-@dataclass
-class ObjectAssetBundle:
-    """Generated object asset ready for scene composition."""
-    asset_id: str
-    proposal_id: str
-    concept_label: str
-
-    # Asset paths
-    mesh_path: str  # GLB/USD path
-    texture_path: Optional[str] = None
-    collision_path: Optional[str] = None
-
-    # Generation metadata
-    tier: AssetizationTier = AssetizationTier.TIER_2_PROXY
-    source: str = "proxy"  # "reconstruction", "proxy", "retrieval", "generation"
-
-    # Placement in scene
-    position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-    rotation: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
-    scale: Tuple[float, float, float] = (1.0, 1.0, 1.0)
-
-    # Bounds
-    bounds_min: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-    bounds_max: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-
-    # Quality
-    quality_score: float = 0.5
-
-
-@dataclass
-class ZeroSceneBundle:
-    """ZeroScene-compatible output bundle for BlueprintPipeline handoff.
-
-    This follows the ZeroScene folder structure expected by
-    BlueprintPipeline's zeroscene_adapter_job.py.
-
-    Structure:
-        zeroscene/
-            scene_info.json
-            objects/
-                obj_i/
-                    mesh.glb
-                    pose.json
-                    bounds.json
-                    material.json
-            background/
-                mesh.glb
-                collision.glb
-            camera/
-                intrinsics.json
-                trajectory.json
-    """
-    capture_id: str
-    output_path: Path
-
-    # Scene metadata
-    scene_info: Dict[str, Any] = field(default_factory=dict)
-
-    # Background environment
-    background_mesh_path: Optional[str] = None
-    background_collision_path: Optional[str] = None
-
-    # Objects
-    objects: List[ObjectAssetBundle] = field(default_factory=list)
-
-    # Camera
-    intrinsics: Optional[CameraIntrinsics] = None
-    camera_trajectory: List[Dict[str, Any]] = field(default_factory=list)
-
-    # Metadata
-    scale_factor: float = 1.0
-    up_axis: str = "Y"
-    meters_per_unit: float = 1.0
-
-    # Completion marker
-    is_complete: bool = False
-
-    def write(self) -> Path:
-        """Write the ZeroScene bundle to disk."""
-        bundle_path = self.output_path / "zeroscene"
-        bundle_path.mkdir(parents=True, exist_ok=True)
-
-        # Write scene_info.json
-        scene_info = {
-            "capture_id": self.capture_id,
-            "scale_factor": self.scale_factor,
-            "up_axis": self.up_axis,
-            "meters_per_unit": self.meters_per_unit,
-            "object_count": len(self.objects),
-            "has_background": self.background_mesh_path is not None,
-            **self.scene_info,
-        }
-        (bundle_path / "scene_info.json").write_text(json.dumps(scene_info, indent=2))
-
-        # Write objects
-        objects_dir = bundle_path / "objects"
-        objects_dir.mkdir(exist_ok=True)
-
-        for i, obj in enumerate(self.objects):
-            obj_dir = objects_dir / f"obj_{i:04d}"
-            obj_dir.mkdir(exist_ok=True)
-
-            # Write pose.json
-            pose = {
-                "position": list(obj.position),
-                "rotation": list(obj.rotation),
-                "scale": list(obj.scale),
-            }
-            (obj_dir / "pose.json").write_text(json.dumps(pose, indent=2))
-
-            # Write bounds.json
-            bounds = {
-                "min": list(obj.bounds_min),
-                "max": list(obj.bounds_max),
-            }
-            (obj_dir / "bounds.json").write_text(json.dumps(bounds, indent=2))
-
-            # Write material.json (placeholder)
-            material = {
-                "label": obj.concept_label,
-                "tier": obj.tier.value,
-                "source": obj.source,
-            }
-            (obj_dir / "material.json").write_text(json.dumps(material, indent=2))
-
-        # Write background info
-        background_dir = bundle_path / "background"
-        background_dir.mkdir(exist_ok=True)
-
-        if self.background_mesh_path:
-            bg_info = {
-                "mesh_path": self.background_mesh_path,
-                "collision_path": self.background_collision_path,
-            }
-            (background_dir / "info.json").write_text(json.dumps(bg_info, indent=2))
-
-        # Write camera info
-        camera_dir = bundle_path / "camera"
-        camera_dir.mkdir(exist_ok=True)
-
-        if self.intrinsics:
-            intrinsics = {
-                "fx": self.intrinsics.fx,
-                "fy": self.intrinsics.fy,
-                "cx": self.intrinsics.cx,
-                "cy": self.intrinsics.cy,
-                "width": self.intrinsics.width,
-                "height": self.intrinsics.height,
-            }
-            (camera_dir / "intrinsics.json").write_text(json.dumps(intrinsics, indent=2))
-
-        if self.camera_trajectory:
-            (camera_dir / "trajectory.json").write_text(
-                json.dumps(self.camera_trajectory, indent=2)
-            )
-
-        # Write completion marker
-        self.is_complete = True
-        (bundle_path / ".complete").touch()
-
-        return bundle_path
-
-
-@dataclass
 class PipelineConfig:
-    """Configuration for the video2zeroscene pipeline."""
+    """Configuration for the BlueprintCapture pipeline."""
 
     # SLAM configuration
     slam_backend: Optional[SLAMBackend] = None  # Auto-select based on sensors
@@ -489,40 +259,8 @@ class PipelineConfig:
         default_factory=lambda: ["aruco_board", "apriltag", "known_object"]
     )
 
-    # SAM3 segmentation
-    sam3_concepts: List[str] = field(
-        default_factory=lambda: [
-            # Dynamic (for masking)
-            "person", "hand", "pet",
-            # Static objects (for inventory)
-            "chair", "table", "desk", "sofa", "bed",
-            "shelf", "cabinet", "drawer", "door",
-            "lamp", "plant", "monitor", "keyboard",
-            "bottle", "cup", "book", "box",
-        ]
-    )
-    sam3_dynamic_concepts: List[str] = field(
-        default_factory=lambda: ["person", "hand", "pet"]
-    )
-
-    # Object proposals
-    min_object_area: int = 500  # Minimum mask area in pixels
-    min_object_views: int = 3   # Minimum views for proposal
-    max_objects: int = 100
-
-    # Assetization
-    tier1_coverage_threshold: float = 0.6  # Coverage needed for reconstruction
-    tier1_diversity_threshold: float = 0.3  # Viewpoint diversity threshold
-    enable_hunyuan3d: bool = True
-    enable_asset_retrieval: bool = False  # LiteReality-style replacement
-
-    # Mesh extraction
-    mesh_decimation_target: int = 500000
-    collision_decimation_target: int = 50000
-    texture_resolution: int = 4096
-
     # Output
-    output_format: str = "zeroscene"  # "zeroscene" or "blueprint_direct"
+    output_format: str = "gaussian"  # Output format for DWM handoff
 
     def select_slam_backend(self, manifest: CaptureManifest) -> SLAMBackend:
         """Auto-select SLAM backend based on available sensors."""

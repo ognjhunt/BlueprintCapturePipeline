@@ -1,7 +1,7 @@
 [project]
 name = "blueprint-capture-pipeline"
-version = "0.2.0"
-description = "GPU-accelerated pipeline for converting walkthrough video captures to SimReady 3D scenes via ZeroScene format"
+version = "1.0.0"
+description = "Phase 3: Video to 3D Gaussian capture pipeline for DWM (Dexterous World Models) processing"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -11,13 +11,13 @@ authors = [
 keywords = [
     "3d-reconstruction",
     "gaussian-splatting",
-    "isaac-sim",
-    "robotics",
-    "simulation",
-    "usd",
+    "slam",
+    "dwm",
+    "world-models",
+    "video-capture",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -39,8 +39,6 @@ dependencies = [
 # Core pipeline dependencies (recommended for local development)
 core = [
     "opencv-python>=4.8.0",
-    "open3d>=0.17.0",
-    "trimesh>=4.0.0",
 ]
 
 # GCS/Cloud dependencies
@@ -50,31 +48,7 @@ cloud = [
     "google-cloud-logging>=3.6.0",
 ]
 
-# USD authoring (install separately due to size)
-usd = [
-    "usd-core>=24.0",
-]
-
-# SAM3 segmentation (https://github.com/facebookresearch/sam3)
-sam = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    "segment-anything-2>=0.1.0",  # SAM2 fallback
-    # "sam3>=0.1.0",  # Install from GitHub when available
-]
-
-# Video2ZeroScene specific dependencies
-video2zeroscene = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    "opencv-python>=4.8.0",
-    "open3d>=0.17.0",
-    "trimesh>=4.0.0",
-    "plyfile>=1.0.0",
-    "scipy>=1.11.0",
-]
-
-# 3D Gaussian Splatting / Reconstruction
+# 3D Gaussian Splatting / SLAM reconstruction
 reconstruction = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
@@ -82,28 +56,9 @@ reconstruction = [
     "scipy>=1.11.0",
 ]
 
-# 3DGS Rendering (for DWM static-scene video generation)
-# NOTE: diff-gaussian-rasterization requires manual install from:
-#       https://github.com/graphdeco-inria/diff-gaussian-rasterization
-rendering = [
-    "torch>=2.0.0",
-    "plyfile>=1.0.0",
-    "opencv-python>=4.8.0",
-    "scipy>=1.11.0",
-    # Optional: gsplat provides easier install than diff-gaussian-rasterization
-    # "gsplat>=0.1.0",
-]
-
-# Hunyuan3D generation (install separately)
-generation = [
-    "torch>=2.0.0",
-    "diffusers>=0.25.0",
-    "transformers>=4.36.0",
-]
-
 # Full GPU pipeline (all dependencies)
 gpu = [
-    "blueprint-capture-pipeline[core,cloud,usd,sam,reconstruction,rendering,generation]",
+    "blueprint-capture-pipeline[core,cloud,reconstruction]",
 ]
 
 # Development dependencies
@@ -131,8 +86,7 @@ all = [
 ]
 
 [project.scripts]
-blueprint-pipeline = "blueprint_pipeline.runner:main"
-render-static-scene = "blueprint_pipeline.video2zeroscene.rendering.cli:main"
+blueprint-capture = "blueprint_pipeline.runner:main"
 
 [project.urls]
 Homepage = "https://github.com/ognjhunt/BlueprintCapturePipeline"
