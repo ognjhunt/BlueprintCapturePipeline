@@ -1,72 +1,55 @@
-# Blueprint Capture Pipeline
+# BlueprintCapture Pipeline Overview
 
-This document describes the end-to-end pipeline for converting walkthrough video captures into SimReady 3D scenes for robotics simulation.
+## Phase 3: Video → Gaussian → DWM
+
+This pipeline converts video walkthroughs into 3D Gaussian representations ready for DWM (Dexterous World Models) processing in BlueprintPipeline.
 
 ## Key Constraint: Meta Wearables DAT
 
-**Meta Wearables DAT preview (as of Dec 2025) is primarily camera (and audio via Bluetooth), not a full VIO/depth stack.** The pipeline is designed to work well in **monocular RGB** conditions, treating metric scale as something that must be anchored during capture or calibrated post-hoc.
+**Meta Wearables DAT preview (as of Dec 2025) is primarily camera (and audio via Bluetooth), not a full VIO/depth stack.** The pipeline is designed to work well in **monocular RGB** conditions, treating metric scale as something that must be anchored during capture or calibrated post-hoc via ARKit (iOS) or scale anchors.
 
-## Two-Deliverable Strategy
-
-1. **Perception Twin** — Photoreal dense representation (Gaussian splats, mesh) for rendering and perception training.
-2. **Sim Twin** — Object-centric assets with colliders, physics materials, and semantics for interaction in Isaac Sim.
-
-## Architecture
+## Pipeline Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      BlueprintCapturePipeline (this repo)               │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  [Capture (iOS/Meta DAT)]                                               │
-│         │                                                                │
-│         v                                                                │
-│  [Upload to GCS] ─────> [Cloud Function Trigger]                        │
-│         │                                                                │
-│         v                                                                │
-│  ┌──────────────────────────────────────────────────────────────┐       │
-│  │              video2zeroscene Pipeline                         │       │
-│  │                                                               │       │
-│  │  Stage 0: Ingest ──> CaptureManifest + keyframes             │       │
-│  │     │                                                         │       │
-│  │     v                                                         │       │
-│  │  Stage 1-early: SAM3 tracking ──> dynamic masks              │       │
-│  │     │                                                         │       │
-│  │     v                                                         │       │
-│  │  Stage 2: SLAM (sensor-conditional)                          │       │
-│  │     ├── RGB-only: WildGS-SLAM                                │       │
-│  │     ├── RGB-D: SplaTAM                                       │       │
-│  │     ├── Visual-Inertial: VIGS-SLAM                          │       │
-│  │     └── iOS ARKit: Direct pose import                        │       │
-│  │     │                                                         │       │
-│  │     v                                                         │       │
-│  │  Stage 3: Mesh ──> SuGaR extraction + decimation             │       │
-│  │     │                                                         │       │
-│  │     v                                                         │       │
-│  │  Stage 4: Tracks ──> SAM3 concept segmentation               │       │
-│  │     │                                                         │       │
-│  │     v                                                         │       │
-│  │  Stage 5: Lift ──> 2D tracks to 3D proposals                 │       │
-│  │     │                                                         │       │
-│  │     v                                                         │       │
-│  │  Stage 6: Assetize ──> tiered object assets                  │       │
-│  │     ├── Tier 1: Multi-view reconstruction                    │       │
-│  │     ├── Tier 2: Proxy geometry (box/hull)                    │       │
-│  │     └── Tier 3: Asset replacement (future)                   │       │
-│  │     │                                                         │       │
-│  │     v                                                         │       │
-│  │  Stage 7: Export ──> ZeroScene bundle                        │       │
-│  └──────────────────────────────────────────────────────────────┘       │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      BlueprintCapturePipeline (this repo)                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  [Capture (iOS/Meta DAT)]                                                   │
+│         │                                                                    │
+│         v                                                                    │
+│  [Upload to GCS] ─────> [Cloud Function Trigger]                            │
+│         │                                                                    │
+│         v                                                                    │
+│  ┌──────────────────────────────────────────────────────────────┐           │
+│  │                   CapturePipeline                             │           │
+│  │                                                               │           │
+│  │  Stage 0: Ingest ──> CaptureManifest + keyframes             │           │
+│  │     │                                                         │           │
+│  │     v                                                         │           │
+│  │  Stage 1: SLAM (sensor-conditional)                          │           │
+│  │     ├── RGB-only: WildGS-SLAM                                │           │
+│  │     ├── RGB-D: SplaTAM                                       │           │
+│  │     ├── Visual-Inertial: VIGS-SLAM                          │           │
+│  │     └── iOS ARKit: Direct pose import                        │           │
+│  │     │                                                         │           │
+│  │     v                                                         │           │
+│  │  Stage 2: Export ──> DWM-ready output                        │           │
+│  │     • gaussians.ply                                          │           │
+│  │     • camera/trajectory.json                                 │           │
+│  │     • camera/intrinsics.json                                 │           │
+│  │     • capture_info.json                                      │           │
+│  └──────────────────────────────────────────────────────────────┘           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
                                     │
-                                    │ ZeroScene handoff
+                                    │ DWM-ready handoff
                                     v
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        BlueprintPipeline (downstream)                    │
-├─────────────────────────────────────────────────────────────────────────┤
-│  zeroscene_adapter ──> simready ──> usd_assembly ──> isaac_lab         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        BlueprintPipeline (downstream)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  DWM processing ──> egocentric rollouts ──> training data                   │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Sensor-Conditional SLAM Selection
@@ -88,32 +71,21 @@ gs://bucket/captures/{capture_id}/
 │   └── arkit/                    # iOS only
 │       ├── poses.jsonl
 │       └── intrinsics.json
-├── stage0_ingest/
+├── ingest/
 │   ├── capture_manifest.json
-│   └── frame_index.json
-├── stage1_frames/
+│   ├── frame_index.json
 │   └── frames/*.png
-├── stage2_slam/
+├── slam/
 │   ├── poses/
+│   │   └── poses.json
 │   └── gaussians/
-├── stage3_mesh/
-│   ├── environment_mesh.glb
-│   └── environment_collision.glb
-├── stage4_tracks/
-│   ├── masks/
-│   ├── tracks.json
-│   └── annotations.json
-├── stage5_proposals/
-│   └── proposals.json
-├── stage6_assets/
-│   └── {object_id}/
-├── zeroscene/                    # <- Handoff to BlueprintPipeline
-│   ├── scene_info.json
-│   ├── objects/
-│   ├── background/
-│   └── camera/
-└── blueprint/                    # <- Output from BlueprintPipeline
-    └── scene.usdc
+│       └── point_cloud.ply
+└── output/                       # <- DWM-ready output
+    ├── gaussians.ply
+    ├── camera/
+    │   ├── intrinsics.json
+    │   └── trajectory.json
+    └── capture_info.json
 ```
 
 ## Cloud Deployment (GCP)
@@ -123,100 +95,146 @@ gs://bucket/captures/{capture_id}/
 * **Messaging:** Pub/Sub for stage transitions; Cloud Tasks for job dispatch
 * **Triggers:** Cloud Functions for Firebase Storage upload detection
 
-## Capture requirements (iOS + Meta DAT)
+## Capture Requirements
 
-* **Two-pass capture:**
-  * **Structure pass:** Slow room walkthrough with wide parallax, full loop, avoid fast rotations.
-  * **Object micro-scans:** Short sequences focused on manipulable objects (drawers, appliances, dishes, handles).
-* **Scale anchor (mandatory):** Show an AprilTag/ArUco board, tape-measured segment, or A4 sheet in multiple locations for 2–3 seconds.
-* **Stabilization:** Encourage 1080p or higher, minimal motion blur, and good lighting.
-* **MockDeviceKit:** Enable for local QA and automated tests of the capture UX.
+### Video Quality
+* **Resolution:** 1080p or higher
+* **Frame rate:** 30 fps minimum
+* **Stabilization:** Minimal motion blur, good lighting
+* **Movement:** Slow, smooth walkthrough with wide parallax
 
-## Data model and ingress
+### Scale Calibration
+For metric-scale output, use one of:
+* **ARKit poses** (iOS) - Automatic metric scale
+* **Scale anchors** - Show AprilTag/ArUco board with known size
+* **Known objects** - Reference objects with known dimensions
 
-* **Session manifest (JSON):**
-  * `session_id`, `capture_start`, `device` metadata (DAT build, lenses, resolution, FPS).
-  * `scale_anchor` observations (tag size, measured distance, or known object dimensions).
-  * `clips[]` with GCS URIs, timestamps, and optional user notes.
-* **Upload path:** `gs://<bucket>/sessions/<session_id>/raw/{clip.mp4,manifest.json}`.
-* **Integrity:** Compute checksums client-side; server validates duration and metadata before enqueueing work.
+## Processing Stages
 
-## Processing stages
+### Stage 0: Ingest
 
-### 1) Frame extraction & masking
+**Purpose:** Prepare video for SLAM processing.
 
-* **Decode video → frames** at ~3–5 fps for reconstruction; keep full-rate frames for object micro-scans when available.
-* **SAM 3 (video) masks:**
-  * Generate per-frame instance masks.
-  * Tag dynamic classes (people/hands) for exclusion during reconstruction.
-  * Persist masks as PNG + COCO-style JSON per clip.
+**Operations:**
+1. Decode video clips
+2. Extract frames at target FPS (default: 2 fps)
+3. Quality filtering:
+   - Blur detection (Laplacian variance)
+   - Exposure quality
+   - Parallax from previous frame
+4. Generate CaptureManifest
 
-### 2) Camera trajectory & dense reconstruction (Perception Twin backbone)
+**Configuration:**
+```python
+PipelineConfig(
+    target_fps=2.0,           # Keyframes per second
+    blur_threshold=100.0,     # Variance of Laplacian threshold
+    min_parallax_threshold=0.1,
+)
+```
 
-* **WildGS-SLAM**
-  * Input: frames + dynamic masks (to ignore moving objects).
-  * Output: camera poses (COLMAP-style), 3D Gaussian map, filtered point cloud.
-  * Apply **scale calibration** using anchor observations (AprilTag detections or measured pixel length).
-* **Quality checks:**
-  * Reprojection error thresholds.
-  * Coverage heatmap; flag low-parallax regions.
+### Stage 1: SLAM Reconstruction
 
-### 3) Mesh extraction
+**Purpose:** Estimate camera poses and build 3D Gaussian representation.
 
-* **SuGaR** on WildGS Gaussians → watertight mesh for static environment.
-* **Texture baking:**
-  * Bake albedo/normal maps for USD rendering.
-  * Keep both high-res render mesh and decimated collision mesh.
+**WildGS-SLAM (RGB-only):**
+* Input: frames (optionally with dynamic masks)
+* Output: camera poses, 3D Gaussian map
+* Handles dynamic objects (people, hands)
+* Apply scale calibration using anchor observations
 
-### 4) Object lifting & assetization (Sim Twin)
+**ARKit Direct (iOS):**
+* Skip SLAM entirely
+* Use ARKit poses directly (metric scale)
+* Train 3DGS from known poses
 
-* **2D tracking:** Use SAM 3 prompts (text or point) to track target objects across frames.
-* **3D lifting:** Project masks into 3D using camera poses + mesh/splats to produce object clusters and oriented bounding boxes (OBBs).
-* **Tiered assetization:**
-  * **Tier 1 (reconstruct):** If coverage is sufficient, run object-centric 3DGS + SuGaR to create textured meshes faithful to the captured object.
-  * **Tier 2 (generate):** If coverage is poor, generate via **Hunyuan3D** (shape + texture) constrained to the OBB dimensions; align to scene scale.
-* **Dynamics filtering:** Skip or replace highly reflective/transparent items unless adequate views exist.
+**Quality metrics:**
+* Registration rate (poses / keyframes)
+* Reprojection error
+* Scale confidence
 
-### 5) USD authoring for simulation
+### Stage 2: Export
 
-* **Scene scale:** Set `metersPerUnit` and apply calibrated scale globally.
-* **Environment (static):**
-  * Render mesh (pretty) and simplified collision mesh (tri or voxelized SDF) for walls/floors.
-* **Objects (dynamic):**
-  * Collision: convex decomposition or primitive approximations (box/capsule). Avoid triangle-mesh colliders for rigid bodies.
-  * Physics materials: friction/restitution bound via USD Physics schema.
-  * Optional articulation: add joints only when confidently detected; otherwise keep static.
-* **Packaging:**
-  * `scene.usda/usdc` with references to per-object USDs.
-  * Per-object USDs include render mesh, collision mesh, material bindings, mass/inertia estimates, and semantic labels.
+**Purpose:** Package output for BlueprintPipeline/DWM handoff.
 
-## Cloud deployment (GCP)
+**Output files:**
+* `gaussians.ply` - 3D Gaussian point cloud
+* `camera/trajectory.json` - Camera poses per frame
+* `camera/intrinsics.json` - Camera parameters
+* `capture_info.json` - Metadata for handoff
 
-* **Runtime:** Cloud Run Jobs with GPU (L4) for SAM 3, WildGS-SLAM, SuGaR, and Hunyuan3D.
-* **Storage:** GCS buckets with lifecycle rules; signed URLs for client uploads.
-* **Messaging:** Pub/Sub topics for stage transitions; dead-letter queues for failed jobs.
-* **Observability:** Cloud Logging + Cloud Trace; per-stage metrics (reproj error, mask count, pose completeness, mesh watertightness).
-* **Artifacts:**
-  * `reconstruction/` — gaussians, poses, mesh, textures.
-  * `objects/<id>/` — masks, crops, per-object 3DGS checkpoints, USDs.
-  * `reports/` — QA metrics, thumbnails, coverage heatmaps.
+## GPU Requirements
 
-## QA harness
+| Stage | GPU Memory | Notes |
+|-------|------------|-------|
+| Ingest | None | CPU-only frame extraction |
+| SLAM | 8-16 GB | WildGS-SLAM needs ~16GB for large scenes |
+| Export | None | File I/O only |
 
-* **Automated checks:**
-  * Pose quality (median reprojection error, track length).
-  * Scale sanity (anchor consistency across clips).
-  * Mesh integrity (non-manifold count, watertightness).
-  * Physics sanity (convex hull volume vs. OBB volume).
-* **Isaac Sim smoke tests:**
-  * Drop-test objects onto floor collider.
-  * Stack-test with representative objects.
-  * Robot reach test to ensure bounding boxes and colliders are reachable without tunneling.
+**Recommended:** NVIDIA L4 (24GB) or A100 for production workloads.
 
-## Roadmap (execution order)
+## Data Models
 
-1. Build capture ingest (manifest validation + GCS upload) and Cloud Run orchestration.
-2. Add SAM 3 masking stage and WildGS-SLAM backbone with scale calibration.
-3. Integrate SuGaR mesh extraction and texture baking.
-4. Implement object lifting → per-object reconstruction; add Hunyuan3D fallback.
-5. USD authoring with physics-ready assets; ship QA harness (reports + Isaac Sim tests).
+### CaptureManifest
+```python
+@dataclass
+class CaptureManifest:
+    capture_id: str
+    capture_timestamp: str
+    device_platform: str  # "ios", "meta_glasses", "android"
+    sensor_type: SensorType  # RGB_ONLY, RGB_DEPTH, VISUAL_INERTIAL
+    has_depth: bool
+    has_imu: bool
+    has_arkit_poses: bool
+    intrinsics: CameraIntrinsics
+    clips: List[Dict]
+    scale_anchors: List[ScaleAnchorObservation]
+```
+
+### CameraPose
+```python
+@dataclass
+class CameraPose:
+    frame_id: str
+    image_name: str
+    rotation: Tuple[float, float, float, float]  # Quaternion (w, x, y, z)
+    translation: Tuple[float, float, float]
+    timestamp: float
+```
+
+### SLAMResult
+```python
+@dataclass
+class SLAMResult:
+    poses: List[CameraPose]
+    gaussians_path: Path
+    registration_rate: float
+    scale_factor: float
+    success: bool
+```
+
+## Integration with BlueprintPipeline
+
+The output is designed for seamless handoff to BlueprintPipeline for DWM processing:
+
+```python
+# BlueprintCapturePipeline (this repo)
+from blueprint_pipeline import run_capture_pipeline
+
+result = run_capture_pipeline(
+    video_paths=[Path("walkthrough.mp4")],
+    output_dir=Path("capture_output"),
+)
+
+# Output structure:
+# capture_output/
+#   gaussians.ply           <- 3D Gaussians
+#   camera/
+#     intrinsics.json       <- Camera params
+#     trajectory.json       <- Poses
+#   capture_info.json       <- Metadata with dwm_ready flag
+
+# BlueprintPipeline (downstream) reads this and generates DWM data
+```
+
+The `capture_info.json` contains the `dwm_ready` flag to confirm the output is complete and valid for DWM processing.

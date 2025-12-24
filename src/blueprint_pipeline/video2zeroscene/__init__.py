@@ -1,54 +1,69 @@
-"""Video to ZeroScene conversion module.
+"""BlueprintCapture Pipeline - Video to Gaussian for DWM.
 
-This module implements the complete pipeline for converting walkthrough video
-captures into ZeroScene-compatible outputs that can be handed off to BlueprintPipeline.
+This module implements the Phase 3: Capture pipeline for converting
+walkthrough video captures into high-quality 3D Gaussian representations
+ready for DWM (Dexterous World Models) processing in BlueprintPipeline.
 
-The pipeline is designed to work with:
-- RGB-only captures (Meta glasses default)
-- RGB-D captures (iPhone LiDAR)
-- Visual-inertial captures (with synchronized IMU)
+Pipeline stages:
+    0. Ingest: Video → CaptureManifest + keyframes
+    1. SLAM: Pose estimation + 3D Gaussian reconstruction
+    2. Export: Gaussians + camera data for DWM handoff
 
-Key components:
-- ingest: Video normalization and CaptureManifest creation
-- slam: Sensor-conditional SLAM (WildGS-SLAM, SplaTAM, VIGS-SLAM)
-- mesh: SuGaR mesh extraction and decimation
-- tracks: SAM3 concept segmentation and video tracking
-- lift: 2D-to-3D instance proposal generation
-- assetize: Tiered object asset generation (reconstruction/proxy/replacement)
-- export: ZeroScene bundle export for BlueprintPipeline handoff
+Sensor support:
+    - RGB-only: Meta glasses, generic cameras (WildGS-SLAM)
+    - RGB-D: iPhone LiDAR, RealSense (SplaTAM)
+    - iOS ARKit: Direct pose import (skips SLAM)
 """
 
 from .interfaces import (
     CaptureManifest,
     SensorType,
+    SLAMBackend,
     PipelineConfig,
-    ZeroSceneBundle,
-    ObjectProposal,
-    TrackInfo,
+    CameraIntrinsics,
+    FrameMetadata,
     Submap,
 )
 
-from .pipeline import Video2ZeroScenePipeline
+from .pipeline import (
+    CapturePipeline,
+    CaptureResult,
+    run_capture_pipeline,
+    # Backward compatibility
+    Video2ZeroScenePipeline,
+)
 
-# Rendering module (optional - requires additional dependencies)
-try:
-    from .rendering import GaussianRenderer, RenderSettings
-    _RENDERING_AVAILABLE = True
-except ImportError:
-    _RENDERING_AVAILABLE = False
-    GaussianRenderer = None
-    RenderSettings = None
+from .export import (
+    CaptureExporter,
+    CaptureExportResult,
+    export_capture,
+)
+
+from .slam import (
+    CameraPose,
+    SLAMResult,
+)
 
 __all__ = [
+    # Main pipeline
+    "CapturePipeline",
+    "CaptureResult",
+    "run_capture_pipeline",
+    # Backward compatibility
+    "Video2ZeroScenePipeline",
+    # Data models
     "CaptureManifest",
     "SensorType",
+    "SLAMBackend",
     "PipelineConfig",
-    "ZeroSceneBundle",
-    "ObjectProposal",
-    "TrackInfo",
+    "CameraIntrinsics",
+    "FrameMetadata",
     "Submap",
-    "Video2ZeroScenePipeline",
-    # Rendering (if available)
-    "GaussianRenderer",
-    "RenderSettings",
+    # Export
+    "CaptureExporter",
+    "CaptureExportResult",
+    "export_capture",
+    # SLAM
+    "CameraPose",
+    "SLAMResult",
 ]
