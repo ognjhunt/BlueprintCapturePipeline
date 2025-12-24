@@ -20,6 +20,27 @@ DWM uses these to generate photorealistic egocentric interaction videos, enablin
 
 👉 See [DWM Compatibility Guide](docs/DWM_COMPATIBILITY.md) for details.
 
+### 🎬 NEW: 3DGS Static Scene Renderer
+
+This pipeline now includes a **full 3D Gaussian Splatting renderer** for generating static-scene videos from ZeroScene bundles:
+
+```bash
+# Render static scene for DWM
+python scripts/render_static_scene.py output/zeroscene -o static_scene.mp4
+```
+
+Or use the Python API:
+```python
+from blueprint_pipeline.video2zeroscene.rendering import GaussianRenderer
+
+renderer = GaussianRenderer.from_zeroscene("output/zeroscene")
+frames = renderer.render_trajectory()
+renderer.save_video(frames, "static_scene.mp4")
+```
+
+Supports multiple backends (diff-gaussian-rasterization, gsplat, CPU fallback).
+👉 See [Rendering Guide](docs/RENDERING.md) for full documentation.
+
 ## Pipeline Stages
 
 ```
@@ -103,6 +124,13 @@ pip install -e ".[sam]"
 
 # USD authoring
 pip install -e ".[usd]"
+
+# 3DGS rendering (for DWM static-scene videos)
+pip install -e ".[rendering]"
+# For CUDA acceleration (recommended):
+pip install gsplat  # Easy install
+# OR for best quality/speed, build from source:
+# https://github.com/graphdeco-inria/diff-gaussian-rasterization
 
 # Hunyuan3D generation
 pip install -e ".[generation]"
