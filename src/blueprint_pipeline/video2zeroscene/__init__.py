@@ -30,6 +30,15 @@ from .interfaces import (
 
 from .pipeline import Video2ZeroScenePipeline
 
+# Rendering module (optional - requires additional dependencies)
+try:
+    from .rendering import GaussianRenderer, RenderSettings
+    _RENDERING_AVAILABLE = True
+except ImportError:
+    _RENDERING_AVAILABLE = False
+    GaussianRenderer = None
+    RenderSettings = None
+
 __all__ = [
     "CaptureManifest",
     "SensorType",
@@ -39,4 +48,7 @@ __all__ = [
     "TrackInfo",
     "Submap",
     "Video2ZeroScenePipeline",
+    # Rendering (if available)
+    "GaussianRenderer",
+    "RenderSettings",
 ]
