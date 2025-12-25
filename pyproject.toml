@@ -39,6 +39,7 @@ dependencies = [
 # Core pipeline dependencies (recommended for local development)
 core = [
     "opencv-python>=4.8.0",
+    "scipy>=1.11.0",
 ]
 
 # GCS/Cloud dependencies
@@ -48,17 +49,29 @@ cloud = [
     "google-cloud-logging>=3.6.0",
 ]
 
-# 3D Gaussian Splatting / SLAM reconstruction
+# 3D Gaussian Splatting / SLAM reconstruction (standalone - no external 3DGS needed)
 reconstruction = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
     "plyfile>=1.0.0",
     "scipy>=1.11.0",
+    "tqdm>=4.65.0",
+]
+
+# Dynamic object masking (SAM and YOLO support)
+masking = [
+    "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
+    "ultralytics>=8.0.0",
 ]
 
 # Full GPU pipeline (all dependencies)
 gpu = [
     "blueprint-capture-pipeline[core,cloud,reconstruction]",
+]
+
+# Complete pipeline with all masking features
+complete = [
+    "blueprint-capture-pipeline[gpu,masking]",
 ]
 
 # Development dependencies
