@@ -168,6 +168,7 @@ class CapturePipeline:
             frames_dir=frames_dir,
             output_dir=slam_dir,
             dynamic_masks=None,  # No object tracking in simplified pipeline
+            scale_observations=ingest_result.scale_observations,  # Pass ArUco/AprilTag observations
         )
         result.slam_result = slam_result
         result.registered_frames = len(slam_result.poses)

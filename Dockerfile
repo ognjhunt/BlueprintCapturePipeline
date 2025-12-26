@@ -70,9 +70,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmetis-dev \
     libsqlite3-dev \
     libsuitesparse-dev \
+    libceres-dev \
+    qtbase5-dev \
+    libqt5opengl5-dev \
     # Cleanup
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Build and install COLMAP from source (required for SLAM fallback)
+# =============================================================================
+RUN git clone https://github.com/colmap/colmap.git /tmp/colmap && \
+    cd /tmp/colmap && \
+    git checkout 3.9.1 && \
+    mkdir build && cd build && \
+    cmake .. -GNinja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" \
+        -DCUDA_ENABLED=ON \
+        -DGUI_ENABLED=OFF && \
+    ninja && \
+    ninja install && \
+    rm -rf /tmp/colmap
+
+# Verify COLMAP installation
+RUN colmap --help | head -5
 
 # Set Python 3.11 as default
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
@@ -130,6 +152,20 @@ COPY README.md /app/
 
 # Install the pipeline package
 RUN pip install --no-cache-dir -e /app[cloud]
+
+# =============================================================================
+# Install CUDA-accelerated Gaussian Splatting rasterizer (optional but 10-100x faster)
+# =============================================================================
+RUN git clone https://github.com/graphdeco-inria/diff-gaussian-rasterization.git /tmp/diff-gaussian-rasterization && \
+    cd /tmp/diff-gaussian-rasterization && \
+    pip install --no-cache-dir . && \
+    rm -rf /tmp/diff-gaussian-rasterization
+
+# Also install the simple-knn for 3DGS
+RUN git clone https://github.com/camenduru/simple-knn.git /tmp/simple-knn && \
+    cd /tmp/simple-knn && \
+    pip install --no-cache-dir . && \
+    rm -rf /tmp/simple-knn
 
 # Create directories for workspace
 RUN mkdir -p /tmp/blueprint_pipeline /workspace
