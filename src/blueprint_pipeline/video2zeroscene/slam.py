@@ -52,6 +52,13 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+# PyColmap - Python bindings for COLMAP (preferred over CLI)
+try:
+    import pycolmap
+    PYCOLMAP_AVAILABLE = True
+except ImportError:
+    PYCOLMAP_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -1262,17 +1269,30 @@ class COLMAPFallback(BaseSLAM):
 
     Used when other SLAM backends are not available.
     Now uses our built-in 3DGS training module instead of external packages.
+
+    Supports two modes:
+    1. pycolmap (preferred) - Python bindings, no CLI needed
+    2. colmap CLI (fallback) - requires colmap to be installed
     """
 
     def __init__(self, config: PipelineConfig):
         super().__init__(config)
         self._colmap_available = None
+        self._use_pycolmap = PYCOLMAP_AVAILABLE
 
     def check_colmap_available(self) -> bool:
-        """Check if COLMAP is installed and available."""
+        """Check if COLMAP is installed and available (pycolmap or CLI)."""
         if self._colmap_available is not None:
             return self._colmap_available
 
+        # First check for pycolmap (preferred)
+        if PYCOLMAP_AVAILABLE:
+            logger.info("Using pycolmap Python bindings for COLMAP")
+            self._colmap_available = True
+            self._use_pycolmap = True
+            return True
+
+        # Fallback to CLI
         try:
             result = subprocess.run(
                 ["colmap", "--help"],
@@ -1280,12 +1300,14 @@ class COLMAPFallback(BaseSLAM):
                 timeout=10
             )
             self._colmap_available = result.returncode == 0
+            self._use_pycolmap = False
         except (FileNotFoundError, subprocess.TimeoutExpired):
             self._colmap_available = False
 
         if not self._colmap_available:
             logger.warning(
                 "COLMAP not found. Install with: "
+                "pip install pycolmap (recommended) or "
                 "apt install colmap (Ubuntu) or brew install colmap (macOS)"
             )
 
@@ -1403,7 +1425,133 @@ class COLMAPFallback(BaseSLAM):
         output_dir: Path,
         intrinsics: Optional[CameraIntrinsics] = None,
     ) -> List[CameraPose]:
-        """Run COLMAP SfM pipeline."""
+        """Run COLMAP SfM pipeline using pycolmap or CLI."""
+        if self._use_pycolmap and PYCOLMAP_AVAILABLE:
+            return self._run_colmap_pycolmap(images_dir, output_dir, intrinsics)
+        else:
+            return self._run_colmap_cli(images_dir, output_dir, intrinsics)
+
+    def _run_colmap_pycolmap(
+        self,
+        images_dir: Path,
+        output_dir: Path,
+        intrinsics: Optional[CameraIntrinsics] = None,
+    ) -> List[CameraPose]:
+        """Run COLMAP using pycolmap Python bindings (preferred method)."""
+        database_path = output_dir / "database.db"
+        sparse_dir = output_dir / "sparse"
+        sparse_dir.mkdir(exist_ok=True)
+
+        try:
+            # Remove existing database if present
+            if database_path.exists():
+                database_path.unlink()
+
+            logger.info("Running COLMAP feature extraction via pycolmap...")
+
+            # Configure camera options
+            camera_mode = pycolmap.CameraMode.SINGLE
+            if intrinsics:
+                # Use known intrinsics
+                camera_model = "PINHOLE"
+                camera_params = f"{intrinsics.fx},{intrinsics.fy},{intrinsics.cx},{intrinsics.cy}"
+            else:
+                camera_model = "SIMPLE_RADIAL"
+                camera_params = None
+
+            # Feature extraction
+            sift_options = pycolmap.SiftExtractionOptions()
+            sift_options.max_num_features = 8192
+
+            pycolmap.extract_features(
+                database_path=database_path,
+                image_path=images_dir,
+                camera_mode=camera_mode,
+                camera_model=camera_model,
+                sift_options=sift_options,
+            )
+
+            logger.info("Running COLMAP feature matching via pycolmap...")
+
+            # Sequential matching (best for video sequences)
+            matching_options = pycolmap.SequentialMatchingOptions()
+            matching_options.overlap = 10
+            matching_options.quadratic_overlap = True
+
+            pycolmap.match_sequential(
+                database_path=database_path,
+                matching_options=matching_options,
+            )
+
+            logger.info("Running COLMAP sparse reconstruction via pycolmap...")
+
+            # Incremental mapper
+            mapper_options = pycolmap.IncrementalMapperOptions()
+            mapper_options.min_num_matches = 15
+
+            reconstructions = pycolmap.incremental_mapping(
+                database_path=database_path,
+                image_path=images_dir,
+                output_path=sparse_dir,
+                options=mapper_options,
+            )
+
+            if not reconstructions:
+                logger.warning("No reconstructions from pycolmap, trying exhaustive matching...")
+                # Try with exhaustive matching as fallback
+                pycolmap.match_exhaustive(database_path=database_path)
+                reconstructions = pycolmap.incremental_mapping(
+                    database_path=database_path,
+                    image_path=images_dir,
+                    output_path=sparse_dir,
+                    options=mapper_options,
+                )
+
+            if not reconstructions:
+                logger.error("COLMAP reconstruction failed - no valid reconstructions")
+                return []
+
+            # Get the best reconstruction (usually index 0)
+            best_reconstruction = reconstructions[0] if reconstructions else None
+            if best_reconstruction is None:
+                return []
+
+            # Extract poses from reconstruction
+            poses = []
+            for image_id, image in best_reconstruction.images.items():
+                # pycolmap provides rotation as quaternion and translation
+                quat = image.cam_from_world.rotation.quat  # [w, x, y, z]
+                trans = image.cam_from_world.translation
+
+                poses.append(CameraPose(
+                    frame_id=Path(image.name).stem,
+                    image_name=image.name,
+                    rotation=(quat[0], quat[1], quat[2], quat[3]),
+                    translation=(trans[0], trans[1], trans[2]),
+                ))
+
+            logger.info(f"pycolmap reconstruction: {len(poses)} poses from {len(best_reconstruction.images)} images")
+
+            # Also write the model in text format for 3DGS training
+            model_dir = sparse_dir / "0"
+            model_dir.mkdir(exist_ok=True)
+            best_reconstruction.write_text(str(model_dir))
+
+            return poses
+
+        except Exception as e:
+            logger.error(f"pycolmap failed: {e}")
+            # Fallback to CLI if pycolmap fails
+            logger.info("Falling back to COLMAP CLI...")
+            return self._run_colmap_cli(images_dir, output_dir, intrinsics)
+
+    def _run_colmap_cli(
+        self,
+        images_dir: Path,
+        output_dir: Path,
+        intrinsics: Optional[CameraIntrinsics] = None,
+    ) -> List[CameraPose]:
+        """Run COLMAP SfM pipeline using CLI (fallback method)."""
         database_path = output_dir / "database.db"
         sparse_dir = output_dir / "sparse"
         sparse_dir.mkdir(exist_ok=True)

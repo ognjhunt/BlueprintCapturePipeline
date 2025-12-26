@@ -56,6 +56,7 @@ reconstruction = [
     "plyfile>=1.0.0",
     "scipy>=1.11.0",
     "tqdm>=4.65.0",
+    "pycolmap>=3.10.0",  # Python bindings for COLMAP (no CLI needed)
 ]
 
 # CUDA-accelerated 3DGS (10-100x faster rendering)
