@@ -363,9 +363,17 @@ class WildGSSLAM(BaseSLAM):
     - Handling of dynamic objects (people, hands)
     - Monocular RGB input
 
-    This implementation uses our standalone 3DGS training module when
-    the external wildgs_slam package is not available.
+    GitHub: https://github.com/GradientSpaces/WildGS-SLAM
+
+    This implementation:
+    1. Uses the official WildGS-SLAM when installed (git clone + setup)
+    2. Falls back to COLMAP + standalone 3DGS when not available
     """
+
+    def __init__(self, config: PipelineConfig):
+        super().__init__(config)
+        self._wildgs_path = None
+        self._wildgs_available = None
 
     def run(
         self,
@@ -380,31 +388,77 @@ class WildGSSLAM(BaseSLAM):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Check if WildGS-SLAM is available
-        wildgs_available = self._check_wildgs_available()
+        if self._check_wildgs_available():
+            try:
+                result = self._run_native_wildgs(
+                    manifest, keyframes, frames_dir, output_dir, dynamic_masks
+                )
+                # Apply scale calibration
+                if scale_observations:
+                    result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+                return result
+            except Exception as e:
+                logger.warning(f"WildGS-SLAM failed: {e}, falling back to COLMAP")
 
-        if wildgs_available:
-            result = self._run_native_wildgs(
-                manifest, keyframes, frames_dir, output_dir, dynamic_masks
-            )
-            # Apply scale calibration
-            if scale_observations:
-                result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
-            return result
-        else:
-            # Fall back to our built-in COLMAP + standalone 3DGS
-            logger.info("WildGS-SLAM not available, using COLMAP + standalone 3DGS")
-            fallback = COLMAPFallback(self.config)
-            return fallback.run(
-                manifest, keyframes, frames_dir, output_dir, dynamic_masks, scale_observations
-            )
+        # Fall back to our built-in COLMAP + standalone 3DGS
+        logger.info("WildGS-SLAM not available, using COLMAP + standalone 3DGS")
+        fallback = COLMAPFallback(self.config)
+        return fallback.run(
+            manifest, keyframes, frames_dir, output_dir, dynamic_masks, scale_observations
+        )
 
     def _check_wildgs_available(self) -> bool:
-        """Check if WildGS-SLAM package is available."""
+        """Check if WildGS-SLAM is available.
+
+        WildGS-SLAM can be installed via:
+        1. pip install (if published) - imports as 'wildgs_slam'
+        2. git clone + pip install -e . - imports from 'src' module
+        3. Direct path to cloned repo
+        """
+        if self._wildgs_available is not None:
+            return self._wildgs_available
+
+        # Method 1: Try pip-installed package
         try:
-            import wildgs_slam  # noqa: F401
+            from wildgs_slam import WildGSSLAM as _  # noqa: F401
+            self._wildgs_available = True
+            logger.info("WildGS-SLAM available via pip package")
             return True
         except ImportError:
-            return False
+            pass
+
+        # Method 2: Try git-cloned installation (src.slam module)
+        try:
+            from src.slam import SLAM as _  # noqa: F401
+            from src import config as _  # noqa: F401
+            self._wildgs_available = True
+            logger.info("WildGS-SLAM available via git clone (src.slam)")
+            return True
+        except ImportError:
+            pass
+
+        # Method 3: Check for WildGS-SLAM in common locations
+        common_paths = [
+            Path.home() / "WildGS-SLAM",
+            Path.home() / "repos" / "WildGS-SLAM",
+            Path("/opt/WildGS-SLAM"),
+            Path.cwd() / "WildGS-SLAM",
+        ]
+
+        for path in common_paths:
+            if (path / "src" / "slam.py").exists():
+                self._wildgs_path = path
+                self._wildgs_available = True
+                logger.info(f"WildGS-SLAM found at {path}")
+                return True
+
+        self._wildgs_available = False
+        logger.info(
+            "WildGS-SLAM not found. Install with: "
+            "git clone --recursive https://github.com/GradientSpaces/WildGS-SLAM.git && "
+            "cd WildGS-SLAM && pip install -e ."
+        )
+        return False
 
     def _run_native_wildgs(
         self,
@@ -414,71 +468,306 @@ class WildGSSLAM(BaseSLAM):
         output_dir: Path,
         dynamic_masks: Optional[Dict[str, Path]],
     ) -> SLAMResult:
-        """Run native WildGS-SLAM implementation."""
-        try:
-            from wildgs_slam import WildGSSLAM as WildGSLib
-        except ImportError:
-            logger.warning("wildgs_slam package not available")
-            fallback = COLMAPFallback(self.config)
-            return fallback.run(
-                manifest, keyframes, frames_dir, output_dir, dynamic_masks
-            )
+        """Run native WildGS-SLAM implementation.
 
-        # Prepare image paths
-        image_paths = []
-        mask_paths = []
+        WildGS-SLAM uses a config-based approach:
+        1. Create config YAML with dataset/camera parameters
+        2. Prepare images in expected format (rgb/ folder)
+        3. Run SLAM via the SLAM class or subprocess
+        4. Parse output poses and gaussians
+        """
+        import yaml
 
-        for kf in keyframes:
-            frame_path = frames_dir.parent / kf.file_path
-            image_paths.append(str(frame_path))
+        # Prepare dataset structure expected by WildGS-SLAM
+        dataset_dir = output_dir / "wildgs_dataset"
+        rgb_dir = dataset_dir / "rgb"
+        rgb_dir.mkdir(parents=True, exist_ok=True)
 
-            if dynamic_masks and kf.frame_id in dynamic_masks:
-                mask_paths.append(str(dynamic_masks[kf.frame_id]))
+        # Copy/link images to rgb/ folder
+        for i, kf in enumerate(keyframes):
+            src = frames_dir.parent / kf.file_path
+            if src.exists():
+                dst = rgb_dir / f"{i:06d}.png"
+                if not dst.exists():
+                    shutil.copy(src, dst)
+
+        # Get image dimensions
+        if keyframes and CV2_AVAILABLE:
+            sample_img = cv2.imread(str(rgb_dir / "000000.png"))
+            if sample_img is not None:
+                H, W = sample_img.shape[:2]
             else:
-                mask_paths.append(None)
+                H, W = 1080, 1920
+        else:
+            H, W = 1080, 1920
 
-        # Configure SLAM
-        config = {
-            "use_masks": bool(dynamic_masks),
-            "num_iterations": 30000,
+        # Create config YAML
+        config_dict = {
+            "scene": "custom_capture",
+            "dataset": "custom",
+            "data": {
+                "input_folder": str(dataset_dir),
+                "output": str(output_dir / "wildgs_output"),
+            },
+            "cam": {
+                "H": H,
+                "W": W,
+                "H_out": min(H, 680),  # Recommended by WildGS-SLAM
+                "W_out": min(W, 1200),
+            },
+            "mapping": {
+                "Training": {"alpha": 0.8},
+            },
         }
 
+        # Add intrinsics if available
         if manifest.intrinsics:
-            config["intrinsics"] = {
+            config_dict["cam"].update({
                 "fx": manifest.intrinsics.fx,
                 "fy": manifest.intrinsics.fy,
                 "cx": manifest.intrinsics.cx,
                 "cy": manifest.intrinsics.cy,
-            }
+            })
 
-        # Run SLAM
-        slam = WildGSLib(config)
+        config_path = output_dir / "wildgs_config.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump(config_dict, f)
+
+        # Try running WildGS-SLAM
         poses = []
+        gaussians_path = None
 
-        for i, (img_path, mask_path) in enumerate(zip(image_paths, mask_paths)):
-            pose = slam.process_frame(img_path, mask_path)
-            poses.append(CameraPose(
-                frame_id=keyframes[i].frame_id,
-                image_name=Path(img_path).name,
-                rotation=tuple(pose["rotation"]),
-                translation=tuple(pose["translation"]),
-                timestamp=keyframes[i].timestamp_seconds,
-            ))
+        try:
+            # Method 1: Direct Python import
+            poses, gaussians_path = self._run_wildgs_python(
+                config_dict, dataset_dir, output_dir
+            )
+        except Exception as e:
+            logger.warning(f"Direct WildGS-SLAM import failed: {e}")
+            try:
+                # Method 2: Subprocess with run.py
+                poses, gaussians_path = self._run_wildgs_subprocess(
+                    config_path, output_dir
+                )
+            except Exception as e2:
+                logger.error(f"WildGS-SLAM subprocess failed: {e2}")
+                raise RuntimeError(f"WildGS-SLAM failed: {e}, {e2}")
 
-        # Export gaussians
-        gaussians_dir = output_dir / "gaussians"
-        gaussians_dir.mkdir(exist_ok=True)
-        gaussians_path = gaussians_dir / "point_cloud.ply"
-        slam.export_gaussians(str(gaussians_path))
+        # Map poses back to original keyframes
+        final_poses = []
+        for i, kf in enumerate(keyframes):
+            if i < len(poses):
+                pose = poses[i]
+                final_poses.append(CameraPose(
+                    frame_id=kf.frame_id,
+                    image_name=Path(kf.file_path).name,
+                    rotation=pose.rotation,
+                    translation=pose.translation,
+                    timestamp=kf.timestamp_seconds,
+                ))
 
         # Save poses
-        self._save_poses(poses, output_dir / "poses")
+        self._save_poses(final_poses, output_dir / "poses")
 
         return SLAMResult(
-            poses=poses,
+            poses=final_poses,
             gaussians_path=gaussians_path,
-            registration_rate=len(poses) / len(keyframes) if keyframes else 0,
+            registration_rate=len(final_poses) / len(keyframes) if keyframes else 0,
         )
+
+    def _run_wildgs_python(
+        self,
+        config_dict: Dict[str, Any],
+        dataset_dir: Path,
+        output_dir: Path,
+    ) -> Tuple[List[CameraPose], Optional[Path]]:
+        """Run WildGS-SLAM via direct Python import."""
+        import sys
+
+        # Add WildGS-SLAM to path if needed
+        if self._wildgs_path:
+            sys.path.insert(0, str(self._wildgs_path))
+
+        try:
+            from src import config as wildgs_config
+            from src.slam import SLAM
+            from src.utils.datasets import get_dataset
+        except ImportError:
+            # Try alternative import
+            from wildgs_slam import config as wildgs_config
+            from wildgs_slam.slam import SLAM
+            from wildgs_slam.utils.datasets import get_dataset
+
+        # Create a temporary config file for WildGS-SLAM
+        import yaml
+        config_path = output_dir / "wildgs_temp_config.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump(config_dict, f)
+
+        # Load config
+        cfg = wildgs_config.load_config(str(config_path))
+
+        # Get dataset
+        dataset = get_dataset(cfg)
+
+        # Create and run SLAM
+        slam = SLAM(cfg, dataset)
+        slam.run()
+
+        # Parse output poses
+        poses = self._parse_wildgs_poses(
+            Path(config_dict["data"]["output"]) / config_dict["scene"]
+        )
+
+        # Find gaussians
+        gaussians_path = (
+            Path(config_dict["data"]["output"]) /
+            config_dict["scene"] /
+            "final_gs.ply"
+        )
+
+        if not gaussians_path.exists():
+            gaussians_path = None
+
+        return poses, gaussians_path
+
+    def _run_wildgs_subprocess(
+        self,
+        config_path: Path,
+        output_dir: Path,
+    ) -> Tuple[List[CameraPose], Optional[Path]]:
+        """Run WildGS-SLAM via subprocess."""
+        # Find run.py script
+        run_script = None
+        if self._wildgs_path:
+            run_script = self._wildgs_path / "run.py"
+
+        if not run_script or not run_script.exists():
+            # Try common locations
+            for path in [
+                Path.home() / "WildGS-SLAM" / "run.py",
+                Path.cwd() / "WildGS-SLAM" / "run.py",
+            ]:
+                if path.exists():
+                    run_script = path
+                    break
+
+        if not run_script or not run_script.exists():
+            raise RuntimeError("WildGS-SLAM run.py not found")
+
+        # Run WildGS-SLAM
+        result = subprocess.run(
+            ["python", str(run_script), str(config_path)],
+            capture_output=True,
+            timeout=3600,
+            cwd=run_script.parent,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"WildGS-SLAM failed: {result.stderr.decode()}"
+            )
+
+        # Parse output
+        import yaml
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+
+        output_scene_dir = Path(cfg["data"]["output"]) / cfg["scene"]
+        poses = self._parse_wildgs_poses(output_scene_dir)
+
+        gaussians_path = output_scene_dir / "final_gs.ply"
+        if not gaussians_path.exists():
+            gaussians_path = None
+
+        return poses, gaussians_path
+
+    def _parse_wildgs_poses(self, output_dir: Path) -> List[CameraPose]:
+        """Parse poses from WildGS-SLAM output.
+
+        WildGS-SLAM saves poses in video.npz and traj/ folder.
+        """
+        poses = []
+
+        # Try loading from video.npz
+        video_npz = output_dir / "video.npz"
+        if video_npz.exists():
+            try:
+                data = np.load(video_npz, allow_pickle=True)
+
+                # WildGS-SLAM stores poses as 4x4 matrices
+                if "poses" in data:
+                    pose_matrices = data["poses"]
+                    for i, pose_mat in enumerate(pose_matrices):
+                        pose_mat = pose_mat.reshape(4, 4)
+
+                        # Extract rotation and translation
+                        R = pose_mat[:3, :3]
+                        t = pose_mat[:3, 3]
+
+                        # Convert rotation matrix to quaternion
+                        quat = self._rotation_matrix_to_quaternion(R)
+
+                        poses.append(CameraPose(
+                            frame_id=f"{i:06d}",
+                            image_name=f"{i:06d}.png",
+                            rotation=quat,
+                            translation=tuple(t),
+                        ))
+
+                return poses
+            except Exception as e:
+                logger.warning(f"Failed to parse video.npz: {e}")
+
+        # Try loading from traj/ folder
+        traj_dir = output_dir / "traj"
+        if traj_dir.exists():
+            for traj_file in sorted(traj_dir.glob("*.txt")):
+                try:
+                    pose_mat = np.loadtxt(traj_file).reshape(4, 4)
+                    R = pose_mat[:3, :3]
+                    t = pose_mat[:3, 3]
+                    quat = self._rotation_matrix_to_quaternion(R)
+
+                    poses.append(CameraPose(
+                        frame_id=traj_file.stem,
+                        image_name=f"{traj_file.stem}.png",
+                        rotation=quat,
+                        translation=tuple(t),
+                    ))
+                except Exception:
+                    continue
+
+        return poses
+
+    def _rotation_matrix_to_quaternion(self, R: np.ndarray) -> Tuple[float, float, float, float]:
+        """Convert 3x3 rotation matrix to quaternion (w, x, y, z)."""
+        trace = np.trace(R)
+        if trace > 0:
+            s = 0.5 / np.sqrt(trace + 1.0)
+            w = 0.25 / s
+            x = (R[2, 1] - R[1, 2]) * s
+            y = (R[0, 2] - R[2, 0]) * s
+            z = (R[1, 0] - R[0, 1]) * s
+        elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+            w = (R[2, 1] - R[1, 2]) / s
+            x = 0.25 * s
+            y = (R[0, 1] + R[1, 0]) / s
+            z = (R[0, 2] + R[2, 0]) / s
+        elif R[1, 1] > R[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+            w = (R[0, 2] - R[2, 0]) / s
+            x = (R[0, 1] + R[1, 0]) / s
+            y = 0.25 * s
+            z = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+            w = (R[1, 0] - R[0, 1]) / s
+            x = (R[0, 2] + R[2, 0]) / s
+            y = (R[1, 2] + R[2, 1]) / s
+            z = 0.25 * s
+        return (w, x, y, z)
 
     def _save_poses(self, poses: List[CameraPose], output_dir: Path) -> None:
         """Save poses in multiple formats."""
@@ -513,10 +802,17 @@ class SplaTAM(BaseSLAM):
     Designed for dense SLAM with depth sensor input (e.g., iPhone LiDAR).
     Uses depth information for more accurate geometry reconstruction.
 
-    This implementation provides:
-    1. Native SplaTAM integration when available
-    2. Fallback to depth-guided COLMAP + standalone 3DGS
+    GitHub: https://github.com/spla-tam/SplaTAM
+
+    This implementation:
+    1. Uses the official SplaTAM when installed (git clone + setup)
+    2. Falls back to depth-guided COLMAP + standalone 3DGS when not available
     """
+
+    def __init__(self, config: PipelineConfig):
+        super().__init__(config)
+        self._splatam_path = None
+        self._splatam_available = None
 
     def run(
         self,
@@ -557,12 +853,56 @@ class SplaTAM(BaseSLAM):
         )
 
     def _check_splatam_available(self) -> bool:
-        """Check if SplaTAM package is available."""
+        """Check if SplaTAM package is available.
+
+        SplaTAM can be installed via:
+        1. pip install (if published)
+        2. git clone + pip install -e .
+        3. Direct path to cloned repo
+        """
+        if self._splatam_available is not None:
+            return self._splatam_available
+
+        # Method 1: Try pip-installed package
         try:
-            import splatam  # noqa: F401
+            from splatam import rgbd_slam  # noqa: F401
+            self._splatam_available = True
+            logger.info("SplaTAM available via pip package")
             return True
         except ImportError:
-            return False
+            pass
+
+        # Method 2: Try git-cloned installation (scripts.splatam module)
+        try:
+            from scripts.splatam import rgbd_slam  # noqa: F401
+            self._splatam_available = True
+            logger.info("SplaTAM available via git clone (scripts.splatam)")
+            return True
+        except ImportError:
+            pass
+
+        # Method 3: Check for SplaTAM in common locations
+        common_paths = [
+            Path.home() / "SplaTAM",
+            Path.home() / "repos" / "SplaTAM",
+            Path("/opt/SplaTAM"),
+            Path.cwd() / "SplaTAM",
+        ]
+
+        for path in common_paths:
+            if (path / "scripts" / "splatam.py").exists():
+                self._splatam_path = path
+                self._splatam_available = True
+                logger.info(f"SplaTAM found at {path}")
+                return True
+
+        self._splatam_available = False
+        logger.info(
+            "SplaTAM not found. Install with: "
+            "git clone https://github.com/spla-tam/SplaTAM.git && "
+            "cd SplaTAM && pip install -e ."
+        )
+        return False
 
     def _run_native_splatam(
         self,
@@ -571,66 +911,520 @@ class SplaTAM(BaseSLAM):
         frames_dir: Path,
         output_dir: Path,
     ) -> SLAMResult:
-        """Run native SplaTAM implementation."""
-        from splatam import SplaTAMRunner
+        """Run native SplaTAM implementation.
 
-        # Prepare RGB-D pairs
-        rgb_paths = []
-        depth_paths = []
-        depth_dir = Path(manifest.depth_frames_path)
+        SplaTAM uses a config dictionary approach:
+        1. Create config with dataset/camera parameters
+        2. Prepare images in expected format (color/, depth/ folders)
+        3. Run rgbd_slam(config) function
+        4. Parse output poses and gaussians
+        """
+        # Prepare dataset structure expected by SplaTAM
+        dataset_dir = output_dir / "splatam_dataset"
+        color_dir = dataset_dir / "color"
+        depth_dir_out = dataset_dir / "depth"
+        color_dir.mkdir(parents=True, exist_ok=True)
+        depth_dir_out.mkdir(parents=True, exist_ok=True)
 
-        for kf in keyframes:
-            rgb_path = frames_dir.parent / kf.file_path
-            depth_path = depth_dir / f"{kf.frame_id}_depth.png"
+        depth_dir = Path(manifest.depth_frames_path) if manifest.depth_frames_path else None
 
-            if rgb_path.exists() and depth_path.exists():
-                rgb_paths.append(str(rgb_path))
-                depth_paths.append(str(depth_path))
+        # Copy RGB and depth images
+        valid_frames = []
+        for i, kf in enumerate(keyframes):
+            rgb_src = frames_dir.parent / kf.file_path
+            if depth_dir:
+                # Try different depth naming conventions
+                depth_src = None
+                for pattern in [
+                    f"{kf.frame_id}_depth.png",
+                    f"{kf.frame_id}.png",
+                    f"depth_{kf.frame_id}.png",
+                    f"{i:06d}_depth.png",
+                ]:
+                    candidate = depth_dir / pattern
+                    if candidate.exists():
+                        depth_src = candidate
+                        break
 
-        if not rgb_paths:
-            raise ValueError("No valid RGB-D pairs found")
+                if rgb_src.exists() and depth_src:
+                    rgb_dst = color_dir / f"{i:06d}.png"
+                    depth_dst = depth_dir_out / f"{i:06d}.png"
+                    if not rgb_dst.exists():
+                        shutil.copy(rgb_src, rgb_dst)
+                    if not depth_dst.exists():
+                        shutil.copy(depth_src, depth_dst)
+                    valid_frames.append((i, kf))
 
-        # Configure SplaTAM
-        config = {
-            "depth_scale": manifest.depth_scale if hasattr(manifest, 'depth_scale') else 1000.0,
-            "max_depth": 10.0,
-            "num_iterations": 30000,
+        if not valid_frames:
+            raise ValueError("No valid RGB-D pairs found for SplaTAM")
+
+        # Get image dimensions
+        if valid_frames and CV2_AVAILABLE:
+            sample_img = cv2.imread(str(color_dir / "000000.png"))
+            if sample_img is not None:
+                H, W = sample_img.shape[:2]
+            else:
+                H, W = 480, 640
+        else:
+            H, W = 480, 640
+
+        # Build SplaTAM config
+        # Based on: https://github.com/spla-tam/SplaTAM/blob/main/configs/replica/splatam.py
+        splatam_config = {
+            "workdir": str(output_dir / "splatam_output"),
+            "run_name": "custom_capture",
+            "seed": 0,
+            "primary_device": "cuda:0" if self._check_cuda_available() else "cpu",
+            "map_every": 1,
+            "keyframe_every": 5,
+            "mapping_window_size": 24,
+            "report_global_progress_every": 500,
+            "eval_every": 5,
+            "scene_radius_depth_ratio": 3,
+            "mean_sq_dist_method": "projective",
+            "gaussian_distribution": "isotropic",
+            "report_iter_progress": False,
+            "load_checkpoint": False,
+            "checkpoint_time_idx": 0,
+            "save_checkpoints": False,
+            "checkpoint_interval": 100,
+            "use_wandb": False,
+
+            "data": {
+                "basedir": str(dataset_dir),
+                "sequence": "",
+                "desired_image_height": H,
+                "desired_image_width": W,
+                "start": 0,
+                "end": -1,
+                "stride": 1,
+                "num_frames": len(valid_frames),
+            },
+
+            "tracking": {
+                "use_gt_poses": False,
+                "forward_prop": True,
+                "num_iters": 40,
+                "use_sil_for_loss": True,
+                "sil_thres": 0.99,
+                "use_l1": True,
+                "ignore_outlier_depth_loss": False,
+                "use_uncertainty_for_loss_mask": False,
+                "use_uncertainty_for_loss": False,
+                "use_chamfer": False,
+                "loss_weights": {
+                    "im": 0.5,
+                    "depth": 1.0,
+                },
+                "lrs": {
+                    "means3D": 0.0,
+                    "rgb_colors": 0.0,
+                    "unnorm_rotations": 0.0,
+                    "logit_opacities": 0.0,
+                    "log_scales": 0.0,
+                    "cam_unnorm_rots": 0.0004,
+                    "cam_trans": 0.002,
+                },
+            },
+
+            "mapping": {
+                "num_iters": 60,
+                "add_new_gaussians": True,
+                "sil_thres": 0.5,
+                "use_l1": True,
+                "ignore_outlier_depth_loss": False,
+                "use_sil_for_loss": False,
+                "use_uncertainty_for_loss_mask": False,
+                "use_uncertainty_for_loss": False,
+                "use_chamfer": False,
+                "loss_weights": {
+                    "im": 0.5,
+                    "depth": 1.0,
+                },
+                "lrs": {
+                    "means3D": 0.0001,
+                    "rgb_colors": 0.0025,
+                    "unnorm_rotations": 0.001,
+                    "logit_opacities": 0.05,
+                    "log_scales": 0.001,
+                    "cam_unnorm_rots": 0.0000,
+                    "cam_trans": 0.0000,
+                },
+                "prune_gaussians": True,
+                "pruning_dict": {
+                    "start_after": 0,
+                    "remove_big_after": 0,
+                    "stop_after": 20,
+                    "prune_every": 20,
+                    "removal_opacity_threshold": 0.005,
+                    "final_removal_opacity_threshold": 0.005,
+                    "reset_opacities": False,
+                    "reset_opacities_every": 500,
+                },
+                "use_gaussian_splatting_densification": False,
+                "densify_dict": {
+                    "start_after": 500,
+                    "remove_big_after": 3000,
+                    "stop_after": 5000,
+                    "densify_every": 100,
+                    "grad_thresh": 0.0002,
+                    "num_to_split_into": 2,
+                    "removal_opacity_threshold": 0.005,
+                    "final_removal_opacity_threshold": 0.005,
+                    "reset_opacities_every": 3000,
+                },
+            },
+
+            "viz": {
+                "render_mode": "color",
+                "offset_first_viz_cam": True,
+                "show_sil": False,
+                "visualize_cams": True,
+                "viz_w": 600,
+                "viz_h": 340,
+                "viz_near": 0.01,
+                "viz_far": 100.0,
+                "view_scale": 2,
+                "viz_fps": 5,
+                "enter_interactive_post_online": False,
+            },
         }
 
+        # Add camera intrinsics if available
         if manifest.intrinsics:
-            config["camera"] = {
+            splatam_config["cam"] = {
                 "fx": manifest.intrinsics.fx,
                 "fy": manifest.intrinsics.fy,
                 "cx": manifest.intrinsics.cx,
                 "cy": manifest.intrinsics.cy,
-                "width": manifest.intrinsics.width,
-                "height": manifest.intrinsics.height,
+                "H": manifest.intrinsics.height,
+                "W": manifest.intrinsics.width,
+                "png_depth_scale": manifest.depth_scale if hasattr(manifest, 'depth_scale') else 6553.5,
+            }
+        else:
+            # Default camera params
+            splatam_config["cam"] = {
+                "fx": 600.0,
+                "fy": 600.0,
+                "cx": W / 2,
+                "cy": H / 2,
+                "H": H,
+                "W": W,
+                "png_depth_scale": 6553.5,
             }
 
         # Run SplaTAM
-        runner = SplaTAMRunner(config)
-        result = runner.run(rgb_paths, depth_paths, output_dir)
+        try:
+            poses, gaussians_path = self._run_splatam_python(splatam_config, output_dir)
+        except Exception as e:
+            logger.warning(f"Direct SplaTAM import failed: {e}")
+            try:
+                poses, gaussians_path = self._run_splatam_subprocess(
+                    splatam_config, dataset_dir, output_dir
+                )
+            except Exception as e2:
+                logger.error(f"SplaTAM subprocess failed: {e2}")
+                raise RuntimeError(f"SplaTAM failed: {e}, {e2}")
 
-        # Extract poses
-        poses = []
-        for i, pose_data in enumerate(result.get("poses", [])):
-            poses.append(CameraPose(
-                frame_id=keyframes[i].frame_id,
-                image_name=Path(rgb_paths[i]).name,
-                rotation=tuple(pose_data["rotation"]),
-                translation=tuple(pose_data["translation"]),
-                timestamp=keyframes[i].timestamp_seconds,
-            ))
+        # Map poses back to original keyframes
+        final_poses = []
+        for idx, kf in valid_frames:
+            if idx < len(poses):
+                pose = poses[idx]
+                final_poses.append(CameraPose(
+                    frame_id=kf.frame_id,
+                    image_name=Path(kf.file_path).name,
+                    rotation=pose.rotation,
+                    translation=pose.translation,
+                    timestamp=kf.timestamp_seconds,
+                ))
 
-        gaussians_path = output_dir / "gaussians" / "point_cloud.ply"
+        # Save poses
+        self._save_poses(final_poses, output_dir / "poses")
 
         return SLAMResult(
-            poses=poses,
-            gaussians_path=gaussians_path if gaussians_path.exists() else None,
-            registration_rate=len(poses) / len(keyframes) if keyframes else 0,
+            poses=final_poses,
+            gaussians_path=gaussians_path,
+            registration_rate=len(final_poses) / len(keyframes) if keyframes else 0,
             scale_factor=1.0,  # Depth gives metric scale
             scale_confidence=0.95,
         )
+
+    def _check_cuda_available(self) -> bool:
+        """Check if CUDA is available for PyTorch."""
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except ImportError:
+            return False
+
+    def _run_splatam_python(
+        self,
+        config: Dict[str, Any],
+        output_dir: Path,
+    ) -> Tuple[List[CameraPose], Optional[Path]]:
+        """Run SplaTAM via direct Python import."""
+        import sys
+
+        # Add SplaTAM to path if needed
+        if self._splatam_path:
+            sys.path.insert(0, str(self._splatam_path))
+
+        try:
+            from scripts.splatam import rgbd_slam
+        except ImportError:
+            from splatam import rgbd_slam
+
+        # Run SplaTAM
+        rgbd_slam(config)
+
+        # Parse output
+        splatam_output = Path(config["workdir"]) / config["run_name"]
+        poses = self._parse_splatam_poses(splatam_output)
+
+        # Find Gaussians PLY
+        gaussians_path = None
+        for ply_pattern in ["params.npz", "final_params.npz", "*.ply"]:
+            matches = list(splatam_output.glob(ply_pattern))
+            if matches:
+                if matches[0].suffix == ".npz":
+                    # Convert npz to ply
+                    gaussians_path = self._convert_splatam_npz_to_ply(
+                        matches[0], output_dir / "gaussians" / "point_cloud.ply"
+                    )
+                else:
+                    gaussians_path = matches[0]
+                break
+
+        return poses, gaussians_path
+
+    def _run_splatam_subprocess(
+        self,
+        config: Dict[str, Any],
+        dataset_dir: Path,
+        output_dir: Path,
+    ) -> Tuple[List[CameraPose], Optional[Path]]:
+        """Run SplaTAM via subprocess."""
+        import json as json_module
+
+        # Write config to file
+        config_path = output_dir / "splatam_config.json"
+        with open(config_path, "w") as f:
+            json_module.dump(config, f, indent=2)
+
+        # Find splatam.py script
+        script_path = None
+        if self._splatam_path:
+            script_path = self._splatam_path / "scripts" / "splatam.py"
+
+        if not script_path or not script_path.exists():
+            for path in [
+                Path.home() / "SplaTAM" / "scripts" / "splatam.py",
+                Path.cwd() / "SplaTAM" / "scripts" / "splatam.py",
+            ]:
+                if path.exists():
+                    script_path = path
+                    break
+
+        if not script_path or not script_path.exists():
+            raise RuntimeError("SplaTAM splatam.py script not found")
+
+        # Create a Python script to run SplaTAM with our config
+        runner_script = output_dir / "run_splatam.py"
+        runner_script.write_text(f"""
+import sys
+import json
+sys.path.insert(0, "{script_path.parent.parent}")
+from scripts.splatam import rgbd_slam
+
+with open("{config_path}") as f:
+    config = json.load(f)
+
+rgbd_slam(config)
+""")
+
+        # Run SplaTAM
+        result = subprocess.run(
+            ["python", str(runner_script)],
+            capture_output=True,
+            timeout=7200,  # 2 hour timeout for SLAM
+            cwd=script_path.parent.parent,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"SplaTAM failed: {result.stderr.decode()}")
+
+        # Parse output
+        splatam_output = Path(config["workdir"]) / config["run_name"]
+        poses = self._parse_splatam_poses(splatam_output)
+
+        # Find Gaussians
+        gaussians_path = None
+        for npz_file in splatam_output.glob("*.npz"):
+            gaussians_path = self._convert_splatam_npz_to_ply(
+                npz_file, output_dir / "gaussians" / "point_cloud.ply"
+            )
+            break
+
+        return poses, gaussians_path
+
+    def _parse_splatam_poses(self, output_dir: Path) -> List[CameraPose]:
+        """Parse poses from SplaTAM output.
+
+        SplaTAM saves poses in traj/ folder or in params.npz.
+        """
+        poses = []
+
+        # Try loading from traj_est.txt (TUM format)
+        traj_file = output_dir / "traj_est.txt"
+        if traj_file.exists():
+            try:
+                with open(traj_file) as f:
+                    for i, line in enumerate(f):
+                        parts = line.strip().split()
+                        if len(parts) >= 8:
+                            # TUM format: timestamp tx ty tz qx qy qz qw
+                            tx, ty, tz = float(parts[1]), float(parts[2]), float(parts[3])
+                            qx, qy, qz, qw = (
+                                float(parts[4]), float(parts[5]),
+                                float(parts[6]), float(parts[7])
+                            )
+
+                            poses.append(CameraPose(
+                                frame_id=f"{i:06d}",
+                                image_name=f"{i:06d}.png",
+                                rotation=(qw, qx, qy, qz),  # Convert to w,x,y,z
+                                translation=(tx, ty, tz),
+                            ))
+                return poses
+            except Exception as e:
+                logger.warning(f"Failed to parse traj_est.txt: {e}")
+
+        # Try loading from params.npz
+        params_file = output_dir / "params.npz"
+        if params_file.exists():
+            try:
+                data = np.load(params_file, allow_pickle=True)
+                if "cam_unnorm_rots" in data and "cam_trans" in data:
+                    rots = data["cam_unnorm_rots"]
+                    trans = data["cam_trans"]
+
+                    for i in range(len(trans)):
+                        # Normalize quaternion
+                        q = rots[i]
+                        q = q / np.linalg.norm(q)
+
+                        poses.append(CameraPose(
+                            frame_id=f"{i:06d}",
+                            image_name=f"{i:06d}.png",
+                            rotation=tuple(q),
+                            translation=tuple(trans[i]),
+                        ))
+                return poses
+            except Exception as e:
+                logger.warning(f"Failed to parse params.npz: {e}")
+
+        return poses
+
+    def _convert_splatam_npz_to_ply(self, npz_path: Path, output_path: Path) -> Path:
+        """Convert SplaTAM params.npz to standard 3DGS PLY format."""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            data = np.load(npz_path, allow_pickle=True)
+
+            # SplaTAM stores: means3D, rgb_colors, unnorm_rotations, logit_opacities, log_scales
+            means = data.get("means3D", np.zeros((0, 3)))
+            colors = data.get("rgb_colors", np.ones((len(means), 3)) * 0.5)
+            rotations = data.get("unnorm_rotations", np.tile([1, 0, 0, 0], (len(means), 1)))
+            opacities = data.get("logit_opacities", np.zeros(len(means)))
+            scales = data.get("log_scales", np.ones((len(means), 3)) * -3)
+
+            # Normalize rotations
+            rot_norms = np.linalg.norm(rotations, axis=1, keepdims=True)
+            rotations = rotations / np.clip(rot_norms, 1e-6, None)
+
+            # Convert logit opacities to actual opacities
+            # sigmoid(logit) = 1 / (1 + exp(-logit))
+            opacities_actual = 1 / (1 + np.exp(-opacities))
+
+            # Build PLY content
+            n_points = len(means)
+            header = f"""ply
+format ascii 1.0
+element vertex {n_points}
+property float x
+property float y
+property float z
+property float nx
+property float ny
+property float nz
+property float f_dc_0
+property float f_dc_1
+property float f_dc_2
+property float opacity
+property float scale_0
+property float scale_1
+property float scale_2
+property float rot_0
+property float rot_1
+property float rot_2
+property float rot_3
+end_header
+"""
+            lines = [header]
+            for i in range(n_points):
+                x, y, z = means[i]
+                r, g, b = colors[i] if i < len(colors) else (0.5, 0.5, 0.5)
+                opacity = opacities_actual[i] if i < len(opacities_actual) else 0.1
+                s0, s1, s2 = scales[i] if i < len(scales) else (-3, -3, -3)
+                q0, q1, q2, q3 = rotations[i] if i < len(rotations) else (1, 0, 0, 0)
+
+                # SH DC coefficients from RGB (simplified)
+                f_dc_0 = (r - 0.5) / 0.28209479177387814
+                f_dc_1 = (g - 0.5) / 0.28209479177387814
+                f_dc_2 = (b - 0.5) / 0.28209479177387814
+
+                lines.append(
+                    f"{x:.6f} {y:.6f} {z:.6f} 0 0 1 "
+                    f"{f_dc_0:.6f} {f_dc_1:.6f} {f_dc_2:.6f} "
+                    f"{opacity:.6f} {s0:.6f} {s1:.6f} {s2:.6f} "
+                    f"{q0:.6f} {q1:.6f} {q2:.6f} {q3:.6f}\n"
+                )
+
+            output_path.write_text("".join(lines))
+            logger.info(f"Converted SplaTAM output to PLY: {n_points} Gaussians")
+            return output_path
+
+        except Exception as e:
+            logger.error(f"Failed to convert SplaTAM npz to ply: {e}")
+            return npz_path
+
+    def _save_poses(self, poses: List[CameraPose], output_dir: Path) -> None:
+        """Save poses in multiple formats."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # JSON format
+        poses_json = [
+            {
+                "frame_id": p.frame_id,
+                "image_name": p.image_name,
+                "rotation": list(p.rotation),
+                "translation": list(p.translation),
+                "timestamp": p.timestamp,
+            }
+            for p in poses
+        ]
+        (output_dir / "poses.json").write_text(json.dumps({"poses": poses_json}, indent=2))
+
+        # COLMAP format
+        with open(output_dir / "images.txt", "w") as f:
+            f.write("# Image list\n")
+            for i, p in enumerate(poses):
+                qw, qx, qy, qz = p.rotation
+                tx, ty, tz = p.translation
+                f.write(f"{i+1} {qw} {qx} {qy} {qz} {tx} {ty} {tz} 1 {p.image_name}\n")
+                f.write("\n")
 
     def _run_depth_guided_colmap(
         self,
