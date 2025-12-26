@@ -76,6 +76,81 @@ def check_cuda_rasterizer():
         return False, None
 
 
+def check_wildgs_slam():
+    """Check WildGS-SLAM availability.
+
+    WildGS-SLAM can be installed via:
+    1. pip package (wildgs_slam)
+    2. git clone with src.slam module
+    3. Direct path to cloned repo
+    """
+    # Method 1: pip package
+    try:
+        from wildgs_slam import WildGSSLAM
+        return True, "pip package"
+    except ImportError:
+        pass
+
+    # Method 2: git clone (src.slam)
+    try:
+        from src.slam import SLAM
+        from src import config
+        return True, "git clone (src.slam)"
+    except ImportError:
+        pass
+
+    # Method 3: Check common paths
+    common_paths = [
+        Path.home() / "WildGS-SLAM",
+        Path.home() / "repos" / "WildGS-SLAM",
+        Path("/opt/WildGS-SLAM"),
+        Path.cwd() / "WildGS-SLAM",
+    ]
+
+    for path in common_paths:
+        if (path / "src" / "slam.py").exists():
+            return True, f"found at {path}"
+
+    return False, None
+
+
+def check_splatam():
+    """Check SplaTAM availability.
+
+    SplaTAM can be installed via:
+    1. pip package (splatam)
+    2. git clone with scripts.splatam module
+    3. Direct path to cloned repo
+    """
+    # Method 1: pip package
+    try:
+        from splatam import rgbd_slam
+        return True, "pip package"
+    except ImportError:
+        pass
+
+    # Method 2: git clone (scripts.splatam)
+    try:
+        from scripts.splatam import rgbd_slam
+        return True, "git clone (scripts.splatam)"
+    except ImportError:
+        pass
+
+    # Method 3: Check common paths
+    common_paths = [
+        Path.home() / "SplaTAM",
+        Path.home() / "repos" / "SplaTAM",
+        Path("/opt/SplaTAM"),
+        Path.cwd() / "SplaTAM",
+    ]
+
+    for path in common_paths:
+        if (path / "scripts" / "splatam.py").exists():
+            return True, f"found at {path}"
+
+    return False, None
+
+
 def main():
     print("=" * 60)
     print("Blueprint Capture Pipeline - Dependency Check")
@@ -137,6 +212,28 @@ def main():
     else:
         print(f"  CUDA 3DGS Rasterizer: NOT INSTALLED (10-100x slower rendering)")
         print(f"    Install with: pip install git+https://github.com/graphdeco-inria/diff-gaussian-rasterization.git")
+
+    print()
+    print("SLAM BACKENDS (optional - falls back to COLMAP if not installed):")
+    print("-" * 60)
+
+    # WildGS-SLAM (RGB-only with dynamic handling)
+    ok, version = check_wildgs_slam()
+    if ok:
+        print(f"  WildGS-SLAM: {version}")
+    else:
+        print(f"  WildGS-SLAM: NOT INSTALLED (will use COLMAP fallback)")
+        print(f"    Install with: git clone --recursive https://github.com/GradientSpaces/WildGS-SLAM.git")
+        print(f"                  cd WildGS-SLAM && pip install -e .")
+
+    # SplaTAM (RGB-D)
+    ok, version = check_splatam()
+    if ok:
+        print(f"  SplaTAM: {version}")
+    else:
+        print(f"  SplaTAM: NOT INSTALLED (will use COLMAP fallback for RGB-D)")
+        print(f"    Install with: git clone https://github.com/spla-tam/SplaTAM.git")
+        print(f"                  cd SplaTAM && pip install -e .")
 
     # Other optional packages
     optional_packages = [
