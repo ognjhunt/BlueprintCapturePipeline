@@ -1,0 +1,27 @@
+# Blueprint Capture Pipeline - Core Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.24.0
+Pillow>=10.0.0
+pyyaml>=6.0
+opencv-python-headless>=4.8.0  # Use headless for server environments
+scipy>=1.11.0
+
+# PyTorch (CPU version - use pytorch.org for GPU)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 3D Reconstruction
+plyfile>=1.0.0
+tqdm>=4.65.0
+pycolmap>=3.10.0  # Python bindings for COLMAP - no CLI needed
+
+# Cloud dependencies (optional - install separately for GCS support)
+# google-cloud-storage>=2.10.0
+# google-cloud-run>=0.10.0
+# google-cloud-logging>=3.6.0
+
+# For CUDA-accelerated 3DGS (10-100x faster, optional):
+# pip install git+https://github.com/graphdeco-inria/diff-gaussian-rasterization.git
+# pip install git+https://github.com/camenduru/simple-knn.git
