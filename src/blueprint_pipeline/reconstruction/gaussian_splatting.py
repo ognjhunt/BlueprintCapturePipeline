@@ -45,7 +45,29 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+# CUDA-accelerated rasterizer (10-100x faster than Python implementation)
+try:
+    from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer as CUDARasterizer
+    CUDA_RASTERIZER_AVAILABLE = True
+except ImportError:
+    CUDA_RASTERIZER_AVAILABLE = False
+
+# Simple KNN for point cloud initialization
+try:
+    from simple_knn._C import distCUDA2
+    SIMPLE_KNN_AVAILABLE = True
+except ImportError:
+    SIMPLE_KNN_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+if CUDA_RASTERIZER_AVAILABLE:
+    logger.info("CUDA rasterizer available - using GPU-accelerated rendering (10-100x faster)")
+else:
+    logger.warning(
+        "CUDA rasterizer not available - using slower Python implementation. "
+        "Install with: pip install git+https://github.com/graphdeco-inria/diff-gaussian-rasterization.git"
+    )
 
 
 # =============================================================================
@@ -615,14 +637,14 @@ element vertex {num_gaussians}
 
 
 # =============================================================================
-# Differentiable Rasterizer
+# Differentiable Rasterizer (with CUDA acceleration when available)
 # =============================================================================
 
 class GaussianRasterizer:
-    """Software rasterizer for 3D Gaussians.
+    """Rasterizer for 3D Gaussians.
 
-    This is a simplified Python implementation. For production use,
-    the CUDA rasterizer from the original 3DGS repo is recommended.
+    Uses CUDA-accelerated diff-gaussian-rasterization when available,
+    otherwise falls back to a simplified Python implementation.
     """
 
     def __init__(
@@ -649,6 +671,26 @@ class GaussianRasterizer:
         self.sh_degree = sh_degree
         self.campos = campos
 
+        # Set up CUDA rasterizer if available
+        self._use_cuda = CUDA_RASTERIZER_AVAILABLE and torch.cuda.is_available()
+
+        if self._use_cuda:
+            self._cuda_settings = GaussianRasterizationSettings(
+                image_height=image_height,
+                image_width=image_width,
+                tanfovx=tanfovx,
+                tanfovy=tanfovy,
+                bg=bg_color,
+                scale_modifier=scale_modifier,
+                viewmatrix=viewmatrix,
+                projmatrix=projmatrix,
+                sh_degree=sh_degree,
+                campos=campos,
+                prefiltered=False,
+                debug=False,
+            )
+            self._cuda_rasterizer = CUDARasterizer(raster_settings=self._cuda_settings)
+
     def forward(
         self,
         means3D: "torch.Tensor",
@@ -662,12 +704,74 @@ class GaussianRasterizer:
     ) -> Tuple["torch.Tensor", "torch.Tensor"]:
         """Rasterize Gaussians to an image.
 
-        This is a differentiable forward pass. For efficiency in training,
-        you should use the CUDA implementation.
-
         Returns:
             Tuple of (rendered_image, radii)
         """
+        if self._use_cuda:
+            return self._forward_cuda(
+                means3D, means2D, shs, colors_precomp,
+                opacities, scales, rotations, cov3D_precomp
+            )
+        else:
+            return self._forward_python(
+                means3D, means2D, shs, colors_precomp,
+                opacities, scales, rotations, cov3D_precomp
+            )
+
+    def _forward_cuda(
+        self,
+        means3D: "torch.Tensor",
+        means2D: "torch.Tensor",
+        shs: "torch.Tensor",
+        colors_precomp: "torch.Tensor",
+        opacities: "torch.Tensor",
+        scales: "torch.Tensor",
+        rotations: "torch.Tensor",
+        cov3D_precomp: "torch.Tensor",
+    ) -> Tuple["torch.Tensor", "torch.Tensor"]:
+        """CUDA-accelerated rasterization (10-100x faster)."""
+        # Ensure all inputs are on CUDA
+        means3D = means3D.cuda()
+        means2D = means2D.cuda() if means2D is not None else torch.zeros_like(means3D[:, :2])
+        opacities = opacities.cuda()
+        scales = scales.cuda()
+        rotations = rotations.cuda()
+
+        if shs is not None:
+            shs = shs.cuda()
+
+        if colors_precomp is not None:
+            colors_precomp = colors_precomp.cuda()
+
+        if cov3D_precomp is not None:
+            cov3D_precomp = cov3D_precomp.cuda()
+
+        # Use the CUDA rasterizer
+        rendered_image, radii = self._cuda_rasterizer(
+            means3D=means3D,
+            means2D=means2D,
+            shs=shs,
+            colors_precomp=colors_precomp,
+            opacities=opacities,
+            scales=scales,
+            rotations=rotations,
+            cov3D_precomp=cov3D_precomp,
+        )
+
+        return rendered_image, radii
+
+    def _forward_python(
+        self,
+        means3D: "torch.Tensor",
+        means2D: "torch.Tensor",
+        shs: "torch.Tensor",
+        colors_precomp: "torch.Tensor",
+        opacities: "torch.Tensor",
+        scales: "torch.Tensor",
+        rotations: "torch.Tensor",
+        cov3D_precomp: "torch.Tensor",
+    ) -> Tuple["torch.Tensor", "torch.Tensor"]:
+        """Fallback Python rasterization (slow, for testing only)."""
         device = means3D.device
         num_gaussians = means3D.shape[0]
 

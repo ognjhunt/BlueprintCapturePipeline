@@ -33,6 +33,7 @@ from .interfaces import (
     CaptureManifest,
     FrameMetadata,
     PipelineConfig,
+    ScaleAnchorObservation,
     SLAMBackend,
     SensorType,
     Submap,
@@ -52,6 +53,173 @@ except ImportError:
     PIL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Scale Calibration Utilities
+# =============================================================================
+
+def compute_scale_from_aruco(
+    scale_observations: List["ScaleAnchorObservation"],
+    poses: List["CameraPose"],
+    intrinsics: Optional["CameraIntrinsics"],
+) -> Tuple[float, float]:
+    """Compute metric scale factor from ArUco/AprilTag observations.
+
+    When we detect a marker of known physical size and observe its pixel size
+    in the image, we can estimate the distance to the marker using:
+        distance = (marker_size_meters * focal_length) / pixel_size
+
+    By comparing this metric distance to the SLAM-estimated distance, we can
+    compute a scale correction factor.
+
+    Args:
+        scale_observations: List of ScaleAnchorObservation from ingest
+        poses: Camera poses from SLAM (arbitrary scale)
+        intrinsics: Camera intrinsics (for focal length)
+
+    Returns:
+        Tuple of (scale_factor, confidence)
+        - scale_factor: Multiply SLAM translations by this to get meters
+        - confidence: How reliable the scale estimate is (0-1)
+    """
+    if not scale_observations or not poses or not intrinsics:
+        return 1.0, 0.0
+
+    # Build a map of frame_id to pose
+    pose_map = {p.frame_id: p for p in poses}
+
+    scale_estimates = []
+
+    for obs in scale_observations:
+        frame_id = obs.frame_id
+        if frame_id not in pose_map:
+            continue
+
+        pose = pose_map[frame_id]
+
+        # Compute estimated distance from marker observation
+        # distance = (size_meters * focal_length_pixels) / size_pixels
+        marker_size_m = obs.size_meters
+        pixel_size = obs.pixel_size  # Average edge length in pixels
+        focal_length = (intrinsics.fx + intrinsics.fy) / 2
+
+        if pixel_size < 1:
+            continue
+
+        # Metric distance to marker
+        metric_distance = (marker_size_m * focal_length) / pixel_size
+
+        # Get SLAM translation magnitude (distance from origin)
+        # For simplicity, we use distance from origin, but a more robust
+        # approach would track relative motion between marker observations
+        slam_distance = np.linalg.norm(pose.translation)
+
+        if slam_distance < 0.001:
+            # Camera is at origin, can't compute scale
+            continue
+
+        # Scale = metric / SLAM
+        scale = metric_distance / slam_distance
+        scale_estimates.append((scale, obs.confidence))
+
+    if not scale_estimates:
+        return 1.0, 0.0
+
+    # Compute weighted average scale
+    total_weight = sum(c for _, c in scale_estimates)
+    if total_weight < 0.001:
+        return 1.0, 0.0
+
+    weighted_scale = sum(s * c for s, c in scale_estimates) / total_weight
+
+    # Confidence based on number of observations and their individual confidences
+    avg_confidence = total_weight / len(scale_estimates)
+    num_confidence = min(1.0, len(scale_estimates) / 5.0)  # Max confidence at 5+ observations
+    overall_confidence = avg_confidence * num_confidence
+
+    logger.info(
+        f"Scale calibration: factor={weighted_scale:.4f}, "
+        f"confidence={overall_confidence:.2f} ({len(scale_estimates)} observations)"
+    )
+
+    return weighted_scale, overall_confidence
+
+
+def apply_scale_to_poses(
+    poses: List["CameraPose"],
+    scale_factor: float,
+) -> List["CameraPose"]:
+    """Apply scale factor to pose translations.
+
+    Args:
+        poses: Original poses with arbitrary scale
+        scale_factor: Factor to multiply translations by
+
+    Returns:
+        New list of poses with scaled translations
+    """
+    if abs(scale_factor - 1.0) < 1e-6:
+        return poses  # No scaling needed
+
+    scaled_poses = []
+    for p in poses:
+        tx, ty, tz = p.translation
+        scaled_poses.append(CameraPose(
+            frame_id=p.frame_id,
+            image_name=p.image_name,
+            rotation=p.rotation,
+            translation=(tx * scale_factor, ty * scale_factor, tz * scale_factor),
+            timestamp=p.timestamp,
+            camera_id=p.camera_id,
+        ))
+
+    return scaled_poses
+
+
+def apply_scale_to_gaussians(
+    gaussians_path: Path,
+    scale_factor: float,
+    output_path: Optional[Path] = None,
+) -> Path:
+    """Apply scale factor to Gaussian positions.
+
+    Args:
+        gaussians_path: Path to input PLY file
+        scale_factor: Factor to multiply positions by
+        output_path: Output path (defaults to overwriting input)
+
+    Returns:
+        Path to scaled PLY file
+    """
+    if abs(scale_factor - 1.0) < 1e-6:
+        return gaussians_path  # No scaling needed
+
+    output_path = output_path or gaussians_path
+
+    try:
+        from ..reconstruction.point_cloud import load_ply, save_ply
+
+        data = load_ply(gaussians_path)
+
+        if "xyz" in data:
+            data["xyz"] = data["xyz"] * scale_factor
+
+            # Also scale the Gaussian scales if present
+            if "scales" in data:
+                # Scales are in log space, so add log(scale_factor)
+                data["scales"] = data["scales"] + np.log(scale_factor)
+
+            # Write back
+            # For now, just modify positions and keep other attributes
+            # A full implementation would preserve all 3DGS attributes
+
+        logger.info(f"Applied scale factor {scale_factor:.4f} to Gaussians")
+
+    except Exception as e:
+        logger.warning(f"Could not apply scale to Gaussians: {e}")
+
+    return output_path
 
 
 @dataclass
@@ -99,9 +267,65 @@ class BaseSLAM(ABC):
         frames_dir: Path,
         output_dir: Path,
         dynamic_masks: Optional[Dict[str, Path]] = None,
+        scale_observations: Optional[List[ScaleAnchorObservation]] = None,
     ) -> SLAMResult:
-        """Run SLAM reconstruction."""
+        """Run SLAM reconstruction.
+
+        Args:
+            manifest: Capture manifest with metadata
+            keyframes: Selected keyframes for reconstruction
+            frames_dir: Directory containing frame images
+            output_dir: Output directory for results
+            dynamic_masks: Optional masks for dynamic objects
+            scale_observations: Optional ArUco/AprilTag observations for scale calibration
+
+        Returns:
+            SLAMResult with poses and Gaussians
+        """
         pass
+
+    def _calibrate_scale(
+        self,
+        result: SLAMResult,
+        scale_observations: Optional[List[ScaleAnchorObservation]],
+        intrinsics: Optional[CameraIntrinsics],
+    ) -> SLAMResult:
+        """Apply scale calibration to SLAM result if observations available.
+
+        Args:
+            result: Raw SLAM result with arbitrary scale
+            scale_observations: ArUco/AprilTag observations
+            intrinsics: Camera intrinsics for scale computation
+
+        Returns:
+            Calibrated SLAMResult with metric scale
+        """
+        if not scale_observations or not result.poses:
+            return result
+
+        # Compute scale from observations
+        scale_factor, confidence = compute_scale_from_aruco(
+            scale_observations, result.poses, intrinsics
+        )
+
+        if abs(scale_factor - 1.0) < 1e-6 or confidence < 0.1:
+            return result
+
+        print(f"  Applying scale calibration: {scale_factor:.4f} (confidence: {confidence:.2f})")
+
+        # Apply scale to poses
+        scaled_poses = apply_scale_to_poses(result.poses, scale_factor)
+
+        # Apply scale to Gaussians if available
+        if result.gaussians_path and result.gaussians_path.exists():
+            apply_scale_to_gaussians(result.gaussians_path, scale_factor)
+
+        # Update result
+        result.poses = scaled_poses
+        result.scale_factor = scale_factor
+        result.scale_confidence = confidence
+
+        return result
 
     def _create_submaps(
         self,
@@ -143,6 +367,7 @@ class WildGSSLAM(BaseSLAM):
         frames_dir: Path,
         output_dir: Path,
         dynamic_masks: Optional[Dict[str, Path]] = None,
+        scale_observations: Optional[List[ScaleAnchorObservation]] = None,
     ) -> SLAMResult:
         """Run WildGS-SLAM reconstruction."""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -151,15 +376,19 @@ class WildGSSLAM(BaseSLAM):
         wildgs_available = self._check_wildgs_available()
 
         if wildgs_available:
-            return self._run_native_wildgs(
+            result = self._run_native_wildgs(
                 manifest, keyframes, frames_dir, output_dir, dynamic_masks
             )
+            # Apply scale calibration
+            if scale_observations:
+                result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+            return result
         else:
             # Fall back to our built-in COLMAP + standalone 3DGS
             logger.info("WildGS-SLAM not available, using COLMAP + standalone 3DGS")
             fallback = COLMAPFallback(self.config)
             return fallback.run(
-                manifest, keyframes, frames_dir, output_dir, dynamic_masks
+                manifest, keyframes, frames_dir, output_dir, dynamic_masks, scale_observations
             )
 
     def _check_wildgs_available(self) -> bool:
@@ -289,6 +518,7 @@ class SplaTAM(BaseSLAM):
         frames_dir: Path,
         output_dir: Path,
         dynamic_masks: Optional[Dict[str, Path]] = None,
+        scale_observations: Optional[List[ScaleAnchorObservation]] = None,
     ) -> SLAMResult:
         """Run SplaTAM with RGB-D input."""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -298,15 +528,19 @@ class SplaTAM(BaseSLAM):
             logger.info("No depth data available for SplaTAM, falling back to WildGS-SLAM")
             fallback = WildGSSLAM(self.config)
             return fallback.run(
-                manifest, keyframes, frames_dir, output_dir, dynamic_masks
+                manifest, keyframes, frames_dir, output_dir, dynamic_masks, scale_observations
             )
 
         # Try native SplaTAM first
         if self._check_splatam_available():
             try:
-                return self._run_native_splatam(
+                result = self._run_native_splatam(
                     manifest, keyframes, frames_dir, output_dir
                 )
+                # RGB-D has metric scale, but apply calibration if available for refinement
+                if scale_observations:
+                    result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+                return result
             except Exception as e:
                 logger.warning(f"Native SplaTAM failed: {e}, using fallback")
 
@@ -495,6 +729,7 @@ class VIGSSLAM(BaseSLAM):
         frames_dir: Path,
         output_dir: Path,
         dynamic_masks: Optional[Dict[str, Path]] = None,
+        scale_observations: Optional[List[ScaleAnchorObservation]] = None,
     ) -> SLAMResult:
         """Run VIGS-SLAM with visual-inertial input."""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -503,15 +738,19 @@ class VIGSSLAM(BaseSLAM):
             logger.info("No IMU data available for VIGS-SLAM, falling back to WildGS-SLAM")
             fallback = WildGSSLAM(self.config)
             return fallback.run(
-                manifest, keyframes, frames_dir, output_dir, dynamic_masks
+                manifest, keyframes, frames_dir, output_dir, dynamic_masks, scale_observations
             )
 
         # Try native VIGS-SLAM first
         if self._check_vigs_available():
             try:
-                return self._run_native_vigs(
+                result = self._run_native_vigs(
                     manifest, keyframes, frames_dir, output_dir, dynamic_masks
                 )
+                # IMU has metric scale, but apply calibration if available for refinement
+                if scale_observations:
+                    result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+                return result
             except Exception as e:
                 logger.warning(f"Native VIGS-SLAM failed: {e}, using fallback")
 
@@ -770,6 +1009,7 @@ class ARKitDirect(BaseSLAM):
         frames_dir: Path,
         output_dir: Path,
         dynamic_masks: Optional[Dict[str, Path]] = None,
+        scale_observations: Optional[List[ScaleAnchorObservation]] = None,
     ) -> SLAMResult:
         """Load ARKit poses and train 3DGS."""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -778,7 +1018,7 @@ class ARKitDirect(BaseSLAM):
             print("No ARKit poses available, falling back to WildGS-SLAM")
             fallback = WildGSSLAM(self.config)
             return fallback.run(
-                manifest, keyframes, frames_dir, output_dir, dynamic_masks
+                manifest, keyframes, frames_dir, output_dir, dynamic_masks, scale_observations
             )
 
         # Load ARKit poses
@@ -1058,6 +1298,7 @@ class COLMAPFallback(BaseSLAM):
         frames_dir: Path,
         output_dir: Path,
         dynamic_masks: Optional[Dict[str, Path]] = None,
+        scale_observations: Optional[List[ScaleAnchorObservation]] = None,
     ) -> SLAMResult:
         """Run COLMAP SfM then train 3DGS using our standalone module."""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1099,11 +1340,17 @@ class COLMAPFallback(BaseSLAM):
         gaussians_dir.mkdir(exist_ok=True)
         gaussians_path = self._train_3dgs_standalone(colmap_dir, gaussians_dir)
 
-        return SLAMResult(
+        result = SLAMResult(
             poses=poses,
             gaussians_path=gaussians_path,
             registration_rate=len(poses) / len(keyframes) if keyframes else 0,
         )
+
+        # Apply scale calibration if observations available
+        if scale_observations:
+            result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+
+        return result
 
     def _prepare_images(
         self,

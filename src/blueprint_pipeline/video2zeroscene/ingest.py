@@ -11,12 +11,176 @@ This module handles:
 from __future__ import annotations
 
 import json
+import subprocess
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+
+# =============================================================================
+# Video Metadata Extraction for Camera Intrinsics
+# =============================================================================
+
+# Known device focal length databases (sensor width in mm, typical focal length in mm)
+# These are used to estimate intrinsics when not available in metadata
+DEVICE_SENSOR_DATABASE = {
+    # iPhones (typical values)
+    "iphone": {"sensor_width_mm": 6.17, "focal_length_mm": 4.25},  # iPhone 12/13/14 wide
+    "iphone_pro": {"sensor_width_mm": 7.01, "focal_length_mm": 5.7},  # iPhone Pro main
+    "iphone_ultrawide": {"sensor_width_mm": 5.6, "focal_length_mm": 1.55},  # Ultra-wide
+    # Meta/Ray-Ban glasses
+    "meta_glasses": {"sensor_width_mm": 4.8, "focal_length_mm": 2.87},
+    # Generic webcam/action cam
+    "generic": {"sensor_width_mm": 6.17, "focal_length_mm": 3.5},
+}
+
+
+def extract_video_metadata(video_path: Path) -> Dict[str, Any]:
+    """Extract video metadata using ffprobe.
+
+    Attempts to extract camera intrinsics information from video metadata.
+    Many cameras (especially mobile devices) encode this in the video stream.
+
+    Args:
+        video_path: Path to video file
+
+    Returns:
+        Dictionary with extracted metadata
+    """
+    metadata = {}
+
+    try:
+        # Run ffprobe to get detailed metadata
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_format",
+                "-show_streams",
+                str(video_path)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+
+            # Extract video stream info
+            for stream in data.get("streams", []):
+                if stream.get("codec_type") == "video":
+                    metadata["width"] = stream.get("width")
+                    metadata["height"] = stream.get("height")
+                    metadata["codec"] = stream.get("codec_name")
+
+                    # Parse frame rate
+                    fps_str = stream.get("r_frame_rate", "30/1")
+                    if "/" in fps_str:
+                        num, den = fps_str.split("/")
+                        metadata["fps"] = float(num) / float(den) if float(den) > 0 else 30.0
+                    break
+
+            # Extract format tags (often contains device info)
+            format_tags = data.get("format", {}).get("tags", {})
+            metadata["device_make"] = format_tags.get("com.apple.quicktime.make",
+                                       format_tags.get("make", ""))
+            metadata["device_model"] = format_tags.get("com.apple.quicktime.model",
+                                        format_tags.get("model", ""))
+
+            # Try to extract focal length from metadata (some cameras include this)
+            # Apple devices sometimes include this in the video metadata
+            focal_length_str = format_tags.get("com.apple.quicktime.focal-length.35mm-equivalent")
+            if focal_length_str:
+                try:
+                    metadata["focal_length_35mm"] = float(focal_length_str)
+                except ValueError:
+                    pass
+
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    return metadata
+
+
+def estimate_intrinsics_from_metadata(
+    metadata: Dict[str, Any],
+    width: int,
+    height: int,
+) -> Optional["CameraIntrinsics"]:
+    """Estimate camera intrinsics from video metadata and device database.
+
+    Args:
+        metadata: Video metadata dictionary
+        width: Image width in pixels
+        height: Image height in pixels
+
+    Returns:
+        CameraIntrinsics if estimation possible, None otherwise
+    """
+    from .interfaces import CameraIntrinsics
+
+    fx = fy = None
+    cx, cy = width / 2.0, height / 2.0
+
+    # Method 1: Use 35mm equivalent focal length if available
+    if "focal_length_35mm" in metadata:
+        # Convert 35mm equivalent to actual focal length in pixels
+        # 35mm film is 36mm wide, so: f_pixels = f_35mm * (width_pixels / 36)
+        # But this is 35mm equivalent, so we need to account for crop factor
+        focal_35mm = metadata["focal_length_35mm"]
+        # For mobile sensors, approximate: f_pixels ≈ f_35mm * (width / 36) * crop_factor
+        # Most phone sensors have ~5-7x crop factor. Use width directly for simpler estimate:
+        fx = fy = focal_35mm * (width / 36.0)
+
+    # Method 2: Use device database
+    elif "device_model" in metadata or "device_make" in metadata:
+        device_info = _identify_device(metadata)
+        if device_info:
+            sensor_width_mm = device_info["sensor_width_mm"]
+            focal_length_mm = device_info["focal_length_mm"]
+            # f_pixels = f_mm * (width_pixels / sensor_width_mm)
+            fx = fy = focal_length_mm * (width / sensor_width_mm)
+
+    # Method 3: Use reasonable defaults based on resolution
+    if fx is None:
+        # Most phone cameras have ~60-80 degree horizontal FOV
+        # For 70 degree FOV: f = (width/2) / tan(35°) ≈ width * 0.71
+        # For safety, use a slightly narrower estimate (75 deg FOV)
+        fx = fy = width * 0.75
+
+    return CameraIntrinsics(
+        fx=fx,
+        fy=fy,
+        cx=cx,
+        cy=cy,
+        width=width,
+        height=height,
+    )
+
+
+def _identify_device(metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Identify device from metadata and return sensor parameters."""
+    make = metadata.get("device_make", "").lower()
+    model = metadata.get("device_model", "").lower()
+
+    # Apple devices
+    if "apple" in make or "iphone" in model or "ipad" in model:
+        if "pro" in model or "max" in model:
+            return DEVICE_SENSOR_DATABASE["iphone_pro"]
+        return DEVICE_SENSOR_DATABASE["iphone"]
+
+    # Meta/Ray-Ban devices
+    if "meta" in make or "ray-ban" in model or "glasses" in model:
+        return DEVICE_SENSOR_DATABASE["meta_glasses"]
+
+    # Fallback to generic
+    return DEVICE_SENSOR_DATABASE["generic"]
 
 from .interfaces import (
     CameraIntrinsics,
@@ -86,8 +250,8 @@ class VideoIngestor:
             metadata, arkit_data_path, depth_path, imu_path
         )
 
-        # Extract intrinsics if available
-        intrinsics = self._extract_intrinsics(metadata, arkit_data_path)
+        # Extract intrinsics if available (now with video metadata support)
+        intrinsics = self._extract_intrinsics(metadata, arkit_data_path, video_paths)
 
         # Extract frames from all clips
         all_frames = []
@@ -204,14 +368,24 @@ class VideoIngestor:
         self,
         metadata: Dict[str, Any],
         arkit_path: Optional[Path],
+        video_paths: Optional[List[Path]] = None,
     ) -> Optional[CameraIntrinsics]:
-        """Extract camera intrinsics from metadata or ARKit."""
-        # Try ARKit intrinsics first
+        """Extract camera intrinsics from metadata, ARKit, or video.
+
+        Priority order:
+        1. ARKit intrinsics (most accurate for iOS)
+        2. User-provided intrinsics in metadata
+        3. Video metadata extraction (ffprobe)
+        4. Device database estimation
+        5. Default estimation based on resolution
+        """
+        # Try ARKit intrinsics first (most accurate for iOS)
         if arkit_path and arkit_path.exists():
             intrinsics_file = arkit_path / "intrinsics.json"
             if intrinsics_file.exists():
                 try:
                     data = json.loads(intrinsics_file.read_text())
+                    print(f"  Using ARKit intrinsics: fx={data['fx']:.1f}, fy={data['fy']:.1f}")
                     return CameraIntrinsics(
                         fx=data["fx"],
                         fy=data["fy"],
@@ -223,9 +397,10 @@ class VideoIngestor:
                 except Exception:
                     pass
 
-        # Try metadata
+        # Try user-provided intrinsics in metadata
         if "intrinsics" in metadata:
             intr = metadata["intrinsics"]
+            print(f"  Using provided intrinsics: fx={intr.get('fx', 1500):.1f}")
             return CameraIntrinsics(
                 fx=intr.get("fx", 1500),
                 fy=intr.get("fy", 1500),
@@ -235,7 +410,39 @@ class VideoIngestor:
                 height=intr.get("height", 1080),
             )
 
-        return None
+        # Try extracting from video metadata
+        if video_paths:
+            for video_path in video_paths:
+                if video_path.exists():
+                    video_meta = extract_video_metadata(video_path)
+                    if video_meta:
+                        width = video_meta.get("width", 1920)
+                        height = video_meta.get("height", 1080)
+
+                        # Merge video metadata with user metadata for device detection
+                        combined_meta = {**video_meta, **metadata}
+
+                        intrinsics = estimate_intrinsics_from_metadata(
+                            combined_meta, width, height
+                        )
+                        if intrinsics:
+                            source = "35mm metadata" if "focal_length_35mm" in video_meta else "device estimation"
+                            print(f"  Estimated intrinsics from {source}: fx={intrinsics.fx:.1f}")
+                            return intrinsics
+
+        # Final fallback: estimate from default resolution
+        width = metadata.get("width", 1920)
+        height = metadata.get("height", 1080)
+        fx = width * 0.75  # Approximate 75-degree FOV
+        print(f"  Using default intrinsics: fx={fx:.1f} (estimated from resolution)")
+        return CameraIntrinsics(
+            fx=fx,
+            fy=fx,
+            cx=width / 2.0,
+            cy=height / 2.0,
+            width=width,
+            height=height,
+        )
 
     def _extract_frames(
         self,
