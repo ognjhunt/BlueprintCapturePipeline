@@ -1,0 +1,32 @@
+# Blueprint Capture Pipeline - Terraform Variables
+#
+# Copy this file to terraform.tfvars and customize for your deployment.
+
+# Required
+project_id = "blueprint-8c1ca"
+
+# Primary region for all resources
+primary_region = "us-central1"
+
+# Secondary regions for overflow and geographic distribution
+# Set to [] for single-region deployment
+secondary_regions = ["us-east1", "europe-west1"]
+
+# Firebase Storage bucket (typically {project_id}.appspot.com)
+storage_bucket = "blueprint-8c1ca.appspot.com"
+
+# Docker image for the pipeline
+# Build and push: docker build -t gcr.io/{project_id}/blueprint-pipeline:latest . && docker push gcr.io/{project_id}/blueprint-pipeline:latest
+docker_image = "gcr.io/blueprint-8c1ca/blueprint-pipeline:latest"
+
+# GPU type for Cloud Run Jobs
+# Options: nvidia-l4 (recommended), nvidia-t4
+gpu_type = "nvidia-l4"
+
+# Maximum concurrent job executions per region
+# Total capacity = max_concurrent_jobs * (1 + len(secondary_regions))
+# For 1000 scans/day with 20 min/scan: need ~14 concurrent GPUs
+max_concurrent_jobs = 10
+
+# Enable push notifications via Firebase Cloud Messaging
+enable_notifications = true
