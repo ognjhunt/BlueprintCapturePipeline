@@ -214,6 +214,202 @@ class VideoIngestor:
     def __init__(self, config: PipelineConfig):
         self.config = config
 
+    def check_preextracted_frames(
+        self,
+        raw_data_path: Path,
+    ) -> Optional[Tuple[Path, List[Dict[str, Any]]]]:
+        """Check if frames were pre-extracted by iOS app's extractFrames Cloud Function.
+
+        P2 FIX: Integrates with BlueprintCapture iOS app's extract-frames Cloud Function.
+        If frames/index.jsonl exists alongside the raw data, use those frames instead
+        of re-extracting from video.
+
+        The iOS extractFrames function creates:
+        - frames/{frame_number}.jpg - Individual frame images
+        - frames/index.jsonl - Frame metadata with timestamps and optional poses
+
+        Args:
+            raw_data_path: Path to raw/ directory from iOS upload
+
+        Returns:
+            Tuple of (frames_dir, frame_list) if pre-extracted frames exist, None otherwise
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Check for frames directory relative to raw data
+        # iOS structure: scenes/{sceneId}/iphone/{timestamp}/
+        #   ├── raw/          (input from iOS app)
+        #   │   ├── manifest.json
+        #   │   ├── walkthrough.mov
+        #   │   └── arkit/
+        #   └── frames/       (output from extractFrames Cloud Function)
+        #       ├── 000001.jpg
+        #       └── index.jsonl
+
+        # Try sibling frames/ directory
+        if raw_data_path.name == "raw":
+            parent_dir = raw_data_path.parent
+            frames_dir = parent_dir / "frames"
+            index_path = frames_dir / "index.jsonl"
+        else:
+            frames_dir = raw_data_path / "frames"
+            index_path = frames_dir / "index.jsonl"
+
+        if not frames_dir.exists() or not index_path.exists():
+            logger.debug(f"No pre-extracted frames found at {frames_dir}")
+            return None
+
+        # Parse index.jsonl
+        try:
+            frame_list = []
+            with open(index_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        frame_data = json.loads(line)
+                        frame_list.append(frame_data)
+
+            if not frame_list:
+                logger.warning(f"index.jsonl at {index_path} is empty")
+                return None
+
+            # Verify at least some frames exist
+            sample_frames = frame_list[:5]
+            for frame in sample_frames:
+                frame_path = frames_dir / frame.get("filename", f"{frame.get('frame_id', 0):06d}.jpg")
+                if not frame_path.exists():
+                    logger.warning(f"Frame file missing: {frame_path}")
+                    return None
+
+            logger.info(f"Found {len(frame_list)} pre-extracted frames at {frames_dir}")
+            return (frames_dir, frame_list)
+
+        except Exception as e:
+            logger.warning(f"Failed to parse pre-extracted frames index: {e}")
+            return None
+
+    def use_preextracted_frames(
+        self,
+        capture_id: str,
+        frames_dir: Path,
+        frame_list: List[Dict[str, Any]],
+        output_dir: Path,
+        metadata: Optional[Dict[str, Any]] = None,
+        arkit_data_path: Optional[Path] = None,
+        depth_path: Optional[Path] = None,
+        imu_path: Optional[Path] = None,
+    ) -> "IngestResult":
+        """Create IngestResult from pre-extracted frames.
+
+        P2 FIX: Uses frames already extracted by iOS app's extractFrames function.
+
+        Args:
+            capture_id: Unique capture ID
+            frames_dir: Path to pre-extracted frames directory
+            frame_list: List of frame metadata from index.jsonl
+            output_dir: Output directory for manifest
+            metadata: Device metadata
+            arkit_data_path: Path to ARKit poses
+            depth_path: Path to depth frames
+            imu_path: Path to IMU data
+
+        Returns:
+            IngestResult with pre-extracted frames
+        """
+        import logging
+        from .interfaces import FrameMetadata, CaptureManifest, SensorType
+
+        logger = logging.getLogger(__name__)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        metadata = metadata or {}
+
+        # Convert frame list to FrameMetadata objects
+        frames = []
+        for i, frame_data in enumerate(frame_list):
+            # Support both iOS extractFrames format and pipeline format
+            frame_id = frame_data.get("frame_id", frame_data.get("frameId", i))
+            timestamp = frame_data.get("timestamp", frame_data.get("timestamp_ms", 0) / 1000.0)
+            filename = frame_data.get("filename", f"{frame_id:06d}.jpg")
+
+            # Get image dimensions if available
+            width = frame_data.get("width", metadata.get("width", 1920))
+            height = frame_data.get("height", metadata.get("height", 1080))
+
+            frame_path = frames_dir / filename
+            if frame_path.exists():
+                frames.append(FrameMetadata(
+                    frame_id=frame_id,
+                    timestamp_seconds=timestamp,
+                    image_path=str(frame_path),
+                    width=width,
+                    height=height,
+                    quality_score=frame_data.get("quality_score", 1.0),
+                    is_keyframe=frame_data.get("is_keyframe", True),
+                    blur_score=frame_data.get("blur_score", 0.0),
+                    exposure_score=frame_data.get("exposure_score", 1.0),
+                ))
+
+        if not frames:
+            return IngestResult(
+                manifest=CaptureManifest(
+                    capture_id=capture_id,
+                    capture_timestamp=datetime.now().isoformat(),
+                    device_platform="unknown",
+                ),
+                frames=[],
+                keyframes=[],
+                scale_observations=[],
+                frames_dir=frames_dir,
+                success=False,
+                errors=["No valid frames found in pre-extracted frames"],
+            )
+
+        # All pre-extracted frames are considered keyframes
+        keyframes = [f for f in frames if f.is_keyframe]
+
+        # Detect sensor type
+        sensor_type = self._detect_sensor_type(
+            metadata, arkit_data_path, depth_path, imu_path
+        )
+
+        # Extract intrinsics
+        intrinsics = self._extract_intrinsics(metadata, arkit_data_path, [])
+
+        # Create manifest
+        manifest = CaptureManifest(
+            capture_id=capture_id,
+            capture_timestamp=datetime.now().isoformat(),
+            device_platform=metadata.get("platform", "ios"),
+            device_model=metadata.get("model"),
+            sensor_type=sensor_type,
+            has_depth=depth_path is not None,
+            has_imu=imu_path is not None,
+            has_arkit_poses=arkit_data_path is not None,
+            intrinsics=intrinsics,
+            clips=[],  # No video clips when using pre-extracted frames
+            scale_anchors=[],
+            imu_data_path=str(imu_path) if imu_path else None,
+            depth_frames_path=str(depth_path) if depth_path else None,
+            arkit_poses_path=str(arkit_data_path) if arkit_data_path else None,
+            total_frames=len(frames),
+            estimated_duration_seconds=frames[-1].timestamp_seconds if frames else 0,
+            resolution=(frames[0].width, frames[0].height) if frames else (1920, 1080),
+            fps=metadata.get("fps", 30.0),
+            notes=f"Using pre-extracted frames from {frames_dir}",
+        )
+
+        logger.info(f"Created manifest from {len(frames)} pre-extracted frames")
+
+        return IngestResult(
+            manifest=manifest,
+            frames=frames,
+            keyframes=keyframes,
+            scale_observations=[],
+            frames_dir=frames_dir,
+            success=True,
+        )
+
     def ingest(
         self,
         capture_id: str,
