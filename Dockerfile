@@ -123,27 +123,16 @@ RUN pip install --no-cache-dir \
     scipy>=1.11.0 \
     plyfile>=1.0.0
 
-# Install GCS and Cloud dependencies
+# Install GCS and Cloud dependencies (including Firestore and Cloud Tasks)
 RUN pip install --no-cache-dir \
     google-cloud-storage>=2.10.0 \
-    google-cloud-logging>=3.6.0
+    google-cloud-logging>=3.6.0 \
+    google-cloud-firestore>=2.14.0 \
+    google-cloud-tasks>=2.14.0 \
+    firebase-admin>=6.0.0
 
-# Install USD (OpenUSD/Pixar)
-RUN pip install --no-cache-dir usd-core>=24.0
-
-# Install SAM 2 (Segment Anything Model 2)
-# Note: Requires git clone for full functionality
-RUN pip install --no-cache-dir \
-    segment-anything-2>=0.1.0 || true
-
-# Install diffusers for Hunyuan3D
-RUN pip install --no-cache-dir \
-    diffusers>=0.25.0 \
-    transformers>=4.36.0 \
-    accelerate>=0.25.0
-
-# Install xatlas for UV unwrapping (optional)
-RUN pip install --no-cache-dir xatlas || true
+# Install pycolmap for Python-native COLMAP bindings
+RUN pip install --no-cache-dir pycolmap>=3.10.0
 
 # Copy application code
 COPY src/ /app/src/
@@ -166,6 +155,24 @@ RUN git clone https://github.com/camenduru/simple-knn.git /tmp/simple-knn && \
     cd /tmp/simple-knn && \
     pip install --no-cache-dir . && \
     rm -rf /tmp/simple-knn
+
+# =============================================================================
+# Install SLAM backends for different sensor types
+# =============================================================================
+
+# WildGS-SLAM: RGB-only SLAM with Gaussian Splatting (for Meta glasses, generic cameras)
+# This is the primary backend for videos without depth
+RUN git clone --recursive https://github.com/GradientSpaces/WildGS-SLAM.git /opt/WildGS-SLAM && \
+    cd /opt/WildGS-SLAM && \
+    pip install --no-cache-dir -e . || echo "WildGS-SLAM installation optional" && \
+    echo "WildGS-SLAM installed at /opt/WildGS-SLAM"
+
+# SplaTAM: RGB-D SLAM with Gaussian Splatting (for iPhone LiDAR)
+# This is used when depth maps are available
+RUN git clone https://github.com/spla-tam/SplaTAM.git /opt/SplaTAM && \
+    cd /opt/SplaTAM && \
+    pip install --no-cache-dir -e . || echo "SplaTAM installation optional" && \
+    echo "SplaTAM installed at /opt/SplaTAM"
 
 # Create directories for workspace
 RUN mkdir -p /tmp/blueprint_pipeline /workspace

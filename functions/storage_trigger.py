@@ -27,6 +27,112 @@ from typing import Any, Dict, Optional, Tuple
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Firestore integration
+try:
+    from google.cloud import firestore
+    FIRESTORE_AVAILABLE = True
+except ImportError:
+    FIRESTORE_AVAILABLE = False
+    firestore = None
+
+
+def create_capture_status(
+    capture_id: str,
+    scene_id: str,
+    creator_id: str,
+    source: str,
+    raw_data_uri: str,
+) -> bool:
+    """Create initial capture status in Firestore.
+
+    Args:
+        capture_id: Unique capture/session ID
+        scene_id: Target scene ID
+        creator_id: User who created the capture
+        source: "iphone" or "meta_glasses"
+        raw_data_uri: GCS URI to raw upload
+
+    Returns:
+        True if created successfully
+    """
+    if not FIRESTORE_AVAILABLE:
+        logger.warning("Firestore not available - skipping status creation")
+        return False
+
+    try:
+        project_id = os.environ.get("PIPELINE_PROJECT_ID", "blueprint-8c1ca")
+        db = firestore.Client(project=project_id)
+
+        doc_ref = db.collection("captures").document(capture_id)
+
+        doc_data = {
+            "id": capture_id,
+            "sceneId": scene_id,
+            "creatorId": creator_id,
+            "status": "queued",
+            "stage": "upload_complete",
+            "progress": 0.0,
+            "error": None,
+            "retryCount": 0,
+            "source": source,
+            "rawDataUri": raw_data_uri,
+            "outputs": {
+                "gaussiansUri": None,
+                "posesUri": None,
+                "framesUri": None,
+            },
+            "metrics": {
+                "totalFrames": 0,
+                "processingTimeSeconds": 0.0,
+                "registrationRate": 0.0,
+            },
+            "createdAt": firestore.SERVER_TIMESTAMP,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+            "startedAt": None,
+            "completedAt": None,
+        }
+
+        doc_ref.set(doc_data)
+        logger.info(f"Created capture status document: {capture_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to create capture status: {e}")
+        return False
+
+
+def update_capture_status_failed(capture_id: str, error: str) -> bool:
+    """Mark capture as failed in Firestore.
+
+    Args:
+        capture_id: Capture/session ID
+        error: Error message
+
+    Returns:
+        True if updated successfully
+    """
+    if not FIRESTORE_AVAILABLE:
+        return False
+
+    try:
+        project_id = os.environ.get("PIPELINE_PROJECT_ID", "blueprint-8c1ca")
+        db = firestore.Client(project=project_id)
+
+        doc_ref = db.collection("captures").document(capture_id)
+        doc_ref.update({
+            "status": "failed",
+            "error": error,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+            "completedAt": firestore.SERVER_TIMESTAMP,
+        })
+
+        logger.info(f"Marked capture {capture_id} as failed")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to update capture status: {e}")
+        return False
+
 
 # Expected file markers that indicate a complete upload
 COMPLETION_MARKERS = [
@@ -441,6 +547,23 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:
         logger.error(f"Failed to load iOS manifest for scene {scene_id}")
         return
 
+    # Generate unique capture ID from the folder path
+    capture_folder = path_info["capture_folder"]
+    capture_id = f"{scene_id}_{capture_folder}"
+
+    # Extract creator_id from iOS manifest (falls back to unknown)
+    creator_id = ios_manifest.get("creator_id") or ios_manifest.get("user_id") or "unknown"
+
+    # Create initial Firestore status document
+    raw_data_uri = f"gs://{bucket_name}/{raw_prefix}"
+    create_capture_status(
+        capture_id=capture_id,
+        scene_id=scene_id,
+        creator_id=creator_id,
+        source=source,
+        raw_data_uri=raw_data_uri,
+    )
+
     # Convert to pipeline format
     session_manifest = convert_ios_manifest_to_session(
         ios_manifest=ios_manifest,
@@ -450,6 +573,9 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:
         bucket_name=bucket_name,
         file_status=file_status,
     )
+
+    # Add capture_id to session manifest for tracking
+    session_manifest["capture_id"] = capture_id
 
     # Trigger the pipeline
     try:
@@ -461,6 +587,10 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:
 
     except Exception as e:
         logger.error(f"Failed to trigger pipeline for scene {scene_id}: {e}")
+
+        # Update Firestore status to failed
+        update_capture_status_failed(capture_id, str(e))
+
         # Record failure
         record_trigger_event(
             bucket_name,
