@@ -47,6 +47,8 @@ cloud = [
     "google-cloud-storage>=2.10.0",
     "google-cloud-run>=0.10.0",
     "google-cloud-logging>=3.6.0",
+    "google-cloud-firestore>=2.14.0",
+    "google-cloud-tasks>=2.14.0",
 ]
 
 # 3D Gaussian Splatting / SLAM reconstruction (standalone - no external 3DGS needed)
@@ -68,9 +70,8 @@ cuda_3dgs = [
     # diff-gaussian-rasterization and simple-knn must be installed from git (CUDA required)
 ]
 
-# Dynamic object masking (SAM and YOLO support)
+# Dynamic object masking (YOLO for simple detection)
 masking = [
-    "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
     "ultralytics>=8.0.0",
 ]
 

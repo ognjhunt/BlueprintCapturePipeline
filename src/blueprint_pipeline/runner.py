@@ -26,9 +26,6 @@ from .models import ArtifactPaths, Clip, ScaleAnchor, SessionManifest
 from .jobs.base import BaseJob, JobResult, JobStatus
 from .jobs.frame_extraction import FrameExtractionJob
 from .jobs.reconstruction import ReconstructionJob
-from .jobs.mesh import MeshExtractionJob
-from .jobs.object_assetization import ObjectAssetizationJob
-from .jobs.usd_authoring import USDAuthoringJob
 from .pipeline import default_artifact_paths
 from .orchestrator import PipelineOrchestrator, PipelineStage
 from .utils.logging import setup_logging, get_logger
@@ -40,9 +37,6 @@ from .utils.gcs import GCSClient, GCSPath
 JOB_REGISTRY: Dict[str, type] = {
     "frame-extraction": FrameExtractionJob,
     "reconstruction": ReconstructionJob,
-    "mesh-extraction": MeshExtractionJob,
-    "object-assetization": ObjectAssetizationJob,
-    "usd-authoring": USDAuthoringJob,
 }
 
 
@@ -107,6 +101,7 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
     {
         "job_name": "full-pipeline",
         "session_id": "scene_123",
+        "capture_id": "scene_123_2024-12-09...",  # For Firestore tracking
         "inputs": {
             "manifest_uri": "gs://bucket/sessions/scene_123/session_manifest.json"
         },
@@ -116,6 +111,9 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
         "parameters": {}
     }
     """
+    import time
+    start_time = time.time()
+
     logger = setup_logging("runner", cloud_logging=True)
 
     job_name = payload.get("job_name", "full-pipeline")
@@ -126,8 +124,20 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
 
     logger.info(f"Running from iOS trigger: {job_name} for session {session_id}")
 
+    # Initialize Firestore job tracker
+    from .utils.firestore import (
+        FirestoreJobTracker,
+        CaptureStatus,
+        ProcessingStage,
+        CaptureOutputs,
+        CaptureMetrics,
+    )
+    tracker = FirestoreJobTracker()
+    capture_id = None  # Will be set from manifest data
+
     # Load session manifest from GCS
     manifest_uri = inputs.get("manifest_uri")
+    manifest_data = {}
     if manifest_uri:
         logger.info(f"Loading session manifest from {manifest_uri}")
         gcs = GCSClient()
@@ -135,6 +145,9 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
         bucket = gcs._get_bucket(parsed.bucket)
         blob = bucket.blob(parsed.blob)
         manifest_data = json.loads(blob.download_as_text())
+
+        # Extract capture_id for Firestore tracking
+        capture_id = manifest_data.get("capture_id") or session_id
 
         # Build session manifest from the converted format
         session = SessionManifest(
@@ -146,6 +159,7 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
             user_notes=manifest_data.get("user_notes"),
         )
     else:
+        capture_id = session_id
         # Minimal session for direct runs
         session = SessionManifest(
             session_id=session_id,
@@ -155,6 +169,15 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
             clips=[],
         )
 
+    # Update Firestore: mark as processing
+    if capture_id:
+        tracker.update_status(
+            capture_id=capture_id,
+            status=CaptureStatus.PROCESSING,
+            stage=ProcessingStage.FRAME_EXTRACTION,
+            progress=0.0,
+        )
+
     # Setup artifact paths
     output_base = outputs.get("base", f"gs://blueprint-8c1ca.appspot.com/sessions/{session_id}")
     artifacts = ArtifactPaths(
@@ -162,8 +185,6 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
         frames=f"{output_base}/frames",
         masks=f"{output_base}/masks",
         reconstruction=f"{output_base}/reconstruction",
-        meshes=f"{output_base}/meshes",
-        objects=f"{output_base}/objects",
         reports=f"{output_base}/reports",
     )
 
@@ -200,19 +221,53 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
             workspace_base=Path("/tmp/blueprint_pipeline"),
         )
 
+        # Update Firestore: starting reconstruction
+        if capture_id:
+            tracker.update_status(
+                capture_id=capture_id,
+                stage=ProcessingStage.RECONSTRUCTION,
+                progress=0.3,
+            )
+
         pipeline_result = orchestrator.run_full_pipeline(
             session=session,
             artifacts=artifacts,
             parameters=parameters,
         )
 
+        # Calculate processing time
+        processing_time = time.time() - start_time
+
         if pipeline_result.success:
+            # Update Firestore: mark as completed
+            if capture_id:
+                tracker.mark_completed(
+                    capture_id=capture_id,
+                    outputs=CaptureOutputs(
+                        gaussians_uri=f"{output_base}/reconstruction/gaussians/point_cloud.ply",
+                        poses_uri=f"{output_base}/reconstruction/poses/poses.json",
+                        frames_uri=f"{output_base}/frames",
+                    ),
+                    metrics=CaptureMetrics(
+                        total_frames=pipeline_result.to_dict().get("total_frames", 0),
+                        processing_time_seconds=processing_time,
+                        registration_rate=pipeline_result.to_dict().get("registration_rate", 0.0),
+                    ),
+                )
+
             return JobResult(
                 status=JobStatus.COMPLETED,
                 metrics=pipeline_result.to_dict(),
                 duration_seconds=pipeline_result.total_duration_seconds,
             )
         else:
+            # Update Firestore: mark as failed
+            if capture_id:
+                tracker.mark_failed(
+                    capture_id=capture_id,
+                    error=pipeline_result.error_message or "Pipeline failed",
+                )
+
             return JobResult(
                 status=JobStatus.FAILED,
                 errors=[pipeline_result.error_message or "Pipeline failed"],
@@ -223,17 +278,35 @@ def run_from_ios_trigger(payload: Dict[str, Any]) -> JobResult:
         # Single job execution
         job_class = JOB_REGISTRY.get(job_name)
         if job_class is None:
+            if capture_id:
+                tracker.mark_failed(capture_id=capture_id, error=f"Unknown job: {job_name}")
             return JobResult(
                 status=JobStatus.FAILED,
                 errors=[f"Unknown job: {job_name}"],
             )
 
         job = job_class()
-        return job.run(
+        result = job.run(
             session=session,
             artifacts=artifacts,
             parameters=parameters,
         )
+
+        # Update Firestore based on result
+        if capture_id:
+            processing_time = time.time() - start_time
+            if result.status == JobStatus.COMPLETED:
+                tracker.mark_completed(
+                    capture_id=capture_id,
+                    metrics=CaptureMetrics(processing_time_seconds=processing_time),
+                )
+            else:
+                tracker.mark_failed(
+                    capture_id=capture_id,
+                    error=result.errors[0] if result.errors else "Job failed",
+                )
+
+        return result
 
 
 def run_from_payload(payload: Dict[str, Any]) -> JobResult:
@@ -290,8 +363,6 @@ def run_from_payload(payload: Dict[str, Any]) -> JobResult:
         frames=f"{session_root}/frames",
         masks=f"{session_root}/masks",
         reconstruction=f"{session_root}/reconstruction",
-        meshes=f"{session_root}/meshes",
-        objects=f"{session_root}/objects",
         reports=f"{session_root}/reports",
     )
 
