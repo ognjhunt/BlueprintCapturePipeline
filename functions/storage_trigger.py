@@ -141,12 +141,16 @@ COMPLETION_MARKERS = [
 ]
 
 # Optional files that enhance processing
+# Note: These paths must match exactly what the iOS app uploads
 OPTIONAL_FILES = [
-    "motion.jsonl",
-    "arkit/frames.jsonl",
-    "arkit/poses.jsonl",
-    "arkit/intrinsics.json",
+    "motion.jsonl",              # Device motion data (60Hz IMU)
+    "arkit/frames.jsonl",        # Frame metadata with timestamps
+    "arkit/poses.jsonl",         # Camera poses (4x4 transforms) - CRITICAL for skipping SLAM
+    "arkit/intrinsics.json",     # Camera intrinsics (fx, fy, cx, cy)
 ]
+
+# Minimum video file size to consider it complete (5MB - prevents partial uploads)
+MIN_VIDEO_SIZE_BYTES = 5 * 1024 * 1024
 
 
 def parse_upload_path(object_name: str) -> Optional[Dict[str, str]]:
@@ -185,15 +189,15 @@ def parse_upload_path(object_name: str) -> Optional[Dict[str, str]]:
 def check_upload_completeness(
     bucket_name: str,
     raw_prefix: str,
-) -> Tuple[bool, Dict[str, bool]]:
-    """Check if all required files have been uploaded.
+) -> Tuple[bool, Dict[str, bool], Optional[str]]:
+    """Check if all required files have been uploaded and video is valid.
 
     Args:
         bucket_name: GCS bucket name
         raw_prefix: Prefix path to the raw/ folder
 
     Returns:
-        Tuple of (is_complete, file_status_dict)
+        Tuple of (is_complete, file_status_dict, error_message)
     """
     try:
         from google.cloud import storage
@@ -202,7 +206,14 @@ def check_upload_completeness(
 
         # List all blobs under the raw prefix
         blobs = list(bucket.list_blobs(prefix=raw_prefix))
-        existing_files = {blob.name.replace(f"{raw_prefix}/", ""): True for blob in blobs}
+
+        # Build file status with sizes
+        existing_files = {}
+        file_sizes = {}
+        for blob in blobs:
+            relative_path = blob.name.replace(f"{raw_prefix}/", "")
+            existing_files[relative_path] = True
+            file_sizes[relative_path] = blob.size
 
         # Check required markers
         file_status = {}
@@ -213,17 +224,46 @@ def check_upload_completeness(
         for optional in OPTIONAL_FILES:
             file_status[optional] = optional in existing_files
 
-        # Upload is complete if all required markers exist
+        # Basic completeness check
         is_complete = all(file_status.get(m, False) for m in COMPLETION_MARKERS)
+
+        # P2 FIX: Verify video file is actually downloadable and has valid size
+        error_message = None
+        if is_complete:
+            video_path = "walkthrough.mov"
+            video_size = file_sizes.get(video_path, 0)
+
+            if video_size < MIN_VIDEO_SIZE_BYTES:
+                is_complete = False
+                error_message = f"Video file too small ({video_size} bytes < {MIN_VIDEO_SIZE_BYTES} bytes minimum). Upload may be incomplete."
+                logger.warning(f"Video size check failed: {error_message}")
+            else:
+                # Verify video is accessible by checking its metadata
+                try:
+                    video_blob = bucket.blob(f"{raw_prefix}/{video_path}")
+                    video_blob.reload()  # Forces a metadata fetch
+
+                    # Check for upload completion via metadata
+                    if video_blob.metadata and video_blob.metadata.get("upload_status") == "partial":
+                        is_complete = False
+                        error_message = "Video upload is still in progress"
+                        logger.warning(f"Video not fully uploaded: {raw_prefix}/{video_path}")
+
+                except Exception as video_error:
+                    is_complete = False
+                    error_message = f"Cannot verify video file: {video_error}"
+                    logger.error(f"Video verification failed: {video_error}")
 
         logger.info(f"Upload completeness check for {raw_prefix}: {is_complete}")
         logger.info(f"File status: {file_status}")
+        if error_message:
+            logger.warning(f"Completeness error: {error_message}")
 
-        return is_complete, file_status
+        return is_complete, file_status, error_message
 
     except Exception as e:
         logger.error(f"Error checking upload completeness: {e}")
-        return False, {}
+        return False, {}, str(e)
 
 
 def load_ios_manifest(bucket_name: str, manifest_path: str) -> Optional[Dict[str, Any]]:
@@ -530,11 +570,14 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:
         logger.debug(f"Not a completion marker file: {filename}")
         return
 
-    # Check if upload is complete
-    is_complete, file_status = check_upload_completeness(bucket_name, raw_prefix)
+    # Check if upload is complete (P2: now also verifies video is downloadable)
+    is_complete, file_status, completeness_error = check_upload_completeness(bucket_name, raw_prefix)
 
     if not is_complete:
-        logger.info(f"Upload not yet complete for scene {scene_id}")
+        if completeness_error:
+            logger.warning(f"Upload incomplete for scene {scene_id}: {completeness_error}")
+        else:
+            logger.info(f"Upload not yet complete for scene {scene_id}")
         return
 
     logger.info(f"Upload complete for scene {scene_id}! Triggering pipeline...")
@@ -551,8 +594,18 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:
     capture_folder = path_info["capture_folder"]
     capture_id = f"{scene_id}_{capture_folder}"
 
-    # Extract creator_id from iOS manifest (falls back to unknown)
-    creator_id = ios_manifest.get("creator_id") or ios_manifest.get("user_id") or "unknown"
+    # Extract creator_id from iOS manifest
+    # P1 FIX: Handle all possible field names from iOS app:
+    # - creatorId (camelCase - what iOS app actually sends)
+    # - creator_id (snake_case)
+    # - user_id (legacy)
+    creator_id = (
+        ios_manifest.get("creatorId") or      # iOS app sends this (camelCase)
+        ios_manifest.get("creator_id") or     # Alternative snake_case
+        ios_manifest.get("userId") or         # Alternative camelCase
+        ios_manifest.get("user_id") or        # Legacy snake_case
+        "unknown"
+    )
 
     # Create initial Firestore status document
     raw_data_uri = f"gs://{bucket_name}/{raw_prefix}"
