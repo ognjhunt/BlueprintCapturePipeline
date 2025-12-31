@@ -63,6 +63,114 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# P1 FIX: Backend Availability Checking
+# =============================================================================
+
+# Cache for backend availability (read once at startup)
+_BACKEND_AVAILABILITY: Optional[Dict[str, bool]] = None
+
+
+def check_slam_backend_availability() -> Dict[str, bool]:
+    """Check which SLAM backends are available.
+
+    Reads from /opt/slam_status/backends.txt (created during Docker build)
+    and also checks runtime availability of Python packages.
+
+    Returns:
+        Dictionary mapping backend name to availability boolean
+    """
+    global _BACKEND_AVAILABILITY
+
+    if _BACKEND_AVAILABILITY is not None:
+        return _BACKEND_AVAILABILITY
+
+    _BACKEND_AVAILABILITY = {
+        "wildgs_slam": False,
+        "splatam": False,
+        "colmap": False,
+        "pycolmap": PYCOLMAP_AVAILABLE,
+    }
+
+    # Read status file from Docker build (if running in container)
+    status_file = Path("/opt/slam_status/backends.txt")
+    if status_file.exists():
+        try:
+            content = status_file.read_text()
+            for line in content.strip().split("\n"):
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    _BACKEND_AVAILABILITY[key.strip()] = value.strip().lower() == "available"
+        except Exception as e:
+            logger.warning(f"Failed to read SLAM status file: {e}")
+
+    # Also do runtime checks for Python package availability
+    try:
+        # Check if WildGS-SLAM is importable
+        import importlib.util
+        if importlib.util.find_spec("wildgsslam") is not None:
+            _BACKEND_AVAILABILITY["wildgs_slam"] = True
+    except Exception:
+        pass
+
+    try:
+        # Check if SplaTAM is importable
+        import importlib.util
+        if importlib.util.find_spec("splatam") is not None:
+            _BACKEND_AVAILABILITY["splatam"] = True
+    except Exception:
+        pass
+
+    # Check COLMAP CLI availability
+    try:
+        result = subprocess.run(["colmap", "-h"], capture_output=True, timeout=5)
+        _BACKEND_AVAILABILITY["colmap"] = result.returncode == 0
+    except Exception:
+        _BACKEND_AVAILABILITY["colmap"] = False
+
+    logger.info(f"SLAM backend availability: {_BACKEND_AVAILABILITY}")
+    return _BACKEND_AVAILABILITY
+
+
+def get_recommended_backend(sensor_type: "SensorType", has_arkit_poses: bool = False) -> "SLAMBackend":
+    """Get recommended SLAM backend based on sensor type and availability.
+
+    Args:
+        sensor_type: Type of sensor data available
+        has_arkit_poses: Whether ARKit poses are available
+
+    Returns:
+        Recommended SLAMBackend enum value
+    """
+    availability = check_slam_backend_availability()
+
+    # If ARKit poses available, always prefer direct import
+    if has_arkit_poses:
+        logger.info("ARKit poses available - using ARKit direct import")
+        return SLAMBackend.ARKIT_DIRECT
+
+    # Sensor-conditional backend selection with fallbacks
+    if sensor_type == SensorType.RGB_DEPTH:
+        # RGB-D: Prefer SplaTAM, fall back to COLMAP
+        if availability.get("splatam", False):
+            return SLAMBackend.SPLATAM
+        logger.warning("SplaTAM not available, falling back to COLMAP for RGB-D")
+        return SLAMBackend.COLMAP_FALLBACK
+
+    elif sensor_type == SensorType.VISUAL_INERTIAL:
+        # Visual-Inertial: Prefer VIGS-SLAM, fall back to WildGS or COLMAP
+        if availability.get("wildgs_slam", False):
+            return SLAMBackend.WILDGS_SLAM  # WildGS handles IMU reasonably well
+        return SLAMBackend.COLMAP_FALLBACK
+
+    else:  # RGB_ONLY or default
+        # RGB-only: Prefer WildGS-SLAM, fall back to COLMAP
+        if availability.get("wildgs_slam", False):
+            return SLAMBackend.WILDGS_SLAM
+        logger.warning("WildGS-SLAM not available, falling back to COLMAP for RGB-only")
+        return SLAMBackend.COLMAP_FALLBACK
+
+
+# =============================================================================
 # Scale Calibration Utilities
 # =============================================================================
 

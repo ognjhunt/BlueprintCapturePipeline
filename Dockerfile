@@ -158,21 +158,45 @@ RUN git clone https://github.com/camenduru/simple-knn.git /tmp/simple-knn && \
 
 # =============================================================================
 # Install SLAM backends for different sensor types
+# P1 FIX: Make installations more robust with proper fallbacks and verification
 # =============================================================================
+
+# Create a status file to track which backends are available
+RUN mkdir -p /opt/slam_status
 
 # WildGS-SLAM: RGB-only SLAM with Gaussian Splatting (for Meta glasses, generic cameras)
 # This is the primary backend for videos without depth
-RUN git clone --recursive https://github.com/GradientSpaces/WildGS-SLAM.git /opt/WildGS-SLAM && \
+RUN echo "Installing WildGS-SLAM..." && \
+    git clone --recursive https://github.com/GradientSpaces/WildGS-SLAM.git /opt/WildGS-SLAM 2>/dev/null && \
     cd /opt/WildGS-SLAM && \
-    pip install --no-cache-dir -e . || echo "WildGS-SLAM installation optional" && \
-    echo "WildGS-SLAM installed at /opt/WildGS-SLAM"
+    pip install --no-cache-dir -e . 2>/dev/null && \
+    echo "wildgs_slam=available" >> /opt/slam_status/backends.txt && \
+    echo "WildGS-SLAM installed successfully" || \
+    ( echo "wildgs_slam=unavailable" >> /opt/slam_status/backends.txt && \
+      echo "WARNING: WildGS-SLAM installation failed - will use COLMAP fallback for RGB-only videos" )
 
 # SplaTAM: RGB-D SLAM with Gaussian Splatting (for iPhone LiDAR)
 # This is used when depth maps are available
-RUN git clone https://github.com/spla-tam/SplaTAM.git /opt/SplaTAM && \
+RUN echo "Installing SplaTAM..." && \
+    git clone https://github.com/spla-tam/SplaTAM.git /opt/SplaTAM 2>/dev/null && \
     cd /opt/SplaTAM && \
-    pip install --no-cache-dir -e . || echo "SplaTAM installation optional" && \
-    echo "SplaTAM installed at /opt/SplaTAM"
+    pip install --no-cache-dir -e . 2>/dev/null && \
+    echo "splatam=available" >> /opt/slam_status/backends.txt && \
+    echo "SplaTAM installed successfully" || \
+    ( echo "splatam=unavailable" >> /opt/slam_status/backends.txt && \
+      echo "WARNING: SplaTAM installation failed - will use COLMAP fallback for RGB-D videos" )
+
+# Verify at least COLMAP is available (critical fallback)
+RUN echo "Verifying SLAM backends..." && \
+    colmap -h > /dev/null 2>&1 && \
+    echo "colmap=available" >> /opt/slam_status/backends.txt && \
+    echo "COLMAP verified successfully" || \
+    ( echo "CRITICAL: COLMAP not available - pipeline may fail" && exit 1 )
+
+# Print available backends for logging
+RUN echo "=== Available SLAM Backends ===" && \
+    cat /opt/slam_status/backends.txt && \
+    echo "================================"
 
 # Create directories for workspace
 RUN mkdir -p /tmp/blueprint_pipeline /workspace
