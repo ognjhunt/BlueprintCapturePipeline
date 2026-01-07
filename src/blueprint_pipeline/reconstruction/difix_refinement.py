@@ -127,6 +127,9 @@ class DifixConfig:
     enable_post_process: bool = True  # Apply Difix at render time
     post_process_strength: float = 1.0  # 0.0-1.0 blending with original
 
+    # Difix prompt (from paper: "remove degradation" is the default)
+    difix_prompt: str = "remove degradation"  # Configurable prompt for diffusion model
+
     def __post_init__(self):
         """Validate configuration."""
         if not TORCH_AVAILABLE:
@@ -311,6 +314,24 @@ class GapDetector:
         from .gaussian_splatting import GaussianRasterizer
 
         try:
+            # Check for missing intrinsics and warn user
+            missing_intrinsics = []
+            if 'height' not in intrinsics:
+                missing_intrinsics.append('height')
+            if 'width' not in intrinsics:
+                missing_intrinsics.append('width')
+            if 'fx' not in intrinsics:
+                missing_intrinsics.append('fx')
+            if 'fy' not in intrinsics:
+                missing_intrinsics.append('fy')
+
+            if missing_intrinsics:
+                logger.warning(
+                    f"Missing camera intrinsics: {missing_intrinsics}. "
+                    f"Using default values (512x512). This may affect render quality. "
+                    f"Provide complete intrinsics for best results."
+                )
+
             H = intrinsics.get('height', 512)
             W = intrinsics.get('width', 512)
             fx = intrinsics.get('fx', W)
@@ -769,7 +790,7 @@ class DifixPipeline:
         # Run Difix (single-step inference)
         with torch.no_grad():
             output = self.difix_model(
-                prompt="remove degradation",
+                prompt=self.config.difix_prompt,
                 image=degraded_pil,
                 num_inference_steps=1,
                 timesteps=[self.config.difix_timestep],
