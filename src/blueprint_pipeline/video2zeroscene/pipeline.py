@@ -5,6 +5,7 @@ This module provides the main pipeline for Phase 3: Capture.
 Pipeline stages:
     0. Ingest: Video → CaptureManifest + keyframes
     1. SLAM: Pose estimation + 3D Gaussian reconstruction
+    1.5. Difix Refinement: Scene inpainting + quality enhancement (optional)
     2. Export: Gaussians + camera data for BlueprintPipeline/DWM handoff
 
 The pipeline is designed to work with:
@@ -12,12 +13,24 @@ The pipeline is designed to work with:
 - RGB-D captures (iPhone LiDAR)
 - iOS ARKit captures (direct pose import)
 
+Scene Inpainting (Difix3D+):
+    When enabled, the pipeline uses NVIDIA's Difix3D+ (CVPR 2025) to:
+    - Fill gaps in sparse captures
+    - Remove artifacts from 3DGS reconstructions
+    - Generate higher-quality renders through progressive refinement
+
+    This is especially useful for:
+    - Meta Glasses captures (RGB-only, no LiDAR)
+    - Quick walk-through captures with incomplete coverage
+    - Any capture where visual quality needs enhancement
+
 Output is passed to BlueprintPipeline for DWM (Dexterous World Models) processing.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -30,6 +43,53 @@ from .ingest import VideoIngestor, IngestResult
 from .slam import get_slam_backend, SLAMResult, CameraPose
 from .export import CaptureExporter, CaptureExportResult
 
+# Difix3D+ integration for scene inpainting
+try:
+    from ..reconstruction.difix_refinement import (
+        DifixConfig,
+        DifixPipeline,
+        GapDetector,
+    )
+    DIFIX_AVAILABLE = True
+except ImportError:
+    DIFIX_AVAILABLE = False
+    DifixConfig = None
+    DifixPipeline = None
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DifixRefinementResult:
+    """Result of Difix3D+ scene inpainting refinement."""
+    success: bool = True
+    enabled: bool = False
+
+    # Refinement metrics
+    rounds_completed: int = 0
+    gaps_detected: int = 0
+    pseudo_views_generated: int = 0
+
+    # Output paths
+    refined_gaussians_path: Optional[Path] = None
+
+    # Error tracking
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "success": self.success,
+            "enabled": self.enabled,
+            "rounds_completed": self.rounds_completed,
+            "gaps_detected": self.gaps_detected,
+            "pseudo_views_generated": self.pseudo_views_generated,
+            "refined_gaussians_path": str(self.refined_gaussians_path) if self.refined_gaussians_path else None,
+            "errors": self.errors,
+            "warnings": self.warnings,
+        }
+
 
 @dataclass
 class CaptureResult:
@@ -40,6 +100,7 @@ class CaptureResult:
     # Stage results
     ingest_result: Optional[IngestResult] = None
     slam_result: Optional[SLAMResult] = None
+    difix_result: Optional[DifixRefinementResult] = None  # Scene inpainting
     export_result: Optional[CaptureExportResult] = None
 
     # Summary metrics
@@ -55,6 +116,9 @@ class CaptureResult:
     # DWM readiness
     dwm_ready: bool = False
 
+    # Quality enhancement flags
+    difix_refined: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -66,8 +130,10 @@ class CaptureResult:
                 "registered_frames": self.registered_frames,
                 "registration_rate": self.registration_rate,
             },
+            "difix_refinement": self.difix_result.to_dict() if self.difix_result else None,
             "success": self.success,
             "dwm_ready": self.dwm_ready,
+            "difix_refined": self.difix_refined,
             "errors": self.errors,
         }
 
@@ -82,7 +148,23 @@ class CapturePipeline:
     Stages:
         0. Ingest - Video normalization, keyframe selection
         1. SLAM - Pose estimation + 3D Gaussian reconstruction
+        1.5. Difix Refinement - Scene inpainting + quality enhancement (optional)
         2. Export - Package for BlueprintPipeline handoff
+
+    Scene Inpainting (Difix3D+):
+        When enable_difix_refinement=True, adds a refinement stage that uses
+        NVIDIA's Difix3D+ to enhance the 3DGS reconstruction:
+
+        - Detects gaps/artifacts in the initial reconstruction
+        - Generates novel views via pose interpolation
+        - Uses single-step diffusion to "fix" degraded renders
+        - Distills enhanced views back into the 3DGS model
+        - Progressively expands to harder viewpoints
+
+        This significantly improves quality for:
+        - RGB-only captures (no LiDAR/depth)
+        - Sparse captures with incomplete coverage
+        - Any capture where visual quality needs enhancement
     """
 
     def __init__(self, config: Optional[PipelineConfig] = None):
@@ -91,6 +173,9 @@ class CapturePipeline:
         # Initialize stage processors
         self.ingestor = VideoIngestor(self.config)
         self.exporter = CaptureExporter()
+
+        # Difix3D+ pipeline (lazy initialized)
+        self._difix_pipeline = None
 
     def run(
         self,
@@ -102,6 +187,8 @@ class CapturePipeline:
         depth_path: Optional[Path] = None,
         imu_path: Optional[Path] = None,
         copy_frames: bool = False,
+        enable_difix_refinement: bool = True,
+        difix_config: Optional["DifixConfig"] = None,
     ) -> CaptureResult:
         """Run the capture pipeline.
 
@@ -114,6 +201,8 @@ class CapturePipeline:
             depth_path: Optional path to depth frames
             imu_path: Optional path to IMU data
             copy_frames: Whether to include keyframes in export
+            enable_difix_refinement: Enable Difix3D+ scene inpainting (default True)
+            difix_config: Optional DifixConfig for refinement settings
 
         Returns:
             CaptureResult with Gaussian + camera data ready for DWM
@@ -184,12 +273,54 @@ class CapturePipeline:
         if slam_result.gaussians_path:
             print(f"  Gaussians: {slam_result.gaussians_path}")
 
+        # Stage 1.5: Difix3D+ Refinement (Scene Inpainting)
+        gaussians_path = slam_result.gaussians_path
+        difix_result = DifixRefinementResult(enabled=enable_difix_refinement)
+
+        if enable_difix_refinement and slam_result.gaussians_path:
+            print("\n[Stage 1.5] Running Difix3D+ scene inpainting...")
+
+            if not DIFIX_AVAILABLE:
+                print("  WARNING: Difix3D+ not available (missing dependencies)")
+                print("  Install with: pip install diffusers transformers accelerate lpips")
+                difix_result.warnings.append("Difix3D+ not available - skipped refinement")
+            else:
+                try:
+                    difix_result = self._run_difix_refinement(
+                        gaussians_path=slam_result.gaussians_path,
+                        slam_result=slam_result,
+                        manifest=manifest,
+                        keyframes=keyframes,
+                        frames_dir=frames_dir,
+                        output_dir=output_dir / "difix",
+                        difix_config=difix_config,
+                    )
+
+                    if difix_result.success and difix_result.refined_gaussians_path:
+                        # Use refined Gaussians for export
+                        gaussians_path = difix_result.refined_gaussians_path
+                        result.difix_refined = True
+                        print(f"  Refinement complete: {difix_result.rounds_completed} rounds")
+                        print(f"  Gaps filled: {difix_result.gaps_detected}")
+                        print(f"  Pseudo-views generated: {difix_result.pseudo_views_generated}")
+                    else:
+                        print(f"  Refinement had issues: {difix_result.errors}")
+
+                except Exception as e:
+                    logger.error(f"Difix refinement failed: {e}")
+                    difix_result.success = False
+                    difix_result.errors.append(str(e))
+                    print(f"  ERROR: Difix refinement failed: {e}")
+                    print("  Continuing with unrefined Gaussians...")
+
+        result.difix_result = difix_result
+
         # Stage 2: Export for DWM
         print("\n[Stage 2] Exporting for DWM processing...")
         export_dir = output_dir / "output"
         export_result = self.exporter.export(
             manifest=manifest,
-            gaussians_path=slam_result.gaussians_path,
+            gaussians_path=gaussians_path,  # Use refined if available
             poses=slam_result.poses,
             intrinsics=manifest.intrinsics,
             output_dir=export_dir,
@@ -222,6 +353,212 @@ class CapturePipeline:
         print(f"{'='*60}\n")
 
         return result
+
+    def _run_difix_refinement(
+        self,
+        gaussians_path: Path,
+        slam_result: SLAMResult,
+        manifest: CaptureManifest,
+        keyframes: List[Any],
+        frames_dir: Path,
+        output_dir: Path,
+        difix_config: Optional["DifixConfig"] = None,
+    ) -> DifixRefinementResult:
+        """Run Difix3D+ scene inpainting refinement.
+
+        This is Stage 1.5 of the pipeline. It takes the initial 3DGS
+        reconstruction and enhances it using progressive distillation
+        with NVIDIA's Difix3D+ diffusion model.
+
+        Args:
+            gaussians_path: Path to initial Gaussians PLY
+            slam_result: SLAM result with poses
+            manifest: Capture manifest with intrinsics
+            keyframes: List of keyframe metadata
+            frames_dir: Directory containing frame images
+            output_dir: Output directory for refined results
+            difix_config: Optional configuration for refinement
+
+        Returns:
+            DifixRefinementResult with refined Gaussians path
+        """
+        from ..reconstruction.gaussian_splatting import GaussianModel
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        result = DifixRefinementResult(enabled=True)
+
+        try:
+            # Load the Gaussian model
+            logger.info(f"Loading Gaussians from {gaussians_path}")
+            gaussian_model = GaussianModel.load_ply(gaussians_path)
+
+            # Build training views from keyframes + SLAM poses
+            training_views = self._build_training_views(
+                keyframes=keyframes,
+                poses=slam_result.poses,
+                frames_dir=frames_dir,
+                manifest=manifest,
+            )
+
+            if not training_views:
+                result.success = False
+                result.errors.append("No valid training views found")
+                return result
+
+            # Build intrinsics dict
+            intrinsics = {}
+            if manifest.intrinsics:
+                intrinsics = {
+                    'fx': manifest.intrinsics.fx,
+                    'fy': manifest.intrinsics.fy,
+                    'cx': manifest.intrinsics.cx,
+                    'cy': manifest.intrinsics.cy,
+                    'width': manifest.intrinsics.width,
+                    'height': manifest.intrinsics.height,
+                }
+
+            # Initialize Difix pipeline with config settings
+            if difix_config is None:
+                # Build DifixConfig from PipelineConfig settings
+                difix_config = DifixConfig(
+                    num_refinement_rounds=self.config.difix_num_rounds,
+                    coverage_threshold=self.config.difix_coverage_threshold,
+                    poses_per_round=self.config.difix_poses_per_round,
+                )
+
+            difix_pipeline = DifixPipeline(difix_config)
+
+            # Track metrics during refinement
+            metrics_tracker = {'gaps': 0, 'pseudo_views': 0}
+
+            def progress_callback(round_idx, total_rounds, round_metrics):
+                metrics_tracker['gaps'] += round_metrics.get('gaps_found', 0)
+                metrics_tracker['pseudo_views'] += round_metrics.get('pseudo_views', 0)
+                logger.info(
+                    f"Difix round {round_idx + 1}/{total_rounds}: "
+                    f"gaps={round_metrics.get('gaps_found', 0)}, "
+                    f"pseudo_views={round_metrics.get('pseudo_views', 0)}"
+                )
+
+            # Run refinement
+            refined_model = difix_pipeline.refine(
+                gaussian_model=gaussian_model,
+                training_views=training_views,
+                intrinsics=intrinsics,
+                output_dir=output_dir,
+                progress_callback=progress_callback,
+            )
+
+            # Update result
+            result.success = True
+            result.rounds_completed = difix_config.num_refinement_rounds
+            result.gaps_detected = metrics_tracker['gaps']
+            result.pseudo_views_generated = metrics_tracker['pseudo_views']
+            result.refined_gaussians_path = output_dir / "refined_gaussians.ply"
+
+            logger.info(f"Difix refinement complete: {result.refined_gaussians_path}")
+
+        except Exception as e:
+            logger.error(f"Difix refinement failed: {e}")
+            result.success = False
+            result.errors.append(str(e))
+
+        return result
+
+    def _build_training_views(
+        self,
+        keyframes: List[Any],
+        poses: List[CameraPose],
+        frames_dir: Path,
+        manifest: CaptureManifest,
+    ) -> List[Dict[str, Any]]:
+        """Build training view dicts from keyframes and SLAM poses.
+
+        Args:
+            keyframes: List of FrameMetadata
+            poses: List of CameraPose from SLAM
+            frames_dir: Directory containing frame images
+            manifest: Capture manifest with intrinsics
+
+        Returns:
+            List of training view dicts with pose and image
+        """
+        import numpy as np
+
+        try:
+            from PIL import Image
+            import torch
+        except ImportError:
+            logger.warning("PIL or torch not available for loading training views")
+            return []
+
+        # Build pose lookup by frame_id
+        pose_by_frame = {p.frame_id: p for p in poses}
+
+        training_views = []
+
+        for kf in keyframes:
+            frame_id = kf.frame_id
+            if frame_id not in pose_by_frame:
+                continue
+
+            pose = pose_by_frame[frame_id]
+
+            # Build 4x4 world-to-camera matrix from quaternion + translation
+            qw, qx, qy, qz = pose.rotation
+            tx, ty, tz = pose.translation
+
+            # Quaternion to rotation matrix
+            R = np.array([
+                [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
+                [2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qw*qx)],
+                [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)]
+            ])
+
+            world_to_camera = np.eye(4)
+            world_to_camera[:3, :3] = R
+            world_to_camera[:3, 3] = [tx, ty, tz]
+
+            # Load image
+            img_path = frames_dir / kf.file_path if not Path(kf.file_path).is_absolute() else Path(kf.file_path)
+            if not img_path.exists():
+                img_path = frames_dir / Path(kf.file_path).name
+
+            if not img_path.exists():
+                continue
+
+            try:
+                img = Image.open(img_path).convert("RGB")
+                img_tensor = torch.tensor(np.array(img)).float() / 255.0
+                img_tensor = img_tensor.permute(2, 0, 1)  # [H, W, 3] -> [3, H, W]
+            except Exception as e:
+                logger.warning(f"Could not load image {img_path}: {e}")
+                continue
+
+            # Build view dict
+            view = {
+                'frame_id': frame_id,
+                'image': img_tensor,
+                'pose': {
+                    'world_to_camera': world_to_camera.tolist(),
+                },
+            }
+
+            # Add intrinsics
+            if manifest.intrinsics:
+                view['fx'] = manifest.intrinsics.fx
+                view['fy'] = manifest.intrinsics.fy
+                view['cx'] = manifest.intrinsics.cx
+                view['cy'] = manifest.intrinsics.cy
+                view['image_height'] = manifest.intrinsics.height
+                view['image_width'] = manifest.intrinsics.width
+
+            training_views.append(view)
+
+        logger.info(f"Built {len(training_views)} training views for Difix refinement")
+        return training_views
 
     def run_from_manifest(
         self,

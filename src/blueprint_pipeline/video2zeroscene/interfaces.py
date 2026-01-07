@@ -237,7 +237,20 @@ class Submap:
 
 @dataclass
 class PipelineConfig:
-    """Configuration for the BlueprintCapture pipeline."""
+    """Configuration for the BlueprintCapture pipeline.
+
+    Scene Inpainting (Difix3D+):
+        When enable_difix_refinement=True (default), the pipeline runs a
+        refinement stage using NVIDIA's Difix3D+ after SLAM reconstruction.
+        This significantly improves visual quality by:
+        - Filling gaps in sparse captures
+        - Removing artifacts from 3DGS
+        - Generating HQ splats through progressive distillation
+
+        Difix settings can be customized via difix_num_rounds and
+        difix_coverage_threshold, or by passing a full DifixConfig
+        to the pipeline.run() method.
+    """
 
     # SLAM configuration
     slam_backend: Optional[SLAMBackend] = None  # Auto-select based on sensors
@@ -258,6 +271,12 @@ class PipelineConfig:
     scale_anchor_types: List[str] = field(
         default_factory=lambda: ["aruco_board", "apriltag", "known_object"]
     )
+
+    # Difix3D+ Scene Inpainting (HQ splats + gap filling)
+    enable_difix_refinement: bool = True  # Enable by default for best quality
+    difix_num_rounds: int = 3  # Number of progressive refinement rounds
+    difix_coverage_threshold: float = 0.8  # Min coverage to skip inpainting
+    difix_poses_per_round: int = 50  # Novel poses generated per round
 
     # Output
     output_format: str = "gaussian"  # Output format for DWM handoff
