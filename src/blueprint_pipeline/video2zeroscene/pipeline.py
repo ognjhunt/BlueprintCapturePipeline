@@ -174,9 +174,6 @@ class CapturePipeline:
         self.ingestor = VideoIngestor(self.config)
         self.exporter = CaptureExporter()
 
-        # Difix3D+ pipeline (lazy initialized)
-        self._difix_pipeline = None
-
     def run(
         self,
         capture_id: str,
@@ -421,11 +418,40 @@ class CapturePipeline:
 
             # Initialize Difix pipeline with config settings
             if difix_config is None:
-                # Build DifixConfig from PipelineConfig settings
+                # Build DifixConfig from PipelineConfig settings (full parameter mapping)
                 difix_config = DifixConfig(
+                    # Model settings
+                    model_name=self.config.difix_model_name,
+                    device=self.config.difix_device,
+                    dtype=self.config.difix_dtype,
+                    # Progressive refinement
                     num_refinement_rounds=self.config.difix_num_rounds,
-                    coverage_threshold=self.config.difix_coverage_threshold,
                     poses_per_round=self.config.difix_poses_per_round,
+                    pose_interpolation_steps=self.config.difix_pose_interpolation_steps,
+                    progressive_expansion_rate=self.config.difix_progressive_expansion_rate,
+                    # Distillation
+                    distillation_weight=self.config.difix_distillation_weight,
+                    iterations_per_round=self.config.difix_iterations_per_round,
+                    distillation_lr=self.config.difix_distillation_lr,
+                    # Loss weights
+                    l2_weight=self.config.difix_l2_weight,
+                    lpips_weight=self.config.difix_lpips_weight,
+                    gram_weight=self.config.difix_gram_weight,
+                    ssim_weight=self.config.difix_ssim_weight,
+                    # Quality thresholds
+                    coverage_threshold=self.config.difix_coverage_threshold,
+                    artifact_threshold=self.config.difix_artifact_threshold,
+                    # Inference settings
+                    difix_timestep=self.config.difix_timestep,
+                    guidance_scale=self.config.difix_guidance_scale,
+                    # Post-processing
+                    enable_post_process=self.config.difix_enable_post_process,
+                    post_process_strength=self.config.difix_post_process_strength,
+                    # Output settings
+                    save_intermediate=self.config.difix_save_intermediate,
+                    output_resolution=self.config.difix_output_resolution,
+                    # Prompt
+                    difix_prompt=self.config.difix_prompt,
                 )
 
             difix_pipeline = DifixPipeline(difix_config)
