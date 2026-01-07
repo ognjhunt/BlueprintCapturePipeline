@@ -247,9 +247,52 @@ class PipelineConfig:
         - Removing artifacts from 3DGS
         - Generating HQ splats through progressive distillation
 
-        Difix settings can be customized via difix_num_rounds and
-        difix_coverage_threshold, or by passing a full DifixConfig
-        to the pipeline.run() method.
+        All 22 Difix3D+ parameters are now configurable via PipelineConfig:
+
+        Core Settings:
+            - enable_difix_refinement: Enable/disable refinement (default: True)
+            - difix_num_rounds: Number of refinement rounds (default: 3)
+            - difix_coverage_threshold: Min coverage to skip inpainting (default: 0.8)
+            - difix_poses_per_round: Novel poses per round (default: 50)
+
+        Model Settings:
+            - difix_model_name: HuggingFace model ID (default: "nvidia/difix")
+            - difix_device: "cuda" or "cpu" (default: "cuda")
+            - difix_dtype: "float16" or "float32" (default: "float16")
+
+        Progressive Refinement:
+            - difix_pose_interpolation_steps: Steps between views (default: 5)
+            - difix_progressive_expansion_rate: Expansion rate (default: 1.5)
+
+        Distillation Training:
+            - difix_distillation_weight: Pseudo-view weight (default: 0.3)
+            - difix_iterations_per_round: Training iterations (default: 1500)
+            - difix_distillation_lr: Learning rate (default: 1e-4)
+
+        Loss Weights (matching Difix3D+ paper):
+            - difix_l2_weight: L2 loss weight (default: 1.0)
+            - difix_lpips_weight: Perceptual loss weight (default: 1.0)
+            - difix_gram_weight: Style loss weight (default: 0.5)
+            - difix_ssim_weight: SSIM loss weight (default: 0.2)
+
+        Quality Thresholds:
+            - difix_artifact_threshold: Gradient threshold (default: 0.3)
+
+        Inference Settings:
+            - difix_timestep: Noise level (default: 199, per paper)
+            - difix_guidance_scale: CFG scale (default: 0.0)
+
+        Post-Processing:
+            - difix_enable_post_process: Apply at render time (default: True)
+            - difix_post_process_strength: Blend strength (default: 1.0)
+
+        Output Settings:
+            - difix_save_intermediate: Save per-round results (default: False)
+            - difix_output_resolution: Difix resolution (default: (512, 512))
+            - difix_prompt: Diffusion prompt (default: "remove degradation")
+
+        Alternatively, pass a full DifixConfig to pipeline.run() for
+        complete control over all refinement parameters.
     """
 
     # SLAM configuration
@@ -273,10 +316,49 @@ class PipelineConfig:
     )
 
     # Difix3D+ Scene Inpainting (HQ splats + gap filling)
+    # Core settings
     enable_difix_refinement: bool = True  # Enable by default for best quality
     difix_num_rounds: int = 3  # Number of progressive refinement rounds
     difix_coverage_threshold: float = 0.8  # Min coverage to skip inpainting
     difix_poses_per_round: int = 50  # Novel poses generated per round
+
+    # Model settings
+    difix_model_name: str = "nvidia/difix"  # HuggingFace model ID
+    difix_device: str = "cuda"  # Device for inference ("cuda" or "cpu")
+    difix_dtype: str = "float16"  # float16 for speed, float32 for quality
+
+    # Progressive refinement settings
+    difix_pose_interpolation_steps: int = 5  # Interpolation steps between views
+    difix_progressive_expansion_rate: float = 1.5  # How fast to expand pose range
+
+    # Distillation training settings
+    difix_distillation_weight: float = 0.3  # Weight for pseudo-views (vs real=1.0)
+    difix_iterations_per_round: int = 1500  # Training iterations per refinement round
+    difix_distillation_lr: float = 1e-4  # Learning rate for distillation
+
+    # Loss weights (matching Difix3D+ paper)
+    difix_l2_weight: float = 1.0  # L2 reconstruction loss
+    difix_lpips_weight: float = 1.0  # Perceptual loss
+    difix_gram_weight: float = 0.5  # Style loss for sharper details
+    difix_ssim_weight: float = 0.2  # Structural similarity
+
+    # Quality thresholds
+    difix_artifact_threshold: float = 0.3  # Gradient magnitude for artifact detection
+
+    # Inference settings (from Difix3D+ paper)
+    difix_timestep: int = 199  # Optimal noise level for artifacts (paper default)
+    difix_guidance_scale: float = 0.0  # No classifier-free guidance
+
+    # Post-processing
+    difix_enable_post_process: bool = True  # Apply Difix at render time
+    difix_post_process_strength: float = 1.0  # 0.0-1.0 blending with original
+
+    # Output settings
+    difix_save_intermediate: bool = False  # Save intermediate refinement results
+    difix_output_resolution: tuple = (512, 512)  # Difix optimal resolution
+
+    # Difix prompt (paper uses "remove degradation")
+    difix_prompt: str = "remove degradation"  # Prompt for diffusion model
 
     # Output
     output_format: str = "gaussian"  # Output format for DWM handoff
