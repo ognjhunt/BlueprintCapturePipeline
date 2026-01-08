@@ -62,6 +62,9 @@ class CaptureExporter:
         intrinsics: Optional[CameraIntrinsics],
         output_dir: Path,
         scale_factor: float = 1.0,
+        scale_confidence: float = 0.0,
+        scale_source: str = "unknown",
+        is_metric: bool = False,
         copy_frames: bool = False,
         frames_dir: Optional[Path] = None,
     ) -> CaptureExportResult:
@@ -74,6 +77,9 @@ class CaptureExporter:
             intrinsics: Camera intrinsics
             output_dir: Output directory
             scale_factor: Scale factor applied during reconstruction
+            scale_confidence: Confidence in scale estimate (0-1)
+            scale_source: Source of scale estimate ("aruco_marker", "metric_depth", etc.)
+            is_metric: Whether scale is metric (meters)
             copy_frames: Whether to copy keyframes to output
             frames_dir: Source directory for frames (if copying)
 
@@ -142,11 +148,22 @@ class CaptureExporter:
                     shutil.copy(src, frames_output / pose.image_name)
 
         # Create capture info (metadata for handoff)
+        # Determine if scale is truly metric
+        actual_is_metric = (
+            is_metric or
+            manifest.has_arkit_poses or  # ARKit always metric
+            manifest.has_depth or         # LiDAR always metric
+            scale_confidence >= 0.5       # High confidence from depth model
+        )
+
         capture_info = self._create_capture_info(
             manifest=manifest,
             pose_count=len(poses),
             has_gaussians=result.gaussians_path is not None,
             scale_factor=scale_factor,
+            scale_confidence=scale_confidence,
+            scale_source=scale_source,
+            is_metric=actual_is_metric,
         )
         info_path = output_dir / "capture_info.json"
         info_path.write_text(json.dumps(capture_info, indent=2))
@@ -162,8 +179,57 @@ class CaptureExporter:
         pose_count: int,
         has_gaussians: bool,
         scale_factor: float,
+        scale_confidence: float = 0.0,
+        scale_source: str = "unknown",
+        is_metric: bool = False,
     ) -> Dict[str, Any]:
-        """Create capture_info.json for BlueprintPipeline handoff."""
+        """Create capture_info.json for BlueprintPipeline handoff.
+
+        Now includes detailed validation and scale recovery information.
+        """
+        # Determine if output is truly DWM-ready
+        # Requirements:
+        # 1. Has valid Gaussians
+        # 2. Has camera poses
+        # 3. Either has metric scale OR high scale confidence
+        has_metric_scale = (
+            is_metric or
+            manifest.has_arkit_poses or
+            manifest.has_depth or
+            scale_confidence >= 0.5
+        )
+
+        dwm_ready = (
+            has_gaussians and
+            pose_count > 0 and
+            has_metric_scale
+        )
+
+        # Build validation report
+        validation = {
+            "passed": dwm_ready,
+            "checks": {
+                "has_gaussians": has_gaussians,
+                "has_poses": pose_count > 0,
+                "has_metric_scale": has_metric_scale,
+                "scale_confidence": scale_confidence,
+            },
+            "warnings": [],
+        }
+
+        if not has_gaussians:
+            validation["warnings"].append("No 3D Gaussians generated")
+        if pose_count == 0:
+            validation["warnings"].append("No camera poses registered")
+        if not has_metric_scale:
+            validation["warnings"].append(
+                "Scale may not be metric - use with caution for real-world measurements"
+            )
+        if scale_confidence < 0.5 and scale_confidence > 0:
+            validation["warnings"].append(
+                f"Low scale confidence ({scale_confidence:.2f}) - metric accuracy uncertain"
+            )
+
         return {
             # Identification
             "capture_id": manifest.capture_id,
@@ -171,7 +237,7 @@ class CaptureExporter:
 
             # Source info
             "source": "BlueprintCapturePipeline",
-            "version": "1.0",
+            "version": "2.0",  # Updated version with metric scale recovery
 
             # Device metadata
             "device": {
@@ -200,12 +266,23 @@ class CaptureExporter:
             "reconstruction": {
                 "has_gaussians": has_gaussians,
                 "gaussians_format": "3dgs_ply",
-                "scale_factor": scale_factor,
                 "coordinate_system": "colmap",
             },
 
-            # DWM compatibility
-            "dwm_ready": has_gaussians and pose_count > 0,
+            # Scale information (new)
+            "scale": {
+                "factor": scale_factor,
+                "confidence": scale_confidence,
+                "source": scale_source,
+                "is_metric": is_metric,
+                "unit": "meters" if is_metric else "arbitrary",
+            },
+
+            # Validation report (new)
+            "validation": validation,
+
+            # DWM compatibility (updated logic)
+            "dwm_ready": dwm_ready,
 
             # Handoff status
             "ready_for_pipeline": has_gaussians,
