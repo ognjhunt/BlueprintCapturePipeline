@@ -404,29 +404,63 @@ class BaseSLAM(ABC):
         result: SLAMResult,
         scale_observations: Optional[List[ScaleAnchorObservation]],
         intrinsics: Optional[CameraIntrinsics],
+        keyframes: Optional[List[FrameMetadata]] = None,
+        frames_dir: Optional[Path] = None,
     ) -> SLAMResult:
-        """Apply scale calibration to SLAM result if observations available.
+        """Apply scale calibration to SLAM result.
+
+        Priority order for scale recovery:
+        1. ArUco/AprilTag observations (if available)
+        2. Metric depth foundation models (Depth Pro, Metric3D v2)
+        3. Semantic scale anchors (doors, cars, people)
+        4. Person height priors
 
         Args:
             result: Raw SLAM result with arbitrary scale
             scale_observations: ArUco/AprilTag observations
             intrinsics: Camera intrinsics for scale computation
+            keyframes: Optional keyframes for metric scale recovery
+            frames_dir: Optional frames directory for loading images
 
         Returns:
             Calibrated SLAMResult with metric scale
         """
-        if not scale_observations or not result.poses:
+        if not result.poses:
             return result
 
-        # Compute scale from observations
-        scale_factor, confidence = compute_scale_from_aruco(
-            scale_observations, result.poses, intrinsics
-        )
+        scale_factor = 1.0
+        confidence = 0.0
+        scale_source = "none"
 
+        # Method 1: ArUco/AprilTag markers (highest priority if available)
+        if scale_observations:
+            aruco_scale, aruco_conf = compute_scale_from_aruco(
+                scale_observations, result.poses, intrinsics
+            )
+            if aruco_conf > 0.1 and abs(aruco_scale - 1.0) > 1e-6:
+                scale_factor = aruco_scale
+                confidence = aruco_conf
+                scale_source = "aruco_marker"
+                print(f"  Scale from ArUco markers: {scale_factor:.4f} (confidence: {confidence:.2f})")
+
+        # Method 2: Metric scale recovery (foundation models + semantic detection)
+        if confidence < 0.5 and self.config.enable_metric_scale_recovery:
+            metric_result = self._run_metric_scale_recovery(
+                result, keyframes, frames_dir, intrinsics
+            )
+            if metric_result is not None and metric_result.confidence > confidence:
+                scale_factor = metric_result.scale_factor
+                confidence = metric_result.confidence
+                scale_source = "metric_depth_recovery"
+                print(f"  Scale from metric depth: {scale_factor:.4f} (confidence: {confidence:.2f})")
+                if metric_result.is_metric:
+                    print(f"    ✓ Metric scale achieved via {metric_result.anchors_detected}")
+
+        # Only apply if we have meaningful scale
         if abs(scale_factor - 1.0) < 1e-6 or confidence < 0.1:
+            if self.config.enable_metric_scale_recovery:
+                logger.warning("Could not recover metric scale - output will have arbitrary scale")
             return result
-
-        print(f"  Applying scale calibration: {scale_factor:.4f} (confidence: {confidence:.2f})")
 
         # Apply scale to poses
         scaled_poses = apply_scale_to_poses(result.poses, scale_factor)
@@ -441,6 +475,100 @@ class BaseSLAM(ABC):
         result.scale_confidence = confidence
 
         return result
+
+    def _run_metric_scale_recovery(
+        self,
+        result: SLAMResult,
+        keyframes: Optional[List[FrameMetadata]],
+        frames_dir: Optional[Path],
+        intrinsics: Optional[CameraIntrinsics],
+    ):
+        """Run marker-free metric scale recovery using foundation models.
+
+        Uses:
+        - Depth Pro / Metric3D v2 for metric depth estimation
+        - Semantic detection of doors, cars, people, furniture
+        - Person height priors with pose estimation
+        """
+        if not keyframes or not frames_dir:
+            return None
+
+        try:
+            from ..reconstruction.metric_scale_recovery import (
+                MetricScaleRecovery,
+                MetricScaleConfig,
+                MetricDepthModel,
+            )
+        except ImportError as e:
+            logger.warning(f"Metric scale recovery not available: {e}")
+            return None
+
+        # Build config from pipeline config
+        model_map = {
+            "auto": MetricDepthModel.AUTO,
+            "depth_pro": MetricDepthModel.DEPTH_PRO,
+            "metric3d_v2": MetricDepthModel.METRIC3D_V2,
+            "unidepth_v2": MetricDepthModel.UNIDEPTH_V2,
+        }
+
+        config = MetricScaleConfig(
+            depth_model=model_map.get(self.config.metric_depth_model, MetricDepthModel.AUTO),
+            device=self.config.metric_scale_device,
+            dtype=self.config.metric_scale_dtype,
+            enable_semantic_anchors=self.config.enable_semantic_anchors,
+            semantic_detector=self.config.semantic_detector,
+            enable_person_prior=self.config.enable_person_prior,
+            person_height_mean=self.config.person_height_mean,
+            use_pose_estimation=self.config.use_pose_estimation,
+            min_scale_confidence=self.config.min_scale_confidence,
+        )
+
+        # Load frames for processing
+        frames = []
+        for kf in keyframes[:20]:  # Sample up to 20 keyframes
+            frame_path = frames_dir.parent / kf.file_path
+            if not frame_path.exists():
+                frame_path = frames_dir / Path(kf.file_path).name
+            if not frame_path.exists():
+                continue
+
+            try:
+                from PIL import Image
+                img = Image.open(frame_path).convert("RGB")
+                frames.append({
+                    "image": np.array(img),
+                    "frame_id": kf.frame_id,
+                })
+            except Exception as e:
+                logger.warning(f"Could not load frame {frame_path}: {e}")
+                continue
+
+        if not frames:
+            logger.warning("No frames available for metric scale recovery")
+            return None
+
+        # Build intrinsics dict
+        intrinsics_dict = None
+        if intrinsics:
+            intrinsics_dict = {
+                "fx": intrinsics.fx,
+                "fy": intrinsics.fy,
+                "cx": intrinsics.cx,
+                "cy": intrinsics.cy,
+            }
+
+        # Run recovery
+        recovery = MetricScaleRecovery(config)
+        try:
+            metric_result = recovery.estimate_scale(
+                frames=frames,
+                slam_poses=result.poses,
+                intrinsics=intrinsics_dict,
+            )
+            return metric_result
+        except Exception as e:
+            logger.error(f"Metric scale recovery failed: {e}")
+            return None
 
     def _create_submaps(
         self,
@@ -501,9 +629,11 @@ class WildGSSLAM(BaseSLAM):
                 result = self._run_native_wildgs(
                     manifest, keyframes, frames_dir, output_dir, dynamic_masks
                 )
-                # Apply scale calibration
-                if scale_observations:
-                    result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+                # Apply scale calibration (includes metric scale recovery for RGB-only)
+                result = self._calibrate_scale(
+                    result, scale_observations, manifest.intrinsics,
+                    keyframes=keyframes, frames_dir=frames_dir
+                )
                 return result
             except Exception as e:
                 logger.warning(f"WildGS-SLAM failed: {e}, falling back to COLMAP")
@@ -949,8 +1079,10 @@ class SplaTAM(BaseSLAM):
                     manifest, keyframes, frames_dir, output_dir
                 )
                 # RGB-D has metric scale, but apply calibration if available for refinement
-                if scale_observations:
-                    result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+                result = self._calibrate_scale(
+                    result, scale_observations, manifest.intrinsics,
+                    keyframes=keyframes, frames_dir=frames_dir
+                )
                 return result
             except Exception as e:
                 logger.warning(f"Native SplaTAM failed: {e}, using fallback")
@@ -1657,8 +1789,10 @@ class VIGSSLAM(BaseSLAM):
                     manifest, keyframes, frames_dir, output_dir, dynamic_masks
                 )
                 # IMU has metric scale, but apply calibration if available for refinement
-                if scale_observations:
-                    result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+                result = self._calibrate_scale(
+                    result, scale_observations, manifest.intrinsics,
+                    keyframes=keyframes, frames_dir=frames_dir
+                )
                 return result
             except Exception as e:
                 logger.warning(f"Native VIGS-SLAM failed: {e}, using fallback")
@@ -2270,9 +2404,11 @@ class COLMAPFallback(BaseSLAM):
             registration_rate=len(poses) / len(keyframes) if keyframes else 0,
         )
 
-        # Apply scale calibration if observations available
-        if scale_observations:
-            result = self._calibrate_scale(result, scale_observations, manifest.intrinsics)
+        # Apply scale calibration (includes metric scale recovery for RGB-only)
+        result = self._calibrate_scale(
+            result, scale_observations, manifest.intrinsics,
+            keyframes=keyframes, frames_dir=frames_dir
+        )
 
         return result
 

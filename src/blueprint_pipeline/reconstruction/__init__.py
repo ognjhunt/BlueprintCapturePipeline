@@ -5,6 +5,7 @@ This package provides:
 - Point cloud processing utilities
 - Camera model handling
 - Difix3D+ scene inpainting and quality enhancement
+- Metric scale recovery for RGB-only captures
 """
 
 from .gaussian_splatting import (
@@ -38,6 +39,26 @@ except ImportError:
     PoseInterpolator = None
     refine_gaussians_with_difix = None
 
+# Metric Scale Recovery (optional - requires depth models)
+try:
+    from .metric_scale_recovery import (
+        MetricScaleConfig,
+        MetricScaleRecovery,
+        MetricScaleResult,
+        MetricDepthModel,
+        recover_metric_scale,
+        SEMANTIC_SCALE_ANCHORS,
+    )
+    METRIC_SCALE_AVAILABLE = True
+except ImportError:
+    METRIC_SCALE_AVAILABLE = False
+    MetricScaleConfig = None
+    MetricScaleRecovery = None
+    MetricScaleResult = None
+    MetricDepthModel = None
+    recover_metric_scale = None
+    SEMANTIC_SCALE_ANCHORS = None
+
 __all__ = [
     # Gaussian Splatting
     "GaussianConfig",
@@ -56,4 +77,12 @@ __all__ = [
     "GapDetector",
     "PoseInterpolator",
     "refine_gaussians_with_difix",
+    # Metric Scale Recovery (may be None if not installed)
+    "METRIC_SCALE_AVAILABLE",
+    "MetricScaleConfig",
+    "MetricScaleRecovery",
+    "MetricScaleResult",
+    "MetricDepthModel",
+    "recover_metric_scale",
+    "SEMANTIC_SCALE_ANCHORS",
 ]

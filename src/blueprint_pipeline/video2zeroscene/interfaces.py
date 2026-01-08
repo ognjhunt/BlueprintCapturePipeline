@@ -315,6 +315,25 @@ class PipelineConfig:
         default_factory=lambda: ["aruco_board", "apriltag", "known_object"]
     )
 
+    # Metric Scale Recovery (for RGB-only captures without markers)
+    # Uses foundation models + semantic detection for marker-free metric scale
+    enable_metric_scale_recovery: bool = True  # Enable for all RGB-only captures
+    metric_depth_model: str = "auto"  # "depth_pro", "metric3d_v2", "unidepth_v2", "auto"
+    metric_scale_device: str = "cuda"  # Device for depth models
+    metric_scale_dtype: str = "float16"  # float16 for speed, float32 for quality
+
+    # Semantic scale anchors (doors, cars, people, furniture)
+    enable_semantic_anchors: bool = True  # Detect known objects for scale
+    semantic_detector: str = "yolo"  # "yolo" for YOLO, "detic" for Detic
+
+    # Person height prior (fallback for any scene with people)
+    enable_person_prior: bool = True  # Use detected people for scale
+    person_height_mean: float = 1.70  # Average adult height in meters
+    use_pose_estimation: bool = True  # Use pose for better height estimation
+
+    # Scale confidence threshold
+    min_scale_confidence: float = 0.5  # Min confidence to accept scale as metric
+
     # Difix3D+ Scene Inpainting (HQ splats + gap filling)
     # Core settings
     enable_difix_refinement: bool = True  # Enable by default for best quality

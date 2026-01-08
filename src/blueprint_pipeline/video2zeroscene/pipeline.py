@@ -315,6 +315,20 @@ class CapturePipeline:
         # Stage 2: Export for DWM
         print("\n[Stage 2] Exporting for DWM processing...")
         export_dir = output_dir / "output"
+
+        # Determine scale source and metric status
+        scale_source = "unknown"
+        is_metric = False
+        if manifest.has_arkit_poses:
+            scale_source = "arkit"
+            is_metric = True
+        elif manifest.has_depth:
+            scale_source = "lidar_depth"
+            is_metric = True
+        elif slam_result.scale_confidence > 0:
+            scale_source = "metric_depth_recovery"
+            is_metric = slam_result.scale_confidence >= 0.5
+
         export_result = self.exporter.export(
             manifest=manifest,
             gaussians_path=gaussians_path,  # Use refined if available
@@ -322,6 +336,9 @@ class CapturePipeline:
             intrinsics=manifest.intrinsics,
             output_dir=export_dir,
             scale_factor=slam_result.scale_factor,
+            scale_confidence=slam_result.scale_confidence,
+            scale_source=scale_source,
+            is_metric=is_metric,
             copy_frames=copy_frames,
             frames_dir=frames_dir,
         )
@@ -332,11 +349,24 @@ class CapturePipeline:
             result.success = False
             result.errors.extend(export_result.errors)
 
-        # Check DWM readiness
+        # Check DWM readiness (now includes metric scale check)
+        has_metric_scale = (
+            is_metric or
+            manifest.has_arkit_poses or
+            manifest.has_depth or
+            slam_result.scale_confidence >= 0.5
+        )
         result.dwm_ready = (
             export_result.gaussians_path is not None
             and export_result.trajectory_path is not None
+            and has_metric_scale
         )
+
+        # Print scale status
+        if is_metric:
+            print(f"  ✓ Metric scale achieved via {scale_source}")
+        elif slam_result.scale_confidence > 0:
+            print(f"  ⚠ Scale confidence: {slam_result.scale_confidence:.2f} (source: {scale_source})")
 
         # Save pipeline summary
         summary_path = output_dir / "pipeline_summary.json"

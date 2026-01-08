@@ -24,6 +24,24 @@ transformers>=4.36.0  # Required by diffusers
 accelerate>=0.25.0  # GPU acceleration for diffusion models
 lpips>=0.1.4  # Perceptual loss (optional but recommended)
 
+# Metric Scale Recovery (for RGB-only captures without markers)
+# Enables marker-free metric scale estimation using foundation models
+ultralytics>=8.0.0  # YOLO for object detection and pose estimation
+
+# Metric Depth Foundation Models (install ONE of the following):
+# Option 1: Apple Depth Pro (ICLR 2025) - fastest, recommended
+# pip install depth-pro
+# See: https://github.com/apple/ml-depth-pro
+#
+# Option 2: Metric3D v2 (TPAMI 2024) - proven SLAM integration
+# pip install timm einops  # Dependencies for Metric3D
+# Model loads via torch.hub (automatic download)
+# See: https://github.com/YvanYin/Metric3D
+#
+# Option 3: UniDepth v2 - includes uncertainty estimation
+# pip install unidepth
+# See: https://github.com/lpiccinelli-eth/UniDepth
+
 # Cloud dependencies (optional - install separately for GCS support)
 # google-cloud-storage>=2.10.0
 # google-cloud-run>=0.10.0
