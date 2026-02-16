@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 import pytest
 
 from blueprint_pipeline.blueprintpipeline_runner import CommandResult
+from blueprint_pipeline.quality_gates import AdvancedQualityGateConfig
 from blueprint_pipeline.swap_orchestrator import OrchestratorConfig, run_swap_pipeline
 from functions.storage_trigger import parse_descriptor_path
 
@@ -389,6 +390,8 @@ def _run_pipeline(
             blueprintpipeline_root=Path("/unused"),
             expected_blueprintpipeline_commit="",
             fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
         ),
         nurec_client=nurec_client,
         blueprint_runner=runner,
@@ -452,6 +455,8 @@ def test_hard_fail_when_retrieval_unresolved(tmp_path: Path) -> None:
                 blueprintpipeline_root=Path("/unused"),
                 expected_blueprintpipeline_commit="",
                 fail_on_commit_mismatch=False,
+                runtime_preflight_enabled=False,
+                advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
             ),
             nurec_client=nurec_client,
             blueprint_runner=runner,
@@ -485,6 +490,8 @@ def test_end_to_end_dry_outputs_written(tmp_path: Path) -> None:
     assert (pipeline_dir / "nurec_outputs.json").is_file()
     assert (pipeline_dir / "swap_candidates.json").is_file()
     assert (pipeline_dir / "swap_execution_report.json").is_file()
+    assert (pipeline_dir / "runtime_preflight_report.json").is_file()
+    assert (pipeline_dir / "advanced_quality_report.json").is_file()
     assert (pipeline_dir / "swap_quality_report.json").is_file()
     assert (pipeline_dir / ".swap_pipeline_complete").is_file()
 

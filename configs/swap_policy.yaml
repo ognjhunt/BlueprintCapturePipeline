@@ -1,0 +1,85 @@
+schema_version: v1
+name: pilot_exchange_swap_policy
+defaults:
+  articulated_appliance_keywords:
+    - dishwasher
+    - refrigerator
+    - fridge
+    - freezer
+    - microwave
+    - oven
+    - washer
+    - dryer
+  articulated_furniture_keywords:
+    - drawer
+    - cabinet
+    - door
+    - cupboard
+    - closet
+    - wardrobe
+    - locker
+  manipulable_keywords:
+    - tote
+    - bin
+    - box
+    - crate
+    - carton
+    - package
+    - container
+    - cup
+    - mug
+    - bottle
+    - can
+    - tray
+    - tool
+    - part
+  exclude_keywords:
+    - wall
+    - floor
+    - ceiling
+    - window
+    - stairs
+    - pillar
+    - beam
+  min_volume_m3:
+    articulated_appliance: 0.01
+    articulated_furniture: 0.006
+    manipulable_object: 0.0002
+environments:
+  kitchen:
+    articulated_appliance_keywords:
+      - dishwasher
+      - refrigerator
+      - fridge
+      - oven
+      - microwave
+    articulated_furniture_keywords:
+      - drawer
+      - cabinet
+      - pantry_door
+    manipulable_keywords:
+      - mug
+      - cup
+      - bowl
+      - plate
+      - pot
+      - pan
+      - bottle
+    exclude_keywords:
+      - countertop
+      - backsplash
+  warehouse:
+    manipulable_keywords:
+      - tote
+      - pallet
+      - carton
+      - package
+      - bin
+      - crate
+      - container
+    exclude_keywords:
+      - rack
+      - shelf
+      - conveyor
+      - dock_door
+      - safety_barrier

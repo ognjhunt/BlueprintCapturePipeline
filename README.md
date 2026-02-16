@@ -12,9 +12,9 @@ It reuses existing jobs and helper logic from:
 
 - `/Users/nijelhunt_1/workspace/BlueprintPipeline`
 
-## Entry Point
+## Entry Points
 
-Run directly:
+Orchestrator:
 
 ```bash
 python -m blueprint_pipeline.swap_orchestrator \
@@ -25,6 +25,14 @@ Or via installed script:
 
 ```bash
 blueprint-capture-swap --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json
+```
+
+NuRec worker (consumes `nurec_job_spec.json`, writes `.nurec_complete`/`.nurec_failed`):
+
+```bash
+python -m blueprint_pipeline.nurec_worker \
+  --job-spec /mnt/gcs/<bucket>/scenes/<scene_id>/captures/<capture_id>/pipeline/nurec_job_spec.json \
+  --storage-root /mnt/gcs
 ```
 
 ## Required Descriptor Inputs
@@ -50,6 +58,8 @@ Written under:
 - `nurec_outputs.json`
 - `swap_candidates.json`
 - `swap_execution_report.json`
+- `runtime_preflight_report.json`
+- `advanced_quality_report.json`
 - `swap_quality_report.json`
 - `.swap_pipeline_complete` or `.swap_pipeline_failed.json`
 
@@ -63,10 +73,70 @@ Scene artifacts written under:
 
 - `GCS_ROOT` (default: `/mnt/gcs`)
 - `BLUEPRINTPIPELINE_ROOT` (default: `/Users/nijelhunt_1/workspace/BlueprintPipeline`)
-- `NUREC_WORKER_COMMAND` (optional command template; receives `{JOB_SPEC_PATH}`)
 - `BLUEPRINTPIPELINE_COMMIT_HASH` (optional pin)
 - `FAIL_ON_BLUEPRINTPIPELINE_COMMIT_MISMATCH` (`true` by default)
+- `RUNTIME_PREFLIGHT_ENABLED` (`true` by default)
+
+NuRec worker dispatch:
+
+- `NUREC_WORKER_MODE` (`local_worker` default, `command`, `external_markers`)
+- `NUREC_WORKER_COMMAND` (required when `NUREC_WORKER_MODE=command`)
+- `NUREC_PIPELINE_COMMAND` (required for `local_worker` unless `NUREC_SKIP_PIPELINE_COMMAND=true`)
+- `NUREC_SKIP_PIPELINE_COMMAND` (dev/testing only: skip command and validate pre-generated artifacts)
+
+Asset generation/retrieval providers:
+
 - `TEXT_ASSET_GENERATION_PROVIDER_CHAIN` (default: `sam3d,hunyuan3d`)
+- `TEXT_SAM3D_API_HOST` + `TEXT_SAM3D_API_KEY` (or `SAM3D_API_HOST` + `SAM3D_API_KEY`)
+- `TEXT_HUNYUAN_API_HOST` + `TEXT_HUNYUAN_API_KEY` (or `HUNYUAN_API_HOST` + `HUNYUAN_API_KEY`)
+
+Interactive backend env:
+
+- `PARTICULATE_MODE` (`remote`/`local`/`mock`/`skip`)
+- `PARTICULATE_ENDPOINT` (required for `PARTICULATE_MODE=remote`)
+- `PARTICULATE_LOCAL_ENDPOINT` + `PARTICULATE_LOCAL_MODEL` (required for `PARTICULATE_MODE=local`)
+- `ARTICULATION_BACKEND` (`auto` default)
+
+Swap policy tuning:
+
+- `SWAP_POLICY_CONFIG_PATH` (optional YAML path; default baked policy used if unset)
+
+Advanced quality gates:
+
+- `ADVANCED_QUALITY_GATES_ENABLED` (`true` by default)
+- `QUALITY_MAX_COLLISION_FACES`
+- `QUALITY_DROP_MIN_PASS_RATE`
+- `QUALITY_JITTER_MAX_DRIFT_M`
+- `QUALITY_TUNNELING_MAX_PENETRATION_M`
+- `QUALITY_PERF_MAX_STEP_MS`
+
+Async trigger dispatch:
+
+- `SWAP_TRIGGER_DISPATCH_MODE` (`pubsub` default, `cloud_tasks`, or `direct`)
+- `SWAP_TRIGGER_PUBSUB_TOPIC` (required for `pubsub` mode)
+- `SWAP_TRIGGER_TASK_QUEUE`, `SWAP_TRIGGER_TASK_LOCATION`, `SWAP_TRIGGER_TASK_URL` (required for `cloud_tasks` mode)
+- `SWAP_TRIGGER_TASK_SERVICE_ACCOUNT` (optional OIDC SA for Cloud Tasks HTTP target)
+- `SWAP_TRIGGER_ALLOW_DIRECT=true` (required to allow sync direct mode in local/dev)
+
+Worker entrypoints in `functions/storage_trigger.py`:
+
+- `on_storage_finalize`: enqueue-only storage trigger.
+- `on_swap_dispatch`: Pub/Sub worker consumer.
+- `on_swap_dispatch_http`: HTTP worker target for Cloud Tasks.
+
+## Pipeline Stages
+
+1. Runtime preflight checks mounted storage, BlueprintPipeline runtime, provider env, NuRec worker config, and quality-gate deps.
+2. Intake validates descriptor + `qa_report.json` and loads raw manifest/object index.
+3. NuRec stage writes `nurec_job_spec.json`, dispatches worker, and waits for completion marker.
+4. Candidate selection applies policy signals (descriptor hints + object index + environment tuning).
+5. SAM3D-first materialization generates swappable assets and scene shell assets.
+6. Manifest/layout synthesis writes scene files for BlueprintPipeline Stage 2+ jobs.
+7. Interactive articulation validation runs interactive-job.
+8. Retrieval fallback resolves required articulation failures (hard fail if unresolved).
+9. SimReady + USD assembly runs unchanged BlueprintPipeline jobs.
+10. Advanced quality gates run drop/jitter/tunneling/perf and complexity budgets.
+11. Completion writes `swap_quality_report.json` and `.swap_pipeline_complete`.
 
 ## Tests
 

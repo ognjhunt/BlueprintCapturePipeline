@@ -38,7 +38,9 @@ from .interactive_reconciliation import (
 from .ios_manifest import load_object_index, load_raw_manifest, resolve_object_index_uri
 from .manifest_builder import build_scene_artifacts
 from .nurec_worker_client import NurecWorkerClient, NurecWorkerConfig
+from .quality_gates import AdvancedQualityGateConfig, run_advanced_quality_gates
 from .retrieval_fallback import enforce_hard_fail_if_unresolved, run_retrieval_fallback
+from .runtime_preflight import enforce_preflight, validate_runtime_preflight
 from .sam3d_assets import materialize_candidate_assets, materialize_scene_shell_assets
 from .swap_candidates import build_swap_candidates_payload
 
@@ -55,10 +57,19 @@ class OrchestratorConfig:
     )
     nurec_timeout_seconds: int = int(os.getenv("NUREC_TIMEOUT_SECONDS", "14400") or "14400")
     nurec_poll_seconds: int = int(os.getenv("NUREC_POLL_SECONDS", "20") or "20")
+    nurec_worker_mode: str = (os.getenv("NUREC_WORKER_MODE", "local_worker") or "local_worker").strip()
     nurec_worker_command: str = os.getenv("NUREC_WORKER_COMMAND", "").strip()
+    runtime_preflight_enabled: bool = parse_bool(
+        os.getenv("RUNTIME_PREFLIGHT_ENABLED"),
+        default=True,
+    )
+    swap_policy_path: str = os.getenv("SWAP_POLICY_CONFIG_PATH", "").strip()
     generation_provider_chain: str = os.getenv(
         "TEXT_ASSET_GENERATION_PROVIDER_CHAIN", "sam3d,hunyuan3d"
     ).strip()
+    advanced_quality_config: AdvancedQualityGateConfig = field(
+        default_factory=AdvancedQualityGateConfig
+    )
     interactive_extra_env: Dict[str, str] = field(default_factory=dict)
 
 
@@ -215,11 +226,50 @@ def run_swap_pipeline(
     swap_candidates_payload: Dict[str, Any] = {}
     interactive_results_payload: Dict[str, Any] = {}
     fallback_payload: Dict[str, Any] = {}
+    advanced_quality_report: Dict[str, Any] = {}
+    runtime_preflight_report: Dict[str, Any] = {}
 
     try:
         # ------------------------------------------------------------------
+        # Stage 0: runtime preflight
+        # ------------------------------------------------------------------
+        stage = "runtime_preflight"
+        if cfg.runtime_preflight_enabled:
+            checks = validate_runtime_preflight(
+                gcs_root=storage_root,
+                blueprintpipeline_root=cfg.blueprintpipeline_root,
+                generation_provider_chain=cfg.generation_provider_chain,
+                swap_policy_path=cfg.swap_policy_path,
+                nurec_worker_mode=cfg.nurec_worker_mode,
+                nurec_worker_command=cfg.nurec_worker_command,
+                advanced_quality_gates_enabled=cfg.advanced_quality_config.enabled,
+            )
+            has_failures = any(not check.passed for check in checks)
+            runtime_preflight_report = {
+                "schema_version": "v1",
+                "status": "failed" if has_failures else "passed",
+                "generated_at": utc_now_iso(),
+                "checks": [check.to_dict() for check in checks],
+            }
+            write_json(pipeline_dir / "runtime_preflight_report.json", runtime_preflight_report)
+            enforce_preflight(checks)
+            gates.append(_Gate("runtime_preflight_gate", True, "runtime preflight passed"))
+        else:
+            runtime_preflight_report = {
+                "schema_version": "v1",
+                "status": "skipped",
+                "generated_at": utc_now_iso(),
+                "detail": "runtime preflight disabled by configuration",
+            }
+            write_json(pipeline_dir / "runtime_preflight_report.json", runtime_preflight_report)
+            gates.append(
+                _Gate("runtime_preflight_gate", True, "runtime preflight skipped by configuration")
+            )
+
+        # ------------------------------------------------------------------
         # Stage A: intake
         # ------------------------------------------------------------------
+        stage = "intake"
         qa_report_uri = descriptor.qa_report_uri or _default_qa_report_uri(descriptor_gcs_uri)
         qa_report_path = resolve_gs_uri_to_path(qa_report_uri, storage_root)
         qa_report = read_json(qa_report_path)
@@ -248,6 +298,7 @@ def run_swap_pipeline(
                 config=NurecWorkerConfig(
                     timeout_seconds=cfg.nurec_timeout_seconds,
                     poll_interval_seconds=cfg.nurec_poll_seconds,
+                    worker_mode=cfg.nurec_worker_mode,
                     worker_command=cfg.nurec_worker_command,
                 ),
             )
@@ -280,6 +331,7 @@ def run_swap_pipeline(
         swap_candidates_payload = build_swap_candidates_payload(
             descriptor=descriptor,
             object_index_entries=object_index_entries,
+            policy_path=cfg.swap_policy_path or None,
         )
         write_json(pipeline_dir / "swap_candidates.json", swap_candidates_payload)
         swap_candidates = swap_candidates_payload.get("candidates")
@@ -464,6 +516,30 @@ def run_swap_pipeline(
         # ------------------------------------------------------------------
         # Stage I: quality + completion
         # ------------------------------------------------------------------
+        stage = "quality_gates"
+        advanced_quality_report = run_advanced_quality_gates(
+            storage_root=storage_root,
+            assets_prefix=assets_prefix,
+            nurec_outputs=nurec_outputs,
+            config=cfg.advanced_quality_config,
+        )
+        write_json(pipeline_dir / "advanced_quality_report.json", advanced_quality_report)
+        advanced_status = str(advanced_quality_report.get("status") or "").strip().lower()
+        advanced_ok = advanced_status in {"passed", "skipped"}
+        gates.append(
+            _Gate(
+                "advanced_quality_gate",
+                advanced_ok,
+                f"advanced quality status={advanced_status or 'unknown'}",
+            )
+        )
+        if not advanced_ok:
+            raise StageError(
+                "quality_gates",
+                f"advanced quality gates failed: {advanced_quality_report.get('gates', [])}",
+            )
+
+        stage = "completion"
         quality_report = {
             "schema_version": "v1",
             "scene_id": scene_id,
@@ -474,9 +550,11 @@ def run_swap_pipeline(
             "artifacts": {
                 "descriptor_uri": descriptor_gcs_uri,
                 "qa_report_uri": qa_report_uri,
+                "runtime_preflight_report": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
                 "nurec_outputs": f"gs://{bucket}/{pipeline_prefix}/nurec_outputs.json",
                 "swap_candidates": f"gs://{bucket}/{pipeline_prefix}/swap_candidates.json",
                 "swap_execution_report": f"gs://{bucket}/{pipeline_prefix}/swap_execution_report.json",
+                "advanced_quality_report": f"gs://{bucket}/{pipeline_prefix}/advanced_quality_report.json",
                 "manifest": f"gs://{bucket}/{relative_scene_path(artifact_paths['manifest_path'], storage_root)}",
                 "layout": f"gs://{bucket}/{relative_scene_path(artifact_paths['layout_path'], storage_root)}",
                 "inventory": f"gs://{bucket}/{relative_scene_path(artifact_paths['inventory_path'], storage_root)}",

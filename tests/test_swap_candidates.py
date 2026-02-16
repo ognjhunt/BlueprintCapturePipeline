@@ -1,5 +1,8 @@
 """Tests for swap candidate policy selection."""
 
+import textwrap
+from pathlib import Path
+
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.swap_candidates import build_swap_candidates_payload
 
@@ -59,3 +62,69 @@ def test_candidate_generation_mixed_labels_and_roles() -> None:
     assert by_id["obj_box"]["sim_role"] == "manipulable_object"
     assert by_id["obj_box"]["articulation"]["required"] is False
     assert all(item["must_be_separate_asset"] is True for item in candidates)
+
+
+def test_environment_policy_excludes_non_swappable_structures() -> None:
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene_warehouse",
+            "capture_id": "cap_warehouse",
+            "capture_source": "iphone",
+            "capture_tier": "tier1_iphone",
+            "raw_prefix_uri": "gs://bucket/scenes/scene_warehouse/iphone/cap_warehouse/raw",
+            "frames_index_uri": "gs://bucket/scenes/scene_warehouse/captures/cap_warehouse/frames/index.jsonl",
+            "nurec_mode": "mono_pose_assisted",
+            "intended_space_type": "warehouse",
+        }
+    )
+
+    payload = build_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=[
+            {"id": "rack_1", "label": "pallet rack"},
+            {
+                "id": "tote_1",
+                "label": "plastic tote",
+                "boundingBox": {"extents": [0.5, 0.4, 0.3]},
+            },
+        ],
+    )
+
+    ids = [item["object_id"] for item in payload["candidates"]]
+    assert "tote_1" in ids
+    assert "rack_1" not in ids
+
+
+def test_custom_policy_file_tunes_keywords(tmp_path: Path) -> None:
+    policy_path = tmp_path / "swap_policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            schema_version: v1
+            name: tuned_policy
+            defaults:
+              manipulable_keywords:
+                - stool
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    descriptor = _descriptor()
+
+    payload = build_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=[
+            {
+                "id": "obj_stool",
+                "label": "rolling stool",
+                "boundingBox": {"extents": [0.45, 0.45, 0.45]},
+            }
+        ],
+        policy_path=str(policy_path),
+    )
+
+    assert payload["policy_details"]["name"] == "tuned_policy"
+    assert payload["candidates"][0]["object_id"] == "obj_stool"
+    assert payload["candidates"][0]["sim_role"] == "manipulable_object"

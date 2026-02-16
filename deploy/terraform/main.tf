@@ -432,6 +432,8 @@ resource "google_cloudfunctions2_function" "storage_trigger" {
       PIPELINE_REGION     = var.primary_region
       PIPELINE_BUCKET     = var.storage_bucket
       REGIONS             = join(",", local.all_regions)
+      SWAP_TRIGGER_DISPATCH_MODE = "pubsub"
+      SWAP_TRIGGER_PUBSUB_TOPIC  = google_pubsub_topic.pipeline_trigger.name
     }
   }
 
@@ -450,6 +452,58 @@ resource "google_cloudfunctions2_function" "storage_trigger" {
   depends_on = [
     google_project_service.required_apis["cloudfunctions.googleapis.com"],
     google_storage_bucket_object.function_source,
+  ]
+}
+
+# Cloud Function (Gen2) - async orchestration worker (Pub/Sub consumer)
+resource "google_cloudfunctions2_function" "swap_dispatch_worker" {
+  name     = "swap-dispatch-worker"
+  location = var.primary_region
+  labels   = local.common_labels
+
+  build_config {
+    runtime     = "python311"
+    entry_point = "on_swap_dispatch"
+
+    source {
+      storage_source {
+        bucket = google_storage_bucket.function_source.name
+        object = google_storage_bucket_object.function_source.name
+      }
+    }
+  }
+
+  service_config {
+    max_instance_count    = 100
+    min_instance_count    = 0
+    available_memory      = "4096M"
+    timeout_seconds       = 3600
+    service_account_email = google_service_account.storage_trigger.email
+
+    environment_variables = {
+      PIPELINE_PROJECT_ID = var.project_id
+      PIPELINE_REGION     = var.primary_region
+      PIPELINE_BUCKET     = var.storage_bucket
+      REGIONS             = join(",", local.all_regions)
+    }
+  }
+
+  event_trigger {
+    trigger_region = var.primary_region
+    event_type     = "google.cloud.pubsub.topic.v1.messagePublished"
+
+    event_filters {
+      attribute = "topic"
+      value     = google_pubsub_topic.pipeline_trigger.id
+    }
+
+    retry_policy = "RETRY_POLICY_RETRY"
+  }
+
+  depends_on = [
+    google_project_service.required_apis["cloudfunctions.googleapis.com"],
+    google_storage_bucket_object.function_source,
+    google_pubsub_topic.pipeline_trigger,
   ]
 }
 
@@ -610,4 +664,9 @@ output "pubsub_topic" {
 output "storage_trigger_function" {
   description = "Storage trigger Cloud Function URL"
   value       = google_cloudfunctions2_function.storage_trigger.service_config[0].uri
+}
+
+output "swap_dispatch_worker_function" {
+  description = "Swap dispatch worker Cloud Function name"
+  value       = google_cloudfunctions2_function.swap_dispatch_worker.name
 }

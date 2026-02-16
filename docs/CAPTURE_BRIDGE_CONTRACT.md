@@ -8,6 +8,11 @@ Object finalize trigger:
 
 `scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json`
 
+The storage trigger is enqueue-first (async). Dispatch backends:
+
+- Pub/Sub (`SWAP_TRIGGER_DISPATCH_MODE=pubsub`)
+- Cloud Tasks (`SWAP_TRIGGER_DISPATCH_MODE=cloud_tasks`)
+
 ## 2) Descriptor Schema (`capture_descriptor.json`)
 
 Required:
@@ -49,6 +54,8 @@ All orchestration artifacts are emitted under:
 - `nurec_outputs.json` (v1)
 - `swap_candidates.json` (v1)
 - `swap_execution_report.json` (v1)
+- `runtime_preflight_report.json` (v1)
+- `advanced_quality_report.json` (v1)
 - `swap_quality_report.json` (v1)
 - `.swap_pipeline_complete` or `.swap_pipeline_failed.json`
 

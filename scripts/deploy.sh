@@ -31,6 +31,7 @@ REGION="${GCP_REGION:-us-central1}"
 DOCKER_TAG="${DOCKER_TAG:-latest}"
 BUCKET_NAME="${PROJECT_ID}.appspot.com"
 IMAGE_NAME="gcr.io/${PROJECT_ID}/blueprint-pipeline:${DOCKER_TAG}"
+SWAP_TOPIC="${SWAP_TOPIC:-pipeline-trigger}"
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -263,6 +264,20 @@ EOF
         --trigger-event-filters="bucket=$BUCKET_NAME" \
         --memory=512MB \
         --timeout=60s \
+        --set-env-vars="PIPELINE_PROJECT_ID=$PROJECT_ID,PIPELINE_REGION=$REGION,PIPELINE_BUCKET=$BUCKET_NAME,SWAP_TRIGGER_DISPATCH_MODE=pubsub,SWAP_TRIGGER_PUBSUB_TOPIC=$SWAP_TOPIC" \
+        --service-account="storage-trigger@${PROJECT_ID}.iam.gserviceaccount.com" \
+        --project="$PROJECT_ID" \
+        --quiet
+
+    run_cmd gcloud functions deploy swap-dispatch-worker \
+        --gen2 \
+        --runtime=python311 \
+        --region="$REGION" \
+        --source=. \
+        --entry-point=on_swap_dispatch \
+        --trigger-topic="$SWAP_TOPIC" \
+        --memory=4096MB \
+        --timeout=3600s \
         --set-env-vars="PIPELINE_PROJECT_ID=$PROJECT_ID,PIPELINE_REGION=$REGION,PIPELINE_BUCKET=$BUCKET_NAME" \
         --service-account="storage-trigger@${PROJECT_ID}.iam.gserviceaccount.com" \
         --project="$PROJECT_ID" \

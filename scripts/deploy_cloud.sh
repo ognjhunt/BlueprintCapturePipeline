@@ -17,6 +17,7 @@ BUCKET="${BUCKET:-blueprint-8c1ca.appspot.com}"
 CLOUD_RUN_JOB="${CLOUD_RUN_JOB:-blueprint-pipeline}"
 TASK_QUEUE="${TASK_QUEUE:-blueprint-pipeline-queue}"
 DLQ_NAME="${DLQ_NAME:-blueprint-pipeline-dlq}"
+SWAP_TOPIC="${SWAP_TOPIC:-pipeline-trigger}"
 
 echo "🚀 Deploying BlueprintCapturePipeline Cloud Infrastructure"
 echo "   Project: $PROJECT_ID"
@@ -149,10 +150,23 @@ gcloud functions deploy storage_trigger \
     --region $REGION \
     --memory 512MB \
     --timeout 120s \
-    --set-env-vars PIPELINE_PROJECT_ID=$PROJECT_ID,PIPELINE_REGION=$REGION,TASK_QUEUE=$TASK_QUEUE \
+    --set-env-vars PIPELINE_PROJECT_ID=$PROJECT_ID,PIPELINE_REGION=$REGION,TASK_QUEUE=$TASK_QUEUE,SWAP_TRIGGER_DISPATCH_MODE=pubsub,SWAP_TRIGGER_PUBSUB_TOPIC=$SWAP_TOPIC \
     --quiet
 
 echo "✅ Cloud Function deployed"
+
+gcloud functions deploy swap_dispatch_worker \
+    --gen2 \
+    --runtime python311 \
+    --trigger-topic $SWAP_TOPIC \
+    --entry-point on_swap_dispatch \
+    --region $REGION \
+    --memory 4096MB \
+    --timeout 3600s \
+    --set-env-vars PIPELINE_PROJECT_ID=$PROJECT_ID,PIPELINE_REGION=$REGION,TASK_QUEUE=$TASK_QUEUE \
+    --quiet
+
+echo "✅ Dispatch worker deployed"
 
 # ============================================================================
 # Step 4: Build and Deploy Cloud Run Job

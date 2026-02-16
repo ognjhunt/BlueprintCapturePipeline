@@ -26,7 +26,9 @@ from .common import (
 class NurecWorkerConfig:
     timeout_seconds: int = 4 * 60 * 60
     poll_interval_seconds: int = 20
+    worker_mode: str = "local_worker"
     worker_command: str = ""
+    worker_python_executable: str = os.getenv("PYTHON_BIN", "python")
 
 
 class NurecWorkerClient:
@@ -47,7 +49,9 @@ class NurecWorkerClient:
         self.config = config or NurecWorkerConfig(
             timeout_seconds=int(os.getenv("NUREC_TIMEOUT_SECONDS", "14400") or "14400"),
             poll_interval_seconds=int(os.getenv("NUREC_POLL_SECONDS", "20") or "20"),
+            worker_mode=(os.getenv("NUREC_WORKER_MODE", "local_worker") or "local_worker").strip(),
             worker_command=(os.getenv("NUREC_WORKER_COMMAND", "") or "").strip(),
+            worker_python_executable=(os.getenv("NUREC_WORKER_PYTHON", "python") or "python").strip(),
         )
 
     @property
@@ -109,40 +113,85 @@ class NurecWorkerClient:
         return spec_path
 
     def dispatch(self, *, spec_path: Path) -> None:
-        command = self.config.worker_command.strip()
-        if not command:
-            # External scheduler can pick up nurec_job_spec.json asynchronously.
+        worker_mode = self.config.worker_mode.strip().lower()
+        if worker_mode == "external_markers":
+            # External scheduler picks up nurec_job_spec.json and writes markers.
             return
 
-        command = (
-            command.replace("{JOB_SPEC_PATH}", str(spec_path))
-            .replace("{PIPELINE_DIR}", str(self.pipeline_dir))
-            .replace("{PIPELINE_PREFIX}", self.pipeline_prefix)
-            .replace("{BUCKET}", self.bucket)
-        )
+        if worker_mode == "local_worker":
+            command = [
+                self.config.worker_python_executable,
+                "-m",
+                "blueprint_pipeline.nurec_worker",
+                "--job-spec",
+                str(spec_path),
+                "--storage-root",
+                str(self.storage_root),
+            ]
+            proc = subprocess.run(
+                command,
+                cwd=str(self.storage_root),
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            if proc.returncode != 0:
+                error = {
+                    "schema_version": "v1",
+                    "scene_prefix": self.pipeline_prefix,
+                    "status": "failed",
+                    "stage": "dispatch",
+                    "worker_mode": worker_mode,
+                    "command": command,
+                    "return_code": proc.returncode,
+                    "stdout": proc.stdout[-4000:],
+                    "stderr": proc.stderr[-4000:],
+                    "failed_at": utc_now_iso(),
+                }
+                write_json(self._marker(".nurec_failed"), error)
+                raise StageError("nurec", f"local worker failed with code {proc.returncode}")
+            return
 
-        proc = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(self.storage_root),
-            check=False,
-            text=True,
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            error = {
-                "schema_version": "v1",
-                "scene_prefix": self.pipeline_prefix,
-                "status": "failed",
-                "stage": "dispatch",
-                "command": command,
-                "return_code": proc.returncode,
-                "stdout": proc.stdout[-4000:],
-                "stderr": proc.stderr[-4000:],
-                "failed_at": utc_now_iso(),
-            }
-            write_json(self._marker(".nurec_failed"), error)
-            raise StageError("nurec", f"worker dispatch failed with code {proc.returncode}")
+        if worker_mode == "command":
+            command_template = self.config.worker_command.strip()
+            if not command_template:
+                raise StageError(
+                    "nurec",
+                    "NUREC_WORKER_MODE=command requires NUREC_WORKER_COMMAND",
+                )
+
+            command = (
+                command_template.replace("{JOB_SPEC_PATH}", str(spec_path))
+                .replace("{PIPELINE_DIR}", str(self.pipeline_dir))
+                .replace("{PIPELINE_PREFIX}", self.pipeline_prefix)
+                .replace("{BUCKET}", self.bucket)
+            )
+            proc = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(self.storage_root),
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            if proc.returncode != 0:
+                error = {
+                    "schema_version": "v1",
+                    "scene_prefix": self.pipeline_prefix,
+                    "status": "failed",
+                    "stage": "dispatch",
+                    "worker_mode": worker_mode,
+                    "command": command,
+                    "return_code": proc.returncode,
+                    "stdout": proc.stdout[-4000:],
+                    "stderr": proc.stderr[-4000:],
+                    "failed_at": utc_now_iso(),
+                }
+                write_json(self._marker(".nurec_failed"), error)
+                raise StageError("nurec", f"worker dispatch failed with code {proc.returncode}")
+            return
+
+        raise StageError("nurec", f"unsupported NUREC_WORKER_MODE: {worker_mode}")
 
     def wait_for_completion(self) -> None:
         deadline = time.time() + max(60, self.config.timeout_seconds)

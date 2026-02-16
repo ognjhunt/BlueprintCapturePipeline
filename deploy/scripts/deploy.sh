@@ -31,6 +31,7 @@ SECONDARY_REGIONS="${SECONDARY_REGIONS:-us-east1,europe-west1}"
 STORAGE_BUCKET="${STORAGE_BUCKET:-${PROJECT_ID}.appspot.com}"
 IMAGE_NAME="${IMAGE_NAME:-blueprint-pipeline}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
+SWAP_TOPIC="${SWAP_TOPIC:-pipeline-trigger}"
 
 # Directories
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -250,6 +251,17 @@ EOF
         --trigger-event-filters="bucket=${STORAGE_BUCKET}" \
         --memory 512M \
         --timeout 60s \
+        --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${PRIMARY_REGION},REGIONS=${SECONDARY_REGIONS},SWAP_TRIGGER_DISPATCH_MODE=pubsub,SWAP_TRIGGER_PUBSUB_TOPIC=${SWAP_TOPIC}"
+
+    gcloud functions deploy swap-dispatch-worker \
+        --gen2 \
+        --runtime python311 \
+        --region "$PRIMARY_REGION" \
+        --source . \
+        --entry-point on_swap_dispatch \
+        --trigger-topic "${SWAP_TOPIC}" \
+        --memory 4096M \
+        --timeout 3600s \
         --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${PRIMARY_REGION},REGIONS=${SECONDARY_REGIONS}"
 
     log_success "Cloud Function deployed"
