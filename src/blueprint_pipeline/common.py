@@ -63,13 +63,23 @@ def resolve_gs_uri_to_path(uri: str, gcs_root: Path) -> Path:
     candidate_bucket = gcs_root / parsed.bucket / parsed.key
     candidate_flat = gcs_root / parsed.key
 
-    if candidate_bucket.exists():
-        return candidate_bucket
     if candidate_flat.exists():
         return candidate_flat
+    if candidate_bucket.exists():
+        # If gcs_root is already bucket-root (for example /mnt/gcs/<bucket>),
+        # stale nested directories can make candidate_bucket "exist" incorrectly.
+        if gcs_root.name == parsed.bucket:
+            return candidate_flat
+        return candidate_bucket
 
-    # Prefer bucket layout when unresolved so future writes remain unambiguous.
-    return candidate_bucket
+    bucket_dir = gcs_root / parsed.bucket
+    if gcs_root.name == parsed.bucket:
+        return candidate_flat
+    # Prefer bucket layout only when the provided root is a mount that already
+    # has per-bucket subdirectories. Otherwise prefer flat/single-bucket layout.
+    if bucket_dir.exists() and bucket_dir.is_dir():
+        return candidate_bucket
+    return candidate_flat
 
 
 def infer_storage_root_from_scene_path(path: Path) -> Path:

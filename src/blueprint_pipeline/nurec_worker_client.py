@@ -53,6 +53,7 @@ class NurecWorkerClient:
             worker_command=(os.getenv("NUREC_WORKER_COMMAND", "") or "").strip(),
             worker_python_executable=(os.getenv("NUREC_WORKER_PYTHON", "python") or "python").strip(),
         )
+        self._repo_src = Path(__file__).resolve().parents[1]
 
     @property
     def nurec_dir(self) -> Path:
@@ -128,9 +129,17 @@ class NurecWorkerClient:
                 "--storage-root",
                 str(self.storage_root),
             ]
+            env = dict(os.environ)
+            existing_pythonpath = env.get("PYTHONPATH", "")
+            parts = [part for part in existing_pythonpath.split(os.pathsep) if part]
+            repo_src = str(self._repo_src)
+            if repo_src not in parts:
+                parts.insert(0, repo_src)
+            env["PYTHONPATH"] = os.pathsep.join(parts)
             proc = subprocess.run(
                 command,
                 cwd=str(self.storage_root),
+                env=env,
                 check=False,
                 text=True,
                 capture_output=True,
@@ -265,6 +274,10 @@ class NurecWorkerClient:
         descriptor_uri: str,
         object_index_uri: str,
     ) -> Dict[str, Any]:
+        for marker_name in (".nurec_complete", ".nurec_failed"):
+            marker_path = self._marker(marker_name)
+            if marker_path.exists():
+                marker_path.unlink()
         spec_path = self.write_job_spec(
             descriptor=descriptor,
             descriptor_uri=descriptor_uri,

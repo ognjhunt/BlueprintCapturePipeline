@@ -22,6 +22,7 @@ from .common import (
     ensure_dir,
     has_nonempty_file,
     infer_storage_root_from_scene_path,
+    optional_read_json,
     parse_bool,
     parse_gs_uri,
     read_json,
@@ -162,6 +163,36 @@ def _read_interactive_results(path: Path) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise StageError("interactive", f"invalid interactive results payload type at {path}")
     return payload
+
+
+def _synthesize_interactive_results_from_failure(
+    *,
+    scene_id: str,
+    failed_required_ids: List[str],
+    reason: str,
+) -> Dict[str, Any]:
+    objects = [
+        {
+            "id": obj_id,
+            "status": "error",
+            "backend": "interactive_failed_marker",
+            "required_articulation": True,
+            "is_articulated": False,
+            "joint_count": 0,
+        }
+        for obj_id in sorted(set(failed_required_ids))
+    ]
+    return {
+        "scene_id": scene_id,
+        "objects": objects,
+        "total_objects": len(objects),
+        "ok_count": 0,
+        "error_count": len(objects),
+        "fallback_count": 0,
+        "articulated_count": 0,
+        "source": "interactive_failed_marker",
+        "failure_reason": reason,
+    }
 
 
 def _write_pipeline_failure(
@@ -424,10 +455,49 @@ def run_swap_pipeline(
         )
         debug["interactive_job"] = required_env_from_command_result(interactive_result)
 
-        interactive_results_path = storage_root / assets_prefix / "interactive" / "interactive_results.json"
-        interactive_results_payload = _read_interactive_results(interactive_results_path)
-
         required_ids = _required_articulation_ids(swap_candidates)
+        interactive_results_path = storage_root / assets_prefix / "interactive" / "interactive_results.json"
+        if interactive_results_path.is_file():
+            interactive_results_payload = _read_interactive_results(interactive_results_path)
+        else:
+            failure_marker_path = storage_root / assets_prefix / ".interactive_failed"
+            failure_marker = optional_read_json(failure_marker_path) or {}
+            failure_reason = ""
+            failure_required_ids: List[str] = []
+            if isinstance(failure_marker, Mapping):
+                failure_reason = str(failure_marker.get("reason") or "").strip()
+                details = (
+                    failure_marker.get("details")
+                    if isinstance(failure_marker.get("details"), Mapping)
+                    else {}
+                )
+                raw_required = details.get("required_objects") if isinstance(details, Mapping) else []
+                if isinstance(raw_required, list):
+                    failure_required_ids = [str(value) for value in raw_required if str(value).strip()]
+
+            if interactive_result.return_code != 0 and failure_reason == "required_articulation_unmet":
+                synthesized_failed_ids = failure_required_ids or required_ids
+                interactive_results_payload = _synthesize_interactive_results_from_failure(
+                    scene_id=scene_id,
+                    failed_required_ids=synthesized_failed_ids,
+                    reason=failure_reason,
+                )
+                write_json(interactive_results_path, interactive_results_payload)
+                debug["interactive_synthesized_results"] = {
+                    "reason": failure_reason,
+                    "failure_marker": str(failure_marker_path),
+                    "failed_required_ids": synthesized_failed_ids,
+                }
+            else:
+                raise StageError(
+                    "interactive",
+                    (
+                        "interactive results missing at "
+                        f"{interactive_results_path}; return_code={interactive_result.return_code}; "
+                        f"failure_reason={failure_reason or 'unknown'}"
+                    ),
+                )
+
         failed_required_ids = find_required_articulation_failures(
             interactive_results=interactive_results_payload,
             required_object_ids=required_ids,

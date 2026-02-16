@@ -13,6 +13,12 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping,
 
 from .common import StageError
 
+DEFAULT_GCS_MOUNT_ROOT = Path("/mnt/gcs")
+ROOT_OVERRIDE_SCRIPT_PATHS = {
+    "simready-job/prepare_simready_assets.py",
+    "usd-assembly-job/assemble_scene.py",
+}
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -50,6 +56,47 @@ class BlueprintPipelineRunner:
 
     def __init__(self, config: BlueprintPipelineRunnerConfig) -> None:
         self.config = config
+
+    def _using_default_mount_root(self) -> bool:
+        try:
+            return self.config.gcs_root.resolve() == DEFAULT_GCS_MOUNT_ROOT
+        except FileNotFoundError:
+            return self.config.gcs_root == DEFAULT_GCS_MOUNT_ROOT
+
+    def _job_prefix_path(self, prefix: str) -> str:
+        path = Path(prefix)
+        if path.is_absolute():
+            return str(path)
+        if self._using_default_mount_root():
+            return prefix
+        return str((self.config.gcs_root / path).resolve())
+
+    def _should_use_root_override_wrapper(self, script_rel_path: str) -> bool:
+        return (not self._using_default_mount_root()) and script_rel_path in ROOT_OVERRIDE_SCRIPT_PATHS
+
+    def _build_job_command(self, *, script_path: Path, script_rel_path: str) -> List[str]:
+        if not self._should_use_root_override_wrapper(script_rel_path):
+            return [sys.executable, str(script_path)]
+
+        wrapper = "\n".join(
+            [
+                "import importlib.util",
+                "import pathlib",
+                "import sys",
+                "script = pathlib.Path(sys.argv[1])",
+                "root = pathlib.Path(sys.argv[2])",
+                "spec = importlib.util.spec_from_file_location('bp_job_entry', str(script))",
+                "if spec is None or spec.loader is None:",
+                "    raise SystemExit(2)",
+                "module = importlib.util.module_from_spec(spec)",
+                "spec.loader.exec_module(module)",
+                "if hasattr(module, 'GCS_ROOT'):",
+                "    module.GCS_ROOT = root",
+                "result = module.main() if hasattr(module, 'main') else 0",
+                "raise SystemExit(0 if result is None else int(result))",
+            ]
+        )
+        return [sys.executable, "-c", wrapper, str(script_path), str(self.config.gcs_root)]
 
     def ensure_expected_commit(self, expected_commit_hash: str) -> None:
         expected = expected_commit_hash.strip().lower()
@@ -127,7 +174,7 @@ class BlueprintPipelineRunner:
         env: MutableMapping[str, str],
     ) -> CommandResult:
         script_path = self.config.blueprintpipeline_root / script_rel_path
-        command = [sys.executable, str(script_path)]
+        command = self._build_job_command(script_path=script_path, script_rel_path=script_rel_path)
 
         merged_env = dict(os.environ)
         merged_env.update(env)
@@ -154,11 +201,13 @@ class BlueprintPipelineRunner:
         regen3d_prefix: str,
         extra_env: Optional[Mapping[str, str]] = None,
     ) -> CommandResult:
+        assets_env_prefix = self._job_prefix_path(assets_prefix)
+        regen3d_env_prefix = self._job_prefix_path(regen3d_prefix)
         env = {
             "BUCKET": self.config.bucket,
             "SCENE_ID": scene_id,
-            "ASSETS_PREFIX": assets_prefix,
-            "REGEN3D_PREFIX": regen3d_prefix,
+            "ASSETS_PREFIX": assets_env_prefix,
+            "REGEN3D_PREFIX": regen3d_env_prefix,
         }
         if extra_env:
             env.update({str(k): str(v) for k, v in extra_env.items()})
@@ -175,12 +224,15 @@ class BlueprintPipelineRunner:
         layout_prefix: str,
         usd_prefix: str,
     ) -> CommandResult:
+        assets_env_prefix = self._job_prefix_path(assets_prefix)
+        layout_env_prefix = self._job_prefix_path(layout_prefix)
+        usd_env_prefix = self._job_prefix_path(usd_prefix)
         env = {
             "BUCKET": self.config.bucket,
             "SCENE_ID": scene_id,
-            "ASSETS_PREFIX": assets_prefix,
-            "LAYOUT_PREFIX": layout_prefix,
-            "USD_PREFIX": usd_prefix,
+            "ASSETS_PREFIX": assets_env_prefix,
+            "LAYOUT_PREFIX": layout_env_prefix,
+            "USD_PREFIX": usd_env_prefix,
         }
         return self._run_job_script(
             script_rel_path="simready-job/prepare_simready_assets.py",
@@ -195,12 +247,15 @@ class BlueprintPipelineRunner:
         layout_prefix: str,
         usd_prefix: str,
     ) -> CommandResult:
+        assets_env_prefix = self._job_prefix_path(assets_prefix)
+        layout_env_prefix = self._job_prefix_path(layout_prefix)
+        usd_env_prefix = self._job_prefix_path(usd_prefix)
         env = {
             "BUCKET": self.config.bucket,
             "SCENE_ID": scene_id,
-            "ASSETS_PREFIX": assets_prefix,
-            "LAYOUT_PREFIX": layout_prefix,
-            "USD_PREFIX": usd_prefix,
+            "ASSETS_PREFIX": assets_env_prefix,
+            "LAYOUT_PREFIX": layout_env_prefix,
+            "USD_PREFIX": usd_env_prefix,
         }
         return self._run_job_script(
             script_rel_path="usd-assembly-job/assemble_scene.py",

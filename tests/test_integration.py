@@ -434,6 +434,87 @@ def test_interactive_failure_then_retrieval_recovery(tmp_path: Path) -> None:
     assert drawer["backend"] == "retrieval_fallback"
 
 
+def test_interactive_failed_marker_without_results_triggers_fallback(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    nurec_client = _StubNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+
+    class _NoResultsRunner(_StubBlueprintRunner):
+        def run_interactive_job(
+            self,
+            *,
+            scene_id: str,
+            assets_prefix: str,
+            regen3d_prefix: str,
+            extra_env: Optional[Mapping[str, str]] = None,
+        ) -> CommandResult:
+            self.interactive_calls.append(
+                {
+                    "scene_id": scene_id,
+                    "assets_prefix": assets_prefix,
+                    "regen3d_prefix": regen3d_prefix,
+                    "extra_env": dict(extra_env or {}),
+                }
+            )
+
+            failure_path = self.root / assets_prefix / ".interactive_failed"
+            failure_path.parent.mkdir(parents=True, exist_ok=True)
+            failure_path.write_text(
+                json.dumps(
+                    {
+                        "scene_id": scene_id,
+                        "status": "failed",
+                        "reason": "required_articulation_unmet",
+                        "details": {"required_objects": ["drawer_1"]},
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            return CommandResult(
+                return_code=1,
+                stdout="",
+                stderr="",
+                command=["python", "interactive-job/run_interactive_assets.py"],
+            )
+
+    runner = _NoResultsRunner(
+        tmp_path / "bucket",
+        fail_required_ids={"drawer_1"},
+        retrieval_resolves=True,
+    )
+
+    result = run_swap_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+        nurec_client=nurec_client,
+        blueprint_runner=runner,
+    )
+
+    assert result["status"] == "completed"
+    assert len(runner.materialize_calls) == 2
+    interactive_results = json.loads(
+        (
+            tmp_path
+            / "bucket/scenes/scene_demo/assets/interactive/interactive_results.json"
+        ).read_text(encoding="utf-8")
+    )
+    drawer = next(item for item in interactive_results["objects"] if item["id"] == "drawer_1")
+    assert drawer["is_articulated"] is True
+    assert drawer["backend"] == "retrieval_fallback"
+
+
 def test_hard_fail_when_retrieval_unresolved(tmp_path: Path) -> None:
     descriptor_uri = _write_scene_descriptor(tmp_path)
     nurec_client = _StubNurecClient(
