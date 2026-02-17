@@ -84,6 +84,22 @@ NuRec worker dispatch:
 - `NUREC_PIPELINE_COMMAND` (required for `local_worker` unless `NUREC_SKIP_PIPELINE_COMMAND=true`)
 - `NUREC_SKIP_PIPELINE_COMMAND` (dev/testing only: skip command and validate pre-generated artifacts)
 
+NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
+
+- `FIXER_MODE` (`auto` default; `h100`, `local`)
+- `FIXER_H100_SCRIPT` (default: `/app/scripts/fixer_h100_stage.sh`)
+- `FIXER_H100_INSTANCE_ID` (optional existing Vast.ai instance)
+- `FIXER_H100_KEEP_INSTANCE` (`true`/`false`)
+- `FIXER_H100_MAX_HOURLY` (default: `2.50`)
+- `FIXER_H100_DISK_GB` (default: `80`)
+- `FIXER_H100_REMOTE_SETUP_CMD` (optional custom setup command for remote Fixer env)
+- `COLMAP_SIFT_GPU` (`auto` default; `on`, `off`)
+- `SAM3_N_FRAMES` (`0` default = auto-scaled by capture length)
+- `SAM3_MIN_FRAME_DETECTIONS` (`0` default = env-aware auto; warehouse defaults to `1`)
+- `DA3_MODEL_PATH` (default: `/opt/da3/weights/metric_large`, local path preferred)
+- `DA3_MODEL_NAME` (default: `da3metric-large`)
+- `HF_HOME` (default in VM guide: `/opt/hf`, shared HuggingFace cache)
+
 Asset generation/retrieval providers:
 
 - `TEXT_ASSET_GENERATION_PROVIDER_CHAIN` (default: `sam3d,hunyuan3d`)
