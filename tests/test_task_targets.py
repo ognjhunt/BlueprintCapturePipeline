@@ -248,3 +248,366 @@ def test_policy_only_mode_ignores_explicit_targets() -> None:
     ids = {item["object_id"] for item in payload["candidates"]}
     assert "obj_box" in ids
     assert "obj_focus" not in ids
+
+
+def test_object_dedupe_merges_overlapping_same_label_fragments() -> None:
+    descriptor = _descriptor()
+    object_entries = [
+        {
+            "id": "door_a",
+            "label": "door",
+            "boundingBox": {"center": [0.0, 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.92,
+            "n_total_detections": 20,
+            "all_crops": ["door_a.png"],
+        },
+        {
+            "id": "door_b",
+            "label": "door",
+            "boundingBox": {"center": [0.08, 1.02, 0.02], "extents": [1.02, 1.95, 0.22]},
+            "mean_confidence": 0.89,
+            "n_total_detections": 18,
+            "all_crops": ["door_b.png"],
+        },
+        {
+            "id": "box_1",
+            "label": "box",
+            "boundingBox": {"center": [2.0, 0.4, 1.0], "extents": [0.4, 0.3, 0.3]},
+            "mean_confidence": 0.8,
+            "n_total_detections": 12,
+        },
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="policy_only",
+        max_candidates=10,
+        per_class_caps={"door": 10},
+    )
+    ids = [item["object_id"] for item in payload["candidates"]]
+    door_count = sum(1 for item in payload["candidates"] if str(item.get("label")) == "door")
+    assert door_count == 1
+    assert any(obj_id.startswith("door_") for obj_id in ids)
+
+    preprocess = payload["index_preprocessing"]["dedupe"]
+    assert preprocess["original_count"] == 3
+    assert preprocess["deduped_count"] == 2
+
+
+def test_per_class_caps_applied_before_candidate_selection() -> None:
+    descriptor = _descriptor()
+    object_entries = [
+        {
+            "id": "door_1",
+            "label": "door",
+            "boundingBox": {"center": [0.0, 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.95,
+            "n_total_detections": 20,
+        },
+        {
+            "id": "door_2",
+            "label": "door",
+            "boundingBox": {"center": [3.0, 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.9,
+            "n_total_detections": 18,
+        },
+        {
+            "id": "door_3",
+            "label": "door",
+            "boundingBox": {"center": [6.0, 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.85,
+            "n_total_detections": 15,
+        },
+        {
+            "id": "box_1",
+            "label": "box",
+            "boundingBox": {"center": [2.0, 0.4, 1.0], "extents": [0.4, 0.3, 0.3]},
+            "mean_confidence": 0.8,
+            "n_total_detections": 12,
+        },
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="policy_only",
+        max_candidates=20,
+        per_class_caps={"door": 2},
+    )
+
+    doors = [item for item in payload["candidates"] if str(item.get("label")) == "door"]
+    assert len(doors) == 2
+
+    class_caps = payload["index_preprocessing"]["class_caps"]
+    assert class_caps["dropped_count"] >= 1
+    assert class_caps["dropped_by_label"].get("door", 0) >= 1
+
+
+def test_heuristic_targets_do_not_become_explicit_by_default() -> None:
+    descriptor = _descriptor()
+    object_entries = [
+        {
+            "id": "door_1",
+            "label": "door",
+            "boundingBox": {"center": [0.0, 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.95,
+            "n_frame_detections": 3,
+            "n_total_detections": 3,
+        },
+        {
+            "id": "box_1",
+            "label": "box",
+            "boundingBox": {"center": [2.0, 0.4, 1.0], "extents": [0.4, 0.3, 0.3]},
+            "mean_confidence": 0.8,
+            "n_frame_detections": 3,
+            "n_total_detections": 3,
+        },
+    ]
+    task_targets = {
+        "inference_mode": "heuristic",
+        "manipulation_candidates": [{"instance_id": "box_1", "label": "box", "source": "heuristic"}],
+        "articulation_hints": [{"instance_id": "door_1", "label": "door", "source": "heuristic"}],
+        "target_object_ids": ["box_1"],
+        "articulation_required_ids": ["door_1"],
+    }
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        task_targets=task_targets,
+        selection_mode="hybrid",
+        max_candidates=1,
+    )
+
+    assert payload["selection_summary"]["explicit_count"] == 0
+
+
+def test_detection_support_filter_drops_low_support_fragments() -> None:
+    descriptor = _descriptor()
+    object_entries = [
+        {
+            "id": "box_1",
+            "label": "box",
+            "boundingBox": {"center": [0.0, 0.5, 0.0], "extents": [0.4, 0.4, 0.4]},
+            "mean_confidence": 0.8,
+            "n_frame_detections": 1,
+            "n_total_detections": 1,
+        },
+        {
+            "id": "box_2",
+            "label": "box",
+            "boundingBox": {"center": [1.0, 0.5, 0.0], "extents": [0.4, 0.4, 0.4]},
+            "mean_confidence": 0.8,
+            "n_frame_detections": 1,
+            "n_total_detections": 1,
+        },
+        {
+            "id": "box_3",
+            "label": "box",
+            "boundingBox": {"center": [2.0, 0.5, 0.0], "extents": [0.4, 0.4, 0.4]},
+            "mean_confidence": 0.8,
+            "n_frame_detections": 2,
+            "n_total_detections": 2,
+        },
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="policy_only",
+        max_candidates=10,
+        per_class_caps={"box": 10},
+    )
+
+    ids = [item["object_id"] for item in payload["candidates"]]
+    assert ids == ["box_3"]
+    support = payload["index_preprocessing"]["detection_support"]
+    assert support["dropped_low_support_count"] == 2
+
+
+def test_semantic_box_cap_groups_package_and_container_labels() -> None:
+    descriptor = _descriptor()
+    object_entries = [
+        {
+            "id": "obj_package",
+            "label": "package",
+            "boundingBox": {"center": [0.0, 0.5, 0.0], "extents": [0.4, 0.4, 0.4]},
+            "mean_confidence": 0.9,
+            "n_frame_detections": 2,
+            "n_total_detections": 2,
+        },
+        {
+            "id": "obj_box",
+            "label": "box",
+            "boundingBox": {"center": [1.0, 0.5, 0.0], "extents": [0.4, 0.4, 0.4]},
+            "mean_confidence": 0.85,
+            "n_frame_detections": 2,
+            "n_total_detections": 2,
+        },
+        {
+            "id": "obj_container",
+            "label": "container",
+            "boundingBox": {"center": [2.0, 0.5, 0.0], "extents": [0.4, 0.4, 0.4]},
+            "mean_confidence": 0.8,
+            "n_frame_detections": 2,
+            "n_total_detections": 2,
+        },
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="policy_only",
+        max_candidates=10,
+        per_class_caps={"box": 2},
+    )
+
+    assert len(payload["candidates"]) == 2
+    class_caps = payload["index_preprocessing"]["class_caps"]
+    assert class_caps["dropped_by_label"].get("box", 0) == 1
+
+
+def test_per_class_caps_enforced_when_explicitly_set() -> None:
+    """Per-class caps are enforced when explicitly provided."""
+    descriptor = _descriptor()
+    object_entries = [
+        {
+            "id": f"door_{i}",
+            "label": "door",
+            "boundingBox": {"center": [float(i * 3), 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.9 - i * 0.03,
+            "n_total_detections": 20 - i,
+        }
+        for i in range(10)
+    ]
+    task_targets = {
+        "inference_mode": "heuristic",
+        "manipulation_candidates": [],
+        "articulation_hints": [
+            {"instance_id": f"door_{i}", "label": "door", "source": "heuristic"}
+            for i in range(10)
+        ],
+        "target_object_ids": [],
+        "articulation_required_ids": [f"door_{i}" for i in range(10)],
+    }
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        task_targets=task_targets,
+        selection_mode="hybrid",
+        max_candidates=24,
+        per_class_caps={"door": 4},
+    )
+
+    doors = [c for c in payload["candidates"] if c["label"] == "door"]
+    assert len(doors) == 4, f"expected 4 doors, got {len(doors)}"
+    assert payload["selection_summary"]["explicit_count"] == 0
+    class_caps = payload["index_preprocessing"]["class_caps"]
+    assert class_caps["dropped_by_label"].get("door", 0) == 6
+
+
+def test_no_default_per_class_caps() -> None:
+    """Without explicit caps, all qualifying objects pass through."""
+    descriptor = _descriptor()
+    object_entries = [
+        {
+            "id": f"door_{i}",
+            "label": "door",
+            "boundingBox": {"center": [float(i * 3), 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.9,
+            "n_total_detections": 10,
+        }
+        for i in range(8)
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="hybrid",
+        max_candidates=24,
+        # no per_class_caps — defaults should be empty
+    )
+
+    doors = [c for c in payload["candidates"] if c["label"] == "door"]
+    assert len(doors) == 8, f"expected all 8 doors without caps, got {len(doors)}"
+
+
+def test_single_detection_objects_filtered_by_support() -> None:
+    """Objects with only 1 detection are dropped by the detection support filter."""
+    descriptor = _descriptor()
+    # 5 multi-detection doors + 10 single-detection doors
+    object_entries = [
+        {
+            "id": f"door_multi_{i}",
+            "label": "door",
+            "boundingBox": {"center": [float(i * 3), 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.9,
+            "n_total_detections": 5,
+        }
+        for i in range(5)
+    ] + [
+        {
+            "id": f"door_single_{i}",
+            "label": "door",
+            "boundingBox": {"center": [float(i * 3 + 20), 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.7,
+            "n_total_detections": 1,
+        }
+        for i in range(10)
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="hybrid",
+        max_candidates=24,
+    )
+
+    door_ids = [c["object_id"] for c in payload["candidates"] if c["label"] == "door"]
+    assert all(did.startswith("door_multi_") for did in door_ids), (
+        f"single-detection doors should be filtered, got: {door_ids}"
+    )
+    assert len(door_ids) == 5
+    support = payload["index_preprocessing"]["detection_support"]
+    assert support["dropped_low_support_count"] == 10
+
+
+def test_descriptor_explicit_targets_still_bypass_caps() -> None:
+    """Targets explicitly requested in the descriptor bypass per-class caps."""
+    descriptor = _descriptor(
+        artic=[
+            {"instance_id": "door_0", "label": "door"},
+            {"instance_id": "door_1", "label": "door"},
+            {"instance_id": "door_2", "label": "door"},
+        ],
+    )
+    object_entries = [
+        {
+            "id": f"door_{i}",
+            "label": "door",
+            "boundingBox": {"center": [float(i * 3), 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.9,
+            "n_total_detections": 10,
+        }
+        for i in range(5)
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="hybrid",
+        max_candidates=24,
+        per_class_caps={"door": 1},
+    )
+
+    doors = [c for c in payload["candidates"] if c["label"] == "door"]
+    # 3 explicit + at most 1 policy-selected = 4, but only 5 total
+    assert len(doors) >= 3, f"explicit doors must survive cap, got {len(doors)}"
+    explicit_ids = {
+        c["object_id"]
+        for c in payload["candidates"]
+        if c.get("selection", {}).get("explicit")
+    }
+    assert {"door_0", "door_1", "door_2"}.issubset(explicit_ids)

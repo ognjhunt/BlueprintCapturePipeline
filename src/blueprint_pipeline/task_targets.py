@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import shlex
 import subprocess
@@ -80,6 +82,26 @@ _SOURCE_PRIORITY = {
     "heuristic": 1,
 }
 
+_DEFAULT_CLASS_CAPS: Dict[str, int] = {
+    # Empty by default — we rely on spatial deduplication to merge duplicate
+    # detections of the same physical object rather than arbitrarily capping
+    # classes.  Override via SWAP_PER_CLASS_MAX_COUNTS_JSON env var if needed.
+}
+
+_SEMANTIC_LABEL_BUCKETS = {
+    "door": (
+        "door",
+        "docking_door",
+        "rolling_door",
+        "pantry_door",
+        "cabinet_door",
+        "appliance_door",
+    ),
+    "drawer": ("drawer",),
+    "cabinet": ("cabinet", "cupboard", "closet", "locker", "wardrobe"),
+    "box": ("box", "package", "parcel", "carton", "container", "crate", "tote", "bin", "shipment"),
+}
+
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -129,6 +151,16 @@ def _candidate_label(entry: Mapping[str, Any]) -> str:
     return "object"
 
 
+def _semantic_label_bucket(label: Any) -> str:
+    text = str(label or "").strip().lower()
+    if not text:
+        return "object"
+    for bucket, tokens in _SEMANTIC_LABEL_BUCKETS.items():
+        if any(token in text for token in tokens):
+            return bucket
+    return text
+
+
 def _mean_box_area_px(entry: Mapping[str, Any]) -> float:
     raw = entry.get("mean_box_px")
     if isinstance(raw, (int, float)):
@@ -161,6 +193,391 @@ def _object_salience_score(entry: Mapping[str, Any]) -> float:
     area_score = _clamp01(area / 30000.0)
     crop_score = _clamp01(crops / 4.0)
     return (det_score + conf_score + area_score + crop_score) / 4.0
+
+
+def _entry_center_extents(entry: Mapping[str, Any]) -> Tuple[List[float], List[float]]:
+    raw_box = entry.get("boundingBox") if isinstance(entry.get("boundingBox"), Mapping) else None
+    if raw_box is None:
+        raw_box = entry.get("obb") if isinstance(entry.get("obb"), Mapping) else {}
+
+    center_raw = raw_box.get("center") if isinstance(raw_box.get("center"), list) else [0.0, 0.0, 0.0]
+    extents_raw = raw_box.get("extents") if isinstance(raw_box.get("extents"), list) else [0.25, 0.25, 0.25]
+
+    center = [try_parse_float(center_raw[idx] if idx < len(center_raw) else 0.0, 0.0) for idx in range(3)]
+    extents = [
+        max(0.02, try_parse_float(extents_raw[idx] if idx < len(extents_raw) else 0.25, 0.25))
+        for idx in range(3)
+    ]
+    return center, extents
+
+
+def _entry_bounds(entry: Mapping[str, Any]) -> Tuple[List[float], List[float]]:
+    center, extents = _entry_center_extents(entry)
+    half = [max(0.01, value * 0.5) for value in extents]
+    mins = [center[idx] - half[idx] for idx in range(3)]
+    maxs = [center[idx] + half[idx] for idx in range(3)]
+    return mins, maxs
+
+
+def _obb_iou3d(a: Mapping[str, Any], b: Mapping[str, Any]) -> float:
+    a_min, a_max = _entry_bounds(a)
+    b_min, b_max = _entry_bounds(b)
+    overlap = [
+        max(0.0, min(a_max[idx], b_max[idx]) - max(a_min[idx], b_min[idx]))
+        for idx in range(3)
+    ]
+    inter = overlap[0] * overlap[1] * overlap[2]
+    if inter <= 0.0:
+        return 0.0
+    vol_a = max(1e-9, (a_max[0] - a_min[0]) * (a_max[1] - a_min[1]) * (a_max[2] - a_min[2]))
+    vol_b = max(1e-9, (b_max[0] - b_min[0]) * (b_max[1] - b_min[1]) * (b_max[2] - b_min[2]))
+    union = max(1e-9, vol_a + vol_b - inter)
+    return inter / union
+
+
+def _center_distance(a: Mapping[str, Any], b: Mapping[str, Any]) -> float:
+    ac, _ = _entry_center_extents(a)
+    bc, _ = _entry_center_extents(b)
+    return math.sqrt(sum((ac[idx] - bc[idx]) ** 2 for idx in range(3)))
+
+
+def _diag_extent(entry: Mapping[str, Any]) -> float:
+    _, extents = _entry_center_extents(entry)
+    return math.sqrt(sum(value * value for value in extents))
+
+
+def _labels_match(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    label_a = _candidate_label(a).strip().lower()
+    label_b = _candidate_label(b).strip().lower()
+    if label_a == label_b:
+        return True
+    return _semantic_label_bucket(label_a) == _semantic_label_bucket(label_b)
+
+
+def _merge_cluster_entries(cluster_entries: List[Mapping[str, Any]]) -> Dict[str, Any]:
+    representative = max(cluster_entries, key=_object_salience_score)
+    merged = dict(representative)
+
+    mins_list: List[List[float]] = []
+    maxs_list: List[List[float]] = []
+    all_crops: List[str] = []
+    ids: List[str] = []
+    total_detections = 0
+    total_frame_detections = 0
+    weighted_conf_num = 0.0
+    weighted_conf_den = 0.0
+    max_conf = 0.0
+
+    for entry in cluster_entries:
+        mins, maxs = _entry_bounds(entry)
+        mins_list.append(mins)
+        maxs_list.append(maxs)
+
+        obj_id = _candidate_id(entry)
+        if obj_id and obj_id not in ids:
+            ids.append(obj_id)
+
+        ref = entry.get("reference_crop")
+        if isinstance(ref, str):
+            text = ref.strip()
+            if text and text not in all_crops:
+                all_crops.append(text)
+
+        raw_crops = entry.get("all_crops")
+        if isinstance(raw_crops, list):
+            for value in raw_crops:
+                text = str(value).strip()
+                if text and text not in all_crops:
+                    all_crops.append(text)
+
+        detections = max(
+            _safe_int(entry.get("n_total_detections"), 0),
+            _safe_int(entry.get("n_frame_detections"), 0),
+            1,
+        )
+        total_detections += _safe_int(entry.get("n_total_detections"), 0)
+        total_frame_detections += _safe_int(entry.get("n_frame_detections"), 0)
+
+        confidence = _safe_float(
+            entry.get("mean_confidence"),
+            _safe_float(entry.get("confidence"), 0.0),
+        )
+        weighted_conf_num += confidence * float(detections)
+        weighted_conf_den += float(detections)
+        max_conf = max(max_conf, confidence)
+
+    if mins_list and maxs_list:
+        global_min = [min(item[idx] for item in mins_list) for idx in range(3)]
+        global_max = [max(item[idx] for item in maxs_list) for idx in range(3)]
+        merged_center = [(global_min[idx] + global_max[idx]) * 0.5 for idx in range(3)]
+        merged_extents = [max(0.02, global_max[idx] - global_min[idx]) for idx in range(3)]
+
+        box_key = "boundingBox" if "boundingBox" in merged else "obb" if "obb" in merged else "boundingBox"
+        box = dict(merged.get(box_key)) if isinstance(merged.get(box_key), Mapping) else {}
+        box["center"] = merged_center
+        box["extents"] = merged_extents
+        if not isinstance(box.get("axes"), list) or len(box.get("axes")) < 3:
+            box["axes"] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        if not isinstance(box.get("orientationQuaternion"), list) or len(box.get("orientationQuaternion")) < 4:
+            box["orientationQuaternion"] = [1.0, 0.0, 0.0, 0.0]
+        merged[box_key] = box
+
+    if all_crops:
+        merged["all_crops"] = all_crops
+        if not str(merged.get("reference_crop") or "").strip():
+            merged["reference_crop"] = all_crops[0]
+    if ids:
+        merged["merged_object_ids"] = sorted(ids)
+        merged["merge_count"] = len(ids)
+
+    if total_detections > 0:
+        merged["n_total_detections"] = total_detections
+    if total_frame_detections > 0:
+        merged["n_frame_detections"] = total_frame_detections
+    if weighted_conf_den > 0.0:
+        merged["mean_confidence"] = weighted_conf_num / weighted_conf_den
+    if max_conf > 0.0:
+        merged["confidence"] = max_conf
+
+    return merged
+
+
+def _dedupe_object_index_entries(
+    object_index_entries: List[Mapping[str, Any]],
+    *,
+    iou_threshold: float,
+    center_ratio: float,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    iou_threshold = max(0.0, min(1.0, float(iou_threshold)))
+    center_ratio = max(0.0, float(center_ratio))
+
+    candidates = [dict(entry) for entry in object_index_entries if isinstance(entry, Mapping)]
+    ranked = sorted(candidates, key=_object_salience_score, reverse=True)
+    clusters: List[Dict[str, Any]] = []
+
+    for entry in ranked:
+        placed = False
+        for cluster in clusters:
+            representative = cluster["representative"]
+            if not _labels_match(entry, representative):
+                continue
+
+            iou = _obb_iou3d(entry, representative)
+            distance = _center_distance(entry, representative)
+            distance_threshold = max(0.05, center_ratio * max(0.1, min(_diag_extent(entry), _diag_extent(representative))))
+
+            if iou >= iou_threshold or distance <= distance_threshold:
+                cluster["members"].append(entry)
+                rep_score = _object_salience_score(representative)
+                entry_score = _object_salience_score(entry)
+                if entry_score > rep_score:
+                    cluster["representative"] = entry
+                placed = True
+                break
+
+        if not placed:
+            clusters.append({"representative": entry, "members": [entry]})
+
+    merged_entries: List[Dict[str, Any]] = []
+    merged_clusters = 0
+    for cluster in clusters:
+        members = cluster["members"]
+        if len(members) > 1:
+            merged_clusters += 1
+        merged_entries.append(_merge_cluster_entries(members))
+
+    merged_entries.sort(key=_object_salience_score, reverse=True)
+    report = {
+        "original_count": len(candidates),
+        "deduped_count": len(merged_entries),
+        "merged_clusters": merged_clusters,
+        "merged_entries_removed": len(candidates) - len(merged_entries),
+        "iou_threshold": iou_threshold,
+        "center_ratio": center_ratio,
+    }
+    return merged_entries, report
+
+
+def _parse_per_class_caps(
+    override_caps: Optional[Mapping[str, int]] = None,
+) -> Dict[str, int]:
+    if override_caps is not None:
+        parsed: Dict[str, int] = {}
+        for key, value in override_caps.items():
+            label = str(key).strip().lower()
+            cap = _safe_int(value, 0)
+            if label and cap > 0:
+                parsed[label] = cap
+        return parsed
+
+    json_raw = (os.getenv("SWAP_PER_CLASS_MAX_COUNTS_JSON") or "").strip()
+    if json_raw:
+        try:
+            payload = json.loads(json_raw)
+            if isinstance(payload, Mapping):
+                parsed: Dict[str, int] = {}
+                for key, value in payload.items():
+                    label = str(key).strip().lower()
+                    cap = _safe_int(value, 0)
+                    if label and cap > 0:
+                        parsed[label] = cap
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
+
+    kv_raw = (os.getenv("SWAP_PER_CLASS_MAX_COUNTS") or "").strip()
+    if kv_raw:
+        parsed: Dict[str, int] = {}
+        for token in kv_raw.split(","):
+            text = token.strip()
+            if not text:
+                continue
+            if ":" in text:
+                key, value = text.split(":", 1)
+            elif "=" in text:
+                key, value = text.split("=", 1)
+            else:
+                continue
+            label = key.strip().lower()
+            cap = _safe_int(value, 0)
+            if label and cap > 0:
+                parsed[label] = cap
+        if parsed:
+            return parsed
+
+    return dict(_DEFAULT_CLASS_CAPS)
+
+
+def _entry_has_explicit_object_id(entry: Mapping[str, Any], explicit_object_ids: set[str]) -> bool:
+    if not explicit_object_ids:
+        return False
+    ids = [str(entry.get("id") or "").strip()]
+    merged_ids = entry.get("merged_object_ids")
+    if isinstance(merged_ids, list):
+        ids.extend(str(value).strip() for value in merged_ids)
+    return any(obj_id and obj_id in explicit_object_ids for obj_id in ids)
+
+
+def _entry_detection_counts(entry: Mapping[str, Any]) -> Tuple[int, int]:
+    frame_detections = max(0, _safe_int(entry.get("n_frame_detections"), 0))
+    total_detections = max(0, _safe_int(entry.get("n_total_detections"), 0))
+    return frame_detections, total_detections
+
+
+def _apply_detection_support_filter(
+    entries: List[Dict[str, Any]],
+    *,
+    min_frame_detections: int,
+    min_total_detections: int,
+    explicit_object_ids: set[str],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    min_frame_detections = max(0, int(min_frame_detections))
+    min_total_detections = max(0, int(min_total_detections))
+    enabled = min_frame_detections > 0 or min_total_detections > 0
+    if not enabled:
+        return entries, {
+            "enabled": False,
+            "min_frame_detections": min_frame_detections,
+            "min_total_detections": min_total_detections,
+            "input_count": len(entries),
+            "kept_count": len(entries),
+            "dropped_count": 0,
+            "dropped_low_support_count": 0,
+            "explicit_override_kept_count": 0,
+        }
+
+    kept: List[Dict[str, Any]] = []
+    dropped_low_support_count = 0
+    explicit_override_kept_count = 0
+    for entry in entries:
+        has_frame_key = "n_frame_detections" in entry
+        has_total_key = "n_total_detections" in entry
+        frame_detections, total_detections = _entry_detection_counts(entry)
+        has_detection_counts = has_frame_key or has_total_key
+        if not has_detection_counts:
+            kept.append(entry)
+            continue
+
+        frame_ok = True
+        if min_frame_detections > 0 and has_frame_key:
+            frame_ok = frame_detections >= min_frame_detections
+
+        total_ok = True
+        if min_total_detections > 0 and has_total_key:
+            total_ok = total_detections >= min_total_detections
+
+        support_ok = frame_ok and total_ok
+        explicit = _entry_has_explicit_object_id(entry, explicit_object_ids)
+        if support_ok or explicit:
+            kept.append(entry)
+            if explicit and not support_ok:
+                explicit_override_kept_count += 1
+            continue
+
+        dropped_low_support_count += 1
+
+    return kept, {
+        "enabled": True,
+        "min_frame_detections": min_frame_detections,
+        "min_total_detections": min_total_detections,
+        "input_count": len(entries),
+        "kept_count": len(kept),
+        "dropped_count": len(entries) - len(kept),
+        "dropped_low_support_count": dropped_low_support_count,
+        "explicit_override_kept_count": explicit_override_kept_count,
+    }
+
+
+def _apply_per_class_caps(
+    entries: List[Dict[str, Any]],
+    *,
+    class_caps: Mapping[str, int],
+    explicit_object_ids: set[str],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not class_caps:
+        return entries, {
+            "enabled": False,
+            "caps": {},
+            "input_count": len(entries),
+            "kept_count": len(entries),
+            "dropped_count": 0,
+            "dropped_by_label": {},
+        }
+
+    counts: Dict[str, int] = {}
+    kept: List[Dict[str, Any]] = []
+    dropped_by_label: Dict[str, int] = {}
+
+    ranked = sorted(
+        entries,
+        key=lambda item: (
+            _entry_has_explicit_object_id(item, explicit_object_ids),
+            _object_salience_score(item),
+        ),
+        reverse=True,
+    )
+    for entry in ranked:
+        label = _semantic_label_bucket(_candidate_label(entry))
+        cap = _safe_int(class_caps.get(label), 0)
+        explicit = _entry_has_explicit_object_id(entry, explicit_object_ids)
+
+        if cap > 0 and counts.get(label, 0) >= cap and not explicit:
+            dropped_by_label[label] = dropped_by_label.get(label, 0) + 1
+            continue
+
+        kept.append(entry)
+        counts[label] = counts.get(label, 0) + 1
+
+    report = {
+        "enabled": True,
+        "caps": {str(k): int(v) for k, v in class_caps.items()},
+        "input_count": len(entries),
+        "kept_count": len(kept),
+        "dropped_count": len(entries) - len(kept),
+        "dropped_by_label": dropped_by_label,
+    }
+    return kept, report
 
 
 def _entry_text(entry: Mapping[str, Any]) -> str:
@@ -525,6 +942,20 @@ def infer_task_targets(
     """Infer task-relevant targets from descriptor hints + video/object signals."""
 
     max_targets = max(1, int(max_targets or 1))
+    dedupe_iou = _safe_float(
+        os.getenv("SWAP_DEDUPE_IOU_THRESHOLD"),
+        0.2,
+    )
+    dedupe_center_ratio = _safe_float(
+        os.getenv("SWAP_DEDUPE_CENTER_RATIO"),
+        0.45,
+    )
+    preprocessed_entries, dedupe_summary = _dedupe_object_index_entries(
+        object_index_entries,
+        iou_threshold=dedupe_iou,
+        center_ratio=dedupe_center_ratio,
+    )
+
     desc_manip, desc_artic = _descriptor_target_entries(descriptor)
 
     video_uri, video_path = _resolve_video_uri_and_path(
@@ -555,7 +986,7 @@ def infer_task_targets(
 
     heur_manip, heur_artic, heur_tasks = _heuristic_task_inference(
         descriptor=descriptor,
-        object_index_entries=object_index_entries,
+        object_index_entries=preprocessed_entries,
         max_targets=max_targets,
     )
 
@@ -572,6 +1003,27 @@ def infer_task_targets(
         for item in artic_entries
         if str(item.get("instance_id") or "").strip()
     ]
+    explicit_target_ids = sorted(
+        {
+            str(item.get("instance_id"))
+            for item in [*desc_manip, *ext_manip, *desc_artic, *ext_artic]
+            if str(item.get("instance_id") or "").strip()
+        }
+    )
+    explicit_articulation_ids = sorted(
+        {
+            str(item.get("instance_id"))
+            for item in [*desc_artic, *ext_artic]
+            if str(item.get("instance_id") or "").strip()
+        }
+    )
+    explicit_labels = sorted(
+        {
+            _semantic_label_bucket(str(item.get("label") or "").strip().lower())
+            for item in [*desc_manip, *ext_manip, *desc_artic, *ext_artic]
+            if str(item.get("label") or "").strip().lower() not in {"", "object", "unknown"}
+        }
+    )
 
     tasks_payload = external_payload.get("tasks")
     tasks: List[Dict[str, Any]]
@@ -597,10 +1049,17 @@ def infer_task_targets(
             "video_path": str(video_path) if video_path is not None else "",
             "external_inference": external_report,
         },
+        "index_preprocessing": {
+            "dedupe": dedupe_summary,
+        },
         "manipulation_candidates": manip_entries,
         "articulation_hints": artic_entries,
         "target_object_ids": sorted(set(target_ids)),
         "articulation_required_ids": sorted(set(articulation_ids)),
+        "explicit_target_object_ids": explicit_target_ids,
+        "explicit_articulation_required_ids": explicit_articulation_ids,
+        "explicit_target_labels": explicit_labels,
+        "explicit_articulation_labels": explicit_labels,
         "tasks": tasks,
     }
 
@@ -609,11 +1068,35 @@ def _merge_descriptor_with_task_targets(
     descriptor: CaptureDescriptor,
     task_targets: Optional[Mapping[str, Any]],
 ) -> CaptureDescriptor:
+    """Merge *non-heuristic* task-target entries into the descriptor.
+
+    Heuristic entries are NOT merged because they originate from the same
+    keyword matching that ``swap_candidates.py`` already applies.  Merging
+    them would force-select every heuristic detection, bypassing per-class
+    caps and spatial deduplication.
+    """
     if not isinstance(task_targets, Mapping):
         return descriptor
 
+    allow_heuristic = str(
+        os.getenv("SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT", "false")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
     desc_manip = [dict(item) for item in descriptor.manipulation_candidates]
     desc_artic = [dict(item) for item in descriptor.articulation_hints]
+
+    def _non_heuristic(entries: Iterable[Any]) -> List[Any]:
+        """Filter out heuristic-sourced entries unless explicitly allowed."""
+        if allow_heuristic:
+            return list(entries)
+        out: List[Any] = []
+        for entry in entries:
+            if isinstance(entry, Mapping):
+                source = str(entry.get("source") or "").strip().lower()
+                if source == "heuristic":
+                    continue
+            out.append(entry)
+        return out
 
     def _merge(
         base: List[Dict[str, Any]],
@@ -624,7 +1107,12 @@ def _merge_descriptor_with_task_targets(
         merged = _dedupe_hint_entries(
             [
                 *_normalize_hint_list(base, source="descriptor", role=role, default_confidence=1.0),
-                *_normalize_hint_list(incoming, source="video_inference", role=role, default_confidence=0.75),
+                *_normalize_hint_list(
+                    _non_heuristic(incoming),
+                    source="video_inference",
+                    role=role,
+                    default_confidence=0.75,
+                ),
             ]
         )
         out: List[Dict[str, Any]] = []
@@ -651,12 +1139,12 @@ def _merge_descriptor_with_task_targets(
         role="articulation",
     )
 
-    # Also ingest plain ID lists when present.
-    for obj_id in task_targets.get("target_object_ids", []):
+    # Only ingest from explicit ID lists (descriptor/external, not heuristic).
+    for obj_id in task_targets.get("explicit_target_object_ids", []):
         text = str(obj_id).strip()
         if text and text not in {str(item.get("instance_id") or "") for item in manip}:
             manip.append({"instance_id": text, "label": "object"})
-    for obj_id in task_targets.get("articulation_required_ids", []):
+    for obj_id in task_targets.get("explicit_articulation_required_ids", []):
         text = str(obj_id).strip()
         if text and text not in {str(item.get("instance_id") or "") for item in artic}:
             artic.append({"instance_id": text, "label": "object"})
@@ -690,30 +1178,59 @@ def _extract_explicit_sets(
         if obj_id:
             descriptor_obj_ids.add(obj_id)
         if label and label not in {"object", "unknown"}:
-            descriptor_labels.add(label)
+            descriptor_labels.add(_semantic_label_bucket(label))
 
     if isinstance(task_targets, Mapping):
+        allow_heuristic_explicit = str(
+            os.getenv("SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        inference_mode = str(task_targets.get("inference_mode") or "").strip().lower()
+
         for key in ("manipulation_candidates", "articulation_hints"):
             for raw in task_targets.get(key, []):
                 if isinstance(raw, Mapping):
+                    source = str(raw.get("source") or "").strip().lower()
+                    if source == "heuristic" and not allow_heuristic_explicit:
+                        continue
                     obj_id = _candidate_id(raw)
                     label = _candidate_label(raw).strip().lower()
                     if obj_id:
                         task_obj_ids.add(obj_id)
                     if label and label not in {"object", "unknown"}:
-                        task_labels.add(label)
+                        task_labels.add(_semantic_label_bucket(label))
                 elif isinstance(raw, str):
                     text = raw.strip()
                     if text:
                         task_obj_ids.add(text)
-        for obj_id in task_targets.get("target_object_ids", []):
-            text = str(obj_id).strip()
-            if text:
-                task_obj_ids.add(text)
-        for obj_id in task_targets.get("articulation_required_ids", []):
-            text = str(obj_id).strip()
-            if text:
-                task_obj_ids.add(text)
+
+        explicit_list_keys: List[str] = []
+        for key in ("explicit_target_object_ids", "explicit_articulation_required_ids"):
+            if isinstance(task_targets.get(key), list):
+                explicit_list_keys.append(key)
+        if not explicit_list_keys and inference_mode and inference_mode != "heuristic":
+            explicit_list_keys = ["target_object_ids", "articulation_required_ids"]
+
+        for key in explicit_list_keys:
+            for obj_id in task_targets.get(key, []):
+                text = str(obj_id).strip()
+                if text:
+                    task_obj_ids.add(text)
+
+        for key in ("explicit_target_labels", "explicit_articulation_labels"):
+            for raw_label in task_targets.get(key, []):
+                label = str(raw_label or "").strip().lower()
+                if label and label not in {"object", "unknown"}:
+                    task_labels.add(_semantic_label_bucket(label))
+
+        if allow_heuristic_explicit:
+            for obj_id in task_targets.get("target_object_ids", []):
+                text = str(obj_id).strip()
+                if text:
+                    task_obj_ids.add(text)
+            for obj_id in task_targets.get("articulation_required_ids", []):
+                text = str(obj_id).strip()
+                if text:
+                    task_obj_ids.add(text)
 
     return {
         "descriptor_obj_ids": descriptor_obj_ids,
@@ -808,6 +1325,7 @@ def build_task_aware_swap_candidates_payload(
     task_targets: Optional[Mapping[str, Any]] = None,
     selection_mode: str = "hybrid",
     max_candidates: int = 24,
+    per_class_caps: Optional[Mapping[str, int]] = None,
 ) -> Dict[str, Any]:
     """Build swap candidates using task-aware explicit targets + ranked capping."""
 
@@ -819,12 +1337,6 @@ def build_task_aware_swap_candidates_payload(
         descriptor_for_selection = descriptor_for_policy
     else:
         descriptor_for_selection = _merge_descriptor_with_task_targets(descriptor, task_targets)
-
-    base_payload = build_swap_candidates_payload(
-        descriptor=descriptor_for_selection,
-        object_index_entries=object_index_entries,
-        policy_path=policy_path,
-    )
 
     if mode == "policy_only":
         explicit_sets = {
@@ -842,8 +1354,38 @@ def build_task_aware_swap_candidates_payload(
     all_explicit_ids = descriptor_obj_ids | task_obj_ids
     all_explicit_labels = descriptor_labels | task_labels
 
+    dedupe_iou = _safe_float(os.getenv("SWAP_DEDUPE_IOU_THRESHOLD"), 0.2)
+    dedupe_center_ratio = _safe_float(os.getenv("SWAP_DEDUPE_CENTER_RATIO"), 0.45)
+    deduped_entries, dedupe_summary = _dedupe_object_index_entries(
+        object_index_entries,
+        iou_threshold=dedupe_iou,
+        center_ratio=dedupe_center_ratio,
+    )
+
+    min_frame_detections = _safe_int(os.getenv("SWAP_MIN_FRAME_DETECTIONS"), 0)
+    min_total_detections = _safe_int(os.getenv("SWAP_MIN_TOTAL_DETECTIONS"), 2)
+    supported_entries, support_summary = _apply_detection_support_filter(
+        deduped_entries,
+        min_frame_detections=min_frame_detections,
+        min_total_detections=min_total_detections,
+        explicit_object_ids=all_explicit_ids,
+    )
+
+    class_caps = _parse_per_class_caps(per_class_caps)
+    capped_entries, class_cap_summary = _apply_per_class_caps(
+        supported_entries,
+        class_caps=class_caps,
+        explicit_object_ids=all_explicit_ids,
+    )
+
+    base_payload = build_swap_candidates_payload(
+        descriptor=descriptor_for_selection,
+        object_index_entries=capped_entries,
+        policy_path=policy_path,
+    )
+
     entry_by_id: Dict[str, Mapping[str, Any]] = {}
-    for entry in object_index_entries:
+    for entry in capped_entries:
         if not isinstance(entry, Mapping):
             continue
         obj_id = _candidate_id(entry)
@@ -861,23 +1403,24 @@ def build_task_aware_swap_candidates_payload(
         candidate = dict(item)
         obj_id = str(candidate.get("object_id") or "").strip()
         label_text = _normalized_text(candidate.get("label"))
+        label_bucket = _semantic_label_bucket(label_text)
+        source_entry = entry_by_id.get(obj_id)
 
         explicit_by_id = obj_id in all_explicit_ids
-        explicit_by_label = any(token in label_text for token in all_explicit_labels if token)
+        if source_entry is not None and not explicit_by_id:
+            explicit_by_id = _entry_has_explicit_object_id(source_entry, all_explicit_ids)
+        explicit_by_label = label_bucket in all_explicit_labels
         explicit = explicit_by_id or explicit_by_label
 
         selected_by = "policy"
         if explicit:
-            if obj_id in task_obj_ids or any(token in label_text for token in task_labels if token):
+            if obj_id in task_obj_ids or label_bucket in task_labels:
                 selected_by = "task_targets"
-            elif obj_id in descriptor_obj_ids or any(
-                token in label_text for token in descriptor_labels if token
-            ):
+            elif obj_id in descriptor_obj_ids or label_bucket in descriptor_labels:
                 selected_by = "descriptor"
             else:
                 selected_by = "explicit"
 
-        source_entry = entry_by_id.get(obj_id)
         score = _candidate_rank_score(candidate, source_entry, explicit=explicit)
         selection_meta = {
             "explicit": explicit,
@@ -929,6 +1472,11 @@ def build_task_aware_swap_candidates_payload(
     )
     out["task_targets_attached"] = bool(task_targets)
     out["task_target_object_ids"] = sorted(all_explicit_ids)
+    out["index_preprocessing"] = {
+        "dedupe": dedupe_summary,
+        "detection_support": support_summary,
+        "class_caps": class_cap_summary,
+    }
     return out
 
 
