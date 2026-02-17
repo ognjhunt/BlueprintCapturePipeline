@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import shutil
@@ -271,6 +272,7 @@ def _run_image_to_3d_command(
     *,
     command_template: str,
     reference_image: Path,
+    reference_images: List[Path],
     output_glb: Path,
     output_dir: Path,
     scene_id: str,
@@ -282,6 +284,10 @@ def _run_image_to_3d_command(
     substitutions = {
         "REFERENCE_IMAGE": str(reference_image),
         "INPUT_IMAGE": str(reference_image),
+        "REFERENCE_IMAGES": ",".join(str(path) for path in reference_images),
+        "INPUT_IMAGES": ",".join(str(path) for path in reference_images),
+        "REFERENCE_IMAGES_JSON": json.dumps([str(path) for path in reference_images]),
+        "NUM_REFERENCE_IMAGES": str(len(reference_images)),
         "OUTPUT_GLB": str(output_glb),
         "OUTPUT_DIR": str(output_dir),
         "ASSET_DIR": str(output_dir),
@@ -290,6 +296,9 @@ def _run_image_to_3d_command(
         "SCENE_ID": scene_id,
         "ROOM_TYPE": room_type,
     }
+    for idx, path in enumerate(reference_images[:8], 1):
+        substitutions[f"REFERENCE_IMAGE_{idx}"] = str(path)
+        substitutions[f"INPUT_IMAGE_{idx}"] = str(path)
     rendered = command_template
     for key, value in substitutions.items():
         rendered = rendered.replace("{" + key + "}", value)
@@ -331,6 +340,133 @@ def _run_image_to_3d_command(
     if not has_nonempty_file(output_glb):
         return False, f"image-to-3d command completed but missing output GLB at {output_glb}", invocation
     return True, "ok", invocation
+
+
+def _candidate_reference_image_paths(
+    candidate: Mapping[str, Any],
+    *,
+    assets_root: Path,
+    max_candidates: int,
+) -> List[Path]:
+    seen: set[str] = set()
+    out: List[Path] = []
+
+    def _push(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        path = Path(text)
+        if path.is_file():
+            resolved = str(path.resolve())
+            if resolved not in seen:
+                seen.add(resolved)
+                out.append(Path(resolved))
+
+    _push(candidate.get("reference_crop"))
+    raw_all_crops = candidate.get("all_crops")
+    if isinstance(raw_all_crops, list):
+        for crop in raw_all_crops:
+            _push(crop)
+            if len(out) >= max_candidates:
+                return out
+
+    raw_refs = candidate.get("reference_images")
+    if isinstance(raw_refs, list):
+        for crop in raw_refs:
+            _push(crop)
+            if len(out) >= max_candidates:
+                return out
+
+    asset_dir_name = str(candidate.get("asset_dir") or "")
+    if asset_dir_name:
+        for ext in ("png", "jpg", "jpeg"):
+            _push(assets_root / asset_dir_name / f"reference.{ext}")
+            if len(out) >= max_candidates:
+                return out
+
+    fallback = find_best_reference_image(dict(candidate), storage_root=assets_root)
+    if fallback:
+        _push(fallback)
+
+    return out[:max_candidates]
+
+
+def _score_reference_image(path: Path) -> Dict[str, Any]:
+    try:
+        from PIL import Image, ImageFilter, ImageStat  # type: ignore
+    except Exception:
+        return {
+            "path": str(path),
+            "score": 0.0,
+            "sharpness_raw": 0.0,
+            "coverage": 0.0,
+            "mask_quality": 0.0,
+        }
+
+    try:
+        with Image.open(path) as img:
+            image = img.convert("RGBA")
+            width, height = image.size
+            area = max(1, width * height)
+
+            # Sharpness proxy from edge variance on grayscale.
+            gray = image.convert("L")
+            edges = gray.filter(ImageFilter.FIND_EDGES)
+            sharpness_raw = float(ImageStat.Stat(edges).var[0] or 0.0)
+
+            alpha = image.getchannel("A")
+            alpha_data = alpha.tobytes()
+            nonzero = sum(1 for value in alpha_data if value > 16)
+            coverage = float(nonzero) / float(area)
+
+            if nonzero > 0:
+                x0, y0, x1, y1 = alpha.getbbox() or (0, 0, width, height)
+                bbox_w = max(1, x1 - x0)
+                bbox_h = max(1, y1 - y0)
+                bbox_area = max(1, bbox_w * bbox_h)
+                fill_ratio = min(1.0, float(nonzero) / float(bbox_area))
+                touches_border = int(x0 <= 0 or y0 <= 0 or x1 >= width or y1 >= height)
+                border_penalty = 0.35 if touches_border else 0.0
+                mask_quality = max(0.0, min(1.0, fill_ratio - border_penalty))
+            else:
+                mask_quality = 0.0
+
+            return {
+                "path": str(path),
+                "score": 0.0,
+                "sharpness_raw": max(0.0, sharpness_raw),
+                "coverage": max(0.0, min(1.0, coverage)),
+                "mask_quality": max(0.0, min(1.0, mask_quality)),
+            }
+    except Exception:
+        return {
+            "path": str(path),
+            "score": 0.0,
+            "sharpness_raw": 0.0,
+            "coverage": 0.0,
+            "mask_quality": 0.0,
+        }
+
+
+def _rank_reference_images(paths: List[Path], *, top_k: int) -> tuple[List[Path], List[Dict[str, Any]]]:
+    if not paths:
+        return [], []
+
+    rows = [_score_reference_image(path) for path in paths]
+    max_sharp = max((float(row.get("sharpness_raw") or 0.0) for row in rows), default=0.0)
+    sharp_norm_div = max(1e-9, max_sharp)
+
+    for row in rows:
+        sharp_norm = math.sqrt(max(0.0, float(row.get("sharpness_raw") or 0.0)) / sharp_norm_div)
+        coverage = max(0.0, min(1.0, float(row.get("coverage") or 0.0)))
+        mask_quality = max(0.0, min(1.0, float(row.get("mask_quality") or 0.0)))
+        score = (0.5 * sharp_norm) + (0.3 * coverage) + (0.2 * mask_quality)
+        row["sharpness_norm"] = sharp_norm
+        row["score"] = score
+
+    rows.sort(key=lambda row: float(row.get("score") or 0.0), reverse=True)
+    selected_paths = [Path(str(row["path"])) for row in rows[: max(1, top_k)]]
+    return selected_paths, rows
 
 
 def _materialize_with_adapter(
@@ -391,6 +527,9 @@ def _materialize_with_image_conditioned_pipeline(
         or os.getenv("IMAGE_TO_3D_COMMAND")
         or ""
     ).strip()
+    top_k_references = _int_env("STAGE_D_IMAGE_TO_3D_TOPK", 3)
+    max_reference_candidates = _int_env("STAGE_D_REFERENCE_MAX_CROPS", 12)
+    cleanup_top_k = _int_env("STAGE_D_CLEANUP_TOPK", 1)
     timeout_seconds = _int_env("STAGE_D_IMAGE_TO_3D_TIMEOUT_SECONDS", 900)
     allow_proxy_fallback = _is_truthy(
         os.getenv("STAGE_D_ALLOW_PROXY_FALLBACK", "true"),
@@ -501,26 +640,40 @@ def _materialize_with_image_conditioned_pipeline(
         asset_dir = assets_root / asset_dir_name
         ensure_dir(asset_dir)
 
-        reference_image_text = find_best_reference_image(dict(candidate), storage_root=assets_root)
-        original_reference_path = Path(reference_image_text) if reference_image_text else None
-        working_reference_path: Optional[Path] = None
-
-        if original_reference_path and original_reference_path.is_file():
-            reference_copy = asset_dir / "reference.png"
-            if original_reference_path != reference_copy:
-                shutil.copy2(original_reference_path, reference_copy)
+        raw_reference_paths = _candidate_reference_image_paths(
+            candidate,
+            assets_root=assets_root,
+            max_candidates=max(1, max_reference_candidates),
+        )
+        ranked_reference_paths, ranked_reference_metrics = _rank_reference_images(
+            raw_reference_paths,
+            top_k=max(1, top_k_references),
+        )
+        working_reference_paths: List[Path] = []
+        for idx, path in enumerate(ranked_reference_paths):
+            ref_name = "reference.png" if idx == 0 else f"reference_{idx + 1}.png"
+            copied = asset_dir / ref_name
+            if path != copied:
+                shutil.copy2(path, copied)
             else:
-                reference_copy = original_reference_path
+                copied = path
 
-            working_reference_path = reference_copy
-            if cleanup_provider != "skip":
+            working = copied
+            if cleanup_provider != "skip" and idx < max(0, cleanup_top_k):
+                cleaned_name = "reference_clean.png" if idx == 0 else f"reference_{idx + 1}_clean.png"
                 cleaned_path = cleanup_crop_with_vlm(
-                    working_reference_path,
-                    asset_dir / "reference_clean.png",
+                    working,
+                    asset_dir / cleaned_name,
                     provider=cleanup_provider,
                 )
                 if cleaned_path is not None and Path(cleaned_path).is_file():
-                    working_reference_path = Path(cleaned_path)
+                    working = Path(cleaned_path)
+            working_reference_paths.append(working)
+
+        original_reference_path = raw_reference_paths[0] if raw_reference_paths else None
+        working_reference_path: Optional[Path] = (
+            working_reference_paths[0] if working_reference_paths else None
+        )
 
         mesh_glb_path = asset_dir / "mesh.glb"
         source_kind = ""
@@ -533,6 +686,7 @@ def _materialize_with_image_conditioned_pipeline(
             ok, detail, invocation = _run_image_to_3d_command(
                 command_template=image_to_3d_command,
                 reference_image=working_reference_path,
+                reference_images=working_reference_paths or [working_reference_path],
                 output_glb=mesh_glb_path,
                 output_dir=asset_dir,
                 scene_id=scene_id,
@@ -580,6 +734,9 @@ def _materialize_with_image_conditioned_pipeline(
             "cleanup_provider": cleanup_provider,
             "reference_image_original": str(original_reference_path) if original_reference_path else "",
             "reference_image": str(working_reference_path) if working_reference_path else "",
+            "reference_images_ranked": ranked_reference_metrics,
+            "reference_images_selected": [str(path) for path in working_reference_paths],
+            "image_to_3d_reference_count": len(working_reference_paths),
             "image_to_3d_attempted": tried_image_to_3d,
             "mesh_glb_path": f"{assets_prefix}/{asset_dir_name}/mesh.glb",
         }
