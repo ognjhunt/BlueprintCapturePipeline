@@ -18,7 +18,7 @@
 # Prerequisites:
 #   - vastai CLI installed and authenticated (pip install vastai)
 #   - SSH key registered with Vast.ai (vastai set api-key ...)
-#   - Docker snapshot image pushed: nijelhunt/blueprint-capture-pipeline:vast-cuda-snapshot
+#   - Docker snapshot image pushed: nijelhunt/blueprint-capture-pipeline:cuda-snapshot
 # =============================================================================
 
 set -euo pipefail
@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ---- Configuration ----------------------------------------------------------
-VASTAI_IMAGE="${VASTAI_IMAGE:-nijelhunt/blueprint-capture-pipeline:vast-cuda-snapshot}"
+VASTAI_IMAGE="${VASTAI_IMAGE:-nijelhunt/blueprint-capture-pipeline:cuda-snapshot}"
 DISK_GB=80
 MAX_HOURLY_RATE=0.30
 MIN_GPU_RAM=16

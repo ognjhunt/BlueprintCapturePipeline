@@ -160,9 +160,11 @@ class SwapCandidate:
     obb: Dict[str, Any]
     dimensions_est: Dict[str, float]
     physics_hints: Dict[str, Any]
+    reference_crop: Optional[str] = None
+    all_crops: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "object_id": self.object_id,
             "asset_dir": self.asset_dir,
             "label": self.label,
@@ -177,6 +179,11 @@ class SwapCandidate:
             "dimensions_est": dict(self.dimensions_est),
             "physics_hints": dict(self.physics_hints),
         }
+        if self.reference_crop is not None:
+            d["reference_crop"] = self.reference_crop
+        if self.all_crops:
+            d["all_crops"] = list(self.all_crops)
+        return d
 
 
 def _normalized_tokens(values: Iterable[Any]) -> List[str]:
@@ -568,6 +575,16 @@ def select_swap_candidates(
         if min_volume > 0 and volume < min_volume and not (force_manipulable or force_articulated):
             continue
 
+        # Extract reference crop paths from object index if present
+        ref_crop = entry.get("reference_crop")
+        ref_crop_str = str(ref_crop).strip() if ref_crop is not None else None
+        raw_all_crops = entry.get("all_crops")
+        all_crops_list = (
+            [str(c) for c in raw_all_crops if c]
+            if isinstance(raw_all_crops, list)
+            else None
+        )
+
         selected.append(
             SwapCandidate(
                 object_id=object_id,
@@ -585,6 +602,8 @@ def select_swap_candidates(
                 obb=obb,
                 dimensions_est=dimensions,
                 physics_hints=_physics_hints(sim_role),
+                reference_crop=ref_crop_str,
+                all_crops=all_crops_list,
             )
         )
 

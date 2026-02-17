@@ -1,35 +1,38 @@
-FROM python:3.11-slim AS production
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
+ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-# Prevent any runtime downloads from pip or HuggingFace
-ENV PIP_NO_INPUT=1
+ENV HF_HOME=/opt/hf
+ENV THREEDGRUT_DIR=/opt/3dgrut
+ENV FIXER_DIR=/opt/Fixer
+ENV FIXER_WEIGHTS_DIR=/opt/Fixer/weights
+ENV DA3_MODEL_PATH=/opt/da3/weights/metric_large
+# Prevent any runtime downloads — all models/weights are pre-baked
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
+ENV PIP_NO_INPUT=1
+# Default to Ada/Lovelace (89); override at build time for other GPUs
+ARG COLMAP_CUDA_ARCHS=89
+ENV COLMAP_CUDA_ARCHS=${COLMAP_CUDA_ARCHS}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python-is-python3 \
     git \
-    openssh-client \
-    libgl1 \
-    libglib2.0-0 \
+    tmux \
+    openssh-server \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY . /app
 
-COPY pyproject.toml README.md requirements.txt /app/
-COPY src /app/src
-COPY configs /app/configs
-COPY scripts /app/scripts
-
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -e /app && \
-    pip install --no-cache-dir -r /app/requirements.txt && \
-    pip check
+RUN chmod +x /app/scripts/install_colmap_cuda.sh /app/scripts/install_ml_stack.sh && \
+    /app/scripts/install_ml_stack.sh
 
 # Clone only the required BlueprintPipeline subdirectories (~2MB vs 13GB)
-# Needed for stages D/F/H: asset materialization, interactive validation,
-# simready prep, USD assembly
 ARG BLUEPRINTPIPELINE_GIT_URL="https://github.com/ognjhunt/BlueprintPipeline.git"
 ARG BLUEPRINTPIPELINE_GIT_REF="main"
 RUN git clone --depth 1 --branch "$BLUEPRINTPIPELINE_GIT_REF" \
@@ -45,14 +48,8 @@ RUN git clone --depth 1 --branch "$BLUEPRINTPIPELINE_GIT_REF" \
       usd-assembly-job && \
     rm -rf .git && \
     if [ -f /opt/BlueprintPipeline/interactive-job/requirements.txt ]; then \
-      pip install --no-cache-dir -r /opt/BlueprintPipeline/interactive-job/requirements.txt 2>/dev/null || true; \
+      python3 -m pip install --no-cache-dir -r /opt/BlueprintPipeline/interactive-job/requirements.txt 2>/dev/null || true; \
     fi
-
-# Verify all dependencies are installed and importable at build time
-RUN python -c "\
-import yaml; import numpy; import trimesh; import pybullet; \
-import pybullet_data; \
-print('All dependencies verified - no runtime downloads needed')"
 
 ENV BLUEPRINTPIPELINE_ROOT=/opt/BlueprintPipeline
 ENV SWAP_POLICY_CONFIG_PATH=/app/configs/swap_policy.yaml
@@ -60,4 +57,5 @@ ENV GCS_ROOT=/mnt/gcs
 # Ensure scripts/ is importable (nurec_shim.py imports sam3_detect)
 ENV PYTHONPATH=/app/scripts
 
-ENTRYPOINT ["python", "-m", "blueprint_pipeline.swap_orchestrator"]
+# Keep container alive — works for Vast.ai, RunPod, Lambda, etc.
+ENTRYPOINT ["bash", "-lc", "sleep infinity"]

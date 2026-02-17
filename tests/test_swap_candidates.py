@@ -96,6 +96,51 @@ def test_environment_policy_excludes_non_swappable_structures() -> None:
     assert "rack_1" not in ids
 
 
+def test_reference_crop_propagated_to_candidate() -> None:
+    object_index = [
+        {
+            "id": "obj_drawer",
+            "label": "kitchen drawer",
+            "pointCloudFile": "obj_drawer.ply",
+            "boundingBox": {
+                "center": [1.0, 0.5, 2.0],
+                "extents": [0.8, 0.4, 0.6],
+                "axes": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                "orientationQuaternion": [1, 0, 0, 0],
+            },
+            "reference_crop": "/path/to/drawer_crop.png",
+            "all_crops": ["/path/to/drawer_crop.png", "/path/to/drawer_crop2.png"],
+        },
+    ]
+
+    payload = build_swap_candidates_payload(descriptor=_descriptor(), object_index_entries=object_index)
+    candidates = payload["candidates"]
+
+    assert len(candidates) == 1
+    assert candidates[0]["reference_crop"] == "/path/to/drawer_crop.png"
+    assert candidates[0]["all_crops"] == ["/path/to/drawer_crop.png", "/path/to/drawer_crop2.png"]
+
+
+def test_candidate_without_crops_omits_fields() -> None:
+    object_index = [
+        {
+            "id": "obj_drawer",
+            "label": "kitchen drawer",
+            "boundingBox": {
+                "center": [1.0, 0.5, 2.0],
+                "extents": [0.8, 0.4, 0.6],
+            },
+        },
+    ]
+
+    payload = build_swap_candidates_payload(descriptor=_descriptor(), object_index_entries=object_index)
+    candidates = payload["candidates"]
+
+    assert len(candidates) == 1
+    assert "reference_crop" not in candidates[0]
+    assert "all_crops" not in candidates[0]
+
+
 def test_custom_policy_file_tunes_keywords(tmp_path: Path) -> None:
     policy_path = tmp_path / "swap_policy.yaml"
     policy_path.write_text(

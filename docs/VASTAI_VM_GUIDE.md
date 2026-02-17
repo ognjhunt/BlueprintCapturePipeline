@@ -12,7 +12,7 @@ This guide documents the current production path for running `scripts/nurec_shim
 Build and push snapshot image:
 
 ```bash
-./scripts/build_vast_snapshot.sh --tag vast-cuda-snapshot
+./scripts/build_vast_snapshot.sh --tag cuda-snapshot
 ```
 
 Provision/test instance from snapshot:
@@ -23,7 +23,7 @@ Provision/test instance from snapshot:
 
 Defaults:
 
-- `VASTAI_IMAGE=nijelhunt/blueprint-capture-pipeline:vast-cuda-snapshot`
+- `VASTAI_IMAGE=nijelhunt/blueprint-capture-pipeline:cuda-snapshot`
 - Onstart command is `sleep infinity` (no apt/pip runtime installs)
 
 If you want to override image:

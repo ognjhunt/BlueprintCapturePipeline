@@ -55,7 +55,9 @@ def _validate_provider_env(provider_chain: list[str]) -> list[PreflightCheck]:
             PreflightCheck(
                 "provider_sam3d",
                 bool(host and key),
-                "sam3d host+key present" if host and key else "missing SAM3D host or key env",
+                "sam3d host+key present"
+                if host and key
+                else "missing SAM3D credentials — set TEXT_SAM3D_API_HOST + TEXT_SAM3D_API_KEY",
             )
         )
 
@@ -66,7 +68,9 @@ def _validate_provider_env(provider_chain: list[str]) -> list[PreflightCheck]:
             PreflightCheck(
                 "provider_hunyuan3d",
                 bool(host and key),
-                "hunyuan host+key present" if host and key else "missing Hunyuan host or key env",
+                "hunyuan host+key present"
+                if host and key
+                else "missing Hunyuan credentials — set TEXT_HUNYUAN_API_HOST + TEXT_HUNYUAN_API_KEY",
             )
         )
 

@@ -33,7 +33,7 @@ def _candidate_to_adapter_object(candidate: Mapping[str, Any]) -> Dict[str, Any]
     obb = candidate.get("obb") if isinstance(candidate.get("obb"), Mapping) else {}
     center = obb.get("center") if isinstance(obb.get("center"), list) else [0.0, 0.0, 0.0]
 
-    return {
+    obj: Dict[str, Any] = {
         "id": asset_dir,
         "name": label,
         "category": label,
@@ -61,6 +61,13 @@ def _candidate_to_adapter_object(candidate: Mapping[str, Any]) -> Dict[str, Any]
             "source_pipeline": "capture-nurec-swap",
         },
     }
+
+    # Include reference image for image-conditioned retrieval
+    ref_crop = candidate.get("reference_crop")
+    if ref_crop:
+        obj["reference_image"] = str(ref_crop)
+
+    return obj
 
 
 def _iter_text_files(asset_dir: Path) -> Iterable[Path]:

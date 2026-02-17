@@ -76,6 +76,73 @@ def _log(msg: str) -> None:
     print(f"[sam3-detect] {msg}", flush=True)
 
 
+def _save_object_crop(
+    image_path: Path,
+    mask_np: np.ndarray,
+    box: List[float],
+    crops_dir: Path,
+    label: str,
+    frame_idx: int,
+    det_idx: int,
+) -> Optional[Path]:
+    """Save a masked RGBA crop of the detected object.
+
+    Extracts the bounding-box region with 5% padding, applies the
+    segmentation mask as an alpha channel (transparent background),
+    and resizes to max 512×512 preserving aspect ratio.
+
+    Returns the saved path, or None on failure.
+    """
+    try:
+        from PIL import Image
+
+        img = Image.open(image_path).convert("RGB")
+        w, h = img.size
+
+        # Bounding box with 5% padding
+        bw = box[2] - box[0]
+        bh = box[3] - box[1]
+        pad_x = bw * 0.05
+        pad_y = bh * 0.05
+        x1 = max(0, int(box[0] - pad_x))
+        y1 = max(0, int(box[1] - pad_y))
+        x2 = min(w, int(box[2] + pad_x))
+        y2 = min(h, int(box[3] + pad_y))
+
+        crop_rgb = img.crop((x1, y1, x2, y2))
+
+        # Build alpha from segmentation mask
+        mask_full = (mask_np.astype(np.uint8) * 255)
+        mask_crop = mask_full[y1:y2, x1:x2]
+        alpha = Image.fromarray(mask_crop, mode="L")
+
+        # Combine into RGBA
+        crop_rgba = crop_rgb.copy().convert("RGBA")
+        crop_rgba.putalpha(alpha)
+
+        # Resize to max 512×512 preserving aspect ratio
+        max_dim = 512
+        cw, ch = crop_rgba.size
+        if max(cw, ch) > max_dim:
+            scale = max_dim / max(cw, ch)
+            crop_rgba = crop_rgba.resize(
+                (int(cw * scale), int(ch * scale)),
+                Image.LANCZOS,
+            )
+
+        # Save
+        crops_dir.mkdir(parents=True, exist_ok=True)
+        safe_label = label.replace("/", "_").replace(" ", "_")
+        filename = f"{safe_label}_{frame_idx:03d}_{det_idx:03d}.png"
+        out_path = crops_dir / filename
+        crop_rgba.save(out_path, "PNG")
+        return out_path
+
+    except Exception as exc:
+        _log(f"    Crop save failed for {label}: {exc}")
+        return None
+
+
 def _load_sam3():
     """Load SAM3 model and processor."""
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -192,6 +259,8 @@ def _detect_objects_in_frame(
     prompts: List[str],
     depth_map: Optional[np.ndarray] = None,
     focal_px: float = 1000.0,
+    crops_dir: Optional[Path] = None,
+    frame_idx: int = 0,
 ) -> List[Dict[str, Any]]:
     """Run SAM3 detection on a single frame for all prompts.
 
@@ -287,6 +356,15 @@ def _detect_objects_in_frame(
                         "median_depth_m": round(median_depth, 4),
                         "depth_range_m": round(depth_range, 4),
                     }
+
+            # Save masked RGBA crop if crops_dir is set
+            if crops_dir is not None and mask_np is not None and mask_np.any():
+                crop_path = _save_object_crop(
+                    image_path, mask_np, box, crops_dir,
+                    prompt, frame_idx, len(detections),
+                )
+                if crop_path is not None:
+                    det["crop_path"] = str(crop_path)
 
             detections.append(det)
 
@@ -403,7 +481,19 @@ def _merge_detections(
 
             object_id = f"{label}_{cluster_idx + 1}"
 
-            merged_objects.append({
+            # Select best reference crop from cluster (highest confidence with a crop)
+            all_crops = [d["crop_path"] for d in cluster if "crop_path" in d]
+            best_crop = None
+            if all_crops:
+                # Pick crop from the highest-confidence detection
+                crop_dets = sorted(
+                    [d for d in cluster if "crop_path" in d],
+                    key=lambda d: d["score"],
+                    reverse=True,
+                )
+                best_crop = crop_dets[0]["crop_path"]
+
+            obj_entry = {
                 "id": object_id,
                 "label": label,
                 "confidence": round(max_score, 3),
@@ -424,7 +514,14 @@ def _merge_detections(
                 "mean_centroid_px": [round(v, 1) for v in mean_centroid],
                 "detection_source": "sam3",
                 "refinement": refinement_source,
-            })
+            }
+
+            if best_crop:
+                obj_entry["reference_crop"] = best_crop
+            if all_crops:
+                obj_entry["all_crops"] = all_crops
+
+            merged_objects.append(obj_entry)
 
     # Sort by confidence descending
     merged_objects.sort(key=lambda x: x["confidence"], reverse=True)
@@ -749,6 +846,7 @@ def run_sam3_detection(
     gaussian_ply_path: Optional[Path] = None,
     n_sample_frames: int = _DEFAULT_SAMPLE_FRAMES,
     min_frame_detections: int = 2,
+    save_crops: bool = True,
 ) -> Dict[str, Any]:
     """Run full SAM3 detection pipeline and write object index.
 
@@ -806,6 +904,12 @@ def run_sam3_detection(
     except Exception as e:
         _log(f"DA3 not available ({e}), using heuristic 3D estimates")
 
+    # Set up crops directory for reference image extraction
+    crops_dir = None
+    if save_crops:
+        crops_dir = output_path.parent / "object_crops"
+        _log(f"Object crops will be saved to: {crops_dir}")
+
     # Run detection on each frame
     all_detections: List[Dict[str, Any]] = []
     for i, frame_path in enumerate(frame_paths):
@@ -824,6 +928,7 @@ def run_sam3_detection(
         dets = _detect_objects_in_frame(
             processor, frame_path, prompts,
             depth_map=depth_map, focal_px=focal_px,
+            crops_dir=crops_dir, frame_idx=i,
         )
         n_with_depth = sum(1 for d in dets if "depth_3d" in d)
         _log(f"    {len(dets)} detections ({n_with_depth} with metric depth)")
@@ -853,12 +958,15 @@ def run_sam3_detection(
     objects = _refine_with_colmap(objects, colmap_sparse_dir, gaussian_ply_path, all_detections)
 
     # Report
-    _log(f"\nDetected objects:")
+    n_with_crops = sum(1 for obj in objects if "reference_crop" in obj)
+    _log(f"\nDetected objects ({n_with_crops}/{len(objects)} with reference crops):")
     for obj in objects:
         bb = obj["boundingBox"]
+        crop_tag = " [crop]" if "reference_crop" in obj else ""
         _log(f"  {obj['id']:20s}  conf={obj['confidence']:.2f}  "
              f"frames={obj['n_frame_detections']}  "
-             f"size={bb['extents'][0]:.2f}x{bb['extents'][1]:.2f}x{bb['extents'][2]:.2f}m")
+             f"size={bb['extents'][0]:.2f}x{bb['extents'][1]:.2f}x{bb['extents'][2]:.2f}m"
+             f"{crop_tag}")
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -902,6 +1010,8 @@ def main() -> int:
                         help="Number of frames to sample (0=auto)")
     parser.add_argument("--min-frame-detections", type=int, default=0,
                         help="Minimum frames an object must appear in (0=auto)")
+    parser.add_argument("--no-crops", action="store_true",
+                        help="Disable saving per-object reference crops")
     args = parser.parse_args()
 
     result = run_sam3_detection(
@@ -912,6 +1022,7 @@ def main() -> int:
         gaussian_ply_path=Path(args.gaussian_ply) if args.gaussian_ply else None,
         n_sample_frames=args.n_frames,
         min_frame_detections=args.min_frame_detections,
+        save_crops=not args.no_crops,
     )
 
     n_objects = len(result.get("objects", []))

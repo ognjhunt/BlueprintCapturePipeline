@@ -50,7 +50,7 @@ from .swap_candidates import build_swap_candidates_payload
 class OrchestratorConfig:
     gcs_root: Path = Path(os.getenv("GCS_ROOT", "/mnt/gcs"))
     blueprintpipeline_root: Path = Path(
-        os.getenv("BLUEPRINTPIPELINE_ROOT", "/Users/nijelhunt_1/workspace/BlueprintPipeline")
+        os.getenv("BLUEPRINTPIPELINE_ROOT", "/opt/BlueprintPipeline")
     )
     expected_blueprintpipeline_commit: str = os.getenv("BLUEPRINTPIPELINE_COMMIT_HASH", "")
     fail_on_commit_mismatch: bool = parse_bool(
@@ -68,6 +68,12 @@ class OrchestratorConfig:
     generation_provider_chain: str = os.getenv(
         "TEXT_ASSET_GENERATION_PROVIDER_CHAIN", "sam3d,hunyuan3d"
     ).strip()
+    image_conditioned_generation: bool = parse_bool(
+        os.getenv("IMAGE_CONDITIONED_GENERATION_ENABLED"), default=True
+    )
+    crop_cleanup_provider: str = (
+        os.getenv("CROP_CLEANUP_PROVIDER", "skip").strip().lower()
+    )
     advanced_quality_config: AdvancedQualityGateConfig = field(
         default_factory=AdvancedQualityGateConfig
     )
@@ -368,6 +374,24 @@ def run_swap_pipeline(
         swap_candidates = swap_candidates_payload.get("candidates")
         if not isinstance(swap_candidates, list):
             raise StageError("swap_candidates", "invalid swap_candidates payload")
+
+        # Conditionally strip or clean up reference crops
+        if not cfg.image_conditioned_generation:
+            for cand in swap_candidates:
+                cand.pop("reference_crop", None)
+                cand.pop("all_crops", None)
+        elif cfg.crop_cleanup_provider != "skip":
+            from .reference_image_utils import cleanup_crop_with_vlm
+            for cand in swap_candidates:
+                ref_crop = cand.get("reference_crop")
+                if ref_crop and Path(str(ref_crop)).is_file():
+                    crop_path = Path(str(ref_crop))
+                    cleaned_path = crop_path.parent / f"{crop_path.stem}_cleaned.png"
+                    result = cleanup_crop_with_vlm(
+                        crop_path, cleaned_path, provider=cfg.crop_cleanup_provider
+                    )
+                    if result is not None and result != crop_path:
+                        cand["reference_crop"] = str(result)
 
         # ------------------------------------------------------------------
         # Stage D: SAM3D-first materialization
@@ -677,6 +701,54 @@ def run_swap_pipeline(
         raise
 
 
+def _startup_checks() -> List[str]:
+    """Quick startup sanity checks before accepting work. Returns list of errors."""
+    errors: List[str] = []
+    cfg = OrchestratorConfig()
+
+    if not cfg.gcs_root.exists():
+        errors.append(
+            f"GCS_ROOT={cfg.gcs_root} does not exist. "
+            "Mount your GCS bucket (gcsfuse, GCS FUSE CSI, or symlink) or set GCS_ROOT."
+        )
+    if not cfg.blueprintpipeline_root.exists():
+        errors.append(
+            f"BLUEPRINTPIPELINE_ROOT={cfg.blueprintpipeline_root} does not exist. "
+            "Clone https://github.com/ognjhunt/BlueprintPipeline.git to that path "
+            "or set BLUEPRINTPIPELINE_ROOT to the correct location."
+        )
+    elif not (cfg.blueprintpipeline_root / "tools" / "source_pipeline" / "adapter.py").is_file():
+        errors.append(
+            f"BLUEPRINTPIPELINE_ROOT={cfg.blueprintpipeline_root} exists but is missing "
+            "required scripts (tools/source_pipeline/adapter.py). Is the repo complete?"
+        )
+
+    # Check critical API credentials
+    provider_chain = cfg.generation_provider_chain.lower()
+    if "sam3d" in provider_chain:
+        host = os.getenv("TEXT_SAM3D_API_HOST") or os.getenv("SAM3D_API_HOST") or ""
+        key = os.getenv("TEXT_SAM3D_API_KEY") or os.getenv("SAM3D_API_KEY") or ""
+        if not host.strip() or not key.strip():
+            errors.append(
+                "SAM3D credentials missing. Set TEXT_SAM3D_API_HOST and TEXT_SAM3D_API_KEY "
+                "(or SAM3D_API_HOST / SAM3D_API_KEY)."
+            )
+
+    # Check NuRec worker config
+    nurec_cmd = (os.getenv("NUREC_PIPELINE_COMMAND") or "").strip()
+    nurec_skip = (os.getenv("NUREC_SKIP_PIPELINE_COMMAND") or "").strip().lower() in {"1", "true", "yes"}
+    if cfg.nurec_worker_mode == "local_worker" and not nurec_cmd and not nurec_skip:
+        errors.append(
+            "NUREC_PIPELINE_COMMAND is not set. Example:\n"
+            '  export NUREC_PIPELINE_COMMAND="python3 /app/scripts/nurec_shim.py '
+            '--job-spec {JOB_SPEC_PATH} --output-dir {NUREC_OUTPUT_DIR} '
+            '--raw-prefix {RAW_PREFIX_URI}"\n'
+            "Or set NUREC_SKIP_PIPELINE_COMMAND=true if NuRec artifacts are pre-generated."
+        )
+
+    return errors
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run NuRec-first swappable asset pipeline")
     parser.add_argument(
@@ -684,7 +756,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         required=True,
         help="gs:// URI for capture_descriptor.json",
     )
+    parser.add_argument(
+        "--skip-startup-checks",
+        action="store_true",
+        help="Skip early environment validation (preflight still runs)",
+    )
     args = parser.parse_args(argv)
+
+    if not args.skip_startup_checks:
+        errors = _startup_checks()
+        if errors:
+            print("[swap-orchestrator] STARTUP FAILED — environment not ready:")
+            for i, error in enumerate(errors, 1):
+                print(f"  {i}. {error}")
+            return 1
 
     try:
         run_swap_pipeline(descriptor_gcs_uri=args.descriptor_gcs_uri)

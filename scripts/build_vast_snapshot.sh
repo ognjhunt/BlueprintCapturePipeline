@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Build and push the Vast snapshot image (preloaded ML stack, no runtime pulls)
+# Build and push the GPU snapshot image (preloaded ML stack, no runtime pulls)
+# Works with Vast.ai, RunPod, Lambda, or any CUDA-capable host.
 # =============================================================================
 
 set -euo pipefail
@@ -9,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 IMAGE_REPO="${IMAGE_REPO:-nijelhunt/blueprint-capture-pipeline}"
-IMAGE_TAG="${IMAGE_TAG:-vast-cuda-snapshot}"
+IMAGE_TAG="${IMAGE_TAG:-cuda-snapshot}"
 TARGET_PLATFORM="${TARGET_PLATFORM:-linux/amd64}"
 PUSH=true
 
@@ -19,7 +20,7 @@ Usage:
   build_vast_snapshot.sh [options]
 
 Options:
-  --tag TAG          Image tag (default: vast-cuda-snapshot)
+  --tag TAG          Image tag (default: cuda-snapshot)
   --repo REPO        Image repository (default: nijelhunt/blueprint-capture-pipeline)
   --platform VALUE   Target platform (default: linux/amd64)
   --no-push          Build only, do not push
@@ -58,16 +59,16 @@ done
 
 IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
 
-echo "[build-vast-snapshot] Building ${IMAGE}..."
+echo "[build-snapshot] Building ${IMAGE}..."
 docker build \
   --platform "$TARGET_PLATFORM" \
-  -f "$PROJECT_ROOT/Dockerfile.vast.snapshot" \
+  -f "$PROJECT_ROOT/Dockerfile.snapshot" \
   -t "$IMAGE" \
   "$PROJECT_ROOT"
 
 if [ "$PUSH" = true ]; then
-  echo "[build-vast-snapshot] Pushing ${IMAGE}..."
+  echo "[build-snapshot] Pushing ${IMAGE}..."
   docker push "$IMAGE"
 fi
 
-echo "[build-vast-snapshot] Done: ${IMAGE}"
+echo "[build-snapshot] Done: ${IMAGE}"

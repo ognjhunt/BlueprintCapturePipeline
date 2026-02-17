@@ -67,7 +67,7 @@ def _candidate_to_adapter_object(candidate: Mapping[str, Any]) -> Dict[str, Any]
     role = str(candidate.get("sim_role") or "manipulable_object")
     articulation = candidate.get("articulation") if isinstance(candidate.get("articulation"), Mapping) else {}
 
-    return {
+    obj: Dict[str, Any] = {
         "id": asset_dir,
         "name": label,
         "category": label,
@@ -101,6 +101,16 @@ def _candidate_to_adapter_object(candidate: Mapping[str, Any]) -> Dict[str, Any]
             "source_pipeline": "capture-nurec-swap",
         },
     }
+
+    # Include reference image for image-conditioned generation
+    ref_crop = candidate.get("reference_crop")
+    if ref_crop:
+        obj["reference_image"] = str(ref_crop)
+    all_crops = candidate.get("all_crops")
+    if isinstance(all_crops, list) and all_crops:
+        obj["reference_images"] = [str(c) for c in all_crops if c]
+
+    return obj
 
 
 def _discover_glb_file(asset_dir: Path) -> Optional[Path]:
@@ -206,6 +216,18 @@ def materialize_candidate_assets(
     """Materialize swappable objects with SAM3D-first policy."""
 
     adapter_objects = [_candidate_to_adapter_object(candidate) for candidate in swap_candidates]
+
+    # Copy reference crops into asset directories for downstream tools
+    for candidate in swap_candidates:
+        ref_crop = candidate.get("reference_crop")
+        if ref_crop:
+            ref_src = Path(str(ref_crop))
+            if ref_src.is_file():
+                object_id = str(candidate["object_id"])
+                asset_dir_name = str(candidate.get("asset_dir") or f"obj_{object_id}")
+                dest_dir = storage_root / assets_prefix / asset_dir_name
+                ensure_dir(dest_dir)
+                shutil.copy2(ref_src, dest_dir / "reference.png")
 
     result = runner.materialize_text_assets(
         scene_id=scene_id,

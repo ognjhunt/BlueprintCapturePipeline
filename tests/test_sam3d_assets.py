@@ -56,6 +56,53 @@ class _StubRunner:
         return {"provenance_assets": provenance, "retrieval_report": {"method_counts": {"generated": 1}}}
 
 
+def test_reference_image_passed_to_adapter(tmp_path: Path) -> None:
+    runner = _StubRunner(tmp_path)
+
+    crop_file = tmp_path / "crop.png"
+    crop_file.write_bytes(b"fake image data")
+
+    candidates = [
+        {
+            "object_id": "drawer_1",
+            "asset_dir": "obj_drawer_1",
+            "label": "drawer",
+            "sim_role": "articulated_furniture",
+            "dimensions_est": {"width": 0.8, "height": 0.4, "depth": 0.5},
+            "physics_hints": {"dynamic": False},
+            "articulation": {"required": True, "requirement_source": "keyword"},
+            "obb": {
+                "center": [1.0, 0.5, 2.0],
+                "extents": [0.8, 0.4, 0.5],
+                "axes": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                "orientationQuaternion": [1, 0, 0, 0],
+            },
+            "reference_crop": str(crop_file),
+            "all_crops": [str(crop_file)],
+        }
+    ]
+
+    materialize_candidate_assets(
+        runner=runner,  # type: ignore[arg-type]
+        storage_root=tmp_path,
+        scene_id="scene_1",
+        assets_prefix="scenes/scene_1/assets",
+        room_type="kitchen",
+        swap_candidates=candidates,
+    )
+
+    # Verify reference_image was passed to adapter objects
+    call = runner.calls[0]
+    adapter_obj = call["objects"][0]
+    assert adapter_obj["reference_image"] == str(crop_file)
+    assert adapter_obj["reference_images"] == [str(crop_file)]
+
+    # Verify crop was copied to asset directory
+    ref_png = tmp_path / "scenes/scene_1/assets/obj_drawer_1/reference.png"
+    assert ref_png.is_file()
+    assert ref_png.read_bytes() == b"fake image data"
+
+
 def test_sam3d_first_generation_and_mesh_glb_emission(tmp_path: Path) -> None:
     runner = _StubRunner(tmp_path)
     candidates = [

@@ -168,36 +168,41 @@ def build_scene_artifacts(
             else {"required": False, "requirement_source": "policy"}
         )
 
-        manifest_objects.append(
-            {
-                "id": object_id,
-                "name": label,
-                "category": label,
-                "description": f"Swappable {label}",
-                "sim_role": sim_role,
-                "must_be_separate_asset": True,
-                "asset": {
-                    "path": f"{assets_prefix}/{asset_dir}/model.usd",
-                    "source": "sam3d_first",
-                    "format": "usd",
-                },
-                "transform": _candidate_transform(candidate),
-                "dimensions_est": dict(candidate.get("dimensions_est") or {}),
-                "physics_hints": dict(candidate.get("physics_hints") or {}),
-                "articulation": {
-                    "required": bool(articulation.get("required", False)),
-                    "backend_hint": "particulate_first"
-                    if bool(articulation.get("required", False))
-                    else "none",
-                    "requirement_source": str(articulation.get("requirement_source") or "policy"),
-                    "candidate": True,
-                },
-                "source": {
-                    "type": "capture_nurec_swap",
-                    "capture_id": capture_id,
-                },
-            }
-        )
+        manifest_obj: Dict[str, Any] = {
+            "id": object_id,
+            "name": label,
+            "category": label,
+            "description": f"Swappable {label}",
+            "sim_role": sim_role,
+            "must_be_separate_asset": True,
+            "asset": {
+                "path": f"{assets_prefix}/{asset_dir}/model.usd",
+                "source": "sam3d_first",
+                "format": "usd",
+            },
+            "transform": _candidate_transform(candidate),
+            "dimensions_est": dict(candidate.get("dimensions_est") or {}),
+            "physics_hints": dict(candidate.get("physics_hints") or {}),
+            "articulation": {
+                "required": bool(articulation.get("required", False)),
+                "backend_hint": "particulate_first"
+                if bool(articulation.get("required", False))
+                else "none",
+                "requirement_source": str(articulation.get("requirement_source") or "policy"),
+                "candidate": True,
+            },
+            "source": {
+                "type": "capture_nurec_swap",
+                "capture_id": capture_id,
+            },
+        }
+
+        # Include reference image path in manifest for downstream consumers
+        ref_crop = candidate.get("reference_crop")
+        if ref_crop:
+            manifest_obj["reference_image"] = f"{assets_prefix}/{asset_dir}/reference.png"
+
+        manifest_objects.append(manifest_obj)
 
         layout_objects.append(_layout_entry(candidate))
         inventory_objects.append(
