@@ -370,6 +370,7 @@ def _materialize_with_adapter(
 
 def _materialize_with_image_conditioned_pipeline(
     *,
+    runner: BlueprintPipelineRunner,
     storage_root: Path,
     scene_id: str,
     assets_prefix: str,
@@ -398,12 +399,103 @@ def _materialize_with_image_conditioned_pipeline(
 
     provenance_assets: List[Dict[str, Any]] = []
     method_counts: Dict[str, int] = {
+        "articulated_retrieval": 0,
         "image_to_3d": 0,
         "proxy_box": 0,
         "failed": 0,
     }
-
+    articulated_candidates = []
+    non_articulated_candidates = []
     for candidate in swap_candidates:
+        articulation = candidate.get("articulation") if isinstance(candidate.get("articulation"), Mapping) else {}
+        if bool(articulation.get("required", False)):
+            articulated_candidates.append(candidate)
+        else:
+            non_articulated_candidates.append(candidate)
+
+    articulated_error = ""
+    if articulated_candidates:
+        adapter_objects = [_candidate_to_adapter_object(candidate) for candidate in articulated_candidates]
+        try:
+            runner.materialize_text_assets(
+                scene_id=scene_id,
+                assets_prefix=assets_prefix,
+                objects=adapter_objects,
+                room_type=room_type,
+                generation_enabled=False,
+                retrieval_enabled=True,
+                retrieval_mode="ann_primary",
+                generation_provider_chain=generation_provider_chain,
+            )
+        except Exception as exc:  # pragma: no cover - adapter/runtime dependent
+            articulated_error = str(exc)
+            method_counts["failed"] += len(articulated_candidates)
+
+    for candidate in articulated_candidates:
+        object_id = str(candidate["object_id"])
+        asset_dir_name = str(candidate.get("asset_dir") or f"obj_{object_id}")
+        asset_dir = assets_root / asset_dir_name
+        ensure_dir(asset_dir)
+
+        reference_image_text = find_best_reference_image(dict(candidate), storage_root=assets_root)
+        original_reference_path = Path(reference_image_text) if reference_image_text else None
+        if original_reference_path and original_reference_path.is_file():
+            reference_copy = asset_dir / "reference.png"
+            if original_reference_path != reference_copy:
+                shutil.copy2(original_reference_path, reference_copy)
+
+        source_kind = "articulated_retrieval"
+        mesh_glb_path = asset_dir / "mesh.glb"
+
+        if not has_nonempty_file(mesh_glb_path):
+            discovered = _discover_glb_file(asset_dir)
+            if discovered is not None and discovered != mesh_glb_path:
+                shutil.copy2(discovered, mesh_glb_path)
+
+        if not has_nonempty_file(mesh_glb_path):
+            if not allow_proxy_fallback:
+                raise StageError(
+                    "sam3d",
+                    "articulated retrieval produced no mesh.glb and STAGE_D_ALLOW_PROXY_FALLBACK=false",
+                )
+            _write_proxy_mesh_glb(candidate, mesh_glb_path)
+            source_kind = "articulated_retrieval_proxy_box"
+            method_counts["proxy_box"] += 1
+        else:
+            method_counts["articulated_retrieval"] += 1
+
+        model_path = asset_dir / "model.usd"
+        if not has_nonempty_file(model_path):
+            _write_reference_model_usd(model_path, "./mesh.glb")
+
+        metadata_path = asset_dir / "metadata.json"
+        metadata_payload: Dict[str, Any] = {
+            "schema_version": "v1",
+            "scene_id": scene_id,
+            "object_id": object_id,
+            "asset_dir": f"{assets_prefix}/{asset_dir_name}",
+            "source_kind": source_kind,
+            "router_branch": "articulated_required",
+            "articulation_required": True,
+            "status": "success",
+            "room_type": room_type,
+            "generation_provider_chain": generation_provider_chain,
+            "reference_image": str(asset_dir / "reference.png") if (asset_dir / "reference.png").is_file() else "",
+            "mesh_glb_path": f"{assets_prefix}/{asset_dir_name}/mesh.glb",
+        }
+        if articulated_error:
+            metadata_payload["articulated_retrieval_error"] = articulated_error
+        write_json(metadata_path, metadata_payload)
+
+        provenance_assets.append(
+            {
+                "object_id": asset_dir_name,
+                "path": f"{assets_prefix}/{asset_dir_name}/model.usd",
+                "materialization": source_kind,
+            }
+        )
+
+    for candidate in non_articulated_candidates:
         object_id = str(candidate["object_id"])
         asset_dir_name = str(candidate.get("asset_dir") or f"obj_{object_id}")
         asset_dir = assets_root / asset_dir_name
@@ -474,12 +566,14 @@ def _materialize_with_image_conditioned_pipeline(
         _write_reference_model_usd(model_path, "./mesh.glb")
 
         metadata_path = asset_dir / "metadata.json"
-        metadata_payload: Dict[str, Any] = {
+        metadata_payload = {
             "schema_version": "v1",
             "scene_id": scene_id,
             "object_id": object_id,
             "asset_dir": f"{assets_prefix}/{asset_dir_name}",
             "source_kind": source_kind or "image_conditioned_proxy_box",
+            "router_branch": "non_articulated",
+            "articulation_required": False,
             "status": "success",
             "room_type": room_type,
             "generation_provider_chain": generation_provider_chain,
@@ -536,6 +630,7 @@ def materialize_candidate_assets(
         )
     else:
         result = _materialize_with_image_conditioned_pipeline(
+            runner=runner,
             storage_root=storage_root,
             scene_id=scene_id,
             assets_prefix=assets_prefix,

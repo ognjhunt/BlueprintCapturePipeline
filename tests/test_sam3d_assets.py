@@ -57,7 +57,7 @@ class _StubRunner:
         return {"provenance_assets": provenance, "retrieval_report": {"method_counts": {"generated": 1}}}
 
 
-def test_reference_image_copied_for_image_conditioned_generation(tmp_path: Path, monkeypatch) -> None:
+def test_articulated_candidates_route_to_retrieval_first(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("STAGE_D_MATERIALIZATION_MODE", "image_conditioned")
     monkeypatch.setenv("STAGE_D_IMAGE_CLEANUP_PROVIDER", "skip")
     monkeypatch.delenv("STAGE_D_IMAGE_TO_3D_COMMAND", raising=False)
@@ -95,8 +95,12 @@ def test_reference_image_copied_for_image_conditioned_generation(tmp_path: Path,
         swap_candidates=candidates,
     )
 
-    # Adapter path should not be used in image_conditioned mode.
-    assert runner.calls == []
+    # Articulated-required objects route to retrieval-first branch.
+    assert len(runner.calls) == 1
+    call = runner.calls[0]
+    assert call["generation_enabled"] is False
+    assert call["retrieval_enabled"] is True
+    assert call["retrieval_mode"] == "ann_primary"
 
     # Verify crop was copied to asset directory
     ref_png = tmp_path / "scenes/scene_1/assets/obj_drawer_1/reference.png"
@@ -110,8 +114,8 @@ def test_reference_image_copied_for_image_conditioned_generation(tmp_path: Path,
         ).read_text(encoding="utf-8")
     )
     assert metadata["object_id"] == "drawer_1"
-    assert metadata["reference_image"]
-    assert metadata["source_kind"] in {"image_to_3d", "image_conditioned_proxy_box"}
+    assert metadata["source_kind"] in {"articulated_retrieval", "articulated_retrieval_proxy_box"}
+    assert metadata["router_branch"] == "articulated_required"
 
 
 def test_image_conditioned_generation_emits_contract_outputs(tmp_path: Path, monkeypatch) -> None:
@@ -124,10 +128,10 @@ def test_image_conditioned_generation_emits_contract_outputs(tmp_path: Path, mon
             "object_id": "drawer_1",
             "asset_dir": "obj_drawer_1",
             "label": "drawer",
-            "sim_role": "articulated_furniture",
+            "sim_role": "manipulable_object",
             "dimensions_est": {"width": 0.8, "height": 0.4, "depth": 0.5},
-            "physics_hints": {"dynamic": False},
-            "articulation": {"required": True, "requirement_source": "keyword"},
+            "physics_hints": {"dynamic": True},
+            "articulation": {"required": False, "requirement_source": "keyword"},
             "obb": {
                 "center": [1.0, 0.5, 2.0],
                 "extents": [0.8, 0.4, 0.5],
@@ -151,6 +155,7 @@ def test_image_conditioned_generation_emits_contract_outputs(tmp_path: Path, mon
     assert (tmp_path / record["model_path"]).is_file()
     assert (tmp_path / record["mesh_glb_path"]).is_file()
     assert (tmp_path / record["metadata_path"]).is_file()
+    assert runner.calls == []
 
 
 def test_adapter_mode_keeps_legacy_adapter_path(tmp_path: Path, monkeypatch) -> None:
