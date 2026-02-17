@@ -364,6 +364,11 @@ def _patch_mesh_conversion(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _force_adapter_stage_d_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STAGE_D_MATERIALIZATION_MODE", "adapter")
+
+
 def _run_pipeline(
     tmp_path: Path,
     *,

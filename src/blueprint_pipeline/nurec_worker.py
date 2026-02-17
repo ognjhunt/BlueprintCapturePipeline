@@ -57,6 +57,23 @@ def _build_paths(spec: Mapping[str, Any], storage_root: Path) -> Dict[str, Path]
     }
 
 
+def _read_ply_face_count(path: Path) -> int:
+    with path.open("rb") as f:
+        first = f.readline().decode("ascii", errors="ignore").strip().lower()
+        if first != "ply":
+            raise RuntimeError(f"invalid PLY header at {path}")
+        while True:
+            line = f.readline()
+            if not line:
+                raise RuntimeError(f"unexpected EOF while reading PLY header at {path}")
+            text = line.decode("ascii", errors="ignore").strip().lower()
+            if text.startswith("element face "):
+                return int(text.split()[-1])
+            if text == "end_header":
+                break
+    return 0
+
+
 def _render_command(template: str, *, spec_path: Path, spec: Mapping[str, Any], nurec_dir: Path) -> str:
     capture = spec.get("capture") if isinstance(spec.get("capture"), Mapping) else {}
     return (
@@ -128,12 +145,16 @@ def _validate_outputs(nurec_dir: Path) -> Dict[str, Any]:
         raise RuntimeError(f"Missing required NuRec visual artifact: {export_usdz}")
     if not has_nonempty_file(mesh_ply):
         raise RuntimeError(f"Missing required NuRec collision mesh: {mesh_ply}")
+    mesh_faces = _read_ply_face_count(mesh_ply)
+    if mesh_faces <= 0:
+        raise RuntimeError(f"Collision mesh must be triangulated (face_count={mesh_faces}) at {mesh_ply}")
     if not occupancy:
         raise RuntimeError(f"Missing required occupancy artifacts in {nurec_dir}")
 
     return {
         "visual_usdz": str(export_usdz),
         "collision_mesh_ply": str(mesh_ply),
+        "collision_mesh_face_count": int(mesh_faces),
         "occupancy": [str(path) for path in occupancy],
     }
 

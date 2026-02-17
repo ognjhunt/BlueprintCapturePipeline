@@ -91,7 +91,8 @@ def _save_object_crop(
     segmentation mask as an alpha channel (transparent background),
     and resizes to max 512×512 preserving aspect ratio.
 
-    Returns the saved path, or None on failure.
+    Returns a path relative to the object index directory (for portability),
+    or None on failure.
     """
     try:
         from PIL import Image
@@ -136,7 +137,7 @@ def _save_object_crop(
         filename = f"{safe_label}_{frame_idx:03d}_{det_idx:03d}.png"
         out_path = crops_dir / filename
         crop_rgba.save(out_path, "PNG")
-        return out_path
+        return Path(crops_dir.name) / filename
 
     except Exception as exc:
         _log(f"    Crop save failed for {label}: {exc}")
@@ -229,7 +230,7 @@ def _resolve_sampling_settings(
     env = environment.strip().lower()
     if env == "warehouse":
         auto_n_frames = 12
-        auto_min_detections = 1
+        auto_min_detections = 2
     elif env == "kitchen":
         auto_n_frames = 10
         auto_min_detections = 2
@@ -364,7 +365,7 @@ def _detect_objects_in_frame(
                     prompt, frame_idx, len(detections),
                 )
                 if crop_path is not None:
-                    det["crop_path"] = str(crop_path)
+                    det["crop_path"] = crop_path.as_posix()
 
             detections.append(det)
 
@@ -386,6 +387,52 @@ def _box_iou(box_a: List[float], box_b: List[float]) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def _box_area(box: List[float]) -> float:
+    return max(0.0, float(box[2] - box[0])) * max(0.0, float(box[3] - box[1]))
+
+
+def _detections_match(det_a: Dict[str, Any], det_b: Dict[str, Any]) -> bool:
+    """Cross-frame association using IoU + depth + centroid/scale cues."""
+    iou = _box_iou(det_a["box"], det_b["box"])
+    if iou >= _MERGE_IOU_THRESHOLD:
+        return True
+
+    area_a = _box_area(det_a["box"])
+    area_b = _box_area(det_b["box"])
+    area_ratio = max(area_a, area_b) / max(1.0, min(area_a, area_b))
+    if area_ratio > 4.0:
+        return False
+
+    centroid_a = det_a.get("centroid_px", [0.0, 0.0])
+    centroid_b = det_b.get("centroid_px", [0.0, 0.0])
+    dx = float(centroid_a[0]) - float(centroid_b[0])
+    dy = float(centroid_a[1]) - float(centroid_b[1])
+    center_dist = float(np.hypot(dx, dy))
+    diag_a = float(np.hypot(det_a["box"][2] - det_a["box"][0], det_a["box"][3] - det_a["box"][1]))
+    diag_b = float(np.hypot(det_b["box"][2] - det_b["box"][0], det_b["box"][3] - det_b["box"][1]))
+    center_dist_norm = center_dist / max(1.0, diag_a, diag_b)
+
+    depth_a = det_a.get("depth_3d") if isinstance(det_a.get("depth_3d"), dict) else None
+    depth_b = det_b.get("depth_3d") if isinstance(det_b.get("depth_3d"), dict) else None
+    if depth_a is not None and depth_b is not None:
+        center_a = np.array(depth_a.get("center", [0.0, 0.0, 0.0]), dtype=float)
+        center_b = np.array(depth_b.get("center", [0.0, 0.0, 0.0]), dtype=float)
+        ext_a = np.array(depth_a.get("extents", [0.2, 0.2, 0.2]), dtype=float)
+        ext_b = np.array(depth_b.get("extents", [0.2, 0.2, 0.2]), dtype=float)
+
+        dist_3d = float(np.linalg.norm(center_a - center_b))
+        size_ref = max(float(np.max(ext_a)), float(np.max(ext_b)), 0.25)
+        depth_gap = abs(float(center_a[2] - center_b[2]))
+
+        if dist_3d <= max(0.6, 1.25 * size_ref) and center_dist_norm <= 1.2:
+            return True
+        if iou >= 0.15 and depth_gap <= max(0.8, 1.5 * size_ref):
+            return True
+        return False
+
+    return iou >= 0.2 or (iou >= 0.1 and center_dist_norm <= 0.5 and area_ratio <= 2.5)
+
+
 def _merge_detections(
     all_detections: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -404,27 +451,18 @@ def _merge_detections(
         if label.lower() in _STRUCTURAL_LABELS:
             continue
 
-        # Greedy merge by IoU
+        # Greedy merge by IoU + depth/centroid consistency
         clusters: List[List[Dict[str, Any]]] = []
-        used = [False] * len(dets)
-
-        for i, det_i in enumerate(dets):
-            if used[i]:
-                continue
-            cluster = [det_i]
-            used[i] = True
-
-            for j in range(i + 1, len(dets)):
-                if used[j]:
-                    continue
-                # Compare with any member of the cluster
-                for member in cluster:
-                    if _box_iou(member["box"], dets[j]["box"]) > _MERGE_IOU_THRESHOLD:
-                        cluster.append(dets[j])
-                        used[j] = True
-                        break
-
-            clusters.append(cluster)
+        for det in sorted(dets, key=lambda item: float(item.get("score", 0.0)), reverse=True):
+            matched_cluster = None
+            for cluster in clusters:
+                if any(_detections_match(det, member) for member in cluster):
+                    matched_cluster = cluster
+                    break
+            if matched_cluster is None:
+                clusters.append([det])
+            else:
+                matched_cluster.append(det)
 
         for cluster_idx, cluster in enumerate(clusters):
             # Aggregate cluster statistics

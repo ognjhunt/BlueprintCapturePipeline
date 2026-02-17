@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .blueprintpipeline_runner import BlueprintPipelineRunner
 from .common import StageError, ensure_dir, has_nonempty_file, utc_now_iso, write_json, write_text
+from .reference_image_utils import cleanup_crop_with_vlm, find_best_reference_image
 
 
 @dataclass(frozen=True)
@@ -203,7 +207,133 @@ def _build_materialized_records(
     return out
 
 
-def materialize_candidate_assets(
+def _stage_d_materialization_mode() -> str:
+    mode = (os.getenv("STAGE_D_MATERIALIZATION_MODE") or "image_conditioned").strip().lower()
+    if mode in {"image_conditioned", "adapter"}:
+        return mode
+    return "image_conditioned"
+
+
+def _is_truthy(value: str, *, default: bool) -> bool:
+    text = value.strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _coerce_float(value: Any, *, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _candidate_mesh_extents(candidate: Mapping[str, Any]) -> tuple[float, float, float]:
+    obb = candidate.get("obb") if isinstance(candidate.get("obb"), Mapping) else {}
+    extents = obb.get("extents") if isinstance(obb.get("extents"), list) else []
+    if len(extents) >= 3:
+        ex = max(0.02, min(8.0, _coerce_float(extents[0], default=0.35)))
+        ey = max(0.02, min(8.0, _coerce_float(extents[1], default=0.35)))
+        ez = max(0.02, min(8.0, _coerce_float(extents[2], default=0.35)))
+        return ex, ey, ez
+
+    dims = candidate.get("dimensions_est") if isinstance(candidate.get("dimensions_est"), Mapping) else {}
+    width = max(0.02, min(8.0, _coerce_float(dims.get("width"), default=0.35)))
+    height = max(0.02, min(8.0, _coerce_float(dims.get("height"), default=0.35)))
+    depth = max(0.02, min(8.0, _coerce_float(dims.get("depth"), default=0.35)))
+    return width, height, depth
+
+
+def _write_proxy_mesh_glb(candidate: Mapping[str, Any], glb_path: Path) -> None:
+    try:
+        import trimesh  # type: ignore
+    except Exception as exc:  # pragma: no cover - dependency-dependent
+        raise StageError("sam3d", f"trimesh is required for proxy mesh generation: {exc}") from exc
+
+    extents = _candidate_mesh_extents(candidate)
+    mesh = trimesh.creation.box(extents=extents)
+    ensure_dir(glb_path.parent)
+    mesh.export(glb_path)
+
+
+def _run_image_to_3d_command(
+    *,
+    command_template: str,
+    reference_image: Path,
+    output_glb: Path,
+    output_dir: Path,
+    scene_id: str,
+    object_id: str,
+    asset_dir_name: str,
+    room_type: str,
+    timeout_seconds: int,
+) -> tuple[bool, str, Dict[str, Any]]:
+    substitutions = {
+        "REFERENCE_IMAGE": str(reference_image),
+        "INPUT_IMAGE": str(reference_image),
+        "OUTPUT_GLB": str(output_glb),
+        "OUTPUT_DIR": str(output_dir),
+        "ASSET_DIR": str(output_dir),
+        "ASSET_ID": asset_dir_name,
+        "OBJECT_ID": object_id,
+        "SCENE_ID": scene_id,
+        "ROOM_TYPE": room_type,
+    }
+    rendered = command_template
+    for key, value in substitutions.items():
+        rendered = rendered.replace("{" + key + "}", value)
+
+    try:
+        command = shlex.split(rendered)
+    except ValueError as exc:
+        return False, f"invalid STAGE_D_IMAGE_TO_3D_COMMAND: {exc}", {"rendered_command": rendered}
+
+    if not command:
+        return False, "empty STAGE_D_IMAGE_TO_3D_COMMAND", {"rendered_command": rendered}
+
+    try:
+        proc = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            False,
+            f"image-to-3d command timed out after {timeout_seconds}s",
+            {"command": command, "timeout_seconds": timeout_seconds},
+        )
+    except Exception as exc:  # pragma: no cover - subprocess edge
+        return False, f"failed to execute image-to-3d command: {exc}", {"command": command}
+
+    invocation = {
+        "command": command,
+        "return_code": proc.returncode,
+        "stdout_tail": proc.stdout[-4000:],
+        "stderr_tail": proc.stderr[-4000:],
+        "timeout_seconds": timeout_seconds,
+    }
+    if proc.returncode != 0:
+        return False, f"image-to-3d command failed with code {proc.returncode}", invocation
+    if not has_nonempty_file(output_glb):
+        return False, f"image-to-3d command completed but missing output GLB at {output_glb}", invocation
+    return True, "ok", invocation
+
+
+def _materialize_with_adapter(
     *,
     runner: BlueprintPipelineRunner,
     storage_root: Path,
@@ -211,13 +341,10 @@ def materialize_candidate_assets(
     assets_prefix: str,
     room_type: str,
     swap_candidates: List[Mapping[str, Any]],
-    generation_provider_chain: str = "sam3d,hunyuan3d",
+    generation_provider_chain: str,
 ) -> Dict[str, Any]:
-    """Materialize swappable objects with SAM3D-first policy."""
-
     adapter_objects = [_candidate_to_adapter_object(candidate) for candidate in swap_candidates]
 
-    # Copy reference crops into asset directories for downstream tools
     for candidate in swap_candidates:
         ref_crop = candidate.get("reference_crop")
         if ref_crop:
@@ -229,7 +356,7 @@ def materialize_candidate_assets(
                 ensure_dir(dest_dir)
                 shutil.copy2(ref_src, dest_dir / "reference.png")
 
-    result = runner.materialize_text_assets(
+    return runner.materialize_text_assets(
         scene_id=scene_id,
         assets_prefix=assets_prefix,
         objects=adapter_objects,
@@ -239,6 +366,183 @@ def materialize_candidate_assets(
         retrieval_mode="ann_shadow",
         generation_provider_chain=generation_provider_chain,
     )
+
+
+def _materialize_with_image_conditioned_pipeline(
+    *,
+    storage_root: Path,
+    scene_id: str,
+    assets_prefix: str,
+    room_type: str,
+    swap_candidates: List[Mapping[str, Any]],
+    generation_provider_chain: str,
+) -> Dict[str, Any]:
+    assets_root = storage_root / assets_prefix
+    ensure_dir(assets_root)
+
+    cleanup_provider = (
+        os.getenv("STAGE_D_IMAGE_CLEANUP_PROVIDER")
+        or os.getenv("CROP_CLEANUP_PROVIDER")
+        or "qwen_image_edit"
+    ).strip().lower()
+    image_to_3d_command = (
+        os.getenv("STAGE_D_IMAGE_TO_3D_COMMAND")
+        or os.getenv("IMAGE_TO_3D_COMMAND")
+        or ""
+    ).strip()
+    timeout_seconds = _int_env("STAGE_D_IMAGE_TO_3D_TIMEOUT_SECONDS", 900)
+    allow_proxy_fallback = _is_truthy(
+        os.getenv("STAGE_D_ALLOW_PROXY_FALLBACK", "true"),
+        default=True,
+    )
+
+    provenance_assets: List[Dict[str, Any]] = []
+    method_counts: Dict[str, int] = {
+        "image_to_3d": 0,
+        "proxy_box": 0,
+        "failed": 0,
+    }
+
+    for candidate in swap_candidates:
+        object_id = str(candidate["object_id"])
+        asset_dir_name = str(candidate.get("asset_dir") or f"obj_{object_id}")
+        asset_dir = assets_root / asset_dir_name
+        ensure_dir(asset_dir)
+
+        reference_image_text = find_best_reference_image(dict(candidate), storage_root=assets_root)
+        original_reference_path = Path(reference_image_text) if reference_image_text else None
+        working_reference_path: Optional[Path] = None
+
+        if original_reference_path and original_reference_path.is_file():
+            reference_copy = asset_dir / "reference.png"
+            if original_reference_path != reference_copy:
+                shutil.copy2(original_reference_path, reference_copy)
+            else:
+                reference_copy = original_reference_path
+
+            working_reference_path = reference_copy
+            if cleanup_provider != "skip":
+                cleaned_path = cleanup_crop_with_vlm(
+                    working_reference_path,
+                    asset_dir / "reference_clean.png",
+                    provider=cleanup_provider,
+                )
+                if cleaned_path is not None and Path(cleaned_path).is_file():
+                    working_reference_path = Path(cleaned_path)
+
+        mesh_glb_path = asset_dir / "mesh.glb"
+        source_kind = ""
+        command_error = ""
+        image_to_3d_invocation: Dict[str, Any] = {}
+        tried_image_to_3d = False
+
+        if image_to_3d_command and working_reference_path and working_reference_path.is_file():
+            tried_image_to_3d = True
+            ok, detail, invocation = _run_image_to_3d_command(
+                command_template=image_to_3d_command,
+                reference_image=working_reference_path,
+                output_glb=mesh_glb_path,
+                output_dir=asset_dir,
+                scene_id=scene_id,
+                object_id=object_id,
+                asset_dir_name=asset_dir_name,
+                room_type=room_type,
+                timeout_seconds=timeout_seconds,
+            )
+            image_to_3d_invocation = invocation
+            if ok:
+                source_kind = "image_to_3d"
+                method_counts["image_to_3d"] += 1
+            else:
+                command_error = detail
+                method_counts["failed"] += 1
+
+        if not has_nonempty_file(mesh_glb_path):
+            if not allow_proxy_fallback:
+                raise StageError(
+                    "sam3d",
+                    (
+                        "image-conditioned generation produced no mesh.glb and "
+                        "STAGE_D_ALLOW_PROXY_FALLBACK=false"
+                    ),
+                )
+            _write_proxy_mesh_glb(candidate, mesh_glb_path)
+            source_kind = source_kind or "image_conditioned_proxy_box"
+            method_counts["proxy_box"] += 1
+
+        model_path = asset_dir / "model.usd"
+        _write_reference_model_usd(model_path, "./mesh.glb")
+
+        metadata_path = asset_dir / "metadata.json"
+        metadata_payload: Dict[str, Any] = {
+            "schema_version": "v1",
+            "scene_id": scene_id,
+            "object_id": object_id,
+            "asset_dir": f"{assets_prefix}/{asset_dir_name}",
+            "source_kind": source_kind or "image_conditioned_proxy_box",
+            "status": "success",
+            "room_type": room_type,
+            "generation_provider_chain": generation_provider_chain,
+            "cleanup_provider": cleanup_provider,
+            "reference_image_original": str(original_reference_path) if original_reference_path else "",
+            "reference_image": str(working_reference_path) if working_reference_path else "",
+            "image_to_3d_attempted": tried_image_to_3d,
+            "mesh_glb_path": f"{assets_prefix}/{asset_dir_name}/mesh.glb",
+        }
+        if image_to_3d_invocation:
+            metadata_payload["image_to_3d_invocation"] = image_to_3d_invocation
+        if command_error:
+            metadata_payload["image_to_3d_error"] = command_error
+        write_json(metadata_path, metadata_payload)
+
+        provenance_assets.append(
+            {
+                "object_id": asset_dir_name,
+                "path": f"{assets_prefix}/{asset_dir_name}/model.usd",
+                "materialization": source_kind or "image_conditioned_proxy_box",
+            }
+        )
+
+    return {
+        "provenance_assets": provenance_assets,
+        "retrieval_report": {
+            "mode": "image_conditioned",
+            "method_counts": method_counts,
+        },
+    }
+
+
+def materialize_candidate_assets(
+    *,
+    runner: BlueprintPipelineRunner,
+    storage_root: Path,
+    scene_id: str,
+    assets_prefix: str,
+    room_type: str,
+    swap_candidates: List[Mapping[str, Any]],
+    generation_provider_chain: str = "sam3d,hunyuan3d",
+) -> Dict[str, Any]:
+    """Materialize swappable objects with SAM3D-first policy."""
+    mode = _stage_d_materialization_mode()
+    if mode == "adapter":
+        result = _materialize_with_adapter(
+            runner=runner,
+            storage_root=storage_root,
+            scene_id=scene_id,
+            assets_prefix=assets_prefix,
+            room_type=room_type,
+            swap_candidates=swap_candidates,
+            generation_provider_chain=generation_provider_chain,
+        )
+    else:
+        result = _materialize_with_image_conditioned_pipeline(
+            storage_root=storage_root,
+            scene_id=scene_id,
+            assets_prefix=assets_prefix,
+            room_type=room_type,
+            swap_candidates=swap_candidates,
+            generation_provider_chain=generation_provider_chain,
+        )
 
     records = _build_materialized_records(
         storage_root=storage_root,

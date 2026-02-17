@@ -36,7 +36,7 @@ def _env_any(*keys: str) -> str:
 
 def _parse_provider_chain(raw_chain: str) -> list[str]:
     providers = [part.strip().lower() for part in raw_chain.split(",") if part.strip()]
-    return providers or ["sam3d", "hunyuan3d"]
+    return providers or ["image_to_3d", "proxy_box"]
 
 
 def _import_from_blueprintpipeline(root: Path, module_name: str) -> None:
@@ -221,8 +221,18 @@ def _validate_quality_gate_dependencies(*, advanced_quality_gates_enabled: bool)
     return checks
 
 
-def _validate_blueprintpipeline_runtime(root: Path) -> list[PreflightCheck]:
+def _validate_blueprintpipeline_runtime(root: Path, *, standalone_mode: bool) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
+
+    if standalone_mode:
+        checks.append(
+            PreflightCheck(
+                "blueprintpipeline_runtime_mode",
+                True,
+                "standalone mode enabled; external BlueprintPipeline runtime checks skipped",
+            )
+        )
+        return checks
 
     checks.append(
         PreflightCheck(
@@ -274,6 +284,7 @@ def validate_runtime_preflight(
     nurec_worker_mode: str,
     nurec_worker_command: str,
     advanced_quality_gates_enabled: bool,
+    standalone_mode: bool = False,
 ) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
@@ -285,7 +296,12 @@ def validate_runtime_preflight(
         )
     )
 
-    checks.extend(_validate_blueprintpipeline_runtime(blueprintpipeline_root))
+    checks.extend(
+        _validate_blueprintpipeline_runtime(
+            blueprintpipeline_root,
+            standalone_mode=standalone_mode,
+        )
+    )
     checks.extend(_validate_provider_env(_parse_provider_chain(generation_provider_chain)))
     checks.extend(_validate_swap_policy_path(swap_policy_path))
     checks.extend(_validate_interactive_backend_env())

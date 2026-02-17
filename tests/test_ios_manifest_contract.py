@@ -54,3 +54,29 @@ def test_load_object_index_supports_list_and_objects_payload(tmp_path: Path) -> 
 
     assert list_result[0]["id"] == "a"
     assert dict_result[0]["id"] == "b"
+
+
+def test_load_object_index_resolves_relative_crop_paths(tmp_path: Path) -> None:
+    root = tmp_path
+    index_path = root / "bucket/scenes/scene_1/raw/arkit/objects/index.json"
+    crops_dir = index_path.parent / "object_crops"
+    crops_dir.mkdir(parents=True, exist_ok=True)
+    (crops_dir / "drawer_001.png").write_bytes(b"img")
+
+    index_path.write_text(
+        (
+            '{"objects":[{"id":"drawer_1","reference_crop":"object_crops/drawer_001.png",'
+            '"all_crops":["object_crops/drawer_001.png","gs://bucket/shared/remote.png"]}]}'
+        ),
+        encoding="utf-8",
+    )
+
+    result = load_object_index(
+        "gs://bucket/scenes/scene_1/raw/arkit/objects/index.json",
+        gcs_root=root,
+    )
+
+    expected_local = str((index_path.parent / "object_crops/drawer_001.png").resolve())
+    assert result[0]["reference_crop"] == expected_local
+    assert result[0]["all_crops"][0] == expected_local
+    assert result[0]["all_crops"][1] == "gs://bucket/shared/remote.png"

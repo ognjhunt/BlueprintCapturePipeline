@@ -77,3 +77,30 @@ def test_runtime_preflight_fails_when_provider_missing(tmp_path: Path, monkeypat
 
     failed_names = {item.name for item in checks if not item.passed}
     assert "provider_sam3d" in failed_names
+
+
+def test_runtime_preflight_standalone_mode_skips_blueprintpipeline_requirements(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+    missing_bp_root = tmp_path / "does_not_exist"
+
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=missing_bp_root,
+        generation_provider_chain="image_to_3d,proxy_box",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+        standalone_mode=True,
+    )
+    enforce_preflight(checks)
+    check_names = {item.name for item in checks}
+    assert "blueprintpipeline_runtime_mode" in check_names

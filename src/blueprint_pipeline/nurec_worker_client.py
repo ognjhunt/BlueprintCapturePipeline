@@ -238,6 +238,22 @@ class NurecWorkerClient:
             pass
         return stats
 
+    def _read_ply_face_count(self, mesh_path: Path) -> int:
+        with mesh_path.open("rb") as f:
+            first = f.readline().decode("ascii", errors="ignore").strip().lower()
+            if first != "ply":
+                raise StageError("nurec", f"invalid PLY header at {mesh_path}")
+            while True:
+                line = f.readline()
+                if not line:
+                    raise StageError("nurec", f"unexpected EOF while reading PLY header at {mesh_path}")
+                text = line.decode("ascii", errors="ignore").strip().lower()
+                if text.startswith("element face "):
+                    return int(text.split()[-1])
+                if text == "end_header":
+                    break
+        return 0
+
     def collect_outputs(self) -> Dict[str, Any]:
         export_usdz = self.nurec_dir / "export_last.usdz"
         mesh_ply = self.nurec_dir / "nvblox_mesh.ply"
@@ -247,9 +263,14 @@ class NurecWorkerClient:
             raise StageError("nurec", f"missing required artifact: {export_usdz}")
         if not has_nonempty_file(mesh_ply):
             raise StageError("nurec", f"missing required artifact: {mesh_ply}")
+        face_count = self._read_ply_face_count(mesh_ply)
+        if face_count <= 0:
+            raise StageError("nurec", f"collision mesh must be triangulated (face_count={face_count})")
         if not occupancy:
             raise StageError("nurec", "missing occupancy.* artifact")
 
+        mesh_stats = self._mesh_stats(mesh_ply)
+        mesh_stats.setdefault("face_count", int(face_count))
         payload = {
             "schema_version": "v1",
             "scene_prefix": self.pipeline_prefix,
@@ -262,7 +283,7 @@ class NurecWorkerClient:
                     f"gs://{self.bucket}/{relative_scene_path(path, self.storage_root)}" for path in occupancy
                 ],
             },
-            "mesh_stats": self._mesh_stats(mesh_ply),
+            "mesh_stats": mesh_stats,
         }
         write_json(self.pipeline_dir / "nurec_outputs.json", payload)
         return payload

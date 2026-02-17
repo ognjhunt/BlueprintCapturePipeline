@@ -22,6 +22,7 @@ DA3_MODEL_ID="${DA3_MODEL_ID:-depth-anything/DA3Metric-Large}"
 DA3_MODEL_NAME="${DA3_MODEL_NAME:-da3metric-large}"
 FIXER_DIR="${FIXER_DIR:-/opt/Fixer}"
 FIXER_WEIGHTS_DIR="${FIXER_WEIGHTS_DIR:-/opt/Fixer/weights}"
+QWEN_EDIT_DIR="${QWEN_IMAGE_EDIT_MODEL_PATH:-/opt/qwen-image-edit}"
 HF_CACHE_DIR="${HF_HOME:-/opt/hf}"
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -138,7 +139,7 @@ clone_or_update_repo "https://github.com/facebookresearch/sam3.git" "$SAM3_DIR" 
 python3 -m pip install --no-cache-dir -e "$SAM3_DIR"
 
 log "Installing Depth Anything V3..."
-clone_or_update_repo "https://github.com/DepthAnything/Depth-Anything-V3.git" "$DA3_DIR" "main"
+clone_or_update_repo "https://github.com/ByteDance-Seed/Depth-Anything-3.git" "$DA3_DIR" "main"
 python3 -m pip install --no-cache-dir -e "$DA3_DIR"
 
 log "Ensuring DA3 metric weights are present..."
@@ -155,6 +156,15 @@ if [ "$WITH_FIXER" = true ]; then
   if [ ! -f "$FIXER_WEIGHTS_DIR/pretrained/pretrained_fixer.pkl" ]; then
     HF_HOME="$HF_CACHE_DIR" huggingface-cli download nvidia/Fixer --local-dir "$FIXER_WEIGHTS_DIR"
   fi
+fi
+
+log "Installing Qwen-Image-Edit dependencies..."
+python3 -m pip install --no-cache-dir diffusers accelerate sentencepiece protobuf transformers
+
+log "Downloading Qwen-Image-Edit-2511 weights..."
+mkdir -p "$QWEN_EDIT_DIR"
+if [ ! -f "$QWEN_EDIT_DIR/model_index.json" ]; then
+  HF_HOME="$HF_CACHE_DIR" huggingface-cli download Qwen/Qwen-Image-Edit-2511 --local-dir "$QWEN_EDIT_DIR"
 fi
 
 if [ "$SKIP_PREWARM" = false ]; then
@@ -174,6 +184,14 @@ DepthAnything3.from_pretrained(
 print("PREWARM_OK")
 PY
 
+  log "Prewarming Qwen-Image-Edit pipeline..."
+  HF_HOME="$HF_CACHE_DIR" QWEN_IMAGE_EDIT_MODEL_PATH="$QWEN_EDIT_DIR" python3 - <<PY
+import torch
+from diffusers import QwenImageEditPlusPipeline
+pipe = QwenImageEditPlusPipeline.from_pretrained("${QWEN_EDIT_DIR}", torch_dtype=torch.bfloat16)
+print("QWEN_IMAGE_EDIT_PREWARM_OK")
+PY
+
   log "Validating offline model load (no network)..."
   HF_HOME="$HF_CACHE_DIR" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python3 - <<PY
 from pathlib import Path
@@ -188,6 +206,15 @@ DepthAnything3.from_pretrained(
 )
 print("OFFLINE_LOAD_OK")
 PY
+
+  log "Validating offline Qwen-Image-Edit load..."
+  HF_HOME="$HF_CACHE_DIR" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    QWEN_IMAGE_EDIT_MODEL_PATH="$QWEN_EDIT_DIR" python3 - <<PY
+import torch
+from diffusers import QwenImageEditPlusPipeline
+pipe = QwenImageEditPlusPipeline.from_pretrained("${QWEN_EDIT_DIR}", torch_dtype=torch.bfloat16)
+print("QWEN_IMAGE_EDIT_OFFLINE_OK")
+PY
 fi
 
 log "Writing environment profile..."
@@ -197,6 +224,7 @@ export FIXER_DIR=${FIXER_DIR}
 export FIXER_WEIGHTS_DIR=${FIXER_WEIGHTS_DIR}
 export DA3_MODEL_PATH=${DA3_WEIGHTS_DIR}
 export DA3_MODEL_NAME=${DA3_MODEL_NAME}
+export QWEN_IMAGE_EDIT_MODEL_PATH=${QWEN_EDIT_DIR}
 export HF_HOME=${HF_CACHE_DIR}
 EOF
 

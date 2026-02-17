@@ -1,5 +1,6 @@
 """Tests for SAM3D-first materialization behavior."""
 
+import json
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -56,7 +57,10 @@ class _StubRunner:
         return {"provenance_assets": provenance, "retrieval_report": {"method_counts": {"generated": 1}}}
 
 
-def test_reference_image_passed_to_adapter(tmp_path: Path) -> None:
+def test_reference_image_copied_for_image_conditioned_generation(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("STAGE_D_MATERIALIZATION_MODE", "image_conditioned")
+    monkeypatch.setenv("STAGE_D_IMAGE_CLEANUP_PROVIDER", "skip")
+    monkeypatch.delenv("STAGE_D_IMAGE_TO_3D_COMMAND", raising=False)
     runner = _StubRunner(tmp_path)
 
     crop_file = tmp_path / "crop.png"
@@ -91,19 +95,29 @@ def test_reference_image_passed_to_adapter(tmp_path: Path) -> None:
         swap_candidates=candidates,
     )
 
-    # Verify reference_image was passed to adapter objects
-    call = runner.calls[0]
-    adapter_obj = call["objects"][0]
-    assert adapter_obj["reference_image"] == str(crop_file)
-    assert adapter_obj["reference_images"] == [str(crop_file)]
+    # Adapter path should not be used in image_conditioned mode.
+    assert runner.calls == []
 
     # Verify crop was copied to asset directory
     ref_png = tmp_path / "scenes/scene_1/assets/obj_drawer_1/reference.png"
     assert ref_png.is_file()
     assert ref_png.read_bytes() == b"fake image data"
 
+    metadata = json.loads(
+        (
+            tmp_path
+            / "scenes/scene_1/assets/obj_drawer_1/metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert metadata["object_id"] == "drawer_1"
+    assert metadata["reference_image"]
+    assert metadata["source_kind"] in {"image_to_3d", "image_conditioned_proxy_box"}
 
-def test_sam3d_first_generation_and_mesh_glb_emission(tmp_path: Path) -> None:
+
+def test_image_conditioned_generation_emits_contract_outputs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("STAGE_D_MATERIALIZATION_MODE", "image_conditioned")
+    monkeypatch.setenv("STAGE_D_IMAGE_CLEANUP_PROVIDER", "skip")
+    monkeypatch.delenv("STAGE_D_IMAGE_TO_3D_COMMAND", raising=False)
     runner = _StubRunner(tmp_path)
     candidates = [
         {
@@ -132,12 +146,46 @@ def test_sam3d_first_generation_and_mesh_glb_emission(tmp_path: Path) -> None:
         swap_candidates=candidates,
     )
 
-    call = runner.calls[0]
-    assert call["generation_enabled"] is True
-    assert call["retrieval_enabled"] is False
-    assert call["generation_provider_chain"] == "sam3d,hunyuan3d"
-
     record = payload["records"][0]
     assert record["status"] == "success"
     assert (tmp_path / record["model_path"]).is_file()
     assert (tmp_path / record["mesh_glb_path"]).is_file()
+    assert (tmp_path / record["metadata_path"]).is_file()
+
+
+def test_adapter_mode_keeps_legacy_adapter_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("STAGE_D_MATERIALIZATION_MODE", "adapter")
+    runner = _StubRunner(tmp_path)
+    candidates = [
+        {
+            "object_id": "drawer_1",
+            "asset_dir": "obj_drawer_1",
+            "label": "drawer",
+            "sim_role": "articulated_furniture",
+            "dimensions_est": {"width": 0.8, "height": 0.4, "depth": 0.5},
+            "physics_hints": {"dynamic": False},
+            "articulation": {"required": True, "requirement_source": "keyword"},
+            "obb": {
+                "center": [1.0, 0.5, 2.0],
+                "extents": [0.8, 0.4, 0.5],
+                "axes": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                "orientationQuaternion": [1, 0, 0, 0],
+            },
+        }
+    ]
+
+    payload = materialize_candidate_assets(
+        runner=runner,  # type: ignore[arg-type]
+        storage_root=tmp_path,
+        scene_id="scene_1",
+        assets_prefix="scenes/scene_1/assets",
+        room_type="kitchen",
+        swap_candidates=candidates,
+    )
+
+    assert len(runner.calls) == 1
+    call = runner.calls[0]
+    assert call["generation_enabled"] is True
+    assert call["retrieval_enabled"] is False
+    assert call["generation_provider_chain"] == "sam3d,hunyuan3d"
+    assert payload["records"][0]["status"] == "success"

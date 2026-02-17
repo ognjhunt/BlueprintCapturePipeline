@@ -178,12 +178,25 @@ def run_colmap_sfm(frames_dir: Path, workspace: Path, *, sift_use_gpu: bool) -> 
     ])
 
     # Find the best reconstruction (most registered images)
-    recon_dirs = sorted(sparse_dir.iterdir())
+    recon_dirs = sorted(d for d in sparse_dir.iterdir() if d.is_dir())
     if not recon_dirs:
         raise RuntimeError("COLMAP mapper produced no reconstruction")
-    recon_dir = recon_dirs[0]
-    _log(f"Sparse reconstruction at: {recon_dir}")
-    return recon_dir
+
+    best_dir = recon_dirs[0]
+    best_count = 0
+    for d in recon_dirs:
+        images_bin = d / "images.bin"
+        if images_bin.exists() and images_bin.stat().st_size >= 8:
+            n_images = struct.unpack("<Q", images_bin.read_bytes()[:8])[0]
+            _log(f"  {d.name}: {n_images} registered images")
+            if n_images > best_count:
+                best_count = n_images
+                best_dir = d
+        else:
+            _log(f"  {d.name}: no images.bin")
+
+    _log(f"Selected reconstruction: {best_dir} ({best_count} images)")
+    return best_dir
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +435,42 @@ def run_fixer_refinement(
 # ---------------------------------------------------------------------------
 # Stage 6: Dense reconstruction → collision mesh (nvblox_mesh.ply)
 # ---------------------------------------------------------------------------
+def _read_ply_mesh_counts(ply_path: Path) -> tuple[int, int]:
+    """Read vertex/face counts from PLY header without external dependencies."""
+    with open(ply_path, "rb") as f:
+        first = f.readline().decode("ascii", errors="ignore").strip().lower()
+        if first != "ply":
+            raise RuntimeError(f"Invalid PLY header in {ply_path}")
+
+        vertex_count = 0
+        face_count = 0
+        while True:
+            line = f.readline()
+            if not line:
+                raise RuntimeError(f"Unexpected EOF while reading PLY header: {ply_path}")
+            text = line.decode("ascii", errors="ignore").strip().lower()
+            if text.startswith("element vertex "):
+                vertex_count = int(text.split()[-1])
+            elif text.startswith("element face "):
+                face_count = int(text.split()[-1])
+            elif text == "end_header":
+                break
+
+    return vertex_count, face_count
+
+
+def _validate_collision_mesh(output_ply: Path) -> None:
+    """Hard quality gate for collision meshes."""
+    if not output_ply.exists() or output_ply.stat().st_size == 0:
+        raise RuntimeError(f"Collision mesh missing or empty: {output_ply}")
+    vertex_count, face_count = _read_ply_mesh_counts(output_ply)
+    if face_count <= 0:
+        raise RuntimeError(
+            f"Collision mesh has no faces ({vertex_count} vertices, {face_count} faces): {output_ply}"
+        )
+    _log(f"  Collision mesh validated: {vertex_count} vertices, {face_count} faces")
+
+
 def run_dense_reconstruction(frames_dir: Path, sparse_dir: Path,
                               workspace: Path, output_ply: Path) -> None:
     """Run COLMAP dense reconstruction for collision mesh."""
@@ -444,16 +493,10 @@ def run_dense_reconstruction(frames_dir: Path, sparse_dir: Path,
             "--workspace_path", str(dense_dir),
             "--PatchMatchStereo.geom_consistency", "true",
         ])
-    except RuntimeError:
-        _log("WARNING: PatchMatch requires CUDA COLMAP. Using sparse PLY as mesh.")
-        # Convert sparse reconstruction to PLY as fallback
-        _run([
-            "colmap", "model_converter",
-            "--input_path", str(sparse_dir),
-            "--output_path", str(output_ply),
-            "--output_type", "PLY",
-        ])
-        return
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "PatchMatch stereo failed; refusing point-cloud fallback for collision mesh"
+        ) from exc
 
     _log("Running COLMAP stereo fusion...")
     fused_ply = dense_dir / "fused.ply"
@@ -465,14 +508,9 @@ def run_dense_reconstruction(frames_dir: Path, sparse_dir: Path,
 
     if fused_ply.exists() and fused_ply.stat().st_size > 0:
         pointcloud_to_mesh(fused_ply, output_ply)
+        _validate_collision_mesh(output_ply)
     else:
-        _log("WARNING: Dense fusion produced no output, using sparse PLY")
-        _run([
-            "colmap", "model_converter",
-            "--input_path", str(sparse_dir),
-            "--output_path", str(output_ply),
-            "--output_type", "PLY",
-        ])
+        raise RuntimeError("Dense stereo fusion produced no output mesh candidates")
 
 
 def pointcloud_to_mesh(fused_ply: Path, output_ply: Path) -> None:
@@ -505,15 +543,55 @@ def pointcloud_to_mesh(fused_ply: Path, output_ply: Path) -> None:
         _log(f"  Mesh: {len(mesh.vertices)} vertices, {len(mesh.triangles)} faces")
         o3d.io.write_triangle_mesh(str(output_ply), mesh)
 
-    except ImportError:
-        _log("  open3d not available, copying point cloud as mesh fallback...")
-        import shutil
-        shutil.copy2(str(fused_ply), str(output_ply))
+    except ImportError as exc:
+        raise RuntimeError(
+            "open3d is required to convert fused point cloud into a triangulated collision mesh"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
 # Stage 7: Occupancy grid from PLY
 # ---------------------------------------------------------------------------
+def _build_robust_occupancy_grid(xyz, resolution: int):
+    """Build occupancy grid with percentile clipping to suppress outliers."""
+    import numpy as np
+
+    xyz = np.asarray(xyz, dtype=np.float32)
+    if xyz.ndim != 2 or xyz.shape[1] != 3 or xyz.shape[0] == 0:
+        raise RuntimeError("No valid XYZ points for occupancy generation")
+
+    low_q = np.percentile(xyz, 1.0, axis=0)
+    high_q = np.percentile(xyz, 99.0, axis=0)
+    robust_mask = np.all((xyz >= low_q) & (xyz <= high_q), axis=1)
+    robust_xyz = xyz[robust_mask]
+
+    # If clipping is too aggressive, fall back to all points.
+    min_kept = max(1024, int(xyz.shape[0] * 0.25))
+    if robust_xyz.shape[0] < min_kept:
+        robust_xyz = xyz
+        robust_mask = np.ones(xyz.shape[0], dtype=bool)
+
+    bounds_min = robust_xyz.min(axis=0)
+    bounds_max = robust_xyz.max(axis=0)
+    extent = bounds_max - bounds_min
+    max_extent = float(np.max(extent))
+    if max_extent <= 1e-6:
+        max_extent = 1.0
+    voxel_size = max_extent / float(resolution)
+
+    grid = np.zeros((resolution, resolution, resolution), dtype=np.uint8)
+    idx = ((robust_xyz - bounds_min) / voxel_size).astype(int)
+    idx = np.clip(idx, 0, resolution - 1)
+    grid[idx[:, 0], idx[:, 1], idx[:, 2]] = 1
+
+    center = (bounds_min + bounds_max) / 2.0
+    stats = {
+        "total_points": int(xyz.shape[0]),
+        "kept_points": int(robust_xyz.shape[0]),
+    }
+    return grid, center, float(voxel_size), stats
+
+
 def generate_occupancy(ply_path: Path, output_bin: Path,
                         resolution: int = 64) -> None:
     """Generate a voxel occupancy grid from the Gaussian splat PLY."""
@@ -530,16 +608,7 @@ def generate_occupancy(ply_path: Path, output_bin: Path,
             np.array(vertices["z"]),
         ])
 
-        bounds_min = xyz.min(axis=0)
-        bounds_max = xyz.max(axis=0)
-        extent = bounds_max - bounds_min
-        center = (bounds_min + bounds_max) / 2.0
-        voxel_size = max(extent) / resolution
-
-        grid = np.zeros((resolution, resolution, resolution), dtype=np.uint8)
-        idx = ((xyz - bounds_min) / voxel_size).astype(int)
-        idx = np.clip(idx, 0, resolution - 1)
-        grid[idx[:, 0], idx[:, 1], idx[:, 2]] = 1
+        grid, center, voxel_size, stats = _build_robust_occupancy_grid(xyz, resolution)
 
         with open(output_bin, "wb") as f:
             f.write(struct.pack("<iii", resolution, resolution, resolution))
@@ -549,6 +618,7 @@ def generate_occupancy(ply_path: Path, output_bin: Path,
 
         occupied = int(grid.sum())
         _log(f"  Occupancy: {occupied}/{resolution**3} voxels ({100*occupied/resolution**3:.1f}%)")
+        _log(f"  Robust occupancy points: {stats['kept_points']}/{stats['total_points']}")
 
     except ImportError:
         _log("  plyfile not available, trying trimesh...")
@@ -562,16 +632,7 @@ def generate_occupancy(ply_path: Path, output_bin: Path,
             else:
                 xyz = np.asarray(mesh.points) if hasattr(mesh, 'points') else np.zeros((1, 3))
 
-            bounds_min = xyz.min(axis=0)
-            bounds_max = xyz.max(axis=0)
-            extent = bounds_max - bounds_min
-            center = (bounds_min + bounds_max) / 2.0
-            voxel_size = max(extent) / resolution
-
-            grid = np.zeros((resolution, resolution, resolution), dtype=np.uint8)
-            idx = ((xyz - bounds_min) / voxel_size).astype(int)
-            idx = np.clip(idx, 0, resolution - 1)
-            grid[idx[:, 0], idx[:, 1], idx[:, 2]] = 1
+            grid, center, voxel_size, stats = _build_robust_occupancy_grid(xyz, resolution)
 
             with open(output_bin, "wb") as f:
                 f.write(struct.pack("<iii", resolution, resolution, resolution))
@@ -581,6 +642,7 @@ def generate_occupancy(ply_path: Path, output_bin: Path,
 
             occupied = int(grid.sum())
             _log(f"  Occupancy: {occupied}/{resolution**3} voxels ({100*occupied/resolution**3:.1f}%)")
+            _log(f"  Robust occupancy points: {stats['kept_points']}/{stats['total_points']}")
         except ImportError:
             _log("  No PLY reader available, writing placeholder occupancy...")
             with open(output_bin, "wb") as f:
@@ -670,7 +732,7 @@ def _resolve_sam3_settings(
     env = environment.strip().lower()
     if env == "warehouse":
         auto_n_frames = 12
-        auto_min_detections = 1
+        auto_min_detections = 2
     elif env == "kitchen":
         auto_n_frames = 10
         auto_min_detections = 2
@@ -887,14 +949,11 @@ def main() -> int:
     _log("=" * 60)
     mesh_ply = output_dir / "nvblox_mesh.ply"
     if args.skip_dense:
-        _log("Using Gaussian splat PLY as collision mesh (--skip-dense)")
-        shutil.copy2(str(ply_dst), str(mesh_ply))
-    else:
-        try:
-            run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
-        except RuntimeError as e:
-            _log(f"WARNING: Dense reconstruction failed ({e}), using Gaussian PLY")
-            shutil.copy2(str(ply_dst), str(mesh_ply))
+        raise RuntimeError(
+            "--skip-dense is incompatible with collision mesh quality gate "
+            "(triangulated mesh required)"
+        )
+    run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
 
     # -----------------------------------------------------------------------
     # Stage 7: Occupancy Grid

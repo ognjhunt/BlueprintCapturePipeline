@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import struct
 from pathlib import Path
 
 import pytest
@@ -227,6 +228,68 @@ def test_run_colmap_sfm_uses_legacy_gpu_flags(
     assert "--SiftMatching.use_gpu" in commands[1]
 
 
+def test_run_colmap_sfm_selects_reconstruction_with_most_registered_images(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    workspace = tmp_path / "workspace"
+    frames_dir.mkdir(parents=True)
+    workspace.mkdir(parents=True)
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        if cmd[1] == "mapper":
+            sparse = workspace / "sparse"
+            sparse.mkdir(parents=True, exist_ok=True)
+            for name, count in (("0", 4), ("1", 134), ("2", 79)):
+                recon = sparse / name
+                recon.mkdir(parents=True, exist_ok=True)
+                (recon / "images.bin").write_bytes(struct.pack("<Q", count))
+        return None
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    monkeypatch.setattr(module, "_colmap_supports_option", lambda *_args, **_kwargs: True)
+
+    best = module.run_colmap_sfm(frames_dir, workspace, sift_use_gpu=True)
+    assert best == workspace / "sparse" / "1"
+
+
+def test_robust_occupancy_grid_limits_outlier_impact() -> None:
+    module = _load_nurec_shim_module()
+    np = pytest.importorskip("numpy")
+
+    rng = np.random.default_rng(7)
+    core = rng.normal(loc=0.0, scale=1.2, size=(5000, 3)).astype(np.float32)
+    outliers = np.array(
+        [
+            [1200.0, 1100.0, 1300.0],
+            [-1300.0, -1400.0, -1250.0],
+        ],
+        dtype=np.float32,
+    )
+    xyz = np.vstack([core, outliers])
+
+    grid, center, voxel_size, stats = module._build_robust_occupancy_grid(xyz, 64)
+    assert grid.shape == (64, 64, 64)
+    assert stats["kept_points"] < stats["total_points"]
+    assert abs(float(center[0])) < 1.0
+    assert abs(float(center[1])) < 1.0
+    assert abs(float(center[2])) < 1.0
+    assert float(voxel_size) < 0.2
+
+
+def test_robust_occupancy_grid_degenerate_points_has_positive_voxel_size() -> None:
+    module = _load_nurec_shim_module()
+    np = pytest.importorskip("numpy")
+
+    xyz = np.full((256, 3), 5.0, dtype=np.float32)
+    grid, center, voxel_size, stats = module._build_robust_occupancy_grid(xyz, 64)
+    assert grid.shape == (64, 64, 64)
+    assert stats["kept_points"] == stats["total_points"] == 256
+    assert tuple(float(v) for v in center) == (5.0, 5.0, 5.0)
+    assert float(voxel_size) > 0.0
+
+
 def test_resolve_sam3_settings_warehouse_auto() -> None:
     module = _load_nurec_shim_module()
 
@@ -238,7 +301,7 @@ def test_resolve_sam3_settings_warehouse_auto() -> None:
     )
 
     assert n_frames == 26
-    assert min_frames == 1
+    assert min_frames == 2
 
 
 def test_resolve_sam3_settings_manual_override() -> None:

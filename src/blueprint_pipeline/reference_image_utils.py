@@ -67,9 +67,10 @@ def cleanup_crop_with_vlm(
 
     Providers:
       - "skip": Return original path unchanged (default, no API call)
+      - "qwen_image_edit": Use Qwen-Image-Edit-2511 (local GPU, free, open-source)
       - "nano_banana": Use Google Gemini 3 Pro Image (Nano Banana Pro)
       - "gpt_image": Use OpenAI GPT Image 1.5
-      - "auto": Try nano_banana first, fall back to gpt_image
+      - "auto": Try qwen_image_edit first, then nano_banana, then gpt_image
 
     Returns the cleaned image path, or the original path if cleanup fails.
     """
@@ -82,10 +83,16 @@ def cleanup_crop_with_vlm(
         return None
 
     if provider == "auto":
+        result = cleanup_crop_with_vlm(image_path, output_path, provider="qwen_image_edit")
+        if result is not None and result != image_path:
+            return result
         result = cleanup_crop_with_vlm(image_path, output_path, provider="nano_banana")
         if result is not None and result != image_path:
             return result
         return cleanup_crop_with_vlm(image_path, output_path, provider="gpt_image")
+
+    if provider == "qwen_image_edit":
+        return _cleanup_with_qwen_image_edit(image_path, output_path)
 
     if provider == "nano_banana":
         return _cleanup_with_nano_banana(image_path, output_path)
@@ -102,6 +109,58 @@ _CLEANUP_PROMPT = (
     "on a clean transparent background. Preserve the object's exact shape, "
     "color, texture, and details. Output a PNG with transparency."
 )
+
+
+_QWEN_EDIT_PIPELINE = None
+
+
+def _cleanup_with_qwen_image_edit(image_path: Path, output_path: Path) -> Optional[Path]:
+    """Clean up crop using Qwen-Image-Edit-2511 (local GPU, free, open-source)."""
+    global _QWEN_EDIT_PIPELINE  # noqa: PLW0603
+
+    try:
+        import torch
+        from PIL import Image as PILImage
+
+        if not torch.cuda.is_available():
+            logger.warning("CUDA not available, skipping Qwen-Image-Edit cleanup")
+            return image_path
+
+        if _QWEN_EDIT_PIPELINE is None:
+            from diffusers import QwenImageEditPlusPipeline  # type: ignore
+
+            model_path = (
+                os.getenv("QWEN_IMAGE_EDIT_MODEL_PATH") or "Qwen/Qwen-Image-Edit-2511"
+            ).strip()
+            logger.info("Loading Qwen-Image-Edit from %s ...", model_path)
+            _QWEN_EDIT_PIPELINE = QwenImageEditPlusPipeline.from_pretrained(
+                model_path, torch_dtype=torch.bfloat16
+            )
+            _QWEN_EDIT_PIPELINE.enable_model_cpu_offload()
+            logger.info("Qwen-Image-Edit loaded with CPU offload")
+
+        img = PILImage.open(image_path).convert("RGB")
+        result = _QWEN_EDIT_PIPELINE(
+            image=[img],
+            prompt=_CLEANUP_PROMPT,
+            negative_prompt=" ",
+            num_inference_steps=28,
+            guidance_scale=1.0,
+            true_cfg_scale=4.0,
+            num_images_per_prompt=1,
+        ).images[0]
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result.save(str(output_path))
+        logger.info("Qwen-Image-Edit cleanup saved to %s", output_path)
+        return output_path
+
+    except ImportError:
+        logger.warning("diffusers not installed, skipping Qwen-Image-Edit cleanup")
+        return image_path
+    except Exception as exc:
+        logger.warning("Qwen-Image-Edit cleanup failed: %s, using original crop", exc)
+        return image_path
 
 
 def _cleanup_with_nano_banana(image_path: Path, output_path: Path) -> Optional[Path]:

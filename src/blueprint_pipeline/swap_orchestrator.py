@@ -43,7 +43,11 @@ from .quality_gates import AdvancedQualityGateConfig, run_advanced_quality_gates
 from .retrieval_fallback import enforce_hard_fail_if_unresolved, run_retrieval_fallback
 from .runtime_preflight import enforce_preflight, validate_runtime_preflight
 from .sam3d_assets import materialize_candidate_assets, materialize_scene_shell_assets
-from .swap_candidates import build_swap_candidates_payload
+from .task_targets import (
+    build_task_aware_swap_candidates_payload,
+    infer_task_targets,
+    write_task_targets,
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,10 @@ class OrchestratorConfig:
     gcs_root: Path = Path(os.getenv("GCS_ROOT", "/mnt/gcs"))
     blueprintpipeline_root: Path = Path(
         os.getenv("BLUEPRINTPIPELINE_ROOT", "/opt/BlueprintPipeline")
+    )
+    standalone_mode: bool = parse_bool(
+        os.getenv("PIPELINE_STANDALONE_MODE"),
+        default=True,
     )
     expected_blueprintpipeline_commit: str = os.getenv("BLUEPRINTPIPELINE_COMMIT_HASH", "")
     fail_on_commit_mismatch: bool = parse_bool(
@@ -65,8 +73,17 @@ class OrchestratorConfig:
         default=True,
     )
     swap_policy_path: str = os.getenv("SWAP_POLICY_CONFIG_PATH", "").strip()
+    swap_selection_mode: str = (os.getenv("SWAP_SELECTION_MODE", "hybrid") or "hybrid").strip().lower()
+    swap_max_image3d_objects: int = int(
+        os.getenv("SWAP_MAX_IMAGE3D_OBJECTS", "24") or "24"
+    )
+    task_target_inference_enabled: bool = parse_bool(
+        os.getenv("TASK_TARGET_INFERENCE_ENABLED"),
+        default=True,
+    )
+    task_target_max_objects: int = int(os.getenv("TASK_TARGET_MAX_OBJECTS", "24") or "24")
     generation_provider_chain: str = os.getenv(
-        "TEXT_ASSET_GENERATION_PROVIDER_CHAIN", "sam3d,hunyuan3d"
+        "TEXT_ASSET_GENERATION_PROVIDER_CHAIN", "image_to_3d,proxy_box"
     ).strip()
     image_conditioned_generation: bool = parse_bool(
         os.getenv("IMAGE_CONDITIONED_GENERATION_ENABLED"), default=True
@@ -280,6 +297,7 @@ def run_swap_pipeline(
                 nurec_worker_mode=cfg.nurec_worker_mode,
                 nurec_worker_command=cfg.nurec_worker_command,
                 advanced_quality_gates_enabled=cfg.advanced_quality_config.enabled,
+                standalone_mode=cfg.standalone_mode,
             )
             has_failures = any(not check.passed for check in checks)
             runtime_preflight_report = {
@@ -365,10 +383,53 @@ def run_swap_pipeline(
         # Stage C: swap candidate selection
         # ------------------------------------------------------------------
         stage = "swap_candidates"
-        swap_candidates_payload = build_swap_candidates_payload(
+        if cfg.task_target_inference_enabled:
+            task_targets_payload = infer_task_targets(
+                descriptor=descriptor,
+                manifest=manifest,
+                object_index_entries=object_index_entries,
+                object_index_uri=object_index_uri,
+                storage_root=storage_root,
+                max_targets=max(1, cfg.task_target_max_objects),
+            )
+        else:
+            task_targets_payload = {
+                "schema_version": "v1",
+                "scene_id": scene_id,
+                "capture_id": capture_id,
+                "generated_at": utc_now_iso(),
+                "inference_mode": "disabled",
+                "video_analysis": {"external_inference": {"status": "skipped", "reason": "disabled"}},
+                "manipulation_candidates": [dict(item) for item in descriptor.manipulation_candidates],
+                "articulation_hints": [dict(item) for item in descriptor.articulation_hints],
+                "target_object_ids": sorted(
+                    {
+                        str(item.get("instance_id") or item.get("id") or "").strip()
+                        for item in descriptor.manipulation_candidates
+                        if str(item.get("instance_id") or item.get("id") or "").strip()
+                    }
+                ),
+                "articulation_required_ids": sorted(
+                    {
+                        str(item.get("instance_id") or item.get("id") or "").strip()
+                        for item in descriptor.articulation_hints
+                        if str(item.get("instance_id") or item.get("id") or "").strip()
+                    }
+                ),
+                "tasks": [],
+            }
+        write_task_targets(pipeline_dir / "task_targets.json", task_targets_payload)
+
+        swap_candidates_payload = build_task_aware_swap_candidates_payload(
             descriptor=descriptor,
             object_index_entries=object_index_entries,
             policy_path=cfg.swap_policy_path or None,
+            task_targets=task_targets_payload,
+            selection_mode=cfg.swap_selection_mode,
+            max_candidates=cfg.swap_max_image3d_objects,
+        )
+        swap_candidates_payload["task_targets_uri"] = (
+            f"gs://{bucket}/{pipeline_prefix}/task_targets.json"
         )
         write_json(pipeline_dir / "swap_candidates.json", swap_candidates_payload)
         swap_candidates = swap_candidates_payload.get("candidates")
@@ -403,6 +464,7 @@ def run_swap_pipeline(
                     blueprintpipeline_root=cfg.blueprintpipeline_root,
                     gcs_root=storage_root,
                     bucket=bucket,
+                    standalone_enabled=cfg.standalone_mode,
                 )
             )
 
@@ -644,6 +706,7 @@ def run_swap_pipeline(
             "artifacts": {
                 "descriptor_uri": descriptor_gcs_uri,
                 "qa_report_uri": qa_report_uri,
+                "task_targets": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
                 "runtime_preflight_report": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
                 "nurec_outputs": f"gs://{bucket}/{pipeline_prefix}/nurec_outputs.json",
                 "swap_candidates": f"gs://{bucket}/{pipeline_prefix}/swap_candidates.json",
@@ -711,17 +774,18 @@ def _startup_checks() -> List[str]:
             f"GCS_ROOT={cfg.gcs_root} does not exist. "
             "Mount your GCS bucket (gcsfuse, GCS FUSE CSI, or symlink) or set GCS_ROOT."
         )
-    if not cfg.blueprintpipeline_root.exists():
-        errors.append(
-            f"BLUEPRINTPIPELINE_ROOT={cfg.blueprintpipeline_root} does not exist. "
-            "Clone https://github.com/ognjhunt/BlueprintPipeline.git to that path "
-            "or set BLUEPRINTPIPELINE_ROOT to the correct location."
-        )
-    elif not (cfg.blueprintpipeline_root / "tools" / "source_pipeline" / "adapter.py").is_file():
-        errors.append(
-            f"BLUEPRINTPIPELINE_ROOT={cfg.blueprintpipeline_root} exists but is missing "
-            "required scripts (tools/source_pipeline/adapter.py). Is the repo complete?"
-        )
+    if not cfg.standalone_mode:
+        if not cfg.blueprintpipeline_root.exists():
+            errors.append(
+                f"BLUEPRINTPIPELINE_ROOT={cfg.blueprintpipeline_root} does not exist. "
+                "Clone https://github.com/ognjhunt/BlueprintPipeline.git to that path "
+                "or set BLUEPRINTPIPELINE_ROOT to the correct location."
+            )
+        elif not (cfg.blueprintpipeline_root / "tools" / "source_pipeline" / "adapter.py").is_file():
+            errors.append(
+                f"BLUEPRINTPIPELINE_ROOT={cfg.blueprintpipeline_root} exists but is missing "
+                "required scripts (tools/source_pipeline/adapter.py). Is the repo complete?"
+            )
 
     # Check critical API credentials
     provider_chain = cfg.generation_provider_chain.lower()

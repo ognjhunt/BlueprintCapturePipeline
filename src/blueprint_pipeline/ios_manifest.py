@@ -101,20 +101,70 @@ def resolve_object_index_uri(raw_prefix_uri: str, manifest: IOSManifest | Mappin
     return join_gs_uri(raw_prefix_uri, rel)
 
 
+def _is_uri(path_text: str) -> bool:
+    return "://" in path_text
+
+
+def _normalize_crop_paths(
+    entries: list[dict[str, Any]],
+    *,
+    index_dir: Path,
+) -> list[dict[str, Any]]:
+    """Resolve relative crop paths against the object index location."""
+    normalized: list[dict[str, Any]] = []
+    for entry in entries:
+        item = dict(entry)
+
+        reference_crop = item.get("reference_crop")
+        if isinstance(reference_crop, str):
+            ref_text = reference_crop.strip()
+            if ref_text and not _is_uri(ref_text):
+                ref_path = Path(ref_text)
+                if not ref_path.is_absolute():
+                    item["reference_crop"] = str((index_dir / ref_path).resolve())
+
+        all_crops = item.get("all_crops")
+        if isinstance(all_crops, list):
+            resolved_crops: list[str] = []
+            for value in all_crops:
+                crop_text = str(value).strip()
+                if not crop_text:
+                    continue
+                if _is_uri(crop_text):
+                    resolved_crops.append(crop_text)
+                    continue
+                crop_path = Path(crop_text)
+                if not crop_path.is_absolute():
+                    crop_path = (index_dir / crop_path).resolve()
+                resolved_crops.append(str(crop_path))
+            item["all_crops"] = resolved_crops
+
+        normalized.append(item)
+
+    return normalized
+
+
 def load_object_index(index_uri: str, *, gcs_root: Path) -> list[dict[str, Any]]:
     """Load object index as a normalized list of object entries."""
 
     path = resolve_gs_uri_to_path(index_uri, gcs_root)
     payload = read_json_any(path)
 
+    entries: list[dict[str, Any]]
     if isinstance(payload, list):
-        return [dict(item) for item in payload if isinstance(item, Mapping)]
-    if isinstance(payload, Mapping):
+        entries = [dict(item) for item in payload if isinstance(item, Mapping)]
+    elif isinstance(payload, Mapping):
         for field in ("objects", "items", "summaries"):
             value = payload.get(field)
             if isinstance(value, list):
-                return [dict(item) for item in value if isinstance(item, Mapping)]
-    raise ValueError(f"Unsupported object index payload at {path}")
+                entries = [dict(item) for item in value if isinstance(item, Mapping)]
+                break
+        else:
+            raise ValueError(f"Unsupported object index payload at {path}")
+    else:
+        raise ValueError(f"Unsupported object index payload at {path}")
+
+    return _normalize_crop_paths(entries, index_dir=path.parent)
 
 
 def load_raw_manifest(raw_prefix_uri: str, *, gcs_root: Path) -> IOSManifest:
