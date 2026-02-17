@@ -11,6 +11,12 @@ from blueprint_pipeline.reference_image_utils import (
 )
 
 
+def _reset_qwen_state() -> None:
+    ref_utils._QWEN_EDIT_PIPELINE = None
+    ref_utils._QWEN_EDIT_DISABLED_REASON = None
+    ref_utils._QWEN_EDIT_DISABLE_LOGGED = False
+
+
 def test_load_reference_image_base64_happy_path(tmp_path: Path) -> None:
     img = tmp_path / "ref.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
@@ -132,6 +138,8 @@ def test_cleanup_crop_qwen_success(tmp_path: Path) -> None:
 
     mock_torch = MagicMock()
     mock_torch.cuda.is_available.return_value = True
+    mock_torch.cuda.get_device_properties.return_value = MagicMock(total_memory=32 * 1024 ** 3)
+    mock_torch.cuda.mem_get_info.return_value = (24 * 1024 ** 3, 32 * 1024 ** 3)
     mock_torch.bfloat16 = "bfloat16"
 
     mock_diffusers = MagicMock()
@@ -141,7 +149,7 @@ def test_cleanup_crop_qwen_success(tmp_path: Path) -> None:
     mock_pil_image = MagicMock()
     mock_pil.Image.open.return_value.convert.return_value = mock_pil_image
 
-    ref_utils._QWEN_EDIT_PIPELINE = None
+    _reset_qwen_state()
     try:
         with patch.dict("sys.modules", {
             "torch": mock_torch,
@@ -154,7 +162,7 @@ def test_cleanup_crop_qwen_success(tmp_path: Path) -> None:
         assert result == out
         mock_result_img.save.assert_called_once_with(str(out))
     finally:
-        ref_utils._QWEN_EDIT_PIPELINE = None
+        _reset_qwen_state()
 
 
 def test_cleanup_crop_qwen_no_cuda_returns_original(tmp_path: Path) -> None:
@@ -166,13 +174,13 @@ def test_cleanup_crop_qwen_no_cuda_returns_original(tmp_path: Path) -> None:
     mock_torch = MagicMock()
     mock_torch.cuda.is_available.return_value = False
 
-    ref_utils._QWEN_EDIT_PIPELINE = None
+    _reset_qwen_state()
     try:
         with patch.dict("sys.modules", {"torch": mock_torch}):
             result = cleanup_crop_with_vlm(img, out, provider="qwen_image_edit")
         assert result == img
     finally:
-        ref_utils._QWEN_EDIT_PIPELINE = None
+        _reset_qwen_state()
 
 
 def test_cleanup_crop_qwen_import_error_returns_original(tmp_path: Path) -> None:
@@ -181,14 +189,14 @@ def test_cleanup_crop_qwen_import_error_returns_original(tmp_path: Path) -> None
     img.write_bytes(b"image data")
     out = tmp_path / "cleaned.png"
 
-    ref_utils._QWEN_EDIT_PIPELINE = None
+    _reset_qwen_state()
     try:
         # Setting a sys.modules entry to None makes import raise ImportError
         with patch.dict("sys.modules", {"torch": None}):
             result = cleanup_crop_with_vlm(img, out, provider="qwen_image_edit")
         assert result == img
     finally:
-        ref_utils._QWEN_EDIT_PIPELINE = None
+        _reset_qwen_state()
 
 
 def test_cleanup_crop_qwen_exception_returns_original(tmp_path: Path) -> None:
@@ -199,6 +207,8 @@ def test_cleanup_crop_qwen_exception_returns_original(tmp_path: Path) -> None:
 
     mock_torch = MagicMock()
     mock_torch.cuda.is_available.return_value = True
+    mock_torch.cuda.get_device_properties.return_value = MagicMock(total_memory=32 * 1024 ** 3)
+    mock_torch.cuda.mem_get_info.return_value = (24 * 1024 ** 3, 32 * 1024 ** 3)
     mock_torch.bfloat16 = "bfloat16"
 
     mock_pipe_cls = MagicMock()
@@ -207,7 +217,7 @@ def test_cleanup_crop_qwen_exception_returns_original(tmp_path: Path) -> None:
     mock_diffusers = MagicMock()
     mock_diffusers.QwenImageEditPlusPipeline = mock_pipe_cls
 
-    ref_utils._QWEN_EDIT_PIPELINE = None
+    _reset_qwen_state()
     try:
         with patch.dict("sys.modules", {
             "torch": mock_torch,
@@ -216,4 +226,4 @@ def test_cleanup_crop_qwen_exception_returns_original(tmp_path: Path) -> None:
             result = cleanup_crop_with_vlm(img, out, provider="qwen_image_edit")
         assert result == img
     finally:
-        ref_utils._QWEN_EDIT_PIPELINE = None
+        _reset_qwen_state()

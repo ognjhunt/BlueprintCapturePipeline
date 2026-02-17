@@ -507,19 +507,23 @@ def run_dense_reconstruction(frames_dir: Path, sparse_dir: Path,
     ])
 
     if fused_ply.exists() and fused_ply.stat().st_size > 0:
-        pointcloud_to_mesh(fused_ply, output_ply)
+        pointcloud_to_mesh(fused_ply, dense_dir, output_ply)
         _validate_collision_mesh(output_ply)
     else:
         raise RuntimeError("Dense stereo fusion produced no output mesh candidates")
 
 
-def pointcloud_to_mesh(fused_ply: Path, output_ply: Path) -> None:
-    """Convert dense point cloud to mesh using Poisson reconstruction."""
-    _log("Running Poisson mesh reconstruction...")
+def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path) -> bool:
+    """Attempt Open3D Poisson meshing; return True on success."""
     try:
         import open3d as o3d
         import numpy as np
+    except ImportError:
+        _log("  Open3D unavailable; using COLMAP meshing fallback")
+        return False
 
+    _log("Running Open3D Poisson mesh reconstruction...")
+    try:
         pcd = o3d.io.read_point_cloud(str(fused_ply))
         _log(f"  Point cloud: {len(pcd.points)} points")
 
@@ -542,11 +546,50 @@ def pointcloud_to_mesh(fused_ply: Path, output_ply: Path) -> None:
 
         _log(f"  Mesh: {len(mesh.vertices)} vertices, {len(mesh.triangles)} faces")
         o3d.io.write_triangle_mesh(str(output_ply), mesh)
+        return True
+    except Exception as exc:
+        _log(f"  Open3D meshing failed ({exc}); using COLMAP meshing fallback")
+        return False
 
-    except ImportError as exc:
-        raise RuntimeError(
-            "open3d is required to convert fused point cloud into a triangulated collision mesh"
-        ) from exc
+
+def _mesh_with_colmap_delaunay(dense_dir: Path, output_ply: Path) -> None:
+    """Mesh from COLMAP dense workspace using delaunay mesher."""
+    input_candidates = [
+        dense_dir,
+        dense_dir / "sparse",
+        dense_dir / "sparse" / "0",
+    ]
+    tried: list[tuple[Path, str]] = []
+
+    for input_path in input_candidates:
+        if not input_path.exists():
+            continue
+        if output_ply.exists():
+            output_ply.unlink()
+        _log(f"Running COLMAP delaunay mesher (input={input_path})...")
+        try:
+            _run([
+                "colmap", "delaunay_mesher",
+                "--input_path", str(input_path),
+                "--output_path", str(output_ply),
+            ])
+        except RuntimeError as exc:
+            tried.append((input_path, str(exc)))
+            continue
+
+        if output_ply.exists() and output_ply.stat().st_size > 0:
+            return
+        tried.append((input_path, "delaunay_mesher completed but output was empty"))
+
+    details = "; ".join(f"{path}: {msg}" for path, msg in tried) or "no valid input path candidates"
+    raise RuntimeError(f"COLMAP delaunay mesher failed for all candidates ({details})")
+
+
+def pointcloud_to_mesh(fused_ply: Path, dense_dir: Path, output_ply: Path) -> None:
+    """Convert dense point cloud to collision mesh with robust fallbacks."""
+    if _mesh_with_open3d_poisson(fused_ply, output_ply):
+        return
+    _mesh_with_colmap_delaunay(dense_dir, output_ply)
 
 
 # ---------------------------------------------------------------------------

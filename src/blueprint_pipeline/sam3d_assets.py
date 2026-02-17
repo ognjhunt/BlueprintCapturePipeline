@@ -892,6 +892,156 @@ def _prune_scene_shell_mesh(glb_path: Path, swap_candidates: List[Mapping[str, A
     return {"enabled": True, "faces_removed": removed}
 
 
+def _mesh_face_count(mesh: Any) -> int:
+    if hasattr(mesh, "faces"):
+        try:
+            return int(len(mesh.faces))
+        except Exception:
+            return 0
+    return 0
+
+
+def _simplify_scene_shell_mesh(glb_path: Path, max_faces: int) -> Dict[str, Any]:
+    if max_faces <= 0:
+        return {"enabled": False, "reason": "invalid_budget", "before_faces": 0, "after_faces": 0}
+    try:
+        import trimesh  # type: ignore
+    except Exception:
+        return {
+            "enabled": False,
+            "reason": "trimesh_unavailable",
+            "before_faces": 0,
+            "after_faces": 0,
+            "budget_faces": max_faces,
+        }
+
+    mesh = trimesh.load_mesh(str(glb_path), process=False)
+    if mesh is None:
+        return {
+            "enabled": False,
+            "reason": "mesh_load_failed",
+            "before_faces": 0,
+            "after_faces": 0,
+            "budget_faces": max_faces,
+        }
+    if hasattr(trimesh, "Scene") and isinstance(mesh, trimesh.Scene):
+        geometries = list(mesh.geometry.values())
+        if not geometries:
+            return {
+                "enabled": False,
+                "reason": "empty_scene_mesh",
+                "before_faces": 0,
+                "after_faces": 0,
+                "budget_faces": max_faces,
+            }
+        mesh = trimesh.util.concatenate(geometries)
+
+    before_faces = _mesh_face_count(mesh)
+    if before_faces <= 0:
+        return {
+            "enabled": False,
+            "reason": "no_faces",
+            "before_faces": before_faces,
+            "after_faces": before_faces,
+            "budget_faces": max_faces,
+        }
+    if before_faces <= max_faces:
+        return {
+            "enabled": True,
+            "method": "none",
+            "before_faces": before_faces,
+            "after_faces": before_faces,
+            "budget_faces": max_faces,
+        }
+
+    reduction_fraction = max(0.01, min(0.99, 1.0 - (float(max_faces) / float(before_faces))))
+    target_faces = max(4, min(before_faces - 1, int(round(before_faces * (1.0 - reduction_fraction)))))
+    simplified = None
+    method = "none"
+
+    if hasattr(mesh, "simplify_quadric_decimation"):
+        fn = mesh.simplify_quadric_decimation
+        for call in (
+            lambda: fn(percent=reduction_fraction),
+            lambda: fn(face_count=target_faces),
+            lambda: fn(reduction_fraction),
+        ):
+            try:
+                simplified = call()
+                method = "quadric_decimation"
+                if simplified is not None:
+                    break
+            except Exception:
+                continue
+
+    if simplified is None and hasattr(mesh, "simplify_quadratic_decimation"):
+        fn = mesh.simplify_quadratic_decimation
+        for call in (
+            lambda: fn(percent=reduction_fraction),
+            lambda: fn(face_count=target_faces),
+            lambda: fn(target_faces),
+        ):
+            try:
+                simplified = call()
+                method = "quadratic_decimation"
+                if simplified is not None:
+                    break
+            except Exception:
+                continue
+
+    if simplified is None:
+        try:
+            import numpy as np  # type: ignore
+
+            keep_idx = np.linspace(0, before_faces - 1, num=target_faces, dtype=int)
+            simplified = mesh.submesh([keep_idx], append=True, repair=False)
+            method = "face_subsample"
+        except Exception:
+            simplified = None
+
+    if simplified is None:
+        return {
+            "enabled": False,
+            "reason": "simplification_failed",
+            "before_faces": before_faces,
+            "after_faces": before_faces,
+            "budget_faces": max_faces,
+            "reduction_fraction": round(reduction_fraction, 6),
+        }
+
+    after_faces = _mesh_face_count(simplified)
+    if after_faces <= 0:
+        return {
+            "enabled": False,
+            "reason": "simplification_no_faces",
+            "before_faces": before_faces,
+            "after_faces": after_faces,
+            "budget_faces": max_faces,
+            "reduction_fraction": round(reduction_fraction, 6),
+        }
+
+    if after_faces > max_faces:
+        try:
+            import numpy as np  # type: ignore
+
+            keep_idx = np.linspace(0, after_faces - 1, num=max_faces, dtype=int)
+            simplified = simplified.submesh([keep_idx], append=True, repair=False)
+            method = f"{method}_plus_subsample"
+            after_faces = _mesh_face_count(simplified)
+        except Exception:
+            pass
+
+    simplified.export(glb_path)
+    return {
+        "enabled": True,
+        "method": method,
+        "before_faces": before_faces,
+        "after_faces": after_faces,
+        "budget_faces": max_faces,
+        "reduction_fraction": round(reduction_fraction, 6),
+    }
+
+
 def materialize_scene_shell_assets(
     *,
     storage_root: Path,
@@ -928,6 +1078,10 @@ def materialize_scene_shell_assets(
     shell_glb = shell_dir / "mesh.glb"
     _ply_to_glb(mesh_src, shell_glb)
     prune_report = _prune_scene_shell_mesh(shell_glb, swap_candidates)
+    simplify_report = _simplify_scene_shell_mesh(
+        shell_glb,
+        _int_env("QUALITY_MAX_COLLISION_FACES", 500000),
+    )
     _write_reference_model_usd(shell_dir / "model.usd", "mesh.glb")
 
     shell_metadata = {
@@ -936,6 +1090,7 @@ def materialize_scene_shell_assets(
         "source": "nurec_nvblox_mesh",
         "source_uri": mesh_uri,
         "pruning": prune_report,
+        "simplification": simplify_report,
         "generated_at": utc_now_iso(),
     }
     write_json(shell_dir / "metadata.json", shell_metadata)
@@ -954,6 +1109,7 @@ def materialize_scene_shell_assets(
         "shell_asset": f"{assets_prefix}/obj_scene_shell/model.usd",
         "shell_mesh": f"{assets_prefix}/obj_scene_shell/mesh.glb",
         "pruning": prune_report,
+        "simplification": simplify_report,
     }
 
 

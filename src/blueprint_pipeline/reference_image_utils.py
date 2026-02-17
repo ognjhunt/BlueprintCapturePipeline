@@ -112,18 +112,89 @@ _CLEANUP_PROMPT = (
 
 
 _QWEN_EDIT_PIPELINE = None
+_QWEN_EDIT_DISABLED_REASON: Optional[str] = None
+_QWEN_EDIT_DISABLE_LOGGED = False
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _is_truthy_env(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _disable_qwen_for_run(reason: str) -> None:
+    global _QWEN_EDIT_PIPELINE  # noqa: PLW0603
+    global _QWEN_EDIT_DISABLED_REASON  # noqa: PLW0603
+    global _QWEN_EDIT_DISABLE_LOGGED  # noqa: PLW0603
+    _QWEN_EDIT_PIPELINE = None
+    _QWEN_EDIT_DISABLED_REASON = reason
+    if not _QWEN_EDIT_DISABLE_LOGGED:
+        logger.warning("Disabling Qwen-Image-Edit for this run: %s", reason)
+        _QWEN_EDIT_DISABLE_LOGGED = True
+
+
+def _qwen_vram_check(torch_module) -> tuple[bool, str]:
+    if _is_truthy_env("QWEN_IMAGE_EDIT_FORCE", default=False):
+        return True, ""
+
+    min_total_gb = _env_float("QWEN_IMAGE_EDIT_MIN_TOTAL_VRAM_GB", 20.0)
+    min_free_gb = _env_float("QWEN_IMAGE_EDIT_MIN_FREE_VRAM_GB", 6.0)
+    cuda_device_raw = (os.getenv("QWEN_IMAGE_EDIT_CUDA_DEVICE") or "0").strip()
+    try:
+        cuda_device = int(cuda_device_raw)
+    except ValueError:
+        cuda_device = 0
+
+    try:
+        props = torch_module.cuda.get_device_properties(cuda_device)
+        total_gb = float(props.total_memory) / float(1024 ** 3)
+        if total_gb < min_total_gb:
+            return (
+                False,
+                f"device VRAM {total_gb:.1f}GB below required {min_total_gb:.1f}GB",
+            )
+        free_bytes, _ = torch_module.cuda.mem_get_info(cuda_device)
+        free_gb = float(free_bytes) / float(1024 ** 3)
+        if free_gb < min_free_gb:
+            return (
+                False,
+                f"free VRAM {free_gb:.1f}GB below required {min_free_gb:.1f}GB",
+            )
+        return True, ""
+    except Exception as exc:
+        return False, f"unable to query CUDA memory ({exc})"
 
 
 def _cleanup_with_qwen_image_edit(image_path: Path, output_path: Path) -> Optional[Path]:
     """Clean up crop using Qwen-Image-Edit-2511 (local GPU, free, open-source)."""
     global _QWEN_EDIT_PIPELINE  # noqa: PLW0603
+    global _QWEN_EDIT_DISABLED_REASON  # noqa: PLW0603
 
     try:
         import torch
         from PIL import Image as PILImage
 
+        if _QWEN_EDIT_DISABLED_REASON:
+            return image_path
+
         if not torch.cuda.is_available():
             logger.warning("CUDA not available, skipping Qwen-Image-Edit cleanup")
+            return image_path
+
+        can_run, reason = _qwen_vram_check(torch)
+        if not can_run:
+            _disable_qwen_for_run(reason)
             return image_path
 
         if _QWEN_EDIT_PIPELINE is None:
@@ -138,6 +209,15 @@ def _cleanup_with_qwen_image_edit(image_path: Path, output_path: Path) -> Option
             )
             _QWEN_EDIT_PIPELINE.enable_model_cpu_offload()
             logger.info("Qwen-Image-Edit loaded with CPU offload")
+
+            can_run, reason = _qwen_vram_check(torch)
+            if not can_run:
+                _disable_qwen_for_run(f"post-load guard: {reason}")
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                return image_path
 
         img = PILImage.open(image_path).convert("RGB")
         result = _QWEN_EDIT_PIPELINE(
@@ -155,6 +235,19 @@ def _cleanup_with_qwen_image_edit(image_path: Path, output_path: Path) -> Option
         logger.info("Qwen-Image-Edit cleanup saved to %s", output_path)
         return output_path
 
+    except RuntimeError as exc:
+        message = str(exc).lower()
+        if "out of memory" in message or ("cuda" in message and "memory" in message):
+            _disable_qwen_for_run(f"CUDA OOM during inference: {exc}")
+            try:
+                import torch  # type: ignore
+
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            return image_path
+        logger.warning("Qwen-Image-Edit cleanup failed: %s, using original crop", exc)
+        return image_path
     except ImportError:
         logger.warning("diffusers not installed, skipping Qwen-Image-Edit cleanup")
         return image_path

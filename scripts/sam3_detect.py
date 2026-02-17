@@ -29,7 +29,7 @@ import os
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -65,6 +65,33 @@ _DEFAULT_SAMPLE_FRAMES = 8
 
 # IoU threshold for merging detections across frames
 _MERGE_IOU_THRESHOLD = 0.35
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Tracking/association settings
+_TRACKING_MODE_DEFAULT = (os.getenv("SAM3_TRACKING_MODE", "full_video") or "full_video").strip().lower()
+_TRACK_MAX_FRAME_GAP = max(1, _env_int("SAM3_TRACK_MAX_FRAME_GAP", 3))
+_TRACK_MIN_ASSOC_SCORE = max(0.0, min(1.0, _env_float("SAM3_TRACK_MIN_ASSOC_SCORE", 0.28)))
+_MAX_REFERENCE_CROPS = max(1, _env_int("SAM3_MAX_REFERENCE_CROPS", 12))
 
 # DA3 model source (prefer local snapshot to avoid runtime downloads)
 _DA3_MODEL_ID = os.getenv("DA3_MODEL_ID", "depth-anything/DA3Metric-Large")
@@ -314,6 +341,7 @@ def _detect_objects_in_frame(
                 "mask_area_px": mask_area,
                 "image_size": [w, h],
                 "frame_path": str(image_path),
+                "frame_idx": int(frame_idx),
             }
 
             # If we have depth, compute 3D extent from mask + depth
@@ -433,14 +461,346 @@ def _detections_match(det_a: Dict[str, Any], det_b: Dict[str, Any]) -> bool:
     return iou >= 0.2 or (iou >= 0.1 and center_dist_norm <= 0.5 and area_ratio <= 2.5)
 
 
+def _suppress_frame_duplicates(frame_detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply per-frame duplicate suppression per label."""
+    by_label: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for det in frame_detections:
+        by_label[str(det.get("label") or "object")].append(det)
+
+    kept: List[Dict[str, Any]] = []
+    for _, label_dets in by_label.items():
+        selected: List[Dict[str, Any]] = []
+        for det in sorted(label_dets, key=lambda item: float(item.get("score", 0.0)), reverse=True):
+            duplicate = False
+            for prior in selected:
+                iou = _box_iou(det["box"], prior["box"])
+                if iou >= 0.65:
+                    duplicate = True
+                    break
+                c0 = det.get("centroid_px", [0.0, 0.0])
+                c1 = prior.get("centroid_px", [0.0, 0.0])
+                d = float(np.hypot(float(c0[0]) - float(c1[0]), float(c0[1]) - float(c1[1])))
+                diag = max(
+                    1.0,
+                    float(np.hypot(det["box"][2] - det["box"][0], det["box"][3] - det["box"][1])),
+                    float(np.hypot(prior["box"][2] - prior["box"][0], prior["box"][3] - prior["box"][1])),
+                )
+                if d / diag <= 0.2:
+                    duplicate = True
+                    break
+            if not duplicate:
+                selected.append(det)
+        kept.extend(selected)
+    return kept
+
+
+def _track_association_score(track: Dict[str, Any], det: Dict[str, Any]) -> float:
+    """Return [0,1] association score for assigning ``det`` to ``track``."""
+    last = track["last_det"]
+    frame_gap = int(det.get("frame_idx", 0)) - int(track.get("last_frame_idx", -1))
+    if frame_gap <= 0 or frame_gap > _TRACK_MAX_FRAME_GAP:
+        return -1.0
+
+    iou = _box_iou(last["box"], det["box"])
+    area_last = _box_area(last["box"])
+    area_det = _box_area(det["box"])
+    area_ratio = max(area_last, area_det) / max(1.0, min(area_last, area_det))
+    if area_ratio > 6.0:
+        return -1.0
+
+    c0 = last.get("centroid_px", [0.0, 0.0])
+    c1 = det.get("centroid_px", [0.0, 0.0])
+    center_dist = float(np.hypot(float(c0[0]) - float(c1[0]), float(c0[1]) - float(c1[1])))
+    diag_last = float(np.hypot(last["box"][2] - last["box"][0], last["box"][3] - last["box"][1]))
+    diag_det = float(np.hypot(det["box"][2] - det["box"][0], det["box"][3] - det["box"][1]))
+    center_dist_norm = center_dist / max(1.0, diag_last, diag_det)
+    max_center_norm = 1.1 + (0.4 * float(max(0, frame_gap - 1)))
+    center_score = max(0.0, 1.0 - (center_dist_norm / max(1e-6, max_center_norm)))
+
+    size_score = max(0.0, 1.0 - min(6.0, area_ratio) / 6.0)
+    depth_score = 0.0
+
+    depth_a = last.get("depth_3d") if isinstance(last.get("depth_3d"), dict) else None
+    depth_b = det.get("depth_3d") if isinstance(det.get("depth_3d"), dict) else None
+    if depth_a is not None and depth_b is not None:
+        center_a = np.array(depth_a.get("center", [0.0, 0.0, 0.0]), dtype=float)
+        center_b = np.array(depth_b.get("center", [0.0, 0.0, 0.0]), dtype=float)
+        ext_a = np.array(depth_a.get("extents", [0.2, 0.2, 0.2]), dtype=float)
+        ext_b = np.array(depth_b.get("extents", [0.2, 0.2, 0.2]), dtype=float)
+
+        # Use horizontal size as primary scale reference (vertical can be noisy).
+        size_ref = max(
+            float(max(ext_a[0], ext_a[2])),
+            float(max(ext_b[0], ext_b[2])),
+            0.25,
+        )
+        dist_3d = float(np.linalg.norm(center_a - center_b))
+        depth_gap = abs(float(center_a[2] - center_b[2]))
+        max_dist = max(1.1, (2.1 * size_ref) + (0.35 * float(max(0, frame_gap - 1))))
+        if dist_3d > max_dist or depth_gap > max(0.9, 1.5 * size_ref):
+            return -1.0
+        depth_score = max(0.0, 1.0 - (dist_3d / max_dist))
+    elif center_dist_norm > max_center_norm and iou < 0.05:
+        return -1.0
+
+    score = (0.45 * iou) + (0.25 * center_score) + (0.2 * depth_score) + (0.1 * size_score)
+    if _detections_match(last, det):
+        score = max(score, 0.33)
+    score -= min(0.2, 0.06 * float(max(0, frame_gap - 1)))
+    return float(max(0.0, min(1.0, score)))
+
+
+def _track_label_detections(label_dets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build temporal tracks for detections of a single label."""
+    by_frame: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for det in label_dets:
+        by_frame[int(det.get("frame_idx", 0))].append(det)
+
+    tracks: List[Dict[str, Any]] = []
+    for frame_idx in sorted(by_frame.keys()):
+        frame_dets = _suppress_frame_duplicates(by_frame[frame_idx])
+        used_track_ids: set[int] = set()
+        for det in sorted(frame_dets, key=lambda item: float(item.get("score", 0.0)), reverse=True):
+            best_track_idx = -1
+            best_score = _TRACK_MIN_ASSOC_SCORE
+            for track_idx, track in enumerate(tracks):
+                if track_idx in used_track_ids:
+                    continue
+                score = _track_association_score(track, det)
+                if score > best_score:
+                    best_score = score
+                    best_track_idx = track_idx
+
+            if best_track_idx >= 0:
+                track = tracks[best_track_idx]
+                track["detections"].append(det)
+                track["last_det"] = det
+                track["last_frame_idx"] = frame_idx
+                track["frame_indices"].add(frame_idx)
+                used_track_ids.add(best_track_idx)
+            else:
+                tracks.append(
+                    {
+                        "detections": [det],
+                        "last_det": det,
+                        "last_frame_idx": frame_idx,
+                        "frame_indices": {frame_idx},
+                    }
+                )
+                used_track_ids.add(len(tracks) - 1)
+
+    return tracks
+
+
+def _track_prototype(track: Dict[str, Any]) -> Dict[str, Any]:
+    dets = track.get("detections", [])
+    centers = []
+    extents = []
+    centroids = []
+    areas = []
+    for det in dets:
+        centroids.append(det.get("centroid_px", [0.0, 0.0]))
+        areas.append(_box_area(det["box"]))
+        depth = det.get("depth_3d") if isinstance(det.get("depth_3d"), dict) else None
+        if depth is not None:
+            centers.append(depth.get("center", [0.0, 0.0, 0.0]))
+            extents.append(depth.get("extents", [0.2, 0.2, 0.2]))
+
+    out: Dict[str, Any] = {
+        "frame_indices": set(track.get("frame_indices", set())),
+        "centroid_mean": [0.0, 0.0],
+        "area_median": 0.0,
+    }
+    if centroids:
+        c = np.array(centroids, dtype=float)
+        out["centroid_mean"] = [float(np.mean(c[:, 0])), float(np.mean(c[:, 1]))]
+    if areas:
+        out["area_median"] = float(np.median(np.array(areas, dtype=float)))
+    if centers and extents:
+        out["depth_center"] = np.median(np.array(centers, dtype=float), axis=0)
+        out["depth_extents"] = np.median(np.array(extents, dtype=float), axis=0)
+    return out
+
+
+def _tracks_mergeable(track_a: Dict[str, Any], track_b: Dict[str, Any]) -> bool:
+    proto_a = _track_prototype(track_a)
+    proto_b = _track_prototype(track_b)
+    frames_a = proto_a.get("frame_indices", set())
+    frames_b = proto_b.get("frame_indices", set())
+    overlap = set(frames_a).intersection(set(frames_b))
+    if overlap:
+        # If both tracks are present in same frame(s), treat as distinct objects.
+        return False
+
+    depth_center_a = proto_a.get("depth_center")
+    depth_center_b = proto_b.get("depth_center")
+    depth_ext_a = proto_a.get("depth_extents")
+    depth_ext_b = proto_b.get("depth_extents")
+    if depth_center_a is not None and depth_center_b is not None:
+        center_a = np.array(depth_center_a, dtype=float)
+        center_b = np.array(depth_center_b, dtype=float)
+        ext_a = np.array(depth_ext_a, dtype=float) if depth_ext_a is not None else np.array([0.2, 0.2, 0.2])
+        ext_b = np.array(depth_ext_b, dtype=float) if depth_ext_b is not None else np.array([0.2, 0.2, 0.2])
+        size_ref = max(float(max(ext_a[0], ext_a[2])), float(max(ext_b[0], ext_b[2])), 0.3)
+        dist_3d = float(np.linalg.norm(center_a - center_b))
+        depth_gap = abs(float(center_a[2] - center_b[2]))
+        ext_ratio = max(float(np.max(ext_a)), float(np.max(ext_b))) / max(0.05, min(float(np.max(ext_a)), float(np.max(ext_b))))
+        return (
+            dist_3d <= max(1.2, 1.8 * size_ref)
+            and depth_gap <= max(1.0, 1.4 * size_ref)
+            and ext_ratio <= 3.5
+        )
+
+    c_a = np.array(proto_a.get("centroid_mean", [0.0, 0.0]), dtype=float)
+    c_b = np.array(proto_b.get("centroid_mean", [0.0, 0.0]), dtype=float)
+    center_dist = float(np.linalg.norm(c_a - c_b))
+    area_a = float(proto_a.get("area_median", 0.0))
+    area_b = float(proto_b.get("area_median", 0.0))
+    area_ratio = max(area_a, area_b) / max(1.0, min(area_a, area_b))
+    return center_dist <= 80.0 and area_ratio <= 3.0
+
+
+def _merge_tracklets(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge non-overlapping short track fragments likely from same object."""
+    merged = [dict(track) for track in tracks]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(merged)):
+            if changed:
+                break
+            for j in range(i + 1, len(merged)):
+                if not _tracks_mergeable(merged[i], merged[j]):
+                    continue
+                merged[i]["detections"].extend(merged[j]["detections"])
+                merged[i]["detections"].sort(key=lambda det: int(det.get("frame_idx", 0)))
+                merged[i]["frame_indices"] = set(int(det.get("frame_idx", 0)) for det in merged[i]["detections"])
+                merged[i]["last_det"] = merged[i]["detections"][-1]
+                merged[i]["last_frame_idx"] = int(merged[i]["last_det"].get("frame_idx", 0))
+                del merged[j]
+                changed = True
+                break
+    return merged
+
+
+def _reference_quality(det: Dict[str, Any]) -> float:
+    score = float(det.get("score", 0.0))
+    area = max(1.0, _box_area(det["box"]))
+    image_size = det.get("image_size", [1, 1])
+    image_area = max(1.0, float(image_size[0]) * float(image_size[1]))
+    coverage = min(1.0, area / image_area)
+
+    cx, cy = det.get("centroid_px", [0.0, 0.0])
+    center_x = float(image_size[0]) * 0.5
+    center_y = float(image_size[1]) * 0.5
+    dist = float(np.hypot(float(cx) - center_x, float(cy) - center_y))
+    center_norm = dist / max(1.0, float(np.hypot(center_x, center_y)))
+    center_score = max(0.0, 1.0 - center_norm)
+    return (0.65 * score) + (0.25 * np.sqrt(coverage)) + (0.10 * center_score)
+
+
+def _select_reference_crops(cluster: List[Dict[str, Any]]) -> Tuple[Optional[str], List[str]]:
+    crop_dets = [det for det in cluster if isinstance(det.get("crop_path"), str) and str(det.get("crop_path")).strip()]
+    if not crop_dets:
+        return None, []
+
+    ranked = sorted(crop_dets, key=_reference_quality, reverse=True)
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for det in ranked:
+        crop = str(det.get("crop_path")).strip()
+        if crop and crop not in seen:
+            seen.add(crop)
+            ordered.append(crop)
+        if len(ordered) >= _MAX_REFERENCE_CROPS:
+            break
+    if not ordered:
+        return None, []
+    return ordered[0], ordered
+
+
+def _cluster_to_object(
+    *,
+    label: str,
+    cluster_idx: int,
+    cluster: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    scores = [d["score"] for d in cluster]
+    boxes = [d["box"] for d in cluster]
+    centroids = [d["centroid_px"] for d in cluster]
+    n_frames = len(set(int(d.get("frame_idx", 0)) for d in cluster))
+    mean_score = float(np.mean(scores))
+    max_score = float(np.max(scores))
+
+    mean_box = [float(np.mean([b[i] for b in boxes])) for i in range(4)]
+    mean_centroid = [float(np.mean([c[i] for c in centroids])) for i in range(2)]
+    img_w, img_h = cluster[0]["image_size"]
+
+    depth_3d_list = [d["depth_3d"] for d in cluster if "depth_3d" in d]
+    has_depth = len(depth_3d_list) > 0
+    if has_depth:
+        centers = np.array([d["center"] for d in depth_3d_list])
+        extents_arr = np.array([d["extents"] for d in depth_3d_list])
+        cx_3d = float(np.median(centers[:, 0]))
+        cy_3d = float(np.median(centers[:, 1]))
+        cz_3d = float(np.median(centers[:, 2]))
+        width_m = float(np.median(extents_arr[:, 0]))
+        height_m = float(np.median(extents_arr[:, 1]))
+        depth_m = float(np.median(extents_arr[:, 2]))
+        refinement_source = "da3_metric_depth"
+    else:
+        box_w = mean_box[2] - mean_box[0]
+        box_h = mean_box[3] - mean_box[1]
+        scene_depth_est = 3.0
+        scale = scene_depth_est / max(img_w, img_h)
+        width_m = box_w * scale
+        height_m = box_h * scale
+        depth_m = min(width_m, height_m) * 0.6
+        cx_3d = (mean_centroid[0] / img_w - 0.5) * scene_depth_est
+        cy_3d = (0.5 - mean_centroid[1] / img_h) * scene_depth_est
+        cz_3d = scene_depth_est * 0.5
+        refinement_source = "heuristic_2d"
+
+    best_crop, all_crops = _select_reference_crops(cluster)
+    frame_indices = sorted(set(int(det.get("frame_idx", 0)) for det in cluster))
+    frame_paths = [str(det.get("frame_path")) for det in sorted(cluster, key=lambda det: int(det.get("frame_idx", 0)))]
+    unique_frame_paths = list(dict.fromkeys(frame_paths))
+
+    obj_entry = {
+        "id": f"{label}_{cluster_idx + 1}",
+        "label": label,
+        "confidence": round(max_score, 3),
+        "mean_confidence": round(mean_score, 3),
+        "n_frame_detections": n_frames,
+        "n_total_detections": len(cluster),
+        "frame_indices": frame_indices,
+        "frame_paths": unique_frame_paths,
+        "boundingBox": {
+            "center": [round(cx_3d, 4), round(cy_3d, 4), round(cz_3d, 4)],
+            "extents": [
+                round(max(0.02, width_m), 4),
+                round(max(0.02, height_m), 4),
+                round(max(0.02, depth_m), 4),
+            ],
+            "axes": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            "orientationQuaternion": [1, 0, 0, 0],
+        },
+        "mean_box_px": [round(v, 1) for v in mean_box],
+        "mean_centroid_px": [round(v, 1) for v in mean_centroid],
+        "detection_source": "sam3",
+        "refinement": refinement_source,
+    }
+    if best_crop is not None:
+        obj_entry["reference_crop"] = best_crop
+    if all_crops:
+        obj_entry["all_crops"] = all_crops
+    return obj_entry
+
+
 def _merge_detections(
     all_detections: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Merge per-frame detections into unique scene-level objects.
-
-    Groups detections by label, then merges spatially overlapping
-    detections (by 2D box IoU) across frames into single objects.
-    """
+    """Temporal association over the sampled sequence into scene-level objects."""
     by_label: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for det in all_detections:
         by_label[det["label"]].append(det)
@@ -451,115 +811,23 @@ def _merge_detections(
         if label.lower() in _STRUCTURAL_LABELS:
             continue
 
-        # Greedy merge by IoU + depth/centroid consistency
-        clusters: List[List[Dict[str, Any]]] = []
-        for det in sorted(dets, key=lambda item: float(item.get("score", 0.0)), reverse=True):
-            matched_cluster = None
-            for cluster in clusters:
-                if any(_detections_match(det, member) for member in cluster):
-                    matched_cluster = cluster
-                    break
-            if matched_cluster is None:
-                clusters.append([det])
-            else:
-                matched_cluster.append(det)
-
-        for cluster_idx, cluster in enumerate(clusters):
-            # Aggregate cluster statistics
-            scores = [d["score"] for d in cluster]
-            boxes = [d["box"] for d in cluster]
-            centroids = [d["centroid_px"] for d in cluster]
-            areas = [d["mask_area_px"] for d in cluster]
-            n_frames = len(set(d["frame_path"] for d in cluster))
-
-            mean_score = float(np.mean(scores))
-            max_score = float(np.max(scores))
-
-            # Average bounding box across frames
-            mean_box = [
-                float(np.mean([b[i] for b in boxes])) for i in range(4)
-            ]
-            mean_centroid = [
-                float(np.mean([c[i] for c in centroids])) for i in range(2)
-            ]
-
-            # Use image dimensions from first detection
-            img_w, img_h = cluster[0]["image_size"]
-
-            # Check if we have DA3 depth-based 3D data
-            depth_3d_list = [d["depth_3d"] for d in cluster if "depth_3d" in d]
-            has_depth = len(depth_3d_list) > 0
-
-            if has_depth:
-                # Average the depth-based 3D estimates across frames
-                centers = np.array([d["center"] for d in depth_3d_list])
-                extents_arr = np.array([d["extents"] for d in depth_3d_list])
-                median_depths = [d["median_depth_m"] for d in depth_3d_list]
-
-                cx_3d = float(np.median(centers[:, 0]))
-                cy_3d = float(np.median(centers[:, 1]))
-                cz_3d = float(np.median(centers[:, 2]))
-                width_m = float(np.median(extents_arr[:, 0]))
-                height_m = float(np.median(extents_arr[:, 1]))
-                depth_m = float(np.median(extents_arr[:, 2]))
-                refinement_source = "da3_metric_depth"
-            else:
-                # Fallback: heuristic 3D from 2D (no depth data)
-                box_w = mean_box[2] - mean_box[0]
-                box_h = mean_box[3] - mean_box[1]
-                scene_depth_est = 3.0
-                scale = scene_depth_est / max(img_w, img_h)
-                width_m = box_w * scale
-                height_m = box_h * scale
-                depth_m = min(width_m, height_m) * 0.6
-                cx_3d = (mean_centroid[0] / img_w - 0.5) * scene_depth_est
-                cy_3d = (0.5 - mean_centroid[1] / img_h) * scene_depth_est
-                cz_3d = scene_depth_est * 0.5
-                refinement_source = "heuristic_2d"
-
-            object_id = f"{label}_{cluster_idx + 1}"
-
-            # Select best reference crop from cluster (highest confidence with a crop)
-            all_crops = [d["crop_path"] for d in cluster if "crop_path" in d]
-            best_crop = None
-            if all_crops:
-                # Pick crop from the highest-confidence detection
-                crop_dets = sorted(
-                    [d for d in cluster if "crop_path" in d],
-                    key=lambda d: d["score"],
-                    reverse=True,
+        tracks = _track_label_detections(dets)
+        tracks = _merge_tracklets(tracks)
+        tracks.sort(
+            key=lambda track: (
+                max(float(det.get("score", 0.0)) for det in track["detections"]),
+                len(track["frame_indices"]),
+            ),
+            reverse=True,
+        )
+        for cluster_idx, track in enumerate(tracks):
+            merged_objects.append(
+                _cluster_to_object(
+                    label=label,
+                    cluster_idx=cluster_idx,
+                    cluster=track["detections"],
                 )
-                best_crop = crop_dets[0]["crop_path"]
-
-            obj_entry = {
-                "id": object_id,
-                "label": label,
-                "confidence": round(max_score, 3),
-                "mean_confidence": round(mean_score, 3),
-                "n_frame_detections": n_frames,
-                "n_total_detections": len(cluster),
-                "boundingBox": {
-                    "center": [round(cx_3d, 4), round(cy_3d, 4), round(cz_3d, 4)],
-                    "extents": [
-                        round(max(0.02, width_m), 4),
-                        round(max(0.02, height_m), 4),
-                        round(max(0.02, depth_m), 4),
-                    ],
-                    "axes": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                    "orientationQuaternion": [1, 0, 0, 0],
-                },
-                "mean_box_px": [round(v, 1) for v in mean_box],
-                "mean_centroid_px": [round(v, 1) for v in mean_centroid],
-                "detection_source": "sam3",
-                "refinement": refinement_source,
-            }
-
-            if best_crop:
-                obj_entry["reference_crop"] = best_crop
-            if all_crops:
-                obj_entry["all_crops"] = all_crops
-
-            merged_objects.append(obj_entry)
+            )
 
     # Sort by confidence descending
     merged_objects.sort(key=lambda x: x["confidence"], reverse=True)
@@ -916,9 +1184,16 @@ def run_sam3_detection(
         f"n_frames={n_sample_frames} min_frame_detections={min_frame_detections}"
     )
 
-    # Sample frames
-    frame_paths = _sample_frame_paths(frames_dir, n_sample_frames)
-    _log(f"Sampled {len(frame_paths)} frames for detection")
+    tracking_mode = (os.getenv("SAM3_TRACKING_MODE", _TRACKING_MODE_DEFAULT) or _TRACKING_MODE_DEFAULT).strip().lower()
+    if tracking_mode not in {"full_video", "sampled"}:
+        tracking_mode = _TRACKING_MODE_DEFAULT if _TRACKING_MODE_DEFAULT in {"full_video", "sampled"} else "full_video"
+
+    if tracking_mode == "full_video":
+        frame_paths = all_frames
+        _log(f"Tracking mode: full_video (using all {len(frame_paths)} frames)")
+    else:
+        frame_paths = _sample_frame_paths(frames_dir, n_sample_frames)
+        _log(f"Tracking mode: sampled (using {len(frame_paths)} frames)")
 
     # Load SAM3
     processor = _load_sam3()
@@ -1012,6 +1287,9 @@ def run_sam3_detection(
         "schema_version": "v1",
         "detection_source": "sam3",
         "environment": environment,
+        "tracking_mode": tracking_mode,
+        "track_max_frame_gap": _TRACK_MAX_FRAME_GAP,
+        "track_min_assoc_score": _TRACK_MIN_ASSOC_SCORE,
         "n_frames_sampled": len(frame_paths),
         "n_raw_detections": len(all_detections),
         "prompts_used": prompts,

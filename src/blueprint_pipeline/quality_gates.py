@@ -40,6 +40,9 @@ class AdvancedQualityGateConfig:
 
     jitter_settle_steps: int = _safe_int(os.getenv("QUALITY_JITTER_SETTLE_STEPS"), 180)
     jitter_measure_steps: int = _safe_int(os.getenv("QUALITY_JITTER_MEASURE_STEPS"), 180)
+    jitter_extra_settle_steps: int = _safe_int(os.getenv("QUALITY_JITTER_EXTRA_SETTLE_STEPS"), 480)
+    jitter_rest_speed_mps: float = _safe_float(os.getenv("QUALITY_JITTER_REST_SPEED_MPS"), 0.03)
+    jitter_rest_frames: int = _safe_int(os.getenv("QUALITY_JITTER_REST_FRAMES"), 24)
     jitter_max_drift_m: float = _safe_float(os.getenv("QUALITY_JITTER_MAX_DRIFT_M"), 0.04)
     jitter_max_vertical_span_m: float = _safe_float(
         os.getenv("QUALITY_JITTER_MAX_VERTICAL_SPAN_M"), 0.02
@@ -67,6 +70,9 @@ class AdvancedQualityGateConfig:
             "floor_penetration_tolerance_m": self.floor_penetration_tolerance_m,
             "jitter_settle_steps": self.jitter_settle_steps,
             "jitter_measure_steps": self.jitter_measure_steps,
+            "jitter_extra_settle_steps": self.jitter_extra_settle_steps,
+            "jitter_rest_speed_mps": self.jitter_rest_speed_mps,
+            "jitter_rest_frames": self.jitter_rest_frames,
             "jitter_max_drift_m": self.jitter_max_drift_m,
             "jitter_max_vertical_span_m": self.jitter_max_vertical_span_m,
             "tunneling_steps": self.tunneling_steps,
@@ -110,30 +116,37 @@ def _bounds_from_stats_or_mesh(
     nurec_outputs: Mapping[str, Any],
     mesh_bounds: Sequence[Sequence[float]],
 ) -> tuple[List[float], List[float]]:
+    if len(mesh_bounds) >= 2:
+        mesh_min = [float(mesh_bounds[0][idx]) if idx < len(mesh_bounds[0]) else 0.0 for idx in range(3)]
+        mesh_max = [float(mesh_bounds[1][idx]) if idx < len(mesh_bounds[1]) else 0.0 for idx in range(3)]
+        mesh_valid = all(math.isfinite(value) for value in mesh_min + mesh_max) and any(
+            mesh_max[idx] > mesh_min[idx] for idx in range(3)
+        )
+        if mesh_valid:
+            return mesh_min, mesh_max
+
     mesh_stats = nurec_outputs.get("mesh_stats") if isinstance(nurec_outputs.get("mesh_stats"), Mapping) else {}
     stats_bounds = mesh_stats.get("bounds") if isinstance(mesh_stats.get("bounds"), Mapping) else {}
-    mins = stats_bounds.get("min") if isinstance(stats_bounds.get("min"), list) else None
-    maxs = stats_bounds.get("max") if isinstance(stats_bounds.get("max"), list) else None
-
-    if mins is None or maxs is None:
-        mins = list(mesh_bounds[0]) if len(mesh_bounds) >= 1 else [-3.0, 0.0, -3.0]
-        maxs = list(mesh_bounds[1]) if len(mesh_bounds) >= 2 else [3.0, 3.0, 3.0]
-
+    mins = stats_bounds.get("min") if isinstance(stats_bounds.get("min"), list) else [-3.0, 0.0, -3.0]
+    maxs = stats_bounds.get("max") if isinstance(stats_bounds.get("max"), list) else [3.0, 3.0, 3.0]
     min_vec = [float(mins[idx]) if idx < len(mins) else 0.0 for idx in range(3)]
     max_vec = [float(maxs[idx]) if idx < len(maxs) else 0.0 for idx in range(3)]
     return min_vec, max_vec
 
 
 def _face_count(nurec_outputs: Mapping[str, Any], mesh: Any) -> int:
+    if hasattr(mesh, "faces"):
+        try:
+            mesh_face_count = int(len(mesh.faces))
+            if mesh_face_count > 0:
+                return mesh_face_count
+        except Exception:
+            pass
+
     mesh_stats = nurec_outputs.get("mesh_stats") if isinstance(nurec_outputs.get("mesh_stats"), Mapping) else {}
     raw = mesh_stats.get("face_count")
     if raw is not None:
         return max(0, _safe_int(raw, 0))
-    if hasattr(mesh, "faces"):
-        try:
-            return int(len(mesh.faces))
-        except Exception:
-            return 0
     return 0
 
 
@@ -234,9 +247,37 @@ def _jitter_test(
         baseCollisionShapeIndex=box_shape,
         basePosition=[center_x, max(float(max_vec[1]) + 0.8, floor_y + 0.5), center_z],
     )
+    p.changeDynamics(
+        body,
+        -1,
+        lateralFriction=1.1,
+        spinningFriction=0.01,
+        rollingFriction=0.01,
+        restitution=0.0,
+        linearDamping=0.08,
+        angularDamping=0.08,
+    )
 
     for _ in range(max(1, cfg.jitter_settle_steps)):
         p.stepSimulation()
+
+    extra_settle_steps = 0
+    rest_frames = 0
+    for _ in range(max(0, cfg.jitter_extra_settle_steps)):
+        p.stepSimulation()
+        extra_settle_steps += 1
+        linear_velocity, _ = p.getBaseVelocity(body)
+        speed = math.sqrt(
+            float(linear_velocity[0]) ** 2
+            + float(linear_velocity[1]) ** 2
+            + float(linear_velocity[2]) ** 2
+        )
+        if speed <= cfg.jitter_rest_speed_mps:
+            rest_frames += 1
+            if rest_frames >= max(1, cfg.jitter_rest_frames):
+                break
+        else:
+            rest_frames = 0
 
     samples: List[Tuple[float, float, float]] = []
     for _ in range(max(1, cfg.jitter_measure_steps)):
@@ -253,12 +294,14 @@ def _jitter_test(
             metrics={},
         )
 
-    first = samples[0]
+    window = samples[max(0, len(samples) // 2):] or samples
+    mean_x = sum(sample[0] for sample in window) / float(len(window))
+    mean_z = sum(sample[2] for sample in window) / float(len(window))
     lateral_drift = max(
-        math.sqrt((sample[0] - first[0]) ** 2 + (sample[2] - first[2]) ** 2)
-        for sample in samples
+        math.sqrt((sample[0] - mean_x) ** 2 + (sample[2] - mean_z) ** 2)
+        for sample in window
     )
-    ys = [sample[1] for sample in samples]
+    ys = [sample[1] for sample in window]
     vertical_span = max(ys) - min(ys) if ys else 0.0
 
     ok = lateral_drift <= cfg.jitter_max_drift_m and vertical_span <= cfg.jitter_max_vertical_span_m
@@ -275,6 +318,9 @@ def _jitter_test(
             "vertical_span_m": round(vertical_span, 6),
             "threshold_drift_m": cfg.jitter_max_drift_m,
             "threshold_vertical_span_m": cfg.jitter_max_vertical_span_m,
+            "extra_settle_steps": extra_settle_steps,
+            "rest_frames_observed": rest_frames,
+            "rest_speed_threshold_mps": cfg.jitter_rest_speed_mps,
         },
     )
 
