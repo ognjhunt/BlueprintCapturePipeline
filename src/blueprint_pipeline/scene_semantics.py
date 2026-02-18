@@ -175,6 +175,14 @@ class _GeminiResult:
     raw_text: str
 
 
+_DEFAULT_MODEL_CASCADE = [
+    "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
+
+
 def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_GeminiResult]:
     api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or "").strip()
     if not api_key:
@@ -185,7 +193,9 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
     except Exception:
         return None
 
-    model = (os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "gemini-3.0-pro").strip()
+    override = (os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
+    models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
+
     prompt = (
         "Classify this video scene into one of: bedroom, kitchen, warehouse, default. "
         "Return JSON only with keys: room_type (string), confidence (0-1 number), rationale (short string)."
@@ -203,29 +213,32 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
             }
         )
 
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model,
-            contents=[{"parts": parts}],
-            config={"temperature": 0.1, "max_output_tokens": 300, "timeout": timeout_sec},
-        )
-    except Exception:
-        return None
+    client = genai.Client(api_key=api_key)
+    for model in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[{"parts": parts}],
+                config={"temperature": 0.1, "max_output_tokens": 300, "timeout": timeout_sec},
+            )
+        except Exception:
+            continue
 
-    raw_text = _extract_response_text(response)
-    if not raw_text:
-        return None
+        raw_text = _extract_response_text(response)
+        if not raw_text:
+            continue
 
-    payload = _extract_json_object(raw_text)
-    room_type = _normalize_environment(str(payload.get("room_type") or payload.get("environment") or "default"))
-    confidence_raw = payload.get("confidence", 0.0)
-    try:
-        confidence = float(confidence_raw)
-    except (TypeError, ValueError):
-        confidence = 0.0
-    confidence = max(0.0, min(1.0, confidence))
-    return _GeminiResult(environment=room_type, confidence=confidence, model=model, raw_text=raw_text)
+        payload = _extract_json_object(raw_text)
+        room_type = _normalize_environment(str(payload.get("room_type") or payload.get("environment") or "default"))
+        confidence_raw = payload.get("confidence", 0.0)
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        return _GeminiResult(environment=room_type, confidence=confidence, model=model, raw_text=raw_text)
+
+    return None
 
 
 def infer_scene_semantics(
