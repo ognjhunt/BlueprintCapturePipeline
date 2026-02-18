@@ -169,6 +169,117 @@ def _log(msg: str) -> None:
     print(f"[sam3-detect] {msg}", flush=True)
 
 
+# ---------------------------------------------------------------------------
+# Video predictor helpers: adaptive FPS + frame extraction
+# ---------------------------------------------------------------------------
+
+_VIDEO_PREDICTOR_MODEL_VRAM_GB = 3.8  # SAM3 video predictor model weights
+_VIDEO_PREDICTOR_PER_FRAME_MB = 11.4  # VRAM per frame in video predictor session
+_VIDEO_PREDICTOR_SAFETY_MARGIN_GB = 1.5
+_VIDEO_PREDICTOR_MAX_FPS = 15  # Diminishing returns above this
+_VIDEO_PREDICTOR_MIN_FPS = 3   # Floor to ensure useful detection
+
+
+def _compute_safe_fps(
+    video_path: Path,
+    model_vram_gb: float = _VIDEO_PREDICTOR_MODEL_VRAM_GB,
+) -> Tuple[int, str]:
+    """Compute maximum safe FPS for video predictor based on available VRAM.
+
+    Returns (fps, reasoning_string).
+    """
+    # Get video duration via ffprobe
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        duration_sec = float(probe.stdout.strip())
+    except Exception as exc:
+        _log(f"ffprobe failed ({exc}), assuming 60s video")
+        duration_sec = 60.0
+
+    if duration_sec <= 0:
+        duration_sec = 60.0
+
+    # Query GPU VRAM
+    try:
+        free_vram_bytes, total_vram_bytes = torch.cuda.mem_get_info()
+        free_vram_gb = free_vram_bytes / (1024 ** 3)
+        total_vram_gb = total_vram_bytes / (1024 ** 3)
+    except Exception:
+        # Fallback: assume 16GB with 14GB free
+        free_vram_gb = 14.0
+        total_vram_gb = 16.0
+
+    usable_gb = free_vram_gb - model_vram_gb - _VIDEO_PREDICTOR_SAFETY_MARGIN_GB
+    usable_mb = usable_gb * 1024
+    max_frames = int(usable_mb / _VIDEO_PREDICTOR_PER_FRAME_MB)
+    max_fps_raw = max_frames / duration_sec if duration_sec > 0 else _VIDEO_PREDICTOR_MAX_FPS
+
+    fps = int(min(_VIDEO_PREDICTOR_MAX_FPS, max(
+        _VIDEO_PREDICTOR_MIN_FPS, max_fps_raw,
+    )))
+
+    expected_frames = int(fps * duration_sec)
+    expected_vram_gb = (expected_frames * _VIDEO_PREDICTOR_PER_FRAME_MB) / 1024
+
+    reasoning = (
+        f"VRAM {total_vram_gb:.0f}GB (free {free_vram_gb:.1f}GB), "
+        f"model {model_vram_gb}GB, safety {_VIDEO_PREDICTOR_SAFETY_MARGIN_GB}GB, "
+        f"usable {usable_gb:.1f}GB → max {max_frames} frames. "
+        f"Video {duration_sec:.1f}s → {fps}fps ({expected_frames} frames, "
+        f"~{expected_vram_gb:.1f}GB session VRAM)"
+    )
+    _log(f"Adaptive FPS: {reasoning}")
+    return fps, reasoning
+
+
+def _extract_frames_from_video(
+    video_path: Path,
+    output_dir: Path,
+    fps: int,
+) -> Tuple[Path, int]:
+    """Extract frames from video at given FPS using ffmpeg.
+
+    Frames are named 00000.jpg, 00001.jpg, ... (SAM3 expected format).
+    Skips extraction if output_dir already exists with correct frame count.
+
+    Returns (frames_dir, frame_count).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if frames already extracted
+    existing = sorted(output_dir.glob("*.jpg"))
+    if existing:
+        _log(f"Frames already extracted: {len(existing)} frames in {output_dir}")
+        return output_dir, len(existing)
+
+    _log(f"Extracting frames at {fps}fps from {video_path.name} → {output_dir}")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", f"fps={fps}",
+        "-q:v", "2",  # High quality JPEG
+        str(output_dir / "%05d.jpg"),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg frame extraction failed (exit {result.returncode}): "
+            f"{result.stderr[-500:]}"
+        )
+
+    frames = sorted(output_dir.glob("*.jpg"))
+    _log(f"Extracted {len(frames)} frames at {fps}fps")
+    return output_dir, len(frames)
+
+
 def _save_object_crop(
     image_path: Path,
     mask_np: np.ndarray,
@@ -1353,6 +1464,564 @@ def _refine_with_colmap(
     return objects
 
 
+# ---------------------------------------------------------------------------
+# Video predictor backend: persistent session-based tracking
+# ---------------------------------------------------------------------------
+
+def _load_video_predictor():
+    """Load SAM3 video predictor model."""
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
+
+    from sam3 import build_sam3_video_predictor
+
+    predictor = build_sam3_video_predictor()
+    _log(f"SAM3 video predictor loaded. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+    return predictor
+
+
+def _detect_with_video_predictor(
+    frames_dir: Path,
+    prompts: List[str],
+    *,
+    save_crops: bool = True,
+    crops_dir: Optional[Path] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Run SAM3 video predictor for persistent object tracking.
+
+    Prompts SAM3 on frame 0 with each text label, then propagates forward
+    using the 7-frame sliding memory window. Returns scene-level objects
+    with consistent tracking IDs.
+
+    Returns:
+        (objects, metadata) where objects is a list of object dicts compatible
+        with the orchestrator contract, and metadata has tracking stats.
+    """
+    predictor = _load_video_predictor()
+
+    # Start a session with the frames directory
+    _log(f"Starting video predictor session on {frames_dir}")
+    session_id = predictor.start_session(resource_path=str(frames_dir))
+
+    # Count frames for reporting
+    all_frame_files = sorted(frames_dir.glob("*.jpg"))
+    n_frames = len(all_frame_files)
+    _log(f"Session started: {n_frames} frames, VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+
+    # Get image dimensions from first frame
+    from PIL import Image as PILImage
+    first_frame = PILImage.open(all_frame_files[0])
+    img_w, img_h = first_frame.size
+    del first_frame
+
+    # Add prompts on frame 0 — each prompt may spawn multiple object IDs
+    obj_id_to_label: Dict[int, str] = {}
+    prompt_stats: Dict[str, int] = {}
+
+    for prompt in prompts:
+        try:
+            result = predictor.add_prompt(
+                session_id=session_id,
+                frame_index=0,
+                text=prompt,
+            )
+            # result contains out_obj_ids for new objects detected
+            new_ids = result.get("out_obj_ids", np.array([]))
+            if hasattr(new_ids, "tolist"):
+                new_ids = new_ids.tolist()
+            for oid in new_ids:
+                obj_id_to_label[int(oid)] = prompt
+            prompt_stats[prompt] = len(new_ids)
+            if new_ids:
+                _log(f"  Prompt '{prompt}': {len(new_ids)} instance(s) → obj_ids {new_ids}")
+            else:
+                _log(f"  Prompt '{prompt}': no instances detected on frame 0")
+        except Exception as exc:
+            _log(f"  Prompt '{prompt}' failed: {exc}")
+            prompt_stats[prompt] = 0
+
+    if not obj_id_to_label:
+        _log("WARNING: No objects detected on frame 0 by any prompt")
+        predictor.shutdown(session_id)
+        del predictor
+        torch.cuda.empty_cache()
+        return [], {"n_objects_detected": 0, "n_frames": n_frames}
+
+    _log(f"Total tracked objects: {len(obj_id_to_label)} across {len(prompts)} prompts")
+
+    # Propagate forward through all frames
+    _log("Propagating video predictor forward...")
+    # Collect per-object per-frame data
+    obj_frames: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+
+    try:
+        for frame_result in predictor.propagate_in_video(
+            session_id=session_id,
+            propagation_direction="forward",
+        ):
+            frame_idx = int(frame_result.get("frame_index", 0))
+            outputs = frame_result.get("outputs", frame_result)
+
+            out_obj_ids = outputs.get("out_obj_ids", np.array([]))
+            out_probs = outputs.get("out_probs", np.array([]))
+            out_boxes_xywh = outputs.get("out_boxes_xywh", np.array([]))
+            out_masks = outputs.get("out_binary_masks", np.array([]))
+
+            if hasattr(out_obj_ids, "tolist"):
+                out_obj_ids = out_obj_ids.tolist()
+
+            for idx_in_batch, oid in enumerate(out_obj_ids):
+                oid = int(oid)
+                if oid not in obj_id_to_label:
+                    continue  # Skip unknown IDs
+
+                prob = float(out_probs[idx_in_batch]) if idx_in_batch < len(out_probs) else 0.0
+
+                # box_xywh is normalized [0,1] — convert to pixel coords [x1,y1,x2,y2]
+                if idx_in_batch < len(out_boxes_xywh):
+                    bx, by, bw, bh = out_boxes_xywh[idx_in_batch]
+                    box_px = [
+                        float(bx) * img_w,
+                        float(by) * img_h,
+                        float(bx + bw) * img_w,
+                        float(by + bh) * img_h,
+                    ]
+                else:
+                    box_px = [0, 0, img_w, img_h]
+
+                # Binary mask
+                mask_np = None
+                if idx_in_batch < len(out_masks):
+                    mask_np = out_masks[idx_in_batch]
+                    if hasattr(mask_np, "cpu"):
+                        mask_np = mask_np.cpu().numpy()
+                    if mask_np.ndim == 3:
+                        mask_np = mask_np.squeeze(0)
+                    mask_np = mask_np.astype(bool)
+
+                # Centroid from mask or box
+                if mask_np is not None and mask_np.any():
+                    ys, xs = np.where(mask_np)
+                    cx, cy = float(xs.mean()), float(ys.mean())
+                    mask_area = int(mask_np.sum())
+                else:
+                    cx = (box_px[0] + box_px[2]) / 2
+                    cy = (box_px[1] + box_px[3]) / 2
+                    mask_area = int((box_px[2] - box_px[0]) * (box_px[3] - box_px[1]))
+
+                frame_data = {
+                    "frame_idx": frame_idx,
+                    "prob": prob,
+                    "box": box_px,
+                    "centroid_px": [cx, cy],
+                    "mask_area_px": mask_area,
+                    "image_size": [img_w, img_h],
+                }
+                # Store mask reference for depth and crop extraction
+                if mask_np is not None:
+                    frame_data["_mask_np"] = mask_np
+
+                # Build frame path
+                if frame_idx < len(all_frame_files):
+                    frame_data["frame_path"] = str(all_frame_files[frame_idx])
+
+                obj_frames[oid].append(frame_data)
+
+            if (frame_idx + 1) % 100 == 0:
+                _log(f"  Propagated through frame {frame_idx + 1}/{n_frames}")
+
+    except Exception as exc:
+        _log(f"Video propagation error at frame {frame_idx}: {exc}")
+        import traceback
+        traceback.print_exc()
+
+    _log(f"Propagation complete. Tracked {len(obj_frames)} objects across {n_frames} frames")
+
+    # Shutdown predictor and free VRAM before DA3
+    predictor.shutdown(session_id)
+    del predictor
+    torch.cuda.empty_cache()
+    _log(f"Video predictor freed. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+
+    # Convert tracked objects into scene-level object entries
+    objects: List[Dict[str, Any]] = []
+    for oid, frames_data in obj_frames.items():
+        label = obj_id_to_label.get(oid, "object")
+        n_obj_frames = len(set(fd["frame_idx"] for fd in frames_data))
+
+        # Skip objects with very few frame appearances
+        if n_obj_frames < 2:
+            continue
+
+        # Compute aggregate stats
+        probs = [fd["prob"] for fd in frames_data]
+        boxes = [fd["box"] for fd in frames_data]
+        centroids = [fd["centroid_px"] for fd in frames_data]
+
+        mean_prob = float(np.mean(probs))
+        max_prob = float(np.max(probs))
+        mean_box = [float(np.mean([b[i] for b in boxes])) for i in range(4)]
+        mean_centroid = [float(np.mean([c[i] for c in centroids])) for i in range(2)]
+
+        frame_indices = sorted(set(fd["frame_idx"] for fd in frames_data))
+        frame_paths = []
+        for fd in sorted(frames_data, key=lambda x: x["frame_idx"]):
+            fp = fd.get("frame_path")
+            if fp and fp not in frame_paths:
+                frame_paths.append(fp)
+
+        # Heuristic 3D from 2D (will be refined by DA3 depth post-processing)
+        box_w = mean_box[2] - mean_box[0]
+        box_h = mean_box[3] - mean_box[1]
+        scene_depth_est = 3.0
+        scale = scene_depth_est / max(img_w, img_h)
+        width_m = box_w * scale
+        height_m = box_h * scale
+        depth_m = min(width_m, height_m) * 0.6
+        cx_3d = (mean_centroid[0] / img_w - 0.5) * scene_depth_est
+        cy_3d = (0.5 - mean_centroid[1] / img_h) * scene_depth_est
+        cz_3d = scene_depth_est * 0.5
+
+        # Save reference crop from best-probability frame
+        best_crop = None
+        all_crops: List[str] = []
+        if save_crops and crops_dir is not None:
+            # Pick top frames by probability for crops
+            ranked = sorted(frames_data, key=lambda fd: fd["prob"], reverse=True)
+            for crop_idx, fd in enumerate(ranked[:_MAX_REFERENCE_CROPS]):
+                mask = fd.get("_mask_np")
+                fp = fd.get("frame_path")
+                if mask is not None and fp:
+                    cp = _save_object_crop(
+                        Path(fp), mask, fd["box"], crops_dir,
+                        label, fd["frame_idx"], crop_idx,
+                    )
+                    if cp is not None:
+                        all_crops.append(cp.as_posix())
+            if all_crops:
+                best_crop = all_crops[0]
+
+        # Count how many unique label instances share this same label
+        same_label_count = sum(
+            1 for other_oid, other_label in obj_id_to_label.items()
+            if other_label == label and other_oid in obj_frames
+        )
+        instance_idx = sorted(
+            [k for k, v in obj_id_to_label.items() if v == label and k in obj_frames]
+        ).index(oid)
+
+        obj_entry: Dict[str, Any] = {
+            "id": f"{label}_{instance_idx + 1}",
+            "label": label,
+            "confidence": round(max_prob, 3),
+            "mean_confidence": round(mean_prob, 3),
+            "n_frame_detections": n_obj_frames,
+            "n_total_detections": len(frames_data),
+            "frame_indices": frame_indices,
+            "frame_paths": frame_paths,
+            "boundingBox": {
+                "center": [round(cx_3d, 4), round(cy_3d, 4), round(cz_3d, 4)],
+                "extents": [
+                    round(max(0.02, width_m), 4),
+                    round(max(0.02, height_m), 4),
+                    round(max(0.02, depth_m), 4),
+                ],
+                "axes": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                "orientationQuaternion": [1, 0, 0, 0],
+            },
+            "mean_box_px": [round(v, 1) for v in mean_box],
+            "mean_centroid_px": [round(v, 1) for v in mean_centroid],
+            "detection_source": "sam3",
+            "refinement": "heuristic_2d",
+            "video_predictor_obj_id": oid,
+        }
+        if best_crop is not None:
+            obj_entry["reference_crop"] = best_crop
+        if all_crops:
+            obj_entry["all_crops"] = all_crops
+
+        objects.append(obj_entry)
+
+    # Sort by confidence descending
+    objects.sort(key=lambda x: x["confidence"], reverse=True)
+
+    # Clean up transient mask data from frames_data
+    for frames_data_list in obj_frames.values():
+        for fd in frames_data_list:
+            fd.pop("_mask_np", None)
+
+    metadata = {
+        "tracking_backend": "video_predictor",
+        "n_objects_detected": len(objects),
+        "n_frames": n_frames,
+        "n_prompts": len(prompts),
+        "prompt_stats": prompt_stats,
+        "obj_id_to_label": {str(k): v for k, v in obj_id_to_label.items()},
+    }
+
+    _log(f"Video predictor produced {len(objects)} tracked objects")
+    return objects, metadata
+
+
+def _add_depth_to_tracked_objects(
+    objects: List[Dict[str, Any]],
+    frames_dir: Path,
+    focal_px: float = 1000.0,
+    max_depth_frames_per_object: int = 12,
+) -> List[Dict[str, Any]]:
+    """Add DA3 metric depth to video-predictor-tracked objects.
+
+    Loads DA3 model (after video predictor is unloaded), samples frames
+    per object, computes metric depth maps, and aggregates 3D bounding
+    box estimates.
+
+    Returns objects list with updated depth_3d and boundingBox fields.
+    """
+    if not objects:
+        return objects
+
+    # Load DA3
+    try:
+        da3_model = _load_da3()
+    except Exception as exc:
+        _log(f"DA3 not available ({exc}), skipping depth post-processing")
+        return objects
+
+    from PIL import Image as PILImage
+
+    depth_cache: Dict[str, np.ndarray] = {}  # frame_path → depth_map
+    n_refined = 0
+
+    for obj in objects:
+        frame_paths = obj.get("frame_paths", [])
+        if not frame_paths:
+            continue
+
+        # Sample frames evenly (up to max_depth_frames_per_object)
+        n_sample = min(max_depth_frames_per_object, len(frame_paths))
+        if len(frame_paths) <= n_sample:
+            sampled_paths = frame_paths
+        else:
+            indices = np.linspace(0, len(frame_paths) - 1, n_sample, dtype=int)
+            sampled_paths = [frame_paths[i] for i in indices]
+
+        centers_3d = []
+        extents_3d = []
+
+        for fp_str in sampled_paths:
+            fp = Path(fp_str)
+            if not fp.exists():
+                continue
+
+            # Get depth map (cached per frame)
+            if fp_str not in depth_cache:
+                try:
+                    img = PILImage.open(fp).convert("RGB")
+                    depth_cache[fp_str] = _get_metric_depth(da3_model, img, focal_px)
+                except Exception:
+                    continue
+
+            depth_map = depth_cache[fp_str]
+
+            # Find which frame data matches this path to get box
+            box_px = obj.get("mean_box_px", [0, 0, 100, 100])
+            img_w = obj.get("mean_centroid_px", [100, 100])
+            image_size = [1920, 1080]  # default
+
+            # Get image dimensions from depth map
+            dh, dw = depth_map.shape[:2]
+
+            # Create approximate mask from bounding box
+            x1 = max(0, int(box_px[0]))
+            y1 = max(0, int(box_px[1]))
+            x2 = min(dw, int(box_px[2]))
+            y2 = min(dh, int(box_px[3]))
+
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            # Scale box to depth map resolution if needed
+            if dw != obj.get("mean_box_px", [0])[0]:
+                # Compute based on image_size stored in object
+                stored_size = None
+                for fi in obj.get("frame_indices", []):
+                    break  # We just need the image size
+
+            object_depths = depth_map[y1:y2, x1:x2].flatten()
+            object_depths = object_depths[object_depths > 0.05]  # Filter zero/near-zero
+            if len(object_depths) < 10:
+                continue
+
+            median_depth = float(np.median(object_depths))
+            depth_range = float(
+                np.percentile(object_depths, 90) - np.percentile(object_depths, 10)
+            )
+
+            # Convert 2D extent to 3D
+            box_w_px = box_px[2] - box_px[0]
+            box_h_px = box_px[3] - box_px[1]
+            width_m = box_w_px * median_depth / focal_px
+            height_m = box_h_px * median_depth / focal_px
+            depth_m = max(depth_range, min(width_m, height_m) * 0.3)
+
+            # 3D center from 2D centroid + depth
+            cx_2d = (box_px[0] + box_px[2]) / 2
+            cy_2d = (box_px[1] + box_px[3]) / 2
+            cx_3d = (cx_2d - dw / 2) * median_depth / focal_px
+            cy_3d = (dh / 2 - cy_2d) * median_depth / focal_px
+            cz_3d = median_depth
+
+            centers_3d.append([cx_3d, cy_3d, cz_3d])
+            extents_3d.append([
+                max(0.02, width_m),
+                max(0.02, height_m),
+                max(0.02, depth_m),
+            ])
+
+        if centers_3d:
+            centers_arr = np.array(centers_3d)
+            extents_arr = np.array(extents_3d)
+            center = np.median(centers_arr, axis=0)
+            extents = np.median(extents_arr, axis=0)
+
+            obj["boundingBox"]["center"] = [round(float(c), 4) for c in center]
+            obj["boundingBox"]["extents"] = [round(float(e), 4) for e in extents]
+            obj["refinement"] = "da3_metric_depth"
+            n_refined += 1
+
+    # Free DA3
+    del da3_model
+    del depth_cache
+    torch.cuda.empty_cache()
+    _log(f"DA3 depth post-processing: refined {n_refined}/{len(objects)} objects")
+
+    return objects
+
+
+def run_sam3_video_predictor(
+    *,
+    frames_dir: Path,
+    output_path: Path,
+    environment: str = "auto",
+    detection_prompts_override: Optional[List[str]] = None,
+    prompt_source_override: Optional[str] = None,
+    environment_source: Optional[str] = None,
+    environment_confidence: Optional[float] = None,
+    colmap_sparse_dir: Optional[Path] = None,
+    gaussian_ply_path: Optional[Path] = None,
+    save_crops: bool = True,
+    video_path: Optional[Path] = None,
+    extraction_fps: int = 0,
+    adaptive_fps_reasoning: str = "",
+) -> Dict[str, Any]:
+    """Run SAM3 video predictor pipeline and write object index.
+
+    This is the video-predictor-based alternative to run_sam3_detection().
+    Instead of per-frame image detection + custom association, it uses
+    SAM3's native persistent video tracking with a 7-frame sliding memory.
+    """
+    _log(f"[VIDEO PREDICTOR MODE]")
+    _log(f"Environment: {environment}")
+    _log(f"Frames dir: {frames_dir}")
+    _log(f"Output: {output_path}")
+
+    all_frames = sorted(frames_dir.glob("*.jpg")) + sorted(frames_dir.glob("*.png"))
+    override_prompts = _normalize_prompts(detection_prompts_override or [])
+    if override_prompts:
+        prompts = override_prompts
+        prompt_source = (prompt_source_override or "scene_semantics_override").strip()
+    else:
+        prompts, prompt_source = _resolve_detection_prompts(
+            environment=environment,
+            frames_dir=frames_dir,
+            all_frames=all_frames,
+        )
+    _log(f"Detection prompts ({len(prompts)}) [{prompt_source}]: {', '.join(prompts)}")
+
+    # Set up crops directory
+    crops_dir = None
+    if save_crops:
+        crops_dir = output_path.parent / "object_crops"
+        _log(f"Object crops will be saved to: {crops_dir}")
+
+    # Run video predictor
+    objects, vp_metadata = _detect_with_video_predictor(
+        frames_dir=frames_dir,
+        prompts=prompts,
+        save_crops=save_crops,
+        crops_dir=crops_dir,
+    )
+
+    # DA3 depth post-processing (video predictor already freed)
+    focal_px = 1000.0
+    if colmap_sparse_dir and (colmap_sparse_dir / "cameras.bin").exists():
+        try:
+            cams = _read_colmap_cameras(colmap_sparse_dir / "cameras.bin")
+            if cams:
+                cam = list(cams.values())[0]
+                focal_px = cam.get("fx", 1000.0)
+                _log(f"COLMAP focal length: {focal_px:.1f}px")
+        except Exception as e:
+            _log(f"Could not read COLMAP cameras: {e}")
+
+    objects = _add_depth_to_tracked_objects(objects, frames_dir, focal_px)
+
+    # COLMAP + Gaussian back-projection refinement (for objects not refined by DA3)
+    objects = _refine_with_colmap(objects, colmap_sparse_dir, gaussian_ply_path)
+
+    # Report
+    n_with_crops = sum(1 for obj in objects if "reference_crop" in obj)
+    _log(f"\nDetected objects ({n_with_crops}/{len(objects)} with reference crops):")
+    for obj in objects:
+        bb = obj["boundingBox"]
+        crop_tag = " [crop]" if "reference_crop" in obj else ""
+        _log(f"  {obj['id']:20s}  conf={obj['confidence']:.2f}  "
+             f"frames={obj['n_frame_detections']}  "
+             f"size={bb['extents'][0]:.2f}x{bb['extents'][1]:.2f}x{bb['extents'][2]:.2f}m"
+             f"{crop_tag}")
+
+    # Write output
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        normalized_env_conf = float(environment_confidence) if environment_confidence is not None else 1.0
+    except (TypeError, ValueError):
+        normalized_env_conf = 0.0
+    normalized_env_conf = max(0.0, min(1.0, normalized_env_conf))
+
+    index_payload = {
+        "schema_version": "v1",
+        "detection_source": "sam3",
+        "tracking_backend": "video_predictor",
+        "environment": environment,
+        "environment_source": str(environment_source or "").strip() or "environment_input",
+        "environment_confidence": round(normalized_env_conf, 4),
+        "prompt_source": prompt_source,
+        "n_frames_total": len(all_frames),
+        "n_raw_detections": sum(obj.get("n_total_detections", 0) for obj in objects),
+        "prompts_used": prompts,
+        "objects": objects,
+    }
+
+    # Add video-specific metadata
+    if video_path:
+        index_payload["input_source"] = f"video:{video_path}"
+    if extraction_fps > 0:
+        index_payload["extraction_fps"] = extraction_fps
+    if adaptive_fps_reasoning:
+        index_payload["adaptive_fps_reasoning"] = adaptive_fps_reasoning
+    index_payload.update({
+        k: v for k, v in vp_metadata.items()
+        if k not in index_payload
+    })
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(index_payload, f, indent=2)
+
+    _log(f"\nWrote {len(objects)} objects to {output_path}")
+    return index_payload
+
+
 def run_sam3_detection(
     *,
     frames_dir: Path,
@@ -1557,12 +2226,64 @@ def run_sam3_detection(
     return index_payload
 
 
+def _sync_descriptor_environment(
+    output_path: Path,
+    resolved_environment: str,
+) -> None:
+    """Update capture_descriptor.json with Gemini-resolved environment.
+
+    Searches for capture_descriptor.json near the output path and updates
+    the environment_type_hint field so the orchestrator applies correct
+    class caps (e.g., residential caps for bedroom instead of warehouse).
+    """
+    # Search for descriptor in likely locations
+    candidates = [
+        output_path.parent.parent / "capture_descriptor.json",
+        output_path.parent / "capture_descriptor.json",
+        output_path.parent.parent.parent / "capture_descriptor.json",
+    ]
+    descriptor_path = None
+    for cp in candidates:
+        if cp.exists():
+            descriptor_path = cp
+            break
+
+    if descriptor_path is None:
+        _log("No capture_descriptor.json found for environment sync")
+        return
+
+    try:
+        with open(descriptor_path, "r", encoding="utf-8") as f:
+            descriptor = json.load(f)
+
+        old_env = descriptor.get("environment_type_hint", "")
+        if old_env == resolved_environment:
+            _log(f"Descriptor environment_type_hint already '{resolved_environment}', no update needed")
+            return
+
+        descriptor["environment_type_hint"] = resolved_environment
+        with open(descriptor_path, "w", encoding="utf-8") as f:
+            json.dump(descriptor, f, indent=2)
+
+        _log(f"Updated descriptor environment_type_hint from '{old_env}' to "
+             f"'{resolved_environment}' (Gemini inference) at {descriptor_path}")
+    except Exception as exc:
+        _log(f"Failed to sync descriptor environment: {exc}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="SAM3 object detection for swap pipeline"
     )
-    parser.add_argument("--frames-dir", required=True,
+    parser.add_argument("--frames-dir", default=None,
                         help="Directory with extracted video frames")
+    parser.add_argument("--video", default=None,
+                        help="Path to raw video file (.mp4/.mov). Alternative to --frames-dir")
+    parser.add_argument("--fps", type=int, default=0,
+                        help="Frame rate for extraction from --video (0=adaptive based on VRAM)")
+    parser.add_argument("--tracking-backend", default="video_predictor",
+                        choices=["video_predictor", "image_model"],
+                        help="Detection backend: video_predictor (persistent tracking) or image_model (legacy per-frame)")
     parser.add_argument("--output", required=True,
                         help="Output path for object_point_cloud_index.json")
     parser.add_argument("--environment", default="auto",
@@ -1573,14 +2294,21 @@ def main() -> int:
     parser.add_argument("--gaussian-ply", default=None,
                         help="Path to 3DGRUT export_last.ply for accurate 3D back-projection")
     parser.add_argument("--n-frames", type=int, default=0,
-                        help="Number of frames to sample (0=auto)")
+                        help="Number of frames to sample (0=auto, image_model only)")
     parser.add_argument("--min-frame-detections", type=int, default=0,
-                        help="Minimum frames an object must appear in (0=auto)")
+                        help="Minimum frames an object must appear in (0=auto, image_model only)")
     parser.add_argument("--no-crops", action="store_true",
                         help="Disable saving per-object reference crops")
     parser.add_argument("--scene-semantics", action="store_true",
                         help="Run Gemini scene semantics before detection to infer environment and prompts")
     args = parser.parse_args()
+
+    # Validate input: need either --frames-dir or --video
+    if not args.frames_dir and not args.video:
+        parser.error("Either --frames-dir or --video is required")
+
+    video_path = Path(args.video) if args.video else None
+    frames_dir = Path(args.frames_dir) if args.frames_dir else None
 
     # Scene semantics: Gemini-first environment inference
     detection_prompts_override = None
@@ -1589,57 +2317,128 @@ def main() -> int:
     environment_confidence = None
     resolved_environment = args.environment
 
+    # For scene semantics with --video, we need frames first.
+    # Extract a small set for Gemini analysis, then the full set for detection.
+    adaptive_fps_reasoning = ""
+    extraction_fps = args.fps
+
     if args.scene_semantics:
+        # If we have a video but no frames yet, extract a small set for Gemini
+        sem_frames_dir = frames_dir
+        if sem_frames_dir is None and video_path is not None:
+            # Extract at low FPS just for scene semantics (fast)
+            sem_output = Path(args.output).parent / "scene_semantics_frames"
+            try:
+                sem_frames_dir, _ = _extract_frames_from_video(video_path, sem_output, fps=3)
+            except Exception as exc:
+                _log(f"Frame extraction for scene semantics failed: {exc}")
+                sem_frames_dir = None
+
+        if sem_frames_dir is not None:
+            try:
+                import sys as _sys
+                _repo_root = Path(__file__).resolve().parents[1]
+                _src_root = _repo_root / "src"
+                if str(_src_root) not in _sys.path:
+                    _sys.path.insert(0, str(_src_root))
+                from blueprint_pipeline.scene_semantics import (
+                    infer_scene_semantics,
+                    write_scene_semantics_report,
+                )
+                _log("Running Gemini scene semantics...")
+                sem_report = infer_scene_semantics(
+                    frames_dir=sem_frames_dir,
+                    requested_environment=args.environment,
+                )
+                # Write report next to output
+                sem_path = Path(args.output).parent.parent / "pipeline" / "nurec" / "scene_semantics_report.json"
+                if not sem_path.parent.exists():
+                    sem_path = Path(args.output).parent / "scene_semantics_report.json"
+                write_scene_semantics_report(sem_path, sem_report)
+                _log(f"Scene semantics report written to {sem_path}")
+                _log(f"  environment_source: {sem_report.get('environment_source')}")
+                _log(f"  resolved_environment: {sem_report.get('resolved_environment')}")
+                _log(f"  environment_confidence: {sem_report.get('environment_confidence')}")
+                _log(f"  prompt_source: {sem_report.get('prompt_source')}")
+
+                resolved_environment = str(sem_report.get("resolved_environment") or args.environment)
+                prompts = sem_report.get("detection_prompts")
+                if isinstance(prompts, list) and prompts:
+                    detection_prompts_override = prompts
+                prompt_source_override = str(sem_report.get("prompt_source") or "").strip() or None
+                environment_source = str(sem_report.get("environment_source") or "").strip() or None
+                environment_confidence = sem_report.get("environment_confidence")
+
+                # Sync descriptor environment if Gemini resolved a specific one
+                if resolved_environment and resolved_environment != "auto":
+                    _sync_descriptor_environment(Path(args.output), resolved_environment)
+
+            except Exception as exc:
+                _log(f"Scene semantics failed ({exc}), proceeding with --environment={args.environment}")
+
+    # Handle video input: extract frames at target FPS
+    if video_path is not None and frames_dir is None:
+        if extraction_fps <= 0:
+            extraction_fps, adaptive_fps_reasoning = _compute_safe_fps(video_path)
+        else:
+            adaptive_fps_reasoning = f"User-specified {extraction_fps}fps"
+
+        # Store frames persistently near the output
+        frames_output = Path(args.output).parent.parent / "pipeline" / "nurec" / f"video_frames_{extraction_fps}fps"
+        if not frames_output.parent.exists():
+            frames_output = Path(args.output).parent / f"video_frames_{extraction_fps}fps"
+
+        frames_dir, n_extracted = _extract_frames_from_video(
+            video_path, frames_output, extraction_fps,
+        )
+
+    if frames_dir is None:
+        _log("ERROR: No frames directory available")
+        return 1
+
+    # Choose backend
+    use_video_predictor = args.tracking_backend == "video_predictor"
+
+    if use_video_predictor:
         try:
-            import sys as _sys
-            _repo_root = Path(__file__).resolve().parents[1]
-            _src_root = _repo_root / "src"
-            if str(_src_root) not in _sys.path:
-                _sys.path.insert(0, str(_src_root))
-            from blueprint_pipeline.scene_semantics import (
-                infer_scene_semantics,
-                write_scene_semantics_report,
+            result = run_sam3_video_predictor(
+                frames_dir=frames_dir,
+                output_path=Path(args.output),
+                environment=resolved_environment,
+                detection_prompts_override=detection_prompts_override,
+                prompt_source_override=prompt_source_override,
+                environment_source=environment_source,
+                environment_confidence=environment_confidence,
+                colmap_sparse_dir=Path(args.colmap_sparse) if args.colmap_sparse else None,
+                gaussian_ply_path=Path(args.gaussian_ply) if args.gaussian_ply else None,
+                save_crops=not args.no_crops,
+                video_path=video_path,
+                extraction_fps=extraction_fps,
+                adaptive_fps_reasoning=adaptive_fps_reasoning,
             )
-            _log("Running Gemini scene semantics...")
-            sem_report = infer_scene_semantics(
-                frames_dir=Path(args.frames_dir),
-                requested_environment=args.environment,
-            )
-            # Write report next to output
-            sem_path = Path(args.output).parent.parent / "pipeline" / "nurec" / "scene_semantics_report.json"
-            if not sem_path.parent.exists():
-                sem_path = Path(args.output).parent / "scene_semantics_report.json"
-            write_scene_semantics_report(sem_path, sem_report)
-            _log(f"Scene semantics report written to {sem_path}")
-            _log(f"  environment_source: {sem_report.get('environment_source')}")
-            _log(f"  resolved_environment: {sem_report.get('resolved_environment')}")
-            _log(f"  environment_confidence: {sem_report.get('environment_confidence')}")
-            _log(f"  prompt_source: {sem_report.get('prompt_source')}")
-
-            resolved_environment = str(sem_report.get("resolved_environment") or args.environment)
-            prompts = sem_report.get("detection_prompts")
-            if isinstance(prompts, list) and prompts:
-                detection_prompts_override = prompts
-            prompt_source_override = str(sem_report.get("prompt_source") or "").strip() or None
-            environment_source = str(sem_report.get("environment_source") or "").strip() or None
-            environment_confidence = sem_report.get("environment_confidence")
         except Exception as exc:
-            _log(f"Scene semantics failed ({exc}), proceeding with --environment={args.environment}")
+            _log(f"Video predictor failed: {exc}")
+            _log("Falling back to image_model backend...")
+            import traceback
+            traceback.print_exc()
+            use_video_predictor = False
 
-    result = run_sam3_detection(
-        frames_dir=Path(args.frames_dir),
-        output_path=Path(args.output),
-        environment=resolved_environment,
-        detection_prompts_override=detection_prompts_override,
-        prompt_source_override=prompt_source_override,
-        environment_source=environment_source,
-        environment_confidence=environment_confidence,
-        colmap_sparse_dir=Path(args.colmap_sparse) if args.colmap_sparse else None,
-        gaussian_ply_path=Path(args.gaussian_ply) if args.gaussian_ply else None,
-        n_sample_frames=args.n_frames,
-        min_frame_detections=args.min_frame_detections,
-        save_crops=not args.no_crops,
-    )
+    if not use_video_predictor:
+        # Legacy image model path
+        result = run_sam3_detection(
+            frames_dir=frames_dir,
+            output_path=Path(args.output),
+            environment=resolved_environment,
+            detection_prompts_override=detection_prompts_override,
+            prompt_source_override=prompt_source_override,
+            environment_source=environment_source,
+            environment_confidence=environment_confidence,
+            colmap_sparse_dir=Path(args.colmap_sparse) if args.colmap_sparse else None,
+            gaussian_ply_path=Path(args.gaussian_ply) if args.gaussian_ply else None,
+            n_sample_frames=args.n_frames,
+            min_frame_detections=args.min_frame_detections,
+            save_crops=not args.no_crops,
+        )
 
     n_objects = len(result.get("objects", []))
     return 0 if n_objects > 0 else 1
