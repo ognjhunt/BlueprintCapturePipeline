@@ -27,6 +27,10 @@ def test_scene_semantics_gemini_overrides_explicit_hint(monkeypatch, tmp_path: P
             confidence=0.95,
             model="gemini-3.0-pro",
             raw_text='{"room_type":"bedroom","confidence":0.95}',
+            detected_objects=[
+                {"object_id": "wooden_bed", "category": "Furniture", "sam_prompt": "wooden bed"},
+                {"object_id": "blue_suitcase", "category": "Container", "sam_prompt": "blue suitcase"},
+            ],
         ),
     )
 
@@ -37,9 +41,10 @@ def test_scene_semantics_gemini_overrides_explicit_hint(monkeypatch, tmp_path: P
     )
     assert report["resolved_environment"] == "bedroom"
     assert report["environment_source"] == "gemini_video_inference"
-    assert report["prompt_source"] == "gemini_video_inference"
+    assert report["prompt_source"] == "gemini_object_enumeration"
     assert report["explicit_hint"] == "warehouse"
-    assert "bed" in report["detection_prompts"]
+    assert "wooden bed" in report["detection_prompts"]
+    assert "blue suitcase" in report["detection_prompts"]
 
 
 def test_scene_semantics_explicit_hint_fallback_when_gemini_unavailable(monkeypatch, tmp_path: Path) -> None:
@@ -70,6 +75,7 @@ def test_scene_semantics_gemini_success_for_auto(monkeypatch, tmp_path: Path) ->
             confidence=0.91,
             model="gemini-3.0-pro",
             raw_text='{"room_type":"bedroom","confidence":0.91}',
+            detected_objects=[],  # No objects enumerated — falls back to env prompts
         ),
     )
 

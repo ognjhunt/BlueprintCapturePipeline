@@ -173,6 +173,7 @@ class _GeminiResult:
     confidence: float
     model: str
     raw_text: str
+    detected_objects: List[Dict[str, Any]]
 
 
 _DEFAULT_MODEL_CASCADE = [
@@ -181,6 +182,47 @@ _DEFAULT_MODEL_CASCADE = [
     "gemini-2.5-flash",
     "gemini-2.5-pro",
 ]
+
+
+def _build_image_parts(frames: List[Path], max_frames: int = 8) -> List[Dict[str, Any]]:
+    """Encode frame images as inline_data parts for Gemini."""
+    parts: List[Dict[str, Any]] = []
+    for frame in frames[:max_frames]:
+        suffix = frame.suffix.lower()
+        mime = "image/png" if suffix == ".png" else "image/jpeg"
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": mime,
+                    "data": base64.b64encode(frame.read_bytes()).decode("ascii"),
+                }
+            }
+        )
+    return parts
+
+
+def _extract_json_array(text: str) -> List[Any]:
+    """Extract a JSON array from text, trying direct parse then regex."""
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("objects", "detected_objects", "items"):
+                if isinstance(payload.get(key), list):
+                    return payload[key]
+    except Exception:
+        pass
+
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if match:
+        try:
+            payload = json.loads(match.group(0))
+            if isinstance(payload, list):
+                return payload
+        except Exception:
+            pass
+    return []
 
 
 def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_GeminiResult]:
@@ -196,29 +238,23 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
     override = (os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
     models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
 
-    prompt = (
+    image_parts = _build_image_parts(frames, max_frames=8)
+
+    client = genai.Client(api_key=api_key)
+
+    # --- Step 1: Room classification ---
+    classify_prompt = (
         "Classify this video scene into one of: bedroom, kitchen, warehouse, default. "
         "Return JSON only with keys: room_type (string), confidence (0-1 number), rationale (short string)."
     )
-    parts: List[Dict[str, Any]] = [{"text": prompt}]
-    for frame in frames[:8]:
-        suffix = frame.suffix.lower()
-        mime = "image/png" if suffix == ".png" else "image/jpeg"
-        parts.append(
-            {
-                "inline_data": {
-                    "mime_type": mime,
-                    "data": base64.b64encode(frame.read_bytes()).decode("ascii"),
-                }
-            }
-        )
+    classify_parts: List[Dict[str, Any]] = [{"text": classify_prompt}] + image_parts
 
-    client = genai.Client(api_key=api_key)
+    gemini_result = None
     for model in models_to_try:
         try:
             response = client.models.generate_content(
                 model=model,
-                contents=[{"parts": parts}],
+                contents=[{"parts": classify_parts}],
                 config={
                     "temperature": 0.3,
                     "max_output_tokens": 1024,
@@ -250,9 +286,53 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
         except (TypeError, ValueError):
             confidence = 0.0
         confidence = max(0.0, min(1.0, confidence))
-        return _GeminiResult(environment=room_type, confidence=confidence, model=model, raw_text=raw_text)
+        gemini_result = _GeminiResult(
+            environment=room_type, confidence=confidence, model=model,
+            raw_text=raw_text, detected_objects=[],
+        )
+        break
 
-    return None
+    if gemini_result is None:
+        return None
+
+    # --- Step 2: Object enumeration ---
+    enumerate_prompt = (
+        "Look at these video frames of a room. List ALL distinct physical objects visible "
+        "that could be manipulated in a robotics simulator (pick up, open, move, interact with). "
+        "Include furniture with movable parts (drawers, doors), containers, items on surfaces, "
+        "things on the floor, hanging items, etc. For each object provide:\n"
+        "- object_id: short snake_case identifier (e.g. 'blue_suitcase', 'wooden_dresser')\n"
+        "- category: object category (e.g. 'Furniture', 'Container', 'Clothing', 'Electronics')\n"
+        "- sam_prompt: a short 1-3 word phrase that a segmentation model can use to find this "
+        "object (e.g. 'blue suitcase', 'wooden dresser', 'white laundry basket')\n"
+        "Return a JSON array of objects. Be thorough — list every distinct manipulatable object you see."
+    )
+    enumerate_parts: List[Dict[str, Any]] = [{"text": enumerate_prompt}] + image_parts
+
+    working_model = gemini_result.model
+    detected_objects: List[Dict[str, Any]] = []
+    try:
+        response = client.models.generate_content(
+            model=working_model,
+            contents=[{"parts": enumerate_parts}],
+            config={
+                "temperature": 0.3,
+                "max_output_tokens": 4096,
+                "thinking_config": {"thinking_budget": 8192},
+            },
+        )
+        raw_enum = _extract_response_text(response)
+        detected_objects = _extract_json_array(raw_enum)
+    except Exception:
+        pass
+
+    return _GeminiResult(
+        environment=gemini_result.environment,
+        confidence=gemini_result.confidence,
+        model=gemini_result.model,
+        raw_text=gemini_result.raw_text,
+        detected_objects=detected_objects,
+    )
 
 
 def infer_scene_semantics(
@@ -277,6 +357,23 @@ def infer_scene_semantics(
     gemini_result = _infer_with_gemini(frames=keyframes, timeout_sec=max(5, int(timeout_sec)))
     if gemini_result is not None:
         resolved = _normalize_environment(gemini_result.environment)
+
+        # Use Gemini-enumerated objects as SAM prompts if available,
+        # otherwise fall back to hardcoded environment prompts.
+        if gemini_result.detected_objects:
+            sam_prompts = []
+            for obj in gemini_result.detected_objects:
+                prompt = (obj.get("sam_prompt") or obj.get("object_id") or "").strip()
+                if prompt:
+                    # Normalize: replace underscores with spaces for SAM text prompts
+                    sam_prompts.append(prompt.replace("_", " "))
+            if not sam_prompts:
+                sam_prompts = list(_PROMPTS_BY_ENV[resolved])
+            prompt_source = "gemini_object_enumeration"
+        else:
+            sam_prompts = list(_PROMPTS_BY_ENV[resolved])
+            prompt_source = "gemini_video_inference"
+
         return {
             "schema_version": "v1",
             "generated_at": _utc_now_iso(),
@@ -284,10 +381,11 @@ def infer_scene_semantics(
             "resolved_environment": resolved,
             "environment_source": "gemini_video_inference",
             "environment_confidence": gemini_result.confidence,
-            "prompt_source": "gemini_video_inference",
-            "detection_prompts": list(_PROMPTS_BY_ENV[resolved]),
+            "prompt_source": prompt_source,
+            "detection_prompts": sam_prompts,
             "gemini_model": gemini_result.model,
             "gemini_raw_response": gemini_result.raw_text,
+            "gemini_detected_objects": gemini_result.detected_objects,
             "keyframes_used": [str(path) for path in keyframes],
             "fallback_reason": "",
             "explicit_hint": normalized_requested if has_explicit_hint else None,
