@@ -826,9 +826,9 @@ def _scene_semantics_fallback_report(
     explicit = requested in {"warehouse", "kitchen", "bedroom"}
     if explicit:
         resolved = requested
-        source = "manual_override"
-        prompt_source = "environment_override"
-        confidence = 1.0
+        source = "explicit_hint_fallback"
+        prompt_source = "explicit_hint_fallback"
+        confidence = 0.7
     else:
         resolved = "default"
         source = "local_auto_fallback"

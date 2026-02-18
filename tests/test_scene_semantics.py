@@ -15,17 +15,48 @@ def _make_frames(tmp_path: Path, count: int = 3) -> Path:
     return frames_dir
 
 
-def test_scene_semantics_manual_bedroom_override(tmp_path: Path) -> None:
+def test_scene_semantics_gemini_overrides_explicit_hint(monkeypatch, tmp_path: Path) -> None:
+    """Gemini always runs, even when an explicit environment is requested."""
     frames_dir = _make_frames(tmp_path)
+
+    monkeypatch.setattr(
+        scene_semantics,
+        "_infer_with_gemini",
+        lambda **_kwargs: scene_semantics._GeminiResult(
+            environment="bedroom",
+            confidence=0.95,
+            model="gemini-3.0-pro",
+            raw_text='{"room_type":"bedroom","confidence":0.95}',
+        ),
+    )
+
+    # Request warehouse explicitly, but Gemini sees bedroom
+    report = scene_semantics.infer_scene_semantics(
+        frames_dir=frames_dir,
+        requested_environment="warehouse",
+    )
+    assert report["resolved_environment"] == "bedroom"
+    assert report["environment_source"] == "gemini_video_inference"
+    assert report["prompt_source"] == "gemini_video_inference"
+    assert report["explicit_hint"] == "warehouse"
+    assert "bed" in report["detection_prompts"]
+
+
+def test_scene_semantics_explicit_hint_fallback_when_gemini_unavailable(monkeypatch, tmp_path: Path) -> None:
+    """When Gemini is unavailable, explicit hint is used as fallback."""
+    frames_dir = _make_frames(tmp_path)
+    monkeypatch.setattr(scene_semantics, "_infer_with_gemini", lambda **_kwargs: None)
+
     report = scene_semantics.infer_scene_semantics(
         frames_dir=frames_dir,
         requested_environment="bedroom",
     )
-
     assert report["resolved_environment"] == "bedroom"
-    assert report["environment_source"] == "manual_override"
-    assert report["prompt_source"] == "environment_override"
+    assert report["environment_source"] == "explicit_hint_fallback"
+    assert report["prompt_source"] == "explicit_hint_fallback"
+    assert report["environment_confidence"] == 0.7
     assert "bed" in report["detection_prompts"]
+    assert "gemini_unavailable" in report["fallback_reason"]
 
 
 def test_scene_semantics_gemini_success_for_auto(monkeypatch, tmp_path: Path) -> None:
@@ -50,6 +81,7 @@ def test_scene_semantics_gemini_success_for_auto(monkeypatch, tmp_path: Path) ->
     assert report["environment_source"] == "gemini_video_inference"
     assert report["prompt_source"] == "gemini_video_inference"
     assert report["environment_confidence"] == 0.91
+    assert report["explicit_hint"] is None
 
 
 def test_scene_semantics_falls_back_when_gemini_unavailable(monkeypatch, tmp_path: Path) -> None:

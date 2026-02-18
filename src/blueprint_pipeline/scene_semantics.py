@@ -243,23 +243,10 @@ def infer_scene_semantics(
 
     requested = str(requested_environment or "").strip().lower()
     normalized_requested = _normalize_environment(requested)
+    has_explicit_hint = requested not in {"", "auto", "default"} and normalized_requested in _SUPPORTED_ENVIRONMENTS
     keyframes = _sample_frame_paths(frames_dir, 8)
 
-    # Explicit env selections remain authoritative.
-    if requested not in {"", "auto", "default"} and normalized_requested in _SUPPORTED_ENVIRONMENTS:
-        return {
-            "schema_version": "v1",
-            "generated_at": _utc_now_iso(),
-            "requested_environment": requested,
-            "resolved_environment": normalized_requested,
-            "environment_source": "manual_override",
-            "environment_confidence": 1.0,
-            "prompt_source": "environment_override",
-            "detection_prompts": list(_PROMPTS_BY_ENV[normalized_requested]),
-            "keyframes_used": [str(path) for path in keyframes],
-            "fallback_reason": "",
-        }
-
+    # Always attempt Gemini inference first, regardless of explicit hint.
     gemini_result = _infer_with_gemini(frames=keyframes, timeout_sec=max(5, int(timeout_sec)))
     if gemini_result is not None:
         resolved = _normalize_environment(gemini_result.environment)
@@ -276,6 +263,22 @@ def infer_scene_semantics(
             "gemini_raw_response": gemini_result.raw_text,
             "keyframes_used": [str(path) for path in keyframes],
             "fallback_reason": "",
+            "explicit_hint": normalized_requested if has_explicit_hint else None,
+        }
+
+    # Gemini unavailable — fall back to explicit hint if provided.
+    if has_explicit_hint:
+        return {
+            "schema_version": "v1",
+            "generated_at": _utc_now_iso(),
+            "requested_environment": requested,
+            "resolved_environment": normalized_requested,
+            "environment_source": "explicit_hint_fallback",
+            "environment_confidence": 0.7,
+            "prompt_source": "explicit_hint_fallback",
+            "detection_prompts": list(_PROMPTS_BY_ENV[normalized_requested]),
+            "keyframes_used": [str(path) for path in keyframes],
+            "fallback_reason": "gemini_unavailable_used_explicit_hint",
         }
 
     return {

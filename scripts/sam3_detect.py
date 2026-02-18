@@ -1578,12 +1578,62 @@ def main() -> int:
                         help="Minimum frames an object must appear in (0=auto)")
     parser.add_argument("--no-crops", action="store_true",
                         help="Disable saving per-object reference crops")
+    parser.add_argument("--scene-semantics", action="store_true",
+                        help="Run Gemini scene semantics before detection to infer environment and prompts")
     args = parser.parse_args()
+
+    # Scene semantics: Gemini-first environment inference
+    detection_prompts_override = None
+    prompt_source_override = None
+    environment_source = None
+    environment_confidence = None
+    resolved_environment = args.environment
+
+    if args.scene_semantics:
+        try:
+            import sys as _sys
+            _repo_root = Path(__file__).resolve().parents[1]
+            _src_root = _repo_root / "src"
+            if str(_src_root) not in _sys.path:
+                _sys.path.insert(0, str(_src_root))
+            from blueprint_pipeline.scene_semantics import (
+                infer_scene_semantics,
+                write_scene_semantics_report,
+            )
+            _log("Running Gemini scene semantics...")
+            sem_report = infer_scene_semantics(
+                frames_dir=Path(args.frames_dir),
+                requested_environment=args.environment,
+            )
+            # Write report next to output
+            sem_path = Path(args.output).parent.parent / "pipeline" / "nurec" / "scene_semantics_report.json"
+            if not sem_path.parent.exists():
+                sem_path = Path(args.output).parent / "scene_semantics_report.json"
+            write_scene_semantics_report(sem_path, sem_report)
+            _log(f"Scene semantics report written to {sem_path}")
+            _log(f"  environment_source: {sem_report.get('environment_source')}")
+            _log(f"  resolved_environment: {sem_report.get('resolved_environment')}")
+            _log(f"  environment_confidence: {sem_report.get('environment_confidence')}")
+            _log(f"  prompt_source: {sem_report.get('prompt_source')}")
+
+            resolved_environment = str(sem_report.get("resolved_environment") or args.environment)
+            prompts = sem_report.get("detection_prompts")
+            if isinstance(prompts, list) and prompts:
+                detection_prompts_override = prompts
+            prompt_source_override = str(sem_report.get("prompt_source") or "").strip() or None
+            environment_source = str(sem_report.get("environment_source") or "").strip() or None
+            environment_confidence = sem_report.get("environment_confidence")
+        except Exception as exc:
+            _log(f"Scene semantics failed ({exc}), proceeding with --environment={args.environment}")
 
     result = run_sam3_detection(
         frames_dir=Path(args.frames_dir),
         output_path=Path(args.output),
-        environment=args.environment,
+        environment=resolved_environment,
+        detection_prompts_override=detection_prompts_override,
+        prompt_source_override=prompt_source_override,
+        environment_source=environment_source,
+        environment_confidence=environment_confidence,
         colmap_sparse_dir=Path(args.colmap_sparse) if args.colmap_sparse else None,
         gaussian_ply_path=Path(args.gaussian_ply) if args.gaussian_ply else None,
         n_sample_frames=args.n_frames,
