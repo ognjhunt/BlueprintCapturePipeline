@@ -219,7 +219,21 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
             response = client.models.generate_content(
                 model=model,
                 contents=[{"parts": parts}],
-                config={"temperature": 0.1, "max_output_tokens": 1024},
+                config={
+                    "temperature": 0.3,
+                    "max_output_tokens": 1024,
+                    "response_mime_type": "application/json",
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {
+                            "room_type": {"type": "string", "enum": ["bedroom", "kitchen", "warehouse", "default"]},
+                            "confidence": {"type": "number"},
+                            "rationale": {"type": "string"},
+                        },
+                        "required": ["room_type", "confidence", "rationale"],
+                    },
+                    "thinking_config": {"thinking_budget": 8192},
+                },
             )
         except Exception:
             continue
