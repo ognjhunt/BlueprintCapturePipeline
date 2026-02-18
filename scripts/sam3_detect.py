@@ -1491,88 +1491,99 @@ def _collect_propagation_results(
     img_h: int,
     n_frames: int,
     obj_frames: Dict[int, List[Dict[str, Any]]],
+    seed_frame_idx: int = 0,
 ) -> None:
-    """Propagate forward and collect per-object per-frame results into obj_frames."""
-    frame_idx = 0
-    try:
-        for frame_result in predictor.propagate_in_video(
-            session_id=session_id,
-            propagation_direction="forward",
-            start_frame_idx=0,
-            max_frame_num_to_track=n_frames,
-        ):
-            frame_idx = int(frame_result.get("frame_index", 0))
-            outputs = frame_result.get("outputs", frame_result)
+    """Propagate from seed frame and collect per-object per-frame results.
 
-            out_obj_ids = outputs.get("out_obj_ids", np.array([]))
-            out_probs = outputs.get("out_probs", np.array([]))
-            out_boxes_xywh = outputs.get("out_boxes_xywh", np.array([]))
-            out_masks = outputs.get("out_binary_masks", np.array([]))
+    Propagates forward from seed_frame_idx, then backward from seed_frame_idx
+    if the seed is not frame 0, to cover the entire video.
+    """
+    directions = [("forward", seed_frame_idx)]
+    if seed_frame_idx > 0:
+        directions.append(("backward", seed_frame_idx))
 
-            if hasattr(out_obj_ids, "tolist"):
-                out_obj_ids = out_obj_ids.tolist()
+    for direction, start_idx in directions:
+        _log(f"    Propagating {direction} from frame {start_idx}")
+        frame_idx = start_idx
+        try:
+            for frame_result in predictor.propagate_in_video(
+                session_id=session_id,
+                propagation_direction=direction,
+                start_frame_idx=start_idx,
+                max_frame_num_to_track=n_frames,
+            ):
+                frame_idx = int(frame_result.get("frame_index", 0))
+                outputs = frame_result.get("outputs", frame_result)
 
-            for idx_in_batch, oid in enumerate(out_obj_ids):
-                oid = int(oid)
-                if oid not in obj_id_to_label:
-                    continue
+                out_obj_ids = outputs.get("out_obj_ids", np.array([]))
+                out_probs = outputs.get("out_probs", np.array([]))
+                out_boxes_xywh = outputs.get("out_boxes_xywh", np.array([]))
+                out_masks = outputs.get("out_binary_masks", np.array([]))
 
-                prob = float(out_probs[idx_in_batch]) if idx_in_batch < len(out_probs) else 0.0
+                if hasattr(out_obj_ids, "tolist"):
+                    out_obj_ids = out_obj_ids.tolist()
 
-                # box_xywh is normalized [0,1] — convert to pixel coords [x1,y1,x2,y2]
-                if idx_in_batch < len(out_boxes_xywh):
-                    bx, by, bw, bh = out_boxes_xywh[idx_in_batch]
-                    box_px = [
-                        float(bx) * img_w,
-                        float(by) * img_h,
-                        float(bx + bw) * img_w,
-                        float(by + bh) * img_h,
-                    ]
-                else:
-                    box_px = [0, 0, img_w, img_h]
+                for idx_in_batch, oid in enumerate(out_obj_ids):
+                    oid = int(oid)
+                    if oid not in obj_id_to_label:
+                        continue
 
-                # Binary mask
-                mask_np = None
-                if idx_in_batch < len(out_masks):
-                    mask_np = out_masks[idx_in_batch]
-                    if hasattr(mask_np, "cpu"):
-                        mask_np = mask_np.cpu().numpy()
-                    if mask_np.ndim == 3:
-                        mask_np = mask_np.squeeze(0)
-                    mask_np = mask_np.astype(bool)
+                    prob = float(out_probs[idx_in_batch]) if idx_in_batch < len(out_probs) else 0.0
 
-                # Centroid from mask or box
-                if mask_np is not None and mask_np.any():
-                    ys, xs = np.where(mask_np)
-                    cx, cy = float(xs.mean()), float(ys.mean())
-                    mask_area = int(mask_np.sum())
-                else:
-                    cx = (box_px[0] + box_px[2]) / 2
-                    cy = (box_px[1] + box_px[3]) / 2
-                    mask_area = int((box_px[2] - box_px[0]) * (box_px[3] - box_px[1]))
+                    # box_xywh is normalized [0,1] — convert to pixel coords [x1,y1,x2,y2]
+                    if idx_in_batch < len(out_boxes_xywh):
+                        bx, by, bw, bh = out_boxes_xywh[idx_in_batch]
+                        box_px = [
+                            float(bx) * img_w,
+                            float(by) * img_h,
+                            float(bx + bw) * img_w,
+                            float(by + bh) * img_h,
+                        ]
+                    else:
+                        box_px = [0, 0, img_w, img_h]
 
-                frame_data: Dict[str, Any] = {
-                    "frame_idx": frame_idx,
-                    "prob": prob,
-                    "box": box_px,
-                    "centroid_px": [cx, cy],
-                    "mask_area_px": mask_area,
-                    "image_size": [img_w, img_h],
-                }
-                if mask_np is not None:
-                    frame_data["_mask_np"] = mask_np
-                if frame_idx < len(all_frame_files):
-                    frame_data["frame_path"] = str(all_frame_files[frame_idx])
+                    # Binary mask
+                    mask_np = None
+                    if idx_in_batch < len(out_masks):
+                        mask_np = out_masks[idx_in_batch]
+                        if hasattr(mask_np, "cpu"):
+                            mask_np = mask_np.cpu().numpy()
+                        if mask_np.ndim == 3:
+                            mask_np = mask_np.squeeze(0)
+                        mask_np = mask_np.astype(bool)
 
-                obj_frames[oid].append(frame_data)
+                    # Centroid from mask or box
+                    if mask_np is not None and mask_np.any():
+                        ys, xs = np.where(mask_np)
+                        cx, cy = float(xs.mean()), float(ys.mean())
+                        mask_area = int(mask_np.sum())
+                    else:
+                        cx = (box_px[0] + box_px[2]) / 2
+                        cy = (box_px[1] + box_px[3]) / 2
+                        mask_area = int((box_px[2] - box_px[0]) * (box_px[3] - box_px[1]))
 
-            if (frame_idx + 1) % 100 == 0:
-                _log(f"    Propagated through frame {frame_idx + 1}/{n_frames}")
+                    frame_data: Dict[str, Any] = {
+                        "frame_idx": frame_idx,
+                        "prob": prob,
+                        "box": box_px,
+                        "centroid_px": [cx, cy],
+                        "mask_area_px": mask_area,
+                        "image_size": [img_w, img_h],
+                    }
+                    if mask_np is not None:
+                        frame_data["_mask_np"] = mask_np
+                    if frame_idx < len(all_frame_files):
+                        frame_data["frame_path"] = str(all_frame_files[frame_idx])
 
-    except Exception as exc:
-        _log(f"    Propagation error at frame {frame_idx}: {exc}")
-        import traceback
-        traceback.print_exc()
+                    obj_frames[oid].append(frame_data)
+
+                if (frame_idx + 1) % 100 == 0:
+                    _log(f"    Propagated {direction} through frame {frame_idx + 1}/{n_frames}")
+
+        except Exception as exc:
+            _log(f"    Propagation {direction} error at frame {frame_idx}: {exc}")
+            import traceback
+            traceback.print_exc()
 
 
 def _detect_with_video_predictor(
@@ -1619,31 +1630,51 @@ def _detect_with_video_predictor(
     _log(f"Session {session_id[:8]}... started. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
 
     # Run each prompt as a separate cycle (add_prompt resets state)
+    # Try multiple seed frames to catch objects that appear later in the video.
     obj_id_to_label: Dict[int, str] = {}
     prompt_stats: Dict[str, int] = {}
     obj_frames: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     global_obj_counter = 0  # Assign unique IDs across prompts
 
+    # Seed frames: 0%, 25%, 50%, 75% of the video
+    seed_frames = sorted(set([
+        0,
+        n_frames // 4,
+        n_frames // 2,
+        3 * n_frames // 4,
+    ]))
+    _log(f"Seed frames for multi-frame detection: {seed_frames}")
+
     for prompt_idx, prompt in enumerate(prompts):
         _log(f"  [{prompt_idx+1}/{len(prompts)}] Prompt: '{prompt}'")
 
+        found_on_seed = None
+        result = None
+
         try:
-            # add_prompt resets state and runs detection on frame 0
-            result = predictor.add_prompt(
-                session_id=session_id,
-                frame_idx=0,
-                text=prompt,
-            )
+            # Try each seed frame until the object is detected
+            for seed_idx in seed_frames:
+                result = predictor.add_prompt(
+                    session_id=session_id,
+                    frame_idx=seed_idx,
+                    text=prompt,
+                )
 
-            outputs = result.get("outputs", result)
-            new_ids = outputs.get("out_obj_ids", np.array([]))
-            if hasattr(new_ids, "tolist"):
-                new_ids = new_ids.tolist()
+                outputs = result.get("outputs", result)
+                new_ids = outputs.get("out_obj_ids", np.array([]))
+                if hasattr(new_ids, "tolist"):
+                    new_ids = new_ids.tolist()
 
-            if not new_ids:
-                _log(f"    No instances detected on frame 0")
+                if new_ids:
+                    found_on_seed = seed_idx
+                    break
+
+            if not new_ids or found_on_seed is None:
+                _log(f"    No instances detected on any seed frame {seed_frames}")
                 prompt_stats[prompt] = 0
                 continue
+
+            _log(f"    {len(new_ids)} instance(s) detected on seed frame {found_on_seed}")
 
             # Map SAM3 obj_ids to our global IDs with label
             local_to_global: Dict[int, int] = {}
@@ -1654,10 +1685,9 @@ def _detect_with_video_predictor(
                 local_to_global[sam_oid] = global_id
                 obj_id_to_label[global_id] = prompt
 
-            _log(f"    {len(new_ids)} instance(s) detected → propagating...")
             prompt_stats[prompt] = len(new_ids)
 
-            # Also collect frame 0 results from add_prompt itself
+            # Collect seed frame results from add_prompt itself
             out_probs = outputs.get("out_probs", np.array([]))
             out_boxes_xywh = outputs.get("out_boxes_xywh", np.array([]))
             out_masks = outputs.get("out_binary_masks", np.array([]))
@@ -1691,27 +1721,27 @@ def _detect_with_video_predictor(
                     mask_area = int((box_px[2] - box_px[0]) * (box_px[3] - box_px[1]))
 
                 fd: Dict[str, Any] = {
-                    "frame_idx": 0, "prob": prob, "box": box_px,
+                    "frame_idx": found_on_seed, "prob": prob, "box": box_px,
                     "centroid_px": [cx, cy], "mask_area_px": mask_area,
                     "image_size": [img_w, img_h],
                 }
                 if mask_np is not None:
                     fd["_mask_np"] = mask_np
-                if all_frame_files:
-                    fd["frame_path"] = str(all_frame_files[0])
+                if found_on_seed < len(all_frame_files):
+                    fd["frame_path"] = str(all_frame_files[found_on_seed])
                 obj_frames[global_id].append(fd)
 
-            # Propagate forward through all frames for this prompt
-            # Need a temporary mapping for propagation: SAM3 obj_ids → global
+            # Propagate from seed frame (forward + backward if seed > 0)
+            _log(f"    Propagating from seed frame {found_on_seed}...")
             temp_label_map: Dict[int, str] = {
                 sam_oid: prompt for sam_oid in [int(x) for x in new_ids]
             }
-            # Collect into a temp dict, then remap
             temp_obj_frames: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
             _collect_propagation_results(
                 predictor, session_id, prompt,
                 temp_label_map, all_frame_files,
                 img_w, img_h, n_frames, temp_obj_frames,
+                seed_frame_idx=found_on_seed,
             )
 
             # Remap SAM3 obj_ids to global IDs
