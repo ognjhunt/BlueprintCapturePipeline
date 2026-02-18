@@ -202,9 +202,12 @@ def _build_image_parts(frames: List[Path], max_frames: int = 8) -> List[Dict[str
 
 
 def _extract_json_array(text: str) -> List[Any]:
-    """Extract a JSON array from text, trying direct parse then regex."""
+    """Extract a JSON array from text, handling markdown fences and nested objects."""
+    # Strip markdown code fences (```json ... ```)
+    cleaned = re.sub(r"```(?:json)?\s*", "", text).strip()
+
     try:
-        payload = json.loads(text)
+        payload = json.loads(cleaned)
         if isinstance(payload, list):
             return payload
         if isinstance(payload, dict):
@@ -214,7 +217,7 @@ def _extract_json_array(text: str) -> List[Any]:
     except Exception:
         pass
 
-    match = re.search(r"\[.*\]", text, re.DOTALL)
+    match = re.search(r"\[.*\]", cleaned, re.DOTALL)
     if match:
         try:
             payload = json.loads(match.group(0))
