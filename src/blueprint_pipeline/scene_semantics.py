@@ -161,6 +161,9 @@ def _extract_response_text(response: Any) -> str:
         if not isinstance(parts, list):
             continue
         for part in parts:
+            # Skip thinking parts — they contain reasoning, not the final answer
+            if getattr(part, "thought", False):
+                continue
             part_text = str(getattr(part, "text", "") or "").strip()
             if part_text:
                 return part_text
@@ -321,13 +324,15 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
             config={
                 "temperature": 0.3,
                 "max_output_tokens": 4096,
+                "response_mime_type": "application/json",
                 "thinking_config": {"thinking_budget": 8192},
             },
         )
         raw_enum = _extract_response_text(response)
         detected_objects = _extract_json_array(raw_enum)
-    except Exception:
-        pass
+    except Exception as exc:
+        import sys
+        print(f"[scene-semantics] Object enumeration failed: {exc}", file=sys.stderr)
 
     return _GeminiResult(
         environment=gemini_result.environment,
