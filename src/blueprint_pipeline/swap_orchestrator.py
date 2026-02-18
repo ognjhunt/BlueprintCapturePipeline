@@ -7,6 +7,7 @@ import json
 import os
 import traceback
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -50,6 +51,11 @@ from .task_targets import (
 )
 
 
+def _normalize_completion_mode(mode: str) -> str:
+    candidate = (mode or "").strip().lower()
+    return candidate if candidate in {"full_required", "best_effort"} else "best_effort"
+
+
 @dataclass(frozen=True)
 class OrchestratorConfig:
     gcs_root: Path = Path(os.getenv("GCS_ROOT", "/mnt/gcs"))
@@ -71,6 +77,9 @@ class OrchestratorConfig:
     runtime_preflight_enabled: bool = parse_bool(
         os.getenv("RUNTIME_PREFLIGHT_ENABLED"),
         default=True,
+    )
+    completion_mode: str = _normalize_completion_mode(
+        os.getenv("PIPELINE_COMPLETION_MODE", "best_effort")
     )
     swap_policy_path: str = os.getenv("SWAP_POLICY_CONFIG_PATH", "").strip()
     swap_selection_mode: str = (os.getenv("SWAP_SELECTION_MODE", "hybrid") or "hybrid").strip().lower()
@@ -156,6 +165,135 @@ def _required_articulation_ids(candidates: List[Mapping[str, Any]]) -> List[str]
 def _asset_dir_for_candidate(candidate: Mapping[str, Any]) -> str:
     object_id = str(candidate.get("object_id"))
     return str(candidate.get("asset_dir") or f"obj_{object_id}")
+
+
+def _is_scene_usda_stub(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if len(lines) > 12:
+        return False
+    return (
+        'defaultPrim = "Scene"' in text
+        and 'def Xform "Scene"' in text
+        and "references = @" not in text
+    )
+
+
+def _local_file_pointer(path: Path) -> Dict[str, Any]:
+    pointer: Dict[str, Any] = {"path": str(path), "exists": path.exists()}
+    if not path.exists():
+        return pointer
+    stat = path.stat()
+    pointer["size_bytes"] = int(stat.st_size)
+    pointer["modified_at"] = datetime.fromtimestamp(
+        stat.st_mtime,
+        tz=timezone.utc,
+    ).isoformat()
+    return pointer
+
+
+def _candidate_label_counts(candidates: List[Mapping[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for candidate in candidates:
+        label = str(candidate.get("label") or "").strip().lower() or "unknown"
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _build_pipeline_summary(
+    *,
+    scene_id: str,
+    capture_id: str,
+    bucket: str,
+    descriptor_uri: str,
+    qa_report_uri: str,
+    object_index_uri: str,
+    pipeline_prefix: str,
+    pipeline_dir: Path,
+    quality_report: Mapping[str, Any],
+    runtime_preflight_report: Mapping[str, Any],
+    advanced_quality_report: Mapping[str, Any],
+    swap_candidates_payload: Mapping[str, Any],
+    task_targets_payload: Mapping[str, Any],
+    nurec_outputs: Mapping[str, Any],
+    object_index_count: int,
+) -> Dict[str, Any]:
+    generated_at = utc_now_iso()
+    candidates = (
+        swap_candidates_payload.get("candidates")
+        if isinstance(swap_candidates_payload.get("candidates"), list)
+        else []
+    )
+    candidate_count = len(candidates)
+    articulated_count = sum(
+        1
+        for candidate in candidates
+        if isinstance(candidate, Mapping)
+        and isinstance(candidate.get("articulation"), Mapping)
+        and bool(candidate["articulation"].get("required", False))
+    )
+    quality_gates = quality_report.get("gates") if isinstance(quality_report.get("gates"), list) else []
+    quality_gates_passed = sum(
+        1
+        for gate in quality_gates
+        if isinstance(gate, Mapping) and bool(gate.get("passed", False))
+    )
+    target_ids = (
+        task_targets_payload.get("target_object_ids")
+        if isinstance(task_targets_payload.get("target_object_ids"), list)
+        else []
+    )
+    run_id = f"{scene_id}:{capture_id}:{generated_at}"
+
+    return {
+        "schema_version": "v1",
+        "run_id": run_id,
+        "generated_at": generated_at,
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "pipeline_prefix": pipeline_prefix,
+        "source_uris": {
+            "descriptor_uri": descriptor_uri,
+            "qa_report_uri": qa_report_uri,
+            "object_index_uri": object_index_uri,
+            "runtime_preflight_report_uri": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
+            "task_targets_uri": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
+            "swap_candidates_uri": f"gs://{bucket}/{pipeline_prefix}/swap_candidates.json",
+            "advanced_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/advanced_quality_report.json",
+            "quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/swap_quality_report.json",
+        },
+        "source_files": {
+            "runtime_preflight_report": _local_file_pointer(pipeline_dir / "runtime_preflight_report.json"),
+            "task_targets": _local_file_pointer(pipeline_dir / "task_targets.json"),
+            "swap_candidates": _local_file_pointer(pipeline_dir / "swap_candidates.json"),
+            "advanced_quality_report": _local_file_pointer(pipeline_dir / "advanced_quality_report.json"),
+            "quality_report": _local_file_pointer(pipeline_dir / "swap_quality_report.json"),
+            "nurec_outputs": _local_file_pointer(pipeline_dir / "nurec_outputs.json"),
+        },
+        "metrics": {
+            "swap_candidate_count": candidate_count,
+            "articulated_candidate_count": articulated_count,
+            "candidate_label_breakdown": _candidate_label_counts(
+                [candidate for candidate in candidates if isinstance(candidate, Mapping)]
+            ),
+            "task_target_count": len(target_ids),
+            "object_index_count": int(max(0, object_index_count)),
+            "quality_gate_total": len(quality_gates),
+            "quality_gate_passed": quality_gates_passed,
+            "runtime_preflight_status": str(runtime_preflight_report.get("status") or "unknown"),
+            "advanced_quality_status": str(advanced_quality_report.get("status") or "unknown"),
+            "nurec_artifact_keys": sorted(
+                list(nurec_outputs.get("artifacts", {}).keys())
+                if isinstance(nurec_outputs.get("artifacts"), Mapping)
+                else []
+            ),
+        },
+    }
 
 
 def _validate_swap_assets(
@@ -298,6 +436,7 @@ def run_swap_pipeline(
                 nurec_worker_command=cfg.nurec_worker_command,
                 advanced_quality_gates_enabled=cfg.advanced_quality_config.enabled,
                 standalone_mode=cfg.standalone_mode,
+                completion_mode=cfg.completion_mode,
             )
             has_failures = any(not check.passed for check in checks)
             runtime_preflight_report = {
@@ -668,6 +807,19 @@ def run_swap_pipeline(
         )
         if not assembly_gate_ok:
             raise StageError("usd_assembly", f"scene.usda missing at {scene_usda_path}")
+        if cfg.completion_mode == "full_required":
+            non_stub = not _is_scene_usda_stub(scene_usda_path)
+            gates.append(
+                _Gate(
+                    "assembly_content_gate",
+                    non_stub,
+                    "scene.usda contains assembled scene data"
+                    if non_stub
+                    else "scene.usda is standalone stub (full assembly required)",
+                )
+            )
+            if not non_stub:
+                raise StageError("usd_assembly", f"scene.usda is standalone stub at {scene_usda_path}")
 
         # ------------------------------------------------------------------
         # Stage I: quality + completion
@@ -716,9 +868,29 @@ def run_swap_pipeline(
                 "layout": f"gs://{bucket}/{relative_scene_path(artifact_paths['layout_path'], storage_root)}",
                 "inventory": f"gs://{bucket}/{relative_scene_path(artifact_paths['inventory_path'], storage_root)}",
                 "scene_usda": f"gs://{bucket}/{relative_scene_path(scene_usda_path, storage_root)}",
+                "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             },
         }
         write_json(pipeline_dir / "swap_quality_report.json", quality_report)
+
+        pipeline_summary = _build_pipeline_summary(
+            scene_id=scene_id,
+            capture_id=capture_id,
+            bucket=bucket,
+            descriptor_uri=descriptor_gcs_uri,
+            qa_report_uri=qa_report_uri,
+            object_index_uri=object_index_uri,
+            pipeline_prefix=pipeline_prefix,
+            pipeline_dir=pipeline_dir,
+            quality_report=quality_report,
+            runtime_preflight_report=runtime_preflight_report,
+            advanced_quality_report=advanced_quality_report,
+            swap_candidates_payload=swap_candidates_payload,
+            task_targets_payload=task_targets_payload,
+            nurec_outputs=nurec_outputs,
+            object_index_count=len(object_index_entries),
+        )
+        write_json(pipeline_dir / "pipeline_summary.json", pipeline_summary)
 
         completion_payload = {
             "schema_version": "v1",
@@ -727,6 +899,7 @@ def run_swap_pipeline(
             "status": "completed",
             "completed_at": utc_now_iso(),
             "quality_report": f"gs://{bucket}/{pipeline_prefix}/swap_quality_report.json",
+            "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
         }
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
 
@@ -773,6 +946,11 @@ def _startup_checks() -> List[str]:
         errors.append(
             f"GCS_ROOT={cfg.gcs_root} does not exist. "
             "Mount your GCS bucket (gcsfuse, GCS FUSE CSI, or symlink) or set GCS_ROOT."
+        )
+    if cfg.completion_mode == "full_required" and cfg.standalone_mode:
+        errors.append(
+            "PIPELINE_COMPLETION_MODE=full_required is incompatible with PIPELINE_STANDALONE_MODE=true. "
+            "Set PIPELINE_STANDALONE_MODE=false for full assembly."
         )
     if not cfg.standalone_mode:
         if not cfg.blueprintpipeline_root.exists():

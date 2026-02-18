@@ -37,6 +37,7 @@ def test_runtime_preflight_passes_with_configured_env(tmp_path: Path, monkeypatc
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
 
     checks = validate_runtime_preflight(
         gcs_root=gcs_root,
@@ -62,6 +63,7 @@ def test_runtime_preflight_fails_when_provider_missing(tmp_path: Path, monkeypat
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
 
     checks = validate_runtime_preflight(
         gcs_root=gcs_root,
@@ -90,6 +92,7 @@ def test_runtime_preflight_standalone_mode_skips_blueprintpipeline_requirements(
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
 
     checks = validate_runtime_preflight(
         gcs_root=gcs_root,
@@ -104,3 +107,60 @@ def test_runtime_preflight_standalone_mode_skips_blueprintpipeline_requirements(
     enforce_preflight(checks)
     check_names = {item.name for item in checks}
     assert "blueprintpipeline_runtime_mode" in check_names
+
+
+def test_runtime_preflight_flags_unsafe_heuristic_explicit_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("TEXT_SAM3D_API_HOST", "https://sam3d.example.internal")
+    monkeypatch.setenv("TEXT_SAM3D_API_KEY", "sam3d-key")
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT", "true")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="sam3d",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+    )
+    failed = {item.name for item in checks if not item.passed}
+    assert "swap_heuristic_explicit_override" in failed
+
+
+def test_runtime_preflight_rejects_standalone_in_full_required_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+    missing_bp_root = tmp_path / "does_not_exist"
+
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=missing_bp_root,
+        generation_provider_chain="image_to_3d,proxy_box",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=True,
+        standalone_mode=True,
+        completion_mode="full_required",
+    )
+    failed = {item.name for item in checks if not item.passed}
+    assert "full_completion_standalone_guard" in failed

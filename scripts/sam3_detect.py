@@ -17,7 +17,7 @@ Usage:
   python3 sam3_detect.py \
       --frames-dir /workspace/test_scene/images \
       --output /workspace/test_scene/raw/arkit/objects/index.json \
-      --environment warehouse \
+      --environment auto \
       --colmap-sparse /workspace/test_scene/colmap/sparse/0
 """
 
@@ -26,10 +26,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import subprocess
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
@@ -37,10 +39,25 @@ import torch
 # Swap-policy keyword lists used for text prompts
 _DETECTION_PROMPTS: Dict[str, List[str]] = {
     "default": [
-        "shelf", "door", "cabinet", "drawer", "box", "container",
-        "tote", "bin", "crate", "chair", "table", "desk",
-        "refrigerator", "microwave", "oven", "dishwasher",
-        "bottle", "cup", "mug", "tool",
+        "door",
+        "bed",
+        "nightstand",
+        "dresser",
+        "closet",
+        "cabinet",
+        "drawer",
+        "desk",
+        "chair",
+        "table",
+        "shelf",
+        "lamp",
+        "mirror",
+        "tv",
+        "monitor",
+        "box",
+        "container",
+        "basket",
+        "hamper",
     ],
     "warehouse": [
         "shelf", "box", "tote", "bin", "crate", "container",
@@ -52,7 +69,52 @@ _DETECTION_PROMPTS: Dict[str, List[str]] = {
         "oven", "dishwasher", "door", "mug", "cup", "bowl",
         "plate", "pot", "pan", "bottle",
     ],
+    "bedroom": [
+        "bed",
+        "nightstand",
+        "dresser",
+        "wardrobe",
+        "closet_door",
+        "door",
+        "desk",
+        "chair",
+        "lamp",
+        "mirror",
+        "box",
+        "container",
+        "basket",
+        "hamper",
+        "suitcase",
+        "backpack",
+        "laundry basket",
+        "shoes",
+        "laptop",
+        "mug",
+    ],
 }
+
+# Generic fallback prompt list for ``environment=auto``.
+_AUTO_FALLBACK_PROMPTS: List[str] = [
+    "door",
+    "bed",
+    "nightstand",
+    "dresser",
+    "closet",
+    "cabinet",
+    "drawer",
+    "desk",
+    "chair",
+    "table",
+    "shelf",
+    "lamp",
+    "mirror",
+    "tv",
+    "monitor",
+    "box",
+    "container",
+    "basket",
+    "hamper",
+]
 
 # Objects that are structural and should be excluded from swap candidates
 _STRUCTURAL_LABELS = {"wall", "floor", "ceiling", "window", "stairs"}
@@ -86,6 +148,10 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         return default
 
+
+# Prompt inference settings
+_PROMPT_INFERENCE_COMMAND = (os.getenv("PROMPT_INFERENCE_COMMAND") or "").strip()
+_PROMPT_INFERENCE_TIMEOUT_SEC = max(10, _env_int("PROMPT_INFERENCE_TIMEOUT_SEC", 120))
 
 # Tracking/association settings
 _TRACKING_MODE_DEFAULT = (os.getenv("SAM3_TRACKING_MODE", "full_video") or "full_video").strip().lower()
@@ -233,6 +299,144 @@ def _get_metric_depth(da3_model, image, focal_px: float) -> np.ndarray:
     return metric_depth
 
 
+def _normalize_prompts(raw_prompts: List[Any]) -> List[str]:
+    seen: set[str] = set()
+    prompts: List[str] = []
+    for raw in raw_prompts:
+        label = str(raw or "").strip().lower()
+        if not label:
+            continue
+        label = " ".join(label.replace("_", " ").replace("-", " ").split())
+        if not label or label in _STRUCTURAL_LABELS:
+            continue
+        if label not in seen:
+            seen.add(label)
+            prompts.append(label)
+    return prompts
+
+
+def _parse_prompt_payload(raw_payload: str) -> List[str]:
+    payload_text = (raw_payload or "").strip()
+    if not payload_text:
+        return []
+
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return _normalize_prompts(payload_text.split(","))
+
+    if isinstance(payload, list):
+        if payload and all(isinstance(item, Mapping) for item in payload):
+            labels = []
+            for item in payload:
+                if not isinstance(item, Mapping):
+                    continue
+                labels.append(
+                    item.get("label")
+                    or item.get("object")
+                    or item.get("object_id")
+                    or item.get("name")
+                    or item.get("class_name")
+                )
+            return _normalize_prompts(labels)
+        return _normalize_prompts(payload)
+
+    if isinstance(payload, Mapping):
+        for key in ("prompts", "labels", "target_labels", "objects"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                if candidate and all(isinstance(item, Mapping) for item in candidate):
+                    labels = []
+                    for item in candidate:
+                        if not isinstance(item, Mapping):
+                            continue
+                        labels.append(
+                            item.get("label")
+                            or item.get("object")
+                            or item.get("object_id")
+                            or item.get("name")
+                            or item.get("class_name")
+                        )
+                    return _normalize_prompts(labels)
+                return _normalize_prompts(candidate)
+
+    return []
+
+
+def _resolve_detection_prompts(
+    *,
+    environment: str,
+    frames_dir: Path,
+    all_frames: List[Path],
+) -> Tuple[List[str], str]:
+    override = _parse_prompt_payload(os.getenv("SAM3_DETECTION_PROMPTS", ""))
+    if override:
+        return override, "env:SAM3_DETECTION_PROMPTS"
+
+    if _PROMPT_INFERENCE_COMMAND:
+        keyframe_count = max(6, min(18, len(all_frames) // 20 if len(all_frames) > 0 else 6))
+        keyframes = _sample_frame_paths(frames_dir, keyframe_count)
+        output_hint = frames_dir / "_prompt_inference_output.json"
+        if output_hint.exists():
+            output_hint.unlink()
+
+        command_template = _PROMPT_INFERENCE_COMMAND
+        try:
+            command = command_template.format(
+                frames_dir=shlex.quote(str(frames_dir)),
+                environment=shlex.quote(environment),
+                keyframes=" ".join(shlex.quote(str(path)) for path in keyframes),
+                keyframes_csv=",".join(str(path) for path in keyframes),
+                keyframes_json=json.dumps([str(path) for path in keyframes]),
+                output_json=shlex.quote(str(output_hint)),
+            )
+        except Exception:
+            command = command_template
+
+        _log(
+            f"Running PROMPT_INFERENCE_COMMAND on {len(keyframes)} keyframes "
+            f"(timeout={_PROMPT_INFERENCE_TIMEOUT_SEC}s)"
+        )
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                capture_output=True,
+                timeout=_PROMPT_INFERENCE_TIMEOUT_SEC,
+            )
+            if result.returncode == 0:
+                prompts = _parse_prompt_payload(result.stdout)
+                if not prompts and output_hint.exists():
+                    prompts = _parse_prompt_payload(output_hint.read_text(encoding="utf-8"))
+                if prompts:
+                    _log(f"Prompt inference produced {len(prompts)} prompts")
+                    return prompts, "command:PROMPT_INFERENCE_COMMAND"
+                _log("Prompt inference returned no prompts; using fallback prompts")
+            else:
+                stderr_lines = (result.stderr or "").strip().splitlines()
+                tail = stderr_lines[-1] if stderr_lines else f"exit={result.returncode}"
+                _log(f"Prompt inference command failed ({tail}); using fallback prompts")
+        except subprocess.TimeoutExpired:
+            _log("Prompt inference command timed out; using fallback prompts")
+        except Exception as exc:
+            _log(f"Prompt inference command errored ({exc}); using fallback prompts")
+
+    env = environment.strip().lower()
+    if env in _DETECTION_PROMPTS and env != "auto":
+        return list(_DETECTION_PROMPTS[env]), f"environment:{env}"
+    return list(_AUTO_FALLBACK_PROMPTS), "auto_fallback"
+
+
+def _resolve_persistence_thresholds(environment: str, min_frame_detections: int) -> Tuple[int, int]:
+    env = environment.strip().lower()
+    default_min_frames = 3 if env == "auto" else max(2, min_frame_detections)
+    default_min_total = 3 if env == "auto" else 2
+    min_frames = _env_int("SAM3_MIN_TRACK_FRAMES", default_min_frames)
+    min_total = _env_int("SAM3_MIN_TOTAL_DETECTIONS", default_min_total)
+    return max(1, min_frames), max(1, min_total)
+
+
 def _sample_frame_paths(frames_dir: Path, n_samples: int) -> List[Path]:
     """Select evenly-spaced frames from the directory."""
     frames = sorted(frames_dir.glob("*.jpg")) + sorted(frames_dir.glob("*.png"))
@@ -261,6 +465,12 @@ def _resolve_sampling_settings(
     elif env == "kitchen":
         auto_n_frames = 10
         auto_min_detections = 2
+    elif env == "bedroom":
+        auto_n_frames = 12
+        auto_min_detections = 2
+    elif env == "auto":
+        auto_n_frames = 14
+        auto_min_detections = 3
     else:
         auto_n_frames = _DEFAULT_SAMPLE_FRAMES
         auto_min_detections = 2
@@ -1147,7 +1357,11 @@ def run_sam3_detection(
     *,
     frames_dir: Path,
     output_path: Path,
-    environment: str = "default",
+    environment: str = "auto",
+    detection_prompts_override: Optional[List[str]] = None,
+    prompt_source_override: Optional[str] = None,
+    environment_source: Optional[str] = None,
+    environment_confidence: Optional[float] = None,
     colmap_sparse_dir: Optional[Path] = None,
     gaussian_ply_path: Optional[Path] = None,
     n_sample_frames: int = _DEFAULT_SAMPLE_FRAMES,
@@ -1168,11 +1382,18 @@ def run_sam3_detection(
     if gaussian_ply_path:
         _log(f"Gaussian PLY: {gaussian_ply_path}")
 
-    # Select prompts for this environment
-    prompts = _DETECTION_PROMPTS.get(environment, _DETECTION_PROMPTS["default"])
-    _log(f"Detection prompts ({len(prompts)}): {', '.join(prompts)}")
-
     all_frames = sorted(frames_dir.glob("*.jpg")) + sorted(frames_dir.glob("*.png"))
+    override_prompts = _normalize_prompts(detection_prompts_override or [])
+    if override_prompts:
+        prompts = override_prompts
+        prompt_source = (prompt_source_override or "scene_semantics_override").strip()
+    else:
+        prompts, prompt_source = _resolve_detection_prompts(
+            environment=environment,
+            frames_dir=frames_dir,
+            all_frames=all_frames,
+        )
+    _log(f"Detection prompts ({len(prompts)}) [{prompt_source}]: {', '.join(prompts)}")
     n_sample_frames, min_frame_detections = _resolve_sampling_settings(
         environment=environment,
         total_frames=len(all_frames),
@@ -1270,6 +1491,24 @@ def run_sam3_detection(
     # Refine with COLMAP + Gaussian PLY for accurate 3D bounding boxes
     objects = _refine_with_colmap(objects, colmap_sparse_dir, gaussian_ply_path, all_detections)
 
+    # Persistence filter: drop transient tracks before emitting final objects.
+    persistence_min_frames, persistence_min_total = _resolve_persistence_thresholds(
+        environment,
+        min_frame_detections,
+    )
+    before_persistence = len(objects)
+    objects = [
+        obj
+        for obj in objects
+        if int(obj.get("n_frame_detections", 0)) >= persistence_min_frames
+        and int(obj.get("n_total_detections", 0)) >= persistence_min_total
+    ]
+    _log(
+        f"After persistence filter (frames>={persistence_min_frames}, "
+        f"total>={persistence_min_total}): {len(objects)} objects "
+        f"(removed {before_persistence - len(objects)})"
+    )
+
     # Report
     n_with_crops = sum(1 for obj in objects if "reference_crop" in obj)
     _log(f"\nDetected objects ({n_with_crops}/{len(objects)} with reference crops):")
@@ -1283,13 +1522,24 @@ def run_sam3_detection(
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        normalized_env_conf = float(environment_confidence) if environment_confidence is not None else 1.0
+    except (TypeError, ValueError):
+        normalized_env_conf = 0.0
+    normalized_env_conf = max(0.0, min(1.0, normalized_env_conf))
+
     index_payload = {
         "schema_version": "v1",
         "detection_source": "sam3",
         "environment": environment,
+        "environment_source": str(environment_source or "").strip() or "environment_input",
+        "environment_confidence": round(normalized_env_conf, 4),
+        "prompt_source": prompt_source,
         "tracking_mode": tracking_mode,
         "track_max_frame_gap": _TRACK_MAX_FRAME_GAP,
         "track_min_assoc_score": _TRACK_MIN_ASSOC_SCORE,
+        "persistence_min_track_frames": persistence_min_frames,
+        "persistence_min_total_detections": persistence_min_total,
         "n_frames_sampled": len(frame_paths),
         "n_raw_detections": len(all_detections),
         "prompts_used": prompts,
@@ -1315,8 +1565,8 @@ def main() -> int:
                         help="Directory with extracted video frames")
     parser.add_argument("--output", required=True,
                         help="Output path for object_point_cloud_index.json")
-    parser.add_argument("--environment", default="default",
-                        choices=list(_DETECTION_PROMPTS.keys()),
+    parser.add_argument("--environment", default="auto",
+                        choices=["auto", *list(_DETECTION_PROMPTS.keys())],
                         help="Environment type for prompt selection")
     parser.add_argument("--colmap-sparse", default=None,
                         help="Path to COLMAP sparse/0/ for 3D refinement")

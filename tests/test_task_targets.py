@@ -611,3 +611,85 @@ def test_descriptor_explicit_targets_still_bypass_caps() -> None:
         if c.get("selection", {}).get("explicit")
     }
     assert {"door_0", "door_1", "door_2"}.issubset(explicit_ids)
+
+
+def test_bedroom_environment_applies_default_residential_caps() -> None:
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene_bedroom",
+            "capture_id": "cap_bedroom",
+            "capture_source": "iphone",
+            "capture_tier": "tier1_iphone",
+            "raw_prefix_uri": "gs://bucket/scenes/scene_bedroom/iphone/cap_bedroom/raw",
+            "frames_index_uri": "gs://bucket/scenes/scene_bedroom/captures/cap_bedroom/frames/index.jsonl",
+            "nurec_mode": "mono_pose_assisted",
+            "environment_type_hint": "bedroom",
+        }
+    )
+    object_entries = [
+        {
+            "id": f"door_{i}",
+            "label": "door",
+            "boundingBox": {"center": [float(i * 2), 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.9 - i * 0.03,
+            "n_total_detections": 10,
+        }
+        for i in range(8)
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="policy_only",
+        max_candidates=20,
+    )
+
+    doors = [item for item in payload["candidates"] if item["label"] == "door"]
+    assert len(doors) == 4
+    class_caps = payload["index_preprocessing"]["class_caps"]
+    assert class_caps["diagnostics"]["source"] == "environment_default:bedroom"
+    assert class_caps["dropped_by_label"].get("door", 0) == 4
+
+
+def test_residential_default_caps_allow_explicit_id_bypass() -> None:
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene_bedroom",
+            "capture_id": "cap_bedroom",
+            "capture_source": "iphone",
+            "capture_tier": "tier1_iphone",
+            "raw_prefix_uri": "gs://bucket/scenes/scene_bedroom/iphone/cap_bedroom/raw",
+            "frames_index_uri": "gs://bucket/scenes/scene_bedroom/captures/cap_bedroom/frames/index.jsonl",
+            "nurec_mode": "mono_pose_assisted",
+            "environment_type_hint": "bedroom",
+            "articulation_hints": [{"instance_id": f"door_{i}", "label": "door"} for i in range(6)],
+        }
+    )
+    object_entries = [
+        {
+            "id": f"door_{i}",
+            "label": "door",
+            "boundingBox": {"center": [float(i * 2), 1.0, 0.0], "extents": [1.0, 2.0, 0.2]},
+            "mean_confidence": 0.9 - i * 0.03,
+            "n_total_detections": 10,
+        }
+        for i in range(8)
+    ]
+
+    payload = build_task_aware_swap_candidates_payload(
+        descriptor=descriptor,
+        object_index_entries=object_entries,
+        selection_mode="hybrid",
+        max_candidates=20,
+    )
+
+    explicit_ids = {
+        item["object_id"]
+        for item in payload["candidates"]
+        if item.get("selection", {}).get("explicit")
+    }
+    assert {"door_0", "door_1", "door_2", "door_3", "door_4", "door_5"}.issubset(explicit_ids)
+    class_caps = payload["index_preprocessing"]["class_caps"]
+    assert class_caps["diagnostics"]["explicit_bypass_mode"] == "descriptor_and_external_object_ids_only"

@@ -9,7 +9,8 @@ from typing import Any, Dict, List, Mapping, Optional
 
 
 _ALLOWED_NUREC_MODES = {"mono_pose_assisted", "mono_slam"}
-_ALLOWED_SWAP_FOCUS = {"kitchen", "warehouse"}
+_ALLOWED_SWAP_FOCUS = {"default", "bedroom", "kitchen", "warehouse"}
+_ALLOWED_ENVIRONMENT_HINTS = {"default", "bedroom", "kitchen", "warehouse"}
 
 
 def _optional_str(value: Any) -> Optional[str]:
@@ -23,6 +24,26 @@ def _dict_list(value: Any) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _normalize_environment_hint(raw_environment: Any) -> Optional[str]:
+    text = _optional_str(raw_environment)
+    if text is None:
+        return None
+    lowered = text.strip().lower()
+    aliases = {
+        "auto": "default",
+        "bed room": "bedroom",
+        "bed-room": "bedroom",
+        "livingroom": "default",
+        "living_room": "default",
+        "residential": "default",
+        "home": "default",
+    }
+    lowered = aliases.get(lowered, lowered)
+    if lowered in _ALLOWED_ENVIRONMENT_HINTS:
+        return lowered
+    return lowered
 
 
 def _normalize_swap_focus(raw_swap_focus: Any) -> List[str]:
@@ -126,7 +147,7 @@ class CaptureDescriptor:
         if not swap_focus:
             swap_focus = _normalize_swap_focus(metadata.get("swap_focus"))
 
-        environment_type_hint = (
+        environment_type_hint = _normalize_environment_hint(
             _optional_str(data.get("environment_type_hint"))
             or _optional_str(data.get("intended_space_type"))
         )

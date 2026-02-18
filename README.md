@@ -61,6 +61,7 @@ Written under:
 - `runtime_preflight_report.json`
 - `advanced_quality_report.json`
 - `swap_quality_report.json`
+- `pipeline_summary.json`
 - `.swap_pipeline_complete` or `.swap_pipeline_failed.json`
 
 Scene artifacts written under:
@@ -76,6 +77,8 @@ Scene artifacts written under:
 - `BLUEPRINTPIPELINE_COMMIT_HASH` (optional pin)
 - `FAIL_ON_BLUEPRINTPIPELINE_COMMIT_MISMATCH` (`true` by default)
 - `RUNTIME_PREFLIGHT_ENABLED` (`true` by default)
+- `PIPELINE_COMPLETION_MODE` (`best_effort` default, `full_required` for strict non-stub completion)
+- `PIPELINE_STANDALONE_MODE` (`true` by default; must be `false` in `full_required`)
 
 NuRec worker dispatch:
 
@@ -95,7 +98,10 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `FIXER_H100_REMOTE_SETUP_CMD` (optional custom setup command for remote Fixer env)
 - `COLMAP_SIFT_GPU` (`auto` default; `on`, `off`)
 - `SAM3_N_FRAMES` (`0` default = auto-scaled by capture length)
-- `SAM3_MIN_FRAME_DETECTIONS` (`0` default = env-aware auto; warehouse defaults to `1`)
+- `SAM3_MIN_FRAME_DETECTIONS` (`0` default = env-aware auto)
+- `SCENE_SEMANTICS_GEMINI_MODEL` (default: `gemini-3.0-pro`)
+- `GOOGLE_GENAI_API_KEY` (optional; when missing, scene semantics falls back to local auto)
+- `SAM3_TRACKING_MODE` (`full_video` recommended/default in wrapper)
 - `DA3_MODEL_PATH` (default: `/opt/da3/weights/metric_large`, local path preferred)
 - `DA3_MODEL_NAME` (default: `da3metric-large`)
 - `HF_HOME` (default in VM guide: `/opt/hf`, shared HuggingFace cache)
@@ -116,6 +122,7 @@ Interactive backend env:
 Swap policy tuning:
 
 - `SWAP_POLICY_CONFIG_PATH` (optional YAML path; default baked policy used if unset)
+- `SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT` (`false` recommended; `true` is flagged as unsafe in preflight)
 
 Advanced quality gates:
 
@@ -125,6 +132,7 @@ Advanced quality gates:
 - `QUALITY_JITTER_MAX_DRIFT_M`
 - `QUALITY_TUNNELING_MAX_PENETRATION_M`
 - `QUALITY_PERF_MAX_STEP_MS`
+- `QUALITY_THRESHOLD_PROFILE` (`default`, `delaunay_relaxed`, etc.; persisted in quality report)
 
 Async trigger dispatch:
 
@@ -152,7 +160,7 @@ Worker entrypoints in `functions/storage_trigger.py`:
 8. Retrieval fallback resolves required articulation failures (hard fail if unresolved).
 9. SimReady + USD assembly runs unchanged BlueprintPipeline jobs.
 10. Advanced quality gates run drop/jitter/tunneling/perf and complexity budgets.
-11. Completion writes `swap_quality_report.json` and `.swap_pipeline_complete`.
+11. Completion writes `swap_quality_report.json`, `pipeline_summary.json`, and `.swap_pipeline_complete`.
 
 ## Tests
 

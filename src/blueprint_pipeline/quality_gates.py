@@ -27,6 +27,19 @@ def _safe_float(value: Any, default: float) -> float:
         return default
 
 
+def _quality_threshold_profile(cfg: "AdvancedQualityGateConfig") -> Dict[str, Any]:
+    profile_name = (os.getenv("QUALITY_THRESHOLD_PROFILE") or "default").strip().lower() or "default"
+    return {
+        "name": profile_name,
+        "jitter_max_drift_m": cfg.jitter_max_drift_m,
+        "jitter_max_vertical_span_m": cfg.jitter_max_vertical_span_m,
+        "drop_min_pass_rate": cfg.drop_min_pass_rate,
+        "tunneling_max_penetration_m": cfg.tunneling_max_penetration_m,
+        "perf_max_step_ms": cfg.perf_max_step_ms,
+        "max_collision_faces": cfg.max_collision_faces,
+    }
+
+
 @dataclass(frozen=True)
 class AdvancedQualityGateConfig:
     enabled: bool = parse_bool(os.getenv("ADVANCED_QUALITY_GATES_ENABLED"), default=True)
@@ -422,6 +435,7 @@ def run_advanced_quality_gates(
         "status": "skipped",
         "generated_at": utc_now_iso(),
         "config": cfg.to_dict(),
+        "threshold_profile": _quality_threshold_profile(cfg),
         "gates": [],
     }
 

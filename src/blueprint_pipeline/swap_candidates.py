@@ -121,6 +121,31 @@ _DEFAULT_POLICY: Dict[str, Any] = {
                 "safety_barrier",
             ],
         },
+        "bedroom": {
+            "articulated_furniture_keywords": [
+                "door",
+                "closet_door",
+                "drawer",
+                "wardrobe",
+                "dresser",
+                "nightstand",
+            ],
+            "manipulable_keywords": [
+                "box",
+                "container",
+                "basket",
+                "hamper",
+                "bag",
+                "bin",
+            ],
+            "exclude_keywords": [
+                "bedframe",
+                "mattress",
+                "wall",
+                "floor",
+                "ceiling",
+            ],
+        },
     },
 }
 

@@ -33,6 +33,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if SRC_ROOT.is_dir() and str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
 
 # ---------------------------------------------------------------------------
 # Configuration (paths set by VM provisioning / Docker snapshot)
@@ -471,8 +476,14 @@ def _validate_collision_mesh(output_ply: Path) -> None:
     _log(f"  Collision mesh validated: {vertex_count} vertices, {face_count} faces")
 
 
+def _read_ply_vertex_count(ply_path: Path) -> int:
+    """Read vertex count from PLY header (works for point clouds or meshes)."""
+    vertex_count, _ = _read_ply_mesh_counts(ply_path)
+    return vertex_count
+
+
 def run_dense_reconstruction(frames_dir: Path, sparse_dir: Path,
-                              workspace: Path, output_ply: Path) -> None:
+                              workspace: Path, output_ply: Path) -> str:
     """Run COLMAP dense reconstruction for collision mesh."""
     dense_dir = workspace / "dense"
     dense_dir.mkdir(parents=True, exist_ok=True)
@@ -507,8 +518,9 @@ def run_dense_reconstruction(frames_dir: Path, sparse_dir: Path,
     ])
 
     if fused_ply.exists() and fused_ply.stat().st_size > 0:
-        pointcloud_to_mesh(fused_ply, dense_dir, output_ply)
+        mesh_method = pointcloud_to_mesh(fused_ply, dense_dir, output_ply)
         _validate_collision_mesh(output_ply)
+        return mesh_method
     else:
         raise RuntimeError("Dense stereo fusion produced no output mesh candidates")
 
@@ -522,10 +534,50 @@ def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path) -> bool:
         _log("  Open3D unavailable; using COLMAP meshing fallback")
         return False
 
+    force_poisson = _env_flag("OPEN3D_POISSON_FORCE", False)
+    max_poisson_points = max(1, _env_int("OPEN3D_POISSON_MAX_POINTS", 900000))
+    poisson_depth = max(6, min(12, _env_int("OPEN3D_POISSON_DEPTH", 9)))
+    poisson_depth_large = max(6, min(12, _env_int("OPEN3D_POISSON_DEPTH_LARGE", 8)))
+    downsample_target = max(0, _env_int("OPEN3D_POISSON_DOWNSAMPLE_TARGET", 450000))
+
+    header_points = 0
+    try:
+        header_points = _read_ply_vertex_count(fused_ply)
+    except Exception as exc:
+        _log(f"  WARNING: Could not read fused PLY header count ({exc}); continuing")
+
+    if header_points > 0:
+        _log(f"  Fused cloud header points: {header_points}")
+        if header_points > max_poisson_points and not force_poisson:
+            _log(
+                "  Skipping Open3D Poisson due to large fused cloud "
+                f"({header_points} > {max_poisson_points}); using COLMAP delaunay fallback"
+            )
+            return False
+
     _log("Running Open3D Poisson mesh reconstruction...")
     try:
         pcd = o3d.io.read_point_cloud(str(fused_ply))
-        _log(f"  Point cloud: {len(pcd.points)} points")
+        point_count = len(pcd.points)
+        _log(f"  Point cloud: {point_count} points")
+
+        if point_count > max_poisson_points and not force_poisson:
+            _log(
+                "  Skipping Open3D Poisson after load due to point count "
+                f"({point_count} > {max_poisson_points}); using COLMAP delaunay fallback"
+            )
+            return False
+
+        effective_depth = poisson_depth_large if point_count > downsample_target > 0 else poisson_depth
+        if point_count > downsample_target > 0:
+            ratio = max(0.05, min(1.0, float(downsample_target) / float(max(1, point_count))))
+            _log(
+                "  Downsampling point cloud for Poisson "
+                f"(target={downsample_target}, ratio={ratio:.3f})..."
+            )
+            pcd = pcd.random_down_sample(ratio)
+            point_count = len(pcd.points)
+            _log(f"  Downsampled point cloud: {point_count} points")
 
         if not pcd.has_normals():
             _log("  Estimating normals...")
@@ -534,9 +586,9 @@ def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path) -> bool:
             )
             pcd.orient_normals_consistent_tangent_plane(30)
 
-        _log("  Running Poisson reconstruction (depth=9)...")
+        _log(f"  Running Poisson reconstruction (depth={effective_depth})...")
         mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-            pcd, depth=9, width=0, scale=1.1, linear_fit=False,
+            pcd, depth=effective_depth, width=0, scale=1.1, linear_fit=False,
         )
 
         densities_arr = np.asarray(densities)
@@ -585,11 +637,12 @@ def _mesh_with_colmap_delaunay(dense_dir: Path, output_ply: Path) -> None:
     raise RuntimeError(f"COLMAP delaunay mesher failed for all candidates ({details})")
 
 
-def pointcloud_to_mesh(fused_ply: Path, dense_dir: Path, output_ply: Path) -> None:
+def pointcloud_to_mesh(fused_ply: Path, dense_dir: Path, output_ply: Path) -> str:
     """Convert dense point cloud to collision mesh with robust fallbacks."""
     if _mesh_with_open3d_poisson(fused_ply, output_ply):
-        return
+        return "poisson_open3d"
     _mesh_with_colmap_delaunay(dense_dir, output_ply)
+    return "delaunay_colmap"
 
 
 # ---------------------------------------------------------------------------
@@ -764,6 +817,64 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _scene_semantics_fallback_report(
+    *,
+    requested_environment: str,
+    reason: str,
+) -> dict:
+    requested = str(requested_environment or "").strip().lower()
+    explicit = requested in {"warehouse", "kitchen", "bedroom"}
+    if explicit:
+        resolved = requested
+        source = "manual_override"
+        prompt_source = "environment_override"
+        confidence = 1.0
+    else:
+        resolved = "default"
+        source = "local_auto_fallback"
+        prompt_source = "auto_fallback"
+        confidence = 0.35
+    return {
+        "schema_version": "v1",
+        "requested_environment": requested or "auto",
+        "resolved_environment": resolved,
+        "environment_source": source,
+        "environment_confidence": confidence,
+        "prompt_source": prompt_source,
+        "detection_prompts": [],
+        "fallback_reason": reason,
+    }
+
+
+def _infer_scene_semantics_report(*, frames_dir: Path, requested_environment: str) -> dict:
+    timeout_sec = max(5, _env_int("SCENE_SEMANTICS_TIMEOUT_SEC", 30))
+    try:
+        from blueprint_pipeline.scene_semantics import infer_scene_semantics
+    except Exception as exc:
+        return _scene_semantics_fallback_report(
+            requested_environment=requested_environment,
+            reason=f"scene_semantics_import_failed:{exc}",
+        )
+
+    try:
+        report = infer_scene_semantics(
+            frames_dir=frames_dir,
+            requested_environment=requested_environment,
+            timeout_sec=timeout_sec,
+        )
+    except Exception as exc:
+        return _scene_semantics_fallback_report(
+            requested_environment=requested_environment,
+            reason=f"scene_semantics_inference_failed:{exc}",
+        )
+    if not isinstance(report, dict):
+        return _scene_semantics_fallback_report(
+            requested_environment=requested_environment,
+            reason="scene_semantics_invalid_payload",
+        )
+    return report
+
+
 def _resolve_sam3_settings(
     *,
     environment: str,
@@ -779,6 +890,12 @@ def _resolve_sam3_settings(
     elif env == "kitchen":
         auto_n_frames = 10
         auto_min_detections = 2
+    elif env == "bedroom":
+        auto_n_frames = 12
+        auto_min_detections = 2
+    elif env == "auto":
+        auto_n_frames = 14
+        auto_min_detections = 3
     else:
         auto_n_frames = 8
         auto_min_detections = 2
@@ -861,9 +978,9 @@ def main() -> int:
                         help="Skip dense reconstruction (use Gaussian PLY as mesh)")
     parser.add_argument("--skip-sam3", action="store_true",
                         help="Skip SAM3 object detection")
-    parser.add_argument("--environment", default="default",
-                        choices=["default", "warehouse", "kitchen"],
-                        help="Environment type for SAM3 detection prompts")
+    parser.add_argument("--environment", default="auto",
+                        choices=["auto", "default", "warehouse", "kitchen", "bedroom"],
+                        help="Environment type for SAM3 detection prompts (auto recommended)")
     parser.add_argument(
         "--sam3-n-frames",
         type=int,
@@ -996,7 +1113,14 @@ def main() -> int:
             "--skip-dense is incompatible with collision mesh quality gate "
             "(triangulated mesh required)"
         )
-    run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
+    mesh_method = run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
+    mesh_method_path = output_dir / "mesh_method.txt"
+    mesh_method_path.write_text(f"{mesh_method}\n", encoding="utf-8")
+    _log(f"  Collision mesh method: {mesh_method}")
+    quality_profile = "delaunay_relaxed" if mesh_method == "delaunay_colmap" else "default"
+    quality_profile_path = output_dir / "quality_profile.txt"
+    quality_profile_path.write_text(f"{quality_profile}\n", encoding="utf-8")
+    _log(f"  Suggested quality profile: {quality_profile}")
 
     # -----------------------------------------------------------------------
     # Stage 7: Occupancy Grid
@@ -1015,8 +1139,40 @@ def main() -> int:
         _log("=" * 60)
         _log("STAGE 8: SAM3 Object Detection")
         _log("=" * 60)
+        scene_semantics_report = _infer_scene_semantics_report(
+            frames_dir=frames_dir,
+            requested_environment=args.environment,
+        )
+        scene_semantics_path = output_dir / "scene_semantics_report.json"
+        scene_semantics_path.write_text(
+            json.dumps(scene_semantics_report, indent=2),
+            encoding="utf-8",
+        )
+
+        resolved_environment = (
+            str(scene_semantics_report.get("resolved_environment") or args.environment)
+            .strip()
+            .lower()
+        )
+        if resolved_environment not in {"default", "warehouse", "kitchen", "bedroom"}:
+            resolved_environment = "default"
+        detection_prompts_override = (
+            scene_semantics_report.get("detection_prompts")
+            if isinstance(scene_semantics_report.get("detection_prompts"), list)
+            else None
+        )
+        prompt_source_override = str(scene_semantics_report.get("prompt_source") or "").strip() or None
+        environment_source = str(scene_semantics_report.get("environment_source") or "").strip() or None
+        environment_confidence = scene_semantics_report.get("environment_confidence")
+        _log(
+            "Scene semantics: "
+            f"requested={args.environment} resolved={resolved_environment} "
+            f"source={environment_source or 'unknown'} "
+            f"confidence={environment_confidence if environment_confidence is not None else 'n/a'}"
+        )
+
         sam3_n_frames, sam3_min_frame_detections = _resolve_sam3_settings(
-            environment=args.environment,
+            environment=resolved_environment,
             frame_count=frame_count,
             requested_n_frames=args.sam3_n_frames,
             requested_min_frame_detections=args.sam3_min_frame_detections,
@@ -1044,7 +1200,11 @@ def main() -> int:
             sam3_result = run_sam3_detection(
                 frames_dir=frames_dir,
                 output_path=index_output,
-                environment=args.environment,
+                environment=resolved_environment,
+                detection_prompts_override=detection_prompts_override,
+                prompt_source_override=prompt_source_override,
+                environment_source=environment_source,
+                environment_confidence=environment_confidence,
                 colmap_sparse_dir=colmap_sparse,
                 gaussian_ply_path=gaussian_ply,
                 n_sample_frames=sam3_n_frames,
@@ -1076,7 +1236,13 @@ def main() -> int:
             all_ok = False
 
     # Optional outputs
-    for artifact in ["export_last.ingp", "object_point_cloud_index.json"]:
+    for artifact in [
+        "export_last.ingp",
+        "object_point_cloud_index.json",
+        "scene_semantics_report.json",
+        "mesh_method.txt",
+        "quality_profile.txt",
+    ]:
         path = output_dir / artifact
         if path.exists():
             size_mb = path.stat().st_size / 1024 / 1024

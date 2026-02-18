@@ -80,14 +80,16 @@ python3 /app/scripts/nurec_shim.py \
   --job-spec /workspace/pipeline/job_spec.json \
   --output-dir /workspace/pipeline/output \
   --raw-prefix /workspace/pipeline/input/video.MOV \
-  --environment warehouse
+  --environment auto
 ```
 
 Notes:
 
 - Dense stage is enabled by default (remove `--skip-dense` unless debugging).
-- SAM3 defaults are now auto-tuned by clip length/environment:
-  - warehouse: more sampled frames, `min_frame_detections=1` by default
+- Scene semantics default to Gemini (`SCENE_SEMANTICS_GEMINI_MODEL=gemini-3.0-pro`) and
+  fall back to local auto prompts when Gemini is unavailable.
+- SAM3 defaults are auto-tuned by clip length/environment and full-video tracking.
+- Bedroom captures should stay `--environment auto` (or `--environment bedroom` for manual override).
 - Override if needed:
   - `--sam3-n-frames <N>`
   - `--sam3-min-frame-detections <N>`
@@ -112,7 +114,7 @@ H100 stage script:
 | apt COLMAP without CUDA | Fixed via `scripts/install_colmap_cuda.sh` |
 | Headless COLMAP crashes | Fixed (CUDA build + shim option compatibility for old/new COLMAP flags) |
 | Dense mesh skipped | No longer required by default; dense stage runs when COLMAP CUDA is present |
-| SAM3 too few surviving objects | Improved defaults (more frames, lower warehouse filter threshold) |
+| Bedroom mislabeled as warehouse | Auto scene semantics + bedroom prompt set + full-video tracking |
 | DA3 runtime downloads | Avoided via local `DA3_MODEL_PATH` and prewarmed cache |
 | Fixer flash-attn mismatch on 12.4 | Kept optional; use H100 mode for reliable Fixer stage |
 

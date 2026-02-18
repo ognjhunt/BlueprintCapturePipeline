@@ -39,6 +39,10 @@ def _parse_provider_chain(raw_chain: str) -> list[str]:
     return providers or ["image_to_3d", "proxy_box"]
 
 
+def _is_truthy(raw_value: str) -> bool:
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _import_from_blueprintpipeline(root: Path, module_name: str) -> None:
     root_str = str(root)
     if root_str not in sys.path:
@@ -275,6 +279,67 @@ def _validate_blueprintpipeline_runtime(root: Path, *, standalone_mode: bool) ->
     return checks
 
 
+def _validate_risky_overrides(
+    *,
+    standalone_mode: bool,
+    completion_mode: str,
+    advanced_quality_gates_enabled: bool,
+) -> list[PreflightCheck]:
+    checks: list[PreflightCheck] = []
+    normalized_mode = (completion_mode or "best_effort").strip().lower()
+    if normalized_mode not in {"full_required", "best_effort"}:
+        normalized_mode = "best_effort"
+
+    heuristic_explicit = _is_truthy(os.getenv("SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT", "false"))
+    checks.append(
+        PreflightCheck(
+            "swap_heuristic_explicit_override",
+            not heuristic_explicit,
+            "heuristic entries remain non-explicit"
+            if not heuristic_explicit
+            else "unsafe override: SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT=true",
+        )
+    )
+
+    preflight_enabled_env = _is_truthy(os.getenv("RUNTIME_PREFLIGHT_ENABLED", "true"))
+    checks.append(
+        PreflightCheck(
+            "runtime_preflight_toggle",
+            preflight_enabled_env,
+            "RUNTIME_PREFLIGHT_ENABLED=true"
+            if preflight_enabled_env
+            else "unsafe override: RUNTIME_PREFLIGHT_ENABLED=false",
+        )
+    )
+
+    strict_mode_ok = not (normalized_mode == "full_required" and standalone_mode)
+    checks.append(
+        PreflightCheck(
+            "full_completion_standalone_guard",
+            strict_mode_ok,
+            (
+                "standalone disabled in full_required mode"
+                if strict_mode_ok
+                else "unsafe override: PIPELINE_STANDALONE_MODE=true with PIPELINE_COMPLETION_MODE=full_required"
+            ),
+        )
+    )
+
+    strict_quality_ok = not (normalized_mode == "full_required" and not advanced_quality_gates_enabled)
+    checks.append(
+        PreflightCheck(
+            "full_completion_quality_guard",
+            strict_quality_ok,
+            (
+                "advanced quality gates enabled"
+                if strict_quality_ok
+                else "unsafe override: ADVANCED_QUALITY_GATES_ENABLED=false in full_required mode"
+            ),
+        )
+    )
+    return checks
+
+
 def validate_runtime_preflight(
     *,
     gcs_root: Path,
@@ -285,6 +350,7 @@ def validate_runtime_preflight(
     nurec_worker_command: str,
     advanced_quality_gates_enabled: bool,
     standalone_mode: bool = False,
+    completion_mode: str = "best_effort",
 ) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
@@ -306,6 +372,13 @@ def validate_runtime_preflight(
     checks.extend(_validate_swap_policy_path(swap_policy_path))
     checks.extend(_validate_interactive_backend_env())
     checks.extend(_validate_nurec_worker(nurec_worker_mode, nurec_worker_command))
+    checks.extend(
+        _validate_risky_overrides(
+            standalone_mode=standalone_mode,
+            completion_mode=completion_mode,
+            advanced_quality_gates_enabled=advanced_quality_gates_enabled,
+        )
+    )
     checks.extend(
         _validate_quality_gate_dependencies(
             advanced_quality_gates_enabled=advanced_quality_gates_enabled

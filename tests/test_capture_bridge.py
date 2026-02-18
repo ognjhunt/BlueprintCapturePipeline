@@ -46,6 +46,16 @@ def test_capture_descriptor_infers_nurec_mode() -> None:
     assert descriptor.nurec_mode == "mono_pose_assisted"
 
 
+def test_capture_descriptor_normalizes_bedroom_aliases() -> None:
+    payload = _sample_descriptor_payload()
+    payload["environment_type_hint"] = "bed room"
+    payload["swap_focus"] = ["bedroom", "auto", "warehouse"]
+
+    descriptor = CaptureDescriptor.from_dict(payload)
+    assert descriptor.environment_type_hint == "bedroom"
+    assert descriptor.swap_focus == ["bedroom", "warehouse"]
+
+
 def test_build_capture_bundle_constraints_embeds_metadata() -> None:
     descriptor = CaptureDescriptor.from_dict(_sample_descriptor_payload())
     bundle = build_capture_bundle_constraints(

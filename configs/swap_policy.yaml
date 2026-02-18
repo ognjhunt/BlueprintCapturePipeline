@@ -83,3 +83,28 @@ environments:
       - conveyor
       - dock_door
       - safety_barrier
+  bedroom:
+    articulated_furniture_keywords:
+      - door
+      - closet_door
+      - drawer
+      - wardrobe
+      - dresser
+      - nightstand
+    manipulable_keywords:
+      - backpack
+      - suitcase
+      - box
+      - container
+      - basket
+      - hamper
+      - clothes
+      - laptop
+      - mug
+      - shoes
+    exclude_keywords:
+      - bedframe
+      - mattress
+      - floor
+      - wall
+      - ceiling

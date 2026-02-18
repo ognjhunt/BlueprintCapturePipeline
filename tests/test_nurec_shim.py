@@ -316,3 +316,17 @@ def test_resolve_sam3_settings_manual_override() -> None:
 
     assert n_frames == 14
     assert min_frames == 3
+
+
+def test_resolve_sam3_settings_bedroom_auto() -> None:
+    module = _load_nurec_shim_module()
+
+    n_frames, min_frames = module._resolve_sam3_settings(
+        environment="bedroom",
+        frame_count=263,
+        requested_n_frames=0,
+        requested_min_frame_detections=0,
+    )
+
+    assert n_frames == 26
+    assert min_frames == 2

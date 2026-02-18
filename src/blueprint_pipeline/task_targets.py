@@ -87,6 +87,13 @@ _DEFAULT_CLASS_CAPS: Dict[str, int] = {
     # detections of the same physical object rather than arbitrarily capping
     # classes.  Override via SWAP_PER_CLASS_MAX_COUNTS_JSON env var if needed.
 }
+_RESIDENTIAL_ENVIRONMENTS = {"default", "bedroom", "kitchen"}
+_RESIDENTIAL_DEFAULT_CLASS_CAPS: Dict[str, int] = {
+    "door": 4,
+    "drawer": 8,
+    "cabinet": 8,
+    "box": 10,
+}
 
 _SEMANTIC_LABEL_BUCKETS = {
     "door": (
@@ -398,31 +405,30 @@ def _dedupe_object_index_entries(
     return merged_entries, report
 
 
+def _parse_caps_mapping(raw_caps: Mapping[str, Any]) -> Dict[str, int]:
+    parsed: Dict[str, int] = {}
+    for key, value in raw_caps.items():
+        label = str(key).strip().lower()
+        cap = _safe_int(value, 0)
+        if label and cap > 0:
+            parsed[label] = cap
+    return parsed
+
+
 def _parse_per_class_caps(
     override_caps: Optional[Mapping[str, int]] = None,
-) -> Dict[str, int]:
+) -> Tuple[Dict[str, int], str]:
     if override_caps is not None:
-        parsed: Dict[str, int] = {}
-        for key, value in override_caps.items():
-            label = str(key).strip().lower()
-            cap = _safe_int(value, 0)
-            if label and cap > 0:
-                parsed[label] = cap
-        return parsed
+        return _parse_caps_mapping(override_caps), "argument_override"
 
     json_raw = (os.getenv("SWAP_PER_CLASS_MAX_COUNTS_JSON") or "").strip()
     if json_raw:
         try:
             payload = json.loads(json_raw)
             if isinstance(payload, Mapping):
-                parsed: Dict[str, int] = {}
-                for key, value in payload.items():
-                    label = str(key).strip().lower()
-                    cap = _safe_int(value, 0)
-                    if label and cap > 0:
-                        parsed[label] = cap
+                parsed = _parse_caps_mapping(payload)
                 if parsed:
-                    return parsed
+                    return parsed, "env_json_override"
         except Exception:
             pass
 
@@ -444,9 +450,53 @@ def _parse_per_class_caps(
             if label and cap > 0:
                 parsed[label] = cap
         if parsed:
-            return parsed
+            return parsed, "env_kv_override"
 
-    return dict(_DEFAULT_CLASS_CAPS)
+    return dict(_DEFAULT_CLASS_CAPS), "default"
+
+
+def _descriptor_environment_hints(descriptor: CaptureDescriptor) -> List[str]:
+    hints: List[str] = []
+    for raw in [descriptor.environment_type_hint, *(descriptor.swap_focus or [])]:
+        hint = str(raw or "").strip().lower()
+        if hint and hint not in hints:
+            hints.append(hint)
+    return hints
+
+
+def _resolve_default_class_caps_for_descriptor(
+    descriptor: CaptureDescriptor,
+) -> Tuple[Dict[str, int], str]:
+    hints = _descriptor_environment_hints(descriptor)
+    for hint in hints:
+        if hint in _RESIDENTIAL_ENVIRONMENTS:
+            return dict(_RESIDENTIAL_DEFAULT_CLASS_CAPS), hint
+    return dict(_DEFAULT_CLASS_CAPS), hints[0] if hints else "unknown"
+
+
+def _resolve_per_class_caps(
+    *,
+    descriptor: CaptureDescriptor,
+    override_caps: Optional[Mapping[str, int]],
+    explicit_object_ids: set[str],
+) -> Tuple[Dict[str, int], Dict[str, Any]]:
+    parsed_caps, source = _parse_per_class_caps(override_caps)
+    if source == "default" and not parsed_caps:
+        parsed_caps, inferred_env = _resolve_default_class_caps_for_descriptor(descriptor)
+        if parsed_caps:
+            source = f"environment_default:{inferred_env}"
+
+    diagnostics = {
+        "source": source,
+        "explicit_bypass_mode": "descriptor_and_external_object_ids_only",
+        "explicit_object_id_count": len(explicit_object_ids),
+        "environment_hints": _descriptor_environment_hints(descriptor),
+    }
+    if not parsed_caps:
+        diagnostics["reason"] = "no per-class cap override and no environment default caps applied"
+    else:
+        diagnostics["reason"] = "per-class caps applied before candidate selection"
+    return parsed_caps, diagnostics
 
 
 def _entry_has_explicit_object_id(entry: Mapping[str, Any], explicit_object_ids: set[str]) -> bool:
@@ -548,6 +598,8 @@ def _apply_per_class_caps(
     counts: Dict[str, int] = {}
     kept: List[Dict[str, Any]] = []
     dropped_by_label: Dict[str, int] = {}
+    kept_by_label: Dict[str, int] = {}
+    explicit_bypass_kept_count = 0
 
     ranked = sorted(
         entries,
@@ -568,6 +620,9 @@ def _apply_per_class_caps(
 
         kept.append(entry)
         counts[label] = counts.get(label, 0) + 1
+        kept_by_label[label] = kept_by_label.get(label, 0) + 1
+        if cap > 0 and explicit and counts.get(label, 0) > cap:
+            explicit_bypass_kept_count += 1
 
     report = {
         "enabled": True,
@@ -576,6 +631,8 @@ def _apply_per_class_caps(
         "kept_count": len(kept),
         "dropped_count": len(entries) - len(kept),
         "dropped_by_label": dropped_by_label,
+        "kept_by_label": kept_by_label,
+        "explicit_bypass_kept_count": explicit_bypass_kept_count,
     }
     return kept, report
 
@@ -1371,12 +1428,17 @@ def build_task_aware_swap_candidates_payload(
         explicit_object_ids=all_explicit_ids,
     )
 
-    class_caps = _parse_per_class_caps(per_class_caps)
+    class_caps, class_cap_diagnostics = _resolve_per_class_caps(
+        descriptor=descriptor,
+        override_caps=per_class_caps,
+        explicit_object_ids=all_explicit_ids,
+    )
     capped_entries, class_cap_summary = _apply_per_class_caps(
         supported_entries,
         class_caps=class_caps,
         explicit_object_ids=all_explicit_ids,
     )
+    class_cap_summary["diagnostics"] = class_cap_diagnostics
 
     base_payload = build_swap_candidates_payload(
         descriptor=descriptor_for_selection,

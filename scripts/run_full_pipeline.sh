@@ -18,7 +18,8 @@ WORKSPACE="${WORKSPACE:-/workspace}"
 GCS_ROOT="${GCS_ROOT:-${WORKSPACE}/gcs_root}"
 BUCKET="${BUCKET:-blueprint-local}"
 BLUEPRINTPIPELINE_ROOT="${BLUEPRINTPIPELINE_ROOT:-/opt/BlueprintPipeline}"
-ENVIRONMENT="${ENVIRONMENT:-warehouse}"
+ENVIRONMENT="${ENVIRONMENT:-auto}"
+COMPLETION_MODE="${COMPLETION_MODE:-full_required}"
 CROP_CLEANUP_PROVIDER="${CROP_CLEANUP_PROVIDER:-qwen_image_edit}"
 GENERATION_PROVIDER_CHAIN="${TEXT_ASSET_GENERATION_PROVIDER_CHAIN:-sam3d,hunyuan3d}"
 SKIP_NUREC="${SKIP_NUREC:-false}"
@@ -39,13 +40,36 @@ die() {
   exit 1
 }
 
+validate_full_runtime() {
+  local root="$1"
+  local required=(
+    "interactive-job/run_interactive_assets.py"
+    "simready-job/prepare_simready_assets.py"
+    "usd-assembly-job/assemble_scene.py"
+    "tools/source_pipeline/adapter.py"
+  )
+  [ -d "$root" ] || die "Full completion mode requires BLUEPRINTPIPELINE_ROOT directory: ${root}"
+  local missing=()
+  local rel
+  for rel in "${required[@]}"; do
+    if [ ! -f "${root}/${rel}" ]; then
+      missing+=("${root}/${rel}")
+    fi
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    printf '%s\n' "${missing[@]}" >&2
+    die "Full completion mode requires BlueprintPipeline assembly scripts above"
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage:
   run_full_pipeline.sh [options] <input_video>
 
 Options:
-  --environment ENV       Scene environment: warehouse, kitchen (default: warehouse)
+  --environment ENV       Scene environment: auto, default, bedroom, warehouse, kitchen (default: auto)
+  --completion-mode MODE  Completion mode: full_required, best_effort (default: full_required)
   --workspace DIR         Working directory (default: /workspace)
   --skip-nurec            Skip NuRec shim (use existing outputs in --nurec-output-dir)
   --nurec-output-dir DIR  NuRec output directory (default: auto from workspace)
@@ -62,6 +86,7 @@ INPUT_VIDEO=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --environment)     ENVIRONMENT="$2";          shift 2 ;;
+    --completion-mode) COMPLETION_MODE="$2";      shift 2 ;;
     --workspace)       WORKSPACE="$2";            shift 2 ;;
     --skip-nurec)      SKIP_NUREC=true;           shift ;;
     --nurec-output-dir) NUREC_OUTPUT_DIR="$2";    shift 2 ;;
@@ -75,6 +100,17 @@ done
 
 [ -n "$INPUT_VIDEO" ] || die "Input video is required. Usage: run_full_pipeline.sh <video>"
 [ -f "$INPUT_VIDEO" ] || die "Input video not found: $INPUT_VIDEO"
+case "${ENVIRONMENT}" in
+  auto|default|bedroom|warehouse|kitchen) ;;
+  *) die "Invalid --environment '${ENVIRONMENT}'. Expected: auto, default, bedroom, warehouse, kitchen" ;;
+esac
+case "${COMPLETION_MODE}" in
+  full_required|best_effort) ;;
+  *) die "Invalid --completion-mode '${COMPLETION_MODE}'. Expected: full_required or best_effort" ;;
+esac
+if [ "$COMPLETION_MODE" = "full_required" ]; then
+  validate_full_runtime "$BLUEPRINTPIPELINE_ROOT"
+fi
 
 # ── Derive identifiers ──────────────────────────────────────────────────────
 VIDEO_BASENAME="$(basename "$INPUT_VIDEO" | sed 's/\.[^.]*$//')"
@@ -84,6 +120,7 @@ CAPTURE_ID="cap_$(date +%Y%m%d_%H%M%S)"
 log "Scene ID: $SCENE_ID"
 log "Capture ID: $CAPTURE_ID"
 log "Environment: $ENVIRONMENT"
+log "Completion mode: $COMPLETION_MODE"
 
 # ── Stage 1: NuRec Shim (COLMAP + 3DGRUT + SAM3) ───────────────────────────
 PIPELINE_DIR="${WORKSPACE}/full_pipeline"
@@ -151,13 +188,20 @@ mkdir -p "$RAW_ROOT" "$NUREC_ROOT" "$PIPELINE_ROOT" \
          "${SCENE_ROOT}/seg" "${SCENE_ROOT}/usd"
 
 # Copy NuRec outputs into expected location
-for f in export_last.usdz export_last.ply export_last.ingp nvblox_mesh.ply occupancy.bin; do
+for f in export_last.usdz export_last.ply export_last.ingp nvblox_mesh.ply occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt; do
   src="${NUREC_OUTPUT_DIR}/${f}"
   [ -f "$src" ] && ln -sf "$src" "${NUREC_ROOT}/${f}"
 done
 
 # Copy object index
-ln -sf "${NUREC_OUTPUT_DIR}/object_point_cloud_index.json" "${RAW_ROOT}/arkit_objects_index.json"
+INDEX_SOURCE="${NUREC_OUTPUT_DIR}/object_point_cloud_index.json"
+INDEX_POINTER_CANONICAL="${RAW_ROOT}/object_point_cloud_index.json"
+INDEX_POINTER_LEGACY="${RAW_ROOT}/arkit_objects_index.json"
+ln -sfn "$INDEX_SOURCE" "$INDEX_POINTER_CANONICAL"
+ln -sfn "$INDEX_SOURCE" "$INDEX_POINTER_LEGACY"
+log "Regenerated object index pointers:"
+log "  ${INDEX_POINTER_CANONICAL} -> ${INDEX_SOURCE}"
+log "  ${INDEX_POINTER_LEGACY} -> ${INDEX_SOURCE}"
 
 # Copy object crops directory (reference images for generation)
 if [ -d "${NUREC_OUTPUT_DIR}/object_crops" ]; then
@@ -169,7 +213,7 @@ python3 - <<PY
 import json
 from pathlib import Path
 
-idx_path = Path("${RAW_ROOT}/arkit_objects_index.json")
+idx_path = Path("${RAW_ROOT}/object_point_cloud_index.json")
 data = json.loads(idx_path.read_text())
 objects = data.get("objects", data if isinstance(data, list) else [])
 
@@ -195,6 +239,24 @@ idx_path.write_text(json.dumps(data, indent=2))
 print(f"Updated {len(objects)} object crop paths")
 PY
 
+RESOLVED_ENVIRONMENT="$(python3 - <<PY
+import json
+from pathlib import Path
+idx_path = Path("${RAW_ROOT}/object_point_cloud_index.json")
+try:
+    payload = json.loads(idx_path.read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+env = str(payload.get("environment") if isinstance(payload, dict) else "").strip().lower()
+print(env or "${ENVIRONMENT}")
+PY
+)"
+case "$RESOLVED_ENVIRONMENT" in
+  default|bedroom|warehouse|kitchen) ;;
+  *) RESOLVED_ENVIRONMENT="${ENVIRONMENT}" ;;
+esac
+log "Resolved environment from object index: ${RESOLVED_ENVIRONMENT}"
+
 # Create raw/manifest.json
 cat > "${RAW_ROOT}/manifest.json" <<MANIFEST
 {
@@ -208,9 +270,9 @@ cat > "${RAW_ROOT}/manifest.json" <<MANIFEST
   "capture_start_epoch_ms": 0,
   "has_lidar": false,
   "scale_hint_m_per_unit": 1.0,
-  "intended_space_type": "${ENVIRONMENT}",
-  "object_point_cloud_index": "arkit_objects_index.json",
-  "object_point_cloud_count": $(python3 -c "import json; d=json.load(open('${RAW_ROOT}/arkit_objects_index.json')); print(len(d.get('objects', d if isinstance(d, list) else [])))" 2>/dev/null || echo 0),
+  "intended_space_type": "${RESOLVED_ENVIRONMENT}",
+  "object_point_cloud_index": "object_point_cloud_index.json",
+  "object_point_cloud_count": $(python3 -c "import json; d=json.load(open('${RAW_ROOT}/object_point_cloud_index.json')); print(len(d.get('objects', d if isinstance(d, list) else [])))" 2>/dev/null || echo 0),
   "capture_source": "iphone",
   "capture_tier_hint": "tier1_iphone"
 }
@@ -252,9 +314,9 @@ cat > "${CAPTURE_ROOT}/capture_descriptor.json" <<DESC
   "nurec_mode": "mono_pose_assisted",
   "qa_report_uri": "${QA_URI}",
   "qa_status": "passed",
-  "environment_type_hint": "${ENVIRONMENT}",
+  "environment_type_hint": "${RESOLVED_ENVIRONMENT}",
   "quality": {"pose_match_rate": 0.95},
-  "swap_focus": ["${ENVIRONMENT}"],
+  "swap_focus": ["${RESOLVED_ENVIRONMENT}"],
   "manipulation_candidates": [],
   "articulation_hints": []
 }
@@ -294,12 +356,57 @@ log "============================================================"
 
 export GCS_ROOT="${GCS_ROOT}/${BUCKET}"
 export BLUEPRINTPIPELINE_ROOT
+export PIPELINE_COMPLETION_MODE="$COMPLETION_MODE"
 export NUREC_SKIP_PIPELINE_COMMAND=true
 export CROP_CLEANUP_PROVIDER="$CROP_CLEANUP_PROVIDER"
 export IMAGE_CONDITIONED_GENERATION_ENABLED=true
 export TEXT_ASSET_GENERATION_PROVIDER_CHAIN="$GENERATION_PROVIDER_CHAIN"
 export SWAP_POLICY_CONFIG_PATH="${APP_DIR}/configs/swap_policy.yaml"
 export PYTHONPATH="${APP_DIR}/scripts:${PYTHONPATH:-}"
+export SAM3_TRACKING_MODE="${SAM3_TRACKING_MODE:-full_video}"
+export SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT=false
+
+if [ "$COMPLETION_MODE" = "full_required" ]; then
+  export PIPELINE_STANDALONE_MODE=false
+  export RUNTIME_PREFLIGHT_ENABLED=true
+  export ADVANCED_QUALITY_GATES_ENABLED=true
+  log "Strict full completion enabled:"
+  log "  PIPELINE_STANDALONE_MODE=${PIPELINE_STANDALONE_MODE}"
+  log "  RUNTIME_PREFLIGHT_ENABLED=${RUNTIME_PREFLIGHT_ENABLED}"
+  log "  ADVANCED_QUALITY_GATES_ENABLED=${ADVANCED_QUALITY_GATES_ENABLED}"
+else
+  export PIPELINE_STANDALONE_MODE="${PIPELINE_STANDALONE_MODE:-false}"
+  export RUNTIME_PREFLIGHT_ENABLED="${RUNTIME_PREFLIGHT_ENABLED:-true}"
+  export ADVANCED_QUALITY_GATES_ENABLED="${ADVANCED_QUALITY_GATES_ENABLED:-true}"
+fi
+
+# Apply relaxed jitter thresholds only when NuRec used COLMAP Delaunay fallback.
+MESH_METHOD_FILE="${NUREC_OUTPUT_DIR}/mesh_method.txt"
+if [ ! -f "$MESH_METHOD_FILE" ]; then
+  die "Missing required NuRec mesh method marker: ${MESH_METHOD_FILE}. Re-run NuRec with updated nurec_shim.py."
+fi
+MESH_METHOD="$(tr -d '\r\n' < "$MESH_METHOD_FILE" | tr '[:upper:]' '[:lower:]')"
+if [ -z "$MESH_METHOD" ]; then
+  die "NuRec mesh method marker is empty: ${MESH_METHOD_FILE}"
+fi
+case "$MESH_METHOD" in
+  delaunay_colmap)
+    : "${QUALITY_JITTER_MAX_DRIFT_M:=0.5}"
+    : "${QUALITY_JITTER_MAX_VERTICAL_SPAN_M:=2.0}"
+    export QUALITY_JITTER_MAX_DRIFT_M QUALITY_JITTER_MAX_VERTICAL_SPAN_M
+    export QUALITY_THRESHOLD_PROFILE="${QUALITY_THRESHOLD_PROFILE:-delaunay_relaxed}"
+    log "Detected Delaunay fallback mesh; applying relaxed jitter thresholds:"
+    log "  QUALITY_JITTER_MAX_DRIFT_M=${QUALITY_JITTER_MAX_DRIFT_M}"
+    log "  QUALITY_JITTER_MAX_VERTICAL_SPAN_M=${QUALITY_JITTER_MAX_VERTICAL_SPAN_M}"
+    ;;
+  poisson_open3d)
+    export QUALITY_THRESHOLD_PROFILE="${QUALITY_THRESHOLD_PROFILE:-default}"
+    log "Mesh method=poisson_open3d; keeping default jitter thresholds"
+    ;;
+  *)
+    die "Invalid mesh method '${MESH_METHOD}' in ${MESH_METHOD_FILE}; expected one of: delaunay_colmap, poisson_open3d"
+    ;;
+esac
 
 log "GCS_ROOT=$GCS_ROOT"
 log "BLUEPRINTPIPELINE_ROOT=$BLUEPRINTPIPELINE_ROOT"
@@ -311,6 +418,52 @@ python3 -m blueprint_pipeline.swap_orchestrator \
   --descriptor-gcs-uri "$DESCRIPTOR_URI" \
   2>&1 | tee "${PIPELINE_DIR}/orchestrator.log"
 
+python3 - <<PY
+import json
+from pathlib import Path
+
+completion_mode = "${COMPLETION_MODE}"
+quality_report_path = Path("${PIPELINE_ROOT}/swap_quality_report.json")
+scene_usda_path = Path("${SCENE_ROOT}/usd/scene.usda")
+
+if not quality_report_path.exists():
+    raise SystemExit(f"Missing quality report: {quality_report_path}")
+
+report = json.loads(quality_report_path.read_text(encoding="utf-8"))
+status = str(report.get("status") or "").strip().lower()
+if status != "passed":
+    raise SystemExit(f"Pipeline status is not passed ({status or 'unknown'})")
+
+gates = report.get("gates") if isinstance(report.get("gates"), list) else []
+gate_map = {}
+for gate in gates:
+    if isinstance(gate, dict):
+        name = str(gate.get("name") or "").strip()
+        if name:
+            gate_map[name] = bool(gate.get("passed", False))
+
+if not gate_map.get("assembly_gate", False):
+    raise SystemExit("Assembly gate did not pass")
+
+if completion_mode == "full_required":
+    for required_gate in ("runtime_preflight_gate", "advanced_quality_gate"):
+        if not gate_map.get(required_gate, False):
+            raise SystemExit(f"Required gate failed in full_required mode: {required_gate}")
+
+if not scene_usda_path.exists():
+    raise SystemExit(f"Missing scene.usda: {scene_usda_path}")
+
+scene_text = scene_usda_path.read_text(encoding="utf-8", errors="ignore")
+is_stub = (
+    'defaultPrim = "Scene"' in scene_text
+    and 'def Xform "Scene"' in scene_text
+    and "references = @" not in scene_text
+    and len(scene_text.strip().splitlines()) <= 12
+)
+if completion_mode == "full_required" and is_stub:
+    raise SystemExit("scene.usda is a standalone stub; full assembly is required")
+PY
+
 log "============================================================"
 log "FULL PIPELINE COMPLETE"
 log "============================================================"
@@ -319,3 +472,4 @@ log "  NuRec:        ${NUREC_OUTPUT_DIR}/"
 log "  Scene USD:    ${SCENE_ROOT}/usd/scene.usda"
 log "  Assets:       ${SCENE_ROOT}/assets/"
 log "  Quality:      ${PIPELINE_ROOT}/swap_quality_report.json"
+log "  Summary:      ${PIPELINE_ROOT}/pipeline_summary.json"
