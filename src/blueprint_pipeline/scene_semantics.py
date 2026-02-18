@@ -248,32 +248,36 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
 
     client = genai.Client(api_key=api_key)
 
-    # --- Step 1: Room classification ---
-    classify_prompt = (
-        "Classify this video scene into one of: bedroom, kitchen, warehouse, default. "
-        "Return JSON only with keys: room_type (string), confidence (0-1 number), rationale (short string)."
+    # Single combined call: room classification + object enumeration
+    combined_prompt = (
+        "Analyze these video frames of an indoor scene. Do TWO things:\n\n"
+        "1. CLASSIFY the room type as one of: bedroom, kitchen, warehouse, default.\n"
+        "2. LIST ALL distinct physical objects visible that could be manipulated in a "
+        "robotics simulator (pick up, open, move, interact with). Include furniture with "
+        "movable parts (drawers, doors), containers, items on surfaces, things on the floor, "
+        "hanging items, etc.\n\n"
+        "Return a single JSON object with these keys:\n"
+        "- room_type: string (one of: bedroom, kitchen, warehouse, default)\n"
+        "- confidence: number 0-1\n"
+        "- rationale: short string explaining classification\n"
+        "- objects: array of objects, each with:\n"
+        "  - object_id: short snake_case identifier (e.g. 'blue_suitcase')\n"
+        "  - category: object category (e.g. 'Furniture', 'Container', 'Clothing')\n"
+        "  - sam_prompt: a 1-4 word phrase a segmentation model can use to find this object "
+        "(e.g. 'blue suitcase', 'wooden dresser')\n\n"
+        "Be thorough — list every distinct manipulatable object you see."
     )
-    classify_parts: List[Dict[str, Any]] = [{"text": classify_prompt}] + image_parts
+    combined_parts: List[Dict[str, Any]] = [{"text": combined_prompt}] + image_parts
 
-    gemini_result = None
     for model in models_to_try:
         try:
             response = client.models.generate_content(
                 model=model,
-                contents=[{"parts": classify_parts}],
+                contents=[{"parts": combined_parts}],
                 config={
                     "temperature": 0.3,
-                    "max_output_tokens": 1024,
+                    "max_output_tokens": 8192,
                     "response_mime_type": "application/json",
-                    "response_schema": {
-                        "type": "object",
-                        "properties": {
-                            "room_type": {"type": "string", "enum": ["bedroom", "kitchen", "warehouse", "default"]},
-                            "confidence": {"type": "number"},
-                            "rationale": {"type": "string"},
-                        },
-                        "required": ["room_type", "confidence", "rationale"],
-                    },
                     "thinking_config": {"thinking_budget": 8192},
                 },
             )
@@ -292,55 +296,18 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
         except (TypeError, ValueError):
             confidence = 0.0
         confidence = max(0.0, min(1.0, confidence))
-        gemini_result = _GeminiResult(
+
+        detected_objects: List[Dict[str, Any]] = []
+        raw_objects = payload.get("objects", [])
+        if isinstance(raw_objects, list):
+            detected_objects = raw_objects
+
+        return _GeminiResult(
             environment=room_type, confidence=confidence, model=model,
-            raw_text=raw_text, detected_objects=[],
+            raw_text=raw_text, detected_objects=detected_objects,
         )
-        break
 
-    if gemini_result is None:
-        return None
-
-    # --- Step 2: Object enumeration ---
-    enumerate_prompt = (
-        "Look at these video frames of a room. List ALL distinct physical objects visible "
-        "that could be manipulated in a robotics simulator (pick up, open, move, interact with). "
-        "Include furniture with movable parts (drawers, doors), containers, items on surfaces, "
-        "things on the floor, hanging items, etc. For each object provide:\n"
-        "- object_id: short snake_case identifier (e.g. 'blue_suitcase', 'wooden_dresser')\n"
-        "- category: object category (e.g. 'Furniture', 'Container', 'Clothing', 'Electronics')\n"
-        "- sam_prompt: a short 1-3 word phrase that a segmentation model can use to find this "
-        "object (e.g. 'blue suitcase', 'wooden dresser', 'white laundry basket')\n"
-        "Return a JSON array of objects. Be thorough — list every distinct manipulatable object you see."
-    )
-    enumerate_parts: List[Dict[str, Any]] = [{"text": enumerate_prompt}] + image_parts
-
-    working_model = gemini_result.model
-    detected_objects: List[Dict[str, Any]] = []
-    try:
-        response = client.models.generate_content(
-            model=working_model,
-            contents=[{"parts": enumerate_parts}],
-            config={
-                "temperature": 0.3,
-                "max_output_tokens": 4096,
-                "response_mime_type": "application/json",
-                "thinking_config": {"thinking_budget": 8192},
-            },
-        )
-        raw_enum = _extract_response_text(response)
-        detected_objects = _extract_json_array(raw_enum)
-    except Exception as exc:
-        import sys
-        print(f"[scene-semantics] Object enumeration failed: {exc}", file=sys.stderr)
-
-    return _GeminiResult(
-        environment=gemini_result.environment,
-        confidence=gemini_result.confidence,
-        model=gemini_result.model,
-        raw_text=gemini_result.raw_text,
-        detected_objects=detected_objects,
-    )
+    return None
 
 
 def infer_scene_semantics(
