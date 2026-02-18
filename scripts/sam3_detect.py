@@ -1474,91 +1474,32 @@ def _load_video_predictor():
     torch.backends.cudnn.allow_tf32 = True
     torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
 
-    from sam3 import build_sam3_video_predictor
+    from sam3.model_builder import build_sam3_video_predictor
 
     predictor = build_sam3_video_predictor()
     _log(f"SAM3 video predictor loaded. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
     return predictor
 
 
-def _detect_with_video_predictor(
-    frames_dir: Path,
-    prompts: List[str],
-    *,
-    save_crops: bool = True,
-    crops_dir: Optional[Path] = None,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Run SAM3 video predictor for persistent object tracking.
-
-    Prompts SAM3 on frame 0 with each text label, then propagates forward
-    using the 7-frame sliding memory window. Returns scene-level objects
-    with consistent tracking IDs.
-
-    Returns:
-        (objects, metadata) where objects is a list of object dicts compatible
-        with the orchestrator contract, and metadata has tracking stats.
-    """
-    predictor = _load_video_predictor()
-
-    # Start a session with the frames directory
-    _log(f"Starting video predictor session on {frames_dir}")
-    session_id = predictor.start_session(resource_path=str(frames_dir))
-
-    # Count frames for reporting
-    all_frame_files = sorted(frames_dir.glob("*.jpg"))
-    n_frames = len(all_frame_files)
-    _log(f"Session started: {n_frames} frames, VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
-
-    # Get image dimensions from first frame
-    from PIL import Image as PILImage
-    first_frame = PILImage.open(all_frame_files[0])
-    img_w, img_h = first_frame.size
-    del first_frame
-
-    # Add prompts on frame 0 — each prompt may spawn multiple object IDs
-    obj_id_to_label: Dict[int, str] = {}
-    prompt_stats: Dict[str, int] = {}
-
-    for prompt in prompts:
-        try:
-            result = predictor.add_prompt(
-                session_id=session_id,
-                frame_index=0,
-                text=prompt,
-            )
-            # result contains out_obj_ids for new objects detected
-            new_ids = result.get("out_obj_ids", np.array([]))
-            if hasattr(new_ids, "tolist"):
-                new_ids = new_ids.tolist()
-            for oid in new_ids:
-                obj_id_to_label[int(oid)] = prompt
-            prompt_stats[prompt] = len(new_ids)
-            if new_ids:
-                _log(f"  Prompt '{prompt}': {len(new_ids)} instance(s) → obj_ids {new_ids}")
-            else:
-                _log(f"  Prompt '{prompt}': no instances detected on frame 0")
-        except Exception as exc:
-            _log(f"  Prompt '{prompt}' failed: {exc}")
-            prompt_stats[prompt] = 0
-
-    if not obj_id_to_label:
-        _log("WARNING: No objects detected on frame 0 by any prompt")
-        predictor.shutdown(session_id)
-        del predictor
-        torch.cuda.empty_cache()
-        return [], {"n_objects_detected": 0, "n_frames": n_frames}
-
-    _log(f"Total tracked objects: {len(obj_id_to_label)} across {len(prompts)} prompts")
-
-    # Propagate forward through all frames
-    _log("Propagating video predictor forward...")
-    # Collect per-object per-frame data
-    obj_frames: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
-
+def _collect_propagation_results(
+    predictor,
+    session_id: str,
+    label: str,
+    obj_id_to_label: Dict[int, str],
+    all_frame_files: List[Path],
+    img_w: int,
+    img_h: int,
+    n_frames: int,
+    obj_frames: Dict[int, List[Dict[str, Any]]],
+) -> None:
+    """Propagate forward and collect per-object per-frame results into obj_frames."""
+    frame_idx = 0
     try:
         for frame_result in predictor.propagate_in_video(
             session_id=session_id,
             propagation_direction="forward",
+            start_frame_idx=0,
+            max_frame_num_to_track=n_frames,
         ):
             frame_idx = int(frame_result.get("frame_index", 0))
             outputs = frame_result.get("outputs", frame_result)
@@ -1574,7 +1515,7 @@ def _detect_with_video_predictor(
             for idx_in_batch, oid in enumerate(out_obj_ids):
                 oid = int(oid)
                 if oid not in obj_id_to_label:
-                    continue  # Skip unknown IDs
+                    continue
 
                 prob = float(out_probs[idx_in_batch]) if idx_in_batch < len(out_probs) else 0.0
 
@@ -1610,7 +1551,7 @@ def _detect_with_video_predictor(
                     cy = (box_px[1] + box_px[3]) / 2
                     mask_area = int((box_px[2] - box_px[0]) * (box_px[3] - box_px[1]))
 
-                frame_data = {
+                frame_data: Dict[str, Any] = {
                     "frame_idx": frame_idx,
                     "prob": prob,
                     "box": box_px,
@@ -1618,28 +1559,181 @@ def _detect_with_video_predictor(
                     "mask_area_px": mask_area,
                     "image_size": [img_w, img_h],
                 }
-                # Store mask reference for depth and crop extraction
                 if mask_np is not None:
                     frame_data["_mask_np"] = mask_np
-
-                # Build frame path
                 if frame_idx < len(all_frame_files):
                     frame_data["frame_path"] = str(all_frame_files[frame_idx])
 
                 obj_frames[oid].append(frame_data)
 
             if (frame_idx + 1) % 100 == 0:
-                _log(f"  Propagated through frame {frame_idx + 1}/{n_frames}")
+                _log(f"    Propagated through frame {frame_idx + 1}/{n_frames}")
 
     except Exception as exc:
-        _log(f"Video propagation error at frame {frame_idx}: {exc}")
+        _log(f"    Propagation error at frame {frame_idx}: {exc}")
         import traceback
         traceback.print_exc()
 
-    _log(f"Propagation complete. Tracked {len(obj_frames)} objects across {n_frames} frames")
+
+def _detect_with_video_predictor(
+    frames_dir: Path,
+    prompts: List[str],
+    *,
+    save_crops: bool = True,
+    crops_dir: Optional[Path] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Run SAM3 video predictor for persistent object tracking.
+
+    SAM3's add_prompt resets state each time (it's a semantic prompt model),
+    so we run each text prompt as a separate cycle:
+      prompt → propagate → collect results → reset → next prompt
+
+    Each prompt may detect multiple instances (obj_ids) which are tracked
+    persistently through the video via the 7-frame sliding memory window.
+
+    Returns:
+        (objects, metadata) where objects is a list of object dicts compatible
+        with the orchestrator contract, and metadata has tracking stats.
+    """
+    predictor = _load_video_predictor()
+
+    # Count frames and get image dimensions
+    all_frame_files = sorted(frames_dir.glob("*.jpg"))
+    n_frames = len(all_frame_files)
+    if not all_frame_files:
+        _log("ERROR: No .jpg frames found in frames_dir")
+        predictor.shutdown()
+        del predictor
+        torch.cuda.empty_cache()
+        return [], {"n_objects_detected": 0, "n_frames": 0}
+
+    from PIL import Image as PILImage
+    first_frame = PILImage.open(all_frame_files[0])
+    img_w, img_h = first_frame.size
+    del first_frame
+
+    # Start session — loads all frames into VRAM
+    _log(f"Starting video predictor session on {frames_dir} ({n_frames} frames)")
+    session_result = predictor.start_session(resource_path=str(frames_dir))
+    session_id = session_result["session_id"]
+    _log(f"Session {session_id[:8]}... started. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+
+    # Run each prompt as a separate cycle (add_prompt resets state)
+    obj_id_to_label: Dict[int, str] = {}
+    prompt_stats: Dict[str, int] = {}
+    obj_frames: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    global_obj_counter = 0  # Assign unique IDs across prompts
+
+    for prompt_idx, prompt in enumerate(prompts):
+        _log(f"  [{prompt_idx+1}/{len(prompts)}] Prompt: '{prompt}'")
+
+        try:
+            # add_prompt resets state and runs detection on frame 0
+            result = predictor.add_prompt(
+                session_id=session_id,
+                frame_idx=0,
+                text=prompt,
+            )
+
+            outputs = result.get("outputs", result)
+            new_ids = outputs.get("out_obj_ids", np.array([]))
+            if hasattr(new_ids, "tolist"):
+                new_ids = new_ids.tolist()
+
+            if not new_ids:
+                _log(f"    No instances detected on frame 0")
+                prompt_stats[prompt] = 0
+                continue
+
+            # Map SAM3 obj_ids to our global IDs with label
+            local_to_global: Dict[int, int] = {}
+            for sam_oid in new_ids:
+                sam_oid = int(sam_oid)
+                global_id = global_obj_counter
+                global_obj_counter += 1
+                local_to_global[sam_oid] = global_id
+                obj_id_to_label[global_id] = prompt
+
+            _log(f"    {len(new_ids)} instance(s) detected → propagating...")
+            prompt_stats[prompt] = len(new_ids)
+
+            # Also collect frame 0 results from add_prompt itself
+            out_probs = outputs.get("out_probs", np.array([]))
+            out_boxes_xywh = outputs.get("out_boxes_xywh", np.array([]))
+            out_masks = outputs.get("out_binary_masks", np.array([]))
+            for idx_in_batch, sam_oid in enumerate(new_ids):
+                sam_oid = int(sam_oid)
+                global_id = local_to_global[sam_oid]
+                prob = float(out_probs[idx_in_batch]) if idx_in_batch < len(out_probs) else 0.0
+
+                if idx_in_batch < len(out_boxes_xywh):
+                    bx, by, bw, bh = out_boxes_xywh[idx_in_batch]
+                    box_px = [float(bx)*img_w, float(by)*img_h, float(bx+bw)*img_w, float(by+bh)*img_h]
+                else:
+                    box_px = [0, 0, img_w, img_h]
+
+                mask_np = None
+                if idx_in_batch < len(out_masks):
+                    mask_np = out_masks[idx_in_batch]
+                    if hasattr(mask_np, "cpu"):
+                        mask_np = mask_np.cpu().numpy()
+                    if mask_np.ndim == 3:
+                        mask_np = mask_np.squeeze(0)
+                    mask_np = mask_np.astype(bool)
+
+                if mask_np is not None and mask_np.any():
+                    ys, xs = np.where(mask_np)
+                    cx, cy = float(xs.mean()), float(ys.mean())
+                    mask_area = int(mask_np.sum())
+                else:
+                    cx = (box_px[0] + box_px[2]) / 2
+                    cy = (box_px[1] + box_px[3]) / 2
+                    mask_area = int((box_px[2] - box_px[0]) * (box_px[3] - box_px[1]))
+
+                fd: Dict[str, Any] = {
+                    "frame_idx": 0, "prob": prob, "box": box_px,
+                    "centroid_px": [cx, cy], "mask_area_px": mask_area,
+                    "image_size": [img_w, img_h],
+                }
+                if mask_np is not None:
+                    fd["_mask_np"] = mask_np
+                if all_frame_files:
+                    fd["frame_path"] = str(all_frame_files[0])
+                obj_frames[global_id].append(fd)
+
+            # Propagate forward through all frames for this prompt
+            # Need a temporary mapping for propagation: SAM3 obj_ids → global
+            temp_label_map: Dict[int, str] = {
+                sam_oid: prompt for sam_oid in [int(x) for x in new_ids]
+            }
+            # Collect into a temp dict, then remap
+            temp_obj_frames: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+            _collect_propagation_results(
+                predictor, session_id, prompt,
+                temp_label_map, all_frame_files,
+                img_w, img_h, n_frames, temp_obj_frames,
+            )
+
+            # Remap SAM3 obj_ids to global IDs
+            for sam_oid, frame_data_list in temp_obj_frames.items():
+                global_id = local_to_global.get(int(sam_oid))
+                if global_id is not None:
+                    obj_frames[global_id].extend(frame_data_list)
+
+            n_propagated = sum(len(v) for v in temp_obj_frames.values())
+            _log(f"    Collected {n_propagated} frame-detections across {len(temp_obj_frames)} objects")
+
+        except Exception as exc:
+            _log(f"    Prompt '{prompt}' failed: {exc}")
+            import traceback
+            traceback.print_exc()
+            prompt_stats[prompt] = 0
+
+    _log(f"All prompts complete. {len(obj_id_to_label)} total tracked objects across {n_frames} frames")
 
     # Shutdown predictor and free VRAM before DA3
-    predictor.shutdown(session_id)
+    predictor.close_session(session_id)
+    predictor.shutdown()
     del predictor
     torch.cuda.empty_cache()
     _log(f"Video predictor freed. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
@@ -1687,7 +1781,6 @@ def _detect_with_video_predictor(
         best_crop = None
         all_crops: List[str] = []
         if save_crops and crops_dir is not None:
-            # Pick top frames by probability for crops
             ranked = sorted(frames_data, key=lambda fd: fd["prob"], reverse=True)
             for crop_idx, fd in enumerate(ranked[:_MAX_REFERENCE_CROPS]):
                 mask = fd.get("_mask_np")
@@ -1702,14 +1795,12 @@ def _detect_with_video_predictor(
             if all_crops:
                 best_crop = all_crops[0]
 
-        # Count how many unique label instances share this same label
-        same_label_count = sum(
-            1 for other_oid, other_label in obj_id_to_label.items()
-            if other_label == label and other_oid in obj_frames
+        # Determine instance index among same-label objects
+        same_label_oids = sorted(
+            [k for k, v in obj_id_to_label.items()
+             if v == label and k in obj_frames and len(set(fd["frame_idx"] for fd in obj_frames[k])) >= 2]
         )
-        instance_idx = sorted(
-            [k for k, v in obj_id_to_label.items() if v == label and k in obj_frames]
-        ).index(oid)
+        instance_idx = same_label_oids.index(oid) if oid in same_label_oids else 0
 
         obj_entry: Dict[str, Any] = {
             "id": f"{label}_{instance_idx + 1}",
@@ -1746,7 +1837,7 @@ def _detect_with_video_predictor(
     # Sort by confidence descending
     objects.sort(key=lambda x: x["confidence"], reverse=True)
 
-    # Clean up transient mask data from frames_data
+    # Clean up transient mask data
     for frames_data_list in obj_frames.values():
         for fd in frames_data_list:
             fd.pop("_mask_np", None)
