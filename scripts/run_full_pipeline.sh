@@ -166,7 +166,7 @@ else
 fi
 
 # ── Validate NuRec outputs ──────────────────────────────────────────────────
-for f in export_last.usdz nvblox_mesh.ply occupancy.bin object_point_cloud_index.json; do
+for f in export_last.usdz nvblox_mesh.ply visual_mesh.glb mesh_manifest.json occupancy.bin object_point_cloud_index.json; do
   [ -f "${NUREC_OUTPUT_DIR}/${f}" ] || die "Missing NuRec output: ${NUREC_OUTPUT_DIR}/${f}"
 done
 log "NuRec outputs validated"
@@ -188,7 +188,7 @@ mkdir -p "$RAW_ROOT" "$NUREC_ROOT" "$PIPELINE_ROOT" \
          "${SCENE_ROOT}/seg" "${SCENE_ROOT}/usd"
 
 # Copy NuRec outputs into expected location
-for f in export_last.usdz export_last.ply export_last.ingp nvblox_mesh.ply occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt; do
+for f in export_last.usdz export_last.ply export_last.ingp nvblox_mesh.ply visual_mesh.glb visual_mesh_robust.glb visual_pointcloud.ply mesh_manifest.json collision_mesh_report.json occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt; do
   src="${NUREC_OUTPUT_DIR}/${f}"
   [ -f "$src" ] && ln -sf "$src" "${NUREC_ROOT}/${f}"
 done
@@ -336,6 +336,9 @@ cat > "${PIPELINE_ROOT}/.nurec_complete" <<MARKER
   "command": {"executed": true, "command": "nurec_shim.py", "return_code": 0, "stdout": "", "stderr": ""},
   "outputs": {
     "visual_usdz": "${NUREC_PREFIX_URI}/export_last.usdz",
+    "visual_mesh_glb": "${NUREC_PREFIX_URI}/visual_mesh.glb",
+    "visual_pointcloud_ply": "${NUREC_PREFIX_URI}/visual_pointcloud.ply",
+    "mesh_manifest_json": "${NUREC_PREFIX_URI}/mesh_manifest.json",
     "collision_mesh_ply": "${NUREC_PREFIX_URI}/nvblox_mesh.ply",
     "occupancy": ["${NUREC_PREFIX_URI}/occupancy.bin"]
   }

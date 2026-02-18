@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from blueprint_pipeline.sam3d_assets import materialize_candidate_assets
+from blueprint_pipeline.sam3d_assets import (
+    materialize_candidate_assets,
+    materialize_scene_shell_assets,
+)
 
 
 class _StubRunner:
@@ -122,6 +125,13 @@ def test_image_conditioned_generation_emits_contract_outputs(tmp_path: Path, mon
     monkeypatch.setenv("STAGE_D_MATERIALIZATION_MODE", "image_conditioned")
     monkeypatch.setenv("STAGE_D_IMAGE_CLEANUP_PROVIDER", "skip")
     monkeypatch.delenv("STAGE_D_IMAGE_TO_3D_COMMAND", raising=False)
+    from blueprint_pipeline import sam3d_assets
+
+    def _fake_proxy_mesh(_candidate, mesh_glb_path: Path) -> None:  # noqa: ANN001
+        mesh_glb_path.parent.mkdir(parents=True, exist_ok=True)
+        mesh_glb_path.write_bytes(b"glb")
+
+    monkeypatch.setattr(sam3d_assets, "_write_proxy_mesh_glb", _fake_proxy_mesh)
     runner = _StubRunner(tmp_path)
     candidates = [
         {
@@ -272,3 +282,67 @@ def test_non_articulated_router_uses_topk_ranked_references(tmp_path: Path, monk
     refs = captured.get("reference_images")
     assert isinstance(refs, list)
     assert len(refs) == 2
+
+
+def test_materialize_scene_shell_prefers_visual_mesh_when_available(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from blueprint_pipeline import sam3d_assets
+
+    nurec_dir = tmp_path / "scenes/scene_1/captures/cap_1/pipeline/nurec"
+    nurec_dir.mkdir(parents=True, exist_ok=True)
+    (nurec_dir / "export_last.usdz").write_bytes(b"usdz")
+    (nurec_dir / "visual_mesh.glb").write_bytes(b"glb")
+    (nurec_dir / "nvblox_mesh.ply").write_text(
+        "\n".join(
+            [
+                "ply",
+                "format ascii 1.0",
+                "element vertex 3",
+                "property float x",
+                "property float y",
+                "property float z",
+                "element face 1",
+                "property list uchar int vertex_indices",
+                "end_header",
+                "0 0 0",
+                "1 0 0",
+                "0 1 0",
+                "3 0 1 2",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def _fake_ply_to_glb(ply_path: Path, glb_path: Path) -> None:
+        glb_path.parent.mkdir(parents=True, exist_ok=True)
+        glb_path.write_bytes(b"glb")
+
+    monkeypatch.setattr(sam3d_assets, "_ply_to_glb", _fake_ply_to_glb)
+    monkeypatch.setattr(sam3d_assets, "_prune_scene_shell_mesh", lambda *_a, **_k: {"enabled": False})
+    monkeypatch.setattr(
+        sam3d_assets,
+        "_simplify_scene_shell_mesh",
+        lambda *_a, **_k: {"enabled": False},
+    )
+
+    payload = materialize_scene_shell_assets(
+        storage_root=tmp_path,
+        assets_prefix="scenes/scene_1/assets",
+        nurec_outputs={
+            "artifacts": {
+                "visual_usdz": "gs://bucket/scenes/scene_1/captures/cap_1/pipeline/nurec/export_last.usdz",
+                "visual_mesh_glb": "gs://bucket/scenes/scene_1/captures/cap_1/pipeline/nurec/visual_mesh.glb",
+                "collision_mesh_ply": "gs://bucket/scenes/scene_1/captures/cap_1/pipeline/nurec/nvblox_mesh.ply",
+            }
+        },
+        swap_candidates=[],
+    )
+
+    visual_dir = tmp_path / "scenes/scene_1/assets/obj_nurec_visual"
+    assert payload["visual_asset"] == "scenes/scene_1/assets/obj_nurec_visual/model.usd"
+    assert (visual_dir / "model.glb").is_file()
+    assert (visual_dir / "model.usdz").is_file()
+    metadata = json.loads((visual_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["source"] == "nurec_visual_mesh"

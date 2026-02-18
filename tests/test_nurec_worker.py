@@ -37,6 +37,9 @@ def test_nurec_worker_writes_complete_marker(tmp_path: Path, monkeypatch: pytest
     nurec_dir = tmp_path / "bucket/scenes/scene_1/captures/cap_1/pipeline/nurec"
     nurec_dir.mkdir(parents=True, exist_ok=True)
     (nurec_dir / "export_last.usdz").write_bytes(b"usdz")
+    (nurec_dir / "visual_mesh.glb").write_bytes(b"glb")
+    (nurec_dir / "visual_pointcloud.ply").write_bytes(b"ply")
+    (nurec_dir / "mesh_manifest.json").write_text("{}", encoding="utf-8")
     (nurec_dir / "nvblox_mesh.ply").write_text(
         "\n".join(
             [

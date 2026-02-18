@@ -108,6 +108,9 @@ class _StubNurecClient:
 
         (nurec_dir / "export_last.usdz").write_bytes(b"usdz")
         (nurec_dir / "occupancy.bin").write_bytes(b"occ")
+        (nurec_dir / "visual_mesh.glb").write_bytes(b"glb")
+        (nurec_dir / "visual_pointcloud.ply").write_bytes(b"ply")
+        (nurec_dir / "mesh_manifest.json").write_text("{}", encoding="utf-8")
 
         # Minimal placeholder PLY file (conversion is monkeypatched in tests).
         (nurec_dir / "nvblox_mesh.ply").write_text(
@@ -134,6 +137,9 @@ end_header
             "status": "completed",
             "artifacts": {
                 "visual_usdz": f"gs://{self.bucket}/{self.pipeline_prefix}/nurec/export_last.usdz",
+                "visual_mesh_glb": f"gs://{self.bucket}/{self.pipeline_prefix}/nurec/visual_mesh.glb",
+                "visual_pointcloud_ply": f"gs://{self.bucket}/{self.pipeline_prefix}/nurec/visual_pointcloud.ply",
+                "mesh_manifest_json": f"gs://{self.bucket}/{self.pipeline_prefix}/nurec/mesh_manifest.json",
                 "collision_mesh_ply": f"gs://{self.bucket}/{self.pipeline_prefix}/nurec/nvblox_mesh.ply",
                 "occupancy": [f"gs://{self.bucket}/{self.pipeline_prefix}/nurec/occupancy.bin"],
             },
@@ -361,6 +367,17 @@ def _patch_mesh_conversion(monkeypatch):
         sam3d_assets,
         "_prune_scene_shell_mesh",
         lambda glb_path, swap_candidates: {"enabled": True, "faces_removed": 0},
+    )
+    monkeypatch.setattr(
+        sam3d_assets,
+        "_simplify_scene_shell_mesh",
+        lambda glb_path, max_faces: {
+            "enabled": False,
+            "reason": "test_stub",
+            "before_faces": 0,
+            "after_faces": 0,
+            "budget_faces": max_faces,
+        },
     )
 
 

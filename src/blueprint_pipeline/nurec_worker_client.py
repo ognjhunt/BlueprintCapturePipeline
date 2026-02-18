@@ -22,6 +22,13 @@ from .common import (
 )
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class NurecWorkerConfig:
     timeout_seconds: int = 4 * 60 * 60
@@ -257,12 +264,18 @@ class NurecWorkerClient:
     def collect_outputs(self) -> Dict[str, Any]:
         export_usdz = self.nurec_dir / "export_last.usdz"
         mesh_ply = self.nurec_dir / "nvblox_mesh.ply"
+        visual_mesh_glb = self.nurec_dir / "visual_mesh.glb"
+        visual_pointcloud_ply = self.nurec_dir / "visual_pointcloud.ply"
+        mesh_manifest_json = self.nurec_dir / "mesh_manifest.json"
         occupancy = sorted(self.nurec_dir.glob("occupancy*"))
+        visual_mesh_enabled = _env_flag("VISUAL_MESH_ENABLED", True)
 
         if not has_nonempty_file(export_usdz):
             raise StageError("nurec", f"missing required artifact: {export_usdz}")
         if not has_nonempty_file(mesh_ply):
             raise StageError("nurec", f"missing required artifact: {mesh_ply}")
+        if visual_mesh_enabled and not has_nonempty_file(visual_mesh_glb):
+            raise StageError("nurec", f"missing required visual mesh artifact: {visual_mesh_glb}")
         face_count = self._read_ply_face_count(mesh_ply)
         if face_count <= 0:
             raise StageError("nurec", f"collision mesh must be triangulated (face_count={face_count})")
@@ -271,18 +284,32 @@ class NurecWorkerClient:
 
         mesh_stats = self._mesh_stats(mesh_ply)
         mesh_stats.setdefault("face_count", int(face_count))
+        artifacts: Dict[str, Any] = {
+            "visual_usdz": f"gs://{self.bucket}/{relative_scene_path(export_usdz, self.storage_root)}",
+            "collision_mesh_ply": f"gs://{self.bucket}/{relative_scene_path(mesh_ply, self.storage_root)}",
+            "occupancy": [
+                f"gs://{self.bucket}/{relative_scene_path(path, self.storage_root)}" for path in occupancy
+            ],
+        }
+        if has_nonempty_file(visual_mesh_glb):
+            artifacts["visual_mesh_glb"] = (
+                f"gs://{self.bucket}/{relative_scene_path(visual_mesh_glb, self.storage_root)}"
+            )
+        if has_nonempty_file(visual_pointcloud_ply):
+            artifacts["visual_pointcloud_ply"] = (
+                f"gs://{self.bucket}/{relative_scene_path(visual_pointcloud_ply, self.storage_root)}"
+            )
+        if has_nonempty_file(mesh_manifest_json):
+            artifacts["mesh_manifest_json"] = (
+                f"gs://{self.bucket}/{relative_scene_path(mesh_manifest_json, self.storage_root)}"
+            )
+
         payload = {
             "schema_version": "v1",
             "scene_prefix": self.pipeline_prefix,
             "status": "completed",
             "generated_at": utc_now_iso(),
-            "artifacts": {
-                "visual_usdz": f"gs://{self.bucket}/{relative_scene_path(export_usdz, self.storage_root)}",
-                "collision_mesh_ply": f"gs://{self.bucket}/{relative_scene_path(mesh_ply, self.storage_root)}",
-                "occupancy": [
-                    f"gs://{self.bucket}/{relative_scene_path(path, self.storage_root)}" for path in occupancy
-                ],
-            },
+            "artifacts": artifacts,
             "mesh_stats": mesh_stats,
         }
         write_json(self.pipeline_dir / "nurec_outputs.json", payload)

@@ -9,6 +9,9 @@ detection (replacing ARKit), and produces the required pipeline outputs:
   - export_last.usdz  (neural scene for Isaac Sim)
   - export_last.ply   (Gaussian splat point cloud)
   - nvblox_mesh.ply   (collision mesh from dense reconstruction)
+  - visual_mesh.glb   (viewer-friendly visual mesh, vertex-colored)
+  - visual_pointcloud.ply (colored point cloud for debugging/inspection)
+  - mesh_manifest.json (artifact role manifest: volume/visual/collision)
   - occupancy.bin     (voxel occupancy grid)
   - object_point_cloud_index.json  (SAM3-detected objects for swap pipeline)
 
@@ -31,7 +34,9 @@ import shutil
 import struct
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -488,8 +493,12 @@ def _read_ply_vertex_count(ply_path: Path) -> int:
     return vertex_count
 
 
-def run_dense_reconstruction(frames_dir: Path, sparse_dir: Path,
-                              workspace: Path, output_ply: Path) -> str:
+def run_dense_reconstruction(
+    frames_dir: Path,
+    sparse_dir: Path,
+    workspace: Path,
+    output_ply: Path,
+) -> Dict[str, Any]:
     """Run COLMAP dense reconstruction for collision mesh."""
     dense_dir = workspace / "dense"
     dense_dir.mkdir(parents=True, exist_ok=True)
@@ -526,12 +535,16 @@ def run_dense_reconstruction(frames_dir: Path, sparse_dir: Path,
     if fused_ply.exists() and fused_ply.stat().st_size > 0:
         mesh_method = pointcloud_to_mesh(fused_ply, dense_dir, output_ply)
         _validate_collision_mesh(output_ply)
-        return mesh_method
+        return {
+            "mesh_method": mesh_method,
+            "fused_ply": fused_ply,
+            "dense_dir": dense_dir,
+        }
     else:
         raise RuntimeError("Dense stereo fusion produced no output mesh candidates")
 
 
-def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path) -> bool:
+def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path, *, force: bool = False) -> bool:
     """Attempt Open3D Poisson meshing; return True on success."""
     try:
         import open3d as o3d
@@ -540,7 +553,7 @@ def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path) -> bool:
         _log("  Open3D unavailable; using COLMAP meshing fallback")
         return False
 
-    force_poisson = _env_flag("OPEN3D_POISSON_FORCE", False)
+    force_poisson = force or _env_flag("OPEN3D_POISSON_FORCE", False)
     max_poisson_points = max(1, _env_int("OPEN3D_POISSON_MAX_POINTS", 900000))
     poisson_depth = max(6, min(12, _env_int("OPEN3D_POISSON_DEPTH", 9)))
     poisson_depth_large = max(6, min(12, _env_int("OPEN3D_POISSON_DEPTH_LARGE", 8)))
@@ -652,7 +665,453 @@ def pointcloud_to_mesh(fused_ply: Path, dense_dir: Path, output_ply: Path) -> st
 
 
 # ---------------------------------------------------------------------------
-# Stage 7: Occupancy grid from PLY
+# Collision mesh hardening (spike filtering + fallback)
+# ---------------------------------------------------------------------------
+def _collision_spike_metrics(mesh) -> Dict[str, Any]:
+    try:
+        import numpy as np
+    except ImportError:
+        return {
+            "enabled": False,
+            "reason": "numpy_unavailable",
+        }
+
+    faces = np.asarray(getattr(mesh, "faces", []))
+    vertices = np.asarray(getattr(mesh, "vertices", []))
+    if faces.size == 0 or vertices.size == 0:
+        return {
+            "enabled": True,
+            "face_count": 0,
+            "long_edge_face_count": 0,
+            "long_edge_face_ratio": 0.0,
+            "edge_length_m": {"p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "thresholds": {
+                "max_edge_m": max(0.01, _env_float("COLLISION_MAX_EDGE_M", 5.0)),
+                "max_long_edge_ratio": max(0.0, _env_float("COLLISION_SPIKE_MAX_RATIO", 0.02)),
+            },
+        }
+
+    tri = vertices[faces]
+    edge_01 = np.linalg.norm(tri[:, 0] - tri[:, 1], axis=1)
+    edge_12 = np.linalg.norm(tri[:, 1] - tri[:, 2], axis=1)
+    edge_20 = np.linalg.norm(tri[:, 2] - tri[:, 0], axis=1)
+    edge_all = np.concatenate([edge_01, edge_12, edge_20])
+
+    max_edge_m = max(0.01, _env_float("COLLISION_MAX_EDGE_M", 5.0))
+    long_edge_mask = (edge_01 > max_edge_m) | (edge_12 > max_edge_m) | (edge_20 > max_edge_m)
+    long_edge_faces = int(long_edge_mask.sum())
+    face_count = int(len(faces))
+    long_edge_ratio = float(long_edge_faces / float(face_count)) if face_count > 0 else 0.0
+
+    return {
+        "enabled": True,
+        "face_count": face_count,
+        "long_edge_face_count": long_edge_faces,
+        "long_edge_face_ratio": long_edge_ratio,
+        "edge_length_m": {
+            "p50": float(np.percentile(edge_all, 50)),
+            "p95": float(np.percentile(edge_all, 95)),
+            "p99": float(np.percentile(edge_all, 99)),
+            "max": float(edge_all.max()),
+        },
+        "thresholds": {
+            "max_edge_m": max_edge_m,
+            "max_long_edge_ratio": max(0.0, _env_float("COLLISION_SPIKE_MAX_RATIO", 0.02)),
+        },
+    }
+
+
+def _postprocess_collision_mesh(mesh_path: Path) -> Dict[str, Any]:
+    report: Dict[str, Any] = {
+        "schema_version": "v1",
+        "mesh_path": str(mesh_path),
+        "enabled": False,
+        "steps": [],
+    }
+    try:
+        import numpy as np
+        import trimesh
+    except Exception as exc:
+        report["reason"] = f"postprocess_deps_unavailable:{exc}"
+        return report
+
+    try:
+        mesh = trimesh.load_mesh(str(mesh_path), process=True)
+        if mesh is None:
+            report["reason"] = "failed_to_load_mesh"
+            return report
+
+        report["enabled"] = True
+        report["before"] = {
+            "vertex_count": int(len(getattr(mesh, "vertices", []))),
+            "face_count": int(len(getattr(mesh, "faces", []))),
+        }
+
+        # Remove tiny disconnected components while preserving the largest piece.
+        min_component_faces = max(1, _env_int("COLLISION_MIN_COMPONENT_FACES", 300))
+        largest_kept_faces = 0
+        if hasattr(mesh, "split"):
+            parts = list(mesh.split(only_watertight=False))
+            if len(parts) > 1:
+                parts_sorted = sorted(parts, key=lambda p: len(getattr(p, "faces", [])), reverse=True)
+                largest_kept_faces = int(len(getattr(parts_sorted[0], "faces", [])))
+                kept_parts = [parts_sorted[0]]
+                for part in parts_sorted[1:]:
+                    if len(getattr(part, "faces", [])) >= min_component_faces:
+                        kept_parts.append(part)
+                if len(kept_parts) != len(parts):
+                    mesh = trimesh.util.concatenate(kept_parts)
+                    report["steps"].append(
+                        {
+                            "name": "component_filter",
+                            "total_components": int(len(parts)),
+                            "kept_components": int(len(kept_parts)),
+                            "min_component_faces": min_component_faces,
+                            "largest_component_faces": largest_kept_faces,
+                        }
+                    )
+
+        # Remove pathological long-edge faces.
+        max_edge_m = max(0.01, _env_float("COLLISION_MAX_EDGE_M", 5.0))
+        faces = np.asarray(mesh.faces)
+        vertices = np.asarray(mesh.vertices)
+        if faces.size > 0 and vertices.size > 0:
+            tri = vertices[faces]
+            edge_01 = np.linalg.norm(tri[:, 0] - tri[:, 1], axis=1)
+            edge_12 = np.linalg.norm(tri[:, 1] - tri[:, 2], axis=1)
+            edge_20 = np.linalg.norm(tri[:, 2] - tri[:, 0], axis=1)
+            long_edge_mask = (edge_01 > max_edge_m) | (edge_12 > max_edge_m) | (edge_20 > max_edge_m)
+            long_edge_faces = int(long_edge_mask.sum())
+            if long_edge_faces > 0 and long_edge_faces < len(faces):
+                keep_idx = np.flatnonzero(~long_edge_mask)
+                mesh = mesh.submesh([keep_idx], append=True, repair=True)
+                report["steps"].append(
+                    {
+                        "name": "spike_face_filter",
+                        "long_edge_faces_removed": long_edge_faces,
+                        "long_edge_faces_before": int(len(faces)),
+                        "max_edge_m": max_edge_m,
+                    }
+                )
+
+        # trimesh 4.x removed remove_degenerate_faces(); use nondegenerate_faces() mask instead.
+        if hasattr(mesh, "remove_degenerate_faces"):
+            mesh.remove_degenerate_faces()
+        elif hasattr(mesh, "nondegenerate_faces"):
+            nd_mask = mesh.nondegenerate_faces()
+            if nd_mask is not None and len(nd_mask) > 0:
+                mesh.update_faces(nd_mask)
+        mesh.remove_unreferenced_vertices()
+
+        smooth_iters = max(0, _env_int("COLLISION_SMOOTH_ITERS", 2))
+        if smooth_iters > 0:
+            try:
+                trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iters)
+                report["steps"].append({"name": "taubin_smoothing", "iterations": smooth_iters})
+            except Exception as exc:
+                report["steps"].append({"name": "taubin_smoothing_skipped", "reason": str(exc)})
+
+        mesh.export(str(mesh_path))
+        report["after"] = {
+            "vertex_count": int(len(getattr(mesh, "vertices", []))),
+            "face_count": int(len(getattr(mesh, "faces", []))),
+        }
+        report["spike_metrics"] = _collision_spike_metrics(mesh)
+        return report
+    except Exception as exc:
+        report["reason"] = f"postprocess_failed:{exc}"
+        return report
+
+
+def _enforce_collision_spike_gate(collision_report: Mapping[str, Any]) -> None:
+    metrics = (
+        collision_report.get("spike_metrics")
+        if isinstance(collision_report.get("spike_metrics"), Mapping)
+        else {}
+    )
+    ratio = float(metrics.get("long_edge_face_ratio", 0.0) or 0.0)
+    max_ratio = max(0.0, _env_float("COLLISION_SPIKE_MAX_RATIO", 0.02))
+    if ratio > max_ratio:
+        raise RuntimeError(
+            "Collision spike gate failed: "
+            f"long_edge_face_ratio={ratio:.4f} exceeds threshold={max_ratio:.4f}"
+        )
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Stage 7: visual mesh exports for generic viewers
+# ---------------------------------------------------------------------------
+def _build_visual_mesh_quick(fused_ply: Path, output_glb: Path, target_faces: int) -> Dict[str, Any]:
+    """Generate a viewer-friendly mesh from dense fused point cloud."""
+    try:
+        import open3d as o3d
+        import numpy as np
+    except Exception as exc:
+        try:
+            import trimesh
+        except Exception as tri_exc:
+            raise RuntimeError(
+                f"visual mesh export requires open3d or trimesh ({exc}; {tri_exc})"
+            ) from tri_exc
+
+        cloud = trimesh.load(str(fused_ply))
+        output_glb.parent.mkdir(parents=True, exist_ok=True)
+        cloud.export(str(output_glb))
+        return {
+            "ok": True,
+            "method": "quick_passthrough_trimesh",
+            "target_faces": int(target_faces),
+        }
+
+    pcd = o3d.io.read_point_cloud(str(fused_ply))
+    point_count = len(pcd.points)
+    if point_count <= 0:
+        raise RuntimeError(f"No points found in fused cloud: {fused_ply}")
+
+    max_points = max(50000, _env_int("VISUAL_MESH_MAX_POINTS", 700000))
+    if point_count > max_points:
+        ratio = max(0.05, min(1.0, float(max_points) / float(point_count)))
+        pcd = pcd.random_down_sample(ratio)
+        point_count = len(pcd.points)
+
+    if not pcd.has_normals():
+        pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.15, max_nn=50)
+        )
+        pcd.orient_normals_consistent_tangent_plane(50)
+
+    depth = max(6, min(12, _env_int("VISUAL_MESH_POISSON_DEPTH", 10)))
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        pcd,
+        depth=depth,
+        width=0,
+        scale=1.1,
+        linear_fit=False,
+    )
+    if len(mesh.triangles) <= 0:
+        raise RuntimeError("Open3D Poisson returned an empty mesh")
+
+    density_quantile = min(0.2, max(0.0, _env_float("VISUAL_MESH_DENSITY_QUANTILE", 0.03)))
+    if density_quantile > 0.0:
+        densities_arr = np.asarray(densities)
+        density_threshold = np.quantile(densities_arr, density_quantile)
+        mesh.remove_vertices_by_mask(densities_arr < density_threshold)
+
+    if target_faces > 0 and len(mesh.triangles) > target_faces:
+        mesh = mesh.simplify_quadric_decimation(target_faces)
+
+    if pcd.has_colors() and len(pcd.colors) > 0 and len(mesh.vertices) > 0:
+        tree = o3d.geometry.KDTreeFlann(pcd)
+        pcd_colors = np.asarray(pcd.colors)
+        vtx = np.asarray(mesh.vertices)
+        out_colors = np.zeros((len(vtx), 3), dtype=np.float64)
+        for i, vert in enumerate(vtx):
+            _, idx, _ = tree.search_knn_vector_3d(vert, 1)
+            out_colors[i] = pcd_colors[idx[0]]
+        mesh.vertex_colors = o3d.utility.Vector3dVector(out_colors)
+
+    output_glb.parent.mkdir(parents=True, exist_ok=True)
+    ok = o3d.io.write_triangle_mesh(str(output_glb), mesh, write_vertex_colors=True)
+    if not ok:
+        raise RuntimeError(f"Failed to write visual mesh GLB: {output_glb}")
+    return {
+        "ok": True,
+        "method": "quick_poisson_open3d",
+        "point_count": int(point_count),
+        "faces": int(len(mesh.triangles)),
+        "target_faces": int(target_faces),
+        "path": str(output_glb),
+    }
+
+
+def _build_visual_mesh_gaussian_tsdf(
+    *,
+    gaussian_ply: Path,
+    output_glb: Path,
+    target_faces: int,
+) -> Dict[str, Any]:
+    try:
+        from blueprint_pipeline.gaussian_visual_mesh import build_gaussian_visual_mesh
+    except Exception as exc:
+        return {
+            "ok": False,
+            "method": "gaussian_tsdf",
+            "reason": f"gaussian_visual_mesh_import_failed:{exc}",
+        }
+
+    return build_gaussian_visual_mesh(
+        gaussian_ply=gaussian_ply,
+        output_glb=output_glb,
+        target_faces=target_faces,
+    )
+
+
+def build_visual_mesh_artifacts(*, output_dir: Path, fused_ply: Path, gaussian_ply: Path) -> Dict[str, Any]:
+    enabled = _env_flag("VISUAL_MESH_ENABLED", True)
+    target_faces = max(10000, _env_int("VISUAL_MESH_TARGET_FACES", 500000))
+    method = (os.getenv("VISUAL_MESH_METHOD", "quick_poisson") or "quick_poisson").strip().lower()
+
+    visual_pointcloud = output_dir / "visual_pointcloud.ply"
+    visual_mesh = output_dir / "visual_mesh.glb"
+    robust_mesh = output_dir / "visual_mesh_robust.glb"
+    report: Dict[str, Any] = {
+        "enabled": enabled,
+        "configured_method": method,
+        "target_faces": target_faces,
+        "visual_pointcloud": str(visual_pointcloud),
+    }
+    if not enabled:
+        report["status"] = "disabled"
+        return report
+
+    shutil.copy2(str(fused_ply), str(visual_pointcloud))
+    robust_report: Dict[str, Any] = {}
+    quick_report: Dict[str, Any] = {}
+
+    if method == "gaussian_tsdf":
+        robust_report = _build_visual_mesh_gaussian_tsdf(
+            gaussian_ply=gaussian_ply,
+            output_glb=robust_mesh,
+            target_faces=target_faces,
+        )
+        report["robust"] = robust_report
+        if robust_report.get("ok") and robust_mesh.exists():
+            if robust_mesh != visual_mesh:
+                shutil.copy2(str(robust_mesh), str(visual_mesh))
+            report["status"] = "ok"
+            report["selected_method"] = str(robust_report.get("method") or "gaussian_tsdf")
+            report["visual_mesh"] = str(visual_mesh)
+            report["visual_mesh_robust"] = str(robust_mesh)
+            return report
+
+    quick_report = _build_visual_mesh_quick(
+        fused_ply=fused_ply,
+        output_glb=visual_mesh,
+        target_faces=target_faces,
+    )
+    report["quick"] = quick_report
+    report["status"] = "ok"
+    report["selected_method"] = str(quick_report.get("method") or "quick_poisson")
+    report["visual_mesh"] = str(visual_mesh)
+    if robust_mesh.exists():
+        report["visual_mesh_robust"] = str(robust_mesh)
+    return report
+
+
+def write_mesh_manifest(
+    *,
+    output_dir: Path,
+    visual_usdz: Path,
+    gaussian_ply: Path,
+    collision_mesh_ply: Path,
+    occupancy: Path,
+    visual_report: Mapping[str, Any],
+    collision_method: str,
+    collision_report: Mapping[str, Any],
+) -> Path:
+    visual_mesh_path = (
+        output_dir / "visual_mesh.glb"
+        if (output_dir / "visual_mesh.glb").is_file() and (output_dir / "visual_mesh.glb").stat().st_size > 0
+        else None
+    )
+    visual_pointcloud_path = (
+        output_dir / "visual_pointcloud.ply"
+        if (output_dir / "visual_pointcloud.ply").is_file()
+        and (output_dir / "visual_pointcloud.ply").stat().st_size > 0
+        else None
+    )
+    robust_mesh_path = (
+        output_dir / "visual_mesh_robust.glb"
+        if (output_dir / "visual_mesh_robust.glb").is_file()
+        and (output_dir / "visual_mesh_robust.glb").stat().st_size > 0
+        else None
+    )
+
+    def _entry(path: Path, *, role: str, kind: str, viewer_hint: str) -> Dict[str, Any]:
+        return {
+            "path": path.name,
+            "role": role,
+            "kind": kind,
+            "size_bytes": int(path.stat().st_size),
+            "viewer_hint": viewer_hint,
+        }
+
+    assets = [
+        _entry(
+            visual_usdz,
+            role="volume_visual",
+            kind="usdz_nurec_volume",
+            viewer_hint="Use Isaac Sim / Omniverse renderer for neural volume visuals",
+        ),
+        _entry(
+            gaussian_ply,
+            role="gaussian_pointcloud",
+            kind="ply_gaussian",
+            viewer_hint="Debug/training artifact, not final viewer mesh",
+        ),
+        _entry(
+            collision_mesh_ply,
+            role="collision",
+            kind="ply_triangle_mesh",
+            viewer_hint="Physics/collision mesh; may look coarse or white in viewers",
+        ),
+        _entry(
+            occupancy,
+            role="occupancy",
+            kind="binary_voxel_grid",
+            viewer_hint="Used for occupancy checks; not a visual asset",
+        ),
+    ]
+    if visual_mesh_path is not None:
+        assets.append(
+            _entry(
+                visual_mesh_path,
+                role="visual",
+                kind="glb_triangle_mesh_vertex_color",
+                viewer_hint="Primary generic-viewer asset",
+            )
+        )
+    if robust_mesh_path is not None:
+        assets.append(
+            _entry(
+                robust_mesh_path,
+                role="visual_optional",
+                kind="glb_triangle_mesh_vertex_color",
+                viewer_hint="Robust visual mesh candidate (gaussian_tsdf mode)",
+            )
+        )
+    if visual_pointcloud_path is not None:
+        assets.append(
+            _entry(
+                visual_pointcloud_path,
+                role="visual_pointcloud",
+                kind="ply_pointcloud_color",
+                viewer_hint="Colored dense point cloud for visual debugging",
+            )
+        )
+
+    payload = {
+        "schema_version": "v1",
+        "generated_at": _utc_now_iso(),
+        "collision_method": collision_method,
+        "visual_method": str(visual_report.get("selected_method") or ""),
+        "assets": assets,
+        "reports": {
+            "visual": dict(visual_report),
+            "collision": dict(collision_report),
+        },
+    }
+    manifest_path = output_dir / "mesh_manifest.json"
+    manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return manifest_path
+
+
+# ---------------------------------------------------------------------------
+# Stage 8: Occupancy grid from PLY
 # ---------------------------------------------------------------------------
 def _build_robust_occupancy_grid(xyz, resolution: int):
     """Build occupancy grid with percentile clipping to suppress outliers."""
@@ -1119,7 +1578,34 @@ def main() -> int:
             "--skip-dense is incompatible with collision mesh quality gate "
             "(triangulated mesh required)"
         )
-    mesh_method = run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
+    dense_result = run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
+    mesh_method = str(dense_result.get("mesh_method") or "")
+    fused_ply = Path(str(dense_result.get("fused_ply") or ""))
+    collision_report = _postprocess_collision_mesh(mesh_ply)
+    collision_report_path = output_dir / "collision_mesh_report.json"
+    collision_report_path.write_text(json.dumps(collision_report, indent=2), encoding="utf-8")
+
+    try:
+        _enforce_collision_spike_gate(collision_report)
+    except RuntimeError as spike_error:
+        if mesh_method == "delaunay_colmap" and fused_ply.exists():
+            _log(f"Collision spike gate failed for Delaunay mesh ({spike_error})")
+            _log("Attempting collision fallback: forced Open3D Poisson from fused cloud...")
+            if _mesh_with_open3d_poisson(fused_ply, mesh_ply, force=True):
+                _validate_collision_mesh(mesh_ply)
+                mesh_method = "poisson_open3d"
+                collision_report = _postprocess_collision_mesh(mesh_ply)
+                collision_report_path.write_text(
+                    json.dumps(collision_report, indent=2), encoding="utf-8"
+                )
+                _enforce_collision_spike_gate(collision_report)
+            else:
+                raise RuntimeError(
+                    "Collision spike gate failed and fallback Poisson meshing was unavailable"
+                ) from spike_error
+        else:
+            raise
+
     mesh_method_path = output_dir / "mesh_method.txt"
     mesh_method_path.write_text(f"{mesh_method}\n", encoding="utf-8")
     _log(f"  Collision mesh method: {mesh_method}")
@@ -1129,21 +1615,49 @@ def main() -> int:
     _log(f"  Suggested quality profile: {quality_profile}")
 
     # -----------------------------------------------------------------------
-    # Stage 7: Occupancy Grid
+    # Stage 7: Visual Mesh Exports (generic viewers)
     # -----------------------------------------------------------------------
     _log("=" * 60)
-    _log("STAGE 7: Occupancy Grid")
+    _log("STAGE 7: Visual Mesh Exports")
+    _log("=" * 60)
+    visual_report = build_visual_mesh_artifacts(
+        output_dir=output_dir,
+        fused_ply=fused_ply,
+        gaussian_ply=ply_dst,
+    )
+    if bool(visual_report.get("enabled", False)) and str(visual_report.get("status")) != "ok":
+        raise RuntimeError(f"visual mesh export failed: {visual_report}")
+
+    # -----------------------------------------------------------------------
+    # Stage 8: Occupancy Grid
+    # -----------------------------------------------------------------------
+    _log("=" * 60)
+    _log("STAGE 8: Occupancy Grid")
     _log("=" * 60)
     occupancy_bin = output_dir / "occupancy.bin"
     generate_occupancy(ply_dst, occupancy_bin)
 
     # -----------------------------------------------------------------------
-    # Stage 8: SAM3 Object Detection (replaces ARKit)
+    # Stage 8.5: Mesh Manifest (artifact roles + viewer guidance)
+    # -----------------------------------------------------------------------
+    write_mesh_manifest(
+        output_dir=output_dir,
+        visual_usdz=usdz_dst,
+        gaussian_ply=ply_dst,
+        collision_mesh_ply=mesh_ply,
+        occupancy=occupancy_bin,
+        visual_report=visual_report,
+        collision_method=mesh_method,
+        collision_report=collision_report,
+    )
+
+    # -----------------------------------------------------------------------
+    # Stage 9: SAM3 Object Detection (replaces ARKit)
     # -----------------------------------------------------------------------
     object_index_path = None
     if not args.skip_sam3:
         _log("=" * 60)
-        _log("STAGE 8: SAM3 Object Detection")
+        _log("STAGE 9: SAM3 Object Detection")
         _log("=" * 60)
         scene_semantics_report = _infer_scene_semantics_report(
             frames_dir=frames_dir,
@@ -1230,7 +1744,15 @@ def main() -> int:
     _log("=" * 60)
     _log("RECONSTRUCTION COMPLETE")
     _log("=" * 60)
-    required = ["export_last.usdz", "export_last.ply", "nvblox_mesh.ply", "occupancy.bin"]
+    required = [
+        "export_last.usdz",
+        "export_last.ply",
+        "nvblox_mesh.ply",
+        "occupancy.bin",
+        "mesh_manifest.json",
+    ]
+    if bool(visual_report.get("enabled", False)):
+        required.append("visual_mesh.glb")
     all_ok = True
     for artifact in required:
         path = output_dir / artifact
@@ -1248,6 +1770,9 @@ def main() -> int:
         "scene_semantics_report.json",
         "mesh_method.txt",
         "quality_profile.txt",
+        "collision_mesh_report.json",
+        "visual_pointcloud.ply",
+        "visual_mesh_robust.glb",
     ]:
         path = output_dir / artifact
         if path.exists():

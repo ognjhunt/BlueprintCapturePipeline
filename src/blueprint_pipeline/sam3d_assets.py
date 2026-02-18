@@ -1053,16 +1053,26 @@ def materialize_scene_shell_assets(
 
     artifacts = nurec_outputs.get("artifacts") if isinstance(nurec_outputs.get("artifacts"), Mapping) else {}
     visual_uri = str(artifacts.get("visual_usdz") or "").strip()
+    visual_mesh_uri = str(artifacts.get("visual_mesh_glb") or "").strip()
     mesh_uri = str(artifacts.get("collision_mesh_ply") or "").strip()
-    if not visual_uri or not mesh_uri:
-        raise StageError("sam3d", "nurec_outputs missing visual_usdz or collision_mesh_ply")
+    if not mesh_uri or (not visual_uri and not visual_mesh_uri):
+        raise StageError(
+            "sam3d",
+            "nurec_outputs missing collision_mesh_ply and at least one visual artifact "
+            "(visual_mesh_glb or visual_usdz)",
+        )
 
     from .common import resolve_gs_uri_to_path
 
-    visual_src = resolve_gs_uri_to_path(visual_uri, storage_root)
+    visual_src = resolve_gs_uri_to_path(visual_uri, storage_root) if visual_uri else None
+    visual_mesh_src = resolve_gs_uri_to_path(visual_mesh_uri, storage_root) if visual_mesh_uri else None
     mesh_src = resolve_gs_uri_to_path(mesh_uri, storage_root)
-    if not has_nonempty_file(visual_src):
+    if visual_mesh_src is not None and not has_nonempty_file(visual_mesh_src):
+        visual_mesh_src = None
+    if visual_src is not None and not has_nonempty_file(visual_src):
         raise StageError("sam3d", f"missing NuRec visual USDZ at {visual_src}")
+    if visual_mesh_src is None and visual_src is None:
+        raise StageError("sam3d", "no valid visual source artifact found in nurec outputs")
     if not has_nonempty_file(mesh_src):
         raise StageError("sam3d", f"missing NuRec mesh PLY at {mesh_src}")
 
@@ -1071,9 +1081,23 @@ def materialize_scene_shell_assets(
     ensure_dir(visual_dir)
     ensure_dir(shell_dir)
 
-    visual_usdz = visual_dir / "model.usdz"
-    shutil.copy2(visual_src, visual_usdz)
-    _write_reference_model_usd(visual_dir / "model.usd", "model.usdz")
+    selected_visual_source = ""
+    if visual_mesh_src is not None and has_nonempty_file(visual_mesh_src):
+        visual_glb = visual_dir / "model.glb"
+        shutil.copy2(visual_mesh_src, visual_glb)
+        _write_reference_model_usd(visual_dir / "model.usd", "model.glb")
+        selected_visual_source = "nurec_visual_mesh"
+    else:
+        if visual_src is None:
+            raise StageError("sam3d", "missing visual source: visual_usdz")
+        visual_usdz = visual_dir / "model.usdz"
+        shutil.copy2(visual_src, visual_usdz)
+        _write_reference_model_usd(visual_dir / "model.usd", "model.usdz")
+        selected_visual_source = "nurec_export_volume"
+
+    # Keep USDZ sidecar when available even if GLB is selected as primary visual asset.
+    if visual_src is not None and has_nonempty_file(visual_src):
+        shutil.copy2(visual_src, visual_dir / "model.usdz")
 
     shell_glb = shell_dir / "mesh.glb"
     _ply_to_glb(mesh_src, shell_glb)
@@ -1098,8 +1122,9 @@ def materialize_scene_shell_assets(
     visual_metadata = {
         "schema_version": "v1",
         "asset_id": "obj_nurec_visual",
-        "source": "nurec_export",
-        "source_uri": visual_uri,
+        "source": selected_visual_source,
+        "source_uri": visual_mesh_uri if selected_visual_source == "nurec_visual_mesh" else visual_uri,
+        "fallback_visual_usdz_uri": visual_uri,
         "generated_at": utc_now_iso(),
     }
     write_json(visual_dir / "metadata.json", visual_metadata)

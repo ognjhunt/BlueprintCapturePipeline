@@ -74,6 +74,13 @@ def _read_ply_face_count(path: Path) -> int:
     return 0
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _render_command(template: str, *, spec_path: Path, spec: Mapping[str, Any], nurec_dir: Path) -> str:
     capture = spec.get("capture") if isinstance(spec.get("capture"), Mapping) else {}
     return (
@@ -139,24 +146,37 @@ def _run_nurec_pipeline(*, spec_path: Path, spec: Mapping[str, Any], nurec_dir: 
 def _validate_outputs(nurec_dir: Path) -> Dict[str, Any]:
     export_usdz = nurec_dir / "export_last.usdz"
     mesh_ply = nurec_dir / "nvblox_mesh.ply"
+    visual_mesh_glb = nurec_dir / "visual_mesh.glb"
+    visual_pointcloud_ply = nurec_dir / "visual_pointcloud.ply"
+    mesh_manifest_json = nurec_dir / "mesh_manifest.json"
     occupancy = sorted(nurec_dir.glob("occupancy*"))
+    visual_mesh_enabled = _env_flag("VISUAL_MESH_ENABLED", True)
 
     if not has_nonempty_file(export_usdz):
         raise RuntimeError(f"Missing required NuRec visual artifact: {export_usdz}")
     if not has_nonempty_file(mesh_ply):
         raise RuntimeError(f"Missing required NuRec collision mesh: {mesh_ply}")
+    if visual_mesh_enabled and not has_nonempty_file(visual_mesh_glb):
+        raise RuntimeError(f"Missing required NuRec visual mesh artifact: {visual_mesh_glb}")
     mesh_faces = _read_ply_face_count(mesh_ply)
     if mesh_faces <= 0:
         raise RuntimeError(f"Collision mesh must be triangulated (face_count={mesh_faces}) at {mesh_ply}")
     if not occupancy:
         raise RuntimeError(f"Missing required occupancy artifacts in {nurec_dir}")
 
-    return {
+    outputs: Dict[str, Any] = {
         "visual_usdz": str(export_usdz),
         "collision_mesh_ply": str(mesh_ply),
         "collision_mesh_face_count": int(mesh_faces),
         "occupancy": [str(path) for path in occupancy],
     }
+    if has_nonempty_file(visual_mesh_glb):
+        outputs["visual_mesh_glb"] = str(visual_mesh_glb)
+    if has_nonempty_file(visual_pointcloud_ply):
+        outputs["visual_pointcloud_ply"] = str(visual_pointcloud_ply)
+    if has_nonempty_file(mesh_manifest_json):
+        outputs["mesh_manifest_json"] = str(mesh_manifest_json)
+    return outputs
 
 
 def _marker_payload(

@@ -70,6 +70,14 @@ Scene artifacts written under:
 - `scenes/<scene_id>/layout/scene_layout_scaled.json`
 - `scenes/<scene_id>/seg/inventory.json`
 
+NuRec artifact roles under `.../pipeline/nurec/`:
+
+- `export_last.usdz`: NuRec volume visual for Isaac Sim / Omniverse rendering.
+- `visual_mesh.glb`: generic-viewer visual mesh (vertex-colored).
+- `visual_pointcloud.ply`: colored dense point cloud debug artifact.
+- `nvblox_mesh.ply`: collision/physics mesh (not intended to look photoreal).
+- `mesh_manifest.json`: role manifest describing which artifact to use for visual vs collision.
+
 ## Environment
 
 - `GCS_ROOT` (default: `/mnt/gcs`)
@@ -105,6 +113,11 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `DA3_MODEL_PATH` (default: `/opt/da3/weights/metric_large`, local path preferred)
 - `DA3_MODEL_NAME` (default: `da3metric-large`)
 - `HF_HOME` (default in VM guide: `/opt/hf`, shared HuggingFace cache)
+- `VISUAL_MESH_ENABLED` (`true` default; set `false` to skip viewer mesh export)
+- `VISUAL_MESH_METHOD` (`quick_poisson` default; `gaussian_tsdf` for robust path)
+- `VISUAL_MESH_TARGET_FACES` (default: `500000`)
+- `COLLISION_MAX_EDGE_M` (default: `5.0`; long-edge spike filter threshold)
+- `COLLISION_SPIKE_MAX_RATIO` (default: `0.02`; collision spike gate threshold)
 
 Asset generation/retrieval providers:
 
