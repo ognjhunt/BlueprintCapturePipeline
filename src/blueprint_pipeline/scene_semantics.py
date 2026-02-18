@@ -219,7 +219,7 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
             response = client.models.generate_content(
                 model=model,
                 contents=[{"parts": parts}],
-                config={"temperature": 0.1, "max_output_tokens": 300},
+                config={"temperature": 0.1, "max_output_tokens": 1024},
             )
         except Exception:
             continue
