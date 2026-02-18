@@ -43,6 +43,9 @@ if SRC_ROOT.is_dir() and str(SRC_ROOT) not in sys.path:
 # Configuration (paths set by VM provisioning / Docker snapshot)
 # ---------------------------------------------------------------------------
 THREEDGRUT_DIR = os.getenv("THREEDGRUT_DIR", "/opt/3dgrut")
+# 3DGRUT requires Python >=3.11; use THREEDGRUT_PYTHON env var to override,
+# defaulting to python3.11 (installed alongside the image's default python3.10).
+THREEDGRUT_PYTHON = os.getenv("THREEDGRUT_PYTHON", "python3.11")
 FIXER_DIR = os.getenv("FIXER_DIR", "/opt/Fixer")
 FIXER_WEIGHTS_DIR = os.getenv("FIXER_WEIGHTS_DIR", "/opt/Fixer/weights")
 DEFAULT_FIXER_H100_SCRIPT = os.getenv("FIXER_H100_SCRIPT", "/app/scripts/fixer_h100_stage.sh")
@@ -220,7 +223,10 @@ def run_colmap_undistort(frames_dir: Path, sparse_dir: Path,
         "--input_path", str(sparse_dir),
         "--output_path", str(undistorted_dir),
         "--output_type", "COLMAP",
-        "--max_image_size", "1920",
+        # Use a very large max_image_size to avoid COLMAP's internal rounding
+        # truncating the camera params to a different resolution than the output
+        # images — which causes 3DGRUT's dimension assertion to fail.
+        "--max_image_size", "9999",
     ])
 
     # 3DGRUT expects sparse/0/ but undistorter puts files in sparse/
@@ -254,7 +260,7 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
 
     _log(f"Starting 3DGRUT training ({n_iterations} iterations)...")
     _run([
-        sys.executable, str(train_script),
+        THREEDGRUT_PYTHON, str(train_script),
         "--config-name", "apps/colmap_3dgut_mcmc",
         f"path={undistorted_dir}/",
         f"out_dir={grut_out}/",

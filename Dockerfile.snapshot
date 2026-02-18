@@ -18,12 +18,14 @@ ENV COLMAP_CUDA_ARCHS=${COLMAP_CUDA_ARCHS}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
+    python3-dev \
     python3-pip \
     python3-venv \
     python-is-python3 \
     git \
     tmux \
     openssh-server \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -31,6 +33,18 @@ COPY . /app
 
 RUN chmod +x /app/scripts/install_colmap_cuda.sh /app/scripts/install_ml_stack.sh && \
     /app/scripts/install_ml_stack.sh
+
+# Install libonnxruntime.so.1.24.1 as a system shared library so the CUDA COLMAP
+# binary (which links against VERS_1.24.1) can find it at runtime.
+# This is NOT available on PyPI; grab the official prebuilt tarball instead.
+RUN curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz" \
+      -o /tmp/ort.tgz && \
+    tar xzf /tmp/ort.tgz -C /tmp && \
+    cp /tmp/onnxruntime-linux-x64-1.24.1/lib/libonnxruntime.so.1.24.1 /usr/local/lib/ && \
+    ln -sf /usr/local/lib/libonnxruntime.so.1.24.1 /usr/local/lib/libonnxruntime.so.1 && \
+    ln -sf /usr/local/lib/libonnxruntime.so.1.24.1 /usr/local/lib/libonnxruntime.so && \
+    ldconfig && \
+    rm -rf /tmp/ort.tgz /tmp/onnxruntime-linux-x64-1.24.1
 
 # Clone only the required BlueprintPipeline subdirectories (~2MB vs 13GB)
 ARG BLUEPRINTPIPELINE_GIT_URL="https://github.com/ognjhunt/BlueprintPipeline.git"
@@ -56,6 +70,33 @@ ENV SWAP_POLICY_CONFIG_PATH=/app/configs/swap_policy.yaml
 ENV GCS_ROOT=/mnt/gcs
 # Ensure scripts/ is importable (nurec_shim.py imports sam3_detect)
 ENV PYTHONPATH=/app/scripts
+# 3DGRUT requires Python >=3.11 — installed alongside the default python3.10
+ENV THREEDGRUT_PYTHON=python3.11
+
+# Pre-download Qwen-Image-Edit-2511 weights for object crop polish stage (Stage 7.5)
+# Pass HF_TOKEN at build time: docker build --build-arg HF_TOKEN=hf_xxx ...
+ARG HF_TOKEN
+ENV QWEN_IMAGE_EDIT_MODEL_PATH=/opt/qwen-image-edit
+
+RUN pip install --no-cache-dir \
+    "diffusers>=0.32.0" \
+    accelerate \
+    sentencepiece
+
+RUN mkdir -p /opt/qwen-image-edit && \
+    if [ -n "$HF_TOKEN" ]; then \
+      HF_TOKEN="$HF_TOKEN" huggingface-cli download \
+        Qwen/Qwen-Image-Edit-2511 \
+        --local-dir /opt/qwen-image-edit \
+        --token "$HF_TOKEN"; \
+      python3 -c " \
+import torch; \
+from diffusers import QwenImageEditPlusPipeline; \
+pipe = QwenImageEditPlusPipeline.from_pretrained('/opt/qwen-image-edit', torch_dtype=torch.bfloat16); \
+print('QWEN_IMAGE_EDIT_PREWARM_OK')"; \
+    else \
+      echo 'WARNING: HF_TOKEN not set — Qwen weights not downloaded. Pass --build-arg HF_TOKEN=hf_xxx'; \
+    fi
 
 # Keep container alive — works for Vast.ai, RunPod, Lambda, etc.
 ENTRYPOINT ["bash", "-lc", "sleep infinity"]

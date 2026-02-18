@@ -180,8 +180,8 @@ class _GeminiResult:
 
 
 _DEFAULT_MODEL_CASCADE = [
-    "gemini-3-pro-preview",
     "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
 ]
@@ -232,7 +232,7 @@ def _extract_json_array(text: str) -> List[Any]:
 
 
 def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_GeminiResult]:
-    api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or "").strip()
+    api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         return None
 
@@ -278,7 +278,6 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
                     "temperature": 0.3,
                     "max_output_tokens": 8192,
                     "response_mime_type": "application/json",
-                    "thinking_config": {"thinking_budget": 8192},
                 },
             )
         except Exception:

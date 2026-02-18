@@ -1,0 +1,101 @@
+# Thin fix layer on top of sam3-ready image.
+# Fixes discovered during first E2E run of IMG_3082.MOV (2026-02-18):
+#   1. ffmpeg missing — needed by Stage 1 frame extraction
+#   2. libonnxruntime.so.1.24.1 missing — needed by CUDA COLMAP 3.14 binary
+#   3. python3.11 missing — required by 3DGRUT (pyproject.toml: requires-python>=3.11)
+#   4. 3DGRUT deps (hydra-core, omegaconf, fire, opencv, usd-core, viser, fused-ssim) under 3.11
+#   5. slangtorch version too new (1.3.19 installed, 1.3.4 required) — breaking Slang syntax changes
+#      slangc also not on PATH — bundled in slangtorch package, needs symlink to /usr/local/bin
+#   6. COLMAP undistorter --max_image_size 1920 → 1px rounding mismatch vs 3DGRUT camera assert
+#      → fixed in nurec_shim.py (use 9999); code change in repo only, no Docker layer needed
+#   7. python3-dev missing — triton JIT needs Python.h to compile CUDA utils at runtime
+#   8. diffusers + Qwen-Image-Edit-2511 not pre-downloaded — needed for object crop polish stage
+#
+# Build and push:
+#   docker build -f Dockerfile.fixlayer \
+#     --build-arg HF_TOKEN=<token> \
+#     -t nijelhunt/blueprint-capture-pipeline:sam3-ready-v2 .
+#   docker push nijelhunt/blueprint-capture-pipeline:sam3-ready-v2
+FROM nijelhunt/blueprint-capture-pipeline:sam3-ready
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Fix 1: ffmpeg + python3.11 + python3-dev (Python.h for triton JIT + 3DGRUT)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    python3-dev \
+    python3.11 \
+    python3.11-dev \
+    python3.11-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Fix 2: install libonnxruntime 1.24.1 as a system .so
+# The CUDA COLMAP binary (3.14.0) was compiled against VERS_1.24.1 which is
+# not yet available on PyPI — must grab the prebuilt tarball directly.
+RUN curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz" \
+      -o /tmp/ort.tgz && \
+    tar xzf /tmp/ort.tgz -C /tmp && \
+    cp /tmp/onnxruntime-linux-x64-1.24.1/lib/libonnxruntime.so.1.24.1 /usr/local/lib/ && \
+    ln -sf /usr/local/lib/libonnxruntime.so.1.24.1 /usr/local/lib/libonnxruntime.so.1 && \
+    ln -sf /usr/local/lib/libonnxruntime.so.1.24.1 /usr/local/lib/libonnxruntime.so && \
+    ldconfig && \
+    rm -rf /tmp/ort.tgz /tmp/onnxruntime-linux-x64-1.24.1
+
+# Fix 3: bootstrap pip for python3.11 + install torch + all 3DGRUT deps under it
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 && \
+    python3.11 -m pip install --no-cache-dir \
+        torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
+    python3.11 -m pip install --no-cache-dir \
+        hydra-core omegaconf fire wandb rich addict plyfile torchmetrics \
+        tensorboard "slangtorch==1.3.4" scikit-learn kornia imageio einops msgpack \
+        dataclasses_json piexif \
+        "opencv-python<4.12.0" \
+        usd-core \
+        "viser==1.0.0" \
+        polyscope && \
+    # fused-ssim is a CUDA extension not on PyPI — build from source at pinned commit
+    git clone https://github.com/rahul-goel/fused-ssim /tmp/fused-ssim && \
+    cd /tmp/fused-ssim && git checkout 1272e21a282342e89537159e4bad508b19b34157 && \
+    PATH=/usr/local/cuda/bin:$PATH python3.11 setup.py install && \
+    rm -rf /tmp/fused-ssim && \
+    # Initialize git submodules (tiny-cuda-nn + optix-dev) — required for CUDA extension build
+    cd /opt/3dgrut && git submodule update --init --recursive && \
+    python3.11 -m pip install --no-cache-dir -e /opt/3dgrut
+
+# Verify CUDA COLMAP + python3.11 + 3DGRUT
+RUN ldd /usr/local/bin/colmap | grep -c "not found" | grep -q "^0$" && \
+    colmap help 2>&1 | grep -q "with CUDA" && \
+    echo "CUDA COLMAP OK" && \
+    python3.11 -c "import hydra; import threedgrut; print('3DGRUT OK')"
+
+# slangc (Slang shader compiler) is bundled in slangtorch but not on PATH
+# — 3DGRUT's kernel compiler subprocess calls it by name.
+RUN ln -sf /usr/local/lib/python3.11/dist-packages/slangtorch/bin/slangc /usr/local/bin/slangc
+
+ENV THREEDGRUT_PYTHON=python3.11
+
+# Fix 8: diffusers + Qwen-Image-Edit-2511 weights pre-downloaded for object crop polish stage
+# Pass HF_TOKEN at build time: docker build --build-arg HF_TOKEN=hf_xxx ...
+ARG HF_TOKEN
+ENV QWEN_IMAGE_EDIT_MODEL_PATH=/opt/qwen-image-edit
+
+RUN pip install --no-cache-dir \
+    "diffusers>=0.32.0" \
+    accelerate \
+    sentencepiece \
+    Pillow
+
+RUN mkdir -p /opt/qwen-image-edit && \
+    if [ -n "$HF_TOKEN" ]; then \
+      HF_TOKEN="$HF_TOKEN" huggingface-cli download \
+        Qwen/Qwen-Image-Edit-2511 \
+        --local-dir /opt/qwen-image-edit \
+        --token "$HF_TOKEN"; \
+      python3 -c " \
+import torch; \
+from diffusers import QwenImageEditPlusPipeline; \
+pipe = QwenImageEditPlusPipeline.from_pretrained('/opt/qwen-image-edit', torch_dtype=torch.bfloat16); \
+print('QWEN_IMAGE_EDIT_PREWARM_OK')"; \
+    else \
+      echo 'WARNING: HF_TOKEN not set — Qwen weights not downloaded. Pass --build-arg HF_TOKEN=hf_xxx'; \
+    fi
