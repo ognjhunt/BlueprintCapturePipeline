@@ -83,7 +83,8 @@ RUN pip install --no-cache-dir \
     "diffusers>=0.32.0" \
     accelerate \
     sentencepiece \
-    Pillow
+    Pillow \
+    "open3d>=0.18.0"
 
 RUN mkdir -p /opt/qwen-image-edit && \
     if [ -n "$HF_TOKEN" ]; then \

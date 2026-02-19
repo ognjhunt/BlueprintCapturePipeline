@@ -884,7 +884,7 @@ def _build_visual_mesh_quick(fused_ply: Path, output_glb: Path, target_faces: in
         )
         pcd.orient_normals_consistent_tangent_plane(50)
 
-    depth = max(6, min(12, _env_int("VISUAL_MESH_POISSON_DEPTH", 10)))
+    depth = max(6, min(12, _env_int("VISUAL_MESH_POISSON_DEPTH", 12)))
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
         pcd,
         depth=depth,
@@ -952,7 +952,7 @@ def _build_visual_mesh_gaussian_tsdf(
 
 def build_visual_mesh_artifacts(*, output_dir: Path, fused_ply: Path, gaussian_ply: Path) -> Dict[str, Any]:
     enabled = _env_flag("VISUAL_MESH_ENABLED", True)
-    target_faces = max(10000, _env_int("VISUAL_MESH_TARGET_FACES", 500000))
+    target_faces = _env_int("VISUAL_MESH_TARGET_FACES", 0)
     method = (os.getenv("VISUAL_MESH_METHOD", "quick_poisson") or "quick_poisson").strip().lower()
 
     visual_pointcloud = output_dir / "visual_pointcloud.ply"

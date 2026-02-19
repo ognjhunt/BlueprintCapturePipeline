@@ -159,7 +159,7 @@ if [ "$WITH_FIXER" = true ]; then
 fi
 
 log "Installing Qwen-Image-Edit dependencies..."
-python3 -m pip install --no-cache-dir diffusers accelerate sentencepiece protobuf transformers
+python3 -m pip install --no-cache-dir diffusers accelerate sentencepiece protobuf transformers "open3d>=0.18.0"
 
 log "Downloading Qwen-Image-Edit-2511 weights..."
 mkdir -p "$QWEN_EDIT_DIR"
