@@ -2332,6 +2332,11 @@ def _resolve_hf_token() -> str:
 
 
 def _sam3_local_cache_present() -> bool:
+    # Check for pre-baked weights first (Docker image layer)
+    weights_path = Path(os.getenv("SAM3_WEIGHTS_PATH", "/opt/sam3_weights/sam3.pt"))
+    if weights_path.is_file():
+        return True
+
     roots: list[Path] = []
     hf_home = (os.getenv("HF_HOME") or "").strip()
     if hf_home:

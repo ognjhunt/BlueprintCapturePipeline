@@ -164,6 +164,9 @@ _DA3_MODEL_ID = os.getenv("DA3_MODEL_ID", "depth-anything/DA3Metric-Large")
 _DA3_MODEL_PATH = Path(os.getenv("DA3_MODEL_PATH", "/opt/da3/weights/metric_large"))
 _DA3_MODEL_NAME = os.getenv("DA3_MODEL_NAME", "da3metric-large")
 
+# SAM3 weights (prefer local snapshot to avoid gated-repo HF download)
+_SAM3_WEIGHTS_PATH = Path(os.getenv("SAM3_WEIGHTS_PATH", "/opt/sam3_weights/sam3.pt"))
+
 
 def _log(msg: str) -> None:
     print(f"[sam3-detect] {msg}", flush=True)
@@ -357,7 +360,10 @@ def _load_sam3():
     from sam3 import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
 
-    model = build_sam3_image_model()
+    ckpt = str(_SAM3_WEIGHTS_PATH) if _SAM3_WEIGHTS_PATH.is_file() else None
+    if ckpt:
+        _log(f"Loading SAM3 image model from local weights: {ckpt}")
+    model = build_sam3_image_model(checkpoint_path=ckpt, load_from_HF=(ckpt is None))
     processor = Sam3Processor(model, confidence_threshold=_MIN_CONFIDENCE)
     _log(f"SAM3 loaded. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
     return processor
@@ -1476,7 +1482,10 @@ def _load_video_predictor():
 
     from sam3.model_builder import build_sam3_video_predictor
 
-    predictor = build_sam3_video_predictor()
+    ckpt = str(_SAM3_WEIGHTS_PATH) if _SAM3_WEIGHTS_PATH.is_file() else None
+    if ckpt:
+        _log(f"Loading SAM3 video predictor from local weights: {ckpt}")
+    predictor = build_sam3_video_predictor(checkpoint_path=ckpt, load_from_HF=(ckpt is None))
     _log(f"SAM3 video predictor loaded. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
     return predictor
 
