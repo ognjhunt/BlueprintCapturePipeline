@@ -109,12 +109,24 @@ ENV THREEDGRUT_PYTHON=python3.11
 ARG HF_TOKEN
 ENV QWEN_IMAGE_EDIT_MODEL_PATH=/opt/qwen-image-edit
 
+# Fix 9: Missing Python packages discovered during E2E runs:
+#   google-genai     → scene_semantics.py: `from google import genai` (Gemini API)
+#   scipy            → sam3_detect.py: depth processing
+#   diffusers>=0.32  → qwen_polish.py: QwenImageEditPlusPipeline
+#   open3d>=0.18     → visual mesh Poisson reconstruction
 RUN pip install --no-cache-dir \
     "diffusers>=0.32.0" \
     accelerate \
     sentencepiece \
     Pillow \
-    "open3d>=0.18.0"
+    "open3d>=0.18.0" \
+    "google-genai>=1.0.0" \
+    scipy
+
+# Sane defaults for visual mesh — depth 12 takes 45+ min on CPU for room scans,
+# depth 9 gives visually identical results in 2-5 min
+ENV VISUAL_MESH_POISSON_DEPTH=9
+ENV VISUAL_MESH_ENABLED=true
 
 RUN mkdir -p /opt/qwen-image-edit && \
     if [ -n "$HF_TOKEN" ]; then \
