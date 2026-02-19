@@ -25,13 +25,20 @@ GENERATION_PROVIDER_CHAIN="${TEXT_ASSET_GENERATION_PROVIDER_CHAIN:-sam3d,hunyuan
 SKIP_NUREC="${SKIP_NUREC:-false}"
 
 # ── NuRec shim defaults ─────────────────────────────────────────────────────
-MAX_FRAMES="${MAX_FRAMES:-300}"
-EXTRACT_FPS="${EXTRACT_FPS:-5}"
-N_ITERATIONS="${N_ITERATIONS:-7000}"
+NUREC_QUALITY_PROFILE="${NUREC_QUALITY_PROFILE:-quality_first}"
+MAX_FRAMES="${MAX_FRAMES:-450}"
+EXTRACT_FPS="${EXTRACT_FPS:-6}"
+N_ITERATIONS="${N_ITERATIONS:-12000}"
 SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
 SKIP_FIXER="${SKIP_FIXER:---skip-fixer}"
-NUREC_RESUME="${NUREC_RESUME:-true}"
+NUREC_RESUME="${NUREC_RESUME:-false}"
 NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
+COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-exhaustive}"
+COLMAP_SEQUENTIAL_OVERLAP="${COLMAP_SEQUENTIAL_OVERLAP:-30}"
+BLUR_FILTER_KEEP_RATIO="${BLUR_FILTER_KEEP_RATIO:-1.0}"
+BLUR_FILTER_MIN_FRAMES="${BLUR_FILTER_MIN_FRAMES:-120}"
+VISUAL_MESH_METHOD="${VISUAL_MESH_METHOD:-textured_colmap}"
+NUREC_VISUAL_PRIMARY="${NUREC_VISUAL_PRIMARY:-usdz}"
 
 log() {
   echo "[run-full-pipeline] $*"
@@ -162,6 +169,7 @@ SPEC
     NUREC_PARALLEL_ARGS+=(--no-parallel-post-stage6)
   fi
 
+  export NUREC_QUALITY_PROFILE VISUAL_MESH_METHOD NUREC_VISUAL_PRIMARY
   python3 "${APP_DIR}/scripts/nurec_shim.py" \
     --job-spec "$JOB_SPEC" \
     --output-dir "$NUREC_OUTPUT_DIR" \
@@ -169,6 +177,10 @@ SPEC
     --max-frames "$MAX_FRAMES" \
     --extract-fps "$EXTRACT_FPS" \
     --n-iterations "$N_ITERATIONS" \
+    --colmap-matcher-mode "$COLMAP_MATCHER_MODE" \
+    --colmap-sequential-overlap "$COLMAP_SEQUENTIAL_OVERLAP" \
+    --blur-filter-keep-ratio "$BLUR_FILTER_KEEP_RATIO" \
+    --blur-filter-min-frames "$BLUR_FILTER_MIN_FRAMES" \
     --environment "$ENVIRONMENT" \
     --sam3-n-frames "$SAM3_N_FRAMES" \
     "${NUREC_RESUME_ARGS[@]}" \
@@ -204,7 +216,7 @@ mkdir -p "$RAW_ROOT" "$NUREC_ROOT" "$PIPELINE_ROOT" \
          "${SCENE_ROOT}/seg" "${SCENE_ROOT}/usd"
 
 # Copy NuRec outputs into expected location
-for f in export_last.usdz export_last.ply export_last.ingp nvblox_mesh.ply visual_mesh.glb visual_mesh_robust.glb visual_pointcloud.ply mesh_manifest.json collision_mesh_report.json occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt; do
+for f in export_last.usdz export_last.ply export_last.ingp nvblox_mesh.ply visual_mesh.glb visual_mesh_robust.glb visual_pointcloud.ply mesh_manifest.json collision_mesh_report.json occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt capture_quality_report.json sam3_preflight_report.json; do
   src="${NUREC_OUTPUT_DIR}/${f}"
   [ -f "$src" ] && ln -sf "$src" "${NUREC_ROOT}/${f}"
 done

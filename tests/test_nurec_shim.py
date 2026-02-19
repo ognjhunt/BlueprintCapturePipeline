@@ -255,6 +255,114 @@ def test_run_colmap_sfm_selects_reconstruction_with_most_registered_images(
     assert best == workspace / "sparse" / "1"
 
 
+def test_run_colmap_sfm_supports_exhaustive_matcher(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    workspace = tmp_path / "workspace"
+    frames_dir.mkdir(parents=True)
+    workspace.mkdir(parents=True)
+
+    commands: list[list[str]] = []
+
+    def _fake_supports(subcommand: str, option_name: str) -> bool:
+        if subcommand in {"feature_extractor", "exhaustive_matcher"} and option_name in {
+            "--FeatureExtraction.use_gpu",
+            "--FeatureMatching.use_gpu",
+        }:
+            return True
+        return False
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        commands.append(cmd)
+        if cmd[1] == "mapper":
+            sparse = workspace / "sparse" / "0"
+            sparse.mkdir(parents=True, exist_ok=True)
+            (sparse / "images.bin").write_bytes(struct.pack("<Q", 42))
+        return None
+
+    monkeypatch.setattr(module, "_colmap_supports_option", _fake_supports)
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    module.run_colmap_sfm(
+        frames_dir,
+        workspace,
+        sift_use_gpu=True,
+        matcher_mode="exhaustive",
+    )
+
+    assert commands[1][1] == "exhaustive_matcher"
+    assert "--FeatureMatching.use_gpu" in commands[1]
+
+
+def test_run_colmap_sfm_sequential_overlap_propagates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    workspace = tmp_path / "workspace"
+    frames_dir.mkdir(parents=True)
+    workspace.mkdir(parents=True)
+
+    commands: list[list[str]] = []
+
+    def _fake_supports(subcommand: str, option_name: str) -> bool:
+        return True
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        commands.append(cmd)
+        if cmd[1] == "mapper":
+            sparse = workspace / "sparse" / "0"
+            sparse.mkdir(parents=True, exist_ok=True)
+            (sparse / "images.bin").write_bytes(struct.pack("<Q", 42))
+        return None
+
+    monkeypatch.setattr(module, "_colmap_supports_option", _fake_supports)
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    module.run_colmap_sfm(
+        frames_dir,
+        workspace,
+        sift_use_gpu=True,
+        matcher_mode="sequential",
+        sequential_overlap=40,
+    )
+
+    seq_cmd = commands[1]
+    assert seq_cmd[1] == "sequential_matcher"
+    assert "--SequentialMatching.overlap" in seq_cmd
+    idx = seq_cmd.index("--SequentialMatching.overlap")
+    assert seq_cmd[idx + 1] == "40"
+
+
+def test_run_colmap_sfm_unknown_matcher_falls_back_to_sequential(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    workspace = tmp_path / "workspace"
+    frames_dir.mkdir(parents=True)
+    workspace.mkdir(parents=True)
+
+    commands: list[list[str]] = []
+
+    def _fake_supports(subcommand: str, option_name: str) -> bool:
+        return False
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        commands.append(cmd)
+        if cmd[1] == "mapper":
+            (workspace / "sparse" / "0").mkdir(parents=True, exist_ok=True)
+        return None
+
+    monkeypatch.setattr(module, "_colmap_supports_option", _fake_supports)
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    module.run_colmap_sfm(frames_dir, workspace, sift_use_gpu=True, matcher_mode="bogus")
+    assert commands[1][1] == "sequential_matcher"
+
+
 def test_robust_occupancy_grid_limits_outlier_impact() -> None:
     module = _load_nurec_shim_module()
     np = pytest.importorskip("numpy")
@@ -401,6 +509,94 @@ def test_build_visual_mesh_artifacts_falls_back_from_gaussian_tsdf(
     assert (tmp_path / "visual_pointcloud.ply").is_file()
 
 
+def test_build_visual_mesh_artifacts_textured_fallback_chain(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    fused_ply = tmp_path / "fused.ply"
+    gaussian_ply = tmp_path / "gaussian.ply"
+    fused_ply.write_bytes(b"ply")
+    gaussian_ply.write_bytes(b"ply")
+
+    def _fake_textured(**_kwargs):  # type: ignore[no-untyped-def]
+        return {"ok": False, "method": "textured_colmap", "reason": "texrecon_unavailable"}
+
+    def _fake_robust(**_kwargs):  # type: ignore[no-untyped-def]
+        return {"ok": False, "method": "gaussian_tsdf", "reason": "gaussian_unavailable"}
+
+    def _fake_quick(*, fused_ply: Path, output_glb: Path, target_faces: int):  # type: ignore[no-untyped-def]
+        output_glb.write_bytes(b"glb")
+        return {
+            "ok": True,
+            "method": "quick_poisson_open3d",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+            "path": str(output_glb),
+            "target_faces": target_faces,
+        }
+
+    monkeypatch.setattr(module, "_build_visual_mesh_textured_colmap", _fake_textured)
+    monkeypatch.setattr(module, "_build_visual_mesh_gaussian_tsdf", _fake_robust)
+    monkeypatch.setattr(module, "_build_visual_mesh_quick", _fake_quick)
+    monkeypatch.setenv("VISUAL_MESH_METHOD", "textured_colmap")
+    monkeypatch.setenv("VISUAL_MESH_ENABLED", "true")
+
+    report = module.build_visual_mesh_artifacts(
+        output_dir=tmp_path,
+        fused_ply=fused_ply,
+        gaussian_ply=gaussian_ply,
+        workspace=tmp_path,
+    )
+    assert report["status"] == "ok"
+    assert report["selected_method"] == "quick_poisson_open3d"
+    assert "texrecon_unavailable" in report.get("fallback_reason", "")
+    assert "gaussian_unavailable" in report.get("fallback_reason", "")
+    assert report["textured"] is False
+
+
+def test_build_visual_mesh_artifacts_textured_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    fused_ply = tmp_path / "fused.ply"
+    gaussian_ply = tmp_path / "gaussian.ply"
+    fused_ply.write_bytes(b"ply")
+    gaussian_ply.write_bytes(b"ply")
+
+    def _fake_textured(**_kwargs):  # type: ignore[no-untyped-def]
+        (tmp_path / "visual_mesh.glb").write_bytes(b"glb")
+        return {
+            "ok": True,
+            "method": "textured_colmap_texrecon",
+            "textured": True,
+            "texture_image_count": 2,
+            "atlas_resolution": 4096,
+            "uv_coverage_ratio": 0.91,
+            "path": str(tmp_path / "visual_mesh.glb"),
+        }
+
+    monkeypatch.setattr(module, "_build_visual_mesh_textured_colmap", _fake_textured)
+    monkeypatch.setenv("VISUAL_MESH_METHOD", "textured_colmap")
+    monkeypatch.setenv("VISUAL_MESH_ENABLED", "true")
+
+    report = module.build_visual_mesh_artifacts(
+        output_dir=tmp_path,
+        fused_ply=fused_ply,
+        gaussian_ply=gaussian_ply,
+        workspace=tmp_path,
+    )
+    assert report["status"] == "ok"
+    assert report["selected_method"] == "textured_colmap_texrecon"
+    assert report["textured"] is True
+    assert report["texture_image_count"] == 2
+    assert report["atlas_resolution"] == 4096
+    assert report["uv_coverage_ratio"] == pytest.approx(0.91)
+
+
 def test_write_mesh_manifest_includes_role_entries(tmp_path: Path) -> None:
     module = _load_nurec_shim_module()
     visual_usdz = tmp_path / "export_last.usdz"
@@ -427,6 +623,198 @@ def test_write_mesh_manifest_includes_role_entries(tmp_path: Path) -> None:
     assert "visual" in roles
     assert "collision" in roles
     assert "volume_visual" in roles
+    assert payload["primary_visual_asset"] == "export_last.usdz"
+    assert "omniverse_neural" in payload["viewer_compatibility"]
+    assert "fallback_vertex_mesh" in payload["viewer_compatibility"]
+
+
+def test_write_mesh_manifest_prefers_mesh_when_requested(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    visual_usdz = tmp_path / "export_last.usdz"
+    gaussian_ply = tmp_path / "export_last.ply"
+    collision_ply = tmp_path / "nvblox_mesh.ply"
+    occupancy = tmp_path / "occupancy.bin"
+    visual_mesh = tmp_path / "visual_mesh.glb"
+    visual_pointcloud = tmp_path / "visual_pointcloud.ply"
+    for p in [visual_usdz, gaussian_ply, collision_ply, occupancy, visual_mesh, visual_pointcloud]:
+        p.write_bytes(b"x")
+
+    monkeypatch.setenv("NUREC_VISUAL_PRIMARY", "mesh")
+    manifest_path = module.write_mesh_manifest(
+        output_dir=tmp_path,
+        visual_usdz=visual_usdz,
+        gaussian_ply=gaussian_ply,
+        collision_mesh_ply=collision_ply,
+        occupancy=occupancy,
+        visual_report={"selected_method": "textured_colmap_texrecon", "textured": True},
+        collision_method="poisson_open3d",
+        collision_report={"spike_metrics": {"long_edge_face_ratio": 0.0}},
+    )
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert payload["primary_visual_asset"] == "visual_mesh.glb"
+    assert "generic_textured_mesh" in payload["viewer_compatibility"]
+
+
+def test_build_capture_quality_report_has_expected_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(1, 4):
+        (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+
+    monkeypatch.setattr(
+        module,
+        "_frame_blur_scores",
+        lambda _frames_dir: [  # type: ignore[no-untyped-def]
+            (frames_dir / "frame_00001.jpg", 4.5),
+            (frames_dir / "frame_00002.jpg", 9.0),
+            (frames_dir / "frame_00003.jpg", 12.0),
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "_frame_signal_stats",
+        lambda _frames_dir: {  # type: ignore[no-untyped-def]
+            "yavg": {1: 90.0, 2: 120.0, 3: 150.0},
+            "ydif": {1: 20.0, 2: 30.0, 3: 40.0},
+        },
+    )
+
+    report = module.build_capture_quality_report(frames_dir)
+    assert report["schema_version"] == "v1"
+    assert report["frame_count"] == 3
+    assert report["blur"]["count"] == 3
+    assert report["brightness"]["count"] == 3
+    assert report["motion"]["count"] == 3
+    assert report["blurriest_frames"][0]["frame"] == "frame_00001.jpg"
+
+
+def test_sam3_preflight_non_strict_returns_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setattr(module, "_resolve_hf_token", lambda: "")
+    monkeypatch.setattr(module, "_sam3_local_cache_present", lambda: False)
+
+    import builtins
+
+    orig_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "sam3":
+            raise ModuleNotFoundError("sam3 missing")
+        return orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    report = module._run_sam3_preflight(strict=False)
+    assert report["status"] == "skip"
+    assert "sam3_import_failed" in report["reason"]
+
+
+def test_sam3_preflight_strict_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setattr(module, "_resolve_hf_token", lambda: "")
+    monkeypatch.setattr(module, "_sam3_local_cache_present", lambda: False)
+
+    import builtins
+
+    orig_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "sam3":
+            raise ModuleNotFoundError("sam3 missing")
+        return orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    with pytest.raises(RuntimeError, match="SAM3 preflight failed in strict mode"):
+        module._run_sam3_preflight(strict=True)
+
+
+def test_main_retries_sfm_and_fails_quality_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    output_dir = tmp_path / "out"
+    job_spec = tmp_path / "job_spec.json"
+    video_path = tmp_path / "input.mov"
+    video_path.write_bytes(b"mov")
+    job_spec.write_text("{}", encoding="utf-8")
+
+    call_counter = {"sfm": 0}
+
+    def _fake_find_video(raw_prefix: str, storage_root: Path) -> Path:  # noqa: ARG001
+        return video_path
+
+    def _fake_extract_frames(video: Path, frames_dir: Path, max_frames: int, target_fps: int) -> int:  # noqa: ARG001
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(1, 101):
+            (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+        return 100
+
+    def _fake_run_colmap_sfm(  # type: ignore[no-untyped-def]
+        frames_dir,
+        workspace,
+        *,
+        sift_use_gpu,
+        mapper_num_threads=0,
+        matcher_mode="sequential",
+        sequential_overlap=10,
+    ):
+        del frames_dir, sift_use_gpu, mapper_num_threads, matcher_mode, sequential_overlap
+        call_counter["sfm"] += 1
+        sparse_dir = workspace / "sparse" / "0"
+        sparse_dir.mkdir(parents=True, exist_ok=True)
+        registered = 40 if call_counter["sfm"] == 1 else 60
+        (sparse_dir / "images.bin").write_bytes(struct.pack("<Q", registered))
+        return sparse_dir
+
+    monkeypatch.setattr(module, "find_video", _fake_find_video)
+    monkeypatch.setattr(module, "extract_frames", _fake_extract_frames)
+    monkeypatch.setattr(module, "run_colmap_sfm", _fake_run_colmap_sfm)
+    monkeypatch.setattr(module, "_colmap_has_cuda", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "build_capture_quality_report",
+        lambda _frames_dir: {"schema_version": "v1", "frame_count": 100},
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_sam3_preflight",
+        lambda strict: {  # type: ignore[no-untyped-def]
+            "schema_version": "v1",
+            "generated_at": "now",
+            "enabled": True,
+            "strict": strict,
+            "status": "ok",
+            "reason": "",
+        },
+    )
+
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "nurec_shim.py",
+            "--job-spec",
+            str(job_spec),
+            "--output-dir",
+            str(output_dir),
+            "--raw-prefix",
+            str(video_path),
+            "--no-dependency-preflight",
+            "--colmap-min-registered-ratio",
+            "0.80",
+            "--colmap-retry-min-registered-ratio",
+            "0.75",
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="COLMAP registration quality gate failed"):
+        module.main()
+
+    assert call_counter["sfm"] == 2
 
 
 def test_resolve_sam3_settings_bedroom_auto() -> None:

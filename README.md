@@ -73,9 +73,11 @@ Scene artifacts written under:
 NuRec artifact roles under `.../pipeline/nurec/`:
 
 - `export_last.usdz`: NuRec volume visual for Isaac Sim / Omniverse rendering.
-- `visual_mesh.glb`: generic-viewer visual mesh (vertex-colored).
+- `visual_mesh.glb`: generic-viewer visual mesh (textured when available; vertex-color fallback).
 - `visual_pointcloud.ply`: colored dense point cloud debug artifact.
 - `nvblox_mesh.ply`: collision/physics mesh (not intended to look photoreal).
+- `capture_quality_report.json`: frame blur/brightness/motion stats + SfM registration ratio.
+- `sam3_preflight_report.json`: SAM3 auth/import/cache preflight result and skip/fail reason.
 - `mesh_manifest.json`: role manifest describing which artifact to use for visual vs collision.
 
 ## Environment
@@ -104,12 +106,20 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `FIXER_H100_MAX_HOURLY` (default: `2.50`)
 - `FIXER_H100_DISK_GB` (default: `80`)
 - `FIXER_H100_REMOTE_SETUP_CMD` (optional custom setup command for remote Fixer env)
+- `NUREC_QUALITY_PROFILE` (`quality_first` default; `balanced`, `fast`)
 - `COLMAP_SIFT_GPU` (`auto` default; `on`, `off`)
 - `COLMAP_MAPPER_NUM_THREADS` (`0` default = auto/all visible CPU cores)
-- `NUREC_RESUME` (`false` in shim by default; `run_full_pipeline.sh` sets `true` by default)
+- `COLMAP_MATCHER_MODE` (`exhaustive` default in quality-first profile; `sequential`/`exhaustive`)
+- `COLMAP_SEQUENTIAL_OVERLAP` (`30` default in quality-first profile)
+- `COLMAP_MIN_REGISTERED_RATIO` (`0.80` default; retry threshold trigger)
+- `COLMAP_RETRY_MIN_REGISTERED_RATIO` (`0.75` default; hard fail threshold after forced retry)
+- `BLUR_FILTER_KEEP_RATIO` (`1.0` default = disabled; e.g. `0.7` keeps sharpest 70% before SfM)
+- `BLUR_FILTER_MIN_FRAMES` (`120` default; safety floor when blur filtering is enabled)
+- `NUREC_RESUME` (`false` default in quality-first wrapper profile)
 - `NUREC_PARALLEL_POST_STAGE6` (`true` default; runs Stage 7 visual mesh and Stage 9 SAM3 concurrently)
 - `NUREC_DEPENDENCY_PREFLIGHT` (`true` default; fail fast before COLMAP if 3DGRUT deps are missing)
 - `NUREC_PREFLIGHT_CHECK_FUSED_SSIM` (`true` default; checks fused_ssim import/torch ABI during preflight)
+- `SAM3_PREFLIGHT_STRICT` (`false` default; if true, fail before reconstruction when SAM3 access is unavailable)
 - `SAM3_N_FRAMES` (`0` default = auto-scaled by capture length)
 - `SAM3_MIN_FRAME_DETECTIONS` (`0` default = env-aware auto)
 - `SCENE_SEMANTICS_GEMINI_MODEL` (default: `gemini-3.0-pro`)
@@ -118,12 +128,15 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `DA3_MODEL_PATH` (default: `/opt/da3/weights/metric_large`, local path preferred)
 - `DA3_MODEL_NAME` (default: `da3metric-large`)
 - `HF_HOME` (default in VM guide: `/opt/hf`, shared HuggingFace cache)
+- `NUREC_VISUAL_PRIMARY` (`usdz` default; `mesh`, `auto` control scene-shell visual prim routing)
 - `VISUAL_MESH_ENABLED` (`true` default; set `false` to skip viewer mesh export)
-- `VISUAL_MESH_METHOD` (`quick_poisson` default; `gaussian_tsdf` for robust path)
+- `VISUAL_MESH_METHOD` (`textured_colmap` default; fallback chain `gaussian_tsdf` -> `quick_poisson`)
 - `VISUAL_MESH_TARGET_FACES` (default: `500000`)
 - `VISUAL_MESH_POISSON_DEPTH` (default: `12`; used for smaller clouds)
 - `VISUAL_MESH_POISSON_DEPTH_LARGE` (default: `9`; used when cloud exceeds large-threshold)
 - `VISUAL_MESH_POISSON_LARGE_THRESHOLD` (default: `500000` points)
+- `VISUAL_MESH_TEXTURE_SIZE` (default: `4096`)
+- `VISUAL_MESH_TEXTURE_MAX_ATLASES` (default: `2`)
 - `OPEN3D_CPU_THREADS` (`0` default = Open3D/runtime default threading; set explicit thread count for CPU Poisson stages)
 - `COLLISION_MAX_EDGE_M` (default: `5.0`; long-edge spike filter threshold)
 - `COLLISION_SPIKE_MAX_RATIO` (default: `0.02`; collision spike gate threshold)

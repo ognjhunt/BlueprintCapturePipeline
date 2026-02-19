@@ -28,6 +28,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# Best-effort texrecon install for textured visual mesh generation.
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends texrecon || \
+     apt-get install -y --no-install-recommends mvs-texturing || true) && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY . /app
 
@@ -82,7 +88,8 @@ RUN pip install --no-cache-dir \
     "diffusers>=0.32.0" \
     accelerate \
     sentencepiece \
-    "open3d>=0.18.0"
+    "open3d>=0.18.0" \
+    trimesh
 
 RUN mkdir -p /opt/qwen-image-edit && \
     if [ -n "$HF_TOKEN" ]; then \

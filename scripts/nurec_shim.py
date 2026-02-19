@@ -9,7 +9,7 @@ detection (replacing ARKit), and produces the required pipeline outputs:
   - export_last.usdz  (neural scene for Isaac Sim)
   - export_last.ply   (Gaussian splat point cloud)
   - nvblox_mesh.ply   (collision mesh from dense reconstruction)
-  - visual_mesh.glb   (viewer-friendly visual mesh, vertex-colored)
+  - visual_mesh.glb   (viewer-friendly visual mesh, textured when available)
   - visual_pointcloud.ply (colored point cloud for debugging/inspection)
   - mesh_manifest.json (artifact role manifest: volume/visual/collision)
   - occupancy.bin     (voxel occupancy grid)
@@ -32,12 +32,13 @@ import concurrent.futures
 import json
 import os
 import shutil
+import statistics
 import struct
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -98,6 +99,235 @@ def extract_frames(video_path: Path, frames_dir: Path,
     return count
 
 
+def _frame_blur_scores(frames_dir: Path) -> list[tuple[Path, float]]:
+    """Compute per-frame blur scores using ffmpeg blurdetect (higher is blurrier)."""
+    frames = sorted(frames_dir.glob("frame_*.jpg"))
+    if not frames:
+        return []
+    ffmpeg_input = str(frames_dir / "frame_%05d.jpg")
+    blur_report = frames_dir / ".blurdetect_report.txt"
+    try:
+        _run([
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-start_number",
+            "1",
+            "-i",
+            ffmpeg_input,
+            "-vf",
+            f"blurdetect,metadata=mode=print:file={blur_report}",
+            "-f",
+            "null",
+            "-",
+        ])
+    except Exception as exc:
+        _log(f"WARNING: blurdetect failed ({exc}); skipping blur filtering")
+        return []
+
+    if not blur_report.is_file() or blur_report.stat().st_size <= 0:
+        return []
+    text = blur_report.read_text(encoding="utf-8", errors="ignore")
+    frame_to_score: dict[int, float] = {}
+    current_frame: int | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("frame:"):
+            try:
+                token = line.split()[0]
+                current_frame = int(token.split(":", 1)[1])
+            except Exception:
+                current_frame = None
+            continue
+        if line.startswith("lavfi.blur=") and current_frame is not None:
+            try:
+                frame_to_score[current_frame + 1] = float(line.split("=", 1)[1])
+            except Exception:
+                pass
+
+    out: list[tuple[Path, float]] = []
+    for path in frames:
+        try:
+            frame_num = int(path.stem.split("_")[-1])
+        except Exception:
+            continue
+        if frame_num in frame_to_score:
+            out.append((path, frame_to_score[frame_num]))
+    return out
+
+
+def _apply_blur_frame_filter(frames_dir: Path, *, keep_ratio: float, min_keep: int) -> int:
+    """Keep the sharpest subset of extracted frames in-place."""
+    entries = _frame_blur_scores(frames_dir)
+    frames = sorted(frames_dir.glob("frame_*.jpg"))
+    if not frames:
+        return 0
+    if not entries:
+        return len(frames)
+
+    ratio = max(0.0, min(1.0, float(keep_ratio)))
+    if ratio <= 0.0:
+        return len(frames)
+    keep_target = max(int(min_keep), int(round(len(entries) * ratio)))
+    keep_target = max(1, min(len(entries), keep_target))
+    sorted_entries = sorted(entries, key=lambda item: item[1])  # lower blur score = sharper
+    keep_paths = {path for path, _ in sorted_entries[:keep_target]}
+    drop_paths = [path for path in frames if path not in keep_paths]
+    if not drop_paths:
+        return len(frames)
+
+    dropped = 0
+    for path in drop_paths:
+        try:
+            path.unlink()
+            dropped += 1
+        except Exception as exc:
+            _log(f"WARNING: could not drop blurred frame {path.name} ({exc})")
+
+    remaining = len(sorted(frames_dir.glob("frame_*.jpg")))
+    _log(
+        f"Blur filter kept {remaining}/{len(frames)} frames "
+        f"(dropped={dropped}, keep_ratio={ratio:.2f})"
+    )
+    return remaining
+
+
+def _percentiles(values: Sequence[float], percentiles: Sequence[int]) -> Dict[str, float]:
+    if not values:
+        return {}
+
+    sorted_values = sorted(float(v) for v in values)
+    count = len(sorted_values)
+    out: Dict[str, float] = {}
+    for pct in percentiles:
+        if count == 1:
+            out[f"p{pct}"] = float(sorted_values[0])
+            continue
+        rank = max(0.0, min(100.0, float(pct))) / 100.0 * float(count - 1)
+        low = int(rank)
+        high = min(low + 1, count - 1)
+        if low == high:
+            out[f"p{pct}"] = float(sorted_values[low])
+            continue
+        weight = rank - float(low)
+        value = (1.0 - weight) * sorted_values[low] + weight * sorted_values[high]
+        out[f"p{pct}"] = float(value)
+    return out
+
+
+def _frame_signal_stats(frames_dir: Path) -> Dict[str, Dict[int, float]]:
+    """Extract frame-level brightness/motion stats via ffmpeg signalstats."""
+    frames = sorted(frames_dir.glob("frame_*.jpg"))
+    if not frames:
+        return {"yavg": {}, "ydif": {}}
+
+    ffmpeg_input = str(frames_dir / "frame_%05d.jpg")
+    stats_report = frames_dir / ".signalstats_report.txt"
+    try:
+        _run([
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-start_number",
+            "1",
+            "-i",
+            ffmpeg_input,
+            "-vf",
+            f"signalstats,metadata=mode=print:file={stats_report}",
+            "-f",
+            "null",
+            "-",
+        ])
+    except Exception as exc:
+        _log(f"WARNING: signalstats failed ({exc}); capture quality report will omit brightness/motion details")
+        return {"yavg": {}, "ydif": {}}
+
+    if not stats_report.is_file() or stats_report.stat().st_size <= 0:
+        return {"yavg": {}, "ydif": {}}
+
+    text = stats_report.read_text(encoding="utf-8", errors="ignore")
+    current_frame: int | None = None
+    yavg: Dict[int, float] = {}
+    ydif: Dict[int, float] = {}
+    for line in text.splitlines():
+        entry = line.strip()
+        if entry.startswith("frame:"):
+            try:
+                token = entry.split()[0]
+                current_frame = int(token.split(":", 1)[1]) + 1
+            except Exception:
+                current_frame = None
+            continue
+        if current_frame is None:
+            continue
+        if entry.startswith("lavfi.signalstats.YAVG="):
+            try:
+                yavg[current_frame] = float(entry.split("=", 1)[1])
+            except Exception:
+                pass
+        elif entry.startswith("lavfi.signalstats.YDIF="):
+            try:
+                ydif[current_frame] = float(entry.split("=", 1)[1])
+            except Exception:
+                pass
+    return {"yavg": yavg, "ydif": ydif}
+
+
+def build_capture_quality_report(frames_dir: Path) -> Dict[str, Any]:
+    """Compute objective capture-quality stats from extracted frames."""
+    frames = sorted(frames_dir.glob("frame_*.jpg"))
+    blur_entries = _frame_blur_scores(frames_dir)
+    blur_scores = [score for _, score in blur_entries]
+    signal = _frame_signal_stats(frames_dir)
+    yavg_values = list(signal.get("yavg", {}).values())
+    ydif_values = list(signal.get("ydif", {}).values())
+
+    report: Dict[str, Any] = {
+        "schema_version": "v1",
+        "generated_at": _utc_now_iso(),
+        "frame_count": int(len(frames)),
+        "blur": {
+            "count": int(len(blur_scores)),
+            "percentiles": _percentiles(blur_scores, [5, 50, 95]),
+            "min": float(min(blur_scores)) if blur_scores else None,
+            "max": float(max(blur_scores)) if blur_scores else None,
+        },
+        "brightness": {
+            "count": int(len(yavg_values)),
+            "percentiles": _percentiles(yavg_values, [5, 50, 95]),
+            "dark_frames_yavg_lt_45": int(sum(1 for value in yavg_values if value < 45.0)),
+            "bright_frames_yavg_gt_200": int(sum(1 for value in yavg_values if value > 200.0)),
+        },
+        "motion": {
+            "count": int(len(ydif_values)),
+            "percentiles": _percentiles(ydif_values, [5, 50, 95]),
+            "very_low_change_ydif_lt_1": int(sum(1 for value in ydif_values if value < 1.0)),
+        },
+        "blurriest_frames": [],
+    }
+
+    if blur_entries:
+        sorted_blur = sorted(blur_entries, key=lambda item: item[1])
+        report["blurriest_frames"] = [
+            {"frame": path.name, "score": float(score)}
+            for path, score in sorted_blur[:10]
+        ]
+        report["sharpest_frames"] = [
+            {"frame": path.name, "score": float(score)}
+            for path, score in sorted(blur_entries, key=lambda item: item[1], reverse=True)[:10]
+        ]
+
+    if blur_scores:
+        report["blur"]["mean"] = float(statistics.mean(blur_scores))
+    if yavg_values:
+        report["brightness"]["mean"] = float(statistics.mean(yavg_values))
+    if ydif_values:
+        report["motion"]["mean"] = float(statistics.mean(ydif_values))
+    return report
+
+
 # ---------------------------------------------------------------------------
 # Stage 2: COLMAP SfM
 # ---------------------------------------------------------------------------
@@ -153,6 +383,8 @@ def run_colmap_sfm(
     *,
     sift_use_gpu: bool,
     mapper_num_threads: int = 0,
+    matcher_mode: str = "sequential",
+    sequential_overlap: int = 10,
 ) -> Path:
     """Run COLMAP Structure-from-Motion pipeline."""
     db_path = workspace / "database.db"
@@ -164,9 +396,14 @@ def run_colmap_sfm(
         if _colmap_supports_option("feature_extractor", "--FeatureExtraction.use_gpu")
         else "--SiftExtraction.use_gpu"
     )
+    matcher = matcher_mode.strip().lower()
+    if matcher not in {"sequential", "exhaustive"}:
+        _log(f"WARNING: Unknown matcher_mode={matcher_mode!r}; falling back to sequential")
+        matcher = "sequential"
+    matcher_subcommand = "sequential_matcher" if matcher == "sequential" else "exhaustive_matcher"
     matching_gpu_option = (
         "--FeatureMatching.use_gpu"
-        if _colmap_supports_option("sequential_matcher", "--FeatureMatching.use_gpu")
+        if _colmap_supports_option(matcher_subcommand, "--FeatureMatching.use_gpu")
         else "--SiftMatching.use_gpu"
     )
 
@@ -181,13 +418,25 @@ def run_colmap_sfm(
         feature_gpu_option, sift_gpu_flag,
     ])
 
-    _log(f"Running COLMAP sequential matching (SIFT GPU={sift_gpu_flag})...")
-    _run([
-        "colmap", "sequential_matcher",
-        "--database_path", str(db_path),
-        "--SequentialMatching.overlap", "10",
-        matching_gpu_option, sift_gpu_flag,
-    ])
+    if matcher == "sequential":
+        overlap = max(1, int(sequential_overlap))
+        _log(
+            f"Running COLMAP sequential matching "
+            f"(SIFT GPU={sift_gpu_flag}, overlap={overlap})..."
+        )
+        _run([
+            "colmap", "sequential_matcher",
+            "--database_path", str(db_path),
+            "--SequentialMatching.overlap", str(overlap),
+            matching_gpu_option, sift_gpu_flag,
+        ])
+    else:
+        _log(f"Running COLMAP exhaustive matching (SIFT GPU={sift_gpu_flag})...")
+        _run([
+            "colmap", "exhaustive_matcher",
+            "--database_path", str(db_path),
+            matching_gpu_option, sift_gpu_flag,
+        ])
 
     mapper_cmd = [
         "colmap", "mapper",
@@ -928,7 +1177,285 @@ def _build_visual_mesh_quick(fused_ply: Path, output_glb: Path, target_faces: in
         "point_count": int(point_count),
         "faces": int(len(mesh.triangles)),
         "target_faces": int(target_faces),
+        "textured": False,
+        "texture_image_count": 0,
+        "atlas_resolution": 0,
+        "uv_coverage_ratio": 0.0,
         "path": str(output_glb),
+    }
+
+
+def _estimate_uv_coverage_ratio(scene) -> float:
+    try:
+        import numpy as np
+    except Exception:
+        return 0.0
+
+    total = 0
+    valid = 0
+    for geometry in getattr(scene, "geometry", {}).values():
+        visual = getattr(geometry, "visual", None)
+        uv = getattr(visual, "uv", None)
+        if uv is None:
+            continue
+        uv_arr = np.asarray(uv, dtype=np.float64)
+        if uv_arr.ndim != 2 or uv_arr.shape[1] < 2:
+            continue
+        mask = (
+            np.isfinite(uv_arr[:, 0])
+            & np.isfinite(uv_arr[:, 1])
+            & (uv_arr[:, 0] >= 0.0)
+            & (uv_arr[:, 0] <= 1.0)
+            & (uv_arr[:, 1] >= 0.0)
+            & (uv_arr[:, 1] <= 1.0)
+        )
+        total += int(uv_arr.shape[0])
+        valid += int(mask.sum())
+    return float(valid / total) if total > 0 else 0.0
+
+
+def _texture_files(base_dir: Path) -> list[Path]:
+    out: list[Path] = []
+    for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.ktx2"):
+        out.extend(sorted(base_dir.glob(ext)))
+    return out
+
+
+def _max_texture_resolution(texture_paths: Sequence[Path]) -> int:
+    if not texture_paths:
+        return 0
+    try:
+        from PIL import Image
+    except Exception:
+        return 0
+
+    max_side = 0
+    for path in texture_paths:
+        try:
+            with Image.open(path) as img:
+                width, height = img.size
+            max_side = max(max_side, int(width), int(height))
+        except Exception:
+            continue
+    return int(max_side)
+
+
+def _find_texrecon_output_obj(work_dir: Path, prefix: str) -> Path | None:
+    preferred = [
+        work_dir / f"{prefix}.obj",
+        work_dir / f"{prefix}_out.obj",
+        work_dir / f"{prefix}_model.obj",
+        work_dir / "model.obj",
+    ]
+    for candidate in preferred:
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    dynamic = sorted(work_dir.glob(f"{prefix}*.obj"), key=lambda p: p.stat().st_size, reverse=True)
+    for candidate in dynamic:
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def _run_texrecon(scene_dir: Path, mesh_obj: Path, out_prefix: str, work_dir: Path) -> tuple[Path | None, str]:
+    attempts = [
+        [
+            "texrecon",
+            str(scene_dir),
+            str(mesh_obj),
+            out_prefix,
+            "--keep_unseen_faces",
+            "--max_texture_size",
+            str(max(512, _env_int("VISUAL_MESH_TEXTURE_SIZE", 4096))),
+            "--num_textures",
+            str(max(1, _env_int("VISUAL_MESH_TEXTURE_MAX_ATLASES", 2))),
+        ],
+        [
+            "texrecon",
+            str(scene_dir),
+            str(mesh_obj),
+            out_prefix,
+        ],
+    ]
+    errors: list[str] = []
+    for cmd in attempts:
+        try:
+            _run(cmd, cwd=str(work_dir))
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
+        output_obj = _find_texrecon_output_obj(work_dir, out_prefix)
+        if output_obj is not None:
+            return output_obj, ""
+        errors.append("texrecon completed but produced no OBJ output")
+    return None, "; ".join(errors)[:400]
+
+
+def _build_visual_mesh_textured_colmap(
+    *,
+    fused_ply: Path,
+    output_glb: Path,
+    workspace: Path | None,
+    target_faces: int,
+) -> Dict[str, Any]:
+    if workspace is None:
+        return {
+            "ok": False,
+            "method": "textured_colmap",
+            "reason": "workspace_missing",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+        }
+    if shutil.which("texrecon") is None:
+        return {
+            "ok": False,
+            "method": "textured_colmap",
+            "reason": "texrecon_unavailable",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+        }
+
+    _apply_open3d_thread_overrides()
+    try:
+        import numpy as np
+        import open3d as o3d
+        import trimesh
+    except Exception as exc:
+        return {
+            "ok": False,
+            "method": "textured_colmap",
+            "reason": f"deps_unavailable:{exc}",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+        }
+
+    scene_candidates = [
+        workspace / "dense",
+        workspace / "undistorted",
+    ]
+    scene_dir: Path | None = None
+    for candidate in scene_candidates:
+        if (candidate / "images").is_dir() and (candidate / "sparse").exists():
+            scene_dir = candidate
+            break
+    if scene_dir is None:
+        return {
+            "ok": False,
+            "method": "textured_colmap",
+            "reason": "colmap_scene_missing",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+        }
+
+    pcd = o3d.io.read_point_cloud(str(fused_ply))
+    point_count = int(len(pcd.points))
+    if point_count <= 0:
+        return {
+            "ok": False,
+            "method": "textured_colmap",
+            "reason": f"empty_fused_cloud:{fused_ply}",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+        }
+
+    max_points = max(100000, _env_int("VISUAL_MESH_TEXTURE_MAX_POINTS", 1200000))
+    if point_count > max_points:
+        ratio = max(0.05, min(1.0, float(max_points) / float(point_count)))
+        pcd = pcd.random_down_sample(ratio)
+        point_count = int(len(pcd.points))
+
+    if not pcd.has_normals():
+        pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.12, max_nn=64)
+        )
+        pcd.orient_normals_consistent_tangent_plane(50)
+
+    depth = max(8, min(12, _env_int("VISUAL_MESH_TEXTURE_POISSON_DEPTH", 11)))
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        pcd,
+        depth=depth,
+        width=0,
+        scale=1.1,
+        linear_fit=False,
+    )
+    if len(mesh.triangles) <= 0:
+        return {
+            "ok": False,
+            "method": "textured_colmap",
+            "reason": "poisson_empty_mesh",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+        }
+
+    density_quantile = min(0.2, max(0.0, _env_float("VISUAL_MESH_TEXTURE_DENSITY_QUANTILE", 0.02)))
+    if density_quantile > 0.0:
+        density_values = np.asarray(densities)
+        threshold = np.quantile(density_values, density_quantile)
+        mesh.remove_vertices_by_mask(density_values < threshold)
+    if target_faces > 0 and len(mesh.triangles) > target_faces:
+        mesh = mesh.simplify_quadric_decimation(int(target_faces))
+
+    texturing_dir = workspace / "visual_texturing"
+    if texturing_dir.exists():
+        shutil.rmtree(texturing_dir)
+    texturing_dir.mkdir(parents=True, exist_ok=True)
+    base_mesh_obj = texturing_dir / "mesh_base.obj"
+    if not o3d.io.write_triangle_mesh(str(base_mesh_obj), mesh):
+        return {
+            "ok": False,
+            "method": "textured_colmap",
+            "reason": f"mesh_write_failed:{base_mesh_obj}",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+        }
+
+    out_prefix = "visual_textured"
+    textured_obj, texrecon_error = _run_texrecon(scene_dir, base_mesh_obj, out_prefix, texturing_dir)
+    if textured_obj is None:
+        return {
+            "ok": False,
+            "method": "textured_colmap",
+            "reason": f"texrecon_failed:{texrecon_error or 'unknown'}",
+            "textured": False,
+            "texture_image_count": 0,
+            "atlas_resolution": 0,
+            "uv_coverage_ratio": 0.0,
+        }
+
+    loaded = trimesh.load(str(textured_obj), force="scene", process=False)
+    scene = loaded if hasattr(loaded, "geometry") else loaded.scene()
+    output_glb.parent.mkdir(parents=True, exist_ok=True)
+    scene.export(str(output_glb))
+    texture_paths = _texture_files(texturing_dir)
+    atlas_resolution = _max_texture_resolution(texture_paths)
+    if atlas_resolution <= 0:
+        atlas_resolution = max(512, _env_int("VISUAL_MESH_TEXTURE_SIZE", 4096))
+
+    return {
+        "ok": True,
+        "method": "textured_colmap_texrecon",
+        "path": str(output_glb),
+        "faces": int(sum(len(getattr(g, "faces", [])) for g in scene.geometry.values())),
+        "point_count": int(point_count),
+        "target_faces": int(target_faces),
+        "textured": True,
+        "texture_image_count": int(len(texture_paths)),
+        "atlas_resolution": int(atlas_resolution),
+        "uv_coverage_ratio": float(_estimate_uv_coverage_ratio(scene)),
     }
 
 
@@ -954,10 +1481,16 @@ def _build_visual_mesh_gaussian_tsdf(
     )
 
 
-def build_visual_mesh_artifacts(*, output_dir: Path, fused_ply: Path, gaussian_ply: Path) -> Dict[str, Any]:
+def build_visual_mesh_artifacts(
+    *,
+    output_dir: Path,
+    fused_ply: Path,
+    gaussian_ply: Path,
+    workspace: Path | None = None,
+) -> Dict[str, Any]:
     enabled = _env_flag("VISUAL_MESH_ENABLED", True)
     target_faces = _env_int("VISUAL_MESH_TARGET_FACES", 0)
-    method = (os.getenv("VISUAL_MESH_METHOD", "quick_poisson") or "quick_poisson").strip().lower()
+    method = (os.getenv("VISUAL_MESH_METHOD", "textured_colmap") or "textured_colmap").strip().lower()
 
     visual_pointcloud = output_dir / "visual_pointcloud.ply"
     visual_mesh = output_dir / "visual_mesh.glb"
@@ -967,6 +1500,11 @@ def build_visual_mesh_artifacts(*, output_dir: Path, fused_ply: Path, gaussian_p
         "configured_method": method,
         "target_faces": target_faces,
         "visual_pointcloud": str(visual_pointcloud),
+        "textured": False,
+        "texture_image_count": 0,
+        "atlas_resolution": 0,
+        "uv_coverage_ratio": 0.0,
+        "fallback_reason": "",
     }
     if not enabled:
         report["status"] = "disabled"
@@ -975,8 +1513,30 @@ def build_visual_mesh_artifacts(*, output_dir: Path, fused_ply: Path, gaussian_p
     shutil.copy2(str(fused_ply), str(visual_pointcloud))
     robust_report: Dict[str, Any] = {}
     quick_report: Dict[str, Any] = {}
+    textured_report: Dict[str, Any] = {}
+    fallback_reasons: list[str] = []
 
-    if method == "gaussian_tsdf":
+    if method == "textured_colmap":
+        textured_report = _build_visual_mesh_textured_colmap(
+            fused_ply=fused_ply,
+            output_glb=visual_mesh,
+            workspace=workspace,
+            target_faces=target_faces,
+        )
+        report["textured_colmap"] = textured_report
+        if textured_report.get("ok") and visual_mesh.exists():
+            report["status"] = "ok"
+            report["selected_method"] = str(textured_report.get("method") or "textured_colmap")
+            report["visual_mesh"] = str(visual_mesh)
+            report["textured"] = bool(textured_report.get("textured", True))
+            report["texture_image_count"] = int(textured_report.get("texture_image_count", 0))
+            report["atlas_resolution"] = int(textured_report.get("atlas_resolution", 0))
+            report["uv_coverage_ratio"] = float(textured_report.get("uv_coverage_ratio", 0.0))
+            return report
+        reason = str(textured_report.get("reason") or "textured_colmap_failed")
+        fallback_reasons.append(reason)
+
+    if method in {"gaussian_tsdf", "textured_colmap"}:
         robust_report = _build_visual_mesh_gaussian_tsdf(
             gaussian_ply=gaussian_ply,
             output_glb=robust_mesh,
@@ -990,7 +1550,15 @@ def build_visual_mesh_artifacts(*, output_dir: Path, fused_ply: Path, gaussian_p
             report["selected_method"] = str(robust_report.get("method") or "gaussian_tsdf")
             report["visual_mesh"] = str(visual_mesh)
             report["visual_mesh_robust"] = str(robust_mesh)
+            report["textured"] = bool(robust_report.get("textured", False))
+            report["texture_image_count"] = int(robust_report.get("texture_image_count", 0))
+            report["atlas_resolution"] = int(robust_report.get("atlas_resolution", 0))
+            report["uv_coverage_ratio"] = float(robust_report.get("uv_coverage_ratio", 0.0))
+            if fallback_reasons:
+                report["fallback_reason"] = "; ".join(fallback_reasons)
             return report
+        if method in {"textured_colmap", "gaussian_tsdf"}:
+            fallback_reasons.append(str(robust_report.get("reason") or "gaussian_tsdf_failed"))
 
     quick_report = _build_visual_mesh_quick(
         fused_ply=fused_ply,
@@ -1001,6 +1569,12 @@ def build_visual_mesh_artifacts(*, output_dir: Path, fused_ply: Path, gaussian_p
     report["status"] = "ok"
     report["selected_method"] = str(quick_report.get("method") or "quick_poisson")
     report["visual_mesh"] = str(visual_mesh)
+    report["textured"] = bool(quick_report.get("textured", False))
+    report["texture_image_count"] = int(quick_report.get("texture_image_count", 0))
+    report["atlas_resolution"] = int(quick_report.get("atlas_resolution", 0))
+    report["uv_coverage_ratio"] = float(quick_report.get("uv_coverage_ratio", 0.0))
+    if fallback_reasons:
+        report["fallback_reason"] = "; ".join(fallback_reasons)
     if robust_mesh.exists():
         report["visual_mesh_robust"] = str(robust_mesh)
     return report
@@ -1071,12 +1645,17 @@ def write_mesh_manifest(
         ),
     ]
     if visual_mesh_path is not None:
+        visual_is_textured = bool(visual_report.get("textured", False))
         assets.append(
             _entry(
                 visual_mesh_path,
                 role="visual",
-                kind="glb_triangle_mesh_vertex_color",
-                viewer_hint="Primary generic-viewer asset",
+                kind="glb_triangle_mesh_textured" if visual_is_textured else "glb_triangle_mesh_vertex_color",
+                viewer_hint=(
+                    "Primary generic-viewer photoreal textured mesh"
+                    if visual_is_textured
+                    else "Primary generic-viewer asset (vertex color fallback)"
+                ),
             )
         )
     if robust_mesh_path is not None:
@@ -1103,12 +1682,30 @@ def write_mesh_manifest(
         "generated_at": _utc_now_iso(),
         "collision_method": collision_method,
         "visual_method": str(visual_report.get("selected_method") or ""),
+        "primary_visual_asset": "",
+        "viewer_compatibility": [],
         "assets": assets,
         "reports": {
             "visual": dict(visual_report),
             "collision": dict(collision_report),
         },
     }
+
+    visual_preference = (os.getenv("NUREC_VISUAL_PRIMARY", "usdz") or "usdz").strip().lower()
+    if visual_preference not in {"usdz", "mesh", "auto"}:
+        visual_preference = "usdz"
+
+    has_visual_mesh = visual_mesh_path is not None
+    visual_is_textured = bool(visual_report.get("textured", False))
+    mesh_compat = "generic_textured_mesh" if visual_is_textured else "fallback_vertex_mesh"
+    payload["viewer_compatibility"] = ["omniverse_neural", mesh_compat]
+    if visual_preference == "mesh" and has_visual_mesh:
+        payload["primary_visual_asset"] = visual_mesh_path.name if visual_mesh_path is not None else visual_usdz.name
+    elif visual_preference == "auto" and has_visual_mesh and visual_is_textured:
+        payload["primary_visual_asset"] = visual_mesh_path.name if visual_mesh_path is not None else visual_usdz.name
+    else:
+        payload["primary_visual_asset"] = visual_usdz.name
+
     manifest_path = output_dir / "mesh_manifest.json"
     manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return manifest_path
@@ -1286,6 +1883,50 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_choice(name: str, default: str, allowed: Sequence[str]) -> str:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in allowed:
+        return raw
+    _log(f"WARNING: Invalid choice in {name}={raw!r}; using {default}")
+    return default
+
+
+def _quality_profile() -> str:
+    return _env_choice("NUREC_QUALITY_PROFILE", "quality_first", ("quality_first", "balanced", "fast"))
+
+
+def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
+    table: Dict[str, Dict[str, Any]] = {
+        "quality_first": {
+            "max_frames": 450,
+            "extract_fps": 6,
+            "n_iterations": 12000,
+            "colmap_matcher_mode": "exhaustive",
+            "colmap_sequential_overlap": 30,
+            "resume": False,
+        },
+        "balanced": {
+            "max_frames": 320,
+            "extract_fps": 5,
+            "n_iterations": 9000,
+            "colmap_matcher_mode": "sequential",
+            "colmap_sequential_overlap": 20,
+            "resume": False,
+        },
+        "fast": {
+            "max_frames": 240,
+            "extract_fps": 4,
+            "n_iterations": 7000,
+            "colmap_matcher_mode": "sequential",
+            "colmap_sequential_overlap": 10,
+            "resume": True,
+        },
+    }
+    return table.get(profile, table["quality_first"])
+
+
 def _apply_open3d_thread_overrides() -> None:
     thread_count = max(0, _env_int("OPEN3D_CPU_THREADS", 0))
     if thread_count <= 0:
@@ -1414,6 +2055,21 @@ def _count_extracted_frames(frames_dir: Path) -> int:
     if not frames_dir.is_dir():
         return 0
     return len(list(frames_dir.glob("frame_*.jpg")))
+
+
+def _read_registered_image_count(model_dir: Path) -> int:
+    images_bin = model_dir / "images.bin"
+    if not _is_nonempty_file(images_bin):
+        return 0
+    try:
+        return int(struct.unpack("<Q", images_bin.read_bytes()[:8])[0])
+    except Exception:
+        return 0
+
+
+def _registration_ratio(*, registered_images: int, extracted_frames: int) -> float:
+    denom = max(1, int(extracted_frames))
+    return float(max(0, int(registered_images))) / float(denom)
 
 
 def _select_best_reconstruction(sparse_dir: Path, *, emit_logs: bool = False) -> tuple[Path | None, int]:
@@ -1667,10 +2323,78 @@ def _run_dependency_preflight(*, check_fused_ssim: bool = True) -> None:
             )
 
 
+def _resolve_hf_token() -> str:
+    for name in ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGINGFACE_TOKEN"):
+        token = (os.getenv(name) or "").strip()
+        if token:
+            return token
+    return ""
+
+
+def _sam3_local_cache_present() -> bool:
+    roots: list[Path] = []
+    hf_home = (os.getenv("HF_HOME") or "").strip()
+    if hf_home:
+        roots.append(Path(hf_home))
+    roots.append(Path.home() / ".cache" / "huggingface")
+
+    for root in roots:
+        if not root.exists():
+            continue
+        candidates = [root, root / "hub"]
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            for pattern in ("models--facebook--sam3*", "models--facebook--segment-anything-3*"):
+                if any(candidate.glob(pattern)):
+                    return True
+    return False
+
+
+def _run_sam3_preflight(*, strict: bool) -> Dict[str, Any]:
+    report: Dict[str, Any] = {
+        "schema_version": "v1",
+        "generated_at": _utc_now_iso(),
+        "enabled": True,
+        "strict": bool(strict),
+        "status": "ok",
+        "reason": "",
+        "token_present": False,
+        "cache_present": False,
+        "import_ok": False,
+    }
+    token = _resolve_hf_token()
+    cache_present = _sam3_local_cache_present()
+    report["token_present"] = bool(token)
+    report["cache_present"] = bool(cache_present)
+
+    try:
+        __import__("sam3")
+        report["import_ok"] = True
+    except Exception as exc:
+        report["import_ok"] = False
+        report["status"] = "skip"
+        report["reason"] = f"sam3_import_failed:{exc}"
+
+    if report["status"] == "ok" and not token and not cache_present:
+        report["status"] = "skip"
+        report["reason"] = "sam3_model_access_unavailable:missing_hf_token_and_cache"
+
+    if strict and report["status"] != "ok":
+        reason = str(report.get("reason") or "sam3_preflight_failed")
+        raise RuntimeError(
+            "SAM3 preflight failed in strict mode: "
+            f"{reason}. Provide HF_TOKEN with gated-model access or pre-bake SAM3 weights."
+        )
+    return report
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 def main() -> int:
+    profile = _quality_profile()
+    profile_defaults = _quality_profile_defaults(profile)
     parser = argparse.ArgumentParser(
         description="NuRec reconstruction shim (COLMAP + 3DGRUT + Fixer)"
     )
@@ -1678,18 +2402,28 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, help="NuRec output directory")
     parser.add_argument("--raw-prefix", default="", help="Raw data prefix URI or video path")
     parser.add_argument("--storage-root", default=os.getenv("GCS_ROOT", "/mnt/gcs"))
-    parser.add_argument("--max-frames", type=int, default=300, help="Max frames to extract")
-    parser.add_argument("--extract-fps", type=int, default=5, help="Frame extraction FPS")
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=_env_int("MAX_FRAMES", int(profile_defaults["max_frames"])),
+        help="Max frames to extract",
+    )
+    parser.add_argument(
+        "--extract-fps",
+        type=int,
+        default=_env_int("EXTRACT_FPS", int(profile_defaults["extract_fps"])),
+        help="Frame extraction FPS",
+    )
     parser.add_argument(
         "--n-iterations",
         type=int,
-        default=7000,
+        default=_env_int("N_ITERATIONS", int(profile_defaults["n_iterations"])),
         help="3DGRUT training iterations",
     )
     parser.add_argument(
         "--resume",
         action="store_true",
-        default=_env_flag("NUREC_RESUME", False),
+        default=_env_flag("NUREC_RESUME", bool(profile_defaults["resume"])),
         help="Reuse completed stage outputs from --output-dir when valid",
     )
     parser.add_argument(
@@ -1715,6 +2449,47 @@ def main() -> int:
         type=int,
         default=_env_int("COLMAP_MAPPER_NUM_THREADS", 0),
         help="Mapper CPU threads (0=auto/all available)",
+    )
+    parser.add_argument(
+        "--colmap-matcher-mode",
+        default=(
+            os.getenv("COLMAP_MATCHER_MODE", str(profile_defaults["colmap_matcher_mode"]))
+            .strip()
+            .lower()
+            or str(profile_defaults["colmap_matcher_mode"])
+        ),
+        choices=["sequential", "exhaustive"],
+        help="COLMAP matcher mode for SfM correspondence search",
+    )
+    parser.add_argument(
+        "--colmap-sequential-overlap",
+        type=int,
+        default=_env_int("COLMAP_SEQUENTIAL_OVERLAP", int(profile_defaults["colmap_sequential_overlap"])),
+        help="Temporal overlap window for sequential matcher",
+    )
+    parser.add_argument(
+        "--colmap-min-registered-ratio",
+        type=float,
+        default=_env_float("COLMAP_MIN_REGISTERED_RATIO", 0.80),
+        help="Minimum registered/extracted frame ratio before triggering SfM retry",
+    )
+    parser.add_argument(
+        "--colmap-retry-min-registered-ratio",
+        type=float,
+        default=_env_float("COLMAP_RETRY_MIN_REGISTERED_RATIO", 0.75),
+        help="Hard minimum registered/extracted frame ratio after forced retry",
+    )
+    parser.add_argument(
+        "--blur-filter-keep-ratio",
+        type=float,
+        default=_env_float("BLUR_FILTER_KEEP_RATIO", 1.0),
+        help="Keep ratio of sharpest frames before SfM (1.0 disables filtering)",
+    )
+    parser.add_argument(
+        "--blur-filter-min-frames",
+        type=int,
+        default=_env_int("BLUR_FILTER_MIN_FRAMES", 120),
+        help="Minimum number of frames to keep when blur filtering is enabled",
     )
     parser.add_argument("--skip-fixer", action="store_true", help="Skip Fixer image refinement")
     parser.add_argument(
@@ -1757,6 +2532,12 @@ def main() -> int:
         help="Skip dense reconstruction (use Gaussian PLY as mesh)",
     )
     parser.add_argument("--skip-sam3", action="store_true", help="Skip SAM3 object detection")
+    parser.add_argument(
+        "--sam3-strict-preflight",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("SAM3_PREFLIGHT_STRICT", False),
+        help="Fail fast before reconstruction if SAM3 gated model access is unavailable",
+    )
     parser.add_argument(
         "--parallel-post-stage6",
         action=argparse.BooleanOptionalAction,
@@ -1805,6 +2586,26 @@ def main() -> int:
             _log("Preflight: skipping fused_ssim ABI check (Stage 4 outputs already present for resume)")
         _run_dependency_preflight(check_fused_ssim=check_fused_ssim)
 
+    _log(f"Quality profile: {profile}")
+
+    sam3_preflight_path = output_dir / "sam3_preflight_report.json"
+    sam3_skip_reason = ""
+    if args.skip_sam3:
+        sam3_preflight = {
+            "schema_version": "v1",
+            "generated_at": _utc_now_iso(),
+            "enabled": False,
+            "strict": bool(args.sam3_strict_preflight),
+            "status": "disabled_by_flag",
+            "reason": "--skip-sam3",
+        }
+    else:
+        sam3_preflight = _run_sam3_preflight(strict=bool(args.sam3_strict_preflight))
+        if str(sam3_preflight.get("status")) == "skip":
+            sam3_skip_reason = str(sam3_preflight.get("reason") or "sam3_preflight_skip")
+            _log(f"SAM3 preflight: skipping Stage 9 ({sam3_skip_reason})")
+    sam3_preflight_path.write_text(json.dumps(sam3_preflight, indent=2), encoding="utf-8")
+
     cpu_cores = max(1, int(os.cpu_count() or 1))
     mapper_threads = max(0, int(args.colmap_mapper_threads))
     if mapper_threads == 0:
@@ -1832,6 +2633,19 @@ def main() -> int:
     if frame_count < 10:
         _log(f"WARNING: Only {frame_count} frames extracted. Reconstruction may fail.")
 
+    if args.blur_filter_keep_ratio < 1.0:
+        filtered_count = _apply_blur_frame_filter(
+            frames_dir,
+            keep_ratio=args.blur_filter_keep_ratio,
+            min_keep=args.blur_filter_min_frames,
+        )
+        if filtered_count > 0:
+            frame_count = filtered_count
+
+    capture_quality_report = build_capture_quality_report(frames_dir)
+    capture_quality_path = output_dir / "capture_quality_report.json"
+    capture_quality_path.write_text(json.dumps(capture_quality_report, indent=2), encoding="utf-8")
+
     # -----------------------------------------------------------------------
     # Stage 2: COLMAP SfM
     # -----------------------------------------------------------------------
@@ -1853,10 +2667,12 @@ def main() -> int:
     _log(f"COLMAP CUDA detected: {colmap_cuda}. Effective SIFT GPU: {sift_use_gpu}.")
     sparse_root = workspace / "sparse"
     sparse_dir: Path
+    registered_images = 0
     if args.resume:
         existing_sparse_dir, existing_sparse_count = _select_best_reconstruction(sparse_root, emit_logs=True)
         if existing_sparse_dir is not None and existing_sparse_count > 0:
             sparse_dir = existing_sparse_dir
+            registered_images = int(existing_sparse_count)
             _log(
                 "Resuming Stage 2: using existing COLMAP sparse model "
                 f"{existing_sparse_dir} ({existing_sparse_count} images)"
@@ -1867,14 +2683,77 @@ def main() -> int:
                 workspace,
                 sift_use_gpu=sift_use_gpu,
                 mapper_num_threads=mapper_threads,
+                matcher_mode=args.colmap_matcher_mode,
+                sequential_overlap=args.colmap_sequential_overlap,
             )
+            registered_images = _read_registered_image_count(sparse_dir)
     else:
         sparse_dir = run_colmap_sfm(
             frames_dir,
             workspace,
             sift_use_gpu=sift_use_gpu,
             mapper_num_threads=mapper_threads,
+            matcher_mode=args.colmap_matcher_mode,
+            sequential_overlap=args.colmap_sequential_overlap,
         )
+        registered_images = _read_registered_image_count(sparse_dir)
+
+    min_registered_ratio = max(0.0, min(1.0, float(args.colmap_min_registered_ratio)))
+    retry_min_ratio = max(0.0, min(1.0, float(args.colmap_retry_min_registered_ratio)))
+    registered_ratio = _registration_ratio(
+        registered_images=registered_images,
+        extracted_frames=frame_count,
+    )
+    _log(
+        "SfM coverage: "
+        f"registered={registered_images}/{frame_count} "
+        f"(ratio={registered_ratio:.3f})"
+    )
+
+    if registered_ratio < min_registered_ratio:
+        _log(
+            "SfM coverage below target; forcing retry with exhaustive matching "
+            f"(threshold={min_registered_ratio:.3f})"
+        )
+        db_path = workspace / "database.db"
+        if db_path.exists():
+            db_path.unlink()
+        if sparse_root.exists():
+            shutil.rmtree(sparse_root)
+        sparse_dir = run_colmap_sfm(
+            frames_dir,
+            workspace,
+            sift_use_gpu=sift_use_gpu,
+            mapper_num_threads=mapper_threads,
+            matcher_mode="exhaustive",
+            sequential_overlap=max(30, int(args.colmap_sequential_overlap)),
+        )
+        registered_images = _read_registered_image_count(sparse_dir)
+        registered_ratio = _registration_ratio(
+            registered_images=registered_images,
+            extracted_frames=frame_count,
+        )
+        _log(
+            "SfM retry coverage: "
+            f"registered={registered_images}/{frame_count} "
+            f"(ratio={registered_ratio:.3f})"
+        )
+
+    if registered_ratio < retry_min_ratio:
+        raise RuntimeError(
+            "COLMAP registration quality gate failed: "
+            f"registered_ratio={registered_ratio:.3f} < retry_min={retry_min_ratio:.3f}. "
+            "Capture likely has excessive blur/coverage gaps; rerun with steadier motion and more overlap."
+        )
+
+    capture_quality_report["sfm"] = {
+        "registered_images": int(registered_images),
+        "extracted_frames": int(frame_count),
+        "registered_ratio": float(registered_ratio),
+        "min_registered_ratio": float(min_registered_ratio),
+        "retry_min_registered_ratio": float(retry_min_ratio),
+    }
+    capture_quality_path.write_text(json.dumps(capture_quality_report, indent=2), encoding="utf-8")
 
     # -----------------------------------------------------------------------
     # Stage 3: Undistort for 3DGRUT (PINHOLE cameras required)
@@ -2061,6 +2940,7 @@ def main() -> int:
             output_dir=output_dir,
             fused_ply=fused_ply,
             gaussian_ply=ply_dst,
+            workspace=workspace,
         )
         _save_visual_report(output_dir, visual)
         if bool(visual.get("enabled", False)) and str(visual.get("status")) != "ok":
@@ -2084,7 +2964,8 @@ def main() -> int:
         )
 
     object_index_path: Path | None = None
-    if not args.skip_sam3 and args.parallel_post_stage6:
+    sam3_enabled = (not args.skip_sam3) and (not sam3_skip_reason)
+    if sam3_enabled and args.parallel_post_stage6:
         _log("Running Stage 7 and Stage 9 concurrently...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             visual_future = executor.submit(_run_stage7_visual)
@@ -2093,10 +2974,24 @@ def main() -> int:
             object_index_path = sam3_future.result()
     else:
         visual_report = _run_stage7_visual()
-        if not args.skip_sam3:
+        if sam3_enabled:
             object_index_path = _run_stage9()
         else:
-            _log("Skipping SAM3 detection (--skip-sam3)")
+            if sam3_skip_reason:
+                _log(f"Skipping SAM3 detection ({sam3_skip_reason})")
+            else:
+                _log("Skipping SAM3 detection (--skip-sam3)")
+
+    if object_index_path is None:
+        placeholder_index = output_dir / "object_point_cloud_index.json"
+        if not _is_nonempty_file(placeholder_index):
+            placeholder_payload = {
+                "schema_version": "v1",
+                "generated_at": _utc_now_iso(),
+                "objects": [],
+                "skip_reason": sam3_skip_reason or ("--skip-sam3" if args.skip_sam3 else "sam3_no_objects"),
+            }
+            placeholder_index.write_text(json.dumps(placeholder_payload, indent=2), encoding="utf-8")
 
     # -----------------------------------------------------------------------
     # Stage 8: Occupancy Grid
@@ -2154,6 +3049,8 @@ def main() -> int:
         "export_last.ingp",
         "object_point_cloud_index.json",
         "scene_semantics_report.json",
+        "sam3_preflight_report.json",
+        "capture_quality_report.json",
         "mesh_method.txt",
         "quality_profile.txt",
         "collision_mesh_report.json",

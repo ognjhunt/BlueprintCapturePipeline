@@ -59,6 +59,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-system1.74.0 \
     && rm -rf /var/lib/apt/lists/*
 
+# Best-effort texrecon install for textured visual mesh generation.
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends texrecon || \
+     apt-get install -y --no-install-recommends mvs-texturing || true) && \
+    rm -rf /var/lib/apt/lists/*
+
 # Fix 2: install libonnxruntime 1.24.1 as a system .so
 # The CUDA COLMAP binary (3.14.0) was compiled against VERS_1.24.1 which is
 # not yet available on PyPI — must grab the prebuilt tarball directly.
@@ -121,7 +127,8 @@ RUN pip install --no-cache-dir \
     Pillow \
     "open3d>=0.18.0" \
     "google-genai>=1.0.0" \
-    scipy
+    scipy \
+    trimesh
 
 # Sane defaults for visual mesh — depth 12 takes 45+ min on CPU for room scans,
 # depth 9 gives visually identical results in 2-5 min
