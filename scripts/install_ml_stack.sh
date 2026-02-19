@@ -21,7 +21,7 @@ DA3_WEIGHTS_DIR="${DA3_MODEL_PATH:-/opt/da3/weights/metric_large}"
 DA3_MODEL_ID="${DA3_MODEL_ID:-depth-anything/DA3Metric-Large}"
 DA3_MODEL_NAME="${DA3_MODEL_NAME:-da3metric-large}"
 FIXER_DIR="${FIXER_DIR:-/opt/Fixer}"
-FIXER_WEIGHTS_DIR="${FIXER_WEIGHTS_DIR:-/opt/Fixer/weights}"
+FIXER_WEIGHTS_DIR="${FIXER_WEIGHTS_DIR:-/opt/fixer_weights}"
 QWEN_EDIT_DIR="${QWEN_IMAGE_EDIT_MODEL_PATH:-/opt/qwen-image-edit}"
 HF_CACHE_DIR="${HF_HOME:-/opt/hf}"
 
@@ -108,6 +108,12 @@ DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends 
   python3-venv \
   rsync
 
+# Best-effort texrecon install for textured visual mesh generation.
+log "Installing texrecon (best-effort)..."
+DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends texrecon 2>/dev/null \
+  || DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends mvs-texturing 2>/dev/null \
+  || log "WARNING: texrecon/mvs-texturing not available, textured mesh will fall back to vertex-colored"
+
 mkdir -p "$HF_CACHE_DIR"
 
 log "Installing Python base dependencies..."
@@ -150,8 +156,23 @@ fi
 
 if [ "$WITH_FIXER" = true ]; then
   log "Installing Fixer..."
-  clone_or_update_repo "https://github.com/NVlabs/Fixer.git" "$FIXER_DIR" "main"
-  python3 -m pip install --no-cache-dir -e "$FIXER_DIR"
+  clone_or_update_repo "https://github.com/nv-tlabs/Fixer.git" "$FIXER_DIR" "main"
+  # Keep the existing CUDA/PyTorch stack and install Fixer runtime deps explicitly.
+  python3 -m pip install --no-cache-dir --no-deps "cosmos-predict2==1.0.9"
+  python3 -m pip install --no-cache-dir \
+    "accelerate==1.7.0" \
+    clean-fid \
+    datasets \
+    "facexlib==0.3.0" \
+    fire \
+    imageio-ffmpeg \
+    lpips \
+    natsort \
+    numpy \
+    peft \
+    "torchmetrics[image]" \
+    wandb
+  python3 -m pip install --no-cache-dir "git+https://github.com/openai/CLIP.git"
   mkdir -p "$FIXER_WEIGHTS_DIR"
   if [ ! -f "$FIXER_WEIGHTS_DIR/pretrained/pretrained_fixer.pkl" ]; then
     HF_HOME="$HF_CACHE_DIR" huggingface-cli download nvidia/Fixer --local-dir "$FIXER_WEIGHTS_DIR"

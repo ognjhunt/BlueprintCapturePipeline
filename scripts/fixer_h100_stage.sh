@@ -22,7 +22,9 @@ DISK_GB="${FIXER_H100_DISK_GB:-80}"
 CUDA_MIN="${FIXER_H100_CUDA_MIN:-12.8}"
 INET_DOWN_MIN="${FIXER_H100_INET_DOWN_MIN:-200}"
 FIXER_DIR_LOCAL="${FIXER_DIR:-/opt/Fixer}"
-FIXER_WEIGHTS_LOCAL="${FIXER_WEIGHTS_DIR:-/opt/Fixer/weights}"
+FIXER_WEIGHTS_LOCAL="${FIXER_WEIGHTS_DIR:-/opt/fixer_weights}"
+FIXER_TIMESTEP="${FIXER_TIMESTEP:-250}"
+FIXER_RESOLUTION="${FIXER_RESOLUTION:-1024}"
 REMOTE_ROOT="${FIXER_H100_REMOTE_ROOT:-/opt/fixer_stage}"
 REMOTE_SETUP_CMD="${FIXER_H100_REMOTE_SETUP_CMD:-}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=30"
@@ -56,7 +58,7 @@ Options:
   --max-hourly RATE          Max $/hr when creating H100 instance (default: 2.50)
   --disk-gb GB               Disk size for created instance (default: 80)
   --fixer-dir DIR            Local Fixer source path (default: /opt/Fixer)
-  --fixer-weights-dir DIR    Local Fixer weights dir (default: /opt/Fixer/weights)
+  --fixer-weights-dir DIR    Local Fixer weights dir (default: /opt/fixer_weights)
 EOF
 }
 
@@ -244,17 +246,18 @@ wait_for_ssh "$SSH_HOST" "$SSH_PORT"
 REMOTE_RENDERS="${REMOTE_ROOT}/inputs/renders"
 REMOTE_OUTPUT="${REMOTE_ROOT}/outputs/fixer_output"
 REMOTE_FIXER="${REMOTE_ROOT}/Fixer"
+REMOTE_WEIGHTS="${REMOTE_ROOT}/fixer_weights"
 
 log "Creating remote directories..."
 ssh $SSH_OPTS -p "$SSH_PORT" "root@${SSH_HOST}" \
-  "mkdir -p '${REMOTE_RENDERS}' '${REMOTE_OUTPUT}' '${REMOTE_FIXER}'"
+  "mkdir -p '${REMOTE_RENDERS}' '${REMOTE_OUTPUT}' '${REMOTE_FIXER}' '${REMOTE_WEIGHTS}'"
 
 log "Syncing renders..."
 rsync -az --delete -e "ssh $SSH_OPTS -p $SSH_PORT" \
   "${INPUT_RENDERS}/" "root@${SSH_HOST}:${REMOTE_RENDERS}/"
 
 REMOTE_HAS_FIXER=$(ssh $SSH_OPTS -p "$SSH_PORT" "root@${SSH_HOST}" \
-  "if [ -f '${REMOTE_FIXER}/src/inference_pretrained_model.py' ] && [ -f '${REMOTE_FIXER}/weights/pretrained/pretrained_fixer.pkl' ]; then echo yes; else echo no; fi")
+  "if [ -f '${REMOTE_FIXER}/src/inference_pretrained_model.py' ] && [ -f '${REMOTE_WEIGHTS}/pretrained/pretrained_fixer.pkl' ]; then echo yes; else echo no; fi")
 
 if [ "$REMOTE_HAS_FIXER" != "yes" ]; then
   [ -d "$FIXER_DIR_LOCAL" ] || die "Local Fixer source dir not found: $FIXER_DIR_LOCAL"
@@ -265,9 +268,9 @@ if [ "$REMOTE_HAS_FIXER" != "yes" ]; then
     "${FIXER_DIR_LOCAL}/" "root@${SSH_HOST}:${REMOTE_FIXER}/"
 
   if [ -d "$FIXER_WEIGHTS_LOCAL" ]; then
-    log "Syncing Fixer weights: $FIXER_WEIGHTS_LOCAL -> ${REMOTE_FIXER}/weights"
+    log "Syncing Fixer weights: $FIXER_WEIGHTS_LOCAL -> ${REMOTE_WEIGHTS}"
     rsync -az --delete -e "ssh $SSH_OPTS -p $SSH_PORT" \
-      "${FIXER_WEIGHTS_LOCAL}/" "root@${SSH_HOST}:${REMOTE_FIXER}/weights/"
+      "${FIXER_WEIGHTS_LOCAL}/" "root@${SSH_HOST}:${REMOTE_WEIGHTS}/"
   fi
 fi
 
@@ -290,10 +293,16 @@ fi
 log "Running Fixer inference on H100..."
 ssh $SSH_OPTS -p "$SSH_PORT" "root@${SSH_HOST}" "bash -lc '
 set -euo pipefail
+test -f \"${REMOTE_FIXER}/src/inference_pretrained_model.py\"
+test -f \"${REMOTE_WEIGHTS}/pretrained/pretrained_fixer.pkl\"
+test -f \"${REMOTE_WEIGHTS}/base/model_fast_tokenizer.pt\"
+test -f \"${REMOTE_WEIGHTS}/base/tokenizer_fast.pth\"
 python3 \"${REMOTE_FIXER}/src/inference_pretrained_model.py\" \
-  --input_folder \"${REMOTE_RENDERS}\" \
-  --output_folder \"${REMOTE_OUTPUT}\" \
-  --pretrained_path \"${REMOTE_FIXER}/weights/pretrained/pretrained_fixer.pkl\"
+  --model \"${REMOTE_WEIGHTS}/pretrained/pretrained_fixer.pkl\" \
+  --input \"${REMOTE_RENDERS}\" \
+  --output \"${REMOTE_OUTPUT}\" \
+  --timestep \"${FIXER_TIMESTEP}\" \
+  --resolution \"${FIXER_RESOLUTION}\"
 '"
 
 log "Syncing refined images back..."

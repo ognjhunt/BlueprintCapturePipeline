@@ -44,8 +44,11 @@ def _apply_open3d_thread_overrides() -> None:
 def build_gaussian_visual_mesh(*, gaussian_ply: Path, output_glb: Path, target_faces: int) -> Dict[str, Any]:
     """Build a viewer-friendly mesh from Gaussian PLY.
 
-    Note: current implementation reconstructs from Gaussian samples and writes
-    vertex-colored GLB. This is a robust fallback path for generic viewers.
+    Quality strategy:
+    - Voxel downsampling (not random) to preserve spatial coverage.
+    - Keep up to 2M points for room-scale detail.
+    - Poisson depth 12 for high-resolution reconstruction.
+    - Weighted KNN color transfer (K=5) for smooth vertex colors.
     """
 
     _apply_open3d_thread_overrides()
@@ -76,18 +79,21 @@ def build_gaussian_visual_mesh(*, gaussian_ply: Path, output_glb: Path, target_f
                 "reason": "gaussian_pointcloud_empty",
             }
 
-        max_points = max(100000, _env_int("GAUSSIAN_TSDF_MAX_POINTS", 900000))
+        max_points = max(100000, _env_int("GAUSSIAN_TSDF_MAX_POINTS", 2000000))
         if points_before > max_points:
-            ratio = max(0.05, min(1.0, float(max_points) / float(points_before)))
-            pcd = pcd.random_down_sample(ratio)
+            bbox = pcd.get_axis_aligned_bounding_box()
+            extent = bbox.get_extent()
+            volume = float(extent[0] * extent[1] * extent[2])
+            voxel_size = max(0.001, (volume / max_points) ** (1.0 / 3.0))
+            pcd = pcd.voxel_down_sample(voxel_size)
 
         if not pcd.has_normals():
             pcd.estimate_normals(
-                search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.12, max_nn=64)
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.10, max_nn=64)
             )
-            pcd.orient_normals_consistent_tangent_plane(50)
+            pcd.orient_normals_consistent_tangent_plane(100)
 
-        depth = max(7, min(12, _env_int("GAUSSIAN_TSDF_POISSON_DEPTH", 10)))
+        depth = max(7, min(13, _env_int("GAUSSIAN_TSDF_POISSON_DEPTH", 12)))
         mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
             pcd,
             depth=depth,
@@ -111,15 +117,22 @@ def build_gaussian_visual_mesh(*, gaussian_ply: Path, output_glb: Path, target_f
         if target_faces > 0 and len(mesh.triangles) > target_faces:
             mesh = mesh.simplify_quadric_decimation(target_faces)
 
-        # Transfer nearest-neighbor color from point cloud to mesh vertices.
+        # Weighted KNN color transfer (K=5) for smooth vertex colors.
+        knn_k = max(1, _env_int("GAUSSIAN_TSDF_COLOR_KNN", 5))
         if pcd.has_colors() and len(pcd.colors) > 0 and len(mesh.vertices) > 0:
             tree = o3d.geometry.KDTreeFlann(pcd)
             pcd_colors = np.asarray(pcd.colors)
             verts = np.asarray(mesh.vertices)
             colors = np.zeros((len(verts), 3), dtype=np.float64)
             for i, v in enumerate(verts):
-                _, idx, _ = tree.search_knn_vector_3d(v, 1)
-                colors[i] = pcd_colors[idx[0]]
+                _, idx, dist = tree.search_knn_vector_3d(v, knn_k)
+                if knn_k == 1 or len(idx) <= 1:
+                    colors[i] = pcd_colors[idx[0]]
+                else:
+                    dist_arr = np.asarray(dist, dtype=np.float64)
+                    weights = 1.0 / np.maximum(dist_arr, 1e-12)
+                    weights /= weights.sum()
+                    colors[i] = (pcd_colors[idx] * weights[:, None]).sum(axis=0)
             mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
 
         output_glb.parent.mkdir(parents=True, exist_ok=True)

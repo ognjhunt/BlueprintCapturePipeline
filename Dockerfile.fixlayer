@@ -130,9 +130,60 @@ RUN pip install --no-cache-dir \
     scipy \
     trimesh
 
-# Sane defaults for visual mesh — depth 12 takes 45+ min on CPU for room scans,
-# depth 9 gives visually identical results in 2-5 min
-ENV VISUAL_MESH_POISSON_DEPTH=9
+# Fix 10: NVIDIA Fixer source + runtime deps + optional pre-downloaded weights.
+# Install cosmos-predict2 WITH deps (pulls imaginaire, megatron-core, etc.),
+# then layer transformer-engine + flash-attn prebuilt wheel + CLIP.
+# cuDNN 9 headers needed by transformer-engine at import time.
+ENV FIXER_DIR=/opt/Fixer
+ENV FIXER_WEIGHTS_DIR=/opt/fixer_weights
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libcudnn8-dev libcudnn9-cuda-12 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/nv-tlabs/Fixer.git /opt/Fixer && \
+    pip install --no-cache-dir "cosmos-predict2==1.0.9" && \
+    pip install --no-cache-dir \
+      "transformer-engine==1.12.0" \
+      "transformer-engine-cu12==1.12.0" && \
+    # flash-attn prebuilt wheel for torch 2.6 + cu124 + cp310 (ABI=0).
+    # cosmos-predict2 requires flash-attn >= 2.1.1, <= 2.6.3.
+    pip install --no-deps \
+      "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.6.3%2Bcu124torch2.6-cp310-cp310-linux_x86_64.whl" && \
+    pip install --no-cache-dir \
+      "accelerate==1.7.0" \
+      clean-fid \
+      datasets \
+      "facexlib==0.3.0" \
+      fire \
+      imageio-ffmpeg \
+      lpips \
+      natsort \
+      numpy \
+      peft \
+      "torchmetrics[image]" \
+      wandb && \
+    pip install --no-cache-dir "git+https://github.com/openai/CLIP.git"
+
+RUN mkdir -p /opt/fixer_weights && \
+    if [ -n "$HF_TOKEN" ]; then \
+      HF_TOKEN="$HF_TOKEN" huggingface-cli download \
+        nvidia/Fixer \
+        --local-dir /opt/fixer_weights \
+        --token "$HF_TOKEN"; \
+    else \
+      echo 'WARNING: HF_TOKEN not set — Fixer weights not downloaded. Pass --build-arg HF_TOKEN=hf_xxx'; \
+    fi
+
+# Fixer's Cosmos pipeline hardcodes weight paths under /work/models/.
+# Create symlinks so inference finds them without env hacks.
+RUN mkdir -p /work/models && \
+    ln -sf /opt/fixer_weights/base /work/models/base && \
+    ln -sf /opt/fixer_weights/pretrained /work/models/pretrained
+
+# Visual mesh defaults — depth 12 with voxel downsampling (2M max points)
+# produces high-quality meshes in ~5-10 min on 16-core CPU.
+ENV VISUAL_MESH_POISSON_DEPTH=12
+ENV VISUAL_MESH_POISSON_DEPTH_LARGE=12
 ENV VISUAL_MESH_ENABLED=true
 
 RUN mkdir -p /opt/qwen-image-edit && \

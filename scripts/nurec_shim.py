@@ -54,7 +54,7 @@ THREEDGRUT_DIR = os.getenv("THREEDGRUT_DIR", "/opt/3dgrut")
 # defaulting to python3.11 (installed alongside the image's default python3.10).
 THREEDGRUT_PYTHON = os.getenv("THREEDGRUT_PYTHON", "python3.11")
 FIXER_DIR = os.getenv("FIXER_DIR", "/opt/Fixer")
-FIXER_WEIGHTS_DIR = os.getenv("FIXER_WEIGHTS_DIR", "/opt/Fixer/weights")
+FIXER_WEIGHTS_DIR = os.getenv("FIXER_WEIGHTS_DIR", "/opt/fixer_weights")
 DEFAULT_FIXER_H100_SCRIPT = os.getenv("FIXER_H100_SCRIPT", "/app/scripts/fixer_h100_stage.sh")
 
 
@@ -566,31 +566,71 @@ def _has_image_outputs(directory: Path) -> bool:
 
 
 def _run_fixer_local_stage(renders_dir: Path, fixed_dir: Path) -> bool:
-    """Run Fixer locally on the current machine."""
+    """Run Fixer locally on the current machine.
+
+    Uses the nv-tlabs/Fixer inference script (Difix3D+ single-step diffusion).
+    Expects:
+      - FIXER_DIR (/opt/Fixer) with cloned nv-tlabs/Fixer repo
+      - FIXER_WEIGHTS_DIR (/opt/fixer_weights) with HF download of nvidia/Fixer
+    """
     fixer_dir = Path(FIXER_DIR)
     fixer_weights = Path(FIXER_WEIGHTS_DIR)
     inference_script = fixer_dir / "src" / "inference_pretrained_model.py"
     pretrained_path = fixer_weights / "pretrained" / "pretrained_fixer.pkl"
 
     if not inference_script.exists():
-        _log("WARNING: Fixer source not found locally; skipping local Fixer")
+        _log(f"WARNING: Fixer source not found at {inference_script}; skipping local Fixer")
         return False
     if not pretrained_path.exists():
-        _log("WARNING: Fixer pretrained weights not found locally; skipping local Fixer")
+        _log(f"WARNING: Fixer weights not found at {pretrained_path}; skipping local Fixer")
         return False
 
+    # Verify Cosmos base model files (DIT + VAE tokenizer)
+    base_dit = fixer_weights / "base" / "model_fast_tokenizer.pt"
+    base_vae = fixer_weights / "base" / "tokenizer_fast.pth"
+    if not base_dit.exists() or not base_vae.exists():
+        _log(f"WARNING: Fixer base models missing ({base_dit}, {base_vae}); skipping")
+        return False
+
+    # Fixer's Cosmos pipeline hardcodes weights at /work/models/{base,pretrained}.
+    # Create symlinks so the inference script finds them regardless of our layout.
+    # Best-effort: may fail on read-only root filesystems (e.g. macOS); Dockerfile
+    # already bakes these symlinks so this is a runtime fallback only.
+    try:
+        work_models = Path("/work/models")
+        work_models.mkdir(parents=True, exist_ok=True)
+        for sub in ("base", "pretrained"):
+            link = work_models / sub
+            target = fixer_weights / sub
+            if not link.exists() and target.is_dir():
+                link.symlink_to(target)
+                _log(f"  symlinked {link} -> {target}")
+    except OSError as exc:
+        _log(f"  NOTE: could not create /work/models symlinks ({exc}); "
+             "assuming Dockerfile already set them up")
+
     fixed_dir.mkdir(parents=True, exist_ok=True)
-    _log("Running Fixer image refinement locally...")
+    timestep = _env_int("FIXER_TIMESTEP", 250)
+    resolution = _env_int("FIXER_RESOLUTION", 1024)
+    _log(f"Running Fixer image refinement locally (timestep={timestep}, res={resolution})...")
+
+    # Use the system python3 (not sys.executable which may be python3.11 for 3DGRUT)
+    # because cosmos-predict2, flash-attn, transformer-engine etc. are installed under python3.10.
+    fixer_python = os.getenv("FIXER_PYTHON", "python3")
     _run(
         [
-            sys.executable,
+            fixer_python,
             str(inference_script),
-            "--input_folder",
-            str(renders_dir),
-            "--output_folder",
-            str(fixed_dir),
-            "--pretrained_path",
+            "--model",
             str(pretrained_path),
+            "--input",
+            str(renders_dir),
+            "--output",
+            str(fixed_dir),
+            "--timestep",
+            str(timestep),
+            "--resolution",
+            str(resolution),
         ],
         cwd=str(fixer_dir / "src"),
     )
@@ -623,6 +663,10 @@ def _run_fixer_h100_stage(
         str(renders_dir),
         "--output-dir",
         str(fixed_dir),
+        "--fixer-dir",
+        str(Path(FIXER_DIR)),
+        "--fixer-weights-dir",
+        str(Path(FIXER_WEIGHTS_DIR)),
         "--max-hourly",
         str(h100_max_hourly),
         "--disk-gb",
@@ -1097,7 +1141,14 @@ def _utc_now_iso() -> str:
 # Stage 7: visual mesh exports for generic viewers
 # ---------------------------------------------------------------------------
 def _build_visual_mesh_quick(fused_ply: Path, output_glb: Path, target_faces: int) -> Dict[str, Any]:
-    """Generate a viewer-friendly mesh from dense fused point cloud."""
+    """Generate a viewer-friendly mesh from dense fused point cloud.
+
+    Quality strategy:
+    - Use voxel downsampling (not random) to preserve spatial coverage.
+    - Keep up to 2M points by default for room-scale detail.
+    - Always use Poisson depth 12 for high-resolution reconstruction.
+    - Transfer color via weighted KNN average (K=5) for smooth vertex colors.
+    """
     _apply_open3d_thread_overrides()
     try:
         import open3d as o3d
@@ -1124,17 +1175,23 @@ def _build_visual_mesh_quick(fused_ply: Path, output_glb: Path, target_faces: in
     if point_count <= 0:
         raise RuntimeError(f"No points found in fused cloud: {fused_ply}")
 
-    max_points = max(50000, _env_int("VISUAL_MESH_MAX_POINTS", 700000))
+    # Voxel downsample instead of random to preserve spatial coverage.
+    max_points = max(50000, _env_int("VISUAL_MESH_MAX_POINTS", 2000000))
     if point_count > max_points:
-        ratio = max(0.05, min(1.0, float(max_points) / float(point_count)))
-        pcd = pcd.random_down_sample(ratio)
+        # Estimate voxel size from bounding box to hit target point count.
+        bbox = pcd.get_axis_aligned_bounding_box()
+        extent = bbox.get_extent()
+        volume = float(extent[0] * extent[1] * extent[2])
+        voxel_size = max(0.001, (volume / max_points) ** (1.0 / 3.0))
+        pcd = pcd.voxel_down_sample(voxel_size)
         point_count = len(pcd.points)
+        _log(f"  Voxel downsampled to {point_count} points (voxel={voxel_size:.4f})")
 
     if not pcd.has_normals():
         pcd.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.15, max_nn=50)
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.10, max_nn=64)
         )
-        pcd.orient_normals_consistent_tangent_plane(50)
+        pcd.orient_normals_consistent_tangent_plane(100)
 
     depth = _resolve_visual_mesh_poisson_depth(point_count)
     _log(f"  Visual mesh Poisson depth={depth} (points={point_count})")
@@ -1157,14 +1214,23 @@ def _build_visual_mesh_quick(fused_ply: Path, output_glb: Path, target_faces: in
     if target_faces > 0 and len(mesh.triangles) > target_faces:
         mesh = mesh.simplify_quadric_decimation(target_faces)
 
+    # Weighted KNN color transfer (K=5) for smoother vertex colors.
+    knn_k = max(1, _env_int("VISUAL_MESH_COLOR_KNN", 5))
     if pcd.has_colors() and len(pcd.colors) > 0 and len(mesh.vertices) > 0:
         tree = o3d.geometry.KDTreeFlann(pcd)
         pcd_colors = np.asarray(pcd.colors)
         vtx = np.asarray(mesh.vertices)
         out_colors = np.zeros((len(vtx), 3), dtype=np.float64)
         for i, vert in enumerate(vtx):
-            _, idx, _ = tree.search_knn_vector_3d(vert, 1)
-            out_colors[i] = pcd_colors[idx[0]]
+            _, idx, dist = tree.search_knn_vector_3d(vert, knn_k)
+            if knn_k == 1 or len(idx) <= 1:
+                out_colors[i] = pcd_colors[idx[0]]
+            else:
+                dist_arr = np.asarray(dist, dtype=np.float64)
+                # Inverse-distance weights; guard against zero distance.
+                weights = 1.0 / np.maximum(dist_arr, 1e-12)
+                weights /= weights.sum()
+                out_colors[i] = (pcd_colors[idx] * weights[:, None]).sum(axis=0)
         mesh.vertex_colors = o3d.utility.Vector3dVector(out_colors)
 
     output_glb.parent.mkdir(parents=True, exist_ok=True)
@@ -1240,6 +1306,85 @@ def _max_texture_resolution(texture_paths: Sequence[Path]) -> int:
     return int(max_side)
 
 
+def _prepare_texrecon_scene_with_refined_images(
+    *,
+    scene_dir: Path,
+    refined_images_dir: Path,
+    workspace: Path,
+) -> tuple[Path | None, Dict[str, Any]]:
+    report: Dict[str, Any] = {
+        "requested_dir": str(refined_images_dir),
+        "used": False,
+        "matched_images": 0,
+        "total_images": 0,
+        "coverage_ratio": 0.0,
+        "reason": "",
+    }
+    scene_images = scene_dir / "images"
+    if not scene_images.is_dir():
+        report["reason"] = "scene_images_missing"
+        return None, report
+    if not refined_images_dir.is_dir():
+        report["reason"] = "refined_images_missing"
+        return None, report
+
+    originals = sorted(p for p in scene_images.rglob("*") if p.is_file())
+    if not originals:
+        report["reason"] = "scene_images_empty"
+        return None, report
+
+    refined_index: Dict[str, Path] = {}
+    for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+        for path in refined_images_dir.rglob(ext):
+            if path.is_file():
+                refined_index[path.name.lower()] = path
+
+    matches: Dict[Path, Path] = {}
+    for original in originals:
+        replacement = refined_index.get(original.name.lower())
+        if replacement is not None:
+            matches[original] = replacement
+
+    total_images = len(originals)
+    matched_images = len(matches)
+    coverage_ratio = float(matched_images / total_images) if total_images > 0 else 0.0
+    report["total_images"] = int(total_images)
+    report["matched_images"] = int(matched_images)
+    report["coverage_ratio"] = float(coverage_ratio)
+
+    min_coverage = min(1.0, max(0.0, _env_float("VISUAL_MESH_FIXER_IMAGE_COVERAGE_MIN", 0.95)))
+    if coverage_ratio < min_coverage:
+        report["reason"] = f"coverage_below_threshold:{coverage_ratio:.3f}<{min_coverage:.3f}"
+        return None, report
+
+    override_scene = workspace / "visual_texturing_scene_override"
+    if override_scene.exists():
+        shutil.rmtree(override_scene)
+    override_images = override_scene / "images"
+    override_images.mkdir(parents=True, exist_ok=True)
+
+    for original in originals:
+        rel = original.relative_to(scene_images)
+        destination = override_images / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source = matches.get(original, original)
+        shutil.copy2(str(source), str(destination))
+
+    sparse_src = scene_dir / "sparse"
+    sparse_dst = override_scene / "sparse"
+    if sparse_src.is_dir():
+        shutil.copytree(sparse_src, sparse_dst)
+    else:
+        report["reason"] = "scene_sparse_missing"
+        shutil.rmtree(override_scene, ignore_errors=True)
+        return None, report
+
+    report["used"] = True
+    report["reason"] = "ok"
+    report["scene_dir"] = str(override_scene)
+    return override_scene, report
+
+
 def _find_texrecon_output_obj(work_dir: Path, prefix: str) -> Path | None:
     preferred = [
         work_dir / f"{prefix}.obj",
@@ -1297,6 +1442,7 @@ def _build_visual_mesh_textured_colmap(
     output_glb: Path,
     workspace: Path | None,
     target_faces: int,
+    refined_images_dir: Path | None = None,
 ) -> Dict[str, Any]:
     if workspace is None:
         return {
@@ -1355,6 +1501,25 @@ def _build_visual_mesh_textured_colmap(
             "uv_coverage_ratio": 0.0,
         }
 
+    texrecon_scene_dir = scene_dir
+    fixer_override_report: Dict[str, Any] = {
+        "requested_dir": str(refined_images_dir) if refined_images_dir is not None else "",
+        "used": False,
+        "matched_images": 0,
+        "total_images": 0,
+        "coverage_ratio": 0.0,
+        "reason": "not_requested" if refined_images_dir is None else "not_applied",
+    }
+    if refined_images_dir is not None:
+        prepared_scene, override_report = _prepare_texrecon_scene_with_refined_images(
+            scene_dir=scene_dir,
+            refined_images_dir=refined_images_dir,
+            workspace=workspace,
+        )
+        fixer_override_report = override_report
+        if prepared_scene is not None:
+            texrecon_scene_dir = prepared_scene
+
     pcd = o3d.io.read_point_cloud(str(fused_ply))
     point_count = int(len(pcd.points))
     if point_count <= 0:
@@ -1368,19 +1533,22 @@ def _build_visual_mesh_textured_colmap(
             "uv_coverage_ratio": 0.0,
         }
 
-    max_points = max(100000, _env_int("VISUAL_MESH_TEXTURE_MAX_POINTS", 1200000))
+    max_points = max(100000, _env_int("VISUAL_MESH_TEXTURE_MAX_POINTS", 2000000))
     if point_count > max_points:
-        ratio = max(0.05, min(1.0, float(max_points) / float(point_count)))
-        pcd = pcd.random_down_sample(ratio)
+        bbox = pcd.get_axis_aligned_bounding_box()
+        extent = bbox.get_extent()
+        volume = float(extent[0] * extent[1] * extent[2])
+        voxel_size = max(0.001, (volume / max_points) ** (1.0 / 3.0))
+        pcd = pcd.voxel_down_sample(voxel_size)
         point_count = int(len(pcd.points))
 
     if not pcd.has_normals():
         pcd.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.12, max_nn=64)
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.10, max_nn=64)
         )
-        pcd.orient_normals_consistent_tangent_plane(50)
+        pcd.orient_normals_consistent_tangent_plane(100)
 
-    depth = max(8, min(12, _env_int("VISUAL_MESH_TEXTURE_POISSON_DEPTH", 11)))
+    depth = max(8, min(13, _env_int("VISUAL_MESH_TEXTURE_POISSON_DEPTH", 12)))
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
         pcd,
         depth=depth,
@@ -1424,7 +1592,9 @@ def _build_visual_mesh_textured_colmap(
         }
 
     out_prefix = "visual_textured"
-    textured_obj, texrecon_error = _run_texrecon(scene_dir, base_mesh_obj, out_prefix, texturing_dir)
+    textured_obj, texrecon_error = _run_texrecon(
+        texrecon_scene_dir, base_mesh_obj, out_prefix, texturing_dir
+    )
     if textured_obj is None:
         return {
             "ok": False,
@@ -1434,6 +1604,7 @@ def _build_visual_mesh_textured_colmap(
             "texture_image_count": 0,
             "atlas_resolution": 0,
             "uv_coverage_ratio": 0.0,
+            "fixer_image_override": fixer_override_report,
         }
 
     loaded = trimesh.load(str(textured_obj), force="scene", process=False)
@@ -1456,6 +1627,7 @@ def _build_visual_mesh_textured_colmap(
         "texture_image_count": int(len(texture_paths)),
         "atlas_resolution": int(atlas_resolution),
         "uv_coverage_ratio": float(_estimate_uv_coverage_ratio(scene)),
+        "fixer_image_override": fixer_override_report,
     }
 
 
@@ -1487,6 +1659,7 @@ def build_visual_mesh_artifacts(
     fused_ply: Path,
     gaussian_ply: Path,
     workspace: Path | None = None,
+    refined_images_dir: Path | None = None,
 ) -> Dict[str, Any]:
     enabled = _env_flag("VISUAL_MESH_ENABLED", True)
     target_faces = _env_int("VISUAL_MESH_TARGET_FACES", 0)
@@ -1517,11 +1690,16 @@ def build_visual_mesh_artifacts(
     fallback_reasons: list[str] = []
 
     if method == "textured_colmap":
+        textured_kwargs: Dict[str, Any] = {
+            "fused_ply": fused_ply,
+            "output_glb": visual_mesh,
+            "workspace": workspace,
+            "target_faces": target_faces,
+        }
+        if refined_images_dir is not None:
+            textured_kwargs["refined_images_dir"] = refined_images_dir
         textured_report = _build_visual_mesh_textured_colmap(
-            fused_ply=fused_ply,
-            output_glb=visual_mesh,
-            workspace=workspace,
-            target_faces=target_faces,
+            **textured_kwargs,
         )
         report["textured_colmap"] = textured_report
         if textured_report.get("ok") and visual_mesh.exists():
@@ -1937,9 +2115,9 @@ def _apply_open3d_thread_overrides() -> None:
 
 
 def _resolve_visual_mesh_poisson_depth(point_count: int) -> int:
-    base_depth = max(6, min(12, _env_int("VISUAL_MESH_POISSON_DEPTH", 12)))
+    base_depth = max(6, min(13, _env_int("VISUAL_MESH_POISSON_DEPTH", 12)))
     large_threshold = max(1, _env_int("VISUAL_MESH_POISSON_LARGE_THRESHOLD", 500000))
-    large_depth = max(6, min(base_depth, _env_int("VISUAL_MESH_POISSON_DEPTH_LARGE", 9)))
+    large_depth = max(6, min(base_depth, _env_int("VISUAL_MESH_POISSON_DEPTH_LARGE", 12)))
     return large_depth if point_count > large_threshold else base_depth
 
 
@@ -2814,6 +2992,7 @@ def main() -> int:
     # -----------------------------------------------------------------------
     # Stage 5: Fixer Image Refinement (optional)
     # -----------------------------------------------------------------------
+    fixer_refined_images_dir: Path | None = None
     if not args.skip_fixer:
         _log("=" * 60)
         _log("STAGE 5: Fixer Image Refinement")
@@ -2822,10 +3001,11 @@ def main() -> int:
         fixed_dir = output_dir / "fixer_output"
         if args.resume and _has_image_outputs(fixed_dir):
             _log("Resuming Stage 5: using existing Fixer outputs")
+            fixer_refined_images_dir = fixed_dir
         else:
             renders_dirs = list(Path(str(grut_result["result_dir"])).rglob("renders"))
             if renders_dirs:
-                run_fixer_refinement(
+                fixer_result = run_fixer_refinement(
                     renders_dirs[0],
                     output_dir,
                     mode=args.fixer_mode,
@@ -2835,6 +3015,8 @@ def main() -> int:
                     h100_max_hourly=args.fixer_h100_max_hourly,
                     h100_disk_gb=args.fixer_h100_disk_gb,
                 )
+                if fixer_result != renders_dirs[0] and _has_image_outputs(fixer_result):
+                    fixer_refined_images_dir = fixer_result
             else:
                 _log("WARNING: No rendered images found, skipping Fixer")
     else:
@@ -2946,6 +3128,7 @@ def main() -> int:
             fused_ply=fused_ply,
             gaussian_ply=ply_dst,
             workspace=workspace,
+            refined_images_dir=fixer_refined_images_dir,
         )
         _save_visual_report(output_dir, visual)
         if bool(visual.get("enabled", False)) and str(visual.get("status")) != "ok":

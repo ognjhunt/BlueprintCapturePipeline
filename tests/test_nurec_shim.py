@@ -167,6 +167,88 @@ def test_fixer_auto_falls_back_to_local(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert result == fixed_dir
 
 
+def test_run_fixer_local_stage_uses_updated_cli_args(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    renders_dir = tmp_path / "renders"
+    fixed_dir = tmp_path / "fixed"
+    renders_dir.mkdir(parents=True, exist_ok=True)
+
+    fixer_dir = tmp_path / "Fixer"
+    fixer_src = fixer_dir / "src"
+    fixer_src.mkdir(parents=True, exist_ok=True)
+    inference_script = fixer_src / "inference_pretrained_model.py"
+    inference_script.write_text("# test", encoding="utf-8")
+
+    weights_dir = tmp_path / "weights"
+    pretrained_path = weights_dir / "pretrained" / "pretrained_fixer.pkl"
+    pretrained_path.parent.mkdir(parents=True, exist_ok=True)
+    pretrained_path.write_bytes(b"ok")
+    base_dit = weights_dir / "base" / "model_fast_tokenizer.pt"
+    base_dit.parent.mkdir(parents=True, exist_ok=True)
+    base_dit.write_bytes(b"ok")
+    base_vae = weights_dir / "base" / "tokenizer_fast.pth"
+    base_vae.write_bytes(b"ok")
+
+    monkeypatch.setattr(module, "FIXER_DIR", str(fixer_dir))
+    monkeypatch.setattr(module, "FIXER_WEIGHTS_DIR", str(weights_dir))
+    monkeypatch.setenv("FIXER_TIMESTEP", "321")
+    monkeypatch.setenv("FIXER_RESOLUTION", "576")
+
+    observed: dict[str, object] = {}
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        observed["cmd"] = cmd
+        observed["cwd"] = kwargs.get("cwd")
+        fixed_dir.mkdir(parents=True, exist_ok=True)
+        (fixed_dir / "frame_00001.png").write_bytes(b"ok")
+        return None
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    assert module._run_fixer_local_stage(renders_dir, fixed_dir) is True
+    assert observed["cwd"] == str(fixer_src)
+    assert observed["cmd"] == [
+        "python3",
+        str(inference_script),
+        "--model",
+        str(pretrained_path),
+        "--input",
+        str(renders_dir),
+        "--output",
+        str(fixed_dir),
+        "--timestep",
+        "321",
+        "--resolution",
+        "576",
+    ]
+
+
+def test_run_fixer_local_stage_skips_when_base_models_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    renders_dir = tmp_path / "renders"
+    fixed_dir = tmp_path / "fixed"
+    renders_dir.mkdir(parents=True, exist_ok=True)
+
+    fixer_dir = tmp_path / "Fixer"
+    fixer_src = fixer_dir / "src"
+    fixer_src.mkdir(parents=True, exist_ok=True)
+    (fixer_src / "inference_pretrained_model.py").write_text("# test", encoding="utf-8")
+
+    weights_dir = tmp_path / "weights"
+    pretrained_path = weights_dir / "pretrained" / "pretrained_fixer.pkl"
+    pretrained_path.parent.mkdir(parents=True, exist_ok=True)
+    pretrained_path.write_bytes(b"ok")
+
+    monkeypatch.setattr(module, "FIXER_DIR", str(fixer_dir))
+    monkeypatch.setattr(module, "FIXER_WEIGHTS_DIR", str(weights_dir))
+
+    assert module._run_fixer_local_stage(renders_dir, fixed_dir) is False
+
+
 def test_run_colmap_sfm_uses_new_gpu_flags(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -836,7 +918,7 @@ def test_resolve_visual_mesh_poisson_depth_defaults_large_cloud(monkeypatch: pyt
     monkeypatch.delenv("VISUAL_MESH_POISSON_DEPTH", raising=False)
     monkeypatch.delenv("VISUAL_MESH_POISSON_DEPTH_LARGE", raising=False)
     monkeypatch.delenv("VISUAL_MESH_POISSON_LARGE_THRESHOLD", raising=False)
-    assert module._resolve_visual_mesh_poisson_depth(700000) == 9
+    assert module._resolve_visual_mesh_poisson_depth(700000) == 12
     assert module._resolve_visual_mesh_poisson_depth(200000) == 12
 
 
