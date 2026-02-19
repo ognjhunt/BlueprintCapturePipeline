@@ -129,6 +129,13 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `DA3_MODEL_NAME` (default: `da3metric-large`)
 - `HF_HOME` (default in VM guide: `/opt/hf`, shared HuggingFace cache)
 - `NUREC_VISUAL_PRIMARY` (`usdz` default; `mesh`, `auto` control scene-shell visual prim routing)
+- `OPEN_OMNIVERSE_PREVIEW` (`false` default; set `true` in `run_full_pipeline.sh` to print a preview plan)
+- `ISAAC_WEBRTC_ENDPOINT` (required for client/stream launch hints, example: `https://10.0.0.10:3000`)
+- `ISAAC_WEBRTC_REMOTE_TARGET` (optional `user@host` for asset upload with `scp`)
+- `ISAAC_WEBRTC_REMOTE_PATH` (optional, default `/tmp/omniverse-preview`)
+- `ISAAC_WEBRTC_REMOTE_PORT` (optional, default `22`)
+- `ISAAC_WEBRTC_LOCAL_STAGE` (optional local staging dir for HTTP preview, default `/tmp/omniverse_webrtc_preview`)
+- `ISAAC_WEBRTC_HTTP_PORT` (optional local HTTP port for temporary staging, default `8000`)
 - `VISUAL_MESH_ENABLED` (`true` default; set `false` to skip viewer mesh export)
 - `VISUAL_MESH_METHOD` (`textured_colmap` default; fallback chain `gaussian_tsdf` -> `quick_poisson`)
 - `VISUAL_MESH_TARGET_FACES` (default: `500000`)
@@ -142,6 +149,44 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `COLLISION_SPIKE_MAX_RATIO` (default: `0.02`; collision spike gate threshold)
 
 For production runtimes, pre-bake 3DGRUT build dependencies into the image (tiny-cuda-nn submodules and fused_ssim built against the image's torch) to avoid rebuild delays during retries.
+
+## Omniverse Preview (Recommended)
+
+Primary visual asset routing is now configured by `NUREC_VISUAL_PRIMARY`:
+- `usdz` (default): prefer `export_last.usdz` for photoreal neural rendering in Omniverse/Isaac Sim.
+- `mesh`: prefer `visual_mesh.glb` for broad app compatibility.
+- `auto`: prefer textured mesh only when available, otherwise USDZ.
+
+Use the helper script to choose the same artifact path orchestrator recorded:
+
+```bash
+bash scripts/launch_omniverse_preview.sh /Users/nijelhunt_1/Downloads/pipeline_output
+# add --launch to attempt auto-open with local apps when available
+bash scripts/launch_omniverse_preview.sh /Users/nijelhunt_1/Downloads/pipeline_output auto --launch
+```
+
+For WebRTC-only hosts (like this Mac), use the dedicated flow:
+
+```bash
+ISAAC_WEBRTC_ENDPOINT="https://<server-host>:<port>" \
+ISAAC_WEBRTC_REMOTE_TARGET="<user>@<server-host>" \
+ISAAC_WEBRTC_REMOTE_PATH="/tmp/omniverse-preview" \
+bash scripts/preview_omniverse_webrtc.sh /Users/nijelhunt_1/Downloads/pipeline_output auto
+```
+
+`preview_omniverse_webrtc.sh` outputs:
+1. resolved primary visual asset (USDZ preferred),
+2. local staging + HTTP hosting command,
+3. optional `scp` upload command,
+4. the endpoint + client launch line.
+
+To auto-run this plan after `run_full_pipeline.sh`, set:
+
+```bash
+export OPEN_OMNIVERSE_PREVIEW=true
+export ISAAC_WEBRTC_ENDPOINT="https://<server-host>:<port>"
+export ISAAC_WEBRTC_REMOTE_TARGET="<user>@<server-host>"
+```
 
 Asset generation/retrieval providers:
 

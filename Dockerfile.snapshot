@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV HF_HOME=/opt/hf
 ENV THREEDGRUT_DIR=/opt/3dgrut
 ENV FIXER_DIR=/opt/Fixer
-ENV FIXER_WEIGHTS_DIR=/opt/Fixer/weights
+ENV FIXER_WEIGHTS_DIR=/opt/fixer_weights
 ENV DA3_MODEL_PATH=/opt/da3/weights/metric_large
 # Prevent any runtime downloads — all models/weights are pre-baked
 ENV HF_HUB_OFFLINE=1

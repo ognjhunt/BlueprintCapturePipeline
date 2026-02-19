@@ -181,7 +181,7 @@ class _GeminiResult:
 
 _DEFAULT_MODEL_CASCADE = [
     "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
 ]

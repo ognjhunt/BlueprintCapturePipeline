@@ -35,10 +35,16 @@ NUREC_RESUME="${NUREC_RESUME:-false}"
 NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
 COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-exhaustive}"
 COLMAP_SEQUENTIAL_OVERLAP="${COLMAP_SEQUENTIAL_OVERLAP:-30}"
+COLMAP_MIN_REGISTERED_RATIO="${COLMAP_MIN_REGISTERED_RATIO:-0.80}"
+COLMAP_RETRY_MIN_REGISTERED_RATIO="${COLMAP_RETRY_MIN_REGISTERED_RATIO:-0.75}"
 BLUR_FILTER_KEEP_RATIO="${BLUR_FILTER_KEEP_RATIO:-1.0}"
 BLUR_FILTER_MIN_FRAMES="${BLUR_FILTER_MIN_FRAMES:-120}"
 VISUAL_MESH_METHOD="${VISUAL_MESH_METHOD:-textured_colmap}"
 NUREC_VISUAL_PRIMARY="${NUREC_VISUAL_PRIMARY:-usdz}"
+VISUAL_MESH_TEXTURE_SIZE="${VISUAL_MESH_TEXTURE_SIZE:-4096}"
+VISUAL_MESH_TEXTURE_MAX_ATLASES="${VISUAL_MESH_TEXTURE_MAX_ATLASES:-2}"
+SAM3_PREFLIGHT_STRICT="${SAM3_PREFLIGHT_STRICT:-false}"
+OPEN_OMNIVERSE_PREVIEW="${OPEN_OMNIVERSE_PREVIEW:-false}"
 
 log() {
   echo "[run-full-pipeline] $*"
@@ -169,7 +175,15 @@ SPEC
     NUREC_PARALLEL_ARGS+=(--no-parallel-post-stage6)
   fi
 
+  NUREC_PREVIEW_ARGS=()
+  if [ "${SAM3_PREFLIGHT_STRICT,,}" = "true" ]; then
+    NUREC_PREVIEW_ARGS+=(--sam3-strict-preflight)
+  fi
+
   export NUREC_QUALITY_PROFILE VISUAL_MESH_METHOD NUREC_VISUAL_PRIMARY
+  export COLMAP_MIN_REGISTERED_RATIO COLMAP_RETRY_MIN_REGISTERED_RATIO
+  export VISUAL_MESH_TEXTURE_SIZE VISUAL_MESH_TEXTURE_MAX_ATLASES
+  export SAM3_PREFLIGHT_STRICT
   python3 "${APP_DIR}/scripts/nurec_shim.py" \
     --job-spec "$JOB_SPEC" \
     --output-dir "$NUREC_OUTPUT_DIR" \
@@ -179,12 +193,15 @@ SPEC
     --n-iterations "$N_ITERATIONS" \
     --colmap-matcher-mode "$COLMAP_MATCHER_MODE" \
     --colmap-sequential-overlap "$COLMAP_SEQUENTIAL_OVERLAP" \
+    --colmap-min-registered-ratio "$COLMAP_MIN_REGISTERED_RATIO" \
+    --colmap-retry-min-registered-ratio "$COLMAP_RETRY_MIN_REGISTERED_RATIO" \
     --blur-filter-keep-ratio "$BLUR_FILTER_KEEP_RATIO" \
     --blur-filter-min-frames "$BLUR_FILTER_MIN_FRAMES" \
     --environment "$ENVIRONMENT" \
     --sam3-n-frames "$SAM3_N_FRAMES" \
     "${NUREC_RESUME_ARGS[@]}" \
     "${NUREC_PARALLEL_ARGS[@]}" \
+    "${NUREC_PREVIEW_ARGS[@]}" \
     $SKIP_FIXER \
     2>&1 | tee "${PIPELINE_DIR}/nurec.log"
 
@@ -444,6 +461,8 @@ log "BLUEPRINTPIPELINE_ROOT=$BLUEPRINTPIPELINE_ROOT"
 log "CROP_CLEANUP_PROVIDER=$CROP_CLEANUP_PROVIDER"
 log "GENERATION_PROVIDER_CHAIN=$GENERATION_PROVIDER_CHAIN"
 log "DESCRIPTOR_URI=$DESCRIPTOR_URI"
+log "NUREC_VISUAL_PRIMARY=$NUREC_VISUAL_PRIMARY"
+log "COLMAP coverage gate: min=${COLMAP_MIN_REGISTERED_RATIO}, retry_fail=${COLMAP_RETRY_MIN_REGISTERED_RATIO}"
 
 python3 -m blueprint_pipeline.swap_orchestrator \
   --descriptor-gcs-uri "$DESCRIPTOR_URI" \
@@ -504,3 +523,8 @@ log "  Scene USD:    ${SCENE_ROOT}/usd/scene.usda"
 log "  Assets:       ${SCENE_ROOT}/assets/"
 log "  Quality:      ${PIPELINE_ROOT}/swap_quality_report.json"
 log "  Summary:      ${PIPELINE_ROOT}/pipeline_summary.json"
+
+if [ "${OPEN_OMNIVERSE_PREVIEW,,}" = "true" ]; then
+  log "Preparing Omniverse WebRTC preview workflow..."
+  bash "${APP_DIR}/scripts/preview_omniverse_webrtc.sh" "${NUREC_OUTPUT_DIR}" auto || true
+fi

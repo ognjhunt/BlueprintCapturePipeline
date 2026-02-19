@@ -24,8 +24,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import re
 import shlex
 import subprocess
 import uuid
@@ -149,6 +151,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 # Prompt inference settings
 _PROMPT_INFERENCE_COMMAND = (os.getenv("PROMPT_INFERENCE_COMMAND") or "").strip()
 _PROMPT_INFERENCE_TIMEOUT_SEC = max(10, _env_int("PROMPT_INFERENCE_TIMEOUT_SEC", 120))
@@ -167,9 +176,621 @@ _DA3_MODEL_NAME = os.getenv("DA3_MODEL_NAME", "da3metric-large")
 # SAM3 weights (prefer local snapshot to avoid gated-repo HF download)
 _SAM3_WEIGHTS_PATH = Path(os.getenv("SAM3_WEIGHTS_PATH", "/opt/sam3_weights/sam3.pt"))
 
+# Occlusion-aware dimension completion settings
+_DIM_COMPLETION_DEFAULT_MODE = (
+    os.getenv("SAM3_DIMENSION_COMPLETION_MODE", "auto") or "auto"
+).strip().lower()
+_DIM_COMPLETION_RUNNER_PATH = Path(__file__).with_name("sam3_dimension_completion_runner.py")
+_DIM_COMPLETION_DEFAULT_COMMAND = (
+    f"{shlex.quote(os.getenv('SAM3_DIMENSION_COMPLETION_PYTHON', 'python3'))} "
+    f"{shlex.quote(str(_DIM_COMPLETION_RUNNER_PATH))}"
+    if _DIM_COMPLETION_RUNNER_PATH.is_file()
+    else ""
+)
+_DIM_COMPLETION_COMMAND = (
+    os.getenv("SAM3_DIMENSION_COMPLETION_COMMAND")
+    or _DIM_COMPLETION_DEFAULT_COMMAND
+    or ""
+).strip()
+_DIM_COMPLETION_GEMINI_MODEL = (
+    os.getenv("SAM3_DIMENSION_COMPLETION_GEMINI_MODEL") or "gemini-2.5-flash"
+).strip()
+_DIM_COMPLETION_TIMEOUT_SEC = max(5, _env_int("SAM3_DIMENSION_COMPLETION_TIMEOUT_SEC", 40))
+_DIM_COMPLETION_MAX_OBJECTS = max(1, _env_int("SAM3_DIMENSION_COMPLETION_MAX_OBJECTS", 8))
+_DIM_COMPLETION_MAX_IMAGES = max(1, _env_int("SAM3_DIMENSION_COMPLETION_MAX_IMAGES", 2))
+_DIM_COMPLETION_MIN_OCCLUSION_SCORE = max(
+    0.0,
+    min(1.0, _env_float("SAM3_DIMENSION_COMPLETION_MIN_OCCLUSION_SCORE", 0.52)),
+)
+_DIM_COMPLETION_MIN_CONFIDENCE = max(
+    0.0,
+    min(1.0, _env_float("SAM3_DIMENSION_COMPLETION_MIN_CONFIDENCE", 0.35)),
+)
+_DIM_COMPLETION_LOW_FRAME_THRESHOLD = max(
+    1,
+    _env_int("SAM3_DIMENSION_COMPLETION_LOW_FRAME_THRESHOLD", 4),
+)
+_DIM_COMPLETION_EDGE_MARGIN_RATIO = max(
+    0.005,
+    min(0.2, _env_float("SAM3_DIMENSION_COMPLETION_EDGE_MARGIN_RATIO", 0.04)),
+)
+_DIM_COMPLETION_MAX_EXPAND_RATIO = max(
+    1.0,
+    min(3.0, _env_float("SAM3_DIMENSION_COMPLETION_MAX_EXPAND_RATIO", 1.75)),
+)
+_DIM_COMPLETION_ALLOW_SHRINK = _env_bool("SAM3_DIMENSION_COMPLETION_ALLOW_SHRINK", default=False)
+
 
 def _log(msg: str) -> None:
     print(f"[sam3-detect] {msg}", flush=True)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_dimension_completion_mode(value: Optional[str]) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"off", "auto", "always"}:
+        return mode
+    return "auto"
+
+
+def _extract_response_text(response: Any) -> str:
+    text = str(getattr(response, "text", "") or "").strip()
+    if text:
+        return text
+    candidates = getattr(response, "candidates", None)
+    if not isinstance(candidates, list):
+        return ""
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        parts = getattr(content, "parts", None)
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if getattr(part, "thought", False):
+                continue
+            part_text = str(getattr(part, "text", "") or "").strip()
+            if part_text:
+                return part_text
+    return ""
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    payload_text = (text or "").strip()
+    if not payload_text:
+        return {}
+
+    try:
+        payload = json.loads(payload_text)
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    except Exception:
+        pass
+
+    cleaned = re.sub(r"```(?:json)?\s*", "", payload_text).strip()
+    try:
+        payload = json.loads(cleaned)
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if not match:
+        return {}
+    try:
+        payload = json.loads(match.group(0))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _parse_extents_triplet(payload: Any) -> Optional[List[float]]:
+    if isinstance(payload, list) and len(payload) >= 3:
+        extents = [_safe_float(payload[idx], -1.0) for idx in range(3)]
+    elif isinstance(payload, Mapping):
+        extents = [
+            _safe_float(payload.get("x"), -1.0),
+            _safe_float(payload.get("y"), -1.0),
+            _safe_float(payload.get("z"), -1.0),
+        ]
+    else:
+        return None
+    if any(value <= 0.0 for value in extents):
+        return None
+    return [max(0.02, min(8.0, float(value))) for value in extents]
+
+
+def _parse_completion_payload(payload: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    extents: Optional[List[float]] = None
+    for key in ("predicted_extents_m", "extents_m", "dimensions_m", "extents"):
+        extents = _parse_extents_triplet(payload.get(key))
+        if extents is not None:
+            break
+    if extents is None:
+        nested = payload.get("prediction")
+        if isinstance(nested, Mapping):
+            extents = _parse_extents_triplet(nested.get("extents"))
+    if extents is None:
+        return None
+
+    confidence = _safe_float(payload.get("confidence", payload.get("score", 0.0)), 0.0)
+    confidence = max(0.0, min(1.0, confidence))
+    model = str(payload.get("model") or "").strip()
+    reason = str(payload.get("reason") or payload.get("rationale") or "").strip()
+
+    return {
+        "predicted_extents": extents,
+        "confidence": confidence,
+        "model": model,
+        "reason": reason,
+    }
+
+
+def _object_extents(obj: Mapping[str, Any]) -> Optional[List[float]]:
+    bbox = obj.get("boundingBox") if isinstance(obj.get("boundingBox"), Mapping) else {}
+    extents = bbox.get("extents") if isinstance(bbox.get("extents"), list) else None
+    if extents is None or len(extents) < 3:
+        return None
+    parsed = [_safe_float(extents[idx], -1.0) for idx in range(3)]
+    if any(value <= 0.0 for value in parsed):
+        return None
+    return [max(0.02, min(8.0, float(value))) for value in parsed]
+
+
+def _object_image_size(obj: Mapping[str, Any]) -> Optional[Tuple[int, int]]:
+    raw = obj.get("image_size")
+    if not isinstance(raw, list) or len(raw) < 2:
+        return None
+    width = _safe_int(raw[0], 0)
+    height = _safe_int(raw[1], 0)
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _object_box(obj: Mapping[str, Any]) -> Optional[Tuple[float, float, float, float]]:
+    raw = obj.get("mean_box_px")
+    if not isinstance(raw, list) or len(raw) < 4:
+        return None
+    x1 = _safe_float(raw[0], 0.0)
+    y1 = _safe_float(raw[1], 0.0)
+    x2 = _safe_float(raw[2], 0.0)
+    y2 = _safe_float(raw[3], 0.0)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _compute_occlusion_signals(obj: Mapping[str, Any]) -> Dict[str, Any]:
+    frame_count = max(0, _safe_int(obj.get("n_frame_detections"), 0))
+    mean_confidence = _safe_float(obj.get("mean_confidence", obj.get("confidence", 0.0)), 0.0)
+    mean_confidence = max(0.0, min(1.0, mean_confidence))
+
+    edge_sides_touch = 0
+    edge_touch_fraction = 0.0
+    image_size = _object_image_size(obj)
+    box = _object_box(obj)
+    if image_size is not None and box is not None:
+        width, height = image_size
+        x1, y1, x2, y2 = box
+        margin_x = float(width) * _DIM_COMPLETION_EDGE_MARGIN_RATIO
+        margin_y = float(height) * _DIM_COMPLETION_EDGE_MARGIN_RATIO
+        edge_sides_touch = sum(
+            [
+                x1 <= margin_x,
+                y1 <= margin_y,
+                x2 >= float(width) - margin_x,
+                y2 >= float(height) - margin_y,
+            ]
+        )
+        edge_touch_fraction = edge_sides_touch / 4.0
+
+    low_frame_score = max(
+        0.0,
+        min(
+            1.0,
+            (_DIM_COMPLETION_LOW_FRAME_THRESHOLD - float(frame_count))
+            / float(max(1, _DIM_COMPLETION_LOW_FRAME_THRESHOLD)),
+        ),
+    )
+    low_confidence_score = 1.0 - mean_confidence
+
+    refinement = str(obj.get("refinement") or "").strip().lower()
+    refinement_uncertainty = {
+        "da3_metric_depth": 0.15,
+        "gaussian_backprojection": 0.3,
+        "focal_length_estimate": 0.65,
+        "heuristic_2d": 0.75,
+    }.get(refinement, 0.5)
+
+    extents = _object_extents(obj)
+    thinness_score = 0.0
+    if extents:
+        emax = max(extents)
+        emin = min(extents)
+        if emax > 0:
+            thin_ratio = emin / emax
+            thinness_score = max(0.0, min(1.0, (0.18 - thin_ratio) / 0.18))
+
+    occlusion_score = (
+        (0.45 * edge_touch_fraction)
+        + (0.2 * low_frame_score)
+        + (0.15 * low_confidence_score)
+        + (0.15 * refinement_uncertainty)
+        + (0.05 * thinness_score)
+    )
+    occlusion_score = max(0.0, min(1.0, occlusion_score))
+
+    return {
+        "edge_sides_touch": int(edge_sides_touch),
+        "edge_touch_fraction": round(float(edge_touch_fraction), 4),
+        "low_frame_score": round(float(low_frame_score), 4),
+        "low_confidence_score": round(float(low_confidence_score), 4),
+        "refinement_uncertainty": round(float(refinement_uncertainty), 4),
+        "thinness_score": round(float(thinness_score), 4),
+        "occlusion_score": round(float(occlusion_score), 4),
+    }
+
+
+def _resolve_reference_crops(
+    obj: Mapping[str, Any],
+    *,
+    output_path: Path,
+    max_images: int,
+) -> List[Path]:
+    candidates: List[str] = []
+    ref_crop = obj.get("reference_crop")
+    if isinstance(ref_crop, str) and ref_crop.strip():
+        candidates.append(ref_crop.strip())
+    all_crops = obj.get("all_crops")
+    if isinstance(all_crops, list):
+        for crop in all_crops:
+            text = str(crop).strip()
+            if text:
+                candidates.append(text)
+
+    unique: List[Path] = []
+    seen: set[str] = set()
+    for item in candidates:
+        rel = item.strip()
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        path = Path(rel)
+        if not path.is_absolute():
+            path = output_path.parent / path
+        if path.is_file():
+            unique.append(path)
+        if len(unique) >= max_images:
+            break
+    return unique
+
+
+def _run_completion_command(
+    *,
+    command: str,
+    label: str,
+    environment: str,
+    observed_extents: List[float],
+    crop_paths: List[Path],
+) -> Optional[Dict[str, Any]]:
+    env = os.environ.copy()
+    env["SAM3_COMPLETION_LABEL"] = label
+    env["SAM3_COMPLETION_ENVIRONMENT"] = environment
+    env["SAM3_COMPLETION_OBSERVED_EXTENTS_JSON"] = json.dumps(observed_extents)
+    env["SAM3_COMPLETION_CROP_PATHS_JSON"] = json.dumps([str(path) for path in crop_paths])
+
+    command_text = command
+    try:
+        command_text = command.format(
+            label=shlex.quote(label),
+            environment=shlex.quote(environment),
+            observed_extents_json=shlex.quote(json.dumps(observed_extents)),
+            crop_paths_json=shlex.quote(json.dumps([str(path) for path in crop_paths])),
+        )
+    except Exception:
+        command_text = command
+
+    try:
+        result = subprocess.run(
+            command_text,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=_DIM_COMPLETION_TIMEOUT_SEC,
+            env=env,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+    payload = _extract_json_object(result.stdout or "")
+    parsed = _parse_completion_payload(payload)
+    if parsed is None:
+        return None
+    parsed["provider"] = "command"
+    return parsed
+
+
+def _run_completion_gemini(
+    *,
+    label: str,
+    environment: str,
+    observed_extents: List[float],
+    crop_paths: List[Path],
+) -> Optional[Dict[str, Any]]:
+    api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return None
+
+    try:
+        from google import genai  # type: ignore
+    except Exception:
+        return None
+
+    prompt = (
+        "Estimate the full object dimensions in meters for a partially visible object.\n"
+        f"Object label: {label}\n"
+        f"Environment: {environment}\n"
+        f"Observed extents (x,y,z meters): {json.dumps(observed_extents)}\n\n"
+        "Use the image crop plus common object priors. Return strict JSON:\n"
+        "{\"predicted_extents_m\":[x,y,z],\"confidence\":0.0-1.0,"
+        "\"reason\":\"short text\"}\n"
+        "Rules: x,y,z must each be within [0.02, 8.0]."
+    )
+    parts: List[Dict[str, Any]] = [{"text": prompt}]
+    for path in crop_paths[:_DIM_COMPLETION_MAX_IMAGES]:
+        suffix = path.suffix.lower()
+        mime = "image/png" if suffix == ".png" else "image/jpeg"
+        try:
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        except Exception:
+            continue
+        parts.append({"inline_data": {"mime_type": mime, "data": encoded}})
+
+    if len(parts) <= 1:
+        return None
+
+    client = genai.Client(api_key=api_key)
+    try:
+        response = client.models.generate_content(
+            model=_DIM_COMPLETION_GEMINI_MODEL,
+            contents=[{"parts": parts}],
+            config={
+                "temperature": 0.15,
+                "max_output_tokens": 512,
+                "response_mime_type": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+    raw_text = _extract_response_text(response)
+    payload = _extract_json_object(raw_text)
+    parsed = _parse_completion_payload(payload)
+    if parsed is None:
+        return None
+    parsed["provider"] = "gemini"
+    parsed["model"] = parsed.get("model") or _DIM_COMPLETION_GEMINI_MODEL
+    return parsed
+
+
+def _infer_dimension_completion_estimate(
+    *,
+    obj: Mapping[str, Any],
+    environment: str,
+    observed_extents: List[float],
+    crop_paths: List[Path],
+) -> Dict[str, Any]:
+    label = str(obj.get("label") or obj.get("id") or "object")
+    if _DIM_COMPLETION_COMMAND:
+        estimate = _run_completion_command(
+            command=_DIM_COMPLETION_COMMAND,
+            label=label,
+            environment=environment,
+            observed_extents=observed_extents,
+            crop_paths=crop_paths,
+        )
+        if estimate is not None:
+            return {"ok": True, **estimate}
+
+    estimate = _run_completion_gemini(
+        label=label,
+        environment=environment,
+        observed_extents=observed_extents,
+        crop_paths=crop_paths,
+    )
+    if estimate is not None:
+        return {"ok": True, **estimate}
+
+    return {"ok": False, "reason": "no_estimator_available"}
+
+
+def _fuse_completed_extents(
+    *,
+    observed_extents: List[float],
+    predicted_extents: List[float],
+    model_confidence: float,
+    occlusion_score: float,
+) -> Tuple[List[float], float]:
+    observed = np.array(observed_extents, dtype=float)
+    predicted = np.array(predicted_extents, dtype=float)
+    observed = np.clip(observed, 0.02, 8.0)
+    predicted = np.clip(predicted, 0.02, 8.0)
+
+    cap = np.maximum(observed, observed * float(_DIM_COMPLETION_MAX_EXPAND_RATIO))
+    if not _DIM_COMPLETION_ALLOW_SHRINK:
+        predicted = np.maximum(predicted, observed)
+    predicted = np.minimum(predicted, cap)
+
+    confidence = max(0.0, min(1.0, float(model_confidence)))
+    occlusion = max(0.0, min(1.0, float(occlusion_score)))
+    alpha = max(0.15, min(0.85, confidence * max(0.35, occlusion)))
+
+    fused = observed + (alpha * (predicted - observed))
+    if not _DIM_COMPLETION_ALLOW_SHRINK:
+        fused = np.maximum(fused, observed)
+    fused = np.minimum(fused, cap)
+    return [round(float(value), 4) for value in fused], round(float(alpha), 4)
+
+
+def _apply_occlusion_dimension_completion(
+    *,
+    objects: List[Dict[str, Any]],
+    output_path: Path,
+    environment: str,
+    mode_override: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    mode = _normalize_dimension_completion_mode(mode_override or _DIM_COMPLETION_DEFAULT_MODE)
+    report: Dict[str, Any] = {
+        "enabled": mode != "off",
+        "mode": mode,
+        "objects_considered": len(objects),
+        "objects_attempted": 0,
+        "objects_completed": 0,
+        "objects_updated": 0,
+        "min_occlusion_score": round(float(_DIM_COMPLETION_MIN_OCCLUSION_SCORE), 4),
+        "min_model_confidence": round(float(_DIM_COMPLETION_MIN_CONFIDENCE), 4),
+        "max_objects": int(_DIM_COMPLETION_MAX_OBJECTS),
+        "max_expand_ratio": round(float(_DIM_COMPLETION_MAX_EXPAND_RATIO), 4),
+        "provider_order": (
+            ["command", "gemini"] if _DIM_COMPLETION_COMMAND else ["gemini"]
+        ),
+    }
+    if mode == "off" or not objects:
+        report["reason"] = "disabled_or_no_objects"
+        return objects, report
+
+    scored: List[Tuple[float, int, Dict[str, Any]]] = []
+    for idx, obj in enumerate(objects):
+        signals = _compute_occlusion_signals(obj)
+        completion_info = {
+            "status": "skipped",
+            "reason": "low_occlusion_score",
+            "signals": signals,
+            "occlusion_score": signals["occlusion_score"],
+        }
+        obj["dimension_completion"] = completion_info
+        should_attempt = (
+            mode == "always"
+            or float(signals["occlusion_score"]) >= float(_DIM_COMPLETION_MIN_OCCLUSION_SCORE)
+        )
+        if should_attempt:
+            scored.append((float(signals["occlusion_score"]), idx, signals))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    budget = min(len(scored), int(_DIM_COMPLETION_MAX_OBJECTS))
+
+    for rank, (_, idx, signals) in enumerate(scored):
+        obj = objects[idx]
+        if rank >= budget:
+            obj["dimension_completion"]["status"] = "skipped"
+            obj["dimension_completion"]["reason"] = "max_object_budget_reached"
+            continue
+
+        observed_extents = _object_extents(obj)
+        if observed_extents is None:
+            obj["dimension_completion"]["status"] = "skipped"
+            obj["dimension_completion"]["reason"] = "missing_observed_extents"
+            continue
+
+        crop_paths = _resolve_reference_crops(
+            obj,
+            output_path=output_path,
+            max_images=_DIM_COMPLETION_MAX_IMAGES,
+        )
+        if not crop_paths:
+            obj["dimension_completion"]["status"] = "skipped"
+            obj["dimension_completion"]["reason"] = "missing_reference_crop"
+            continue
+
+        report["objects_attempted"] = int(report["objects_attempted"]) + 1
+        estimate = _infer_dimension_completion_estimate(
+            obj=obj,
+            environment=environment,
+            observed_extents=observed_extents,
+            crop_paths=crop_paths,
+        )
+        if not bool(estimate.get("ok", False)):
+            reason = str(estimate.get("reason") or "inference_failed")
+            obj["dimension_completion"]["status"] = (
+                "skipped" if reason == "no_estimator_available" else "failed"
+            )
+            obj["dimension_completion"]["reason"] = reason
+            continue
+
+        predicted_extents = estimate.get("predicted_extents")
+        if not isinstance(predicted_extents, list) or len(predicted_extents) < 3:
+            obj["dimension_completion"]["status"] = "failed"
+            obj["dimension_completion"]["reason"] = "invalid_prediction_payload"
+            continue
+
+        model_confidence = max(0.0, min(1.0, _safe_float(estimate.get("confidence"), 0.0)))
+        if model_confidence < _DIM_COMPLETION_MIN_CONFIDENCE:
+            obj["dimension_completion"]["status"] = "skipped"
+            obj["dimension_completion"]["reason"] = "model_confidence_below_threshold"
+            obj["dimension_completion"]["model_confidence"] = round(float(model_confidence), 4)
+            continue
+
+        fused_extents, alpha = _fuse_completed_extents(
+            observed_extents=observed_extents,
+            predicted_extents=predicted_extents[:3],
+            model_confidence=model_confidence,
+            occlusion_score=float(signals.get("occlusion_score", 0.0)),
+        )
+
+        bbox = obj.get("boundingBox")
+        if isinstance(bbox, Mapping):
+            obj["boundingBox"]["extents"] = fused_extents
+
+        observed_rounded = [round(float(value), 4) for value in observed_extents]
+        predicted_rounded = [round(float(value), 4) for value in predicted_extents[:3]]
+        changed = any(
+            abs(fused_extents[i] - observed_rounded[i]) > 1e-4
+            for i in range(3)
+        )
+
+        obj["dimension_completion"] = {
+            "status": "completed",
+            "reason": "fused_with_model_prior",
+            "signals": signals,
+            "provider": str(estimate.get("provider") or "unknown"),
+            "model": str(estimate.get("model") or ""),
+            "model_confidence": round(float(model_confidence), 4),
+            "blend_alpha": round(float(alpha), 4),
+            "observed_extents": observed_rounded,
+            "predicted_extents": predicted_rounded,
+            "fused_extents": fused_extents,
+            "updated": changed,
+        }
+        if estimate.get("reason"):
+            obj["dimension_completion"]["model_reason"] = str(estimate.get("reason"))
+
+        report["objects_completed"] = int(report["objects_completed"]) + 1
+        if changed:
+            report["objects_updated"] = int(report["objects_updated"]) + 1
+
+    _log(
+        "Dimension completion: "
+        f"attempted={report['objects_attempted']} "
+        f"completed={report['objects_completed']} "
+        f"updated={report['objects_updated']}"
+    )
+    return objects, report
 
 
 # ---------------------------------------------------------------------------
@@ -1114,6 +1735,7 @@ def _cluster_to_object(
         },
         "mean_box_px": [round(v, 1) for v in mean_box],
         "mean_centroid_px": [round(v, 1) for v in mean_centroid],
+        "image_size": [int(img_w), int(img_h)],
         "detection_source": "sam3",
         "refinement": refinement_source,
     }
@@ -1862,6 +2484,7 @@ def _detect_with_video_predictor(
             },
             "mean_box_px": [round(v, 1) for v in mean_box],
             "mean_centroid_px": [round(v, 1) for v in mean_centroid],
+            "image_size": [int(img_w), int(img_h)],
             "detection_source": "sam3",
             "refinement": "heuristic_2d",
             "video_predictor_obj_id": oid,
@@ -2044,6 +2667,7 @@ def run_sam3_video_predictor(
     video_path: Optional[Path] = None,
     extraction_fps: int = 0,
     adaptive_fps_reasoning: str = "",
+    dimension_completion_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run SAM3 video predictor pipeline and write object index.
 
@@ -2099,6 +2723,12 @@ def run_sam3_video_predictor(
 
     # COLMAP + Gaussian back-projection refinement (for objects not refined by DA3)
     objects = _refine_with_colmap(objects, colmap_sparse_dir, gaussian_ply_path)
+    objects, dimension_completion_report = _apply_occlusion_dimension_completion(
+        objects=objects,
+        output_path=output_path,
+        environment=environment,
+        mode_override=dimension_completion_mode,
+    )
 
     # Report
     n_with_crops = sum(1 for obj in objects if "reference_crop" in obj)
@@ -2130,6 +2760,7 @@ def run_sam3_video_predictor(
         "n_frames_total": len(all_frames),
         "n_raw_detections": sum(obj.get("n_total_detections", 0) for obj in objects),
         "prompts_used": prompts,
+        "dimension_completion": dimension_completion_report,
         "objects": objects,
     }
 
@@ -2166,6 +2797,7 @@ def run_sam3_detection(
     n_sample_frames: int = _DEFAULT_SAMPLE_FRAMES,
     min_frame_detections: int = 2,
     save_crops: bool = True,
+    dimension_completion_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run full SAM3 detection pipeline and write object index.
 
@@ -2307,6 +2939,12 @@ def run_sam3_detection(
         f"total>={persistence_min_total}): {len(objects)} objects "
         f"(removed {before_persistence - len(objects)})"
     )
+    objects, dimension_completion_report = _apply_occlusion_dimension_completion(
+        objects=objects,
+        output_path=output_path,
+        environment=environment,
+        mode_override=dimension_completion_mode,
+    )
 
     # Report
     n_with_crops = sum(1 for obj in objects if "reference_crop" in obj)
@@ -2342,6 +2980,7 @@ def run_sam3_detection(
         "n_frames_sampled": len(frame_paths),
         "n_raw_detections": len(all_detections),
         "prompts_used": prompts,
+        "dimension_completion": dimension_completion_report,
         "objects": objects,
     }
     with open(output_path, "w", encoding="utf-8") as f:
@@ -2431,6 +3070,15 @@ def main() -> int:
                         help="Disable saving per-object reference crops")
     parser.add_argument("--scene-semantics", action="store_true",
                         help="Run Gemini scene semantics before detection to infer environment and prompts")
+    parser.add_argument(
+        "--dimension-completion-mode",
+        default=None,
+        choices=["off", "auto", "always"],
+        help=(
+            "Occlusion-aware dimension completion mode "
+            "(default comes from SAM3_DIMENSION_COMPLETION_MODE)."
+        ),
+    )
     args = parser.parse_args()
 
     # Validate input: need either --frames-dir or --video
@@ -2545,6 +3193,7 @@ def main() -> int:
                 video_path=video_path,
                 extraction_fps=extraction_fps,
                 adaptive_fps_reasoning=adaptive_fps_reasoning,
+                dimension_completion_mode=args.dimension_completion_mode,
             )
         except Exception as exc:
             _log(f"Video predictor failed: {exc}")
@@ -2568,6 +3217,7 @@ def main() -> int:
             n_sample_frames=args.n_frames,
             min_frame_detections=args.min_frame_detections,
             save_crops=not args.no_crops,
+            dimension_completion_mode=args.dimension_completion_mode,
         )
 
     n_objects = len(result.get("objects", []))
