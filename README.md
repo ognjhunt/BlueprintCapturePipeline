@@ -105,6 +105,11 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `FIXER_H100_DISK_GB` (default: `80`)
 - `FIXER_H100_REMOTE_SETUP_CMD` (optional custom setup command for remote Fixer env)
 - `COLMAP_SIFT_GPU` (`auto` default; `on`, `off`)
+- `COLMAP_MAPPER_NUM_THREADS` (`0` default = auto/all visible CPU cores)
+- `NUREC_RESUME` (`false` in shim by default; `run_full_pipeline.sh` sets `true` by default)
+- `NUREC_PARALLEL_POST_STAGE6` (`true` default; runs Stage 7 visual mesh and Stage 9 SAM3 concurrently)
+- `NUREC_DEPENDENCY_PREFLIGHT` (`true` default; fail fast before COLMAP if 3DGRUT deps are missing)
+- `NUREC_PREFLIGHT_CHECK_FUSED_SSIM` (`true` default; checks fused_ssim import/torch ABI during preflight)
 - `SAM3_N_FRAMES` (`0` default = auto-scaled by capture length)
 - `SAM3_MIN_FRAME_DETECTIONS` (`0` default = env-aware auto)
 - `SCENE_SEMANTICS_GEMINI_MODEL` (default: `gemini-3.0-pro`)
@@ -116,8 +121,14 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `VISUAL_MESH_ENABLED` (`true` default; set `false` to skip viewer mesh export)
 - `VISUAL_MESH_METHOD` (`quick_poisson` default; `gaussian_tsdf` for robust path)
 - `VISUAL_MESH_TARGET_FACES` (default: `500000`)
+- `VISUAL_MESH_POISSON_DEPTH` (default: `12`; used for smaller clouds)
+- `VISUAL_MESH_POISSON_DEPTH_LARGE` (default: `9`; used when cloud exceeds large-threshold)
+- `VISUAL_MESH_POISSON_LARGE_THRESHOLD` (default: `500000` points)
+- `OPEN3D_CPU_THREADS` (`0` default = Open3D/runtime default threading; set explicit thread count for CPU Poisson stages)
 - `COLLISION_MAX_EDGE_M` (default: `5.0`; long-edge spike filter threshold)
 - `COLLISION_SPIKE_MAX_RATIO` (default: `0.02`; collision spike gate threshold)
+
+For production runtimes, pre-bake 3DGRUT build dependencies into the image (tiny-cuda-nn submodules and fused_ssim built against the image's torch) to avoid rebuild delays during retries.
 
 Asset generation/retrieval providers:
 

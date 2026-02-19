@@ -28,6 +28,7 @@ Optional Fixer routing:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import shutil
@@ -146,7 +147,13 @@ def _colmap_supports_option(subcommand: str, option_name: str) -> bool:
     return option_name.lower() in output
 
 
-def run_colmap_sfm(frames_dir: Path, workspace: Path, *, sift_use_gpu: bool) -> Path:
+def run_colmap_sfm(
+    frames_dir: Path,
+    workspace: Path,
+    *,
+    sift_use_gpu: bool,
+    mapper_num_threads: int = 0,
+) -> Path:
     """Run COLMAP Structure-from-Motion pipeline."""
     db_path = workspace / "database.db"
     sparse_dir = workspace / "sparse"
@@ -182,31 +189,25 @@ def run_colmap_sfm(frames_dir: Path, workspace: Path, *, sift_use_gpu: bool) -> 
         matching_gpu_option, sift_gpu_flag,
     ])
 
-    _log("Running COLMAP sparse reconstruction (mapper)...")
-    _run([
+    mapper_cmd = [
         "colmap", "mapper",
         "--database_path", str(db_path),
         "--image_path", str(frames_dir),
         "--output_path", str(sparse_dir),
-    ])
+    ]
+    if mapper_num_threads > 0:
+        if _colmap_supports_option("mapper", "--Mapper.num_threads"):
+            mapper_cmd.extend(["--Mapper.num_threads", str(mapper_num_threads)])
+        else:
+            _log("WARNING: COLMAP mapper does not expose --Mapper.num_threads on this build")
+
+    _log("Running COLMAP sparse reconstruction (mapper)...")
+    _run(mapper_cmd)
 
     # Find the best reconstruction (most registered images)
-    recon_dirs = sorted(d for d in sparse_dir.iterdir() if d.is_dir())
-    if not recon_dirs:
+    best_dir, best_count = _select_best_reconstruction(sparse_dir, emit_logs=True)
+    if best_dir is None:
         raise RuntimeError("COLMAP mapper produced no reconstruction")
-
-    best_dir = recon_dirs[0]
-    best_count = 0
-    for d in recon_dirs:
-        images_bin = d / "images.bin"
-        if images_bin.exists() and images_bin.stat().st_size >= 8:
-            n_images = struct.unpack("<Q", images_bin.read_bytes()[:8])[0]
-            _log(f"  {d.name}: {n_images} registered images")
-            if n_images > best_count:
-                best_count = n_images
-                best_dir = d
-        else:
-            _log(f"  {d.name}: no images.bin")
 
     _log(f"Selected reconstruction: {best_dir} ({best_count} images)")
     return best_dir
@@ -546,6 +547,7 @@ def run_dense_reconstruction(
 
 def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path, *, force: bool = False) -> bool:
     """Attempt Open3D Poisson meshing; return True on success."""
+    _apply_open3d_thread_overrides()
     try:
         import open3d as o3d
         import numpy as np
@@ -554,7 +556,7 @@ def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path, *, force: bool 
         return False
 
     force_poisson = force or _env_flag("OPEN3D_POISSON_FORCE", False)
-    max_poisson_points = max(1, _env_int("OPEN3D_POISSON_MAX_POINTS", 900000))
+    max_poisson_points = max(1, _env_int("OPEN3D_POISSON_MAX_POINTS", 2000000))
     poisson_depth = max(6, min(12, _env_int("OPEN3D_POISSON_DEPTH", 9)))
     poisson_depth_large = max(6, min(12, _env_int("OPEN3D_POISSON_DEPTH_LARGE", 8)))
     downsample_target = max(0, _env_int("OPEN3D_POISSON_DOWNSAMPLE_TARGET", 450000))
@@ -847,6 +849,7 @@ def _utc_now_iso() -> str:
 # ---------------------------------------------------------------------------
 def _build_visual_mesh_quick(fused_ply: Path, output_glb: Path, target_faces: int) -> Dict[str, Any]:
     """Generate a viewer-friendly mesh from dense fused point cloud."""
+    _apply_open3d_thread_overrides()
     try:
         import open3d as o3d
         import numpy as np
@@ -884,7 +887,8 @@ def _build_visual_mesh_quick(fused_ply: Path, output_glb: Path, target_faces: in
         )
         pcd.orient_normals_consistent_tangent_plane(50)
 
-    depth = max(6, min(12, _env_int("VISUAL_MESH_POISSON_DEPTH", 12)))
+    depth = _resolve_visual_mesh_poisson_depth(point_count)
+    _log(f"  Visual mesh Poisson depth={depth} (points={point_count})")
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
         pcd,
         depth=depth,
@@ -1282,6 +1286,22 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _apply_open3d_thread_overrides() -> None:
+    thread_count = max(0, _env_int("OPEN3D_CPU_THREADS", 0))
+    if thread_count <= 0:
+        return
+    value = str(thread_count)
+    for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[key] = value
+
+
+def _resolve_visual_mesh_poisson_depth(point_count: int) -> int:
+    base_depth = max(6, min(12, _env_int("VISUAL_MESH_POISSON_DEPTH", 12)))
+    large_threshold = max(1, _env_int("VISUAL_MESH_POISSON_LARGE_THRESHOLD", 500000))
+    large_depth = max(6, min(base_depth, _env_int("VISUAL_MESH_POISSON_DEPTH_LARGE", 9)))
+    return large_depth if point_count > large_threshold else base_depth
+
+
 def _scene_semantics_fallback_report(
     *,
     requested_environment: str,
@@ -1382,6 +1402,271 @@ def _resolve_sam3_settings(
     return n_frames, min_frame_detections
 
 
+def _is_nonempty_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _has_colmap_model(model_dir: Path) -> bool:
+    return all(_is_nonempty_file(model_dir / name) for name in ("cameras.bin", "images.bin", "points3D.bin"))
+
+
+def _count_extracted_frames(frames_dir: Path) -> int:
+    if not frames_dir.is_dir():
+        return 0
+    return len(list(frames_dir.glob("frame_*.jpg")))
+
+
+def _select_best_reconstruction(sparse_dir: Path, *, emit_logs: bool = False) -> tuple[Path | None, int]:
+    if not sparse_dir.exists():
+        return None, 0
+    recon_dirs = sorted(d for d in sparse_dir.iterdir() if d.is_dir())
+    if not recon_dirs:
+        return None, 0
+
+    best_dir: Path | None = None
+    best_count = 0
+    for recon_dir in recon_dirs:
+        images_bin = recon_dir / "images.bin"
+        if not _is_nonempty_file(images_bin):
+            if emit_logs:
+                _log(f"  {recon_dir.name}: no images.bin")
+            continue
+        try:
+            n_images = struct.unpack("<Q", images_bin.read_bytes()[:8])[0]
+        except Exception as exc:
+            if emit_logs:
+                _log(f"  {recon_dir.name}: unreadable images.bin ({exc})")
+            continue
+        if emit_logs:
+            _log(f"  {recon_dir.name}: {n_images} registered images")
+        if n_images >= best_count:
+            best_count = n_images
+            best_dir = recon_dir
+    if best_dir is None:
+        if emit_logs:
+            _log(f"  No readable images.bin found; falling back to {recon_dirs[0].name}")
+        return recon_dirs[0], 0
+    return best_dir, best_count
+
+
+def _load_existing_grut_result(output_dir: Path) -> Dict[str, Any] | None:
+    usdz_path = output_dir / "export_last.usdz"
+    ply_path = output_dir / "export_last.ply"
+    if not (_is_nonempty_file(usdz_path) and _is_nonempty_file(ply_path)):
+        return None
+
+    grut_root = output_dir / "3dgrut"
+    result_dir = output_dir
+    if grut_root.exists():
+        export_candidates = sorted(
+            grut_root.rglob("export_last.usdz"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if export_candidates:
+            result_dir = export_candidates[0].parent
+
+    metrics: Dict[str, Any] = {}
+    metrics_path = result_dir / "metrics.json"
+    if _is_nonempty_file(metrics_path):
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _log(f"WARNING: Failed to read existing 3DGRUT metrics ({exc})")
+
+    ingp_path = output_dir / "export_last.ingp"
+    return {
+        "result_dir": result_dir,
+        "usdz": usdz_path,
+        "ply": ply_path,
+        "ingp": ingp_path if _is_nonempty_file(ingp_path) else None,
+        "metrics": metrics,
+    }
+
+
+def _load_json_dict(path: Path) -> Dict[str, Any]:
+    if not _is_nonempty_file(path):
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_existing_visual_report(output_dir: Path) -> Dict[str, Any] | None:
+    report_candidates = [
+        output_dir / "visual_mesh_report.json",
+    ]
+    for report_path in report_candidates:
+        report = _load_json_dict(report_path)
+        if report:
+            enabled = bool(report.get("enabled", False))
+            if not enabled:
+                return report
+            visual_mesh = output_dir / "visual_mesh.glb"
+            visual_pointcloud = output_dir / "visual_pointcloud.ply"
+            if _is_nonempty_file(visual_mesh) and _is_nonempty_file(visual_pointcloud):
+                return report
+
+    manifest = _load_json_dict(output_dir / "mesh_manifest.json")
+    reports = manifest.get("reports") if isinstance(manifest.get("reports"), dict) else {}
+    visual_report = reports.get("visual") if isinstance(reports.get("visual"), dict) else {}
+    if visual_report:
+        enabled = bool(visual_report.get("enabled", False))
+        if not enabled:
+            return dict(visual_report)
+        visual_mesh = output_dir / "visual_mesh.glb"
+        visual_pointcloud = output_dir / "visual_pointcloud.ply"
+        if _is_nonempty_file(visual_mesh) and _is_nonempty_file(visual_pointcloud):
+            return dict(visual_report)
+
+    visual_mesh = output_dir / "visual_mesh.glb"
+    visual_pointcloud = output_dir / "visual_pointcloud.ply"
+    if _is_nonempty_file(visual_mesh) and _is_nonempty_file(visual_pointcloud):
+        return {
+            "enabled": True,
+            "configured_method": "resume",
+            "selected_method": "resume_existing_artifacts",
+            "status": "ok",
+            "visual_mesh": str(visual_mesh),
+            "visual_pointcloud": str(visual_pointcloud),
+        }
+    return None
+
+
+def _save_visual_report(output_dir: Path, visual_report: Mapping[str, Any]) -> None:
+    report_path = output_dir / "visual_mesh_report.json"
+    report_path.write_text(json.dumps(dict(visual_report), indent=2), encoding="utf-8")
+
+
+def _run_stage9_sam3(
+    *,
+    output_dir: Path,
+    workspace: Path,
+    frames_dir: Path,
+    frame_count: int,
+    requested_environment: str,
+    requested_n_frames: int,
+    requested_min_frame_detections: int,
+    gaussian_ply: Path,
+    resume: bool,
+) -> Path | None:
+    scene_semantics_path = output_dir / "scene_semantics_report.json"
+    index_output = output_dir / "object_point_cloud_index.json"
+    if resume and _is_nonempty_file(scene_semantics_path) and _is_nonempty_file(index_output):
+        _log("Resuming Stage 9: using existing scene semantics + SAM3 object index")
+        return index_output
+
+    scene_semantics_report = _infer_scene_semantics_report(
+        frames_dir=frames_dir,
+        requested_environment=requested_environment,
+    )
+    scene_semantics_path.write_text(
+        json.dumps(scene_semantics_report, indent=2),
+        encoding="utf-8",
+    )
+
+    resolved_environment = (
+        str(scene_semantics_report.get("resolved_environment") or requested_environment)
+        .strip()
+        .lower()
+    )
+    if resolved_environment not in {"default", "warehouse", "kitchen", "bedroom"}:
+        resolved_environment = "default"
+    detection_prompts_override = (
+        scene_semantics_report.get("detection_prompts")
+        if isinstance(scene_semantics_report.get("detection_prompts"), list)
+        else None
+    )
+    prompt_source_override = str(scene_semantics_report.get("prompt_source") or "").strip() or None
+    environment_source = str(scene_semantics_report.get("environment_source") or "").strip() or None
+    environment_confidence = scene_semantics_report.get("environment_confidence")
+    _log(
+        "Scene semantics: "
+        f"requested={requested_environment} resolved={resolved_environment} "
+        f"source={environment_source or 'unknown'} "
+        f"confidence={environment_confidence if environment_confidence is not None else 'n/a'}"
+    )
+
+    sam3_n_frames, sam3_min_frame_detections = _resolve_sam3_settings(
+        environment=resolved_environment,
+        frame_count=frame_count,
+        requested_n_frames=requested_n_frames,
+        requested_min_frame_detections=requested_min_frame_detections,
+    )
+    _log(
+        "SAM3 settings: "
+        f"n_frames={sam3_n_frames}, "
+        f"min_frame_detections={sam3_min_frame_detections}"
+    )
+    try:
+        from sam3_detect import run_sam3_detection
+
+        colmap_sparse = None
+        undist_sparse = workspace / "undistorted" / "sparse" / "0"
+        if undist_sparse.exists():
+            colmap_sparse = undist_sparse
+
+        gaussian_ply_path = gaussian_ply if gaussian_ply.exists() else None
+
+        sam3_result = run_sam3_detection(
+            frames_dir=frames_dir,
+            output_path=index_output,
+            environment=resolved_environment,
+            detection_prompts_override=detection_prompts_override,
+            prompt_source_override=prompt_source_override,
+            environment_source=environment_source,
+            environment_confidence=environment_confidence,
+            colmap_sparse_dir=colmap_sparse,
+            gaussian_ply_path=gaussian_ply_path,
+            n_sample_frames=sam3_n_frames,
+            min_frame_detections=sam3_min_frame_detections,
+        )
+        n_objects = len(sam3_result.get("objects", []))
+        _log(f"SAM3 detected {n_objects} objects")
+        return index_output
+    except Exception as exc:
+        _log(f"WARNING: SAM3 detection failed ({exc}), no object index generated")
+        return None
+
+
+def _run_dependency_preflight(*, check_fused_ssim: bool = True) -> None:
+    """Fail fast on known runtime dependency gaps before expensive stages."""
+    threedgrut_dir = Path(THREEDGRUT_DIR)
+    train_script = threedgrut_dir / "train.py"
+    tiny_cuda_header = threedgrut_dir / "thirdparty" / "tiny-cuda-nn" / "include" / "tiny-cuda-nn" / "common.h"
+    missing: list[str] = []
+    if not train_script.exists():
+        missing.append(f"missing 3DGRUT training script: {train_script}")
+    if not tiny_cuda_header.exists():
+        missing.append(
+            "missing tiny-cuda-nn submodule header "
+            f"(expected {tiny_cuda_header})"
+        )
+    if missing:
+        details = "; ".join(missing)
+        raise RuntimeError(
+            "Dependency preflight failed before reconstruction: "
+            f"{details}. Bake these dependencies into the runtime image."
+        )
+
+    if check_fused_ssim:
+        probe = subprocess.run(
+            [THREEDGRUT_PYTHON, "-c", "import fused_ssim"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if probe.returncode != 0:
+            stderr_tail = (probe.stderr or "").strip()[-400:]
+            raise RuntimeError(
+                "Dependency preflight failed: could not import fused_ssim with "
+                f"{THREEDGRUT_PYTHON}. Rebuild fused_ssim against the current torch ABI. "
+                f"stderr_tail={stderr_tail!r}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -1395,16 +1680,43 @@ def main() -> int:
     parser.add_argument("--storage-root", default=os.getenv("GCS_ROOT", "/mnt/gcs"))
     parser.add_argument("--max-frames", type=int, default=300, help="Max frames to extract")
     parser.add_argument("--extract-fps", type=int, default=5, help="Frame extraction FPS")
-    parser.add_argument("--n-iterations", type=int, default=7000,
-                        help="3DGRUT training iterations")
+    parser.add_argument(
+        "--n-iterations",
+        type=int,
+        default=7000,
+        help="3DGRUT training iterations",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=_env_flag("NUREC_RESUME", False),
+        help="Reuse completed stage outputs from --output-dir when valid",
+    )
+    parser.add_argument(
+        "--dependency-preflight",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("NUREC_DEPENDENCY_PREFLIGHT", True),
+        help="Fail fast on missing runtime deps before expensive stages",
+    )
+    parser.add_argument(
+        "--preflight-check-fused-ssim",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("NUREC_PREFLIGHT_CHECK_FUSED_SSIM", True),
+        help="Include fused_ssim import ABI check in dependency preflight",
+    )
     parser.add_argument(
         "--colmap-sift-gpu",
         default=(os.getenv("COLMAP_SIFT_GPU", "auto").strip().lower() or "auto"),
         choices=["auto", "on", "off"],
         help="SIFT GPU mode for COLMAP feature extraction/matching",
     )
-    parser.add_argument("--skip-fixer", action="store_true",
-                        help="Skip Fixer image refinement")
+    parser.add_argument(
+        "--colmap-mapper-threads",
+        type=int,
+        default=_env_int("COLMAP_MAPPER_NUM_THREADS", 0),
+        help="Mapper CPU threads (0=auto/all available)",
+    )
+    parser.add_argument("--skip-fixer", action="store_true", help="Skip Fixer image refinement")
     parser.add_argument(
         "--fixer-mode",
         default=os.getenv("FIXER_MODE", "auto"),
@@ -1439,13 +1751,24 @@ def main() -> int:
         default=_env_int("FIXER_H100_DISK_GB", 80),
         help="Disk size (GB) when provisioning H100 for Fixer",
     )
-    parser.add_argument("--skip-dense", action="store_true",
-                        help="Skip dense reconstruction (use Gaussian PLY as mesh)")
-    parser.add_argument("--skip-sam3", action="store_true",
-                        help="Skip SAM3 object detection")
-    parser.add_argument("--environment", default="auto",
-                        choices=["auto", "default", "warehouse", "kitchen", "bedroom"],
-                        help="Environment type for SAM3 detection prompts (auto recommended)")
+    parser.add_argument(
+        "--skip-dense",
+        action="store_true",
+        help="Skip dense reconstruction (use Gaussian PLY as mesh)",
+    )
+    parser.add_argument("--skip-sam3", action="store_true", help="Skip SAM3 object detection")
+    parser.add_argument(
+        "--parallel-post-stage6",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("NUREC_PARALLEL_POST_STAGE6", True),
+        help="Run Stage 7 visual mesh and Stage 9 SAM3 concurrently after Stage 6",
+    )
+    parser.add_argument(
+        "--environment",
+        default="auto",
+        choices=["auto", "default", "warehouse", "kitchen", "bedroom"],
+        help="Environment type for SAM3 detection prompts (auto recommended)",
+    )
     parser.add_argument(
         "--sam3-n-frames",
         type=int,
@@ -1465,12 +1788,28 @@ def main() -> int:
     storage_root = Path(args.storage_root)
     workspace = output_dir / "_colmap_workspace"
     workspace.mkdir(parents=True, exist_ok=True)
+    existing_grut_result: Dict[str, Any] | None = (
+        _load_existing_grut_result(output_dir) if args.resume else None
+    )
 
     # Load job spec for raw_prefix if not provided
     raw_prefix = args.raw_prefix
     if not raw_prefix:
         spec = json.loads(Path(args.job_spec).read_text(encoding="utf-8"))
         raw_prefix = spec.get("capture", {}).get("raw_prefix_uri", "")
+
+    if args.dependency_preflight:
+        _log("Running dependency preflight checks...")
+        check_fused_ssim = args.preflight_check_fused_ssim and existing_grut_result is None
+        if args.preflight_check_fused_ssim and existing_grut_result is not None:
+            _log("Preflight: skipping fused_ssim ABI check (Stage 4 outputs already present for resume)")
+        _run_dependency_preflight(check_fused_ssim=check_fused_ssim)
+
+    cpu_cores = max(1, int(os.cpu_count() or 1))
+    mapper_threads = max(0, int(args.colmap_mapper_threads))
+    if mapper_threads == 0:
+        mapper_threads = cpu_cores
+    _log(f"CPU cores visible: {cpu_cores}; mapper threads target: {mapper_threads}")
 
     # -----------------------------------------------------------------------
     # Stage 1: Frame Extraction
@@ -1480,8 +1819,15 @@ def main() -> int:
     _log("=" * 60)
     video_path = find_video(raw_prefix, storage_root)
     frames_dir = workspace / "frames"
-    frame_count = extract_frames(video_path, frames_dir,
-                                  args.max_frames, args.extract_fps)
+    if args.resume:
+        existing_frame_count = _count_extracted_frames(frames_dir)
+        if existing_frame_count > 0:
+            frame_count = existing_frame_count
+            _log(f"Resuming Stage 1: using existing extracted frames ({frame_count})")
+        else:
+            frame_count = extract_frames(video_path, frames_dir, args.max_frames, args.extract_fps)
+    else:
+        frame_count = extract_frames(video_path, frames_dir, args.max_frames, args.extract_fps)
 
     if frame_count < 10:
         _log(f"WARNING: Only {frame_count} frames extracted. Reconstruction may fail.")
@@ -1505,7 +1851,30 @@ def main() -> int:
         sift_use_gpu = False
 
     _log(f"COLMAP CUDA detected: {colmap_cuda}. Effective SIFT GPU: {sift_use_gpu}.")
-    sparse_dir = run_colmap_sfm(frames_dir, workspace, sift_use_gpu=sift_use_gpu)
+    sparse_root = workspace / "sparse"
+    sparse_dir: Path
+    if args.resume:
+        existing_sparse_dir, existing_sparse_count = _select_best_reconstruction(sparse_root, emit_logs=True)
+        if existing_sparse_dir is not None and existing_sparse_count > 0:
+            sparse_dir = existing_sparse_dir
+            _log(
+                "Resuming Stage 2: using existing COLMAP sparse model "
+                f"{existing_sparse_dir} ({existing_sparse_count} images)"
+            )
+        else:
+            sparse_dir = run_colmap_sfm(
+                frames_dir,
+                workspace,
+                sift_use_gpu=sift_use_gpu,
+                mapper_num_threads=mapper_threads,
+            )
+    else:
+        sparse_dir = run_colmap_sfm(
+            frames_dir,
+            workspace,
+            sift_use_gpu=sift_use_gpu,
+            mapper_num_threads=mapper_threads,
+        )
 
     # -----------------------------------------------------------------------
     # Stage 3: Undistort for 3DGRUT (PINHOLE cameras required)
@@ -1513,7 +1882,16 @@ def main() -> int:
     _log("=" * 60)
     _log("STAGE 3: Image Undistortion (→ PINHOLE)")
     _log("=" * 60)
-    undistorted_dir = run_colmap_undistort(frames_dir, sparse_dir, workspace)
+    undistorted_dir = workspace / "undistorted"
+    undistorted_model_dir = undistorted_dir / "sparse" / "0"
+    undistorted_images_dir = undistorted_dir / "images"
+    has_undistorted_images = undistorted_images_dir.is_dir() and any(
+        p.is_file() for p in undistorted_images_dir.rglob("*")
+    )
+    if args.resume and _has_colmap_model(undistorted_model_dir) and has_undistorted_images:
+        _log("Resuming Stage 3: using existing undistorted COLMAP workspace")
+    else:
+        undistorted_dir = run_colmap_undistort(frames_dir, sparse_dir, workspace)
 
     # -----------------------------------------------------------------------
     # Stage 4: 3DGRUT Training → USDZ + PLY
@@ -1521,12 +1899,19 @@ def main() -> int:
     _log("=" * 60)
     _log("STAGE 4: 3DGRUT Neural Reconstruction")
     _log("=" * 60)
-    grut_result = run_3dgrut_training(undistorted_dir, output_dir,
-                                       args.n_iterations)
+    if existing_grut_result is not None:
+        grut_result = existing_grut_result
+        _log("Resuming Stage 4: using existing 3DGRUT exports in output directory")
+    else:
+        grut_result = run_3dgrut_training(
+            undistorted_dir,
+            output_dir,
+            args.n_iterations,
+        )
 
     # Copy 3DGRUT outputs to the expected locations
-    usdz_src = grut_result["usdz"]
-    ply_src = grut_result["ply"]
+    usdz_src = Path(str(grut_result["usdz"]))
+    ply_src = Path(str(grut_result["ply"]))
     usdz_dst = output_dir / "export_last.usdz"
     ply_dst = output_dir / "export_last.ply"
 
@@ -1536,9 +1921,11 @@ def main() -> int:
         shutil.copy2(str(ply_src), str(ply_dst))
 
     # Also copy INGP checkpoint
-    ingp_src = grut_result.get("ingp")
-    if ingp_src and ingp_src.exists():
-        shutil.copy2(str(ingp_src), str(output_dir / "export_last.ingp"))
+    ingp_src_raw = grut_result.get("ingp")
+    if ingp_src_raw:
+        ingp_src = Path(str(ingp_src_raw))
+        if ingp_src.exists():
+            shutil.copy2(str(ingp_src), str(output_dir / "export_last.ingp"))
 
     # -----------------------------------------------------------------------
     # Stage 5: Fixer Image Refinement (optional)
@@ -1548,21 +1935,24 @@ def main() -> int:
         _log("STAGE 5: Fixer Image Refinement")
         _log("=" * 60)
         _log(f"Fixer backend mode: {args.fixer_mode}")
-        # Find rendered images from 3DGRUT training
-        renders_dirs = list(grut_result["result_dir"].rglob("renders"))
-        if renders_dirs:
-            run_fixer_refinement(
-                renders_dirs[0],
-                output_dir,
-                mode=args.fixer_mode,
-                h100_script=Path(args.fixer_h100_script),
-                h100_instance_id=args.fixer_h100_instance_id.strip(),
-                h100_keep_instance=args.fixer_h100_keep_instance,
-                h100_max_hourly=args.fixer_h100_max_hourly,
-                h100_disk_gb=args.fixer_h100_disk_gb,
-            )
+        fixed_dir = output_dir / "fixer_output"
+        if args.resume and _has_image_outputs(fixed_dir):
+            _log("Resuming Stage 5: using existing Fixer outputs")
         else:
-            _log("WARNING: No rendered images found, skipping Fixer")
+            renders_dirs = list(Path(str(grut_result["result_dir"])).rglob("renders"))
+            if renders_dirs:
+                run_fixer_refinement(
+                    renders_dirs[0],
+                    output_dir,
+                    mode=args.fixer_mode,
+                    h100_script=Path(args.fixer_h100_script),
+                    h100_instance_id=args.fixer_h100_instance_id.strip(),
+                    h100_keep_instance=args.fixer_h100_keep_instance,
+                    h100_max_hourly=args.fixer_h100_max_hourly,
+                    h100_disk_gb=args.fixer_h100_disk_gb,
+                )
+            else:
+                _log("WARNING: No rendered images found, skipping Fixer")
     else:
         _log("Skipping Fixer refinement (--skip-fixer)")
 
@@ -1578,12 +1968,56 @@ def main() -> int:
             "--skip-dense is incompatible with collision mesh quality gate "
             "(triangulated mesh required)"
         )
-    dense_result = run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
+
+    dense_dir = workspace / "dense"
+    fused_ply_resume = dense_dir / "fused.ply"
+    mesh_method_path = output_dir / "mesh_method.txt"
+    dense_result: Dict[str, Any] | None = None
+    reused_dense_stage6 = False
+    if (
+        args.resume
+        and _is_nonempty_file(mesh_ply)
+        and _is_nonempty_file(mesh_method_path)
+        and _is_nonempty_file(fused_ply_resume)
+    ):
+        try:
+            _validate_collision_mesh(mesh_ply)
+            existing_mesh_method = mesh_method_path.read_text(encoding="utf-8").strip().lower()
+            if existing_mesh_method in {"poisson_open3d", "delaunay_colmap"}:
+                dense_result = {
+                    "mesh_method": existing_mesh_method,
+                    "fused_ply": fused_ply_resume,
+                    "dense_dir": dense_dir,
+                }
+                reused_dense_stage6 = True
+                _log(
+                    "Resuming Stage 6: using existing fused cloud + collision mesh "
+                    f"(method={existing_mesh_method})"
+                )
+            else:
+                _log(
+                    "Resume check: invalid mesh method marker "
+                    f"{existing_mesh_method!r}; rerunning dense reconstruction"
+                )
+        except Exception as exc:
+            _log(f"Resume check: existing collision mesh unusable ({exc}); rerunning Stage 6")
+
+    if dense_result is None:
+        dense_result = run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
+
     mesh_method = str(dense_result.get("mesh_method") or "")
     fused_ply = Path(str(dense_result.get("fused_ply") or ""))
-    collision_report = _postprocess_collision_mesh(mesh_ply)
     collision_report_path = output_dir / "collision_mesh_report.json"
-    collision_report_path.write_text(json.dumps(collision_report, indent=2), encoding="utf-8")
+    if args.resume and reused_dense_stage6 and _is_nonempty_file(collision_report_path):
+        collision_report = _load_json_dict(collision_report_path)
+        if collision_report:
+            _log("Resuming Stage 6: using existing collision postprocess report")
+        else:
+            collision_report = _postprocess_collision_mesh(mesh_ply)
+            collision_report_path.write_text(json.dumps(collision_report, indent=2), encoding="utf-8")
+    else:
+        collision_report = _postprocess_collision_mesh(mesh_ply)
+        collision_report_path.write_text(json.dumps(collision_report, indent=2), encoding="utf-8")
 
     try:
         _enforce_collision_spike_gate(collision_report)
@@ -1606,7 +2040,6 @@ def main() -> int:
         else:
             raise
 
-    mesh_method_path = output_dir / "mesh_method.txt"
     mesh_method_path.write_text(f"{mesh_method}\n", encoding="utf-8")
     _log(f"  Collision mesh method: {mesh_method}")
     quality_profile = "delaunay_relaxed" if mesh_method == "delaunay_colmap" else "default"
@@ -1614,19 +2047,56 @@ def main() -> int:
     quality_profile_path.write_text(f"{quality_profile}\n", encoding="utf-8")
     _log(f"  Suggested quality profile: {quality_profile}")
 
-    # -----------------------------------------------------------------------
-    # Stage 7: Visual Mesh Exports (generic viewers)
-    # -----------------------------------------------------------------------
-    _log("=" * 60)
-    _log("STAGE 7: Visual Mesh Exports")
-    _log("=" * 60)
-    visual_report = build_visual_mesh_artifacts(
-        output_dir=output_dir,
-        fused_ply=fused_ply,
-        gaussian_ply=ply_dst,
-    )
-    if bool(visual_report.get("enabled", False)) and str(visual_report.get("status")) != "ok":
-        raise RuntimeError(f"visual mesh export failed: {visual_report}")
+    def _run_stage7_visual() -> Dict[str, Any]:
+        _log("=" * 60)
+        _log("STAGE 7: Visual Mesh Exports")
+        _log("=" * 60)
+        if args.resume:
+            existing_report = _load_existing_visual_report(output_dir)
+            if existing_report is not None:
+                _log("Resuming Stage 7: using existing visual mesh artifacts")
+                _save_visual_report(output_dir, existing_report)
+                return existing_report
+        visual = build_visual_mesh_artifacts(
+            output_dir=output_dir,
+            fused_ply=fused_ply,
+            gaussian_ply=ply_dst,
+        )
+        _save_visual_report(output_dir, visual)
+        if bool(visual.get("enabled", False)) and str(visual.get("status")) != "ok":
+            raise RuntimeError(f"visual mesh export failed: {visual}")
+        return visual
+
+    def _run_stage9() -> Path | None:
+        _log("=" * 60)
+        _log("STAGE 9: SAM3 Object Detection")
+        _log("=" * 60)
+        return _run_stage9_sam3(
+            output_dir=output_dir,
+            workspace=workspace,
+            frames_dir=frames_dir,
+            frame_count=frame_count,
+            requested_environment=args.environment,
+            requested_n_frames=args.sam3_n_frames,
+            requested_min_frame_detections=args.sam3_min_frame_detections,
+            gaussian_ply=ply_dst,
+            resume=args.resume,
+        )
+
+    object_index_path: Path | None = None
+    if not args.skip_sam3 and args.parallel_post_stage6:
+        _log("Running Stage 7 and Stage 9 concurrently...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            visual_future = executor.submit(_run_stage7_visual)
+            sam3_future = executor.submit(_run_stage9)
+            visual_report = visual_future.result()
+            object_index_path = sam3_future.result()
+    else:
+        visual_report = _run_stage7_visual()
+        if not args.skip_sam3:
+            object_index_path = _run_stage9()
+        else:
+            _log("Skipping SAM3 detection (--skip-sam3)")
 
     # -----------------------------------------------------------------------
     # Stage 8: Occupancy Grid
@@ -1635,7 +2105,10 @@ def main() -> int:
     _log("STAGE 8: Occupancy Grid")
     _log("=" * 60)
     occupancy_bin = output_dir / "occupancy.bin"
-    generate_occupancy(ply_dst, occupancy_bin)
+    if args.resume and _is_nonempty_file(occupancy_bin):
+        _log("Resuming Stage 8: using existing occupancy grid")
+    else:
+        generate_occupancy(ply_dst, occupancy_bin)
 
     # -----------------------------------------------------------------------
     # Stage 8.5: Mesh Manifest (artifact roles + viewer guidance)
@@ -1650,93 +2123,6 @@ def main() -> int:
         collision_method=mesh_method,
         collision_report=collision_report,
     )
-
-    # -----------------------------------------------------------------------
-    # Stage 9: SAM3 Object Detection (replaces ARKit)
-    # -----------------------------------------------------------------------
-    object_index_path = None
-    if not args.skip_sam3:
-        _log("=" * 60)
-        _log("STAGE 9: SAM3 Object Detection")
-        _log("=" * 60)
-        scene_semantics_report = _infer_scene_semantics_report(
-            frames_dir=frames_dir,
-            requested_environment=args.environment,
-        )
-        scene_semantics_path = output_dir / "scene_semantics_report.json"
-        scene_semantics_path.write_text(
-            json.dumps(scene_semantics_report, indent=2),
-            encoding="utf-8",
-        )
-
-        resolved_environment = (
-            str(scene_semantics_report.get("resolved_environment") or args.environment)
-            .strip()
-            .lower()
-        )
-        if resolved_environment not in {"default", "warehouse", "kitchen", "bedroom"}:
-            resolved_environment = "default"
-        detection_prompts_override = (
-            scene_semantics_report.get("detection_prompts")
-            if isinstance(scene_semantics_report.get("detection_prompts"), list)
-            else None
-        )
-        prompt_source_override = str(scene_semantics_report.get("prompt_source") or "").strip() or None
-        environment_source = str(scene_semantics_report.get("environment_source") or "").strip() or None
-        environment_confidence = scene_semantics_report.get("environment_confidence")
-        _log(
-            "Scene semantics: "
-            f"requested={args.environment} resolved={resolved_environment} "
-            f"source={environment_source or 'unknown'} "
-            f"confidence={environment_confidence if environment_confidence is not None else 'n/a'}"
-        )
-
-        sam3_n_frames, sam3_min_frame_detections = _resolve_sam3_settings(
-            environment=resolved_environment,
-            frame_count=frame_count,
-            requested_n_frames=args.sam3_n_frames,
-            requested_min_frame_detections=args.sam3_min_frame_detections,
-        )
-        _log(
-            "SAM3 settings: "
-            f"n_frames={sam3_n_frames}, "
-            f"min_frame_detections={sam3_min_frame_detections}"
-        )
-        try:
-            from sam3_detect import run_sam3_detection
-
-            # Write index to the raw/arkit/objects/ path expected by the pipeline
-            index_output = output_dir / "object_point_cloud_index.json"
-
-            # Use COLMAP sparse dir for 3D refinement if available
-            colmap_sparse = None
-            undist_sparse = workspace / "undistorted" / "sparse" / "0"
-            if undist_sparse.exists():
-                colmap_sparse = undist_sparse
-
-            # Pass Gaussian PLY for accurate 3D back-projection
-            gaussian_ply = ply_dst if ply_dst.exists() else None
-
-            sam3_result = run_sam3_detection(
-                frames_dir=frames_dir,
-                output_path=index_output,
-                environment=resolved_environment,
-                detection_prompts_override=detection_prompts_override,
-                prompt_source_override=prompt_source_override,
-                environment_source=environment_source,
-                environment_confidence=environment_confidence,
-                colmap_sparse_dir=colmap_sparse,
-                gaussian_ply_path=gaussian_ply,
-                n_sample_frames=sam3_n_frames,
-                min_frame_detections=sam3_min_frame_detections,
-            )
-            n_objects = len(sam3_result.get("objects", []))
-            _log(f"SAM3 detected {n_objects} objects")
-            object_index_path = index_output
-        except Exception as e:
-            _log(f"WARNING: SAM3 detection failed ({e}), no object index generated")
-    else:
-        _log("Skipping SAM3 detection (--skip-sam3)")
 
     # -----------------------------------------------------------------------
     # Summary
@@ -1771,6 +2157,7 @@ def main() -> int:
         "mesh_method.txt",
         "quality_profile.txt",
         "collision_mesh_report.json",
+        "visual_mesh_report.json",
         "visual_pointcloud.ply",
         "visual_mesh_robust.glb",
     ]:
@@ -1781,9 +2168,11 @@ def main() -> int:
 
     if grut_result.get("metrics"):
         m = grut_result["metrics"]
-        _log(f"  Quality: PSNR={m.get('mean_psnr', 0):.2f} "
-             f"SSIM={m.get('mean_ssim', 0):.3f} "
-             f"LPIPS={m.get('mean_lpips', 0):.3f}")
+        _log(
+            f"  Quality: PSNR={m.get('mean_psnr', 0):.2f} "
+            f"SSIM={m.get('mean_ssim', 0):.3f} "
+            f"LPIPS={m.get('mean_lpips', 0):.3f}"
+        )
 
     return 0 if all_ok else 1
 

@@ -441,3 +441,21 @@ def test_resolve_sam3_settings_bedroom_auto() -> None:
 
     assert n_frames == 26
     assert min_frames == 2
+
+
+def test_resolve_visual_mesh_poisson_depth_defaults_large_cloud(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.delenv("VISUAL_MESH_POISSON_DEPTH", raising=False)
+    monkeypatch.delenv("VISUAL_MESH_POISSON_DEPTH_LARGE", raising=False)
+    monkeypatch.delenv("VISUAL_MESH_POISSON_LARGE_THRESHOLD", raising=False)
+    assert module._resolve_visual_mesh_poisson_depth(700000) == 9
+    assert module._resolve_visual_mesh_poisson_depth(200000) == 12
+
+
+def test_resolve_visual_mesh_poisson_depth_respects_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("VISUAL_MESH_POISSON_DEPTH", "11")
+    monkeypatch.setenv("VISUAL_MESH_POISSON_DEPTH_LARGE", "9")
+    monkeypatch.setenv("VISUAL_MESH_POISSON_LARGE_THRESHOLD", "250000")
+    assert module._resolve_visual_mesh_poisson_depth(260000) == 9
+    assert module._resolve_visual_mesh_poisson_depth(120000) == 11

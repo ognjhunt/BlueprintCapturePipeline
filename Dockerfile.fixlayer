@@ -10,6 +10,10 @@
 #      → fixed in nurec_shim.py (use 9999); code change in repo only, no Docker layer needed
 #   7. python3-dev missing — triton JIT needs Python.h to compile CUDA utils at runtime
 #   8. diffusers + Qwen-Image-Edit-2511 not pre-downloaded — needed for object crop polish stage
+#   9. COLMAP runtime .so files missing (discovered 2026-02-19 E2E run):
+#      libcholmod.so.3 (libsuitesparse-dev), libceres.so.2 (libceres2),
+#      libOpenImageIO.so.2.2 (libopenimageio2.2), libOpenGL.so.0 (libopengl0),
+#      libfreeimage.so (libfreeimage3), libglog/libgflags, libglfw3, libglew2.2, boost libs
 #
 # Build and push:
 #   docker build -f Dockerfile.fixlayer \
@@ -21,12 +25,38 @@ FROM nijelhunt/blueprint-capture-pipeline:sam3-ready
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Fix 1: ffmpeg + python3.11 + python3-dev (Python.h for triton JIT + 3DGRUT)
+# Also installs COLMAP runtime shared libraries missing from base image
+# (discovered 2026-02-19 E2E run: libcholmod, libceres, libOpenImageIO, libopengl):
+#   libsuitesparse-dev  → libcholmod.so.3
+#   libceres2           → libceres.so.2
+#   libfreeimage3       → libfreeimage.so (image I/O)
+#   libgoogle-glog0v5   → libglog.so.0
+#   libgflags2.2        → libgflags.so.2.2
+#   libopenimageio2.2   → libOpenImageIO.so.2.2
+#   libopengl0          → libOpenGL.so.0
+#   libglfw3, libglew2.2 → GL window/extension libs
+#   libboost-filesystem1.74.0, libboost-program-options1.74.0, libboost-system1.74.0 → Boost
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3-dev \
     python3.11 \
     python3.11-dev \
     python3.11-venv \
+    libsuitesparse-dev \
+    libceres2 \
+    libfreeimage3 \
+    libgoogle-glog0v5 \
+    libgflags2.2 \
+    libopenimageio2.2 \
+    libopengl0 \
+    libglfw3 \
+    libglew2.2 \
+    libboost-filesystem1.74.0 \
+    libboost-program-options1.74.0 \
+    libboost-system1.74.0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Fix 2: install libonnxruntime 1.24.1 as a system .so

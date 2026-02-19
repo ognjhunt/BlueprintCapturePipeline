@@ -30,6 +30,8 @@ EXTRACT_FPS="${EXTRACT_FPS:-5}"
 N_ITERATIONS="${N_ITERATIONS:-7000}"
 SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
 SKIP_FIXER="${SKIP_FIXER:---skip-fixer}"
+NUREC_RESUME="${NUREC_RESUME:-true}"
+NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
 
 log() {
   echo "[run-full-pipeline] $*"
@@ -148,6 +150,18 @@ if [ "$SKIP_NUREC" = "false" ]; then
 }
 SPEC
 
+  NUREC_RESUME_ARGS=()
+  if [ "$NUREC_RESUME" = "true" ]; then
+    NUREC_RESUME_ARGS+=(--resume)
+  fi
+
+  NUREC_PARALLEL_ARGS=()
+  if [ "$NUREC_PARALLEL_POST_STAGE6" = "true" ]; then
+    NUREC_PARALLEL_ARGS+=(--parallel-post-stage6)
+  else
+    NUREC_PARALLEL_ARGS+=(--no-parallel-post-stage6)
+  fi
+
   python3 "${APP_DIR}/scripts/nurec_shim.py" \
     --job-spec "$JOB_SPEC" \
     --output-dir "$NUREC_OUTPUT_DIR" \
@@ -157,6 +171,8 @@ SPEC
     --n-iterations "$N_ITERATIONS" \
     --environment "$ENVIRONMENT" \
     --sam3-n-frames "$SAM3_N_FRAMES" \
+    "${NUREC_RESUME_ARGS[@]}" \
+    "${NUREC_PARALLEL_ARGS[@]}" \
     $SKIP_FIXER \
     2>&1 | tee "${PIPELINE_DIR}/nurec.log"
 

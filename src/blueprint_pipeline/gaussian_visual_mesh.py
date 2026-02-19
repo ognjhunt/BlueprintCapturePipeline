@@ -32,6 +32,15 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _apply_open3d_thread_overrides() -> None:
+    thread_count = max(0, _env_int("OPEN3D_CPU_THREADS", 0))
+    if thread_count <= 0:
+        return
+    value = str(thread_count)
+    for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[key] = value
+
+
 def build_gaussian_visual_mesh(*, gaussian_ply: Path, output_glb: Path, target_faces: int) -> Dict[str, Any]:
     """Build a viewer-friendly mesh from Gaussian PLY.
 
@@ -39,6 +48,7 @@ def build_gaussian_visual_mesh(*, gaussian_ply: Path, output_glb: Path, target_f
     vertex-colored GLB. This is a robust fallback path for generic viewers.
     """
 
+    _apply_open3d_thread_overrides()
     try:
         import numpy as np
         import open3d as o3d
