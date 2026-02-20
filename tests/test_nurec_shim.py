@@ -2112,3 +2112,133 @@ def test_quality_profile_defaults_set_max_n_gaussians() -> None:
     assert quality_first["max_n_gaussians"] == 0  # adaptive
     assert balanced["max_n_gaussians"] == 0  # adaptive
     assert fast["max_n_gaussians"] == 500_000  # fixed cap for speed
+
+
+# ---------------------------------------------------------------------------
+# Adaptive SfM retry: _resolve_effective_min_registered_ratio
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_min_registered_ratio_relaxes_for_healthy_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """140 registered out of 224: above 100 absolute minimum → relax to 0.50."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MIN_REGISTERED_RATIO", "SFM_ABSOLUTE_MIN_FRAMES",
+                "SFM_SMALL_SET_THRESHOLD", "SFM_RELAXED_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    ratio, reason = module._resolve_effective_min_registered_ratio(
+        requested_ratio=0.80,
+        registered_images=140,
+        extracted_frames=224,
+    )
+    assert ratio == pytest.approx(0.50)
+    assert "relaxed" in reason
+    assert "registered=140" in reason
+
+
+def test_resolve_min_registered_ratio_strict_for_low_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only 40 registered out of 224: below 100 minimum → keep strict 0.80."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MIN_REGISTERED_RATIO", "SFM_ABSOLUTE_MIN_FRAMES",
+                "SFM_SMALL_SET_THRESHOLD", "SFM_RELAXED_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    ratio, reason = module._resolve_effective_min_registered_ratio(
+        requested_ratio=0.80,
+        registered_images=40,
+        extracted_frames=224,
+    )
+    assert ratio == pytest.approx(0.80)
+    assert "strict" in reason
+
+
+def test_resolve_min_registered_ratio_strict_for_small_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Small capture (30 frames): always strict regardless of absolute count."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MIN_REGISTERED_RATIO", "SFM_ABSOLUTE_MIN_FRAMES",
+                "SFM_SMALL_SET_THRESHOLD", "SFM_RELAXED_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    ratio, reason = module._resolve_effective_min_registered_ratio(
+        requested_ratio=0.80,
+        registered_images=25,
+        extracted_frames=30,
+    )
+    assert ratio == pytest.approx(0.80)
+    assert "small_set" in reason
+
+
+def test_resolve_min_registered_ratio_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ADAPTIVE_MIN_REGISTERED_RATIO=false, keep requested ratio."""
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_MIN_REGISTERED_RATIO", "false")
+
+    ratio, reason = module._resolve_effective_min_registered_ratio(
+        requested_ratio=0.80,
+        registered_images=140,
+        extracted_frames=224,
+    )
+    assert ratio == pytest.approx(0.80)
+    assert "disabled" in reason
+
+
+def test_resolve_min_registered_ratio_custom_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Custom env overrides: lower absolute minimum, custom relaxed ratio."""
+    module = _load_nurec_shim_module()
+    monkeypatch.delenv("ADAPTIVE_MIN_REGISTERED_RATIO", raising=False)
+    monkeypatch.setenv("SFM_ABSOLUTE_MIN_FRAMES", "50")
+    monkeypatch.setenv("SFM_RELAXED_RATIO", "0.40")
+
+    ratio, reason = module._resolve_effective_min_registered_ratio(
+        requested_ratio=0.80,
+        registered_images=60,
+        extracted_frames=200,
+    )
+    assert ratio == pytest.approx(0.40)
+    assert "relaxed" in reason
+
+
+def test_resolve_min_registered_ratio_long_video_low_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Long video: 1500 frames, only 80 registered → below absolute min → strict."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MIN_REGISTERED_RATIO", "SFM_ABSOLUTE_MIN_FRAMES",
+                "SFM_SMALL_SET_THRESHOLD", "SFM_RELAXED_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    ratio, reason = module._resolve_effective_min_registered_ratio(
+        requested_ratio=0.80,
+        registered_images=80,
+        extracted_frames=1500,
+    )
+    assert ratio == pytest.approx(0.80)
+    assert "strict" in reason
+
+
+def test_resolve_min_registered_ratio_long_video_healthy_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Long video: 1500 frames, 800 registered → above 100 absolute → relax."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MIN_REGISTERED_RATIO", "SFM_ABSOLUTE_MIN_FRAMES",
+                "SFM_SMALL_SET_THRESHOLD", "SFM_RELAXED_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    ratio, reason = module._resolve_effective_min_registered_ratio(
+        requested_ratio=0.80,
+        registered_images=800,
+        extracted_frames=1500,
+    )
+    assert ratio == pytest.approx(0.50)
+    assert "relaxed" in reason

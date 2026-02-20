@@ -232,6 +232,59 @@ def _resolve_effective_max_n_gaussians(
     return resolved, end_iter, reason
 
 
+def _resolve_effective_min_registered_ratio(
+    *,
+    requested_ratio: float,
+    registered_images: int,
+    extracted_frames: int,
+) -> tuple[float, str]:
+    """Adaptively lower the SfM retry threshold when absolute frame count is healthy.
+
+    For short videos, sequential matching may register only 50-65% of frames,
+    but 120-150 well-separated frames produce better 3DGRUT output than 224
+    redundant frames from exhaustive matching.  When the absolute number of
+    registered frames exceeds a minimum, we accept a lower ratio rather than
+    forcing a retry that adds redundant viewpoints.
+
+    For long videos (1000+ frames) the ratio threshold stays strict because
+    low registration genuinely indicates reconstruction gaps.
+    """
+    requested = max(0.0, min(1.0, float(requested_ratio)))
+
+    if not _env_flag("ADAPTIVE_MIN_REGISTERED_RATIO", True):
+        return requested, "adaptive_min_registered_ratio=disabled"
+
+    # Absolute floor: if we have this many registered frames, the
+    # reconstruction is healthy regardless of the ratio.
+    absolute_min_frames = max(20, _env_int("SFM_ABSOLUTE_MIN_FRAMES", 100))
+
+    # Below this extracted frame count, don't relax — every frame matters.
+    small_set_threshold = max(20, _env_int("SFM_SMALL_SET_THRESHOLD", 60))
+
+    # Relaxed ratio used when absolute count is healthy.
+    relaxed_ratio = max(0.10, min(requested, _env_float("SFM_RELAXED_RATIO", 0.50)))
+
+    if extracted_frames <= small_set_threshold:
+        # Small captures: keep the strict ratio — losing frames hurts.
+        return requested, (
+            "adaptive_min_registered_ratio=strict "
+            f"(extracted={extracted_frames} <= small_set={small_set_threshold})"
+        )
+
+    if registered_images >= absolute_min_frames:
+        reason = (
+            "adaptive_min_registered_ratio=relaxed "
+            f"(registered={registered_images} >= absolute_min={absolute_min_frames} "
+            f"requested_ratio={requested:.3f} relaxed_ratio={relaxed_ratio:.3f})"
+        )
+        return relaxed_ratio, reason
+
+    return requested, (
+        "adaptive_min_registered_ratio=strict "
+        f"(registered={registered_images} < absolute_min={absolute_min_frames})"
+    )
+
+
 def extract_frames(video_path: Path, frames_dir: Path,
                    max_frames: int = 300, target_fps: float = 5) -> int:
     """Extract frames from video at reduced FPS for SfM."""
@@ -3957,7 +4010,7 @@ def main() -> int:
             chunk_matcher_mode=args.colmap_chunk_matcher_mode,
         )
 
-    min_registered_ratio = max(0.0, min(1.0, float(args.colmap_min_registered_ratio)))
+    raw_min_registered_ratio = max(0.0, min(1.0, float(args.colmap_min_registered_ratio)))
     retry_min_ratio = max(0.0, min(1.0, float(args.colmap_retry_min_registered_ratio)))
     registered_ratio = _registration_ratio(
         registered_images=registered_images,
@@ -3968,6 +4021,13 @@ def main() -> int:
         f"registered={registered_images}/{frame_count} "
         f"(ratio={registered_ratio:.3f})"
     )
+
+    min_registered_ratio, adaptive_ratio_reason = _resolve_effective_min_registered_ratio(
+        requested_ratio=raw_min_registered_ratio,
+        registered_images=registered_images,
+        extracted_frames=frame_count,
+    )
+    _log(f"SfM retry threshold: {min_registered_ratio:.3f} ({adaptive_ratio_reason})")
 
     retry_matcher_mode, retry_matcher_reason = _resolve_colmap_retry_matcher_mode(
         args.colmap_retry_matcher_mode,
@@ -4019,10 +4079,18 @@ def main() -> int:
             f"(ratio={registered_ratio:.3f})"
         )
 
-    if registered_ratio < retry_min_ratio:
+    # Apply the same adaptive logic to the hard-fail gate: if the absolute
+    # frame count is healthy, the reconstruction is viable.
+    effective_retry_min, adaptive_fail_reason = _resolve_effective_min_registered_ratio(
+        requested_ratio=retry_min_ratio,
+        registered_images=registered_images,
+        extracted_frames=frame_count,
+    )
+    if registered_ratio < effective_retry_min:
         raise RuntimeError(
             "COLMAP registration quality gate failed: "
-            f"registered_ratio={registered_ratio:.3f} < retry_min={retry_min_ratio:.3f}. "
+            f"registered_ratio={registered_ratio:.3f} < effective_min={effective_retry_min:.3f} "
+            f"({adaptive_fail_reason}). "
             "Capture likely has excessive blur/coverage gaps; rerun with steadier motion and more overlap."
         )
 
@@ -4037,7 +4105,9 @@ def main() -> int:
         "retry_matcher_mode_reason": retry_matcher_reason,
         "retry_triggered": bool(retry_triggered),
         "registered_ratio": float(registered_ratio),
-        "min_registered_ratio": float(min_registered_ratio),
+        "min_registered_ratio_requested": float(raw_min_registered_ratio),
+        "min_registered_ratio_effective": float(min_registered_ratio),
+        "min_registered_ratio_reason": adaptive_ratio_reason,
         "retry_min_registered_ratio": float(retry_min_ratio),
         "run_report": sfm_run_report,
     }
