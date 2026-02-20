@@ -338,11 +338,13 @@ class TestRunSceneCleaning:
         expected_report = {
             "status": "ok",
             "inpainted_visual_glb": str(output_dir / "inpainted_visual_mesh.glb"),
+            "inpainted_gaussian_ply": str(output_dir / "inpainted_gaussian_splat.ply"),
         }
         (output_dir / "scene_cleaning_report.json").write_text(
             json.dumps(expected_report), encoding="utf-8"
         )
         (output_dir / "inpainted_visual_mesh.glb").write_bytes(b"fake glb data")
+        (output_dir / "inpainted_gaussian_splat.ply").write_bytes(b"fake ply data")
 
         result = runner.run_scene_cleaning(
             colmap_sparse_dir=fake_colmap,
@@ -354,6 +356,31 @@ class TestRunSceneCleaning:
         )
         assert result["status"] == "ok"
         assert "inpainted_visual_mesh.glb" in result.get("inpainted_visual_glb", "")
+        assert "inpainted_gaussian_splat.ply" in result.get("inpainted_gaussian_ply", "")
+
+    def test_failed_report_includes_ply_field(
+        self, tmp_path: Path, fake_colmap: Path, fake_images: Path,
+        fake_masks: Path, fake_object_index: Path, monkeypatch,
+    ) -> None:
+        """Failed runs should include inpainted_gaussian_ply=None in report."""
+        fake_install = tmp_path / "fake_inpaint360gs"
+        fake_install.mkdir()
+        monkeypatch.setattr(runner, "INPAINT360GS_DIR", fake_install)
+        monkeypatch.setattr(runner, "probe_installation", lambda **_: {"status": "ok"})
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        result = runner.run_scene_cleaning(
+            colmap_sparse_dir=fake_colmap,
+            images_dir=fake_images,
+            instance_masks_dir=fake_masks,
+            object_index_path=fake_object_index,
+            output_dir=output_dir,
+        )
+        assert result["status"] == "failed"
+        assert "inpainted_gaussian_ply" in result
+        assert result["inpainted_gaussian_ply"] is None
 
     def test_returns_failed_on_subprocess_error(
         self, tmp_path: Path, fake_colmap: Path, fake_images: Path,

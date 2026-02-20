@@ -133,3 +133,6 @@ def test_wrapper_has_scene_cleaning_env_vars_and_passthrough() -> None:
     # Passthrough to nurec_shim
     assert '--scene-cleaning-mode "$SCENE_CLEANING_MODE"' in text
     assert '--sam3-mask-export-space "$SAM3_MASK_EXPORT_SPACE"' in text
+    # Inpainted PLY artifact detection in .nurec_complete
+    assert 'inpainted_gaussian_splat.ply' in text
+    assert 'inpainted_gaussian_ply' in text

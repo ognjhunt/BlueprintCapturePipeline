@@ -537,6 +537,8 @@ outputs = {
 
 if (nurec_output_dir / "inpainted_visual_mesh.glb").is_file():
     outputs["inpainted_visual_mesh_glb"] = f"{nurec_prefix_uri}/inpainted_visual_mesh.glb"
+if (nurec_output_dir / "inpainted_gaussian_splat.ply").is_file():
+    outputs["inpainted_gaussian_ply"] = f"{nurec_prefix_uri}/inpainted_gaussian_splat.ply"
 instance_masks_dir = nurec_output_dir / "instance_masks"
 if instance_masks_dir.is_dir() and any(instance_masks_dir.glob("*.png")):
     outputs["sam3_instance_masks_dir"] = f"{nurec_prefix_uri}/instance_masks"

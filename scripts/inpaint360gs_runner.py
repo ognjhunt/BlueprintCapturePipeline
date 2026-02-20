@@ -615,6 +615,7 @@ def run_scene_cleaning(
     """
     report_path = output_dir / "scene_cleaning_report.json"
     output_glb = output_dir / "inpainted_visual_mesh.glb"
+    output_ply = output_dir / "inpainted_gaussian_splat.ply"
 
     # Resume check
     if resume and report_path.is_file() and output_glb.is_file() and output_glb.stat().st_size > 0:
@@ -742,6 +743,10 @@ def run_scene_cleaning(
 
         final_ply = Path(opt_result["ply_path"])
 
+        # Copy inpainted PLY to output directory as a first-class artifact
+        shutil.copy2(str(final_ply), str(output_ply))
+        _log(f"Copied inpainted PLY to {output_ply} ({output_ply.stat().st_size / 1024 / 1024:.1f}MB)")
+
         # Stage 7: Convert PLY → GLB mesh
         mesh_result = convert_gaussians_to_mesh(
             ply_path=final_ply,
@@ -757,6 +762,7 @@ def run_scene_cleaning(
         report = {
             "status": "ok",
             "inpainted_visual_glb": str(output_glb),
+            "inpainted_gaussian_ply": str(output_ply) if output_ply.is_file() else None,
             "num_objects_removed": len(object_ids),
             "target_instance_ids": object_ids,
             "timing": timing,
@@ -776,6 +782,7 @@ def run_scene_cleaning(
             "status": "failed",
             "reason": str(exc),
             "inpainted_visual_glb": None,
+            "inpainted_gaussian_ply": None,
             "timing": timing,
         }
 

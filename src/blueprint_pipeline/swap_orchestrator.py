@@ -680,6 +680,14 @@ def run_swap_pipeline(
                 if isinstance(artifacts, Mapping):
                     mutable_artifacts = dict(artifacts)
                     mutable_artifacts["inpainted_visual_mesh_glb"] = cleaned_uri
+                    # Also inject cleaned Gaussian PLY if available
+                    cleaned_ply_uri = (
+                        str(details.get("inpainted_gaussian_ply_uri") or "").strip()
+                        if isinstance(details, Mapping)
+                        else ""
+                    )
+                    if cleaned_ply_uri:
+                        mutable_artifacts["inpainted_gaussian_ply"] = cleaned_ply_uri
                     nurec_outputs = dict(nurec_outputs)
                     nurec_outputs["artifacts"] = mutable_artifacts
                     write_json(pipeline_dir / "nurec_outputs.json", nurec_outputs)

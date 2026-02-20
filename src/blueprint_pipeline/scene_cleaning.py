@@ -280,18 +280,33 @@ def run_scene_cleaning(
 
     cleaned_uri = f"gs://{bucket}/{relative_scene_path(cleaned_glb, storage_root)}"
     scene_report_uri = f"gs://{bucket}/{relative_scene_path(pipeline_dir / 'scene_cleaning_report.json', storage_root)}"
+
+    # Inpainted Gaussian PLY (optional — present if runner copied it successfully)
+    cleaned_ply = nurec_dir / "inpainted_gaussian_splat.ply"
+    cleaned_ply_uri = (
+        f"gs://{bucket}/{relative_scene_path(cleaned_ply, storage_root)}"
+        if cleaned_ply.is_file() and cleaned_ply.stat().st_size > 0
+        else None
+    )
+
+    details_dict: Dict[str, Any] = {
+        "inpainted_visual_mesh_glb": str(cleaned_glb),
+        "inpainted_visual_mesh_glb_uri": cleaned_uri,
+        "runner_report": report_payload,
+        "scene_cleaning_report_uri": scene_report_uri,
+        "runner_stdout_tail": (run_proc.stdout or "")[-1200:],
+        "runner_stderr_tail": (run_proc.stderr or "")[-1200:],
+    }
+    if cleaned_ply.is_file():
+        details_dict["inpainted_gaussian_ply"] = str(cleaned_ply)
+    if cleaned_ply_uri:
+        details_dict["inpainted_gaussian_ply_uri"] = cleaned_ply_uri
+
     return _stage_result(
         mode=resolved_mode,
         status="ok",
         reason="scene_cleaning_completed",
         target_object_ids=target_object_ids,
         target_instance_ids=target_instance_ids,
-        details={
-            "inpainted_visual_mesh_glb": str(cleaned_glb),
-            "inpainted_visual_mesh_glb_uri": cleaned_uri,
-            "runner_report": report_payload,
-            "scene_cleaning_report_uri": scene_report_uri,
-            "runner_stdout_tail": (run_proc.stdout or "")[-1200:],
-            "runner_stderr_tail": (run_proc.stderr or "")[-1200:],
-        },
+        details=details_dict,
     )
