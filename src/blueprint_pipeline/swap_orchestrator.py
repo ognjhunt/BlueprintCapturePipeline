@@ -44,6 +44,7 @@ from .quality_gates import AdvancedQualityGateConfig, run_advanced_quality_gates
 from .retrieval_fallback import enforce_hard_fail_if_unresolved, run_retrieval_fallback
 from .runtime_preflight import enforce_preflight, validate_runtime_preflight
 from .sam3d_assets import materialize_candidate_assets, materialize_scene_shell_assets
+from .scene_cleaning import run_scene_cleaning as run_candidate_scene_cleaning
 from .task_targets import (
     build_task_aware_swap_candidates_payload,
     infer_task_targets,
@@ -54,6 +55,11 @@ from .task_targets import (
 def _normalize_completion_mode(mode: str) -> str:
     candidate = (mode or "").strip().lower()
     return candidate if candidate in {"full_required", "best_effort"} else "best_effort"
+
+
+def _normalize_scene_cleaning_mode(mode: str) -> str:
+    candidate = (mode or "").strip().lower()
+    return candidate if candidate in {"off", "auto", "force"} else "off"
 
 
 @dataclass(frozen=True)
@@ -99,6 +105,9 @@ class OrchestratorConfig:
     )
     crop_cleanup_provider: str = (
         os.getenv("CROP_CLEANUP_PROVIDER", "skip").strip().lower()
+    )
+    scene_cleaning_mode: str = _normalize_scene_cleaning_mode(
+        os.getenv("SCENE_CLEANING_MODE", "off")
     )
     advanced_quality_config: AdvancedQualityGateConfig = field(
         default_factory=AdvancedQualityGateConfig
@@ -218,6 +227,7 @@ def _build_pipeline_summary(
     quality_report: Mapping[str, Any],
     runtime_preflight_report: Mapping[str, Any],
     advanced_quality_report: Mapping[str, Any],
+    scene_cleaning_report: Mapping[str, Any],
     swap_candidates_payload: Mapping[str, Any],
     task_targets_payload: Mapping[str, Any],
     nurec_outputs: Mapping[str, Any],
@@ -264,6 +274,7 @@ def _build_pipeline_summary(
             "runtime_preflight_report_uri": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
             "task_targets_uri": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
             "swap_candidates_uri": f"gs://{bucket}/{pipeline_prefix}/swap_candidates.json",
+            "scene_cleaning_report_uri": f"gs://{bucket}/{pipeline_prefix}/scene_cleaning_report.json",
             "advanced_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/advanced_quality_report.json",
             "quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/swap_quality_report.json",
         },
@@ -271,6 +282,7 @@ def _build_pipeline_summary(
             "runtime_preflight_report": _local_file_pointer(pipeline_dir / "runtime_preflight_report.json"),
             "task_targets": _local_file_pointer(pipeline_dir / "task_targets.json"),
             "swap_candidates": _local_file_pointer(pipeline_dir / "swap_candidates.json"),
+            "scene_cleaning_report": _local_file_pointer(pipeline_dir / "scene_cleaning_report.json"),
             "advanced_quality_report": _local_file_pointer(pipeline_dir / "advanced_quality_report.json"),
             "quality_report": _local_file_pointer(pipeline_dir / "swap_quality_report.json"),
             "nurec_outputs": _local_file_pointer(pipeline_dir / "nurec_outputs.json"),
@@ -286,6 +298,7 @@ def _build_pipeline_summary(
             "quality_gate_total": len(quality_gates),
             "quality_gate_passed": quality_gates_passed,
             "runtime_preflight_status": str(runtime_preflight_report.get("status") or "unknown"),
+            "scene_cleaning_status": str(scene_cleaning_report.get("status") or "unknown"),
             "advanced_quality_status": str(advanced_quality_report.get("status") or "unknown"),
             "nurec_artifact_keys": sorted(
                 list(nurec_outputs.get("artifacts", {}).keys())
@@ -426,6 +439,7 @@ def run_swap_pipeline(
     fallback_payload: Dict[str, Any] = {}
     advanced_quality_report: Dict[str, Any] = {}
     runtime_preflight_report: Dict[str, Any] = {}
+    scene_cleaning_report: Dict[str, Any] = {}
 
     try:
         parsed_uri = parse_gs_uri(descriptor_gcs_uri)
@@ -623,6 +637,58 @@ def run_swap_pipeline(
                     if result is not None and result != crop_path:
                         cand["reference_crop"] = str(result)
         write_json(pipeline_dir / "swap_candidates.json", swap_candidates_payload)
+
+        # ------------------------------------------------------------------
+        # Stage C.5: candidate-scoped scene cleaning
+        # ------------------------------------------------------------------
+        stage = "scene_cleaning"
+        scene_cleaning_report = run_candidate_scene_cleaning(
+            storage_root=storage_root,
+            bucket=bucket,
+            pipeline_dir=pipeline_dir,
+            nurec_outputs=nurec_outputs,
+            swap_candidates=[candidate for candidate in swap_candidates if isinstance(candidate, Mapping)],
+            mode=cfg.scene_cleaning_mode,
+            resume=False,
+        )
+        write_json(pipeline_dir / "scene_cleaning_report.json", scene_cleaning_report)
+
+        scene_cleaning_status = str(scene_cleaning_report.get("status") or "").strip().lower()
+        scene_cleaning_reason = str(scene_cleaning_report.get("reason") or "unknown").strip()
+        scene_cleaning_ok = scene_cleaning_status in {"ok", "skipped"}
+        gates.append(
+            _Gate(
+                "scene_cleaning_gate",
+                scene_cleaning_ok,
+                f"status={scene_cleaning_status or 'unknown'} reason={scene_cleaning_reason}",
+            )
+        )
+
+        if scene_cleaning_status == "ok":
+            details = scene_cleaning_report.get("details")
+            cleaned_uri = (
+                str(details.get("inpainted_visual_mesh_glb_uri") or "").strip()
+                if isinstance(details, Mapping)
+                else ""
+            )
+            if cleaned_uri:
+                artifacts = (
+                    nurec_outputs.get("artifacts")
+                    if isinstance(nurec_outputs.get("artifacts"), Mapping)
+                    else {}
+                )
+                if isinstance(artifacts, Mapping):
+                    mutable_artifacts = dict(artifacts)
+                    mutable_artifacts["inpainted_visual_mesh_glb"] = cleaned_uri
+                    nurec_outputs = dict(nurec_outputs)
+                    nurec_outputs["artifacts"] = mutable_artifacts
+                    write_json(pipeline_dir / "nurec_outputs.json", nurec_outputs)
+
+        if not scene_cleaning_ok and cfg.scene_cleaning_mode == "force":
+            raise StageError(
+                "scene_cleaning",
+                f"scene cleaning failed in force mode: {scene_cleaning_reason}",
+            )
 
         # ------------------------------------------------------------------
         # Stage D: SAM3D-first materialization
@@ -915,6 +981,7 @@ def run_swap_pipeline(
                 "runtime_preflight_report": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
                 "nurec_outputs": f"gs://{bucket}/{pipeline_prefix}/nurec_outputs.json",
                 "swap_candidates": f"gs://{bucket}/{pipeline_prefix}/swap_candidates.json",
+                "scene_cleaning_report": f"gs://{bucket}/{pipeline_prefix}/scene_cleaning_report.json",
                 "swap_execution_report": f"gs://{bucket}/{pipeline_prefix}/swap_execution_report.json",
                 "advanced_quality_report": f"gs://{bucket}/{pipeline_prefix}/advanced_quality_report.json",
                 "manifest": f"gs://{bucket}/{relative_scene_path(artifact_paths['manifest_path'], storage_root)}",
@@ -938,6 +1005,7 @@ def run_swap_pipeline(
             quality_report=quality_report,
             runtime_preflight_report=runtime_preflight_report,
             advanced_quality_report=advanced_quality_report,
+            scene_cleaning_report=scene_cleaning_report,
             swap_candidates_payload=swap_candidates_payload,
             task_targets_payload=task_targets_payload,
             nurec_outputs=nurec_outputs,

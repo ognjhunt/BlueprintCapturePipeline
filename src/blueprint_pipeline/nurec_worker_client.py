@@ -266,7 +266,12 @@ class NurecWorkerClient:
         mesh_ply = self.nurec_dir / "nvblox_mesh.ply"
         visual_mesh_glb = self.nurec_dir / "visual_mesh.glb"
         visual_pointcloud_ply = self.nurec_dir / "visual_pointcloud.ply"
+        inpainted_visual_mesh_glb = self.nurec_dir / "inpainted_visual_mesh.glb"
         mesh_manifest_json = self.nurec_dir / "mesh_manifest.json"
+        instance_masks_dir = self.nurec_dir / "instance_masks"
+        undistorted_root = self.nurec_dir / "colmap_undistorted"
+        undistorted_sparse_dir = undistorted_root / "sparse" / "0"
+        undistorted_images_dir = undistorted_root / "images"
         occupancy = sorted(self.nurec_dir.glob("occupancy*"))
         visual_mesh_enabled = _env_flag("VISUAL_MESH_ENABLED", True)
 
@@ -282,10 +287,29 @@ class NurecWorkerClient:
         if not occupancy:
             raise StageError("nurec", "missing occupancy.* artifact")
 
+        selected_visual_usdz = export_usdz
+        hallucinated_region_mask: Path | None = None
+        if has_nonempty_file(mesh_manifest_json):
+            try:
+                manifest_payload = json.loads(mesh_manifest_json.read_text(encoding="utf-8"))
+            except Exception:
+                manifest_payload = {}
+            if isinstance(manifest_payload, dict):
+                primary_visual = str(manifest_payload.get("primary_visual_asset") or "").strip()
+                if primary_visual.lower().endswith(".usdz"):
+                    candidate_visual = self.nurec_dir / primary_visual
+                    if has_nonempty_file(candidate_visual):
+                        selected_visual_usdz = candidate_visual
+                hallucinated_mask_name = str(manifest_payload.get("hallucinated_region_mask") or "").strip()
+                if hallucinated_mask_name:
+                    candidate_mask = self.nurec_dir / hallucinated_mask_name
+                    if has_nonempty_file(candidate_mask):
+                        hallucinated_region_mask = candidate_mask
+
         mesh_stats = self._mesh_stats(mesh_ply)
         mesh_stats.setdefault("face_count", int(face_count))
         artifacts: Dict[str, Any] = {
-            "visual_usdz": f"gs://{self.bucket}/{relative_scene_path(export_usdz, self.storage_root)}",
+            "visual_usdz": f"gs://{self.bucket}/{relative_scene_path(selected_visual_usdz, self.storage_root)}",
             "collision_mesh_ply": f"gs://{self.bucket}/{relative_scene_path(mesh_ply, self.storage_root)}",
             "occupancy": [
                 f"gs://{self.bucket}/{relative_scene_path(path, self.storage_root)}" for path in occupancy
@@ -295,6 +319,10 @@ class NurecWorkerClient:
             artifacts["visual_mesh_glb"] = (
                 f"gs://{self.bucket}/{relative_scene_path(visual_mesh_glb, self.storage_root)}"
             )
+        if has_nonempty_file(inpainted_visual_mesh_glb):
+            artifacts["inpainted_visual_mesh_glb"] = (
+                f"gs://{self.bucket}/{relative_scene_path(inpainted_visual_mesh_glb, self.storage_root)}"
+            )
         if has_nonempty_file(visual_pointcloud_ply):
             artifacts["visual_pointcloud_ply"] = (
                 f"gs://{self.bucket}/{relative_scene_path(visual_pointcloud_ply, self.storage_root)}"
@@ -302,6 +330,22 @@ class NurecWorkerClient:
         if has_nonempty_file(mesh_manifest_json):
             artifacts["mesh_manifest_json"] = (
                 f"gs://{self.bucket}/{relative_scene_path(mesh_manifest_json, self.storage_root)}"
+            )
+        if instance_masks_dir.is_dir() and any(instance_masks_dir.glob("*.png")):
+            artifacts["sam3_instance_masks_dir"] = (
+                f"gs://{self.bucket}/{relative_scene_path(instance_masks_dir, self.storage_root)}"
+            )
+        if undistorted_sparse_dir.is_dir() and any(undistorted_sparse_dir.iterdir()):
+            artifacts["colmap_undistorted_sparse_dir"] = (
+                f"gs://{self.bucket}/{relative_scene_path(undistorted_sparse_dir, self.storage_root)}"
+            )
+        if undistorted_images_dir.is_dir() and any(p.is_file() for p in undistorted_images_dir.rglob("*")):
+            artifacts["colmap_undistorted_images_dir"] = (
+                f"gs://{self.bucket}/{relative_scene_path(undistorted_images_dir, self.storage_root)}"
+            )
+        if hallucinated_region_mask is not None:
+            artifacts["hallucinated_region_mask"] = (
+                f"gs://{self.bucket}/{relative_scene_path(hallucinated_region_mask, self.storage_root)}"
             )
 
         payload = {

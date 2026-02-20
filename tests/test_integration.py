@@ -700,6 +700,157 @@ def test_end_to_end_dry_outputs_written(tmp_path: Path) -> None:
     assert (pipeline_dir / ".swap_pipeline_complete").is_file()
 
 
+def test_scene_cleaning_candidate_scope_and_artifact_injection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    nurec_client = _StubNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+    runner = _StubBlueprintRunner(tmp_path / "bucket")
+    captured: Dict[str, Any] = {}
+
+    def _fake_scene_cleaning(**kwargs):  # type: ignore[no-untyped-def]
+        swap_candidates = kwargs.get("swap_candidates", [])
+        captured["target_object_ids"] = sorted(
+            str(item.get("object_id"))
+            for item in swap_candidates
+            if isinstance(item, Mapping) and str(item.get("object_id")).strip()
+        )
+        cleaned_glb = (
+            tmp_path
+            / "bucket/scenes/scene_demo/captures/capture_demo/pipeline/nurec/inpainted_visual_mesh.glb"
+        )
+        cleaned_glb.parent.mkdir(parents=True, exist_ok=True)
+        cleaned_glb.write_bytes(b"cleaned")
+        return {
+            "status": "ok",
+            "reason": "scene_cleaning_completed",
+            "details": {
+                "inpainted_visual_mesh_glb_uri": (
+                    "gs://bucket/scenes/scene_demo/captures/capture_demo/pipeline/"
+                    "nurec/inpainted_visual_mesh.glb"
+                )
+            },
+        }
+
+    monkeypatch.setattr(swap_orchestrator_module, "run_candidate_scene_cleaning", _fake_scene_cleaning)
+
+    result = run_swap_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            scene_cleaning_mode="auto",
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+        nurec_client=nurec_client,
+        blueprint_runner=runner,
+    )
+    assert result["status"] == "completed"
+    assert captured.get("target_object_ids")
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    scene_report = json.loads((pipeline_dir / "scene_cleaning_report.json").read_text(encoding="utf-8"))
+    assert scene_report["status"] == "ok"
+
+    nurec_outputs = json.loads((pipeline_dir / "nurec_outputs.json").read_text(encoding="utf-8"))
+    artifacts = nurec_outputs.get("artifacts", {})
+    assert "inpainted_visual_mesh_glb" in artifacts
+
+
+def test_scene_cleaning_auto_skip_is_nonfatal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    nurec_client = _StubNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+    runner = _StubBlueprintRunner(tmp_path / "bucket")
+
+    monkeypatch.setattr(
+        swap_orchestrator_module,
+        "run_candidate_scene_cleaning",
+        lambda **_: {
+            "status": "skipped",
+            "reason": "missing_required_artifacts",
+        },
+    )
+
+    result = run_swap_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            scene_cleaning_mode="auto",
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+        nurec_client=nurec_client,
+        blueprint_runner=runner,
+    )
+    assert result["status"] == "completed"
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    quality = json.loads((pipeline_dir / "swap_quality_report.json").read_text(encoding="utf-8"))
+    scene_gate = next(item for item in quality.get("gates", []) if item.get("name") == "scene_cleaning_gate")
+    assert scene_gate["passed"] is True
+
+
+def test_scene_cleaning_force_failure_stops_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    nurec_client = _StubNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+    runner = _StubBlueprintRunner(tmp_path / "bucket")
+
+    monkeypatch.setattr(
+        swap_orchestrator_module,
+        "run_candidate_scene_cleaning",
+        lambda **_: {
+            "status": "failed",
+            "reason": "scene_cleaning_runner_failed",
+        },
+    )
+
+    with pytest.raises(Exception):
+        run_swap_pipeline(
+            descriptor_gcs_uri=descriptor_uri,
+            config=OrchestratorConfig(
+                gcs_root=tmp_path,
+                blueprintpipeline_root=Path("/unused"),
+                expected_blueprintpipeline_commit="",
+                fail_on_commit_mismatch=False,
+                runtime_preflight_enabled=False,
+                scene_cleaning_mode="force",
+                advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+            ),
+            nurec_client=nurec_client,
+            blueprint_runner=runner,
+        )
+
+    failed_marker = (
+        tmp_path
+        / "bucket/scenes/scene_demo/captures/capture_demo/pipeline/.swap_pipeline_failed.json"
+    )
+    assert failed_marker.is_file()
+
+
 def test_storage_trigger_path_parser() -> None:
     parsed = parse_descriptor_path("scenes/abc/captures/def/capture_descriptor.json")
     assert parsed == {

@@ -53,13 +53,37 @@ def test_wrapper_uses_quality_first_nurec_defaults() -> None:
 def test_wrapper_exposes_resume_and_fixer_rerun_flags() -> None:
     text = _script_text()
     assert "--resume                Enable NuRec resume mode" in text
+    assert "--skip-fixer            Disable Stage 5 Fixer refinement" in text
     assert "--fixer-rerun           Force rerun of Fixer in resume mode" in text
     assert "--fixer-required        Fail if Fixer does not produce refined outputs" in text
     assert "--resume)          NUREC_RESUME=true;" in text
+    assert "--skip-fixer)      SKIP_FIXER=true;" in text
     assert "--fixer-rerun)     FIXER_RERUN=true;" in text
     assert "--fixer-required)  FIXER_REQUIRED=true;" in text
+    assert 'if [ "${SKIP_FIXER,,}" = "true" ]; then' in text
+    assert "NUREC_FIXER_ARGS+=(--skip-fixer)" in text
     assert 'NUREC_FIXER_ARGS+=(--fixer-rerun)' in text
     assert 'NUREC_FIXER_ARGS+=(--fixer-required)' in text
+
+
+def test_wrapper_enables_fixer_by_default() -> None:
+    text = _script_text()
+    assert 'SKIP_FIXER="${SKIP_FIXER:-false}"' in text
+    assert 'if [ "${SKIP_FIXER}" = "--skip-fixer" ]; then' in text
+
+
+def test_wrapper_passes_post_stage4_refine_flags() -> None:
+    text = _script_text()
+    assert 'POST_STAGE4_REFINE="${POST_STAGE4_REFINE:-auto}"' in text
+    assert 'POST_STAGE4_REFINE_MODEL="${POST_STAGE4_REFINE_MODEL:-fixer+gsfix3d}"' in text
+    assert 'POST_STAGE4_MAX_PSEUDOVIEWS="${POST_STAGE4_MAX_PSEUDOVIEWS:-96}"' in text
+    assert 'POST_STAGE4_DISTILL_ITERS="${POST_STAGE4_DISTILL_ITERS:-1600}"' in text
+    assert 'POST_STAGE4_TIME_BUDGET_MIN="${POST_STAGE4_TIME_BUDGET_MIN:-90}"' in text
+    assert '--post-stage4-refine "$POST_STAGE4_REFINE"' in text
+    assert '--post-stage4-refine-model "$POST_STAGE4_REFINE_MODEL"' in text
+    assert '--post-stage4-max-pseudoviews "$POST_STAGE4_MAX_PSEUDOVIEWS"' in text
+    assert '--post-stage4-distill-iters "$POST_STAGE4_DISTILL_ITERS"' in text
+    assert '--post-stage4-time-budget-min "$POST_STAGE4_TIME_BUDGET_MIN"' in text
 
 
 def test_wrapper_copies_object_index_before_rewrite() -> None:
@@ -91,3 +115,21 @@ def test_wrapper_has_max_n_gaussians_default_and_passthrough() -> None:
     assert 'if [ -n "${MAX_N_GAUSSIANS}" ]; then' in text
     assert 'NUREC_GAUSSIAN_ARGS+=(--max-n-gaussians "$MAX_N_GAUSSIANS")' in text
     assert '"${NUREC_GAUSSIAN_ARGS[@]}"' in text
+
+
+def test_wrapper_has_scene_cleaning_env_vars_and_passthrough() -> None:
+    """Stage 9.5 scene cleaning integration into run_full_pipeline.sh."""
+    text = _script_text()
+    # Env var defaults
+    assert 'SCENE_CLEANING_MODE="${SCENE_CLEANING_MODE:-off}"' in text
+    assert 'SAM3_MASK_EXPORT_SPACE="${SAM3_MASK_EXPORT_SPACE:-undistorted}"' in text
+    assert 'INPAINT360GS_RESOLUTION="${INPAINT360GS_RESOLUTION:-2}"' in text
+    # CLI options
+    assert "--scene-cleaning-mode) SCENE_CLEANING_MODE=\"$2\"; shift 2 ;;" in text
+    assert "--sam3-mask-export-space) SAM3_MASK_EXPORT_SPACE=\"$2\"; shift 2 ;;" in text
+    assert "--skip-scene-cleaning) SCENE_CLEANING_MODE=\"off\"; shift ;;" in text
+    # Exports
+    assert "export SCENE_CLEANING_MODE SAM3_MASK_EXPORT_SPACE INPAINT360GS_RESOLUTION" in text
+    # Passthrough to nurec_shim
+    assert '--scene-cleaning-mode "$SCENE_CLEANING_MODE"' in text
+    assert '--sam3-mask-export-space "$SAM3_MASK_EXPORT_SPACE"' in text

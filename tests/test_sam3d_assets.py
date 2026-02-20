@@ -416,3 +416,68 @@ def test_materialize_scene_shell_uses_mesh_when_requested(
     assert "model.glb" in model_usd
     metadata = json.loads((visual_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["source"] == "nurec_visual_mesh"
+
+
+def test_materialize_scene_shell_forces_cleaned_mesh_primary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from blueprint_pipeline import sam3d_assets
+
+    nurec_dir = tmp_path / "scenes/scene_1/captures/cap_1/pipeline/nurec"
+    nurec_dir.mkdir(parents=True, exist_ok=True)
+    (nurec_dir / "export_last.usdz").write_bytes(b"usdz")
+    (nurec_dir / "visual_mesh.glb").write_bytes(b"orig_glb")
+    (nurec_dir / "inpainted_visual_mesh.glb").write_bytes(b"cleaned_glb")
+    (nurec_dir / "nvblox_mesh.ply").write_text(
+        "\n".join(
+            [
+                "ply",
+                "format ascii 1.0",
+                "element vertex 3",
+                "property float x",
+                "property float y",
+                "property float z",
+                "element face 1",
+                "property list uchar int vertex_indices",
+                "end_header",
+                "0 0 0",
+                "1 0 0",
+                "0 1 0",
+                "3 0 1 2",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def _fake_ply_to_glb(ply_path: Path, glb_path: Path) -> None:
+        glb_path.parent.mkdir(parents=True, exist_ok=True)
+        glb_path.write_bytes(b"glb")
+
+    monkeypatch.setattr(sam3d_assets, "_ply_to_glb", _fake_ply_to_glb)
+    monkeypatch.setattr(sam3d_assets, "_prune_scene_shell_mesh", lambda *_a, **_k: {"enabled": False})
+    monkeypatch.setattr(
+        sam3d_assets,
+        "_simplify_scene_shell_mesh",
+        lambda *_a, **_k: {"enabled": False},
+    )
+
+    materialize_scene_shell_assets(
+        storage_root=tmp_path,
+        assets_prefix="scenes/scene_1/assets",
+        nurec_outputs={
+            "artifacts": {
+                "visual_usdz": "gs://bucket/scenes/scene_1/captures/cap_1/pipeline/nurec/export_last.usdz",
+                "visual_mesh_glb": "gs://bucket/scenes/scene_1/captures/cap_1/pipeline/nurec/visual_mesh.glb",
+                "inpainted_visual_mesh_glb": "gs://bucket/scenes/scene_1/captures/cap_1/pipeline/nurec/inpainted_visual_mesh.glb",
+                "collision_mesh_ply": "gs://bucket/scenes/scene_1/captures/cap_1/pipeline/nurec/nvblox_mesh.ply",
+            }
+        },
+        swap_candidates=[],
+    )
+
+    visual_dir = tmp_path / "scenes/scene_1/assets/obj_nurec_visual"
+    model_usd = (visual_dir / "model.usd").read_text(encoding="utf-8")
+    metadata = json.loads((visual_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert "model.glb" in model_usd
+    assert metadata["source"] == "inpaint360gs_cleaned_mesh"

@@ -12,6 +12,9 @@ detection (replacing ARKit), and produces the required pipeline outputs:
   - visual_mesh.glb   (viewer-friendly visual mesh, textured when available)
   - visual_pointcloud.ply (colored point cloud for debugging/inspection)
   - mesh_manifest.json (artifact role manifest: volume/visual/collision)
+  - export_last_refined.usdz / export_last_refined.ply (optional refined visual assets)
+  - gap_analysis_report.json / view_repair_report.json / post_stage4_distill_report.json
+  - refinement_quality_gate.json (auto-rollback quality gate decision)
   - occupancy.bin     (voxel occupancy grid)
   - object_point_cloud_index.json  (SAM3-detected objects for swap pipeline)
 
@@ -39,7 +42,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -58,6 +61,9 @@ FIXER_DIR = os.getenv("FIXER_DIR", "/opt/Fixer")
 FIXER_WEIGHTS_DIR = os.getenv("FIXER_WEIGHTS_DIR", "/opt/fixer_weights")
 DEFAULT_FIXER_H100_SCRIPT = os.getenv("FIXER_H100_SCRIPT", "/app/scripts/fixer_h100_stage.sh")
 STAGE14_RESUME_METADATA = ".stage14_resume_metadata.json"
+POST_STAGE4_GAP_ANALYZER_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_gap_analyzer.py"
+POST_STAGE4_VIEW_REPAIR_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_view_repair.py"
+POST_STAGE4_DISTILL_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_distill.py"
 
 
 def _log(msg: str) -> None:
@@ -852,8 +858,30 @@ def _copy_colmap_model(src_model_dir: Path, dst_model_dir: Path) -> None:
             copied_any = True
     if not copied_any:
         raise RuntimeError(f"No COLMAP model files found in {src_model_dir}")
-    if not _has_colmap_model(dst_model_dir):
-        raise RuntimeError(f"Incomplete COLMAP model copied to {dst_model_dir}")
+
+
+def _symlink_or_copy_tree(src: Path, dst: Path) -> None:
+    if dst.exists() or dst.is_symlink():
+        if dst.is_symlink() or dst.is_file():
+            dst.unlink()
+        else:
+            shutil.rmtree(dst)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.symlink_to(src.resolve())
+    except OSError:
+        shutil.copytree(src, dst)
+
+
+def _export_undistorted_artifacts(*, output_dir: Path, undistorted_dir: Path) -> None:
+    """Expose undistorted COLMAP assets as stable output-side artifacts."""
+    src_images = undistorted_dir / "images"
+    src_sparse = undistorted_dir / "sparse" / "0"
+    if not src_images.is_dir() or not src_sparse.is_dir():
+        return
+    export_root = output_dir / "colmap_undistorted"
+    _symlink_or_copy_tree(src_images, export_root / "images")
+    _symlink_or_copy_tree(src_sparse, export_root / "sparse" / "0")
 
 
 def run_colmap_sfm_chunked(
@@ -2516,6 +2544,8 @@ def write_mesh_manifest(
     visual_report: Mapping[str, Any],
     collision_method: str,
     collision_report: Mapping[str, Any],
+    refinement_report: Mapping[str, Any] | None = None,
+    hallucinated_region_mask: Path | None = None,
 ) -> Path:
     visual_mesh_path = (
         output_dir / "visual_mesh.glb"
@@ -2532,6 +2562,18 @@ def write_mesh_manifest(
         output_dir / "visual_mesh_robust.glb"
         if (output_dir / "visual_mesh_robust.glb").is_file()
         and (output_dir / "visual_mesh_robust.glb").stat().st_size > 0
+        else None
+    )
+    refined_usdz_path = (
+        output_dir / "export_last_refined.usdz"
+        if (output_dir / "export_last_refined.usdz").is_file()
+        and (output_dir / "export_last_refined.usdz").stat().st_size > 0
+        else None
+    )
+    refined_ply_path = (
+        output_dir / "export_last_refined.ply"
+        if (output_dir / "export_last_refined.ply").is_file()
+        and (output_dir / "export_last_refined.ply").stat().st_size > 0
         else None
     )
 
@@ -2570,6 +2612,24 @@ def write_mesh_manifest(
             viewer_hint="Used for occupancy checks; not a visual asset",
         ),
     ]
+    if refined_usdz_path is not None and refined_usdz_path.name != visual_usdz.name:
+        assets.append(
+            _entry(
+                refined_usdz_path,
+                role="volume_visual_refined",
+                kind="usdz_nurec_volume_refined",
+                viewer_hint="Refined neural volume visual with gap-filling distillation",
+            )
+        )
+    if refined_ply_path is not None and refined_ply_path.name != gaussian_ply.name:
+        assets.append(
+            _entry(
+                refined_ply_path,
+                role="gaussian_pointcloud_refined",
+                kind="ply_gaussian_refined",
+                viewer_hint="Refined Gaussian pointcloud after pseudo-view distillation",
+            )
+        )
     if visual_mesh_path is not None:
         visual_is_textured = bool(visual_report.get("textured", False))
         assets.append(
@@ -2610,10 +2670,18 @@ def write_mesh_manifest(
         "visual_method": str(visual_report.get("selected_method") or ""),
         "primary_visual_asset": "",
         "viewer_compatibility": [],
+        "hallucinated_region_mask": (
+            hallucinated_region_mask.name
+            if hallucinated_region_mask is not None
+            and hallucinated_region_mask.is_file()
+            and hallucinated_region_mask.stat().st_size > 0
+            else ""
+        ),
         "assets": assets,
         "reports": {
             "visual": dict(visual_report),
             "collision": dict(collision_report),
+            "refinement": dict(refinement_report) if isinstance(refinement_report, Mapping) else {},
         },
     }
 
@@ -2625,7 +2693,14 @@ def write_mesh_manifest(
     visual_is_textured = bool(visual_report.get("textured", False))
     mesh_compat = "generic_textured_mesh" if visual_is_textured else "fallback_vertex_mesh"
     payload["viewer_compatibility"] = ["omniverse_neural", mesh_compat]
-    if visual_preference == "mesh" and has_visual_mesh:
+    refined_primary_asset = ""
+    if isinstance(refinement_report, Mapping):
+        if str(refinement_report.get("status") or "").strip().lower() == "passed":
+            refined_primary_asset = str(refinement_report.get("active_visual_asset") or "").strip()
+    refined_primary_name = Path(refined_primary_asset).name if refined_primary_asset else ""
+    if refined_primary_name and (output_dir / refined_primary_name).is_file():
+        payload["primary_visual_asset"] = refined_primary_name
+    elif visual_preference == "mesh" and has_visual_mesh:
         payload["primary_visual_asset"] = visual_mesh_path.name if visual_mesh_path is not None else visual_usdz.name
     elif visual_preference == "auto" and has_visual_mesh and visual_is_textured:
         payload["primary_visual_asset"] = visual_mesh_path.name if visual_mesh_path is not None else visual_usdz.name
@@ -2817,6 +2892,22 @@ def _env_choice(name: str, default: str, allowed: Sequence[str]) -> str:
         return raw
     _log(f"WARNING: Invalid choice in {name}={raw!r}; using {default}")
     return default
+
+
+def _normalize_scene_cleaning_mode(raw: str) -> str:
+    mode = (raw or "").strip().lower()
+    if mode in {"off", "auto", "force"}:
+        return mode
+    _log(f"WARNING: Invalid scene cleaning mode {raw!r}; using 'off'")
+    return "off"
+
+
+def _normalize_mask_export_space(raw: str) -> str:
+    mode = (raw or "").strip().lower()
+    if mode in {"raw", "undistorted"}:
+        return mode
+    _log(f"WARNING: Invalid SAM3 mask export space {raw!r}; using 'raw'")
+    return "raw"
 
 
 def _quality_profile() -> str:
@@ -3335,26 +3426,136 @@ def _save_visual_report(output_dir: Path, visual_report: Mapping[str, Any]) -> N
     report_path.write_text(json.dumps(dict(visual_report), indent=2), encoding="utf-8")
 
 
+def _resolve_post_stage4_refine_mode(requested_mode: str) -> str:
+    mode = (requested_mode or "").strip().lower()
+    if mode in {"off", "auto", "force"}:
+        return mode
+    _log(f"WARNING: Unknown --post-stage4-refine mode {requested_mode!r}; falling back to auto")
+    return "auto"
+
+
+def _has_valid_post_stage4_refine_cache(output_dir: Path) -> bool:
+    gate = _load_json_dict(output_dir / "refinement_quality_gate.json")
+    if str(gate.get("status") or "").strip().lower() != "passed":
+        return False
+    refined_usdz = output_dir / "export_last_refined.usdz"
+    refined_ply = output_dir / "export_last_refined.ply"
+    return _is_nonempty_file(refined_usdz) and _is_nonempty_file(refined_ply)
+
+
+def _evaluate_refinement_quality_gate(
+    *,
+    baseline_hole_ratio: float,
+    refined_hole_ratio: float,
+    pre_sharpness: float,
+    post_sharpness: float,
+    baseline_psnr: float | None,
+    refined_psnr: float | None,
+) -> Dict[str, Any]:
+    min_hole_improvement = 0.30
+    max_sharpness_drop = 0.05
+    max_psnr_drop = 0.20
+
+    baseline_hole = max(0.0, float(baseline_hole_ratio))
+    refined_hole = max(0.0, float(refined_hole_ratio))
+    hole_improvement = 0.0
+    if baseline_hole > 1e-8:
+        hole_improvement = (baseline_hole - refined_hole) / baseline_hole
+    hole_gate_pass = hole_improvement >= min_hole_improvement
+
+    sharp_drop = 0.0
+    if pre_sharpness > 1e-8:
+        sharp_drop = (float(pre_sharpness) - float(post_sharpness)) / float(pre_sharpness)
+    sharpness_gate_pass = sharp_drop <= max_sharpness_drop
+
+    psnr_gate_enforced = baseline_psnr is not None and refined_psnr is not None
+    psnr_drop = None
+    psnr_gate_pass = True
+    if psnr_gate_enforced:
+        psnr_drop = float(baseline_psnr) - float(refined_psnr)
+        psnr_gate_pass = psnr_drop <= max_psnr_drop
+
+    status = "passed" if hole_gate_pass and sharpness_gate_pass and psnr_gate_pass else "failed_safe_rollback"
+    return {
+        "schema_version": "v1",
+        "generated_at": _utc_now_iso(),
+        "status": status,
+        "thresholds": {
+            "min_hole_improvement_ratio": min_hole_improvement,
+            "max_sharpness_drop_ratio": max_sharpness_drop,
+            "max_psnr_drop_db": max_psnr_drop,
+        },
+        "metrics": {
+            "baseline_hole_ratio": baseline_hole,
+            "refined_hole_ratio": refined_hole,
+            "hole_improvement_ratio": hole_improvement,
+            "pre_sharpness": float(pre_sharpness),
+            "post_sharpness": float(post_sharpness),
+            "sharpness_drop_ratio": sharp_drop,
+            "baseline_psnr": float(baseline_psnr) if baseline_psnr is not None else None,
+            "refined_psnr": float(refined_psnr) if refined_psnr is not None else None,
+            "psnr_drop_db": float(psnr_drop) if psnr_drop is not None else None,
+        },
+        "gates": {
+            "hole_improvement": bool(hole_gate_pass),
+            "sharpness": bool(sharpness_gate_pass),
+            "psnr": bool(psnr_gate_pass),
+            "psnr_enforced": bool(psnr_gate_enforced),
+        },
+    }
+
+
 def _run_stage9_sam3(
     *,
     output_dir: Path,
     workspace: Path,
     frames_dir: Path,
+    undistorted_images_dir: Path,
     frame_count: int,
     requested_environment: str,
     requested_n_frames: int,
     requested_min_frame_detections: int,
     gaussian_ply: Path,
     resume: bool,
+    scene_cleaning_mode: str,
+    sam3_mask_export_space: str,
 ) -> Path | None:
     scene_semantics_path = output_dir / "scene_semantics_report.json"
     index_output = output_dir / "object_point_cloud_index.json"
+    scene_cleaning_enabled = scene_cleaning_mode != "off"
+    mask_export_space = _normalize_mask_export_space(sam3_mask_export_space)
+    instance_masks_dir = output_dir / "instance_masks"
+
+    sam3_frames_dir = frames_dir
+    if scene_cleaning_enabled and mask_export_space == "undistorted":
+        has_undistorted = undistorted_images_dir.is_dir() and any(
+            p.is_file() for p in undistorted_images_dir.rglob("*")
+        )
+        if has_undistorted:
+            sam3_frames_dir = undistorted_images_dir
+        else:
+            message = (
+                "Stage 9 scene-cleaning prerequisites require undistorted images "
+                f"at {undistorted_images_dir}, but none were found."
+            )
+            if scene_cleaning_mode == "force":
+                raise RuntimeError(message)
+            _log(f"WARNING: {message} Falling back to raw-frame SAM3 without mask export.")
+            scene_cleaning_enabled = False
+
     if resume and _is_nonempty_file(scene_semantics_path) and _is_nonempty_file(index_output):
-        _log("Resuming Stage 9: using existing scene semantics + SAM3 object index")
-        return index_output
+        if scene_cleaning_enabled:
+            has_masks = instance_masks_dir.is_dir() and any(instance_masks_dir.glob("*.png"))
+            if has_masks:
+                _log("Resuming Stage 9: using existing scene semantics + SAM3 object index + instance masks")
+                return index_output
+            _log("Resume miss: instance masks required for scene cleaning are missing; rerunning Stage 9")
+        else:
+            _log("Resuming Stage 9: using existing scene semantics + SAM3 object index")
+            return index_output
 
     scene_semantics_report = _infer_scene_semantics_report(
-        frames_dir=frames_dir,
+        frames_dir=sam3_frames_dir,
         requested_environment=requested_environment,
     )
     scene_semantics_path.write_text(
@@ -3396,17 +3597,26 @@ def _run_stage9_sam3(
         f"min_frame_detections={sam3_min_frame_detections}"
     )
     try:
-        from sam3_detect import run_sam3_detection
-
         colmap_sparse = None
         undist_sparse = workspace / "undistorted" / "sparse" / "0"
         if undist_sparse.exists():
             colmap_sparse = undist_sparse
 
         gaussian_ply_path = gaussian_ply if gaussian_ply.exists() else None
+        sam3_frame_count = len(
+            list(sam3_frames_dir.glob("*.jpg")) + list(sam3_frames_dir.glob("*.png"))
+        )
+        if sam3_frame_count > 0 and sam3_frame_count != frame_count:
+            sam3_n_frames, sam3_min_frame_detections = _resolve_sam3_settings(
+                environment=resolved_environment,
+                frame_count=sam3_frame_count,
+                requested_n_frames=requested_n_frames,
+                requested_min_frame_detections=requested_min_frame_detections,
+            )
 
+        from sam3_detect import run_sam3_detection
         sam3_result = run_sam3_detection(
-            frames_dir=frames_dir,
+            frames_dir=sam3_frames_dir,
             output_path=index_output,
             environment=resolved_environment,
             detection_prompts_override=detection_prompts_override,
@@ -3417,11 +3627,17 @@ def _run_stage9_sam3(
             gaussian_ply_path=gaussian_ply_path,
             n_sample_frames=sam3_n_frames,
             min_frame_detections=sam3_min_frame_detections,
+            save_instance_masks=scene_cleaning_enabled,
+            instance_masks_dir=instance_masks_dir if scene_cleaning_enabled else None,
+            force_full_video_masks=scene_cleaning_enabled,
         )
+
         n_objects = len(sam3_result.get("objects", []))
         _log(f"SAM3 detected {n_objects} objects")
         return index_output
     except Exception as exc:
+        if scene_cleaning_mode == "force":
+            raise
         _log(f"WARNING: SAM3 detection failed ({exc}), no object index generated")
         return None
 
@@ -3743,11 +3959,58 @@ def main() -> int:
         help="Disk size (GB) when provisioning H100 for Fixer",
     )
     parser.add_argument(
+        "--post-stage4-refine",
+        default=(os.getenv("POST_STAGE4_REFINE", "auto").strip().lower() or "auto"),
+        choices=["off", "auto", "force"],
+        help="Post-Stage-4 refinement mode: off, auto, or force",
+    )
+    parser.add_argument(
+        "--post-stage4-refine-model",
+        default=(os.getenv("POST_STAGE4_REFINE_MODEL", "fixer+gsfix3d").strip().lower() or "fixer+gsfix3d"),
+        choices=["fixer", "fixer+gsfix3d"],
+        help="Model stack for pseudo-view repair",
+    )
+    parser.add_argument(
+        "--post-stage4-max-pseudoviews",
+        type=int,
+        default=_env_int("POST_STAGE4_MAX_PSEUDOVIEWS", 96),
+        help="Maximum pseudo-views for gap-filling candidates",
+    )
+    parser.add_argument(
+        "--post-stage4-distill-iters",
+        type=int,
+        default=_env_int("POST_STAGE4_DISTILL_ITERS", 1600),
+        help="Distillation iterations for refined Stage-4 outputs",
+    )
+    parser.add_argument(
+        "--post-stage4-time-budget-min",
+        type=int,
+        default=_env_int("POST_STAGE4_TIME_BUDGET_MIN", 90),
+        help="Time budget (minutes) for post-Stage-4 distillation",
+    )
+    parser.add_argument(
         "--skip-dense",
         action="store_true",
         help="Skip dense reconstruction (use Gaussian PLY as mesh)",
     )
     parser.add_argument("--skip-sam3", action="store_true", help="Skip SAM3 object detection")
+    parser.add_argument(
+        "--scene-cleaning-mode",
+        default=_normalize_scene_cleaning_mode(os.getenv("SCENE_CLEANING_MODE", "off")),
+        choices=["off", "auto", "force"],
+        help="Scene-cleaning integration mode: off (disabled), auto (best effort), force (hard fail)",
+    )
+    parser.add_argument(
+        "--sam3-mask-export-space",
+        default=_normalize_mask_export_space(os.getenv("SAM3_MASK_EXPORT_SPACE", "undistorted")),
+        choices=["raw", "undistorted"],
+        help="Image space for SAM3 instance-mask export when scene cleaning is enabled",
+    )
+    parser.add_argument(
+        "--skip-scene-cleaning",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--sam3-strict-preflight",
         action=argparse.BooleanOptionalAction,
@@ -3779,6 +4042,10 @@ def main() -> int:
         help="Minimum detections per object across frames (0=auto)",
     )
     args = parser.parse_args()
+    args.scene_cleaning_mode = _normalize_scene_cleaning_mode(str(args.scene_cleaning_mode))
+    args.sam3_mask_export_space = _normalize_mask_export_space(str(args.sam3_mask_export_space))
+    if getattr(args, "skip_scene_cleaning", False):
+        args.scene_cleaning_mode = "off"
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -4133,6 +4400,7 @@ def main() -> int:
         _log("Resuming Stage 3: using existing undistorted COLMAP workspace")
     else:
         undistorted_dir = run_colmap_undistort(frames_dir, sparse_dir, workspace)
+    _export_undistorted_artifacts(output_dir=output_dir, undistorted_dir=undistorted_dir)
 
     # -----------------------------------------------------------------------
     # Stage 4: 3DGRUT Training → USDZ + PLY
@@ -4183,12 +4451,25 @@ def main() -> int:
         shutil.copy2(str(ply_src), str(ply_dst))
 
     # Also copy INGP checkpoint
+    ingp_dst = (output_dir / "export_last.ingp").resolve()
     ingp_src_raw = grut_result.get("ingp")
     if ingp_src_raw:
         ingp_src = Path(str(ingp_src_raw)).resolve()
-        ingp_dst = (output_dir / "export_last.ingp").resolve()
         if ingp_src.exists() and ingp_src != ingp_dst:
             shutil.copy2(str(ingp_src), str(ingp_dst))
+
+    active_visual_usdz = usdz_dst
+    active_gaussian_ply = ply_dst
+    active_ingp = ingp_dst if _is_nonempty_file(ingp_dst) else None
+    refinement_report: Dict[str, Any] = {
+        "enabled": False,
+        "mode": "off",
+        "status": "skipped",
+        "reason": "post_stage4_refine_disabled",
+        "active_visual_asset": usdz_dst.name,
+        "active_gaussian_asset": ply_dst.name,
+    }
+    hallucinated_region_mask: Path | None = None
 
     _write_stage14_resume_metadata(
         output_dir,
@@ -4275,6 +4556,258 @@ def main() -> int:
                 _log("WARNING: No rendered images found, skipping Fixer")
     else:
         _log("Skipping Fixer refinement (--skip-fixer)")
+
+    # -----------------------------------------------------------------------
+    # Stage 4.5/5A/5B/5C: Gap analysis + pseudo-view repair + distill + gate
+    # -----------------------------------------------------------------------
+    post_stage4_mode = _resolve_post_stage4_refine_mode(args.post_stage4_refine)
+    refinement_report["mode"] = post_stage4_mode
+    if post_stage4_mode == "off":
+        _log("Skipping post-Stage-4 refinement (--post-stage4-refine=off)")
+    else:
+        refined_usdz = output_dir / "export_last_refined.usdz"
+        refined_ply = output_dir / "export_last_refined.ply"
+        refined_ingp = output_dir / "export_last_refined.ingp"
+        if (
+            effective_resume
+            and post_stage4_mode == "auto"
+            and _has_valid_post_stage4_refine_cache(output_dir)
+        ):
+            active_visual_usdz = refined_usdz
+            active_gaussian_ply = refined_ply
+            active_ingp = refined_ingp if _is_nonempty_file(refined_ingp) else active_ingp
+            gate = _load_json_dict(output_dir / "refinement_quality_gate.json")
+            refinement_report = {
+                "enabled": True,
+                "mode": post_stage4_mode,
+                "status": "passed",
+                "reason": "resume_existing_refinement",
+                "active_visual_asset": active_visual_usdz.name,
+                "active_gaussian_asset": active_gaussian_ply.name,
+                "quality_gate": gate,
+            }
+            mask_path = output_dir / "hallucinated_region_mask.png"
+            if _is_nonempty_file(mask_path):
+                hallucinated_region_mask = mask_path
+            _log("Resuming post-Stage-4 refinement: using existing refined assets")
+        else:
+            _log("=" * 60)
+            _log("STAGE 4.5/5A/5B/5C: Post-Stage-4 Gap Fill + Distill")
+            _log("=" * 60)
+            renders_dirs = list(Path(str(grut_result["result_dir"])).rglob("renders"))
+            required_scripts = [
+                POST_STAGE4_GAP_ANALYZER_SCRIPT,
+                POST_STAGE4_VIEW_REPAIR_SCRIPT,
+                POST_STAGE4_DISTILL_SCRIPT,
+            ]
+            missing_scripts = [str(p) for p in required_scripts if not p.is_file()]
+            if missing_scripts:
+                msg = f"missing post-stage4 scripts: {', '.join(missing_scripts)}"
+                if post_stage4_mode == "force":
+                    raise RuntimeError(msg)
+                _log(f"WARNING: {msg}; skipping post-stage4 refinement")
+                refinement_report = {
+                    "enabled": False,
+                    "mode": post_stage4_mode,
+                    "status": "skipped",
+                    "reason": msg,
+                    "active_visual_asset": active_visual_usdz.name,
+                    "active_gaussian_asset": active_gaussian_ply.name,
+                }
+            elif not renders_dirs:
+                msg = "stage4_renders_missing"
+                if post_stage4_mode == "force":
+                    raise RuntimeError("Post-Stage-4 refinement requested but Stage-4 renders are unavailable")
+                _log("WARNING: Stage-4 renders not found; skipping post-stage4 refinement")
+                refinement_report = {
+                    "enabled": False,
+                    "mode": post_stage4_mode,
+                    "status": "skipped",
+                    "reason": msg,
+                    "active_visual_asset": active_visual_usdz.name,
+                    "active_gaussian_asset": active_gaussian_ply.name,
+                }
+            else:
+                renders_dir = renders_dirs[0]
+                gap_report: Dict[str, Any] = {}
+                view_repair_report: Dict[str, Any] = {}
+                distill_report: Dict[str, Any] = {}
+                gate_report: Dict[str, Any] = {}
+                try:
+                    # Stage 4.5: identify high-value hole regions and pseudo-view candidates.
+                    gap_args: List[str] = [
+                        sys.executable,
+                        str(POST_STAGE4_GAP_ANALYZER_SCRIPT),
+                        "--renders-dir",
+                        str(renders_dir),
+                        "--output-dir",
+                        str(output_dir),
+                        "--max-candidate-views",
+                        str(max(1, int(args.post_stage4_max_pseudoviews))),
+                        "--min-parallax-deg",
+                        str(max(0.0, _env_float("POST_STAGE4_MIN_PARALLAX_DEG", 7.0))),
+                    ]
+                    colmap_images_txt = workspace / "undistorted" / "sparse" / "0" / "images.txt"
+                    colmap_images_bin = workspace / "undistorted" / "sparse" / "0" / "images.bin"
+                    if colmap_images_txt.is_file():
+                        gap_args.extend(["--colmap-images-txt", str(colmap_images_txt)])
+                    if colmap_images_bin.is_file():
+                        gap_args.extend(["--colmap-images-bin", str(colmap_images_bin)])
+                    _run(gap_args)
+
+                    # Stage 5A: repair candidate pseudo-views with Fixer (+GSFix3D fallback).
+                    view_repair_args: List[str] = [
+                        sys.executable,
+                        str(POST_STAGE4_VIEW_REPAIR_SCRIPT),
+                        "--renders-dir",
+                        str(renders_dir),
+                        "--candidate-views",
+                        str(output_dir / "gap_candidate_views.jsonl"),
+                        "--output-dir",
+                        str(output_dir),
+                        "--model",
+                        str(args.post_stage4_refine_model),
+                    ]
+                    _run(view_repair_args)
+
+                    # Stage 5B: distill accepted repaired views back into refined Gaussian outputs.
+                    distill_args: List[str] = [
+                        sys.executable,
+                        str(POST_STAGE4_DISTILL_SCRIPT),
+                        "--output-dir",
+                        str(output_dir),
+                        "--undistorted-dir",
+                        str(undistorted_dir),
+                        "--base-usdz",
+                        str(usdz_dst),
+                        "--base-ply",
+                        str(ply_dst),
+                        "--accepted-views-jsonl",
+                        str(output_dir / "accepted_repaired_views.jsonl"),
+                        "--repaired-views-dir",
+                        str(output_dir / "post_stage4_repaired_views"),
+                        "--distill-iters",
+                        str(max(1, int(args.post_stage4_distill_iters))),
+                        "--max-n-gaussians",
+                        str(max(0, int(effective_max_n_gaussians))),
+                        "--time-budget-min",
+                        str(max(1, int(args.post_stage4_time_budget_min))),
+                        "--threedgrut-python",
+                        str(THREEDGRUT_PYTHON),
+                        "--threedgrut-dir",
+                        str(THREEDGRUT_DIR),
+                    ]
+                    if active_ingp is not None and _is_nonempty_file(active_ingp):
+                        distill_args.extend(["--base-ingp", str(active_ingp)])
+                    _run(distill_args)
+
+                    gap_report = _load_json_dict(output_dir / "gap_analysis_report.json")
+                    view_repair_report = _load_json_dict(output_dir / "view_repair_report.json")
+                    distill_report = _load_json_dict(output_dir / "post_stage4_distill_report.json")
+
+                    baseline_metrics = (
+                        grut_result.get("metrics")
+                        if isinstance(grut_result.get("metrics"), Mapping)
+                        else {}
+                    )
+                    refined_metrics = (
+                        distill_report.get("refined_metrics")
+                        if isinstance(distill_report.get("refined_metrics"), Mapping)
+                        else {}
+                    )
+                    baseline_psnr = None
+                    refined_psnr = None
+                    try:
+                        baseline_psnr = float(baseline_metrics.get("mean_psnr"))
+                    except Exception:
+                        baseline_psnr = None
+                    try:
+                        refined_psnr = float(refined_metrics.get("mean_psnr"))
+                    except Exception:
+                        refined_psnr = None
+
+                    gate_report = _evaluate_refinement_quality_gate(
+                        baseline_hole_ratio=float(gap_report.get("global_hole_pixel_ratio", 1.0)),
+                        refined_hole_ratio=float(
+                            view_repair_report.get(
+                                "post_repair_hole_ratio_mean",
+                                gap_report.get("global_hole_pixel_ratio", 1.0),
+                            )
+                        ),
+                        pre_sharpness=float(view_repair_report.get("pre_sharpness_mean", 0.0)),
+                        post_sharpness=float(view_repair_report.get("post_sharpness_mean", 0.0)),
+                        baseline_psnr=baseline_psnr,
+                        refined_psnr=refined_psnr,
+                    )
+                    gate_report["reports"] = {
+                        "gap_analysis": "gap_analysis_report.json",
+                        "view_repair": "view_repair_report.json",
+                        "distill": "post_stage4_distill_report.json",
+                    }
+                    gate_report["refined_assets"] = {
+                        "usdz": str(refined_usdz.name),
+                        "ply": str(refined_ply.name),
+                        "ingp": str(refined_ingp.name) if _is_nonempty_file(refined_ingp) else "",
+                    }
+                    (output_dir / "refinement_quality_gate.json").write_text(
+                        json.dumps(gate_report, indent=2),
+                        encoding="utf-8",
+                    )
+
+                    mask_path = output_dir / "hallucinated_region_mask.png"
+                    if _is_nonempty_file(mask_path):
+                        hallucinated_region_mask = mask_path
+
+                    if (
+                        str(gate_report.get("status") or "").strip().lower() == "passed"
+                        and _is_nonempty_file(refined_usdz)
+                        and _is_nonempty_file(refined_ply)
+                    ):
+                        active_visual_usdz = refined_usdz
+                        active_gaussian_ply = refined_ply
+                        active_ingp = refined_ingp if _is_nonempty_file(refined_ingp) else active_ingp
+                        refinement_report = {
+                            "enabled": True,
+                            "mode": post_stage4_mode,
+                            "status": "passed",
+                            "reason": "quality_gate_passed",
+                            "active_visual_asset": active_visual_usdz.name,
+                            "active_gaussian_asset": active_gaussian_ply.name,
+                            "quality_gate": gate_report,
+                        }
+                        _log("Post-Stage-4 refinement accepted: using refined Gaussian outputs")
+                    else:
+                        refinement_report = {
+                            "enabled": True,
+                            "mode": post_stage4_mode,
+                            "status": "failed_safe_rollback",
+                            "reason": str(gate_report.get("status") or "quality_gate_failed"),
+                            "active_visual_asset": active_visual_usdz.name,
+                            "active_gaussian_asset": active_gaussian_ply.name,
+                            "quality_gate": gate_report,
+                        }
+                        _log("Post-Stage-4 refinement rejected by quality gate; rolling back to baseline Stage-4 outputs")
+                except Exception as exc:
+                    if post_stage4_mode == "force":
+                        raise
+                    _log(f"WARNING: Post-Stage-4 refinement failed ({exc}); rolling back to baseline Stage-4 outputs")
+                    refinement_report = {
+                        "enabled": True,
+                        "mode": post_stage4_mode,
+                        "status": "failed_safe_rollback",
+                        "reason": f"runtime_error:{exc}",
+                        "active_visual_asset": active_visual_usdz.name,
+                        "active_gaussian_asset": active_gaussian_ply.name,
+                    }
+        gate_path = output_dir / "refinement_quality_gate.json"
+        if not _is_nonempty_file(gate_path):
+            gate_fallback = {
+                "schema_version": "v1",
+                "generated_at": _utc_now_iso(),
+                "status": str(refinement_report.get("status") or "skipped"),
+                "reason": str(refinement_report.get("reason") or "post_stage4_refine_not_run"),
+            }
+            gate_path.write_text(json.dumps(gate_fallback, indent=2), encoding="utf-8")
 
     # -----------------------------------------------------------------------
     # Stage 6: Dense Reconstruction → Collision Mesh
@@ -4380,7 +4913,7 @@ def main() -> int:
         visual = build_visual_mesh_artifacts(
             output_dir=output_dir,
             fused_ply=fused_ply,
-            gaussian_ply=ply_dst,
+            gaussian_ply=active_gaussian_ply,
             workspace=workspace,
             refined_images_dir=fixer_refined_images_dir,
         )
@@ -4397,12 +4930,15 @@ def main() -> int:
             output_dir=output_dir,
             workspace=workspace,
             frames_dir=frames_dir,
+            undistorted_images_dir=undistorted_dir / "images",
             frame_count=frame_count,
             requested_environment=args.environment,
             requested_n_frames=args.sam3_n_frames,
             requested_min_frame_detections=args.sam3_min_frame_detections,
-            gaussian_ply=ply_dst,
+            gaussian_ply=active_gaussian_ply,
             resume=effective_resume,
+            scene_cleaning_mode=args.scene_cleaning_mode,
+            sam3_mask_export_space=args.sam3_mask_export_space,
         )
 
     object_index_path: Path | None = None
@@ -4445,20 +4981,22 @@ def main() -> int:
     if effective_resume and _is_nonempty_file(occupancy_bin):
         _log("Resuming Stage 8: using existing occupancy grid")
     else:
-        generate_occupancy(ply_dst, occupancy_bin)
+        generate_occupancy(active_gaussian_ply, occupancy_bin)
 
     # -----------------------------------------------------------------------
     # Stage 8.5: Mesh Manifest (artifact roles + viewer guidance)
     # -----------------------------------------------------------------------
     write_mesh_manifest(
         output_dir=output_dir,
-        visual_usdz=usdz_dst,
-        gaussian_ply=ply_dst,
+        visual_usdz=active_visual_usdz,
+        gaussian_ply=active_gaussian_ply,
         collision_mesh_ply=mesh_ply,
         occupancy=occupancy_bin,
         visual_report=visual_report,
         collision_method=mesh_method,
         collision_report=collision_report,
+        refinement_report=refinement_report,
+        hallucinated_region_mask=hallucinated_region_mask,
     )
 
     # -----------------------------------------------------------------------
@@ -4489,6 +5027,9 @@ def main() -> int:
     # Optional outputs
     for artifact in [
         "export_last.ingp",
+        "export_last_refined.usdz",
+        "export_last_refined.ply",
+        "export_last_refined.ingp",
         "object_point_cloud_index.json",
         "scene_semantics_report.json",
         "sam3_preflight_report.json",
@@ -4499,11 +5040,25 @@ def main() -> int:
         "visual_mesh_report.json",
         "visual_pointcloud.ply",
         "visual_mesh_robust.glb",
+        "gap_analysis_report.json",
+        "gap_candidate_views.jsonl",
+        "view_repair_report.json",
+        "accepted_repaired_views.jsonl",
+        "post_stage4_distill_report.json",
+        "refinement_quality_gate.json",
+        "hallucinated_region_mask.png",
+        "inpainted_visual_mesh.glb",
+        "scene_cleaning_report.json",
     ]:
         path = output_dir / artifact
         if path.exists():
             size_mb = path.stat().st_size / 1024 / 1024
             _log(f"  ○ {artifact}: {size_mb:.1f}MB")
+
+    _log(
+        "  Active visual/canonical outputs: "
+        f"visual={active_visual_usdz.name} gaussian={active_gaussian_ply.name}"
+    )
 
     if grut_result.get("metrics"):
         m = grut_result["metrics"]

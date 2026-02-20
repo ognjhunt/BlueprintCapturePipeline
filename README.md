@@ -73,6 +73,8 @@ Scene artifacts written under:
 NuRec artifact roles under `.../pipeline/nurec/`:
 
 - `export_last.usdz`: NuRec volume visual for Isaac Sim / Omniverse rendering.
+- `export_last_refined.usdz`: post-Stage-4 refined visual volume (when refinement gate passes).
+- `export_last_refined.ply`: post-Stage-4 refined Gaussian point cloud (when refinement gate passes).
 - `visual_mesh.glb`: generic-viewer visual mesh (textured when available; vertex-color fallback).
 - `visual_pointcloud.ply`: colored dense point cloud debug artifact.
 - `nvblox_mesh.ply`: collision/physics mesh (not intended to look photoreal).
@@ -80,6 +82,10 @@ NuRec artifact roles under `.../pipeline/nurec/`:
 - `sam3_preflight_report.json`: SAM3 auth/import/cache preflight result and skip/fail reason.
 - `mesh_manifest.json`: role manifest describing which artifact to use for visual vs collision.
 - `.fixer_stage_complete.json`: Stage 5 Fixer completion marker (backend + refined image count) used for safe resume.
+- `gap_analysis_report.json`: Stage 4.5 gap observability summary + pseudo-view candidate stats.
+- `view_repair_report.json`: Stage 5A per-view repair metrics and acceptance decisions.
+- `post_stage4_distill_report.json`: Stage 5B distillation outputs/metrics summary.
+- `refinement_quality_gate.json`: Stage 5C rollback gate status and thresholds.
 
 ## Environment
 
@@ -109,6 +115,12 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `FIXER_H100_REMOTE_SETUP_CMD` (optional custom setup command for remote Fixer env)
 - `FIXER_RERUN` (`false` default; set `true` with resume to force rerun Stage 5 Fixer)
 - `FIXER_REQUIRED` (`false` default; set `true` to fail instead of falling back to unrefined renders)
+- `POST_STAGE4_REFINE` (`auto` default; `off`/`auto`/`force` for Stage 4.5/5A/5B/5C flow)
+- `POST_STAGE4_REFINE_MODEL` (`fixer+gsfix3d` default; `fixer` or `fixer+gsfix3d`)
+- `POST_STAGE4_MAX_PSEUDOVIEWS` (`96` default; candidate pseudo-view cap)
+- `POST_STAGE4_DISTILL_ITERS` (`1600` default; refinement distillation iterations)
+- `POST_STAGE4_TIME_BUDGET_MIN` (`90` default; refinement distillation budget)
+- `POST_STAGE4_MIN_PARALLAX_DEG` (`7.0` default; minimum pseudo-view parallax)
 - `NUREC_QUALITY_PROFILE` (`quality_first` default; `balanced`, `fast`)
 - `MAX_FRAMES` (`450` default in `quality_first`; requested floor for adaptive frame budget)
 - `EXTRACT_FPS` (`6` default in `quality_first`; requested FPS before duration-aware downsampling)
@@ -141,6 +153,11 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `SAM3_PREFLIGHT_STRICT` (`false` default; if true, fail before reconstruction when SAM3 access is unavailable)
 - `SAM3_N_FRAMES` (`0` default = auto-scaled by capture length)
 - `SAM3_MIN_FRAME_DETECTIONS` (`0` default = env-aware auto)
+- `SCENE_CLEANING_MODE` (`off` default; `auto` best-effort candidate-scoped cleaning, `force` hard-fails when prerequisites/cleaning fail)
+- `SAM3_MASK_EXPORT_SPACE` (`undistorted` default when cleaning is enabled; `raw` or `undistorted`)
+- `INPAINT360GS_DIR` (default: `/opt/Inpaint360GS`)
+- `INPAINT360GS_PYTHON` (default: `python3.10`)
+- `INPAINT360GS_RESOLUTION` (`2` default; `1`=full, `2`=half, `4`=quarter)
 - `SCENE_SEMANTICS_GEMINI_MODEL` (default: `gemini-3.0-pro`)
 - `GOOGLE_GENAI_API_KEY` (optional; when missing, scene semantics falls back to local auto)
 - `SAM3_TRACKING_MODE` (`auto` default in wrapper; resolves to `full_video` or `sampled`)
@@ -169,6 +186,23 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `COLLISION_SPIKE_MAX_RATIO` (default: `0.02`; collision spike gate threshold)
 
 For production runtimes, pre-bake 3DGRUT build dependencies into the image (tiny-cuda-nn submodules and fused_ssim built against the image's torch) to avoid rebuild delays during retries.
+
+### Scene Cleaning Runbook
+
+- Stage location: candidate-scoped scene cleaning runs in swap orchestrator Stage C.5 (after candidate selection, before materialization).
+- Enable modes:
+  - `SCENE_CLEANING_MODE=off`: disabled (default).
+  - `SCENE_CLEANING_MODE=auto`: run best-effort; explicit skip reason is written when prerequisites/deps are missing.
+  - `SCENE_CLEANING_MODE=force`: hard fail on missing prerequisites or cleaner failure.
+- Expected additional runtime: typically ~25-40 minutes/scene on RTX 4090-class GPUs (resolution-dependent).
+- NuRec prerequisite artifacts (when cleaning mode is not `off`):
+  - `instance_masks/` (uint16 SAM3 instance masks in requested export space)
+  - `colmap_undistorted/images/`
+  - `colmap_undistorted/sparse/0/`
+- Orchestrator outputs:
+  - `pipeline/scene_cleaning_report.json` (status/reason/targets)
+  - optional `nurec/inpainted_visual_mesh.glb` (when cleaning succeeds)
+  - `nurec_outputs.artifacts.inpainted_visual_mesh_glb` is injected when available
 
 ## Omniverse Preview (Recommended)
 

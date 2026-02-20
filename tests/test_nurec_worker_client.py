@@ -158,3 +158,32 @@ def test_collect_outputs_respects_visual_mesh_disable_flag(
     artifacts = payload["artifacts"]
     assert "visual_usdz" in artifacts
     assert "visual_mesh_glb" not in artifacts
+
+
+def test_collect_outputs_includes_optional_scene_cleaning_artifacts(tmp_path: Path) -> None:
+    client = NurecWorkerClient(
+        storage_root=tmp_path,
+        bucket="bucket",
+        pipeline_prefix="scenes/scene_1/captures/cap_1/pipeline",
+        config=NurecWorkerConfig(worker_mode="external_markers"),
+    )
+    nurec_dir = client.nurec_dir
+    nurec_dir.mkdir(parents=True, exist_ok=True)
+    (nurec_dir / "export_last.usdz").write_bytes(b"usdz")
+    _write_collision_mesh(nurec_dir / "nvblox_mesh.ply")
+    (nurec_dir / "occupancy.bin").write_bytes(b"occ")
+    (nurec_dir / "visual_mesh.glb").write_bytes(b"glb")
+    (nurec_dir / "inpainted_visual_mesh.glb").write_bytes(b"cleaned")
+    (nurec_dir / "instance_masks").mkdir(parents=True, exist_ok=True)
+    (nurec_dir / "instance_masks" / "frame_00001.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (nurec_dir / "colmap_undistorted" / "sparse" / "0").mkdir(parents=True, exist_ok=True)
+    (nurec_dir / "colmap_undistorted" / "sparse" / "0" / "cameras.bin").write_bytes(b"\x00")
+    (nurec_dir / "colmap_undistorted" / "images").mkdir(parents=True, exist_ok=True)
+    (nurec_dir / "colmap_undistorted" / "images" / "frame_00001.jpg").write_bytes(b"jpg")
+
+    payload = client.collect_outputs()
+    artifacts = payload["artifacts"]
+    assert "inpainted_visual_mesh_glb" in artifacts
+    assert "sam3_instance_masks_dir" in artifacts
+    assert "colmap_undistorted_sparse_dir" in artifacts
+    assert "colmap_undistorted_images_dir" in artifacts

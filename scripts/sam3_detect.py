@@ -129,6 +129,7 @@ _DEFAULT_SAMPLE_FRAMES = 8
 
 # IoU threshold for merging detections across frames
 _MERGE_IOU_THRESHOLD = 0.35
+_INSTANCE_MASK_MAX_ID = 65535
 
 
 def _env_int(name: str, default: int) -> int:
@@ -973,6 +974,106 @@ def _save_object_crop(
         return None
 
 
+def _accumulate_instance_mask(
+    mask_np: np.ndarray,
+    object_id: int,
+    frame_name: str,
+    instance_masks_dir: Path,
+) -> None:
+    """Accumulate a per-object binary mask into a per-view instance segmentation PNG.
+
+    Each pixel in the output PNG holds the 1-indexed object ID that owns it
+    (0 = background). Masks are written as uint16 PNG so object IDs >255 are
+    represented losslessly.
+
+    Args:
+        mask_np: boolean [H, W] mask for one object.
+        object_id: 1-indexed global object ID.
+        frame_name: stem of the image file (no extension).
+        instance_masks_dir: directory for instance segmentation PNGs.
+    """
+    if mask_np is None or not mask_np.any():
+        return
+    try:
+        instance_masks_dir.mkdir(parents=True, exist_ok=True)
+        out_path = instance_masks_dir / f"{frame_name}.png"
+        if out_path.exists():
+            from PIL import Image as _PIL
+            existing = np.array(_PIL.open(out_path), dtype=np.uint16)
+        else:
+            existing = np.zeros(mask_np.shape[:2], dtype=np.uint16)
+
+        if existing.shape != mask_np.shape[:2]:
+            _log(
+                "    Instance mask shape mismatch for "
+                f"{frame_name}: existing={existing.shape} new={mask_np.shape[:2]}"
+            )
+            return
+
+        existing[mask_np] = min(max(int(object_id), 0), _INSTANCE_MASK_MAX_ID)
+
+        from PIL import Image as _PIL
+        _PIL.fromarray(existing.astype(np.uint16), mode="I;16").save(out_path)
+    except Exception as exc:
+        _log(f"    Instance mask write failed for {frame_name} obj {object_id}: {exc}")
+
+
+def _frame_name_from_detection(det: Mapping[str, Any]) -> str:
+    frame_path = str(det.get("frame_path") or "").strip()
+    if frame_path:
+        stem = Path(frame_path).stem
+        if stem:
+            return stem
+    frame_idx = int(det.get("frame_idx", 0))
+    return f"frame_{frame_idx:05d}"
+
+
+def _write_instance_masks_from_objects(
+    *,
+    objects: List[Dict[str, Any]],
+    instance_masks_dir: Path,
+) -> Dict[str, Any]:
+    """Compose per-frame instance PNGs from final merged objects.
+
+    Composition order is deterministic and confidence-aware:
+    1) lower-confidence objects first, higher-confidence objects later
+    2) within each object, lower per-frame detection confidence first
+    """
+    contributions: List[Tuple[float, float, str, int, np.ndarray]] = []
+    for obj in objects:
+        instance_mask_id = int(obj.get("instance_mask_id", 0))
+        if instance_mask_id <= 0:
+            continue
+        obj_conf = float(obj.get("confidence", 0.0))
+        dets = obj.get("_cluster_detections")
+        if not isinstance(dets, list):
+            continue
+        for det in dets:
+            if not isinstance(det, Mapping):
+                continue
+            mask_np = det.get("_mask_np")
+            if not isinstance(mask_np, np.ndarray) or mask_np.size == 0:
+                continue
+            if mask_np.dtype != np.bool_:
+                mask_np = mask_np.astype(bool)
+            if not mask_np.any():
+                continue
+            det_score = float(det.get("score", 0.0))
+            frame_name = _frame_name_from_detection(det)
+            contributions.append((obj_conf, det_score, frame_name, instance_mask_id, mask_np))
+
+    contributions.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    for _, _, frame_name, instance_mask_id, mask_np in contributions:
+        _accumulate_instance_mask(mask_np, instance_mask_id, frame_name, instance_masks_dir)
+
+    frame_count = len({item[2] for item in contributions})
+    return {
+        "instance_masks_dir": str(instance_masks_dir),
+        "instance_mask_dtype": "uint16",
+        "instance_masks_frame_count": frame_count,
+    }
+
+
 def _load_sam3():
     """Load SAM3 model and processor."""
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -1256,6 +1357,7 @@ def _detect_objects_in_frame(
     focal_px: float = 1000.0,
     crops_dir: Optional[Path] = None,
     frame_idx: int = 0,
+    include_mask: bool = False,
 ) -> List[Dict[str, Any]]:
     """Run SAM3 detection on a single frame for all prompts.
 
@@ -1310,6 +1412,8 @@ def _detect_objects_in_frame(
                 "frame_path": str(image_path),
                 "frame_idx": int(frame_idx),
             }
+            if include_mask and mask_np is not None:
+                det["_mask_np"] = mask_np
 
             # If we have depth, compute 3D extent from mask + depth
             if depth_map is not None and mask_np is not None and mask_np.any():
@@ -1691,6 +1795,7 @@ def _cluster_to_object(
     label: str,
     cluster_idx: int,
     cluster: List[Dict[str, Any]],
+    preserve_detections: bool = False,
 ) -> Dict[str, Any]:
     scores = [d["score"] for d in cluster]
     boxes = [d["box"] for d in cluster]
@@ -1762,11 +1867,24 @@ def _cluster_to_object(
         obj_entry["reference_crop"] = best_crop
     if all_crops:
         obj_entry["all_crops"] = all_crops
+    if preserve_detections:
+        obj_entry["_cluster_detections"] = [
+            {
+                "frame_idx": int(det.get("frame_idx", 0)),
+                "frame_path": str(det.get("frame_path") or ""),
+                "score": float(det.get("score", 0.0)),
+                "_mask_np": det.get("_mask_np"),
+            }
+            for det in cluster
+            if isinstance(det, Mapping) and isinstance(det.get("_mask_np"), np.ndarray)
+        ]
     return obj_entry
 
 
 def _merge_detections(
     all_detections: List[Dict[str, Any]],
+    *,
+    preserve_detections: bool = False,
 ) -> List[Dict[str, Any]]:
     """Temporal association over the sampled sequence into scene-level objects."""
     by_label: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -1794,6 +1912,7 @@ def _merge_detections(
                     label=label,
                     cluster_idx=cluster_idx,
                     cluster=track["detections"],
+                    preserve_detections=preserve_detections,
                 )
             )
 
@@ -2142,6 +2261,8 @@ def _collect_propagation_results(
     n_frames: int,
     obj_frames: Dict[int, List[Dict[str, Any]]],
     seed_frame_idx: int = 0,
+    instance_masks_dir: Optional[Path] = None,
+    global_obj_id_map: Optional[Dict[int, int]] = None,
 ) -> None:
     """Propagate from seed frame and collect per-object per-frame results.
 
@@ -2225,6 +2346,16 @@ def _collect_propagation_results(
                     if frame_idx < len(all_frame_files):
                         frame_data["frame_path"] = str(all_frame_files[frame_idx])
 
+                    # Save instance mask contribution if enabled
+                    if instance_masks_dir is not None and mask_np is not None and global_obj_id_map is not None:
+                        global_id = global_obj_id_map.get(oid)
+                        if global_id is not None and frame_idx < len(all_frame_files):
+                            _accumulate_instance_mask(
+                                mask_np, global_id,
+                                all_frame_files[frame_idx].stem,
+                                instance_masks_dir,
+                            )
+
                     obj_frames[oid].append(frame_data)
 
                 if (frame_idx + 1) % 100 == 0:
@@ -2242,6 +2373,7 @@ def _detect_with_video_predictor(
     *,
     save_crops: bool = True,
     crops_dir: Optional[Path] = None,
+    instance_masks_dir: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Run SAM3 video predictor for persistent object tracking.
 
@@ -2278,6 +2410,11 @@ def _detect_with_video_predictor(
     session_result = predictor.start_session(resource_path=str(frames_dir))
     session_id = session_result["session_id"]
     _log(f"Session {session_id[:8]}... started. VRAM: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+
+    # Prepare instance mask output directory if requested
+    if instance_masks_dir is not None:
+        instance_masks_dir.mkdir(parents=True, exist_ok=True)
+        _log(f"Instance masks will be saved to {instance_masks_dir}")
 
     # Run each prompt as a separate cycle (add_prompt resets state)
     # Try multiple seed frames to catch objects that appear later in the video.
@@ -2381,17 +2518,36 @@ def _detect_with_video_predictor(
                     fd["frame_path"] = str(all_frame_files[found_on_seed])
                 obj_frames[global_id].append(fd)
 
+                # Save instance mask contribution for seed frame
+                if instance_masks_dir is not None and mask_np is not None:
+                    if found_on_seed < len(all_frame_files):
+                        _accumulate_instance_mask(
+                            mask_np, global_id + 1,  # 1-indexed for Inpaint360GS
+                            all_frame_files[found_on_seed].stem,
+                            instance_masks_dir,
+                        )
+
             # Propagate from seed frame (forward + backward if seed > 0)
             _log(f"    Propagating from seed frame {found_on_seed}...")
             temp_label_map: Dict[int, str] = {
                 sam_oid: prompt for sam_oid in [int(x) for x in new_ids]
             }
             temp_obj_frames: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+            # Build SAM-oid → 1-indexed global ID map for instance mask writing
+            propagation_global_map: Optional[Dict[int, int]] = None
+            if instance_masks_dir is not None:
+                propagation_global_map = {
+                    sam_oid: local_to_global[sam_oid] + 1  # 1-indexed
+                    for sam_oid in [int(x) for x in new_ids]
+                    if sam_oid in local_to_global
+                }
             _collect_propagation_results(
                 predictor, session_id, prompt,
                 temp_label_map, all_frame_files,
                 img_w, img_h, n_frames, temp_obj_frames,
                 seed_frame_idx=found_on_seed,
+                instance_masks_dir=instance_masks_dir,
+                global_obj_id_map=propagation_global_map,
             )
 
             # Remap SAM3 obj_ids to global IDs
@@ -2687,6 +2843,9 @@ def run_sam3_video_predictor(
     extraction_fps: int = 0,
     adaptive_fps_reasoning: str = "",
     dimension_completion_mode: Optional[str] = None,
+    save_instance_masks: bool = False,
+    instance_masks_dir: Optional[Path] = None,
+    force_full_video_masks: bool = False,
 ) -> Dict[str, Any]:
     """Run SAM3 video predictor pipeline and write object index.
 
@@ -2718,12 +2877,19 @@ def run_sam3_video_predictor(
         crops_dir = output_path.parent / "object_crops"
         _log(f"Object crops will be saved to: {crops_dir}")
 
+    # Set up instance masks directory for Inpaint360GS scene cleaning
+    inst_masks_dir: Optional[Path] = None
+    if save_instance_masks:
+        inst_masks_dir = instance_masks_dir or (output_path.parent / "instance_masks")
+        _log(f"Instance segmentation masks will be saved to: {inst_masks_dir}")
+
     # Run video predictor
     objects, vp_metadata = _detect_with_video_predictor(
         frames_dir=frames_dir,
         prompts=prompts,
         save_crops=save_crops,
         crops_dir=crops_dir,
+        instance_masks_dir=inst_masks_dir,
     )
 
     # DA3 depth post-processing (video predictor already freed)
@@ -2748,6 +2914,13 @@ def run_sam3_video_predictor(
         environment=environment,
         mode_override=dimension_completion_mode,
     )
+    if save_instance_masks:
+        for obj in objects:
+            try:
+                # Keep mask IDs stable with the IDs written during propagation.
+                obj["instance_mask_id"] = int(obj.get("video_predictor_obj_id", -1)) + 1
+            except Exception:
+                continue
 
     # Report
     n_with_crops = sum(1 for obj in objects if "reference_crop" in obj)
@@ -2782,6 +2955,13 @@ def run_sam3_video_predictor(
         "dimension_completion": dimension_completion_report,
         "objects": objects,
     }
+    if save_instance_masks and inst_masks_dir is not None:
+        n_mask_frames = len(list(inst_masks_dir.glob("*.png"))) if inst_masks_dir.is_dir() else 0
+        index_payload["instance_masks_dir"] = str(inst_masks_dir)
+        index_payload["instance_mask_dtype"] = "uint16"
+        index_payload["instance_masks_frame_count"] = int(n_mask_frames)
+    if force_full_video_masks:
+        index_payload["force_full_video_masks"] = True
 
     # Add video-specific metadata
     if video_path:
@@ -2817,6 +2997,9 @@ def run_sam3_detection(
     min_frame_detections: int = 2,
     save_crops: bool = True,
     dimension_completion_mode: Optional[str] = None,
+    save_instance_masks: bool = False,
+    instance_masks_dir: Optional[Path] = None,
+    force_full_video_masks: bool = False,
 ) -> Dict[str, Any]:
     """Run full SAM3 detection pipeline and write object index.
 
@@ -2858,10 +3041,14 @@ def run_sam3_detection(
     tracking_mode_raw = (
         os.getenv("SAM3_TRACKING_MODE", _TRACKING_MODE_DEFAULT) or _TRACKING_MODE_DEFAULT
     ).strip().lower()
-    tracking_mode, tracking_mode_reason = _resolve_tracking_mode(
-        tracking_mode_raw,
-        len(all_frames),
-    )
+    if force_full_video_masks:
+        tracking_mode = "full_video"
+        tracking_mode_reason = "forced_by_force_full_video_masks"
+    else:
+        tracking_mode, tracking_mode_reason = _resolve_tracking_mode(
+            tracking_mode_raw,
+            len(all_frames),
+        )
     _log(f"Tracking mode resolved: {tracking_mode} ({tracking_mode_reason})")
 
     if tracking_mode == "full_video":
@@ -2899,6 +3086,12 @@ def run_sam3_detection(
         crops_dir = output_path.parent / "object_crops"
         _log(f"Object crops will be saved to: {crops_dir}")
 
+    inst_masks_dir: Optional[Path] = None
+    if save_instance_masks:
+        inst_masks_dir = instance_masks_dir or (output_path.parent / "instance_masks")
+        inst_masks_dir.mkdir(parents=True, exist_ok=True)
+        _log(f"Instance masks will be saved to: {inst_masks_dir}")
+
     # Run detection on each frame
     all_detections: List[Dict[str, Any]] = []
     for i, frame_path in enumerate(frame_paths):
@@ -2918,6 +3111,7 @@ def run_sam3_detection(
             processor, frame_path, prompts,
             depth_map=depth_map, focal_px=focal_px,
             crops_dir=crops_dir, frame_idx=i,
+            include_mask=save_instance_masks,
         )
         n_with_depth = sum(1 for d in dets if "depth_3d" in d)
         _log(f"    {len(dets)} detections ({n_with_depth} with metric depth)")
@@ -2931,7 +3125,10 @@ def run_sam3_detection(
         torch.cuda.empty_cache()
 
     # Merge across frames
-    objects = _merge_detections(all_detections)
+    objects = _merge_detections(
+        all_detections,
+        preserve_detections=save_instance_masks,
+    )
     _log(f"Merged into {len(objects)} unique objects")
 
     # Filter: require detection in multiple frames for robustness
@@ -2970,6 +3167,15 @@ def run_sam3_detection(
         mode_override=dimension_completion_mode,
     )
 
+    mask_metadata: Dict[str, Any] = {}
+    if save_instance_masks and inst_masks_dir is not None:
+        for idx, obj in enumerate(objects, start=1):
+            obj["instance_mask_id"] = idx
+        mask_metadata = _write_instance_masks_from_objects(
+            objects=objects,
+            instance_masks_dir=inst_masks_dir,
+        )
+
     # Report
     n_with_crops = sum(1 for obj in objects if "reference_crop" in obj)
     _log(f"\nDetected objects ({n_with_crops}/{len(objects)} with reference crops):")
@@ -3007,6 +3213,10 @@ def run_sam3_detection(
         "dimension_completion": dimension_completion_report,
         "objects": objects,
     }
+    index_payload.update(mask_metadata)
+
+    for obj in objects:
+        obj.pop("_cluster_detections", None)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(index_payload, f, indent=2)
 
@@ -3092,6 +3302,18 @@ def main() -> int:
                         help="Minimum frames an object must appear in (0=auto, image_model only)")
     parser.add_argument("--no-crops", action="store_true",
                         help="Disable saving per-object reference crops")
+    parser.add_argument("--save-instance-masks", action="store_true",
+                        help="Save per-view instance segmentation masks for Inpaint360GS scene cleaning")
+    parser.add_argument(
+        "--instance-masks-dir",
+        default=None,
+        help="Optional output directory for instance masks (default: <output_dir>/instance_masks)",
+    )
+    parser.add_argument(
+        "--force-full-video-masks",
+        action="store_true",
+        help="Force all frames to be processed (ignores sampled mode) when exporting instance masks",
+    )
     parser.add_argument("--scene-semantics", action="store_true",
                         help="Run Gemini scene semantics before detection to infer environment and prompts")
     parser.add_argument(
@@ -3218,6 +3440,9 @@ def main() -> int:
                 extraction_fps=extraction_fps,
                 adaptive_fps_reasoning=adaptive_fps_reasoning,
                 dimension_completion_mode=args.dimension_completion_mode,
+                save_instance_masks=args.save_instance_masks,
+                instance_masks_dir=Path(args.instance_masks_dir) if args.instance_masks_dir else None,
+                force_full_video_masks=args.force_full_video_masks,
             )
         except Exception as exc:
             _log(f"Video predictor failed: {exc}")
@@ -3242,6 +3467,9 @@ def main() -> int:
             min_frame_detections=args.min_frame_detections,
             save_crops=not args.no_crops,
             dimension_completion_mode=args.dimension_completion_mode,
+            save_instance_masks=args.save_instance_masks,
+            instance_masks_dir=Path(args.instance_masks_dir) if args.instance_masks_dir else None,
+            force_full_video_masks=args.force_full_video_masks,
         )
 
     n_objects = len(result.get("objects", []))

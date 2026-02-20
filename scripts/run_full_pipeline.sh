@@ -31,11 +31,16 @@ EXTRACT_FPS="${EXTRACT_FPS:-5}"
 N_ITERATIONS="${N_ITERATIONS:-9000}"
 MAX_N_GAUSSIANS="${MAX_N_GAUSSIANS:-}"
 SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
-SKIP_FIXER="${SKIP_FIXER:---skip-fixer}"
+SKIP_FIXER="${SKIP_FIXER:-false}"
 NUREC_RESUME="${NUREC_RESUME:-false}"
 NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
 FIXER_RERUN="${FIXER_RERUN:-false}"
 FIXER_REQUIRED="${FIXER_REQUIRED:-false}"
+POST_STAGE4_REFINE="${POST_STAGE4_REFINE:-auto}"
+POST_STAGE4_REFINE_MODEL="${POST_STAGE4_REFINE_MODEL:-fixer+gsfix3d}"
+POST_STAGE4_MAX_PSEUDOVIEWS="${POST_STAGE4_MAX_PSEUDOVIEWS:-96}"
+POST_STAGE4_DISTILL_ITERS="${POST_STAGE4_DISTILL_ITERS:-1600}"
+POST_STAGE4_TIME_BUDGET_MIN="${POST_STAGE4_TIME_BUDGET_MIN:-90}"
 COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-auto}"
 COLMAP_SEQUENTIAL_OVERLAP="${COLMAP_SEQUENTIAL_OVERLAP:-30}"
 COLMAP_CHUNKED_MODE="${COLMAP_CHUNKED_MODE:-auto}"
@@ -55,7 +60,15 @@ VISUAL_MESH_TEXTURE_SIZE="${VISUAL_MESH_TEXTURE_SIZE:-4096}"
 VISUAL_MESH_TEXTURE_MAX_ATLASES="${VISUAL_MESH_TEXTURE_MAX_ATLASES:-2}"
 SAM3_PREFLIGHT_STRICT="${SAM3_PREFLIGHT_STRICT:-false}"
 SAM3_TRACKING_MODE="${SAM3_TRACKING_MODE:-auto}"
+SCENE_CLEANING_MODE="${SCENE_CLEANING_MODE:-off}"
+SAM3_MASK_EXPORT_SPACE="${SAM3_MASK_EXPORT_SPACE:-undistorted}"
+INPAINT360GS_RESOLUTION="${INPAINT360GS_RESOLUTION:-2}"
 OPEN_OMNIVERSE_PREVIEW="${OPEN_OMNIVERSE_PREVIEW:-false}"
+
+# Backward compatibility with older SKIP_FIXER env style ("--skip-fixer").
+if [ "${SKIP_FIXER}" = "--skip-fixer" ]; then
+  SKIP_FIXER=true
+fi
 
 if [ -z "$BLUR_FILTER_KEEP_RATIO" ]; then
   case "${NUREC_QUALITY_PROFILE,,}" in
@@ -107,8 +120,17 @@ Options:
   --completion-mode MODE  Completion mode: full_required, best_effort (default: full_required)
   --workspace DIR         Working directory (default: /workspace)
   --resume                Enable NuRec resume mode (reuse Stage 1-4 artifacts)
+  --skip-fixer            Disable Stage 5 Fixer refinement
   --fixer-rerun           Force rerun of Fixer in resume mode
   --fixer-required        Fail if Fixer does not produce refined outputs
+  --post-stage4-refine MODE  Post-Stage-4 mode: off, auto, force (default: auto)
+  --post-stage4-refine-model MODE  Repair stack: fixer, fixer+gsfix3d (default: fixer+gsfix3d)
+  --post-stage4-max-pseudoviews N  Max pseudo-views (default: 96)
+  --post-stage4-distill-iters N    Distillation iterations (default: 1600)
+  --post-stage4-time-budget-min N  Distillation budget minutes (default: 90)
+  --scene-cleaning-mode MODE   Scene cleaning mode: off, auto, force (default: off)
+  --sam3-mask-export-space MODE  SAM3 mask export space: raw, undistorted (default: undistorted)
+  --skip-scene-cleaning        Backward-compatible alias for --scene-cleaning-mode off
   --skip-nurec            Skip NuRec shim (use existing outputs in --nurec-output-dir)
   --nurec-output-dir DIR  NuRec output directory (default: auto from workspace)
   --crop-cleanup PROV     Crop cleanup: skip, together_qwen_image_edit, qwen_image_edit, nano_banana, gpt_image (default: skip)
@@ -127,8 +149,17 @@ while [ $# -gt 0 ]; do
     --completion-mode) COMPLETION_MODE="$2";      shift 2 ;;
     --workspace)       WORKSPACE="$2";            shift 2 ;;
     --resume)          NUREC_RESUME=true;         shift ;;
+    --skip-fixer)      SKIP_FIXER=true;           shift ;;
     --fixer-rerun)     FIXER_RERUN=true;          shift ;;
     --fixer-required)  FIXER_REQUIRED=true;       shift ;;
+    --post-stage4-refine) POST_STAGE4_REFINE="$2"; shift 2 ;;
+    --post-stage4-refine-model) POST_STAGE4_REFINE_MODEL="$2"; shift 2 ;;
+    --post-stage4-max-pseudoviews) POST_STAGE4_MAX_PSEUDOVIEWS="$2"; shift 2 ;;
+    --post-stage4-distill-iters) POST_STAGE4_DISTILL_ITERS="$2"; shift 2 ;;
+    --post-stage4-time-budget-min) POST_STAGE4_TIME_BUDGET_MIN="$2"; shift 2 ;;
+    --scene-cleaning-mode) SCENE_CLEANING_MODE="$2"; shift 2 ;;
+    --sam3-mask-export-space) SAM3_MASK_EXPORT_SPACE="$2"; shift 2 ;;
+    --skip-scene-cleaning) SCENE_CLEANING_MODE="off"; shift ;;
     --skip-nurec)      SKIP_NUREC=true;           shift ;;
     --nurec-output-dir) NUREC_OUTPUT_DIR="$2";    shift 2 ;;
     --crop-cleanup)    CROP_CLEANUP_PROVIDER="$2"; shift 2 ;;
@@ -149,6 +180,22 @@ case "${COMPLETION_MODE}" in
   full_required|best_effort) ;;
   *) die "Invalid --completion-mode '${COMPLETION_MODE}'. Expected: full_required or best_effort" ;;
 esac
+case "${POST_STAGE4_REFINE}" in
+  off|auto|force) ;;
+  *) die "Invalid --post-stage4-refine '${POST_STAGE4_REFINE}'. Expected: off, auto, or force" ;;
+esac
+case "${POST_STAGE4_REFINE_MODEL}" in
+  fixer|fixer+gsfix3d) ;;
+  *) die "Invalid --post-stage4-refine-model '${POST_STAGE4_REFINE_MODEL}'. Expected: fixer or fixer+gsfix3d" ;;
+esac
+case "${SCENE_CLEANING_MODE}" in
+  off|auto|force) ;;
+  *) die "Invalid --scene-cleaning-mode '${SCENE_CLEANING_MODE}'. Expected: off, auto, or force" ;;
+esac
+case "${SAM3_MASK_EXPORT_SPACE}" in
+  raw|undistorted) ;;
+  *) die "Invalid --sam3-mask-export-space '${SAM3_MASK_EXPORT_SPACE}'. Expected: raw or undistorted" ;;
+esac
 if [ "$COMPLETION_MODE" = "full_required" ]; then
   validate_full_runtime "$BLUEPRINTPIPELINE_ROOT"
 fi
@@ -163,9 +210,12 @@ log "Capture ID: $CAPTURE_ID"
 log "Environment: $ENVIRONMENT"
 log "Completion mode: $COMPLETION_MODE"
 log "NuRec resume: $NUREC_RESUME"
+log "Skip fixer: $SKIP_FIXER"
 log "Fixer rerun: $FIXER_RERUN"
 log "Fixer required: $FIXER_REQUIRED"
+log "Post-Stage-4 refine: $POST_STAGE4_REFINE (model=$POST_STAGE4_REFINE_MODEL, max_pseudoviews=$POST_STAGE4_MAX_PSEUDOVIEWS, distill_iters=$POST_STAGE4_DISTILL_ITERS, budget_min=$POST_STAGE4_TIME_BUDGET_MIN)"
 log "Blur filter keep ratio: $BLUR_FILTER_KEEP_RATIO (profile=$NUREC_QUALITY_PROFILE, min_frames=$BLUR_FILTER_MIN_FRAMES)"
+log "Scene cleaning mode: $SCENE_CLEANING_MODE (mask_export_space=$SAM3_MASK_EXPORT_SPACE)"
 
 # ── Stage 1: NuRec Shim (COLMAP + 3DGRUT + SAM3) ───────────────────────────
 PIPELINE_DIR="${WORKSPACE}/full_pipeline"
@@ -211,6 +261,9 @@ SPEC
   fi
 
   NUREC_FIXER_ARGS=()
+  if [ "${SKIP_FIXER,,}" = "true" ]; then
+    NUREC_FIXER_ARGS+=(--skip-fixer)
+  fi
   if [ "${FIXER_RERUN,,}" = "true" ]; then
     NUREC_FIXER_ARGS+=(--fixer-rerun)
   fi
@@ -227,6 +280,9 @@ SPEC
   export COLMAP_MIN_REGISTERED_RATIO COLMAP_RETRY_MIN_REGISTERED_RATIO
   export VISUAL_MESH_TEXTURE_SIZE VISUAL_MESH_TEXTURE_MAX_ATLASES
   export SAM3_PREFLIGHT_STRICT SAM3_TRACKING_MODE
+  export POST_STAGE4_REFINE POST_STAGE4_REFINE_MODEL
+  export POST_STAGE4_MAX_PSEUDOVIEWS POST_STAGE4_DISTILL_ITERS POST_STAGE4_TIME_BUDGET_MIN
+  export SCENE_CLEANING_MODE SAM3_MASK_EXPORT_SPACE INPAINT360GS_RESOLUTION
   python3 "${APP_DIR}/scripts/nurec_shim.py" \
     --job-spec "$JOB_SPEC" \
     --output-dir "$NUREC_OUTPUT_DIR" \
@@ -250,11 +306,17 @@ SPEC
     --blur-filter-min-frames "$BLUR_FILTER_MIN_FRAMES" \
     --environment "$ENVIRONMENT" \
     --sam3-n-frames "$SAM3_N_FRAMES" \
+    --post-stage4-refine "$POST_STAGE4_REFINE" \
+    --post-stage4-refine-model "$POST_STAGE4_REFINE_MODEL" \
+    --post-stage4-max-pseudoviews "$POST_STAGE4_MAX_PSEUDOVIEWS" \
+    --post-stage4-distill-iters "$POST_STAGE4_DISTILL_ITERS" \
+    --post-stage4-time-budget-min "$POST_STAGE4_TIME_BUDGET_MIN" \
+    --scene-cleaning-mode "$SCENE_CLEANING_MODE" \
+    --sam3-mask-export-space "$SAM3_MASK_EXPORT_SPACE" \
     "${NUREC_RESUME_ARGS[@]}" \
     "${NUREC_PARALLEL_ARGS[@]}" \
     "${NUREC_PREVIEW_ARGS[@]}" \
     "${NUREC_FIXER_ARGS[@]}" \
-    $SKIP_FIXER \
     2>&1 | tee "${PIPELINE_DIR}/nurec.log"
 
   log "NuRec shim completed"
@@ -285,7 +347,7 @@ mkdir -p "$RAW_ROOT" "$NUREC_ROOT" "$PIPELINE_ROOT" \
          "${SCENE_ROOT}/seg" "${SCENE_ROOT}/usd"
 
 # Copy NuRec outputs into expected location
-for f in export_last.usdz export_last.ply export_last.ingp nvblox_mesh.ply visual_mesh.glb visual_mesh_robust.glb visual_pointcloud.ply mesh_manifest.json collision_mesh_report.json occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt capture_quality_report.json sam3_preflight_report.json; do
+for f in export_last.usdz export_last.ply export_last.ingp export_last_refined.usdz export_last_refined.ply export_last_refined.ingp nvblox_mesh.ply visual_mesh.glb visual_mesh_robust.glb visual_pointcloud.ply mesh_manifest.json collision_mesh_report.json occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt capture_quality_report.json sam3_preflight_report.json gap_analysis_report.json gap_candidate_views.jsonl view_repair_report.json accepted_repaired_views.jsonl post_stage4_distill_report.json refinement_quality_gate.json hallucinated_region_mask.png; do
   src="${NUREC_OUTPUT_DIR}/${f}"
   [ -f "$src" ] && ln -sf "$src" "${NUREC_ROOT}/${f}"
 done
@@ -303,6 +365,12 @@ log "  ${INDEX_POINTER_LEGACY} -> object_point_cloud_index.json"
 # Copy object crops directory (reference images for generation)
 if [ -d "${NUREC_OUTPUT_DIR}/object_crops" ]; then
   ln -sfn "${NUREC_OUTPUT_DIR}/object_crops" "${NUREC_ROOT}/object_crops"
+fi
+if [ -d "${NUREC_OUTPUT_DIR}/instance_masks" ]; then
+  ln -sfn "${NUREC_OUTPUT_DIR}/instance_masks" "${NUREC_ROOT}/instance_masks"
+fi
+if [ -d "${NUREC_OUTPUT_DIR}/colmap_undistorted" ]; then
+  ln -sfn "${NUREC_OUTPUT_DIR}/colmap_undistorted" "${NUREC_ROOT}/colmap_undistorted"
 fi
 
 # Fix reference_crop paths in object index to point to GCS-like structure
@@ -422,25 +490,71 @@ log "Created capture_descriptor.json"
 
 # Create .nurec_complete marker (so orchestrator skips NuRec execution)
 NUREC_PREFIX_URI="gs://${BUCKET}/scenes/${SCENE_ID}/captures/${CAPTURE_ID}/pipeline/nurec"
-cat > "${PIPELINE_ROOT}/.nurec_complete" <<MARKER
-{
-  "schema_version": "v1",
-  "scene_id": "${SCENE_ID}",
-  "capture_id": "${CAPTURE_ID}",
-  "status": "completed",
-  "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "nurec_dir": "${NUREC_ROOT}",
-  "command": {"executed": true, "command": "nurec_shim.py", "return_code": 0, "stdout": "", "stderr": ""},
-  "outputs": {
-    "visual_usdz": "${NUREC_PREFIX_URI}/export_last.usdz",
-    "visual_mesh_glb": "${NUREC_PREFIX_URI}/visual_mesh.glb",
-    "visual_pointcloud_ply": "${NUREC_PREFIX_URI}/visual_pointcloud.ply",
-    "mesh_manifest_json": "${NUREC_PREFIX_URI}/mesh_manifest.json",
-    "collision_mesh_ply": "${NUREC_PREFIX_URI}/nvblox_mesh.ply",
-    "occupancy": ["${NUREC_PREFIX_URI}/occupancy.bin"]
-  }
+PRIMARY_VISUAL_ASSET="$(python3 - <<PY
+import json
+from pathlib import Path
+manifest_path = Path("${NUREC_OUTPUT_DIR}/mesh_manifest.json")
+primary = "export_last.usdz"
+if manifest_path.exists():
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    candidate = str(payload.get("primary_visual_asset") or "").strip()
+    if candidate.lower().endswith(".usdz") and (manifest_path.parent / candidate).is_file():
+        primary = candidate
+print(primary)
+PY
+)"
+if [ ! -f "${NUREC_OUTPUT_DIR}/${PRIMARY_VISUAL_ASSET}" ]; then
+  PRIMARY_VISUAL_ASSET="export_last.usdz"
+fi
+python3 - <<PY
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+scene_id = "${SCENE_ID}"
+capture_id = "${CAPTURE_ID}"
+nurec_output_dir = Path("${NUREC_OUTPUT_DIR}")
+nurec_prefix_uri = "${NUREC_PREFIX_URI}"
+primary_visual_asset = "${PRIMARY_VISUAL_ASSET}"
+pipeline_root = Path("${PIPELINE_ROOT}")
+nurec_root = "${NUREC_ROOT}"
+
+outputs = {
+    "visual_usdz": f"{nurec_prefix_uri}/{primary_visual_asset}",
+    "visual_mesh_glb": f"{nurec_prefix_uri}/visual_mesh.glb",
+    "visual_pointcloud_ply": f"{nurec_prefix_uri}/visual_pointcloud.ply",
+    "mesh_manifest_json": f"{nurec_prefix_uri}/mesh_manifest.json",
+    "collision_mesh_ply": f"{nurec_prefix_uri}/nvblox_mesh.ply",
+    "occupancy": [f"{nurec_prefix_uri}/occupancy.bin"],
 }
-MARKER
+
+if (nurec_output_dir / "inpainted_visual_mesh.glb").is_file():
+    outputs["inpainted_visual_mesh_glb"] = f"{nurec_prefix_uri}/inpainted_visual_mesh.glb"
+instance_masks_dir = nurec_output_dir / "instance_masks"
+if instance_masks_dir.is_dir() and any(instance_masks_dir.glob("*.png")):
+    outputs["sam3_instance_masks_dir"] = f"{nurec_prefix_uri}/instance_masks"
+undist_sparse = nurec_output_dir / "colmap_undistorted" / "sparse" / "0"
+if undist_sparse.is_dir() and any(undist_sparse.iterdir()):
+    outputs["colmap_undistorted_sparse_dir"] = f"{nurec_prefix_uri}/colmap_undistorted/sparse/0"
+undist_images = nurec_output_dir / "colmap_undistorted" / "images"
+if undist_images.is_dir() and any(p.is_file() for p in undist_images.rglob("*")):
+    outputs["colmap_undistorted_images_dir"] = f"{nurec_prefix_uri}/colmap_undistorted/images"
+
+payload = {
+    "schema_version": "v1",
+    "scene_id": scene_id,
+    "capture_id": capture_id,
+    "status": "completed",
+    "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "nurec_dir": nurec_root,
+    "command": {"executed": True, "command": "nurec_shim.py", "return_code": 0, "stdout": "", "stderr": ""},
+    "outputs": outputs,
+}
+(pipeline_root / ".nurec_complete").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+PY
 log "Created .nurec_complete marker"
 
 # Create synthetic frames index (orchestrator may check it exists)
@@ -464,6 +578,7 @@ export TEXT_ASSET_GENERATION_PROVIDER_CHAIN="$GENERATION_PROVIDER_CHAIN"
 export SWAP_POLICY_CONFIG_PATH="${APP_DIR}/configs/swap_policy.yaml"
 export PYTHONPATH="${APP_DIR}/scripts:${PYTHONPATH:-}"
 export SAM3_TRACKING_MODE
+export SCENE_CLEANING_MODE INPAINT360GS_RESOLUTION SAM3_MASK_EXPORT_SPACE
 export SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT=false
 
 if [ "$COMPLETION_MODE" = "full_required" ]; then

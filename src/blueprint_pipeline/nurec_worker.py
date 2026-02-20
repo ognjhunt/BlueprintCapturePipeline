@@ -148,7 +148,12 @@ def _validate_outputs(nurec_dir: Path) -> Dict[str, Any]:
     mesh_ply = nurec_dir / "nvblox_mesh.ply"
     visual_mesh_glb = nurec_dir / "visual_mesh.glb"
     visual_pointcloud_ply = nurec_dir / "visual_pointcloud.ply"
+    inpainted_visual_mesh_glb = nurec_dir / "inpainted_visual_mesh.glb"
     mesh_manifest_json = nurec_dir / "mesh_manifest.json"
+    instance_masks_dir = nurec_dir / "instance_masks"
+    undistorted_root = nurec_dir / "colmap_undistorted"
+    undistorted_sparse_dir = undistorted_root / "sparse" / "0"
+    undistorted_images_dir = undistorted_root / "images"
     occupancy = sorted(nurec_dir.glob("occupancy*"))
     visual_mesh_enabled = _env_flag("VISUAL_MESH_ENABLED", True)
 
@@ -164,18 +169,47 @@ def _validate_outputs(nurec_dir: Path) -> Dict[str, Any]:
     if not occupancy:
         raise RuntimeError(f"Missing required occupancy artifacts in {nurec_dir}")
 
+    selected_visual_usdz = export_usdz
+    hallucinated_region_mask: Path | None = None
+    if has_nonempty_file(mesh_manifest_json):
+        try:
+            manifest_payload = json.loads(mesh_manifest_json.read_text(encoding="utf-8"))
+        except Exception:
+            manifest_payload = {}
+        if isinstance(manifest_payload, dict):
+            primary_visual = str(manifest_payload.get("primary_visual_asset") or "").strip()
+            if primary_visual.lower().endswith(".usdz"):
+                candidate_visual = nurec_dir / primary_visual
+                if has_nonempty_file(candidate_visual):
+                    selected_visual_usdz = candidate_visual
+            hallucinated_mask_name = str(manifest_payload.get("hallucinated_region_mask") or "").strip()
+            if hallucinated_mask_name:
+                candidate_mask = nurec_dir / hallucinated_mask_name
+                if has_nonempty_file(candidate_mask):
+                    hallucinated_region_mask = candidate_mask
+
     outputs: Dict[str, Any] = {
-        "visual_usdz": str(export_usdz),
+        "visual_usdz": str(selected_visual_usdz),
         "collision_mesh_ply": str(mesh_ply),
         "collision_mesh_face_count": int(mesh_faces),
         "occupancy": [str(path) for path in occupancy],
     }
     if has_nonempty_file(visual_mesh_glb):
         outputs["visual_mesh_glb"] = str(visual_mesh_glb)
+    if has_nonempty_file(inpainted_visual_mesh_glb):
+        outputs["inpainted_visual_mesh_glb"] = str(inpainted_visual_mesh_glb)
     if has_nonempty_file(visual_pointcloud_ply):
         outputs["visual_pointcloud_ply"] = str(visual_pointcloud_ply)
     if has_nonempty_file(mesh_manifest_json):
         outputs["mesh_manifest_json"] = str(mesh_manifest_json)
+    if instance_masks_dir.is_dir() and any(instance_masks_dir.glob("*.png")):
+        outputs["sam3_instance_masks_dir"] = str(instance_masks_dir)
+    if undistorted_sparse_dir.is_dir() and any(undistorted_sparse_dir.iterdir()):
+        outputs["colmap_undistorted_sparse_dir"] = str(undistorted_sparse_dir)
+    if undistorted_images_dir.is_dir() and any(p.is_file() for p in undistorted_images_dir.rglob("*")):
+        outputs["colmap_undistorted_images_dir"] = str(undistorted_images_dir)
+    if hallucinated_region_mask is not None:
+        outputs["hallucinated_region_mask"] = str(hallucinated_region_mask)
     return outputs
 
 

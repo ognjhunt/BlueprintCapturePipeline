@@ -1055,6 +1055,20 @@ def materialize_scene_shell_assets(
     visual_uri = str(artifacts.get("visual_usdz") or "").strip()
     visual_mesh_uri = str(artifacts.get("visual_mesh_glb") or "").strip()
     mesh_uri = str(artifacts.get("collision_mesh_ply") or "").strip()
+    inpainted_mesh_active = False
+
+    # Prefer inpainted visual mesh from Inpaint360GS scene cleaning (Stage 9.5)
+    inpainted_glb_uri = str(artifacts.get("inpainted_visual_mesh_glb") or "").strip()
+    if inpainted_glb_uri:
+        try:
+            from .common import resolve_gs_uri_to_path as _resolve
+            inpainted_src = _resolve(inpainted_glb_uri, storage_root)
+            if has_nonempty_file(inpainted_src):
+                visual_mesh_uri = inpainted_glb_uri
+                inpainted_mesh_active = True
+                print(f"[sam3d_assets] Using inpainted visual mesh: {inpainted_src}", flush=True)
+        except Exception:
+            pass  # Fall through to original visual mesh
     if not mesh_uri or (not visual_uri and not visual_mesh_uri):
         raise StageError(
             "sam3d",
@@ -1098,7 +1112,11 @@ def materialize_scene_shell_assets(
         raise StageError("sam3d", "no valid visual source artifact found after materialization")
 
     selected_visual_source = "nurec_export_volume"
-    if visual_primary == "mesh":
+    if inpainted_mesh_active and has_mesh:
+        # Cleaned mesh must be primary when available (USDZ remains as fallback).
+        _write_reference_model_usd(visual_dir / "model.usd", "model.glb")
+        selected_visual_source = "inpaint360gs_cleaned_mesh"
+    elif visual_primary == "mesh":
         if has_mesh:
             _write_reference_model_usd(visual_dir / "model.usd", "model.glb")
             selected_visual_source = "nurec_visual_mesh"
@@ -1142,13 +1160,18 @@ def materialize_scene_shell_assets(
         "schema_version": "v1",
         "asset_id": "obj_nurec_visual",
         "source": selected_visual_source,
-        "source_uri": visual_mesh_uri if selected_visual_source == "nurec_visual_mesh" else visual_uri,
+        "source_uri": (
+            inpainted_glb_uri
+            if selected_visual_source == "inpaint360gs_cleaned_mesh"
+            else (visual_mesh_uri if selected_visual_source == "nurec_visual_mesh" else visual_uri)
+        ),
         "fallback_visual_usdz_uri": visual_uri,
         "primary_visual_preference": visual_primary,
         "available_visual_assets": {
             "usdz": has_volume,
             "mesh_glb": has_mesh,
         },
+        "inpainted_visual_mesh": bool(inpainted_mesh_active),
         "generated_at": utc_now_iso(),
     }
     write_json(visual_dir / "metadata.json", visual_metadata)
