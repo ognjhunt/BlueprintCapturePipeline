@@ -996,3 +996,264 @@ def test_resolve_visual_mesh_poisson_depth_respects_overrides(monkeypatch: pytes
     monkeypatch.setenv("VISUAL_MESH_POISSON_LARGE_THRESHOLD", "250000")
     assert module._resolve_visual_mesh_poisson_depth(260000) == 9
     assert module._resolve_visual_mesh_poisson_depth(120000) == 11
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Long-Capture: _probe_video_duration_seconds
+# ---------------------------------------------------------------------------
+
+
+def test_probe_video_duration_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "182.45\n"
+        stderr = ""
+
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: _FakeResult())
+    result = module._probe_video_duration_seconds(tmp_path / "video.mov")
+    assert result == pytest.approx(182.45)
+
+
+def test_probe_video_duration_ffprobe_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+
+    class _FakeResult:
+        returncode = 1
+        stdout = ""
+        stderr = "No such file"
+
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: _FakeResult())
+    result = module._probe_video_duration_seconds(tmp_path / "video.mov")
+    assert result is None
+
+
+def test_probe_video_duration_exception(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+
+    def _raise(*a, **kw):
+        raise FileNotFoundError("ffprobe not found")
+
+    monkeypatch.setattr(module.subprocess, "run", _raise)
+    result = module._probe_video_duration_seconds(tmp_path / "video.mov")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Long-Capture: _resolve_effective_max_frames edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_effective_max_frames_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_MAX_FRAMES", "false")
+    max_frames, reason = module._resolve_effective_max_frames(1800.0, 450)
+    assert max_frames == 450
+    assert "adaptive_max_frames=disabled" in reason
+
+
+def test_resolve_effective_max_frames_duration_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_MAX_FRAMES", "true")
+    max_frames, reason = module._resolve_effective_max_frames(None, 450)
+    assert max_frames == 450
+    assert "duration_unknown" in reason
+
+
+def test_resolve_effective_max_frames_respects_hard_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_MAX_FRAMES", "true")
+    monkeypatch.setenv("ADAPTIVE_MAX_FRAMES_TARGET_FPS", "10.0")
+    monkeypatch.setenv("ADAPTIVE_MAX_FRAMES_HARD_CAP", "2000")
+    max_frames, reason = module._resolve_effective_max_frames(1800.0, 450)
+    assert max_frames == 2000
+    assert "hard_cap=2000" in reason
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Long-Capture: _resolve_effective_extract_fps edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_effective_extract_fps_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_EXTRACT_FPS", "false")
+    fps, reason = module._resolve_effective_extract_fps(1800.0, 6, 900)
+    assert fps == 6.0
+    assert "adaptive_extract_fps=disabled" in reason
+
+
+def test_resolve_effective_extract_fps_duration_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_EXTRACT_FPS", "true")
+    fps, reason = module._resolve_effective_extract_fps(None, 6, 900)
+    assert fps == 6.0
+    assert "duration_unknown" in reason
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Long-Capture: _build_colmap_chunk_ranges edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_build_colmap_chunk_ranges_zero_frames() -> None:
+    module = _load_nurec_shim_module()
+    assert module._build_colmap_chunk_ranges(0, chunk_size=600, chunk_overlap=120, max_chunks=24) == []
+
+
+def test_build_colmap_chunk_ranges_total_equals_chunk_size() -> None:
+    module = _load_nurec_shim_module()
+    ranges = module._build_colmap_chunk_ranges(600, chunk_size=600, chunk_overlap=120, max_chunks=24)
+    assert len(ranges) == 1
+    assert ranges[0] == (0, 600)
+
+
+def test_build_colmap_chunk_ranges_total_below_chunk_size() -> None:
+    module = _load_nurec_shim_module()
+    ranges = module._build_colmap_chunk_ranges(200, chunk_size=600, chunk_overlap=120, max_chunks=24)
+    assert len(ranges) == 1
+    assert ranges[0] == (0, 200)
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Long-Capture: _run_sfm_with_optional_chunking
+# ---------------------------------------------------------------------------
+
+
+def test_run_sfm_with_optional_chunking_single_pass_below_threshold(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When frame count is below chunk threshold, uses single-pass SfM."""
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    workspace = tmp_path / "workspace"
+    frames_dir.mkdir(parents=True)
+    workspace.mkdir(parents=True)
+
+    def _fake_run(cmd, **kwargs):
+        if cmd[1] == "mapper":
+            sparse = workspace / "sparse" / "0"
+            sparse.mkdir(parents=True, exist_ok=True)
+            (sparse / "images.bin").write_bytes(struct.pack("<Q", 80))
+        return None
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    monkeypatch.setattr(module, "_colmap_supports_option", lambda *a, **kw: True)
+
+    sparse_dir, registered, report = module._run_sfm_with_optional_chunking(
+        frames_dir=frames_dir,
+        workspace=workspace,
+        sift_use_gpu=False,
+        mapper_num_threads=1,
+        matcher_mode="sequential",
+        sequential_overlap=30,
+        frame_count=400,
+        chunked_mode="auto",
+        chunk_min_frames=900,
+        chunk_size_frames=600,
+        chunk_overlap_frames=120,
+        chunk_max_chunks=24,
+        chunk_matcher_mode="sequential",
+    )
+    assert report["chunking_enabled"] is False
+    assert report["chunking_applied"] is False
+    assert registered == 80
+
+
+def test_run_sfm_with_optional_chunking_falls_back_on_chunk_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When chunking is enabled but fails, falls back to single-pass."""
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    workspace = tmp_path / "workspace"
+    frames_dir.mkdir(parents=True)
+    workspace.mkdir(parents=True)
+
+    def _fake_chunked(*a, **kw):
+        raise RuntimeError("simulated chunk failure")
+
+    def _fake_sfm(frames_dir, workspace, *, sift_use_gpu, mapper_num_threads=0,
+                  matcher_mode="sequential", sequential_overlap=10):
+        sparse_dir = workspace / "sparse" / "0"
+        sparse_dir.mkdir(parents=True, exist_ok=True)
+        (sparse_dir / "images.bin").write_bytes(struct.pack("<Q", 500))
+        return sparse_dir
+
+    monkeypatch.setattr(module, "run_colmap_sfm_chunked", _fake_chunked)
+    monkeypatch.setattr(module, "run_colmap_sfm", _fake_sfm)
+
+    sparse_dir, registered, report = module._run_sfm_with_optional_chunking(
+        frames_dir=frames_dir,
+        workspace=workspace,
+        sift_use_gpu=False,
+        mapper_num_threads=1,
+        matcher_mode="sequential",
+        sequential_overlap=30,
+        frame_count=1000,
+        chunked_mode="auto",
+        chunk_min_frames=900,
+        chunk_size_frames=600,
+        chunk_overlap_frames=120,
+        chunk_max_chunks=24,
+        chunk_matcher_mode="sequential",
+    )
+    assert report["chunking_enabled"] is True
+    assert report["chunking_applied"] is False
+    assert report["chunking_fallback"] == "single_pass"
+    assert registered == 500
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Long-Capture: run_colmap_sfm_chunked smoke test
+# ---------------------------------------------------------------------------
+
+
+def test_run_colmap_sfm_chunked_merges_two_chunks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    workspace = tmp_path / "workspace"
+    frames_dir.mkdir(parents=True)
+    workspace.mkdir(parents=True)
+
+    for i in range(1, 801):
+        (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+
+    def _fake_run(cmd, **kwargs):
+        if cmd[1] == "mapper":
+            out_idx = cmd.index("--output_path") + 1
+            sparse = Path(cmd[out_idx]) / "0"
+            sparse.mkdir(parents=True, exist_ok=True)
+            (sparse / "images.bin").write_bytes(struct.pack("<Q", 50))
+            return None
+        if cmd[1] == "model_merger":
+            out_idx = cmd.index("--output_path") + 1
+            out = Path(cmd[out_idx])
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "cameras.bin").write_bytes(b"\x00")
+            (out / "images.bin").write_bytes(struct.pack("<Q", 90))
+            (out / "points3D.bin").write_bytes(b"\x00")
+            return None
+        return None
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    monkeypatch.setattr(module, "_colmap_supports_option", lambda *a, **kw: True)
+
+    sparse_dir, report = module.run_colmap_sfm_chunked(
+        frames_dir,
+        workspace,
+        sift_use_gpu=False,
+        mapper_num_threads=1,
+        chunk_size_frames=500,
+        chunk_overlap_frames=100,
+        chunk_max_chunks=10,
+        chunk_matcher_mode="sequential",
+        sequential_overlap=30,
+    )
+    assert sparse_dir.exists()
+    assert report["enabled"] is True
+    assert report["chunk_count_planned"] >= 2
+    assert report["chunk_count_successful"] >= 2

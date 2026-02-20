@@ -94,3 +94,23 @@ def test_sam3_tracking_mode_auto_long_capture(monkeypatch) -> None:
     mode, reason = module._resolve_tracking_mode("auto", 1200)
     assert mode == "sampled"
     assert "threshold=600" in reason
+
+
+def test_sam3_tracking_mode_explicit_full_video(monkeypatch) -> None:
+    monkeypatch.setenv("SAM3_TRACKING_MODE", "auto")
+    monkeypatch.setenv("SAM3_FULL_VIDEO_MAX_FRAMES", "600")
+    module = _load_sam3_module_with_env()
+
+    mode, reason = module._resolve_tracking_mode("full_video", 1200)
+    assert mode == "full_video"
+    assert "requested=full_video" in reason
+
+
+def test_sam3_tracking_mode_unknown_falls_back_to_auto(monkeypatch) -> None:
+    monkeypatch.setenv("SAM3_TRACKING_MODE", "auto")
+    monkeypatch.setenv("SAM3_FULL_VIDEO_MAX_FRAMES", "600")
+    module = _load_sam3_module_with_env()
+
+    mode, reason = module._resolve_tracking_mode("bogus_mode", 450)
+    assert mode == "full_video"  # 450 <= 600 threshold
+    assert "unsupported" in reason

@@ -695,7 +695,7 @@ def run_colmap_sfm_chunked(
         _populate_chunk_frames(chunk_frames_dir, chunk_frames)
 
         chunk_size = end - start
-        chunk_overlap = min(max(1, int(sequential_overlap)), max(1, chunk_size - 1))
+        per_chunk_seq_overlap = min(max(1, int(sequential_overlap)), max(1, chunk_size - 1))
         _log(
             f"Chunked SfM {idx + 1}/{len(ranges)}: "
             f"frames {start + 1}-{end} ({chunk_size} frames)"
@@ -707,7 +707,7 @@ def run_colmap_sfm_chunked(
                 sift_use_gpu=sift_use_gpu,
                 mapper_num_threads=mapper_num_threads,
                 matcher_mode=chunk_matcher_mode,
-                sequential_overlap=chunk_overlap,
+                sequential_overlap=per_chunk_seq_overlap,
             )
             registered_images = _read_registered_image_count(model_dir)
             successful_chunks.append(
@@ -3464,15 +3464,22 @@ def main() -> int:
                 retry_sequential_overlap,
                 _env_int("COLMAP_RETRY_SEQUENTIAL_OVERLAP", 60),
             )
-        sparse_dir = run_colmap_sfm(
-            frames_dir,
-            workspace,
+        sparse_dir, registered_images, retry_sfm_report = _run_sfm_with_optional_chunking(
+            frames_dir=frames_dir,
+            workspace=workspace,
             sift_use_gpu=sift_use_gpu,
             mapper_num_threads=mapper_threads,
             matcher_mode=retry_matcher_mode,
             sequential_overlap=retry_sequential_overlap,
+            frame_count=frame_count,
+            chunked_mode=args.colmap_chunked_mode,
+            chunk_min_frames=args.colmap_chunk_min_frames,
+            chunk_size_frames=args.colmap_chunk_size_frames,
+            chunk_overlap_frames=args.colmap_chunk_overlap_frames,
+            chunk_max_chunks=args.colmap_chunk_max_chunks,
+            chunk_matcher_mode=args.colmap_chunk_matcher_mode,
         )
-        registered_images = _read_registered_image_count(sparse_dir)
+        sfm_run_report["retry"] = retry_sfm_report
         registered_ratio = _registration_ratio(
             registered_images=registered_images,
             extracted_frames=frame_count,
