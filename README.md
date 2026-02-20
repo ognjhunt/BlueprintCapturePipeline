@@ -106,7 +106,7 @@ NuRec worker dispatch:
 
 NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 
-- `FIXER_MODE` (`auto` default; `h100`, `local`)
+- `FIXER_MODE` (`local` default; `auto` aliases `local`; `h100` explicit opt-in)
 - `FIXER_H100_SCRIPT` (default: `/app/scripts/fixer_h100_stage.sh`)
 - `FIXER_H100_INSTANCE_ID` (optional existing Vast.ai instance)
 - `FIXER_H100_KEEP_INSTANCE` (`true`/`false`)

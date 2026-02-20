@@ -198,7 +198,7 @@ def test_run_3dgrut_training_selects_newest_export(
     assert result["result_dir"].name == "new"
 
 
-def test_fixer_auto_prefers_h100(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_fixer_auto_uses_local_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     module = _load_nurec_shim_module()
     renders_dir = tmp_path / "renders"
     output_dir = tmp_path / "out"
@@ -206,16 +206,19 @@ def test_fixer_auto_prefers_h100(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     renders_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
 
-    call_count = {"local": 0}
+    call_count = {"local": 0, "h100": 0}
 
     def _fake_h100(*args, **kwargs):  # type: ignore[no-untyped-def]
+        call_count["h100"] += 1
         fixed_dir.mkdir(parents=True, exist_ok=True)
-        (fixed_dir / "frame_00001.png").write_bytes(b"ok")
+        (fixed_dir / "frame_from_h100.png").write_bytes(b"h100")
         return True
 
     def _fake_local(*args, **kwargs):  # type: ignore[no-untyped-def]
         call_count["local"] += 1
-        return False
+        fixed_dir.mkdir(parents=True, exist_ok=True)
+        (fixed_dir / "frame_00001.png").write_bytes(b"ok")
+        return True
 
     monkeypatch.setattr(module, "_run_fixer_h100_stage", _fake_h100)
     monkeypatch.setattr(module, "_run_fixer_local_stage", _fake_local)
@@ -228,7 +231,8 @@ def test_fixer_auto_prefers_h100(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     )
 
     assert result == fixed_dir
-    assert call_count["local"] == 0
+    assert call_count["local"] == 1
+    assert call_count["h100"] == 0
 
 
 def test_colmap_cuda_detection_true(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -323,7 +327,10 @@ def test_fixer_auto_falls_back_to_local(monkeypatch: pytest.MonkeyPatch, tmp_pat
     renders_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
 
+    h100_calls = {"count": 0}
+
     def _fake_h100(*args, **kwargs):  # type: ignore[no-untyped-def]
+        h100_calls["count"] += 1
         return False
 
     def _fake_local(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -342,6 +349,7 @@ def test_fixer_auto_falls_back_to_local(monkeypatch: pytest.MonkeyPatch, tmp_pat
     )
 
     assert result == fixed_dir
+    assert h100_calls["count"] == 0
 
 
 def test_run_fixer_refinement_writes_completion_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1080,6 +1088,209 @@ def test_write_mesh_manifest_prefers_mesh_when_requested(tmp_path: Path, monkeyp
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert payload["primary_visual_asset"] == "visual_mesh.glb"
     assert "generic_textured_mesh" in payload["viewer_compatibility"]
+
+
+def test_resolve_post_stage4_refine_mode() -> None:
+    module = _load_nurec_shim_module()
+    assert module._resolve_post_stage4_refine_mode("off") == "off"
+    assert module._resolve_post_stage4_refine_mode("AUTO") == "auto"
+    assert module._resolve_post_stage4_refine_mode("force") == "force"
+    assert module._resolve_post_stage4_refine_mode("unknown") == "auto"
+
+
+def test_has_valid_post_stage4_refine_cache(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    (tmp_path / "export_last_refined.usdz").write_bytes(b"u")
+    (tmp_path / "export_last_refined.ply").write_bytes(b"p")
+    (tmp_path / "refinement_quality_gate.json").write_text(
+        json.dumps({"status": "passed"}),
+        encoding="utf-8",
+    )
+    assert module._has_valid_post_stage4_refine_cache(tmp_path) is True
+
+    (tmp_path / "refinement_quality_gate.json").write_text(
+        json.dumps({"status": "failed_safe_rollback"}),
+        encoding="utf-8",
+    )
+    assert module._has_valid_post_stage4_refine_cache(tmp_path) is False
+
+
+def test_evaluate_refinement_quality_gate_triggers_rollback() -> None:
+    module = _load_nurec_shim_module()
+    gate = module._evaluate_refinement_quality_gate(
+        baseline_hole_ratio=0.20,
+        refined_hole_ratio=0.18,  # only 10% improvement -> fail
+        pre_sharpness=100.0,
+        post_sharpness=80.0,  # 20% drop -> fail
+        baseline_psnr=26.8,
+        refined_psnr=26.3,  # 0.5 dB drop -> fail
+    )
+    assert gate["status"] == "failed_safe_rollback"
+    assert gate["gates"]["hole_improvement"] is False
+    assert gate["gates"]["sharpness"] is False
+    assert gate["gates"]["psnr"] is False
+
+
+def test_main_forwards_colmap_images_bin_to_gap_analyzer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    output_dir = tmp_path / "out"
+    job_spec = tmp_path / "job_spec.json"
+    video_path = tmp_path / "input.mov"
+    video_path.write_bytes(b"mov")
+    job_spec.write_text("{}", encoding="utf-8")
+    captured_cmds: list[list[str]] = []
+
+    def _fake_find_video(raw_prefix: str, storage_root: Path) -> Path:  # noqa: ARG001
+        return video_path
+
+    def _fake_extract_frames(video: Path, frames_dir: Path, max_frames: int, target_fps: int) -> int:  # noqa: ARG001
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(1, 121):
+            (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+        return 120
+
+    def _fake_run_colmap_sfm(  # type: ignore[no-untyped-def]
+        frames_dir,
+        workspace,
+        *,
+        sift_use_gpu,
+        mapper_num_threads=0,
+        matcher_mode="sequential",
+        sequential_overlap=10,
+    ):
+        del frames_dir, sift_use_gpu, mapper_num_threads, matcher_mode, sequential_overlap
+        sparse_dir = workspace / "sparse" / "0"
+        sparse_dir.mkdir(parents=True, exist_ok=True)
+        (sparse_dir / "cameras.bin").write_bytes(b"\x00")
+        (sparse_dir / "images.bin").write_bytes(struct.pack("<Q", 120))
+        (sparse_dir / "points3D.bin").write_bytes(b"\x00")
+        return sparse_dir
+
+    def _fake_run_colmap_undistort(frames_dir: Path, sparse_dir: Path, workspace: Path) -> Path:  # noqa: ARG001
+        undistorted_dir = workspace / "undistorted"
+        und_images = undistorted_dir / "images"
+        und_sparse = undistorted_dir / "sparse" / "0"
+        und_images.mkdir(parents=True, exist_ok=True)
+        und_sparse.mkdir(parents=True, exist_ok=True)
+        (und_images / "frame_00001.jpg").write_bytes(b"jpg")
+        (und_sparse / "images.bin").write_bytes(struct.pack("<Q", 120))
+        return undistorted_dir
+
+    def _fake_run_3dgrut_training(  # type: ignore[no-untyped-def]
+        undistorted_dir,
+        output_dir,
+        n_iterations,
+        max_n_gaussians=0,
+        add_end_iteration=0,
+    ):
+        del undistorted_dir, n_iterations, max_n_gaussians, add_end_iteration
+        result_dir = output_dir / "3dgrut" / "scene"
+        renders_dir = result_dir / "renders"
+        renders_dir.mkdir(parents=True, exist_ok=True)
+        (renders_dir / "frame_00001.png").write_bytes(b"png")
+        usdz = result_dir / "export_last.usdz"
+        ply = result_dir / "export_last.ply"
+        ingp = result_dir / "export_last.ingp"
+        usdz.write_bytes(b"usdz")
+        ply.write_bytes(b"ply")
+        ingp.write_bytes(b"ingp")
+        return {
+            "usdz": str(usdz),
+            "ply": str(ply),
+            "ingp": str(ingp),
+            "result_dir": str(result_dir),
+            "metrics": {"mean_psnr": 26.8},
+        }
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        captured_cmds.append([str(part) for part in cmd])
+        cmd_path = str(cmd[1]) if len(cmd) > 1 else ""
+        if cmd_path.endswith("post_stage4_gap_analyzer.py"):
+            (output_dir / "gap_candidate_views.jsonl").write_text("", encoding="utf-8")
+            (output_dir / "gap_analysis_report.json").write_text(
+                json.dumps({"global_hole_pixel_ratio": 0.4}),
+                encoding="utf-8",
+            )
+        elif cmd_path.endswith("post_stage4_view_repair.py"):
+            (output_dir / "accepted_repaired_views.jsonl").write_text("", encoding="utf-8")
+            (output_dir / "view_repair_report.json").write_text(
+                json.dumps(
+                    {
+                        "pre_sharpness_mean": 100.0,
+                        "post_sharpness_mean": 100.0,
+                        "post_repair_hole_ratio_mean": 0.2,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        elif cmd_path.endswith("post_stage4_distill.py"):
+            (output_dir / "export_last_refined.usdz").write_bytes(b"refined_usdz")
+            (output_dir / "export_last_refined.ply").write_bytes(b"refined_ply")
+            (output_dir / "post_stage4_distill_report.json").write_text(
+                json.dumps({"refined_metrics": {"mean_psnr": 26.8}}),
+                encoding="utf-8",
+            )
+        return None
+
+    monkeypatch.setattr(module, "find_video", _fake_find_video)
+    monkeypatch.setattr(module, "extract_frames", _fake_extract_frames)
+    monkeypatch.setattr(module, "run_colmap_sfm", _fake_run_colmap_sfm)
+    monkeypatch.setattr(module, "run_colmap_undistort", _fake_run_colmap_undistort)
+    monkeypatch.setattr(module, "run_3dgrut_training", _fake_run_3dgrut_training)
+    monkeypatch.setattr(module, "_colmap_has_cuda", lambda: False)
+    monkeypatch.setattr(module, "_run", _fake_run)
+    monkeypatch.setattr(
+        module,
+        "_run_sam3_preflight",
+        lambda strict: {  # type: ignore[no-untyped-def]
+            "schema_version": "v1",
+            "generated_at": "now",
+            "enabled": True,
+            "strict": strict,
+            "status": "ok",
+            "reason": "",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "build_capture_quality_report",
+        lambda _frames_dir: {"schema_version": "v1", "frame_count": 120},
+    )
+
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "nurec_shim.py",
+            "--job-spec",
+            str(job_spec),
+            "--output-dir",
+            str(output_dir),
+            "--raw-prefix",
+            str(video_path),
+            "--no-dependency-preflight",
+            "--no-blur-filter-required",
+            "--skip-fixer",
+            "--post-stage4-refine",
+            "force",
+            "--skip-dense",
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="--skip-dense is incompatible with collision mesh quality gate"):
+        module.main()
+
+    gap_cmd = next(
+        cmd for cmd in captured_cmds if len(cmd) > 1 and cmd[1].endswith("post_stage4_gap_analyzer.py")
+    )
+    assert "--colmap-images-bin" in gap_cmd
+    bin_idx = gap_cmd.index("--colmap-images-bin") + 1
+    expected_bin = output_dir / "_colmap_workspace" / "undistorted" / "sparse" / "0" / "images.bin"
+    assert gap_cmd[bin_idx] == str(expected_bin)
 
 
 def test_build_capture_quality_report_has_expected_schema(

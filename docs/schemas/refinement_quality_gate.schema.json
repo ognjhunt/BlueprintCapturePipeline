@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprintcapturepipeline.local/schemas/refinement_quality_gate.schema.json",
+  "title": "RefinementQualityGate",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "status"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "status": {"type": "string"},
+    "reason": {"type": "string"},
+    "thresholds": {"type": "object"},
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "baseline_hole_ratio": {"type": "number", "minimum": 0},
+        "refined_hole_ratio": {"type": "number", "minimum": 0},
+        "hole_improvement_ratio": {"type": "number"},
+        "pre_sharpness": {"type": "number", "minimum": 0},
+        "post_sharpness": {"type": "number", "minimum": 0},
+        "sharpness_drop_ratio": {"type": "number"},
+        "baseline_psnr": {"type": ["number", "null"]},
+        "refined_psnr": {"type": ["number", "null"]},
+        "psnr_drop_db": {"type": ["number", "null"]}
+      }
+    },
+    "gates": {
+      "type": "object",
+      "properties": {
+        "hole_improvement": {"type": "boolean"},
+        "sharpness": {"type": "boolean"},
+        "psnr": {"type": "boolean"},
+        "psnr_enforced": {"type": "boolean"}
+      }
+    },
+    "reports": {"type": "object"},
+    "refined_assets": {"type": "object"}
+  },
+  "additionalProperties": true
+}

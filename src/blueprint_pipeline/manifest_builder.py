@@ -109,6 +109,12 @@ def build_scene_artifacts(
     ensure_dir(seg_root)
 
     room_bounds, room_origin, room_box = _room_from_mesh_bounds(nurec_outputs)
+    nurec_artifacts = nurec_outputs.get("artifacts") if isinstance(nurec_outputs.get("artifacts"), Mapping) else {}
+    hallucinated_region_mask = (
+        str(nurec_artifacts.get("hallucinated_region_mask") or "").strip()
+        if isinstance(nurec_artifacts, Mapping)
+        else ""
+    )
 
     manifest_objects: List[Dict[str, Any]] = [
         {
@@ -237,6 +243,9 @@ def build_scene_artifacts(
                 "capture_id": capture_id,
                 "descriptor_uri": descriptor_uri,
                 "qa_report_uri": descriptor.qa_report_uri,
+            },
+            "visual_refinement": {
+                "hallucinated_region_mask": hallucinated_region_mask,
             },
             "provenance": {
                 "descriptor": descriptor.to_dict(),

@@ -25,7 +25,7 @@ Usage as NUREC_PIPELINE_COMMAND:
 
 Optional Fixer routing:
   --skip-fixer                     # disable stage 5
-  --fixer-mode auto|local|h100    # default auto (H100 first, then local)
+  --fixer-mode auto|local|h100    # default local (auto aliases local)
 """
 
 from __future__ import annotations
@@ -1462,8 +1462,8 @@ def run_fixer_refinement(
     """Run NVIDIA Fixer refinement using local or H100 backend.
 
     Modes:
-      - auto: try H100 stage first, then local, then skip
-      - h100: try only H100 stage
+      - auto: alias for local (H100 auto-routing disabled)
+      - h100: explicit opt-in H100 stage
       - local: try only local stage
     """
     fixed_dir = output_dir / "fixer_output"
@@ -1480,8 +1480,14 @@ def run_fixer_refinement(
     mode_normalized = mode.strip().lower()
 
     if mode_normalized not in {"auto", "h100", "local"}:
-        _log(f"WARNING: Unknown fixer mode '{mode}', falling back to auto")
-        mode_normalized = "auto"
+        _log(f"WARNING: Unknown fixer mode '{mode}', falling back to local")
+        mode_normalized = "local"
+
+    # Keep auto behavior deterministic on single-GPU runners (e.g., RTX 4090):
+    # auto now always uses local Fixer, without attempting H100 staging.
+    if mode_normalized == "auto":
+        _log("Fixer auto mode resolved to local backend (H100 auto-routing disabled)")
+        mode_normalized = "local"
 
     if mode_normalized in {"auto", "h100"}:
         try:
@@ -3914,9 +3920,9 @@ def main() -> int:
     parser.add_argument("--skip-fixer", action="store_true", help="Skip Fixer image refinement")
     parser.add_argument(
         "--fixer-mode",
-        default=os.getenv("FIXER_MODE", "auto"),
+        default=os.getenv("FIXER_MODE", "local"),
         choices=["auto", "local", "h100"],
-        help="Fixer backend mode: auto (h100->local), local, or h100 only",
+        help="Fixer backend mode: local (default), auto (alias local), or explicit h100",
     )
     parser.add_argument(
         "--fixer-rerun",

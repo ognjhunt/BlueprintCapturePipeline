@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprintcapturepipeline.local/schemas/post_stage4_distill_report.schema.json",
+  "title": "PostStage4DistillReport",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "status",
+    "refined_usdz",
+    "refined_ply"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "status": {"type": "string"},
+    "work_dir": {"type": "string"},
+    "overlay_replaced_count": {"type": "integer", "minimum": 0},
+    "overlay_replaced_paths": {"type": "array", "items": {"type": "string"}},
+    "distill_iters": {"type": "integer", "minimum": 1},
+    "max_n_gaussians": {"type": "integer", "minimum": 0},
+    "time_budget_min": {"type": "integer", "minimum": 1},
+    "command": {"type": "string"},
+    "command_return_code": {"type": "integer"},
+    "command_stdout_tail": {"type": "string"},
+    "command_stderr_tail": {"type": "string"},
+    "result_dir": {"type": "string"},
+    "refined_usdz": {"type": "string"},
+    "refined_ply": {"type": "string"},
+    "refined_ingp": {"type": "string"},
+    "refined_usdz_bytes": {"type": "integer", "minimum": 0},
+    "refined_ply_bytes": {"type": "integer", "minimum": 0},
+    "refined_metrics": {"type": "object"},
+    "elapsed_sec": {"type": "number", "minimum": 0}
+  },
+  "additionalProperties": true
+}

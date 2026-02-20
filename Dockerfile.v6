@@ -1,0 +1,284 @@
+# =============================================================================
+# Dockerfile.v6 — Clean single-stage build of the full NuRec pipeline image.
+#
+# Everything baked in: COLMAP (CUDA), SAM3, DA3, 3DGRUT, Fixer, flash-attn,
+# cosmos-predict2, transformer-engine, all weights (DA3, Fixer, SAM3).
+# NO Qwen (saves ~54GB).
+#
+# Build:
+#   docker build -f Dockerfile.v6 \
+#     --build-arg HF_TOKEN=hf_xxx \
+#     --build-arg SAM3_HF_TOKEN=hf_yyy \
+#     -t nijelhunt/blueprint-capture-pipeline:sam3-ready-v6 .
+#
+# Push:
+#   docker push nijelhunt/blueprint-capture-pipeline:sam3-ready-v6
+# =============================================================================
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV HF_HOME=/opt/hf
+ENV THREEDGRUT_DIR=/opt/3dgrut
+ENV FIXER_DIR=/opt/Fixer
+ENV FIXER_WEIGHTS_DIR=/opt/fixer_weights
+ENV DA3_MODEL_PATH=/opt/da3/weights/metric_large
+ENV THREEDGRUT_PYTHON=python3.11
+ENV CROP_CLEANUP_PROVIDER=skip
+ENV PYTHONPATH=/app/scripts
+ENV QWEN_IMAGE_EDIT_MODEL_PATH=/opt/qwen-image-edit
+ENV VISUAL_MESH_POISSON_DEPTH=12
+ENV VISUAL_MESH_POISSON_DEPTH_LARGE=12
+ENV VISUAL_MESH_ENABLED=true
+ENV FIXER_ENABLED=true
+
+ARG COLMAP_CUDA_ARCHS=89
+ENV COLMAP_CUDA_ARCHS=${COLMAP_CUDA_ARCHS}
+
+ARG HF_TOKEN
+ARG SAM3_HF_TOKEN
+
+# ---------------------------------------------------------------------------
+# Layer 1: System packages + Python 3.11 from deadsnakes
+# Includes COLMAP build deps, runtime .so libs, cuDNN 9 for transformer-engine
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-dev python3-pip python3-venv python-is-python3 \
+    ffmpeg git git-lfs tmux openssh-server curl wget less locales sudo \
+    software-properties-common rsync \
+    cmake ninja-build build-essential ccache pkg-config \
+    # COLMAP build dependencies
+    libboost-filesystem-dev libboost-graph-dev \
+    libboost-program-options-dev libboost-system-dev \
+    libcgal-dev libceres-dev libeigen3-dev libflann-dev \
+    libfreeimage-dev libgflags-dev libglew-dev libgoogle-glog-dev \
+    libopenimageio-dev libopencv-dev openimageio-tools libopenexr-dev \
+    libmetis-dev libsqlite3-dev libsuitesparse-dev libatlas-base-dev \
+    libgl1-mesa-dev \
+    # COLMAP runtime shared libraries
+    libceres2 libfreeimage3 libgoogle-glog0v5 libgflags2.2 \
+    libopenimageio2.2 libopengl0 libglfw3 libglew2.2 \
+    libboost-filesystem1.74.0 libboost-program-options1.74.0 \
+    libboost-system1.74.0 libsuitesparse-dev \
+    # cuDNN 9 for transformer-engine (Fixer dep)
+    libcudnn8-dev \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-dev python3.11-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/lib/python3/dist-packages/blinker*
+
+# Best-effort texrecon for textured visual mesh
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends texrecon || \
+     apt-get install -y --no-install-recommends mvs-texturing || true) && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Layer 2: Build COLMAP from source with CUDA
+# ---------------------------------------------------------------------------
+RUN mkdir -p /opt/src && \
+    git clone https://github.com/colmap/colmap.git /opt/src/colmap && \
+    cmake -S /opt/src/colmap -B /opt/src/colmap/build -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DCMAKE_CUDA_ARCHITECTURES="${COLMAP_CUDA_ARCHS}" \
+      -DCUDA_ENABLED=ON \
+      -DGUI_ENABLED=OFF \
+      -DBUILD_TESTING=OFF && \
+    cmake --build /opt/src/colmap/build -j"$(nproc)" && \
+    cmake --install /opt/src/colmap/build && \
+    ldconfig && \
+    rm -rf /opt/src/colmap
+
+# ---------------------------------------------------------------------------
+# Layer 3: libonnxruntime 1.24.1 (COLMAP runtime dep, not on PyPI)
+# ---------------------------------------------------------------------------
+RUN curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz" \
+      -o /tmp/ort.tgz && \
+    tar xzf /tmp/ort.tgz -C /tmp && \
+    cp /tmp/onnxruntime-linux-x64-1.24.1/lib/libonnxruntime.so.1.24.1 /usr/local/lib/ && \
+    ln -sf /usr/local/lib/libonnxruntime.so.1.24.1 /usr/local/lib/libonnxruntime.so.1 && \
+    ln -sf /usr/local/lib/libonnxruntime.so.1.24.1 /usr/local/lib/libonnxruntime.so && \
+    ldconfig && \
+    rm -rf /tmp/ort.tgz /tmp/onnxruntime-linux-x64-1.24.1
+
+# Verify COLMAP works
+RUN colmap help 2>&1 | grep -q "COLMAP" && echo "COLMAP OK"
+
+# ---------------------------------------------------------------------------
+# Layer 4: Python 3.10 base packages — torch, SAM3, DA3, pipeline deps
+# ---------------------------------------------------------------------------
+RUN pip install --no-cache-dir --upgrade pip "setuptools<81" wheel && \
+    pip install --no-cache-dir torch torchvision \
+      --index-url https://download.pytorch.org/whl/cu124 && \
+    pip install --no-cache-dir "huggingface_hub[cli]"
+
+# SAM3 + runtime deps
+RUN git clone https://github.com/facebookresearch/sam3.git /opt/sam3 && \
+    pip install --no-cache-dir -e /opt/sam3 && \
+    pip install --no-cache-dir pycocotools decord
+
+# Depth Anything V3
+RUN git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git /opt/da3 && \
+    pip install --no-cache-dir -e /opt/da3
+
+# Pipeline deps (google-genai, scipy, open3d, trimesh, etc.)
+RUN pip install --no-cache-dir \
+    Pillow \
+    "open3d>=0.18.0" \
+    "google-genai>=1.0.0" \
+    scipy \
+    trimesh \
+    pyyaml \
+    "numpy>=1.24.0" \
+    pybullet \
+    google-cloud-storage
+
+# ---------------------------------------------------------------------------
+# Layer 5: Fixer dependencies — cosmos-predict2, flash-attn, transformer-engine, CLIP
+# ---------------------------------------------------------------------------
+RUN git clone https://github.com/nv-tlabs/Fixer.git /opt/Fixer && \
+    pip install --no-cache-dir "cosmos-predict2==1.0.9" && \
+    pip install --no-cache-dir \
+      "transformer-engine==1.12.0" \
+      "transformer-engine-cu12==1.12.0" && \
+    pip install --no-deps \
+      "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.6.3%2Bcu124torch2.6-cp310-cp310-linux_x86_64.whl" && \
+    pip install --no-cache-dir \
+      "accelerate==1.7.0" \
+      clean-fid \
+      datasets \
+      "facexlib==0.3.0" \
+      fire \
+      imageio-ffmpeg \
+      lpips \
+      natsort \
+      peft \
+      "torchmetrics[image]" \
+      wandb && \
+    pip install --no-cache-dir "git+https://github.com/openai/CLIP.git"
+
+# ---------------------------------------------------------------------------
+# Layer 6: Python 3.11 + 3DGRUT
+# ---------------------------------------------------------------------------
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 && \
+    python3.11 -m pip install --no-cache-dir "setuptools<81" && \
+    python3.11 -m pip install --no-cache-dir \
+        torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
+    python3.11 -m pip install --no-cache-dir \
+        hydra-core omegaconf fire wandb rich addict plyfile torchmetrics \
+        tensorboard "slangtorch==1.3.4" scikit-learn kornia imageio einops msgpack \
+        dataclasses_json piexif \
+        "opencv-python<4.12.0" \
+        usd-core \
+        "viser==1.0.0" \
+        polyscope && \
+    # fused-ssim — CUDA extension, build from source
+    git clone https://github.com/rahul-goel/fused-ssim /tmp/fused-ssim && \
+    cd /tmp/fused-ssim && git checkout 1272e21a282342e89537159e4bad508b19b34157 && \
+    PATH=/usr/local/cuda/bin:$PATH python3.11 setup.py install && \
+    rm -rf /tmp/fused-ssim && \
+    # 3DGRUT
+    git clone https://github.com/nv-tlabs/3DGRUT.git /opt/3dgrut && \
+    cd /opt/3dgrut && git submodule update --init --recursive && \
+    python3.11 -m pip install --no-cache-dir -e /opt/3dgrut
+
+# slangc symlink for 3DGRUT kernel compilation
+RUN ln -sf /usr/local/lib/python3.11/dist-packages/slangtorch/bin/slangc /usr/local/bin/slangc
+
+# Verify 3DGRUT
+RUN python3.11 -c "import hydra; import threedgrut; print('3DGRUT OK')"
+
+# ---------------------------------------------------------------------------
+# Layer 7: BPE vocab file for SAM3 CLIP tokenizer
+# ---------------------------------------------------------------------------
+RUN mkdir -p /usr/local/lib/python3.10/dist-packages/assets && \
+    curl -fsSL "https://openaipublic.blob.core.windows.net/clip/bpe_simple_vocab_16e6.txt.gz" \
+      -o /usr/local/lib/python3.10/dist-packages/assets/bpe_simple_vocab_16e6.txt.gz
+
+# ---------------------------------------------------------------------------
+# Layer 8: DA3 weights (~1GB)
+# ---------------------------------------------------------------------------
+RUN mkdir -p /opt/da3/weights/metric_large && \
+    HF_HOME=/opt/hf huggingface-cli download \
+      depth-anything/DA3Metric-Large \
+      --local-dir /opt/da3/weights/metric_large
+
+# ---------------------------------------------------------------------------
+# Layer 9: Fixer weights (~5.2GB)
+# ---------------------------------------------------------------------------
+RUN mkdir -p /opt/fixer_weights && \
+    if [ -n "$HF_TOKEN" ]; then \
+      HF_HOME=/opt/hf huggingface-cli download \
+        nvidia/Fixer \
+        --local-dir /opt/fixer_weights \
+        --token "$HF_TOKEN"; \
+    else \
+      echo "WARNING: HF_TOKEN not set — Fixer weights not downloaded"; \
+    fi && \
+    mkdir -p /work/models && \
+    ln -sf /opt/fixer_weights/base /work/models/base && \
+    ln -sf /opt/fixer_weights/pretrained /work/models/pretrained
+
+# ---------------------------------------------------------------------------
+# Layer 10: SAM3 weights (~6.5GB) — gated repo
+# ---------------------------------------------------------------------------
+RUN mkdir -p /opt/sam3_weights && \
+    if [ -n "$SAM3_HF_TOKEN" ]; then \
+      HF_HOME=/opt/hf huggingface-cli download \
+        facebook/sam3 \
+        --local-dir /opt/sam3_weights \
+        --token "$SAM3_HF_TOKEN"; \
+    else \
+      echo "WARNING: SAM3_HF_TOKEN not set — SAM3 weights not downloaded"; \
+    fi
+
+# ---------------------------------------------------------------------------
+# Layer 11: Application code
+# ---------------------------------------------------------------------------
+WORKDIR /app
+COPY . /app
+
+# Qwen placeholder (not baked in, optional external mount)
+RUN mkdir -p /opt/qwen-image-edit
+
+# Clone BlueprintPipeline subdirectories
+ARG BLUEPRINTPIPELINE_GIT_URL="https://github.com/ognjhunt/BlueprintPipeline.git"
+ARG BLUEPRINTPIPELINE_GIT_REF="main"
+RUN git clone --depth 1 --branch "$BLUEPRINTPIPELINE_GIT_REF" \
+      --filter=blob:none --sparse \
+      "$BLUEPRINTPIPELINE_GIT_URL" /opt/BlueprintPipeline && \
+    cd /opt/BlueprintPipeline && \
+    git sparse-checkout set \
+      blueprint_sim \
+      interactive-job \
+      monitoring \
+      simready-job \
+      tools \
+      usd-assembly-job && \
+    rm -rf .git && \
+    if [ -f /opt/BlueprintPipeline/interactive-job/requirements.txt ]; then \
+      python3 -m pip install --no-cache-dir -r /opt/BlueprintPipeline/interactive-job/requirements.txt 2>/dev/null || true; \
+    fi
+
+ENV BLUEPRINTPIPELINE_ROOT=/opt/BlueprintPipeline
+ENV SWAP_POLICY_CONFIG_PATH=/app/configs/swap_policy.yaml
+ENV GCS_ROOT=/mnt/gcs
+
+# Prevent any runtime downloads
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+# SSH setup for all providers
+RUN mkdir -p /var/run/sshd && \
+    ssh-keygen -A && \
+    sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    echo 'root:root' | chpasswd
+
+EXPOSE 22
+
+ENTRYPOINT ["/bin/bash", "-c", "/usr/sbin/sshd && sleep infinity"]

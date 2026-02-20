@@ -32,6 +32,7 @@ N_ITERATIONS="${N_ITERATIONS:-9000}"
 MAX_N_GAUSSIANS="${MAX_N_GAUSSIANS:-}"
 SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
 SKIP_FIXER="${SKIP_FIXER:-false}"
+FIXER_MODE="${FIXER_MODE:-local}"
 NUREC_RESUME="${NUREC_RESUME:-false}"
 NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
 FIXER_RERUN="${FIXER_RERUN:-false}"
@@ -211,6 +212,7 @@ log "Environment: $ENVIRONMENT"
 log "Completion mode: $COMPLETION_MODE"
 log "NuRec resume: $NUREC_RESUME"
 log "Skip fixer: $SKIP_FIXER"
+log "Fixer mode: $FIXER_MODE"
 log "Fixer rerun: $FIXER_RERUN"
 log "Fixer required: $FIXER_REQUIRED"
 log "Post-Stage-4 refine: $POST_STAGE4_REFINE (model=$POST_STAGE4_REFINE_MODEL, max_pseudoviews=$POST_STAGE4_MAX_PSEUDOVIEWS, distill_iters=$POST_STAGE4_DISTILL_ITERS, budget_min=$POST_STAGE4_TIME_BUDGET_MIN)"
@@ -277,6 +279,7 @@ SPEC
   fi
 
   export NUREC_QUALITY_PROFILE VISUAL_MESH_METHOD NUREC_VISUAL_PRIMARY
+  export FIXER_MODE
   export COLMAP_MIN_REGISTERED_RATIO COLMAP_RETRY_MIN_REGISTERED_RATIO
   export VISUAL_MESH_TEXTURE_SIZE VISUAL_MESH_TEXTURE_MAX_ATLASES
   export SAM3_PREFLIGHT_STRICT SAM3_TRACKING_MODE
@@ -306,6 +309,7 @@ SPEC
     --blur-filter-min-frames "$BLUR_FILTER_MIN_FRAMES" \
     --environment "$ENVIRONMENT" \
     --sam3-n-frames "$SAM3_N_FRAMES" \
+    --fixer-mode "$FIXER_MODE" \
     --post-stage4-refine "$POST_STAGE4_REFINE" \
     --post-stage4-refine-model "$POST_STAGE4_REFINE_MODEL" \
     --post-stage4-max-pseudoviews "$POST_STAGE4_MAX_PSEUDOVIEWS" \

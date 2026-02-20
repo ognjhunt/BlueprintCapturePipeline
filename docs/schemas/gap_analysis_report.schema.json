@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprintcapturepipeline.local/schemas/gap_analysis_report.schema.json",
+  "title": "GapAnalysisReport",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "global_hole_pixel_ratio",
+    "candidate_view_count",
+    "candidate_views_path"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "renders_dir": {"type": "string"},
+    "input_render_count": {"type": "integer", "minimum": 0},
+    "global_hole_pixel_ratio": {"type": "number", "minimum": 0},
+    "total_hole_pixels": {"type": "integer", "minimum": 0},
+    "total_pixels": {"type": "integer", "minimum": 0},
+    "total_cluster_count": {"type": "integer", "minimum": 0},
+    "candidate_view_count": {"type": "integer", "minimum": 0},
+    "max_candidate_views": {"type": "integer", "minimum": 1},
+    "min_parallax_deg": {"type": "number", "minimum": 0},
+    "candidate_views_path": {"type": "string"},
+    "mask_preview_dir": {"type": "string"},
+    "top_hole_frames": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["image", "hole_ratio"],
+        "properties": {
+          "image": {"type": "string"},
+          "hole_ratio": {"type": "number", "minimum": 0},
+          "cluster_count": {"type": "integer", "minimum": 0},
+          "sharpness": {"type": "number", "minimum": 0}
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

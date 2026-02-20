@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "pyyaml>=6.0",
     "numpy>=1.24.0",
+    "Pillow>=10.0.0",
     "trimesh>=4.4.0",
     "open3d>=0.18.0",
     "pybullet>=3.2.6",
