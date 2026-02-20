@@ -57,6 +57,7 @@ THREEDGRUT_PYTHON = os.getenv("THREEDGRUT_PYTHON", "python3.11")
 FIXER_DIR = os.getenv("FIXER_DIR", "/opt/Fixer")
 FIXER_WEIGHTS_DIR = os.getenv("FIXER_WEIGHTS_DIR", "/opt/fixer_weights")
 DEFAULT_FIXER_H100_SCRIPT = os.getenv("FIXER_H100_SCRIPT", "/app/scripts/fixer_h100_stage.sh")
+STAGE14_RESUME_METADATA = ".stage14_resume_metadata.json"
 
 
 def _log(msg: str) -> None:
@@ -166,6 +167,19 @@ def extract_frames(video_path: Path, frames_dir: Path,
                    max_frames: int = 300, target_fps: float = 5) -> int:
     """Extract frames from video at reduced FPS for SfM."""
     frames_dir.mkdir(parents=True, exist_ok=True)
+    # Avoid stale frame tails from prior runs (e.g., previous higher frame count).
+    for stale in frames_dir.glob("frame_*.jpg"):
+        try:
+            stale.unlink()
+        except Exception:
+            pass
+    for report_name in (".blurdetect_report.txt", ".signalstats_report.txt"):
+        report_path = frames_dir / report_name
+        if report_path.exists():
+            try:
+                report_path.unlink()
+            except Exception:
+                pass
     _log(f"Extracting frames from {video_path} at {target_fps:.3f} fps (max {max_frames})...")
     _run([
         "ffmpeg", "-i", str(video_path),
@@ -179,7 +193,7 @@ def extract_frames(video_path: Path, frames_dir: Path,
     return count
 
 
-def _frame_blur_scores(frames_dir: Path) -> list[tuple[Path, float]]:
+def _frame_blur_scores(frames_dir: Path, *, fail_on_error: bool = False) -> list[tuple[Path, float]]:
     """Compute per-frame blur scores using ffmpeg blurdetect (higher is blurrier)."""
     frames = sorted(frames_dir.glob("frame_*.jpg"))
     if not frames:
@@ -203,10 +217,20 @@ def _frame_blur_scores(frames_dir: Path) -> list[tuple[Path, float]]:
             "-",
         ])
     except Exception as exc:
+        if fail_on_error:
+            raise RuntimeError(
+                "blurdetect failed while blur filtering is required; "
+                "install an ffmpeg build with blurdetect or disable strict blur filter"
+            ) from exc
         _log(f"WARNING: blurdetect failed ({exc}); skipping blur filtering")
         return []
 
     if not blur_report.is_file() or blur_report.stat().st_size <= 0:
+        if fail_on_error:
+            raise RuntimeError(
+                "blurdetect produced no report while blur filtering is required; "
+                "cannot continue in strict mode"
+            )
         return []
     text = blur_report.read_text(encoding="utf-8", errors="ignore")
     frame_to_score: dict[int, float] = {}
@@ -237,17 +261,57 @@ def _frame_blur_scores(frames_dir: Path) -> list[tuple[Path, float]]:
     return out
 
 
-def _apply_blur_frame_filter(frames_dir: Path, *, keep_ratio: float, min_keep: int) -> int:
+def _apply_blur_frame_filter(
+    frames_dir: Path,
+    *,
+    keep_ratio: float,
+    min_keep: int,
+    fail_on_error: bool = False,
+    status_out: Dict[str, Any] | None = None,
+) -> int:
     """Keep the sharpest subset of extracted frames in-place."""
-    entries = _frame_blur_scores(frames_dir)
+    if status_out is not None:
+        status_out.clear()
+    entries = _frame_blur_scores(frames_dir, fail_on_error=fail_on_error)
     frames = sorted(frames_dir.glob("frame_*.jpg"))
     if not frames:
+        if status_out is not None:
+            status_out.update({
+                "status": "no_frames",
+                "input_frames": 0,
+                "scores_count": 0,
+            })
         return 0
     if not entries:
+        if status_out is not None:
+            status_out.update({
+                "status": "unavailable",
+                "input_frames": int(len(frames)),
+                "scores_count": 0,
+                "kept_frames": int(len(frames)),
+                "dropped_frames": 0,
+                "keep_ratio": float(keep_ratio),
+                "min_keep": int(min_keep),
+            })
+        if fail_on_error:
+            raise RuntimeError(
+                "blur filtering is required but blur scores are unavailable; "
+                "refusing to continue with unfiltered frames"
+            )
         return len(frames)
 
     ratio = max(0.0, min(1.0, float(keep_ratio)))
     if ratio <= 0.0:
+        if status_out is not None:
+            status_out.update({
+                "status": "disabled",
+                "input_frames": int(len(frames)),
+                "scores_count": int(len(entries)),
+                "kept_frames": int(len(frames)),
+                "dropped_frames": 0,
+                "keep_ratio": float(ratio),
+                "min_keep": int(min_keep),
+            })
         return len(frames)
     keep_target = max(int(min_keep), int(round(len(entries) * ratio)))
     keep_target = max(1, min(len(entries), keep_target))
@@ -270,6 +334,16 @@ def _apply_blur_frame_filter(frames_dir: Path, *, keep_ratio: float, min_keep: i
         f"Blur filter kept {remaining}/{len(frames)} frames "
         f"(dropped={dropped}, keep_ratio={ratio:.2f})"
     )
+    if status_out is not None:
+        status_out.update({
+            "status": "ok",
+            "input_frames": int(len(frames)),
+            "scores_count": int(len(entries)),
+            "kept_frames": int(remaining),
+            "dropped_frames": int(dropped),
+            "keep_ratio": float(ratio),
+            "min_keep": int(min_keep),
+        })
     return remaining
 
 
@@ -469,6 +543,10 @@ def run_colmap_sfm(
     """Run COLMAP Structure-from-Motion pipeline."""
     db_path = workspace / "database.db"
     sparse_dir = workspace / "sparse"
+    if db_path.exists():
+        db_path.unlink()
+    if sparse_dir.exists():
+        shutil.rmtree(sparse_dir)
     sparse_dir.mkdir(parents=True, exist_ok=True)
     sift_gpu_flag = "1" if sift_use_gpu else "0"
     feature_gpu_option = (
@@ -895,6 +973,8 @@ def run_colmap_undistort(frames_dir: Path, sparse_dir: Path,
                          workspace: Path) -> Path:
     """Undistort images to convert camera model to PINHOLE for 3DGRUT."""
     undistorted_dir = workspace / "undistorted"
+    if undistorted_dir.exists():
+        shutil.rmtree(undistorted_dir)
     undistorted_dir.mkdir(parents=True, exist_ok=True)
 
     _log("Running COLMAP image undistortion (SIMPLE_RADIAL → PINHOLE)...")
@@ -937,6 +1017,8 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
         raise FileNotFoundError(f"3DGRUT not found at {threedgrut_dir}")
 
     grut_out = output_dir / "3dgrut"
+    if grut_out.exists():
+        shutil.rmtree(grut_out)
     grut_out.mkdir(parents=True, exist_ok=True)
 
     _log(f"Starting 3DGRUT training ({n_iterations} iterations)...")
@@ -956,7 +1038,11 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
     ], cwd=str(threedgrut_dir))
 
     # Find the output directory (3DGRUT creates a nested structure)
-    experiment_dirs = list(grut_out.rglob("export_last.usdz"))
+    experiment_dirs = sorted(
+        grut_out.rglob("export_last.usdz"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if not experiment_dirs:
         raise RuntimeError("3DGRUT did not produce export_last.usdz")
 
@@ -2881,6 +2967,160 @@ def _load_json_dict(path: Path) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _video_signature(video_path: Path) -> Dict[str, Any]:
+    signature: Dict[str, Any] = {
+        "path": str(video_path),
+    }
+    try:
+        stat = video_path.stat()
+        signature["size_bytes"] = int(stat.st_size)
+        signature["mtime_ns"] = int(stat.st_mtime_ns)
+    except Exception:
+        pass
+    return signature
+
+
+def _float_match(left: Any, right: Any, *, atol: float = 1e-6) -> bool:
+    try:
+        return abs(float(left) - float(right)) <= float(atol)
+    except Exception:
+        return False
+
+
+def _load_stage14_resume_metadata(output_dir: Path) -> Dict[str, Any]:
+    return _load_json_dict(output_dir / STAGE14_RESUME_METADATA)
+
+
+def _write_stage14_resume_metadata(output_dir: Path, payload: Mapping[str, Any]) -> None:
+    metadata_path = output_dir / STAGE14_RESUME_METADATA
+    metadata_path.write_text(json.dumps(dict(payload), indent=2), encoding="utf-8")
+
+
+def _validate_stage14_resume_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    profile: str,
+    video_signature: Mapping[str, Any],
+    requested_max_frames: int,
+    effective_max_frames: int,
+    requested_extract_fps: int,
+    effective_extract_fps: float,
+    blur_filter_keep_ratio: float,
+    blur_filter_min_frames: int,
+    n_iterations: int,
+) -> list[str]:
+    reasons: list[str] = []
+    if str(metadata.get("schema_version") or "") != "v1":
+        reasons.append("resume_metadata_schema_mismatch")
+    if str(metadata.get("quality_profile") or "") != str(profile):
+        reasons.append("quality_profile_changed")
+
+    stage1 = metadata.get("stage1") if isinstance(metadata.get("stage1"), Mapping) else {}
+    stage2 = metadata.get("stage2") if isinstance(metadata.get("stage2"), Mapping) else {}
+    stage4 = metadata.get("stage4") if isinstance(metadata.get("stage4"), Mapping) else {}
+    video_meta = metadata.get("video") if isinstance(metadata.get("video"), Mapping) else {}
+    blur_meta = stage1.get("blur_filter") if isinstance(stage1.get("blur_filter"), Mapping) else {}
+
+    expected_video_size = video_signature.get("size_bytes")
+    actual_video_size = video_meta.get("size_bytes")
+    if expected_video_size is not None and actual_video_size is not None:
+        if int(expected_video_size) != int(actual_video_size):
+            reasons.append("video_size_changed")
+
+    expected_video_mtime = video_signature.get("mtime_ns")
+    actual_video_mtime = video_meta.get("mtime_ns")
+    if expected_video_mtime is not None and actual_video_mtime is not None:
+        if int(expected_video_mtime) != int(actual_video_mtime):
+            reasons.append("video_mtime_changed")
+
+    if int(stage1.get("requested_max_frames", -1)) != int(requested_max_frames):
+        reasons.append("requested_max_frames_changed")
+    if int(stage1.get("effective_max_frames", -1)) != int(effective_max_frames):
+        reasons.append("effective_max_frames_changed")
+    if int(stage1.get("requested_extract_fps", -1)) != int(requested_extract_fps):
+        reasons.append("requested_extract_fps_changed")
+    if not _float_match(stage1.get("effective_extract_fps"), effective_extract_fps, atol=1e-4):
+        reasons.append("effective_extract_fps_changed")
+    if not _float_match(blur_meta.get("keep_ratio"), blur_filter_keep_ratio, atol=1e-6):
+        reasons.append("blur_filter_keep_ratio_changed")
+    if int(blur_meta.get("min_frames", -1)) != int(blur_filter_min_frames):
+        reasons.append("blur_filter_min_frames_changed")
+    if float(blur_filter_keep_ratio) < 1.0:
+        blur_status = str(blur_meta.get("status") or "")
+        if blur_status != "ok":
+            reasons.append(f"prior_blur_filter_not_ok:{blur_status or 'missing'}")
+
+    if int(stage4.get("n_iterations", -1)) != int(n_iterations):
+        reasons.append("n_iterations_changed")
+
+    # Sanity-check cached workspace consistency (frames/sparse) against metadata.
+    cached_frame_count = int(_count_extracted_frames(Path(str(metadata.get("frames_dir") or "")))) \
+        if str(metadata.get("frames_dir") or "").strip() else -1
+    if cached_frame_count >= 0 and int(stage1.get("frame_count", -1)) >= 0:
+        if cached_frame_count != int(stage1.get("frame_count")):
+            reasons.append("cached_frame_count_mismatch")
+    cached_registered = int(_read_registered_image_count(Path(str(metadata.get("sparse_model_dir") or "")))) \
+        if str(metadata.get("sparse_model_dir") or "").strip() else -1
+    if cached_registered >= 0 and int(stage2.get("registered_images", -1)) >= 0:
+        if cached_registered != int(stage2.get("registered_images")):
+            reasons.append("cached_registered_images_mismatch")
+    return reasons
+
+
+def _resolve_stage14_resume(
+    *,
+    resume_requested: bool,
+    quality_guardrails: bool,
+    output_dir: Path,
+    workspace: Path,
+    profile: str,
+    video_signature: Mapping[str, Any],
+    requested_max_frames: int,
+    effective_max_frames: int,
+    requested_extract_fps: int,
+    effective_extract_fps: float,
+    blur_filter_keep_ratio: float,
+    blur_filter_min_frames: int,
+    n_iterations: int,
+) -> tuple[bool, Dict[str, Any] | None, list[str]]:
+    if not resume_requested:
+        return False, None, ["resume_not_requested"]
+
+    existing_grut_result = _load_existing_grut_result(output_dir)
+    if existing_grut_result is None:
+        return False, None, ["missing_stage4_exports"]
+
+    if not quality_guardrails:
+        return True, existing_grut_result, ["guardrails_disabled"]
+
+    metadata = _load_stage14_resume_metadata(output_dir)
+    if not metadata:
+        return False, None, ["missing_stage14_resume_metadata"]
+
+    metadata = dict(metadata)
+    metadata["frames_dir"] = str(workspace / "frames")
+    sparse_dir, _ = _select_best_reconstruction(workspace / "sparse")
+    if sparse_dir is None:
+        return False, None, ["cached_sparse_model_missing"]
+    metadata["sparse_model_dir"] = str(sparse_dir) if sparse_dir is not None else ""
+
+    reasons = _validate_stage14_resume_metadata(
+        metadata,
+        profile=profile,
+        video_signature=video_signature,
+        requested_max_frames=requested_max_frames,
+        effective_max_frames=effective_max_frames,
+        requested_extract_fps=requested_extract_fps,
+        effective_extract_fps=effective_extract_fps,
+        blur_filter_keep_ratio=blur_filter_keep_ratio,
+        blur_filter_min_frames=blur_filter_min_frames,
+        n_iterations=n_iterations,
+    )
+    if reasons:
+        return False, None, reasons
+    return True, existing_grut_result, ["metadata_match"]
+
+
 def _load_existing_visual_report(output_dir: Path) -> Dict[str, Any] | None:
     report_candidates = [
         output_dir / "visual_mesh_report.json",
@@ -3269,6 +3509,18 @@ def main() -> int:
         default=_env_int("BLUR_FILTER_MIN_FRAMES", int(profile_defaults["blur_filter_min_frames"])),
         help="Minimum number of frames to keep when blur filtering is enabled",
     )
+    parser.add_argument(
+        "--blur-filter-required",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("BLUR_FILTER_REQUIRED", profile == "quality_first"),
+        help="Fail Stage 1 when blur filtering is enabled but blur scores are unavailable",
+    )
+    parser.add_argument(
+        "--quality-guardrails",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("NUREC_QUALITY_GUARDRAILS", profile == "quality_first"),
+        help="Strictly validate resume cache inputs/settings; recompute Stage 1-4 on mismatch",
+    )
     parser.add_argument("--skip-fixer", action="store_true", help="Skip Fixer image refinement")
     parser.add_argument(
         "--fixer-mode",
@@ -3359,9 +3611,7 @@ def main() -> int:
     storage_root = Path(args.storage_root)
     workspace = output_dir / "_colmap_workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    existing_grut_result: Dict[str, Any] | None = (
-        _load_existing_grut_result(output_dir) if args.resume else None
-    )
+    existing_grut_result: Dict[str, Any] | None = None
 
     # Load job spec for raw_prefix if not provided
     raw_prefix = args.raw_prefix
@@ -3369,14 +3619,51 @@ def main() -> int:
         spec = json.loads(Path(args.job_spec).read_text(encoding="utf-8"))
         raw_prefix = spec.get("capture", {}).get("raw_prefix_uri", "")
 
+    video_path = find_video(raw_prefix, storage_root)
+    video_duration_sec = _probe_video_duration_seconds(video_path)
+    effective_max_frames, effective_max_frames_reason = _resolve_effective_max_frames(
+        video_duration_sec,
+        int(args.max_frames),
+    )
+    effective_extract_fps, effective_extract_fps_reason = _resolve_effective_extract_fps(
+        video_duration_sec,
+        int(args.extract_fps),
+        int(effective_max_frames),
+    )
+    video_signature = _video_signature(video_path)
+    effective_resume, existing_grut_result, resume_reasons = _resolve_stage14_resume(
+        resume_requested=bool(args.resume),
+        quality_guardrails=bool(args.quality_guardrails),
+        output_dir=output_dir,
+        workspace=workspace,
+        profile=profile,
+        video_signature=video_signature,
+        requested_max_frames=int(args.max_frames),
+        effective_max_frames=int(effective_max_frames),
+        requested_extract_fps=int(args.extract_fps),
+        effective_extract_fps=float(effective_extract_fps),
+        blur_filter_keep_ratio=float(args.blur_filter_keep_ratio),
+        blur_filter_min_frames=int(args.blur_filter_min_frames),
+        n_iterations=int(args.n_iterations),
+    )
+
+    _log(f"Quality profile: {profile}")
+    _log(
+        "Quality guardrails: "
+        f"{'enabled' if args.quality_guardrails else 'disabled'} "
+        f"(resume_requested={bool(args.resume)} effective_resume={effective_resume})"
+    )
+    if args.resume:
+        _log(f"Resume decision: {'accepted' if effective_resume else 'recompute Stage 1-4'}")
+        if resume_reasons:
+            _log(f"  Resume reason(s): {', '.join(resume_reasons)}")
+
     if args.dependency_preflight:
         _log("Running dependency preflight checks...")
         check_fused_ssim = args.preflight_check_fused_ssim and existing_grut_result is None
         if args.preflight_check_fused_ssim and existing_grut_result is not None:
             _log("Preflight: skipping fused_ssim ABI check (Stage 4 outputs already present for resume)")
         _run_dependency_preflight(check_fused_ssim=check_fused_ssim)
-
-    _log(f"Quality profile: {profile}")
 
     sam3_preflight_path = output_dir / "sam3_preflight_report.json"
     sam3_skip_reason = ""
@@ -3408,17 +3695,6 @@ def main() -> int:
     _log("=" * 60)
     _log("STAGE 1: Frame Extraction")
     _log("=" * 60)
-    video_path = find_video(raw_prefix, storage_root)
-    video_duration_sec = _probe_video_duration_seconds(video_path)
-    effective_max_frames, effective_max_frames_reason = _resolve_effective_max_frames(
-        video_duration_sec,
-        int(args.max_frames),
-    )
-    effective_extract_fps, effective_extract_fps_reason = _resolve_effective_extract_fps(
-        video_duration_sec,
-        int(args.extract_fps),
-        int(effective_max_frames),
-    )
     if video_duration_sec is not None:
         _log(f"Video duration: {video_duration_sec:.1f}s")
     _log(f"Frame budget: requested={args.max_frames}, effective={effective_max_frames}")
@@ -3426,7 +3702,7 @@ def main() -> int:
     _log(f"  {effective_max_frames_reason}")
     _log(f"  {effective_extract_fps_reason}")
     frames_dir = workspace / "frames"
-    if args.resume:
+    if effective_resume:
         existing_frame_count = _count_extracted_frames(frames_dir)
         if existing_frame_count > 0:
             frame_count = existing_frame_count
@@ -3449,14 +3725,25 @@ def main() -> int:
     if frame_count < 10:
         _log(f"WARNING: Only {frame_count} frames extracted. Reconstruction may fail.")
 
+    blur_filter_status: Dict[str, Any] = {
+        "enabled": bool(float(args.blur_filter_keep_ratio) < 1.0),
+        "required": bool(args.blur_filter_required and float(args.blur_filter_keep_ratio) < 1.0),
+        "status": "disabled",
+        "keep_ratio": float(args.blur_filter_keep_ratio),
+        "min_frames": int(args.blur_filter_min_frames),
+    }
     if args.blur_filter_keep_ratio < 1.0:
         filtered_count = _apply_blur_frame_filter(
             frames_dir,
             keep_ratio=args.blur_filter_keep_ratio,
             min_keep=args.blur_filter_min_frames,
+            fail_on_error=bool(args.blur_filter_required),
+            status_out=blur_filter_status,
         )
         if filtered_count > 0:
             frame_count = filtered_count
+    else:
+        blur_filter_status["status"] = "disabled"
 
     capture_quality_report = build_capture_quality_report(frames_dir)
     capture_quality_report["frame_extraction"] = {
@@ -3467,6 +3754,7 @@ def main() -> int:
         "effective_extract_fps": float(effective_extract_fps),
         "adaptive_max_frames_reason": effective_max_frames_reason,
         "adaptive_extract_fps_reason": effective_extract_fps_reason,
+        "blur_filter": dict(blur_filter_status),
     }
     capture_quality_path = output_dir / "capture_quality_report.json"
     capture_quality_path.write_text(json.dumps(capture_quality_report, indent=2), encoding="utf-8")
@@ -3499,7 +3787,7 @@ def main() -> int:
     sparse_dir: Path
     registered_images = 0
     sfm_run_report: Dict[str, Any] = {}
-    if args.resume:
+    if effective_resume:
         existing_sparse_dir, existing_sparse_count = _select_best_reconstruction(sparse_root, emit_logs=True)
         if existing_sparse_dir is not None and existing_sparse_count > 0:
             sparse_dir = existing_sparse_dir
@@ -3645,7 +3933,7 @@ def main() -> int:
     has_undistorted_images = undistorted_images_dir.is_dir() and any(
         p.is_file() for p in undistorted_images_dir.rglob("*")
     )
-    if args.resume and _has_colmap_model(undistorted_model_dir) and has_undistorted_images:
+    if effective_resume and _has_colmap_model(undistorted_model_dir) and has_undistorted_images:
         _log("Resuming Stage 3: using existing undistorted COLMAP workspace")
     else:
         undistorted_dir = run_colmap_undistort(frames_dir, sparse_dir, workspace)
@@ -3685,6 +3973,35 @@ def main() -> int:
         if ingp_src.exists() and ingp_src != ingp_dst:
             shutil.copy2(str(ingp_src), str(ingp_dst))
 
+    _write_stage14_resume_metadata(
+        output_dir,
+        {
+            "schema_version": "v1",
+            "generated_at": _utc_now_iso(),
+            "quality_profile": str(profile),
+            "video": dict(video_signature),
+            "stage1": {
+                "frame_count": int(frame_count),
+                "requested_max_frames": int(args.max_frames),
+                "effective_max_frames": int(effective_max_frames),
+                "requested_extract_fps": int(args.extract_fps),
+                "effective_extract_fps": float(effective_extract_fps),
+                "blur_filter": dict(blur_filter_status),
+            },
+            "stage2": {
+                "registered_images": int(registered_images),
+                "registered_ratio": float(registered_ratio),
+                "matcher_mode_effective": str(effective_matcher_mode),
+            },
+            "stage4": {
+                "n_iterations": int(args.n_iterations),
+                "result_dir": str(grut_result.get("result_dir") or ""),
+                "export_usdz_bytes": int(usdz_dst.stat().st_size) if usdz_dst.exists() else 0,
+                "export_ply_bytes": int(ply_dst.stat().st_size) if ply_dst.exists() else 0,
+            },
+        },
+    )
+
     # -----------------------------------------------------------------------
     # Stage 5: Fixer Image Refinement (optional)
     # -----------------------------------------------------------------------
@@ -3698,9 +4015,9 @@ def main() -> int:
         completion_marker = _load_fixer_completion_marker(fixed_dir)
         has_valid_fixer_resume = bool(completion_marker) and _has_image_outputs(fixed_dir)
         should_run_fixer = True
-        if args.resume and args.fixer_rerun:
+        if effective_resume and args.fixer_rerun:
             _log("Resume override: forcing Stage 5 rerun (--fixer-rerun)")
-        elif args.resume and has_valid_fixer_resume:
+        elif effective_resume and has_valid_fixer_resume:
             _log(
                 "Resuming Stage 5: using existing Fixer outputs "
                 f"(backend={completion_marker.get('backend')}, "
@@ -3708,7 +4025,7 @@ def main() -> int:
             )
             fixer_refined_images_dir = fixed_dir
             should_run_fixer = False
-        elif args.resume and _has_image_outputs(fixed_dir):
+        elif effective_resume and _has_image_outputs(fixed_dir):
             _log(
                 "Resume check: found Fixer images without completion marker; "
                 "rerunning Stage 5 to avoid partial outputs"
@@ -3757,7 +4074,7 @@ def main() -> int:
     dense_result: Dict[str, Any] | None = None
     reused_dense_stage6 = False
     if (
-        args.resume
+        effective_resume
         and _is_nonempty_file(mesh_ply)
         and _is_nonempty_file(mesh_method_path)
         and _is_nonempty_file(fused_ply_resume)
@@ -3790,7 +4107,7 @@ def main() -> int:
     mesh_method = str(dense_result.get("mesh_method") or "")
     fused_ply = Path(str(dense_result.get("fused_ply") or ""))
     collision_report_path = output_dir / "collision_mesh_report.json"
-    if args.resume and reused_dense_stage6 and _is_nonempty_file(collision_report_path):
+    if effective_resume and reused_dense_stage6 and _is_nonempty_file(collision_report_path):
         collision_report = _load_json_dict(collision_report_path)
         if collision_report:
             _log("Resuming Stage 6: using existing collision postprocess report")
@@ -3833,7 +4150,7 @@ def main() -> int:
         _log("=" * 60)
         _log("STAGE 7: Visual Mesh Exports")
         _log("=" * 60)
-        if args.resume:
+        if effective_resume:
             existing_report = _load_existing_visual_report(output_dir)
             if existing_report is not None:
                 _log("Resuming Stage 7: using existing visual mesh artifacts")
@@ -3864,7 +4181,7 @@ def main() -> int:
             requested_n_frames=args.sam3_n_frames,
             requested_min_frame_detections=args.sam3_min_frame_detections,
             gaussian_ply=ply_dst,
-            resume=args.resume,
+            resume=effective_resume,
         )
 
     object_index_path: Path | None = None
@@ -3904,7 +4221,7 @@ def main() -> int:
     _log("STAGE 8: Occupancy Grid")
     _log("=" * 60)
     occupancy_bin = output_dir / "occupancy.bin"
-    if args.resume and _is_nonempty_file(occupancy_bin):
+    if effective_resume and _is_nonempty_file(occupancy_bin):
         _log("Resuming Stage 8: using existing occupancy grid")
     else:
         generate_occupancy(ply_dst, occupancy_bin)

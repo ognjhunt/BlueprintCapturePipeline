@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -33,6 +34,168 @@ def test_quality_profile_defaults_set_blur_filter_ratios() -> None:
     assert quality_first["blur_filter_min_frames"] == 120
     assert balanced["blur_filter_min_frames"] == 120
     assert fast["blur_filter_min_frames"] == 120
+
+
+def test_apply_blur_filter_required_raises_when_scores_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(1, 4):
+        (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+
+    monkeypatch.setattr(
+        module,
+        "_frame_blur_scores",
+        lambda _frames_dir, fail_on_error=False: [],  # type: ignore[no-untyped-def]
+    )
+
+    with pytest.raises(RuntimeError, match="blur filtering is required"):
+        module._apply_blur_frame_filter(
+            frames_dir,
+            keep_ratio=0.85,
+            min_keep=2,
+            fail_on_error=True,
+        )
+
+
+def test_resolve_stage14_resume_rejects_missing_metadata(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    output_dir = tmp_path / "out"
+    workspace = output_dir / "_colmap_workspace"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    (output_dir / "export_last.usdz").write_bytes(b"usdz")
+    (output_dir / "export_last.ply").write_bytes(b"ply")
+
+    ok, existing, reasons = module._resolve_stage14_resume(
+        resume_requested=True,
+        quality_guardrails=True,
+        output_dir=output_dir,
+        workspace=workspace,
+        profile="quality_first",
+        video_signature={"size_bytes": 123, "mtime_ns": 456},
+        requested_max_frames=450,
+        effective_max_frames=450,
+        requested_extract_fps=6,
+        effective_extract_fps=6.0,
+        blur_filter_keep_ratio=0.85,
+        blur_filter_min_frames=120,
+        n_iterations=12000,
+    )
+
+    assert ok is False
+    assert existing is None
+    assert "missing_stage14_resume_metadata" in reasons
+
+
+def test_resolve_stage14_resume_accepts_matching_metadata(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    output_dir = tmp_path / "out"
+    workspace = output_dir / "_colmap_workspace"
+    frames_dir = workspace / "frames"
+    sparse_dir = workspace / "sparse" / "0"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    sparse_dir.mkdir(parents=True, exist_ok=True)
+
+    (output_dir / "export_last.usdz").write_bytes(b"usdz")
+    (output_dir / "export_last.ply").write_bytes(b"ply")
+    for i in range(1, 11):
+        (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+    (sparse_dir / "images.bin").write_bytes(struct.pack("<Q", 10))
+
+    metadata = {
+        "schema_version": "v1",
+        "quality_profile": "quality_first",
+        "video": {"size_bytes": 123, "mtime_ns": 456},
+        "stage1": {
+            "frame_count": 10,
+            "requested_max_frames": 450,
+            "effective_max_frames": 450,
+            "requested_extract_fps": 6,
+            "effective_extract_fps": 6.0,
+            "blur_filter": {
+                "status": "ok",
+                "keep_ratio": 0.85,
+                "min_frames": 120,
+            },
+        },
+        "stage2": {"registered_images": 10},
+        "stage4": {"n_iterations": 12000},
+    }
+    (output_dir / module.STAGE14_RESUME_METADATA).write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    ok, existing, reasons = module._resolve_stage14_resume(
+        resume_requested=True,
+        quality_guardrails=True,
+        output_dir=output_dir,
+        workspace=workspace,
+        profile="quality_first",
+        video_signature={"size_bytes": 123, "mtime_ns": 456},
+        requested_max_frames=450,
+        effective_max_frames=450,
+        requested_extract_fps=6,
+        effective_extract_fps=6.0,
+        blur_filter_keep_ratio=0.85,
+        blur_filter_min_frames=120,
+        n_iterations=12000,
+    )
+
+    assert ok is True
+    assert existing is not None
+    assert reasons == ["metadata_match"]
+
+
+def test_run_3dgrut_training_selects_newest_export(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    threedgrut_dir = tmp_path / "3dgrut_src"
+    train_script = threedgrut_dir / "train.py"
+    train_script.parent.mkdir(parents=True, exist_ok=True)
+    train_script.write_text("# test", encoding="utf-8")
+    monkeypatch.setattr(module, "THREEDGRUT_DIR", str(threedgrut_dir))
+
+    output_dir = tmp_path / "output"
+    undistorted_dir = tmp_path / "undistorted"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    undistorted_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del cmd, kwargs
+        result_root = output_dir / "3dgrut" / "nurec_scene"
+        old_dir = result_root / "old"
+        new_dir = result_root / "new"
+        old_dir.mkdir(parents=True, exist_ok=True)
+        new_dir.mkdir(parents=True, exist_ok=True)
+        (old_dir / "export_last.usdz").write_bytes(b"old")
+        (old_dir / "export_last.ply").write_bytes(b"old")
+        (old_dir / "export_last.ingp").write_bytes(b"old")
+        (new_dir / "export_last.usdz").write_bytes(b"new")
+        (new_dir / "export_last.ply").write_bytes(b"new")
+        (new_dir / "export_last.ingp").write_bytes(b"new")
+        old_ts = 1700000000
+        new_ts = 1700003600
+        os.utime(old_dir / "export_last.usdz", (old_ts, old_ts))
+        os.utime(new_dir / "export_last.usdz", (new_ts, new_ts))
+        return None
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    result = module.run_3dgrut_training(
+        undistorted_dir=undistorted_dir,
+        output_dir=output_dir,
+        n_iterations=12000,
+    )
+    assert result["result_dir"].name == "new"
 
 
 def test_fixer_auto_prefers_h100(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1072,6 +1235,7 @@ def test_main_retries_sfm_and_fails_quality_gate(
             "0.80",
             "--colmap-retry-min-registered-ratio",
             "0.75",
+            "--no-blur-filter-required",
         ],
     )
 
