@@ -50,6 +50,18 @@ def test_wrapper_uses_quality_first_nurec_defaults() -> None:
     assert 'NUREC_RESUME="${NUREC_RESUME:-false}"' in text
 
 
+def test_wrapper_exposes_resume_and_fixer_rerun_flags() -> None:
+    text = _script_text()
+    assert "--resume                Enable NuRec resume mode" in text
+    assert "--fixer-rerun           Force rerun of Fixer in resume mode" in text
+    assert "--fixer-required        Fail if Fixer does not produce refined outputs" in text
+    assert "--resume)          NUREC_RESUME=true;" in text
+    assert "--fixer-rerun)     FIXER_RERUN=true;" in text
+    assert "--fixer-required)  FIXER_REQUIRED=true;" in text
+    assert 'NUREC_FIXER_ARGS+=(--fixer-rerun)' in text
+    assert 'NUREC_FIXER_ARGS+=(--fixer-required)' in text
+
+
 def test_wrapper_copies_object_index_before_rewrite() -> None:
     text = _script_text()
     assert 'cp -f "$INDEX_SOURCE" "$INDEX_POINTER_CANONICAL"' in text

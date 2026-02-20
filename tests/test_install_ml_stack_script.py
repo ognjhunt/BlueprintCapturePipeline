@@ -23,7 +23,12 @@ def test_install_script_keeps_required_ml_stack_steps() -> None:
         "https://github.com/facebookresearch/sam3.git",
         "depth-anything/DA3Metric-Large",
         "HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1",
+        "TORCH_VERSION",
+        "TORCHVISION_VERSION",
+        "torch==${TORCH_VERSION}",
+        "torchvision==${TORCHVISION_VERSION}",
+        "transformer-engine-cu12==1.12.0",
+        "FIXER_TRANSFORMER_ENGINE_OK",
     ]
     for snippet in required_snippets:
         assert snippet in text
-

@@ -25,6 +25,8 @@ FIXER_DIR_LOCAL="${FIXER_DIR:-/opt/Fixer}"
 FIXER_WEIGHTS_LOCAL="${FIXER_WEIGHTS_DIR:-/opt/fixer_weights}"
 FIXER_TIMESTEP="${FIXER_TIMESTEP:-250}"
 FIXER_RESOLUTION="${FIXER_RESOLUTION:-1024}"
+TORCH_VERSION="${TORCH_VERSION:-2.6.0}"
+TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.21.0}"
 REMOTE_ROOT="${FIXER_H100_REMOTE_ROOT:-/opt/fixer_stage}"
 REMOTE_SETUP_CMD="${FIXER_H100_REMOTE_SETUP_CMD:-}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=30"
@@ -284,6 +286,22 @@ set -euo pipefail
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-pip python3-venv git libgl1 libglib2.0-0
 python3 -m pip install --upgrade pip setuptools wheel
+python3 -m pip install --no-cache-dir \
+  --index-url \"https://download.pytorch.org/whl/cu124\" \
+  \"torch==${TORCH_VERSION}\" \
+  \"torchvision==${TORCHVISION_VERSION}\"
+python3 -m pip install --no-cache-dir --no-deps \"cosmos-predict2==1.0.9\"
+python3 -m pip install --no-cache-dir \
+  --extra-index-url \"https://pypi.nvidia.com\" \
+  \"transformer-engine==1.12.0\" \
+  \"transformer-engine-cu12==1.12.0\"
+python3 - <<\"PY\"
+from pathlib import Path
+import torch
+import transformer_engine.pytorch as te  # noqa: F401
+print(f\"FIXER_TORCH_OK {torch.__version__} CUDA={torch.version.cuda}\")
+print(f\"FIXER_TRANSFORMER_ENGINE_OK {Path(te.__file__).resolve()}\")
+PY
 if [ -f \"${REMOTE_FIXER}/requirements.txt\" ]; then
   python3 -m pip install -r \"${REMOTE_FIXER}/requirements.txt\"
 fi

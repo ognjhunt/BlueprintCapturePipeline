@@ -984,11 +984,80 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
 # ---------------------------------------------------------------------------
 # Stage 5: Fixer image refinement (optional, requires Cosmos/TE)
 # ---------------------------------------------------------------------------
+FIXER_IMAGE_PATTERNS = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.exr")
+FIXER_COMPLETION_MARKER = ".fixer_stage_complete.json"
+
+
+def _iter_image_outputs(directory: Path):
+    for pattern in FIXER_IMAGE_PATTERNS:
+        yield from directory.rglob(pattern)
+
+
 def _has_image_outputs(directory: Path) -> bool:
     if not directory.exists():
         return False
-    patterns = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.exr")
-    return any(any(directory.rglob(pattern)) for pattern in patterns)
+    return any(True for _ in _iter_image_outputs(directory))
+
+
+def _count_image_outputs(directory: Path) -> int:
+    if not directory.exists():
+        return 0
+    return sum(1 for _ in _iter_image_outputs(directory))
+
+
+def _fixer_completion_marker_path(fixed_dir: Path) -> Path:
+    return fixed_dir / FIXER_COMPLETION_MARKER
+
+
+def _load_fixer_completion_marker(fixed_dir: Path) -> Dict[str, Any]:
+    marker_path = _fixer_completion_marker_path(fixed_dir)
+    if not _is_nonempty_file(marker_path):
+        return {}
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_fixer_completion_marker(fixed_dir: Path, *, backend: str) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "schema_version": "v1",
+        "generated_at": _utc_now_iso(),
+        "backend": str(backend),
+        "image_count": int(_count_image_outputs(fixed_dir)),
+    }
+    _fixer_completion_marker_path(fixed_dir).write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+    return payload
+
+
+def _clear_image_outputs(directory: Path) -> int:
+    if not directory.exists():
+        return 0
+    removed = 0
+    for path in _iter_image_outputs(directory):
+        try:
+            path.unlink()
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+
+def _finalize_fixer_success(fixed_dir: Path, *, backend: str) -> bool:
+    image_count = _count_image_outputs(fixed_dir)
+    if image_count <= 0:
+        _log("WARNING: Fixer completed but produced no refined images")
+        return False
+    marker = _write_fixer_completion_marker(fixed_dir, backend=backend)
+    _log(
+        "Fixer completion marker written "
+        f"(backend={marker.get('backend')}, image_count={marker.get('image_count')})"
+    )
+    return True
 
 
 def _run_fixer_local_stage(renders_dir: Path, fixed_dir: Path) -> bool:
@@ -1038,11 +1107,30 @@ def _run_fixer_local_stage(renders_dir: Path, fixed_dir: Path) -> bool:
     fixed_dir.mkdir(parents=True, exist_ok=True)
     timestep = _env_int("FIXER_TIMESTEP", 250)
     resolution = _env_int("FIXER_RESOLUTION", 1024)
+    fixer_python = os.getenv("FIXER_PYTHON", "python3")
+
+    # Fail fast with a precise diagnostic when TE's compiled torch extension is missing.
+    try:
+        _run(
+            [
+                fixer_python,
+                "-c",
+                "import transformer_engine.pytorch as _te; print('TRANSFORMER_ENGINE_OK')",
+            ],
+            cwd=str(fixer_dir / "src"),
+        )
+    except RuntimeError:
+        _log(
+            "WARNING: Fixer runtime preflight failed: transformer_engine PyTorch extension is unavailable "
+            "(missing transformer_engine_torch*.so). Install both transformer-engine and "
+            "transformer-engine-cu12, then retry."
+        )
+        return False
+
     _log(f"Running Fixer image refinement locally (timestep={timestep}, res={resolution})...")
 
     # Use the system python3 (not sys.executable which may be python3.11 for 3DGRUT)
     # because cosmos-predict2, flash-attn, transformer-engine etc. are installed under python3.10.
-    fixer_python = os.getenv("FIXER_PYTHON", "python3")
     _run(
         [
             fixer_python,
@@ -1131,6 +1219,15 @@ def run_fixer_refinement(
     """
     fixed_dir = output_dir / "fixer_output"
     fixed_dir.mkdir(parents=True, exist_ok=True)
+    marker_path = _fixer_completion_marker_path(fixed_dir)
+    removed_images = _clear_image_outputs(fixed_dir)
+    if removed_images > 0:
+        _log(f"Removed {removed_images} stale image(s) from previous Fixer attempts")
+    if marker_path.exists():
+        try:
+            marker_path.unlink()
+        except Exception:
+            pass
     mode_normalized = mode.strip().lower()
 
     if mode_normalized not in {"auto", "h100", "local"}:
@@ -1148,8 +1245,10 @@ def run_fixer_refinement(
                 h100_max_hourly=h100_max_hourly,
                 h100_disk_gb=h100_disk_gb,
             ):
-                _log(f"Fixer output at: {fixed_dir} (backend=h100)")
-                return fixed_dir
+                if _finalize_fixer_success(fixed_dir, backend="h100"):
+                    _log(f"Fixer output at: {fixed_dir} (backend=h100)")
+                    return fixed_dir
+                _log("WARNING: H100 Fixer stage returned success but outputs are incomplete")
         except RuntimeError as exc:
             _log(f"WARNING: H100 Fixer stage failed ({exc})")
         if mode_normalized == "h100":
@@ -1159,8 +1258,10 @@ def run_fixer_refinement(
     if mode_normalized in {"auto", "local"}:
         try:
             if _run_fixer_local_stage(renders_dir, fixed_dir):
-                _log(f"Fixer output at: {fixed_dir} (backend=local)")
-                return fixed_dir
+                if _finalize_fixer_success(fixed_dir, backend="local"):
+                    _log(f"Fixer output at: {fixed_dir} (backend=local)")
+                    return fixed_dir
+                _log("WARNING: Local Fixer stage returned success but outputs are incomplete")
         except RuntimeError as exc:
             _log(f"WARNING: Local Fixer stage failed ({exc})")
 
@@ -2509,6 +2610,8 @@ def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
             "n_iterations": 12000,
             "colmap_matcher_mode": "auto",
             "colmap_sequential_overlap": 30,
+            "blur_filter_keep_ratio": 0.85,
+            "blur_filter_min_frames": 120,
             "resume": False,
         },
         "balanced": {
@@ -2517,6 +2620,8 @@ def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
             "n_iterations": 9000,
             "colmap_matcher_mode": "sequential",
             "colmap_sequential_overlap": 20,
+            "blur_filter_keep_ratio": 0.90,
+            "blur_filter_min_frames": 120,
             "resume": False,
         },
         "fast": {
@@ -2525,6 +2630,8 @@ def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
             "n_iterations": 7000,
             "colmap_matcher_mode": "sequential",
             "colmap_sequential_overlap": 10,
+            "blur_filter_keep_ratio": 1.0,
+            "blur_filter_min_frames": 120,
             "resume": True,
         },
     }
@@ -3153,13 +3260,13 @@ def main() -> int:
     parser.add_argument(
         "--blur-filter-keep-ratio",
         type=float,
-        default=_env_float("BLUR_FILTER_KEEP_RATIO", 1.0),
+        default=_env_float("BLUR_FILTER_KEEP_RATIO", float(profile_defaults["blur_filter_keep_ratio"])),
         help="Keep ratio of sharpest frames before SfM (1.0 disables filtering)",
     )
     parser.add_argument(
         "--blur-filter-min-frames",
         type=int,
-        default=_env_int("BLUR_FILTER_MIN_FRAMES", 120),
+        default=_env_int("BLUR_FILTER_MIN_FRAMES", int(profile_defaults["blur_filter_min_frames"])),
         help="Minimum number of frames to keep when blur filtering is enabled",
     )
     parser.add_argument("--skip-fixer", action="store_true", help="Skip Fixer image refinement")
@@ -3168,6 +3275,18 @@ def main() -> int:
         default=os.getenv("FIXER_MODE", "auto"),
         choices=["auto", "local", "h100"],
         help="Fixer backend mode: auto (h100->local), local, or h100 only",
+    )
+    parser.add_argument(
+        "--fixer-rerun",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("FIXER_RERUN", False),
+        help="Force rerun of Stage 5 Fixer even when resume outputs exist",
+    )
+    parser.add_argument(
+        "--fixer-required",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("FIXER_REQUIRED", False),
+        help="Fail pipeline when Stage 5 Fixer does not produce refined outputs",
     )
     parser.add_argument(
         "--fixer-h100-script",
@@ -3561,9 +3680,10 @@ def main() -> int:
     # Also copy INGP checkpoint
     ingp_src_raw = grut_result.get("ingp")
     if ingp_src_raw:
-        ingp_src = Path(str(ingp_src_raw))
-        if ingp_src.exists():
-            shutil.copy2(str(ingp_src), str(output_dir / "export_last.ingp"))
+        ingp_src = Path(str(ingp_src_raw)).resolve()
+        ingp_dst = (output_dir / "export_last.ingp").resolve()
+        if ingp_src.exists() and ingp_src != ingp_dst:
+            shutil.copy2(str(ingp_src), str(ingp_dst))
 
     # -----------------------------------------------------------------------
     # Stage 5: Fixer Image Refinement (optional)
@@ -3575,10 +3695,25 @@ def main() -> int:
         _log("=" * 60)
         _log(f"Fixer backend mode: {args.fixer_mode}")
         fixed_dir = output_dir / "fixer_output"
-        if args.resume and _has_image_outputs(fixed_dir):
-            _log("Resuming Stage 5: using existing Fixer outputs")
+        completion_marker = _load_fixer_completion_marker(fixed_dir)
+        has_valid_fixer_resume = bool(completion_marker) and _has_image_outputs(fixed_dir)
+        should_run_fixer = True
+        if args.resume and args.fixer_rerun:
+            _log("Resume override: forcing Stage 5 rerun (--fixer-rerun)")
+        elif args.resume and has_valid_fixer_resume:
+            _log(
+                "Resuming Stage 5: using existing Fixer outputs "
+                f"(backend={completion_marker.get('backend')}, "
+                f"image_count={completion_marker.get('image_count')})"
+            )
             fixer_refined_images_dir = fixed_dir
-        else:
+            should_run_fixer = False
+        elif args.resume and _has_image_outputs(fixed_dir):
+            _log(
+                "Resume check: found Fixer images without completion marker; "
+                "rerunning Stage 5 to avoid partial outputs"
+            )
+        if should_run_fixer:
             renders_dirs = list(Path(str(grut_result["result_dir"])).rglob("renders"))
             if renders_dirs:
                 fixer_result = run_fixer_refinement(
@@ -3593,6 +3728,11 @@ def main() -> int:
                 )
                 if fixer_result != renders_dirs[0] and _has_image_outputs(fixer_result):
                     fixer_refined_images_dir = fixer_result
+                elif args.fixer_required:
+                    raise RuntimeError(
+                        "Fixer required but refinement outputs were unavailable; "
+                        "set --no-fixer-required to allow fallback to unrefined renders"
+                    )
             else:
                 _log("WARNING: No rendered images found, skipping Fixer")
     else:

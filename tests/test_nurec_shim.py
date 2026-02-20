@@ -21,6 +21,20 @@ def _load_nurec_shim_module():
     return module
 
 
+def test_quality_profile_defaults_set_blur_filter_ratios() -> None:
+    module = _load_nurec_shim_module()
+    quality_first = module._quality_profile_defaults("quality_first")
+    balanced = module._quality_profile_defaults("balanced")
+    fast = module._quality_profile_defaults("fast")
+
+    assert quality_first["blur_filter_keep_ratio"] == pytest.approx(0.85)
+    assert balanced["blur_filter_keep_ratio"] == pytest.approx(0.90)
+    assert fast["blur_filter_keep_ratio"] == pytest.approx(1.0)
+    assert quality_first["blur_filter_min_frames"] == 120
+    assert balanced["blur_filter_min_frames"] == 120
+    assert fast["blur_filter_min_frames"] == 120
+
+
 def test_fixer_auto_prefers_h100(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     module = _load_nurec_shim_module()
     renders_dir = tmp_path / "renders"
@@ -167,6 +181,66 @@ def test_fixer_auto_falls_back_to_local(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert result == fixed_dir
 
 
+def test_run_fixer_refinement_writes_completion_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    renders_dir = tmp_path / "renders"
+    output_dir = tmp_path / "out"
+    fixed_dir = output_dir / "fixer_output"
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fake_local(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        fixed_dir.mkdir(parents=True, exist_ok=True)
+        (fixed_dir / "frame_00001.png").write_bytes(b"ok")
+        (fixed_dir / "frame_00002.png").write_bytes(b"ok")
+        return True
+
+    monkeypatch.setattr(module, "_run_fixer_local_stage", _fake_local)
+
+    result = module.run_fixer_refinement(
+        renders_dir,
+        output_dir,
+        mode="local",
+        h100_script=tmp_path / "dummy.sh",
+    )
+
+    marker_path = fixed_dir / ".fixer_stage_complete.json"
+    payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    assert result == fixed_dir
+    assert payload["backend"] == "local"
+    assert payload["image_count"] == 2
+
+
+def test_run_fixer_refinement_clears_stale_images_when_retry_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    renders_dir = tmp_path / "renders"
+    output_dir = tmp_path / "out"
+    fixed_dir = output_dir / "fixer_output"
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    fixed_dir.mkdir(parents=True, exist_ok=True)
+    (fixed_dir / "stale.png").write_bytes(b"old")
+
+    def _fake_local(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return False
+
+    monkeypatch.setattr(module, "_run_fixer_local_stage", _fake_local)
+
+    result = module.run_fixer_refinement(
+        renders_dir,
+        output_dir,
+        mode="local",
+        h100_script=tmp_path / "dummy.sh",
+    )
+
+    assert result == renders_dir
+    assert not (fixed_dir / "stale.png").exists()
+    assert not (fixed_dir / ".fixer_stage_complete.json").exists()
+
+
 def test_run_fixer_local_stage_uses_updated_cli_args(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -223,6 +297,47 @@ def test_run_fixer_local_stage_uses_updated_cli_args(
         "--resolution",
         "576",
     ]
+
+
+def test_run_fixer_local_stage_skips_when_transformer_engine_extension_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    renders_dir = tmp_path / "renders"
+    fixed_dir = tmp_path / "fixed"
+    renders_dir.mkdir(parents=True, exist_ok=True)
+
+    fixer_dir = tmp_path / "Fixer"
+    fixer_src = fixer_dir / "src"
+    fixer_src.mkdir(parents=True, exist_ok=True)
+    (fixer_src / "inference_pretrained_model.py").write_text("# test", encoding="utf-8")
+
+    weights_dir = tmp_path / "weights"
+    pretrained_path = weights_dir / "pretrained" / "pretrained_fixer.pkl"
+    pretrained_path.parent.mkdir(parents=True, exist_ok=True)
+    pretrained_path.write_bytes(b"ok")
+    (weights_dir / "base" / "model_fast_tokenizer.pt").parent.mkdir(parents=True, exist_ok=True)
+    (weights_dir / "base" / "model_fast_tokenizer.pt").write_bytes(b"ok")
+    (weights_dir / "base" / "tokenizer_fast.pth").write_bytes(b"ok")
+
+    monkeypatch.setattr(module, "FIXER_DIR", str(fixer_dir))
+    monkeypatch.setattr(module, "FIXER_WEIGHTS_DIR", str(weights_dir))
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        calls.append(list(cmd))
+        if "-c" in cmd and "transformer_engine.pytorch" in cmd[-1]:
+            raise RuntimeError("missing transformer_engine_torch.so")
+        raise AssertionError("inference should not run when preflight fails")
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    assert module._run_fixer_local_stage(renders_dir, fixed_dir) is False
+    assert len(calls) == 1
+    assert calls[0][0] == "python3"
+    assert calls[0][1] == "-c"
 
 
 def test_run_fixer_local_stage_skips_when_base_models_missing(

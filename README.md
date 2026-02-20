@@ -79,6 +79,7 @@ NuRec artifact roles under `.../pipeline/nurec/`:
 - `capture_quality_report.json`: frame blur/brightness/motion stats + SfM registration ratio.
 - `sam3_preflight_report.json`: SAM3 auth/import/cache preflight result and skip/fail reason.
 - `mesh_manifest.json`: role manifest describing which artifact to use for visual vs collision.
+- `.fixer_stage_complete.json`: Stage 5 Fixer completion marker (backend + refined image count) used for safe resume.
 
 ## Environment
 
@@ -106,6 +107,8 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `FIXER_H100_MAX_HOURLY` (default: `2.50`)
 - `FIXER_H100_DISK_GB` (default: `80`)
 - `FIXER_H100_REMOTE_SETUP_CMD` (optional custom setup command for remote Fixer env)
+- `FIXER_RERUN` (`false` default; set `true` with resume to force rerun Stage 5 Fixer)
+- `FIXER_REQUIRED` (`false` default; set `true` to fail instead of falling back to unrefined renders)
 - `NUREC_QUALITY_PROFILE` (`quality_first` default; `balanced`, `fast`)
 - `MAX_FRAMES` (`450` default in `quality_first`; requested floor for adaptive frame budget)
 - `EXTRACT_FPS` (`6` default in `quality_first`; requested FPS before duration-aware downsampling)
@@ -129,7 +132,7 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `COLMAP_RETRY_MIN_REGISTERED_RATIO` (`0.75` default; hard fail threshold after forced retry)
 - `COLMAP_RETRY_MATCHER_MODE` (`auto` default; retry matcher `auto`/`sequential`/`exhaustive`)
 - `COLMAP_RETRY_SEQUENTIAL_OVERLAP` (`60` default when retry matcher resolves to sequential)
-- `BLUR_FILTER_KEEP_RATIO` (`1.0` default = disabled; e.g. `0.7` keeps sharpest 70% before SfM)
+- `BLUR_FILTER_KEEP_RATIO` (profile defaults: `0.85` for `quality_first`, `0.90` for `balanced`, `1.0` for `fast`; set `1.0` to disable)
 - `BLUR_FILTER_MIN_FRAMES` (`120` default; safety floor when blur filtering is enabled)
 - `NUREC_RESUME` (`false` default in quality-first wrapper profile)
 - `NUREC_PARALLEL_POST_STAGE6` (`true` default; runs Stage 7 visual mesh and Stage 9 SAM3 concurrently)

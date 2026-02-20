@@ -25,6 +25,9 @@ FIXER_DIR="${FIXER_DIR:-/opt/Fixer}"
 FIXER_WEIGHTS_DIR="${FIXER_WEIGHTS_DIR:-/opt/fixer_weights}"
 QWEN_EDIT_DIR="${QWEN_IMAGE_EDIT_MODEL_PATH:-/opt/qwen-image-edit}"
 HF_CACHE_DIR="${HF_HOME:-/opt/hf}"
+NVIDIA_PYPI_INDEX="${NVIDIA_PYPI_INDEX:-https://pypi.nvidia.com}"
+TORCH_VERSION="${TORCH_VERSION:-2.6.0}"
+TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.21.0}"
 
 if [ "$(id -u)" -eq 0 ]; then
   SUDO=""
@@ -124,7 +127,10 @@ mkdir -p "$HF_CACHE_DIR"
 
 log "Installing Python base dependencies..."
 python3 -m pip install --upgrade pip setuptools wheel
-python3 -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124
+python3 -m pip install --no-cache-dir \
+  --index-url https://download.pytorch.org/whl/cu124 \
+  "torch==${TORCH_VERSION}" \
+  "torchvision==${TORCHVISION_VERSION}"
 python3 -m pip install --no-cache-dir "huggingface_hub[cli]"
 
 if [ -f /app/pyproject.toml ]; then
@@ -165,6 +171,11 @@ if [ "$WITH_FIXER" = true ]; then
   clone_or_update_repo "https://github.com/nv-tlabs/Fixer.git" "$FIXER_DIR" "main"
   # Keep the existing CUDA/PyTorch stack and install Fixer runtime deps explicitly.
   python3 -m pip install --no-cache-dir --no-deps "cosmos-predict2==1.0.9"
+  # TE requires the CUDA-specific wheel package to provide transformer_engine_torch*.so.
+  python3 -m pip install --no-cache-dir \
+    --extra-index-url "$NVIDIA_PYPI_INDEX" \
+    "transformer-engine==1.12.0" \
+    "transformer-engine-cu12==1.12.0"
   python3 -m pip install --no-cache-dir \
     "accelerate==1.7.0" \
     clean-fid \
@@ -179,6 +190,11 @@ if [ "$WITH_FIXER" = true ]; then
     "torchmetrics[image]" \
     wandb
   python3 -m pip install --no-cache-dir "git+https://github.com/openai/CLIP.git"
+  python3 - <<'PY'
+from pathlib import Path
+import transformer_engine.pytorch as te  # noqa: F401
+print(f"FIXER_TRANSFORMER_ENGINE_OK {Path(te.__file__).resolve()}")
+PY
   mkdir -p "$FIXER_WEIGHTS_DIR"
   if [ ! -f "$FIXER_WEIGHTS_DIR/pretrained/pretrained_fixer.pkl" ]; then
     HF_HOME="$HF_CACHE_DIR" huggingface-cli download nvidia/Fixer --local-dir "$FIXER_WEIGHTS_DIR"
@@ -263,8 +279,11 @@ EOF
 
 log "Verifying installed stack..."
 colmap help 2>&1 | head -n 5
-python3 - <<'PY'
+python3 - <<PY
 import torch
+expected = "${TORCH_VERSION}"
+if not str(torch.__version__).startswith(expected):
+    raise SystemExit(f"Unexpected torch version {torch.__version__!r}; expected prefix {expected!r}")
 print(f"TORCH={torch.__version__} CUDA={torch.version.cuda} GPU={torch.cuda.is_available()}")
 PY
 

@@ -33,6 +33,8 @@ SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
 SKIP_FIXER="${SKIP_FIXER:---skip-fixer}"
 NUREC_RESUME="${NUREC_RESUME:-false}"
 NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
+FIXER_RERUN="${FIXER_RERUN:-false}"
+FIXER_REQUIRED="${FIXER_REQUIRED:-false}"
 COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-auto}"
 COLMAP_SEQUENTIAL_OVERLAP="${COLMAP_SEQUENTIAL_OVERLAP:-30}"
 COLMAP_CHUNKED_MODE="${COLMAP_CHUNKED_MODE:-auto}"
@@ -44,7 +46,7 @@ COLMAP_CHUNK_MATCHER_MODE="${COLMAP_CHUNK_MATCHER_MODE:-sequential}"
 COLMAP_MIN_REGISTERED_RATIO="${COLMAP_MIN_REGISTERED_RATIO:-0.80}"
 COLMAP_RETRY_MIN_REGISTERED_RATIO="${COLMAP_RETRY_MIN_REGISTERED_RATIO:-0.75}"
 COLMAP_RETRY_MATCHER_MODE="${COLMAP_RETRY_MATCHER_MODE:-auto}"
-BLUR_FILTER_KEEP_RATIO="${BLUR_FILTER_KEEP_RATIO:-1.0}"
+BLUR_FILTER_KEEP_RATIO="${BLUR_FILTER_KEEP_RATIO:-}"
 BLUR_FILTER_MIN_FRAMES="${BLUR_FILTER_MIN_FRAMES:-120}"
 VISUAL_MESH_METHOD="${VISUAL_MESH_METHOD:-textured_colmap}"
 NUREC_VISUAL_PRIMARY="${NUREC_VISUAL_PRIMARY:-usdz}"
@@ -53,6 +55,15 @@ VISUAL_MESH_TEXTURE_MAX_ATLASES="${VISUAL_MESH_TEXTURE_MAX_ATLASES:-2}"
 SAM3_PREFLIGHT_STRICT="${SAM3_PREFLIGHT_STRICT:-false}"
 SAM3_TRACKING_MODE="${SAM3_TRACKING_MODE:-auto}"
 OPEN_OMNIVERSE_PREVIEW="${OPEN_OMNIVERSE_PREVIEW:-false}"
+
+if [ -z "$BLUR_FILTER_KEEP_RATIO" ]; then
+  case "${NUREC_QUALITY_PROFILE,,}" in
+    quality_first) BLUR_FILTER_KEEP_RATIO="0.85" ;;
+    balanced) BLUR_FILTER_KEEP_RATIO="0.90" ;;
+    fast) BLUR_FILTER_KEEP_RATIO="1.0" ;;
+    *) BLUR_FILTER_KEEP_RATIO="0.85" ;;
+  esac
+fi
 
 log() {
   echo "[run-full-pipeline] $*"
@@ -94,6 +105,9 @@ Options:
   --environment ENV       Scene environment: auto, default, bedroom, warehouse, kitchen (default: auto)
   --completion-mode MODE  Completion mode: full_required, best_effort (default: full_required)
   --workspace DIR         Working directory (default: /workspace)
+  --resume                Enable NuRec resume mode (reuse Stage 1-4 artifacts)
+  --fixer-rerun           Force rerun of Fixer in resume mode
+  --fixer-required        Fail if Fixer does not produce refined outputs
   --skip-nurec            Skip NuRec shim (use existing outputs in --nurec-output-dir)
   --nurec-output-dir DIR  NuRec output directory (default: auto from workspace)
   --crop-cleanup PROV     Crop cleanup: skip, together_qwen_image_edit, qwen_image_edit, nano_banana, gpt_image (default: skip)
@@ -111,6 +125,9 @@ while [ $# -gt 0 ]; do
     --environment)     ENVIRONMENT="$2";          shift 2 ;;
     --completion-mode) COMPLETION_MODE="$2";      shift 2 ;;
     --workspace)       WORKSPACE="$2";            shift 2 ;;
+    --resume)          NUREC_RESUME=true;         shift ;;
+    --fixer-rerun)     FIXER_RERUN=true;          shift ;;
+    --fixer-required)  FIXER_REQUIRED=true;       shift ;;
     --skip-nurec)      SKIP_NUREC=true;           shift ;;
     --nurec-output-dir) NUREC_OUTPUT_DIR="$2";    shift 2 ;;
     --crop-cleanup)    CROP_CLEANUP_PROVIDER="$2"; shift 2 ;;
@@ -144,6 +161,10 @@ log "Scene ID: $SCENE_ID"
 log "Capture ID: $CAPTURE_ID"
 log "Environment: $ENVIRONMENT"
 log "Completion mode: $COMPLETION_MODE"
+log "NuRec resume: $NUREC_RESUME"
+log "Fixer rerun: $FIXER_RERUN"
+log "Fixer required: $FIXER_REQUIRED"
+log "Blur filter keep ratio: $BLUR_FILTER_KEEP_RATIO (profile=$NUREC_QUALITY_PROFILE, min_frames=$BLUR_FILTER_MIN_FRAMES)"
 
 # ── Stage 1: NuRec Shim (COLMAP + 3DGRUT + SAM3) ───────────────────────────
 PIPELINE_DIR="${WORKSPACE}/full_pipeline"
@@ -188,6 +209,14 @@ SPEC
     NUREC_PREVIEW_ARGS+=(--sam3-strict-preflight)
   fi
 
+  NUREC_FIXER_ARGS=()
+  if [ "${FIXER_RERUN,,}" = "true" ]; then
+    NUREC_FIXER_ARGS+=(--fixer-rerun)
+  fi
+  if [ "${FIXER_REQUIRED,,}" = "true" ]; then
+    NUREC_FIXER_ARGS+=(--fixer-required)
+  fi
+
   export NUREC_QUALITY_PROFILE VISUAL_MESH_METHOD NUREC_VISUAL_PRIMARY
   export COLMAP_MIN_REGISTERED_RATIO COLMAP_RETRY_MIN_REGISTERED_RATIO
   export VISUAL_MESH_TEXTURE_SIZE VISUAL_MESH_TEXTURE_MAX_ATLASES
@@ -217,6 +246,7 @@ SPEC
     "${NUREC_RESUME_ARGS[@]}" \
     "${NUREC_PARALLEL_ARGS[@]}" \
     "${NUREC_PREVIEW_ARGS[@]}" \
+    "${NUREC_FIXER_ARGS[@]}" \
     $SKIP_FIXER \
     2>&1 | tee "${PIPELINE_DIR}/nurec.log"
 
