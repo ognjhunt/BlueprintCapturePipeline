@@ -38,6 +38,35 @@ def test_wrapper_uses_quality_first_nurec_defaults() -> None:
     assert 'MAX_FRAMES="${MAX_FRAMES:-450}"' in text
     assert 'EXTRACT_FPS="${EXTRACT_FPS:-6}"' in text
     assert 'N_ITERATIONS="${N_ITERATIONS:-12000}"' in text
-    assert 'COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-exhaustive}"' in text
+    assert 'COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-auto}"' in text
     assert 'COLMAP_SEQUENTIAL_OVERLAP="${COLMAP_SEQUENTIAL_OVERLAP:-30}"' in text
+    assert 'COLMAP_CHUNKED_MODE="${COLMAP_CHUNKED_MODE:-auto}"' in text
+    assert 'COLMAP_CHUNK_MIN_FRAMES="${COLMAP_CHUNK_MIN_FRAMES:-900}"' in text
+    assert 'COLMAP_CHUNK_SIZE_FRAMES="${COLMAP_CHUNK_SIZE_FRAMES:-600}"' in text
+    assert 'COLMAP_CHUNK_OVERLAP_FRAMES="${COLMAP_CHUNK_OVERLAP_FRAMES:-120}"' in text
+    assert 'COLMAP_CHUNK_MAX_CHUNKS="${COLMAP_CHUNK_MAX_CHUNKS:-24}"' in text
+    assert 'COLMAP_CHUNK_MATCHER_MODE="${COLMAP_CHUNK_MATCHER_MODE:-sequential}"' in text
+    assert 'COLMAP_RETRY_MATCHER_MODE="${COLMAP_RETRY_MATCHER_MODE:-auto}"' in text
     assert 'NUREC_RESUME="${NUREC_RESUME:-false}"' in text
+
+
+def test_wrapper_copies_object_index_before_rewrite() -> None:
+    text = _script_text()
+    assert 'cp -f "$INDEX_SOURCE" "$INDEX_POINTER_CANONICAL"' in text
+    assert 'ln -sfn "object_point_cloud_index.json" "$INDEX_POINTER_LEGACY"' in text
+
+
+def test_wrapper_uses_force_refresh_symlink_for_object_crops() -> None:
+    text = _script_text()
+    assert 'ln -sfn "${NUREC_OUTPUT_DIR}/object_crops" "${NUREC_ROOT}/object_crops"' in text
+
+
+def test_wrapper_passes_chunked_colmap_flags_to_nurec_shim() -> None:
+    text = _script_text()
+    assert '--colmap-chunked-mode "$COLMAP_CHUNKED_MODE"' in text
+    assert '--colmap-chunk-min-frames "$COLMAP_CHUNK_MIN_FRAMES"' in text
+    assert '--colmap-chunk-size-frames "$COLMAP_CHUNK_SIZE_FRAMES"' in text
+    assert '--colmap-chunk-overlap-frames "$COLMAP_CHUNK_OVERLAP_FRAMES"' in text
+    assert '--colmap-chunk-max-chunks "$COLMAP_CHUNK_MAX_CHUNKS"' in text
+    assert '--colmap-chunk-matcher-mode "$COLMAP_CHUNK_MATCHER_MODE"' in text
+    assert '--colmap-retry-matcher-mode "$COLMAP_RETRY_MATCHER_MODE"' in text

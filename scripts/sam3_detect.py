@@ -163,7 +163,8 @@ _PROMPT_INFERENCE_COMMAND = (os.getenv("PROMPT_INFERENCE_COMMAND") or "").strip(
 _PROMPT_INFERENCE_TIMEOUT_SEC = max(10, _env_int("PROMPT_INFERENCE_TIMEOUT_SEC", 120))
 
 # Tracking/association settings
-_TRACKING_MODE_DEFAULT = (os.getenv("SAM3_TRACKING_MODE", "full_video") or "full_video").strip().lower()
+_TRACKING_MODE_DEFAULT = (os.getenv("SAM3_TRACKING_MODE", "auto") or "auto").strip().lower()
+_SAM3_FULL_VIDEO_MAX_FRAMES = max(50, _env_int("SAM3_FULL_VIDEO_MAX_FRAMES", 600))
 _TRACK_MAX_FRAME_GAP = max(1, _env_int("SAM3_TRACK_MAX_FRAME_GAP", 3))
 _TRACK_MIN_ASSOC_SCORE = max(0.0, min(1.0, _env_float("SAM3_TRACK_MIN_ASSOC_SCORE", 0.28)))
 _MAX_REFERENCE_CROPS = max(1, _env_int("SAM3_MAX_REFERENCE_CROPS", 12))
@@ -1227,6 +1228,24 @@ def _resolve_sampling_settings(
         n_frames = max(1, min(n_frames, total_frames))
     min_frame_detections = max(1, min_frame_detections)
     return n_frames, min_frame_detections
+
+
+def _resolve_tracking_mode(requested_mode: str, total_frames: int) -> tuple[str, str]:
+    mode = (requested_mode or "").strip().lower()
+    if mode in {"full_video", "sampled"}:
+        return mode, f"requested={mode}"
+    if mode == "auto" or not mode:
+        resolved = "full_video" if total_frames <= _SAM3_FULL_VIDEO_MAX_FRAMES else "sampled"
+        reason = (
+            "requested=auto "
+            f"(total_frames={total_frames} threshold={_SAM3_FULL_VIDEO_MAX_FRAMES} -> {resolved})"
+        )
+        return resolved, reason
+    resolved = "full_video" if total_frames <= _SAM3_FULL_VIDEO_MAX_FRAMES else "sampled"
+    return resolved, (
+        f"requested={mode} unsupported "
+        f"(fallback=auto threshold={_SAM3_FULL_VIDEO_MAX_FRAMES} -> {resolved})"
+    )
 
 
 def _detect_objects_in_frame(
@@ -2836,9 +2855,14 @@ def run_sam3_detection(
         f"n_frames={n_sample_frames} min_frame_detections={min_frame_detections}"
     )
 
-    tracking_mode = (os.getenv("SAM3_TRACKING_MODE", _TRACKING_MODE_DEFAULT) or _TRACKING_MODE_DEFAULT).strip().lower()
-    if tracking_mode not in {"full_video", "sampled"}:
-        tracking_mode = _TRACKING_MODE_DEFAULT if _TRACKING_MODE_DEFAULT in {"full_video", "sampled"} else "full_video"
+    tracking_mode_raw = (
+        os.getenv("SAM3_TRACKING_MODE", _TRACKING_MODE_DEFAULT) or _TRACKING_MODE_DEFAULT
+    ).strip().lower()
+    tracking_mode, tracking_mode_reason = _resolve_tracking_mode(
+        tracking_mode_raw,
+        len(all_frames),
+    )
+    _log(f"Tracking mode resolved: {tracking_mode} ({tracking_mode_reason})")
 
     if tracking_mode == "full_video":
         frame_paths = all_frames

@@ -9,7 +9,7 @@
 #   6. COLMAP undistorter --max_image_size 1920 → 1px rounding mismatch vs 3DGRUT camera assert
 #      → fixed in nurec_shim.py (use 9999); code change in repo only, no Docker layer needed
 #   7. python3-dev missing — triton JIT needs Python.h to compile CUDA utils at runtime
-#   8. diffusers + Qwen-Image-Edit-2511 not pre-downloaded — needed for object crop polish stage
+#   8. Together Qwen API is now default for crop cleanup; local Qwen bundle optional
 #   9. COLMAP runtime .so files missing (discovered 2026-02-19 E2E run):
 #      libcholmod.so.3 (libsuitesparse-dev), libceres.so.2 (libceres2),
 #      libOpenImageIO.so.2.2 (libopenimageio2.2), libOpenGL.so.0 (libopengl0),
@@ -109,26 +109,25 @@ RUN ldd /usr/local/bin/colmap | grep -c "not found" | grep -q "^0$" && \
 RUN ln -sf /usr/local/lib/python3.11/dist-packages/slangtorch/bin/slangc /usr/local/bin/slangc
 
 ENV THREEDGRUT_PYTHON=python3.11
+ENV CROP_CLEANUP_PROVIDER=skip
 
-# Fix 8: diffusers + Qwen-Image-Edit-2511 weights pre-downloaded for object crop polish stage
-# Pass HF_TOKEN at build time: docker build --build-arg HF_TOKEN=hf_xxx ...
+# Fix 8: local Qwen-Image-Edit bundle intentionally excluded to keep image size manageable.
 ARG HF_TOKEN
 ENV QWEN_IMAGE_EDIT_MODEL_PATH=/opt/qwen-image-edit
 
 # Fix 9: Missing Python packages discovered during E2E runs:
 #   google-genai     → scene_semantics.py: `from google import genai` (Gemini API)
 #   scipy            → sam3_detect.py: depth processing
-#   diffusers>=0.32  → qwen_polish.py: QwenImageEditPlusPipeline
 #   open3d>=0.18     → visual mesh Poisson reconstruction
 RUN pip install --no-cache-dir \
-    "diffusers>=0.32.0" \
-    accelerate \
-    sentencepiece \
     Pillow \
     "open3d>=0.18.0" \
     "google-genai>=1.0.0" \
     scipy \
     trimesh
+
+RUN mkdir -p /opt/qwen-image-edit && \
+    echo "Local Qwen-Image-Edit download disabled for fix layer builds"
 
 # Fix 10: NVIDIA Fixer source + runtime deps + optional pre-downloaded weights.
 # Install cosmos-predict2 WITH deps (pulls imaginaire, megatron-core, etc.),
@@ -185,18 +184,3 @@ RUN mkdir -p /work/models && \
 ENV VISUAL_MESH_POISSON_DEPTH=12
 ENV VISUAL_MESH_POISSON_DEPTH_LARGE=12
 ENV VISUAL_MESH_ENABLED=true
-
-RUN mkdir -p /opt/qwen-image-edit && \
-    if [ -n "$HF_TOKEN" ]; then \
-      HF_TOKEN="$HF_TOKEN" huggingface-cli download \
-        Qwen/Qwen-Image-Edit-2511 \
-        --local-dir /opt/qwen-image-edit \
-        --token "$HF_TOKEN"; \
-      python3 -c " \
-import torch; \
-from diffusers import QwenImageEditPlusPipeline; \
-pipe = QwenImageEditPlusPipeline.from_pretrained('/opt/qwen-image-edit', torch_dtype=torch.bfloat16); \
-print('QWEN_IMAGE_EDIT_PREWARM_OK')"; \
-    else \
-      echo 'WARNING: HF_TOKEN not set — Qwen weights not downloaded. Pass --build-arg HF_TOKEN=hf_xxx'; \
-    fi

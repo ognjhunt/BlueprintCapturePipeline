@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
 import os
 import shutil
 import statistics
@@ -82,14 +83,93 @@ def _run(cmd: list[str] | str, **kwargs) -> subprocess.CompletedProcess:
 # ---------------------------------------------------------------------------
 # Stage 1: Frame Extraction
 # ---------------------------------------------------------------------------
+def _probe_video_duration_seconds(video_path: Path) -> float | None:
+    """Return media duration in seconds, or None if ffprobe fails."""
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        if probe.returncode != 0:
+            _log(f"WARNING: ffprobe failed for {video_path} ({probe.stderr.strip()[:200]})")
+            return None
+        duration = float((probe.stdout or "").strip())
+        if duration > 0:
+            return duration
+    except Exception as exc:
+        _log(f"WARNING: Could not read video duration via ffprobe ({exc})")
+    return None
+
+
+def _resolve_effective_max_frames(video_duration_sec: float | None, requested_max_frames: int) -> tuple[int, str]:
+    """Resolve frame budget for long videos while keeping a hard upper bound."""
+    requested = max(1, int(requested_max_frames))
+    if not _env_flag("ADAPTIVE_MAX_FRAMES", True):
+        return requested, "adaptive_max_frames=disabled"
+    if video_duration_sec is None or video_duration_sec <= 0:
+        return requested, "adaptive_max_frames=duration_unknown"
+
+    target_density_fps = max(0.01, _env_float("ADAPTIVE_MAX_FRAMES_TARGET_FPS", 3.0))
+    hard_cap = max(requested, _env_int("ADAPTIVE_MAX_FRAMES_HARD_CAP", 6000))
+    proposed = int(math.ceil(video_duration_sec * target_density_fps))
+    resolved = max(requested, min(hard_cap, proposed))
+    reason = (
+        "adaptive_max_frames=enabled "
+        f"(duration={video_duration_sec:.1f}s target_density_fps={target_density_fps:.3f} "
+        f"proposed={proposed} hard_cap={hard_cap} resolved={resolved})"
+    )
+    return resolved, reason
+
+
+def _resolve_effective_extract_fps(
+    video_duration_sec: float | None,
+    requested_extract_fps: int,
+    effective_max_frames: int,
+) -> tuple[float, str]:
+    """Resolve extraction FPS so long videos are sampled across full duration."""
+    requested = float(max(1, int(requested_extract_fps)))
+    if not _env_flag("ADAPTIVE_EXTRACT_FPS", True):
+        return requested, "adaptive_extract_fps=disabled"
+    if video_duration_sec is None or video_duration_sec <= 0:
+        return requested, "adaptive_extract_fps=duration_unknown"
+
+    budget_fps = max(0.01, float(effective_max_frames) / float(video_duration_sec))
+    effective = min(requested, budget_fps)
+    warn_floor = max(0.01, _env_float("ADAPTIVE_EXTRACT_FPS_WARN_FLOOR", 0.15))
+    reason = (
+        "adaptive_extract_fps=enabled "
+        f"(requested_fps={requested:.3f} budget_fps={budget_fps:.3f} effective_fps={effective:.3f} "
+        f"max_frames={effective_max_frames})"
+    )
+    if effective < warn_floor:
+        _log(
+            "WARNING: Effective extraction FPS is very low "
+            f"({effective:.3f} < warn_floor={warn_floor:.3f}); "
+            "spatial coverage is preserved but local detail may degrade."
+        )
+    return effective, reason
+
+
 def extract_frames(video_path: Path, frames_dir: Path,
-                   max_frames: int = 300, target_fps: int = 5) -> int:
+                   max_frames: int = 300, target_fps: float = 5) -> int:
     """Extract frames from video at reduced FPS for SfM."""
     frames_dir.mkdir(parents=True, exist_ok=True)
-    _log(f"Extracting frames from {video_path} at {target_fps} fps (max {max_frames})...")
+    _log(f"Extracting frames from {video_path} at {target_fps:.3f} fps (max {max_frames})...")
     _run([
         "ffmpeg", "-i", str(video_path),
-        "-vf", f"fps={target_fps}",
+        "-vf", f"fps={target_fps:.6f}",
         "-frames:v", str(max_frames),
         "-q:v", "2",
         str(frames_dir / "frame_%05d.jpg"),
@@ -460,6 +540,352 @@ def run_colmap_sfm(
 
     _log(f"Selected reconstruction: {best_dir} ({best_count} images)")
     return best_dir
+
+
+def _resolve_chunked_sfm_enabled(requested_mode: str, frame_count: int, min_frames: int) -> tuple[bool, str]:
+    mode = (requested_mode or "").strip().lower()
+    threshold = max(1, int(min_frames))
+    if mode == "on":
+        return True, f"requested=on (frame_count={frame_count})"
+    if mode == "off":
+        return False, "requested=off"
+    if mode in {"auto", ""}:
+        enabled = int(frame_count) >= threshold
+        return enabled, (
+            f"requested=auto (frame_count={frame_count} "
+            f"min_frames={threshold} -> {'enabled' if enabled else 'disabled'})"
+        )
+    _log(f"WARNING: Unknown COLMAP chunked mode {requested_mode!r}; falling back to auto")
+    enabled = int(frame_count) >= threshold
+    return enabled, (
+        f"requested={requested_mode!r} invalid -> auto "
+        f"(frame_count={frame_count} min_frames={threshold} -> {'enabled' if enabled else 'disabled'})"
+    )
+
+
+def _resolve_colmap_retry_matcher_mode(requested_mode: str, frame_count: int) -> tuple[str, str]:
+    mode = (requested_mode or "").strip().lower()
+    if mode in {"sequential", "exhaustive"}:
+        return mode, f"requested={mode}"
+    threshold = max(50, _env_int("COLMAP_AUTO_EXHAUSTIVE_MAX_FRAMES", 600))
+    resolved = "exhaustive" if int(frame_count) <= threshold else "sequential"
+    if mode in {"auto", ""}:
+        return resolved, (
+            "requested=auto "
+            f"(frame_count={frame_count} threshold={threshold} -> {resolved})"
+        )
+    _log(f"WARNING: Unknown COLMAP retry matcher mode {requested_mode!r}; falling back to auto")
+    return resolved, (
+        f"requested={requested_mode!r} invalid -> auto "
+        f"(frame_count={frame_count} threshold={threshold} -> {resolved})"
+    )
+
+
+def _build_colmap_chunk_ranges(
+    total_frames: int,
+    *,
+    chunk_size: int,
+    chunk_overlap: int,
+    max_chunks: int,
+) -> list[tuple[int, int]]:
+    total = max(0, int(total_frames))
+    if total <= 0:
+        return []
+
+    size = max(20, int(chunk_size))
+    size = min(size, total)
+    overlap = max(0, int(chunk_overlap))
+    overlap = min(overlap, size - 1)
+    step = max(1, size - overlap)
+    max_allowed = max(1, int(max_chunks))
+
+    if total > size:
+        min_step = max(1, math.ceil((total - size) / max(1, max_allowed - 1)))
+        step = max(step, min_step)
+
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while start < total:
+        end = min(total, start + size)
+        ranges.append((start, end))
+        if end >= total:
+            break
+        start += step
+
+    # Ensure tail coverage with a full-size final window whenever possible.
+    if ranges and ranges[-1][1] < total:
+        tail_start = max(0, total - size)
+        if ranges[-1][0] != tail_start:
+            ranges.append((tail_start, total))
+
+    return ranges
+
+
+def _populate_chunk_frames(chunk_frames_dir: Path, frame_paths: Sequence[Path]) -> None:
+    chunk_frames_dir.mkdir(parents=True, exist_ok=True)
+    for src in frame_paths:
+        dst = chunk_frames_dir / src.name
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        try:
+            dst.symlink_to(src)
+        except OSError:
+            shutil.copy2(src, dst)
+
+
+def _copy_colmap_model(src_model_dir: Path, dst_model_dir: Path) -> None:
+    dst_model_dir.mkdir(parents=True, exist_ok=True)
+    copied_any = False
+    for name in (
+        "cameras.bin",
+        "images.bin",
+        "points3D.bin",
+        "cameras.txt",
+        "images.txt",
+        "points3D.txt",
+    ):
+        src = src_model_dir / name
+        if src.exists():
+            shutil.copy2(src, dst_model_dir / name)
+            copied_any = True
+    if not copied_any:
+        raise RuntimeError(f"No COLMAP model files found in {src_model_dir}")
+    if not _has_colmap_model(dst_model_dir):
+        raise RuntimeError(f"Incomplete COLMAP model copied to {dst_model_dir}")
+
+
+def run_colmap_sfm_chunked(
+    frames_dir: Path,
+    workspace: Path,
+    *,
+    sift_use_gpu: bool,
+    mapper_num_threads: int = 0,
+    chunk_size_frames: int = 600,
+    chunk_overlap_frames: int = 120,
+    chunk_max_chunks: int = 24,
+    chunk_matcher_mode: str = "sequential",
+    sequential_overlap: int = 30,
+) -> tuple[Path, Dict[str, Any]]:
+    """Run chunked SfM and merge chunk models into workspace/sparse/0."""
+    frame_paths = sorted(frames_dir.glob("frame_*.jpg"))
+    if not frame_paths:
+        raise FileNotFoundError(f"No extracted frames found in {frames_dir}")
+
+    ranges = _build_colmap_chunk_ranges(
+        len(frame_paths),
+        chunk_size=chunk_size_frames,
+        chunk_overlap=chunk_overlap_frames,
+        max_chunks=chunk_max_chunks,
+    )
+    if not ranges:
+        raise RuntimeError("Failed to compute chunk ranges for COLMAP chunked SfM")
+
+    chunk_root = workspace / "chunked_sfm"
+    if chunk_root.exists():
+        shutil.rmtree(chunk_root)
+    chunk_root.mkdir(parents=True, exist_ok=True)
+
+    successful_chunks: list[Dict[str, Any]] = []
+    failed_chunks: list[Dict[str, Any]] = []
+    for idx, (start, end) in enumerate(ranges):
+        chunk_dir = chunk_root / f"chunk_{idx:03d}"
+        chunk_frames_dir = chunk_dir / "frames"
+        chunk_workspace = chunk_dir / "workspace"
+        chunk_frames = frame_paths[start:end]
+        _populate_chunk_frames(chunk_frames_dir, chunk_frames)
+
+        chunk_size = end - start
+        chunk_overlap = min(max(1, int(sequential_overlap)), max(1, chunk_size - 1))
+        _log(
+            f"Chunked SfM {idx + 1}/{len(ranges)}: "
+            f"frames {start + 1}-{end} ({chunk_size} frames)"
+        )
+        try:
+            model_dir = run_colmap_sfm(
+                chunk_frames_dir,
+                chunk_workspace,
+                sift_use_gpu=sift_use_gpu,
+                mapper_num_threads=mapper_num_threads,
+                matcher_mode=chunk_matcher_mode,
+                sequential_overlap=chunk_overlap,
+            )
+            registered_images = _read_registered_image_count(model_dir)
+            successful_chunks.append(
+                {
+                    "chunk_index": idx,
+                    "start_frame_idx": start,
+                    "end_frame_idx_exclusive": end,
+                    "model_dir": model_dir,
+                    "registered_images": int(registered_images),
+                }
+            )
+        except Exception as exc:
+            message = str(exc)
+            _log(f"WARNING: Chunked SfM failed for chunk {idx + 1}/{len(ranges)} ({message})")
+            failed_chunks.append(
+                {
+                    "chunk_index": idx,
+                    "start_frame_idx": start,
+                    "end_frame_idx_exclusive": end,
+                    "error": message,
+                }
+            )
+
+    if not successful_chunks:
+        raise RuntimeError("Chunked SfM produced no successful chunk reconstructions")
+
+    successful_chunks.sort(key=lambda item: int(item["chunk_index"]))
+    current_model = Path(str(successful_chunks[0]["model_dir"]))
+    current_registered = int(successful_chunks[0]["registered_images"])
+    selected_source = f"chunk_{int(successful_chunks[0]['chunk_index']):03d}"
+    merge_successes = 0
+    merge_failures = 0
+
+    merge_root = chunk_root / "merged"
+    merge_root.mkdir(parents=True, exist_ok=True)
+    for merge_idx, chunk in enumerate(successful_chunks[1:], start=1):
+        next_model = Path(str(chunk["model_dir"]))
+        next_registered = int(chunk["registered_images"])
+        output_model = merge_root / f"merge_{merge_idx:03d}"
+        output_model.mkdir(parents=True, exist_ok=True)
+        try:
+            _run(
+                [
+                    "colmap",
+                    "model_merger",
+                    "--input_path1",
+                    str(current_model),
+                    "--input_path2",
+                    str(next_model),
+                    "--output_path",
+                    str(output_model),
+                ]
+            )
+            try:
+                _run(
+                    [
+                        "colmap",
+                        "bundle_adjuster",
+                        "--input_path",
+                        str(output_model),
+                        "--output_path",
+                        str(output_model),
+                    ]
+                )
+            except RuntimeError as exc:
+                _log(f"WARNING: bundle_adjuster after merge {merge_idx} failed ({exc})")
+            current_model = output_model
+            current_registered = _read_registered_image_count(current_model)
+            selected_source = f"merge_{merge_idx:03d}"
+            merge_successes += 1
+            _log(
+                f"Chunked SfM merge {merge_idx}/{len(successful_chunks) - 1}: "
+                f"registered_images={current_registered}"
+            )
+        except RuntimeError as exc:
+            merge_failures += 1
+            _log(
+                f"WARNING: model_merger failed for chunk {int(chunk['chunk_index']) + 1} ({exc})"
+            )
+            # If merge fails, keep the model with better registration coverage.
+            if next_registered > current_registered:
+                current_model = next_model
+                current_registered = next_registered
+                selected_source = f"chunk_{int(chunk['chunk_index']):03d}_fallback_best"
+                _log(
+                    f"Chunked SfM fallback: switched to chunk model with "
+                    f"{current_registered} registered images"
+                )
+
+    sparse_root = workspace / "sparse"
+    if sparse_root.exists():
+        shutil.rmtree(sparse_root)
+    final_sparse_dir = sparse_root / "0"
+    _copy_colmap_model(current_model, final_sparse_dir)
+    final_registered = _read_registered_image_count(final_sparse_dir)
+
+    report: Dict[str, Any] = {
+        "enabled": True,
+        "chunk_count_planned": int(len(ranges)),
+        "chunk_count_successful": int(len(successful_chunks)),
+        "chunk_count_failed": int(len(failed_chunks)),
+        "merge_successes": int(merge_successes),
+        "merge_failures": int(merge_failures),
+        "chunk_size_frames": int(chunk_size_frames),
+        "chunk_overlap_frames": int(chunk_overlap_frames),
+        "chunk_max_chunks": int(chunk_max_chunks),
+        "chunk_matcher_mode": str(chunk_matcher_mode),
+        "selected_model_source": selected_source,
+        "selected_registered_images": int(final_registered),
+        "failed_chunks": failed_chunks,
+    }
+    return final_sparse_dir, report
+
+
+def _run_sfm_with_optional_chunking(
+    *,
+    frames_dir: Path,
+    workspace: Path,
+    sift_use_gpu: bool,
+    mapper_num_threads: int,
+    matcher_mode: str,
+    sequential_overlap: int,
+    frame_count: int,
+    chunked_mode: str,
+    chunk_min_frames: int,
+    chunk_size_frames: int,
+    chunk_overlap_frames: int,
+    chunk_max_chunks: int,
+    chunk_matcher_mode: str,
+) -> tuple[Path, int, Dict[str, Any]]:
+    chunk_enabled, chunk_reason = _resolve_chunked_sfm_enabled(
+        chunked_mode,
+        frame_count,
+        chunk_min_frames,
+    )
+    sfm_report: Dict[str, Any] = {
+        "chunking_requested_mode": str(chunked_mode),
+        "chunking_enabled": bool(chunk_enabled),
+        "chunking_reason": chunk_reason,
+    }
+
+    if chunk_enabled:
+        _log(f"COLMAP chunked SfM enabled ({chunk_reason})")
+        try:
+            sparse_dir, chunk_report = run_colmap_sfm_chunked(
+                frames_dir,
+                workspace,
+                sift_use_gpu=sift_use_gpu,
+                mapper_num_threads=mapper_num_threads,
+                chunk_size_frames=chunk_size_frames,
+                chunk_overlap_frames=chunk_overlap_frames,
+                chunk_max_chunks=chunk_max_chunks,
+                chunk_matcher_mode=chunk_matcher_mode,
+                sequential_overlap=sequential_overlap,
+            )
+            registered_images = _read_registered_image_count(sparse_dir)
+            sfm_report["chunking_applied"] = True
+            sfm_report["chunking"] = chunk_report
+            return sparse_dir, int(registered_images), sfm_report
+        except Exception as exc:
+            _log(f"WARNING: Chunked SfM failed ({exc}); falling back to single-pass SfM")
+            sfm_report["chunking_applied"] = False
+            sfm_report["chunking_fallback"] = "single_pass"
+            sfm_report["chunking_error"] = str(exc)
+    else:
+        _log(f"COLMAP chunked SfM disabled ({chunk_reason})")
+        sfm_report["chunking_applied"] = False
+
+    sparse_dir = run_colmap_sfm(
+        frames_dir,
+        workspace,
+        sift_use_gpu=sift_use_gpu,
+        mapper_num_threads=mapper_num_threads,
+        matcher_mode=matcher_mode,
+        sequential_overlap=sequential_overlap,
+    )
+    registered_images = _read_registered_image_count(sparse_dir)
+    return sparse_dir, int(registered_images), sfm_report
 
 
 # ---------------------------------------------------------------------------
@@ -2081,7 +2507,7 @@ def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
             "max_frames": 450,
             "extract_fps": 6,
             "n_iterations": 12000,
-            "colmap_matcher_mode": "exhaustive",
+            "colmap_matcher_mode": "auto",
             "colmap_sequential_overlap": 30,
             "resume": False,
         },
@@ -2103,6 +2529,26 @@ def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
         },
     }
     return table.get(profile, table["quality_first"])
+
+
+def _resolve_colmap_matcher_mode(requested_mode: str, frame_count: int) -> tuple[str, str]:
+    mode = (requested_mode or "").strip().lower()
+    if mode in {"sequential", "exhaustive"}:
+        return mode, f"requested={mode}"
+    if mode == "auto" or not mode:
+        threshold = max(50, _env_int("COLMAP_AUTO_EXHAUSTIVE_MAX_FRAMES", 600))
+        resolved = "exhaustive" if frame_count <= threshold else "sequential"
+        return resolved, (
+            "requested=auto "
+            f"(frame_count={frame_count} threshold={threshold} -> {resolved})"
+        )
+    threshold = max(50, _env_int("COLMAP_AUTO_EXHAUSTIVE_MAX_FRAMES", 600))
+    resolved = "exhaustive" if frame_count <= threshold else "sequential"
+    _log(
+        f"WARNING: Unknown COLMAP matcher mode {requested_mode!r}; "
+        f"falling back to auto -> {resolved}"
+    )
+    return resolved, f"requested={requested_mode!r} fallback=auto(frame_count={frame_count})"
 
 
 def _apply_open3d_thread_overrides() -> None:
@@ -2641,7 +3087,7 @@ def main() -> int:
             .lower()
             or str(profile_defaults["colmap_matcher_mode"])
         ),
-        choices=["sequential", "exhaustive"],
+        choices=["auto", "sequential", "exhaustive"],
         help="COLMAP matcher mode for SfM correspondence search",
     )
     parser.add_argument(
@@ -2649,6 +3095,42 @@ def main() -> int:
         type=int,
         default=_env_int("COLMAP_SEQUENTIAL_OVERLAP", int(profile_defaults["colmap_sequential_overlap"])),
         help="Temporal overlap window for sequential matcher",
+    )
+    parser.add_argument(
+        "--colmap-chunked-mode",
+        default=(os.getenv("COLMAP_CHUNKED_MODE", "auto").strip().lower() or "auto"),
+        choices=["auto", "off", "on"],
+        help="Chunked COLMAP SfM mode for long captures",
+    )
+    parser.add_argument(
+        "--colmap-chunk-min-frames",
+        type=int,
+        default=_env_int("COLMAP_CHUNK_MIN_FRAMES", 900),
+        help="Minimum extracted frames before chunked SfM auto-enables",
+    )
+    parser.add_argument(
+        "--colmap-chunk-size-frames",
+        type=int,
+        default=_env_int("COLMAP_CHUNK_SIZE_FRAMES", 600),
+        help="Chunk size (frames) for chunked SfM windows",
+    )
+    parser.add_argument(
+        "--colmap-chunk-overlap-frames",
+        type=int,
+        default=_env_int("COLMAP_CHUNK_OVERLAP_FRAMES", 120),
+        help="Chunk overlap (frames) between adjacent SfM windows",
+    )
+    parser.add_argument(
+        "--colmap-chunk-max-chunks",
+        type=int,
+        default=_env_int("COLMAP_CHUNK_MAX_CHUNKS", 24),
+        help="Maximum chunk windows allowed for chunked SfM",
+    )
+    parser.add_argument(
+        "--colmap-chunk-matcher-mode",
+        default=(os.getenv("COLMAP_CHUNK_MATCHER_MODE", "sequential").strip().lower() or "sequential"),
+        choices=["sequential", "exhaustive"],
+        help="Matcher mode used inside each chunk window",
     )
     parser.add_argument(
         "--colmap-min-registered-ratio",
@@ -2661,6 +3143,12 @@ def main() -> int:
         type=float,
         default=_env_float("COLMAP_RETRY_MIN_REGISTERED_RATIO", 0.75),
         help="Hard minimum registered/extracted frame ratio after forced retry",
+    )
+    parser.add_argument(
+        "--colmap-retry-matcher-mode",
+        default=(os.getenv("COLMAP_RETRY_MATCHER_MODE", "auto").strip().lower() or "auto"),
+        choices=["auto", "sequential", "exhaustive"],
+        help="Matcher mode for SfM quality-gate retry",
     )
     parser.add_argument(
         "--blur-filter-keep-ratio",
@@ -2802,6 +3290,22 @@ def main() -> int:
     _log("STAGE 1: Frame Extraction")
     _log("=" * 60)
     video_path = find_video(raw_prefix, storage_root)
+    video_duration_sec = _probe_video_duration_seconds(video_path)
+    effective_max_frames, effective_max_frames_reason = _resolve_effective_max_frames(
+        video_duration_sec,
+        int(args.max_frames),
+    )
+    effective_extract_fps, effective_extract_fps_reason = _resolve_effective_extract_fps(
+        video_duration_sec,
+        int(args.extract_fps),
+        int(effective_max_frames),
+    )
+    if video_duration_sec is not None:
+        _log(f"Video duration: {video_duration_sec:.1f}s")
+    _log(f"Frame budget: requested={args.max_frames}, effective={effective_max_frames}")
+    _log(f"Extraction FPS: requested={args.extract_fps}, effective={effective_extract_fps:.3f}")
+    _log(f"  {effective_max_frames_reason}")
+    _log(f"  {effective_extract_fps_reason}")
     frames_dir = workspace / "frames"
     if args.resume:
         existing_frame_count = _count_extracted_frames(frames_dir)
@@ -2809,9 +3313,19 @@ def main() -> int:
             frame_count = existing_frame_count
             _log(f"Resuming Stage 1: using existing extracted frames ({frame_count})")
         else:
-            frame_count = extract_frames(video_path, frames_dir, args.max_frames, args.extract_fps)
+            frame_count = extract_frames(
+                video_path,
+                frames_dir,
+                effective_max_frames,
+                effective_extract_fps,
+            )
     else:
-        frame_count = extract_frames(video_path, frames_dir, args.max_frames, args.extract_fps)
+        frame_count = extract_frames(
+            video_path,
+            frames_dir,
+            effective_max_frames,
+            effective_extract_fps,
+        )
 
     if frame_count < 10:
         _log(f"WARNING: Only {frame_count} frames extracted. Reconstruction may fail.")
@@ -2826,6 +3340,15 @@ def main() -> int:
             frame_count = filtered_count
 
     capture_quality_report = build_capture_quality_report(frames_dir)
+    capture_quality_report["frame_extraction"] = {
+        "video_duration_sec": float(video_duration_sec) if video_duration_sec is not None else None,
+        "requested_max_frames": int(args.max_frames),
+        "effective_max_frames": int(effective_max_frames),
+        "requested_extract_fps": int(args.extract_fps),
+        "effective_extract_fps": float(effective_extract_fps),
+        "adaptive_max_frames_reason": effective_max_frames_reason,
+        "adaptive_extract_fps_reason": effective_extract_fps_reason,
+    }
     capture_quality_path = output_dir / "capture_quality_report.json"
     capture_quality_path.write_text(json.dumps(capture_quality_report, indent=2), encoding="utf-8")
 
@@ -2848,38 +3371,62 @@ def main() -> int:
         sift_use_gpu = False
 
     _log(f"COLMAP CUDA detected: {colmap_cuda}. Effective SIFT GPU: {sift_use_gpu}.")
+    effective_matcher_mode, matcher_mode_reason = _resolve_colmap_matcher_mode(
+        args.colmap_matcher_mode,
+        frame_count,
+    )
+    _log(f"COLMAP matcher: {effective_matcher_mode} ({matcher_mode_reason})")
     sparse_root = workspace / "sparse"
     sparse_dir: Path
     registered_images = 0
+    sfm_run_report: Dict[str, Any] = {}
     if args.resume:
         existing_sparse_dir, existing_sparse_count = _select_best_reconstruction(sparse_root, emit_logs=True)
         if existing_sparse_dir is not None and existing_sparse_count > 0:
             sparse_dir = existing_sparse_dir
             registered_images = int(existing_sparse_count)
+            sfm_run_report = {
+                "chunking_requested_mode": str(args.colmap_chunked_mode),
+                "chunking_enabled": False,
+                "chunking_reason": "resume_existing_sparse_model",
+                "chunking_applied": False,
+            }
             _log(
                 "Resuming Stage 2: using existing COLMAP sparse model "
                 f"{existing_sparse_dir} ({existing_sparse_count} images)"
             )
         else:
-            sparse_dir = run_colmap_sfm(
-                frames_dir,
-                workspace,
+            sparse_dir, registered_images, sfm_run_report = _run_sfm_with_optional_chunking(
+                frames_dir=frames_dir,
+                workspace=workspace,
                 sift_use_gpu=sift_use_gpu,
                 mapper_num_threads=mapper_threads,
-                matcher_mode=args.colmap_matcher_mode,
+                matcher_mode=effective_matcher_mode,
                 sequential_overlap=args.colmap_sequential_overlap,
+                frame_count=frame_count,
+                chunked_mode=args.colmap_chunked_mode,
+                chunk_min_frames=args.colmap_chunk_min_frames,
+                chunk_size_frames=args.colmap_chunk_size_frames,
+                chunk_overlap_frames=args.colmap_chunk_overlap_frames,
+                chunk_max_chunks=args.colmap_chunk_max_chunks,
+                chunk_matcher_mode=args.colmap_chunk_matcher_mode,
             )
-            registered_images = _read_registered_image_count(sparse_dir)
     else:
-        sparse_dir = run_colmap_sfm(
-            frames_dir,
-            workspace,
+        sparse_dir, registered_images, sfm_run_report = _run_sfm_with_optional_chunking(
+            frames_dir=frames_dir,
+            workspace=workspace,
             sift_use_gpu=sift_use_gpu,
             mapper_num_threads=mapper_threads,
-            matcher_mode=args.colmap_matcher_mode,
+            matcher_mode=effective_matcher_mode,
             sequential_overlap=args.colmap_sequential_overlap,
+            frame_count=frame_count,
+            chunked_mode=args.colmap_chunked_mode,
+            chunk_min_frames=args.colmap_chunk_min_frames,
+            chunk_size_frames=args.colmap_chunk_size_frames,
+            chunk_overlap_frames=args.colmap_chunk_overlap_frames,
+            chunk_max_chunks=args.colmap_chunk_max_chunks,
+            chunk_matcher_mode=args.colmap_chunk_matcher_mode,
         )
-        registered_images = _read_registered_image_count(sparse_dir)
 
     min_registered_ratio = max(0.0, min(1.0, float(args.colmap_min_registered_ratio)))
     retry_min_ratio = max(0.0, min(1.0, float(args.colmap_retry_min_registered_ratio)))
@@ -2893,23 +3440,37 @@ def main() -> int:
         f"(ratio={registered_ratio:.3f})"
     )
 
+    retry_matcher_mode, retry_matcher_reason = _resolve_colmap_retry_matcher_mode(
+        args.colmap_retry_matcher_mode,
+        frame_count,
+    )
+    retry_triggered = False
     if registered_ratio < min_registered_ratio:
+        retry_triggered = True
         _log(
-            "SfM coverage below target; forcing retry with exhaustive matching "
-            f"(threshold={min_registered_ratio:.3f})"
+            "SfM coverage below target; forcing retry "
+            f"(threshold={min_registered_ratio:.3f}, matcher={retry_matcher_mode})"
         )
+        _log(f"  Retry matcher reason: {retry_matcher_reason}")
         db_path = workspace / "database.db"
         if db_path.exists():
             db_path.unlink()
         if sparse_root.exists():
             shutil.rmtree(sparse_root)
+
+        retry_sequential_overlap = max(30, int(args.colmap_sequential_overlap))
+        if retry_matcher_mode == "sequential":
+            retry_sequential_overlap = max(
+                retry_sequential_overlap,
+                _env_int("COLMAP_RETRY_SEQUENTIAL_OVERLAP", 60),
+            )
         sparse_dir = run_colmap_sfm(
             frames_dir,
             workspace,
             sift_use_gpu=sift_use_gpu,
             mapper_num_threads=mapper_threads,
-            matcher_mode="exhaustive",
-            sequential_overlap=max(30, int(args.colmap_sequential_overlap)),
+            matcher_mode=retry_matcher_mode,
+            sequential_overlap=retry_sequential_overlap,
         )
         registered_images = _read_registered_image_count(sparse_dir)
         registered_ratio = _registration_ratio(
@@ -2932,9 +3493,17 @@ def main() -> int:
     capture_quality_report["sfm"] = {
         "registered_images": int(registered_images),
         "extracted_frames": int(frame_count),
+        "matcher_mode_requested": str(args.colmap_matcher_mode),
+        "matcher_mode_effective": str(effective_matcher_mode),
+        "matcher_mode_reason": matcher_mode_reason,
+        "retry_matcher_mode_requested": str(args.colmap_retry_matcher_mode),
+        "retry_matcher_mode_effective": str(retry_matcher_mode),
+        "retry_matcher_mode_reason": retry_matcher_reason,
+        "retry_triggered": bool(retry_triggered),
         "registered_ratio": float(registered_ratio),
         "min_registered_ratio": float(min_registered_ratio),
         "retry_min_registered_ratio": float(retry_min_ratio),
+        "run_report": sfm_run_report,
     }
     capture_quality_path.write_text(json.dumps(capture_quality_report, indent=2), encoding="utf-8")
 

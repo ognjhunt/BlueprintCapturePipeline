@@ -20,7 +20,7 @@ BUCKET="${BUCKET:-blueprint-local}"
 BLUEPRINTPIPELINE_ROOT="${BLUEPRINTPIPELINE_ROOT:-/opt/BlueprintPipeline}"
 ENVIRONMENT="${ENVIRONMENT:-auto}"
 COMPLETION_MODE="${COMPLETION_MODE:-full_required}"
-CROP_CLEANUP_PROVIDER="${CROP_CLEANUP_PROVIDER:-qwen_image_edit}"
+CROP_CLEANUP_PROVIDER="${CROP_CLEANUP_PROVIDER:-skip}"
 GENERATION_PROVIDER_CHAIN="${TEXT_ASSET_GENERATION_PROVIDER_CHAIN:-sam3d,hunyuan3d}"
 SKIP_NUREC="${SKIP_NUREC:-false}"
 
@@ -33,10 +33,17 @@ SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
 SKIP_FIXER="${SKIP_FIXER:---skip-fixer}"
 NUREC_RESUME="${NUREC_RESUME:-false}"
 NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
-COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-exhaustive}"
+COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-auto}"
 COLMAP_SEQUENTIAL_OVERLAP="${COLMAP_SEQUENTIAL_OVERLAP:-30}"
+COLMAP_CHUNKED_MODE="${COLMAP_CHUNKED_MODE:-auto}"
+COLMAP_CHUNK_MIN_FRAMES="${COLMAP_CHUNK_MIN_FRAMES:-900}"
+COLMAP_CHUNK_SIZE_FRAMES="${COLMAP_CHUNK_SIZE_FRAMES:-600}"
+COLMAP_CHUNK_OVERLAP_FRAMES="${COLMAP_CHUNK_OVERLAP_FRAMES:-120}"
+COLMAP_CHUNK_MAX_CHUNKS="${COLMAP_CHUNK_MAX_CHUNKS:-24}"
+COLMAP_CHUNK_MATCHER_MODE="${COLMAP_CHUNK_MATCHER_MODE:-sequential}"
 COLMAP_MIN_REGISTERED_RATIO="${COLMAP_MIN_REGISTERED_RATIO:-0.80}"
 COLMAP_RETRY_MIN_REGISTERED_RATIO="${COLMAP_RETRY_MIN_REGISTERED_RATIO:-0.75}"
+COLMAP_RETRY_MATCHER_MODE="${COLMAP_RETRY_MATCHER_MODE:-auto}"
 BLUR_FILTER_KEEP_RATIO="${BLUR_FILTER_KEEP_RATIO:-1.0}"
 BLUR_FILTER_MIN_FRAMES="${BLUR_FILTER_MIN_FRAMES:-120}"
 VISUAL_MESH_METHOD="${VISUAL_MESH_METHOD:-textured_colmap}"
@@ -88,7 +95,7 @@ Options:
   --workspace DIR         Working directory (default: /workspace)
   --skip-nurec            Skip NuRec shim (use existing outputs in --nurec-output-dir)
   --nurec-output-dir DIR  NuRec output directory (default: auto from workspace)
-  --crop-cleanup PROV     Crop cleanup: qwen_image_edit, nano_banana, skip (default: qwen_image_edit)
+  --crop-cleanup PROV     Crop cleanup: skip, together_qwen_image_edit, qwen_image_edit, nano_banana, gpt_image (default: skip)
   --scene-id ID           Scene ID (default: derived from input filename)
   -h, --help              Show this help
 EOF
@@ -193,8 +200,15 @@ SPEC
     --n-iterations "$N_ITERATIONS" \
     --colmap-matcher-mode "$COLMAP_MATCHER_MODE" \
     --colmap-sequential-overlap "$COLMAP_SEQUENTIAL_OVERLAP" \
+    --colmap-chunked-mode "$COLMAP_CHUNKED_MODE" \
+    --colmap-chunk-min-frames "$COLMAP_CHUNK_MIN_FRAMES" \
+    --colmap-chunk-size-frames "$COLMAP_CHUNK_SIZE_FRAMES" \
+    --colmap-chunk-overlap-frames "$COLMAP_CHUNK_OVERLAP_FRAMES" \
+    --colmap-chunk-max-chunks "$COLMAP_CHUNK_MAX_CHUNKS" \
+    --colmap-chunk-matcher-mode "$COLMAP_CHUNK_MATCHER_MODE" \
     --colmap-min-registered-ratio "$COLMAP_MIN_REGISTERED_RATIO" \
     --colmap-retry-min-registered-ratio "$COLMAP_RETRY_MIN_REGISTERED_RATIO" \
+    --colmap-retry-matcher-mode "$COLMAP_RETRY_MATCHER_MODE" \
     --blur-filter-keep-ratio "$BLUR_FILTER_KEEP_RATIO" \
     --blur-filter-min-frames "$BLUR_FILTER_MIN_FRAMES" \
     --environment "$ENVIRONMENT" \
@@ -242,15 +256,15 @@ done
 INDEX_SOURCE="${NUREC_OUTPUT_DIR}/object_point_cloud_index.json"
 INDEX_POINTER_CANONICAL="${RAW_ROOT}/object_point_cloud_index.json"
 INDEX_POINTER_LEGACY="${RAW_ROOT}/arkit_objects_index.json"
-ln -sfn "$INDEX_SOURCE" "$INDEX_POINTER_CANONICAL"
-ln -sfn "$INDEX_SOURCE" "$INDEX_POINTER_LEGACY"
-log "Regenerated object index pointers:"
-log "  ${INDEX_POINTER_CANONICAL} -> ${INDEX_SOURCE}"
-log "  ${INDEX_POINTER_LEGACY} -> ${INDEX_SOURCE}"
+cp -f "$INDEX_SOURCE" "$INDEX_POINTER_CANONICAL"
+ln -sfn "object_point_cloud_index.json" "$INDEX_POINTER_LEGACY"
+log "Regenerated object index files:"
+log "  ${INDEX_POINTER_CANONICAL} (copied from ${INDEX_SOURCE})"
+log "  ${INDEX_POINTER_LEGACY} -> object_point_cloud_index.json"
 
 # Copy object crops directory (reference images for generation)
 if [ -d "${NUREC_OUTPUT_DIR}/object_crops" ]; then
-  ln -sf "${NUREC_OUTPUT_DIR}/object_crops" "${NUREC_ROOT}/object_crops"
+  ln -sfn "${NUREC_OUTPUT_DIR}/object_crops" "${NUREC_ROOT}/object_crops"
 fi
 
 # Fix reference_crop paths in object index to point to GCS-like structure
@@ -411,7 +425,7 @@ export IMAGE_CONDITIONED_GENERATION_ENABLED=true
 export TEXT_ASSET_GENERATION_PROVIDER_CHAIN="$GENERATION_PROVIDER_CHAIN"
 export SWAP_POLICY_CONFIG_PATH="${APP_DIR}/configs/swap_policy.yaml"
 export PYTHONPATH="${APP_DIR}/scripts:${PYTHONPATH:-}"
-export SAM3_TRACKING_MODE="${SAM3_TRACKING_MODE:-full_video}"
+export SAM3_TRACKING_MODE="${SAM3_TRACKING_MODE:-auto}"
 export SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT=false
 
 if [ "$COMPLETION_MODE" = "full_required" ]; then
@@ -459,6 +473,9 @@ esac
 log "GCS_ROOT=$GCS_ROOT"
 log "BLUEPRINTPIPELINE_ROOT=$BLUEPRINTPIPELINE_ROOT"
 log "CROP_CLEANUP_PROVIDER=$CROP_CLEANUP_PROVIDER"
+if [ "$CROP_CLEANUP_PROVIDER" = "together_qwen_image_edit" ] && [ -z "${TOGETHER_API_KEY:-}" ]; then
+  log "WARNING: TOGETHER_API_KEY is not set; crop cleanup will fall back to original crops"
+fi
 log "GENERATION_PROVIDER_CHAIN=$GENERATION_PROVIDER_CHAIN"
 log "DESCRIPTOR_URI=$DESCRIPTOR_URI"
 log "NUREC_VISUAL_PRIMARY=$NUREC_VISUAL_PRIMARY"

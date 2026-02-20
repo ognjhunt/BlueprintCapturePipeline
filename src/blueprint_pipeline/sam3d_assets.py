@@ -520,7 +520,7 @@ def _materialize_with_image_conditioned_pipeline(
     cleanup_provider = (
         os.getenv("STAGE_D_IMAGE_CLEANUP_PROVIDER")
         or os.getenv("CROP_CLEANUP_PROVIDER")
-        or "qwen_image_edit"
+        or "skip"
     ).strip().lower()
     image_to_3d_command = (
         os.getenv("STAGE_D_IMAGE_TO_3D_COMMAND")

@@ -10,6 +10,7 @@
 set -euo pipefail
 
 WITH_FIXER=false
+WITH_LOCAL_QWEN=false
 SKIP_PREWARM=false
 COLMAP_REF="${COLMAP_REF:-main}"
 COLMAP_CUDA_ARCHS="${COLMAP_CUDA_ARCHS:-89}"
@@ -47,6 +48,7 @@ Usage:
 
 Options:
   --with-fixer           Install Fixer + weights (optional heavy stage)
+  --with-local-qwen      Install local Qwen-Image-Edit weights (large download)
   --skip-prewarm         Skip model cache prewarm/offline checks
   --colmap-ref REF       COLMAP git ref (default: main)
   -h, --help             Show this help
@@ -57,6 +59,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --with-fixer)
       WITH_FIXER=true
+      shift
+      ;;
+    --with-local-qwen)
+      WITH_LOCAL_QWEN=true
       shift
       ;;
     --skip-prewarm)
@@ -179,13 +185,17 @@ if [ "$WITH_FIXER" = true ]; then
   fi
 fi
 
-log "Installing Qwen-Image-Edit dependencies..."
-python3 -m pip install --no-cache-dir diffusers accelerate sentencepiece protobuf transformers "open3d>=0.18.0"
+if [ "$WITH_LOCAL_QWEN" = true ]; then
+  log "Installing Qwen-Image-Edit dependencies..."
+  python3 -m pip install --no-cache-dir diffusers accelerate sentencepiece protobuf transformers
 
-log "Downloading Qwen-Image-Edit-2511 weights..."
-mkdir -p "$QWEN_EDIT_DIR"
-if [ ! -f "$QWEN_EDIT_DIR/model_index.json" ]; then
-  HF_HOME="$HF_CACHE_DIR" huggingface-cli download Qwen/Qwen-Image-Edit-2511 --local-dir "$QWEN_EDIT_DIR"
+  log "Downloading Qwen-Image-Edit-2511 weights..."
+  mkdir -p "$QWEN_EDIT_DIR"
+  if [ ! -f "$QWEN_EDIT_DIR/model_index.json" ]; then
+    HF_HOME="$HF_CACHE_DIR" huggingface-cli download Qwen/Qwen-Image-Edit-2511 --local-dir "$QWEN_EDIT_DIR"
+  fi
+else
+  log "Skipping local Qwen-Image-Edit install (use Together provider by default)"
 fi
 
 if [ "$SKIP_PREWARM" = false ]; then
@@ -205,14 +215,6 @@ DepthAnything3.from_pretrained(
 print("PREWARM_OK")
 PY
 
-  log "Prewarming Qwen-Image-Edit pipeline..."
-  HF_HOME="$HF_CACHE_DIR" QWEN_IMAGE_EDIT_MODEL_PATH="$QWEN_EDIT_DIR" python3 - <<PY
-import torch
-from diffusers import QwenImageEditPlusPipeline
-pipe = QwenImageEditPlusPipeline.from_pretrained("${QWEN_EDIT_DIR}", torch_dtype=torch.bfloat16)
-print("QWEN_IMAGE_EDIT_PREWARM_OK")
-PY
-
   log "Validating offline model load (no network)..."
   HF_HOME="$HF_CACHE_DIR" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python3 - <<PY
 from pathlib import Path
@@ -227,15 +229,24 @@ DepthAnything3.from_pretrained(
 )
 print("OFFLINE_LOAD_OK")
 PY
+  if [ "$WITH_LOCAL_QWEN" = true ]; then
+    log "Prewarming Qwen-Image-Edit pipeline..."
+    HF_HOME="$HF_CACHE_DIR" QWEN_IMAGE_EDIT_MODEL_PATH="$QWEN_EDIT_DIR" python3 - <<PY
+import torch
+from diffusers import QwenImageEditPlusPipeline
+pipe = QwenImageEditPlusPipeline.from_pretrained("${QWEN_EDIT_DIR}", torch_dtype=torch.bfloat16)
+print("QWEN_IMAGE_EDIT_PREWARM_OK")
+PY
 
-  log "Validating offline Qwen-Image-Edit load..."
-  HF_HOME="$HF_CACHE_DIR" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-    QWEN_IMAGE_EDIT_MODEL_PATH="$QWEN_EDIT_DIR" python3 - <<PY
+    log "Validating offline Qwen-Image-Edit load..."
+    HF_HOME="$HF_CACHE_DIR" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+      QWEN_IMAGE_EDIT_MODEL_PATH="$QWEN_EDIT_DIR" python3 - <<PY
 import torch
 from diffusers import QwenImageEditPlusPipeline
 pipe = QwenImageEditPlusPipeline.from_pretrained("${QWEN_EDIT_DIR}", torch_dtype=torch.bfloat16)
 print("QWEN_IMAGE_EDIT_OFFLINE_OK")
 PY
+  fi
 fi
 
 log "Writing environment profile..."
@@ -247,6 +258,7 @@ export DA3_MODEL_PATH=${DA3_WEIGHTS_DIR}
 export DA3_MODEL_NAME=${DA3_MODEL_NAME}
 export QWEN_IMAGE_EDIT_MODEL_PATH=${QWEN_EDIT_DIR}
 export HF_HOME=${HF_CACHE_DIR}
+export CROP_CLEANUP_PROVIDER=skip
 EOF
 
 log "Verifying installed stack..."

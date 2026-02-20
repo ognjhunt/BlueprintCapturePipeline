@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 import pytest
 
+import blueprint_pipeline.swap_orchestrator as swap_orchestrator_module
 from blueprint_pipeline.blueprintpipeline_runner import CommandResult
 from blueprint_pipeline.quality_gates import AdvancedQualityGateConfig
 from blueprint_pipeline.swap_orchestrator import OrchestratorConfig, run_swap_pipeline
@@ -564,6 +565,106 @@ def test_hard_fail_when_retrieval_unresolved(tmp_path: Path) -> None:
             nurec_client=nurec_client,
             blueprint_runner=runner,
         )
+
+    failed_marker = (
+        tmp_path
+        / "bucket/scenes/scene_demo/captures/capture_demo/pipeline/.swap_pipeline_failed.json"
+    )
+    assert failed_marker.is_file()
+
+
+def test_missing_descriptor_writes_failure_artifacts(tmp_path: Path) -> None:
+    descriptor_uri = "gs://bucket/scenes/scene_demo/captures/capture_demo/capture_descriptor.json"
+
+    with pytest.raises(Exception):
+        run_swap_pipeline(
+            descriptor_gcs_uri=descriptor_uri,
+            config=OrchestratorConfig(
+                gcs_root=tmp_path,
+                blueprintpipeline_root=Path("/unused"),
+                expected_blueprintpipeline_commit="",
+                fail_on_commit_mismatch=False,
+                runtime_preflight_enabled=False,
+                advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+            ),
+        )
+
+    pipeline_dir_bucket = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    pipeline_dir_flat = tmp_path / "scenes/scene_demo/captures/capture_demo/pipeline"
+    pipeline_dir = pipeline_dir_bucket if pipeline_dir_bucket.is_dir() else pipeline_dir_flat
+    failed_payload = json.loads((pipeline_dir / ".swap_pipeline_failed.json").read_text(encoding="utf-8"))
+    quality_payload = json.loads((pipeline_dir / "swap_quality_report.json").read_text(encoding="utf-8"))
+    assert failed_payload["status"] == "failed"
+    assert quality_payload["status"] == "failed"
+    assert quality_payload["failed_stage"] == "intake"
+
+
+def test_swap_candidates_file_matches_post_mutation_payload(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    object_index_path = (
+        tmp_path / "bucket/scenes/scene_demo/iphone/capture_demo/raw/arkit/objects/index.json"
+    )
+    object_index = json.loads(object_index_path.read_text(encoding="utf-8"))
+    objects = object_index["objects"]
+    for item in objects:
+        if item.get("id") == "drawer_1":
+            item["reference_crop"] = "/tmp/crop_a.png"
+            item["all_crops"] = ["/tmp/crop_a.png", "/tmp/crop_b.png"]
+    object_index_path.write_text(json.dumps(object_index, indent=2), encoding="utf-8")
+
+    nurec_client = _StubNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+    runner = _StubBlueprintRunner(tmp_path / "bucket")
+    result = run_swap_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            image_conditioned_generation=False,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+        nurec_client=nurec_client,
+        blueprint_runner=runner,
+    )
+    assert result["status"] == "completed"
+
+    swap_candidates_payload = json.loads(
+        (
+            tmp_path
+            / "bucket/scenes/scene_demo/captures/capture_demo/pipeline/swap_candidates.json"
+        ).read_text(encoding="utf-8")
+    )
+    drawer_candidate = next(
+        item for item in swap_candidates_payload.get("candidates", []) if item.get("object_id") == "drawer_1"
+    )
+    assert "reference_crop" not in drawer_candidate
+    assert "all_crops" not in drawer_candidate
+
+
+def test_unmapped_required_ids_hard_fail_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        swap_orchestrator_module,
+        "find_required_articulation_failures",
+        lambda **_: ["ghost_required_id"],
+    )
+
+    with pytest.raises(Exception):
+        _run_pipeline(tmp_path, fail_required_ids=set(), retrieval_resolves=True)
+
+    fallback_report = json.loads(
+        (
+            tmp_path
+            / "bucket/scenes/scene_demo/captures/capture_demo/pipeline/retrieval_fallback_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fallback_report["unresolved_ids"] == ["ghost_required_id"]
+    assert fallback_report["mapping_error"] == "failed required articulation IDs missing from swap_candidates"
 
     failed_marker = (
         tmp_path

@@ -74,3 +74,23 @@ def test_sam3_detect_defaults_to_runner_command(monkeypatch) -> None:
     command = module._DIM_COMPLETION_COMMAND
     assert command
     assert "sam3_dimension_completion_runner.py" in command
+
+
+def test_sam3_tracking_mode_auto_short_capture(monkeypatch) -> None:
+    monkeypatch.setenv("SAM3_TRACKING_MODE", "auto")
+    monkeypatch.setenv("SAM3_FULL_VIDEO_MAX_FRAMES", "600")
+    module = _load_sam3_module_with_env()
+
+    mode, reason = module._resolve_tracking_mode("auto", 450)
+    assert mode == "full_video"
+    assert "requested=auto" in reason
+
+
+def test_sam3_tracking_mode_auto_long_capture(monkeypatch) -> None:
+    monkeypatch.setenv("SAM3_TRACKING_MODE", "auto")
+    monkeypatch.setenv("SAM3_FULL_VIDEO_MAX_FRAMES", "600")
+    module = _load_sam3_module_with_env()
+
+    mode, reason = module._resolve_tracking_mode("auto", 1200)
+    assert mode == "sampled"
+    assert "threshold=600" in reason

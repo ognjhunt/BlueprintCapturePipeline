@@ -1,5 +1,7 @@
 """Tests for reference image utilities (crop loading, selection, VLM cleanup)."""
 
+import base64
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -119,6 +121,39 @@ def test_cleanup_crop_gpt_image_no_api_key_returns_original(tmp_path: Path) -> N
     with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False):
         result = cleanup_crop_with_vlm(img, out, provider="gpt_image")
     assert result == img
+
+
+def test_cleanup_crop_together_qwen_no_api_key_returns_original(tmp_path: Path) -> None:
+    img = tmp_path / "crop.png"
+    img.write_bytes(b"image data")
+    out = tmp_path / "cleaned.png"
+
+    with patch.dict("os.environ", {"TOGETHER_API_KEY": ""}, clear=False):
+        result = cleanup_crop_with_vlm(img, out, provider="together_qwen_image_edit")
+    assert result == img
+
+
+def test_cleanup_crop_together_qwen_success(tmp_path: Path) -> None:
+    img = tmp_path / "crop.png"
+    img.write_bytes(b"image data")
+    out = tmp_path / "cleaned.png"
+    cleaned_bytes = b"cleaned-image"
+
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps(
+        {"data": [{"b64_json": base64.b64encode(cleaned_bytes).decode("utf-8")}]}
+    ).encode("utf-8")
+
+    mock_context = MagicMock()
+    mock_context.__enter__.return_value = mock_response
+    mock_context.__exit__.return_value = False
+
+    with patch.dict("os.environ", {"TOGETHER_API_KEY": "tok_test"}, clear=False):
+        with patch.object(ref_utils.urllib_request, "urlopen", return_value=mock_context):
+            result = cleanup_crop_with_vlm(img, out, provider="together_qwen_image_edit")
+
+    assert result == out
+    assert out.read_bytes() == cleaned_bytes
 
 
 def test_cleanup_crop_qwen_success(tmp_path: Path) -> None:

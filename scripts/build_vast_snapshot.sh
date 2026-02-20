@@ -60,6 +60,7 @@ done
 IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
 
 echo "[build-snapshot] Building ${IMAGE}..."
+echo "[build-snapshot] Local Qwen-Image-Edit weights are intentionally excluded from snapshot builds."
 docker build \
   --platform "$TARGET_PLATFORM" \
   -f "$PROJECT_ROOT/Dockerfile.snapshot" \

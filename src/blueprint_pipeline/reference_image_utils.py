@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
+import mimetypes
 import os
 from pathlib import Path
 from typing import Optional
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +72,10 @@ def cleanup_crop_with_vlm(
     Providers:
       - "skip": Return original path unchanged (default, no API call)
       - "qwen_image_edit": Use Qwen-Image-Edit-2511 (local GPU, free, open-source)
+      - "together_qwen_image_edit": Use Together AI hosted Qwen Image Edit API
       - "nano_banana": Use Google Gemini 3 Pro Image (Nano Banana Pro)
       - "gpt_image": Use OpenAI GPT Image 1.5
-      - "auto": Try qwen_image_edit first, then nano_banana, then gpt_image
+      - "auto": Try together_qwen_image_edit, qwen_image_edit, nano_banana, then gpt_image
 
     Returns the cleaned image path, or the original path if cleanup fails.
     """
@@ -83,6 +88,9 @@ def cleanup_crop_with_vlm(
         return None
 
     if provider == "auto":
+        result = cleanup_crop_with_vlm(image_path, output_path, provider="together_qwen_image_edit")
+        if result is not None and result != image_path:
+            return result
         result = cleanup_crop_with_vlm(image_path, output_path, provider="qwen_image_edit")
         if result is not None and result != image_path:
             return result
@@ -93,6 +101,9 @@ def cleanup_crop_with_vlm(
 
     if provider == "qwen_image_edit":
         return _cleanup_with_qwen_image_edit(image_path, output_path)
+
+    if provider in {"together_qwen_image_edit", "together_qwen_image_edit_api"}:
+        return _cleanup_with_together_qwen_image_edit(image_path, output_path)
 
     if provider == "nano_banana":
         return _cleanup_with_nano_banana(image_path, output_path)
@@ -122,6 +133,16 @@ def _env_float(name: str, default: float) -> float:
         return default
     try:
         return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
     except ValueError:
         return default
 
@@ -254,6 +275,121 @@ def _cleanup_with_qwen_image_edit(image_path: Path, output_path: Path) -> Option
     except Exception as exc:
         logger.warning("Qwen-Image-Edit cleanup failed: %s, using original crop", exc)
         return image_path
+
+
+def _together_qwen_model_candidates() -> list[str]:
+    configured = (os.getenv("TOGETHER_QWEN_IMAGE_EDIT_MODEL") or "").strip()
+    candidates = [
+        configured,
+        "Qwen/Qwen-Image-Edit",
+        "Qwen/Qwen-Image-edit",
+        "Qwen/Qwen-Image-Edit-2509",
+        "Qwen/Qwen-Image",
+    ]
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def _cleanup_with_together_qwen_image_edit(image_path: Path, output_path: Path) -> Optional[Path]:
+    """Clean up crop using Together AI hosted Qwen image editing."""
+    api_key = (os.getenv("TOGETHER_API_KEY") or "").strip()
+    if not api_key:
+        logger.warning("TOGETHER_API_KEY not set, skipping Together Qwen cleanup")
+        return image_path
+
+    endpoint = (
+        os.getenv("TOGETHER_IMAGE_EDIT_ENDPOINT")
+        or "https://api.together.xyz/v1/images/generations"
+    ).strip()
+    width = _env_int("TOGETHER_QWEN_IMAGE_EDIT_WIDTH", 1024)
+    height = _env_int("TOGETHER_QWEN_IMAGE_EDIT_HEIGHT", width)
+    steps = _env_int("TOGETHER_QWEN_IMAGE_EDIT_STEPS", 28)
+    timeout_seconds = max(1.0, _env_float("TOGETHER_QWEN_IMAGE_EDIT_TIMEOUT_SECONDS", 90.0))
+    output_format = (os.getenv("TOGETHER_QWEN_IMAGE_EDIT_OUTPUT_FORMAT") or "png").strip().lower()
+
+    mime_type = mimetypes.guess_type(str(image_path))[0] or "image/png"
+    image_b64 = base64.b64encode(image_path.read_bytes()).decode()
+    image_data_uri = f"data:{mime_type};base64,{image_b64}"
+
+    last_error = ""
+    for model_name in _together_qwen_model_candidates():
+        payload = {
+            "model": model_name,
+            "prompt": _CLEANUP_PROMPT,
+            "image_url": image_data_uri,
+            "response_format": "base64",
+            "output_format": output_format,
+            "width": width,
+            "height": height,
+            "n": 1,
+        }
+        if steps > 0:
+            payload["steps"] = steps
+
+        request = urllib_request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+                body = json.loads(response.read().decode("utf-8"))
+
+            image_bytes = _extract_together_image_bytes(body, timeout_seconds=timeout_seconds)
+            if image_bytes:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(image_bytes)
+                logger.info(
+                    "Together Qwen cleanup saved to %s (model=%s)",
+                    output_path,
+                    model_name,
+                )
+                return output_path
+            last_error = f"model={model_name}: response missing image payload"
+        except urllib_error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                detail = ""
+            last_error = f"model={model_name}: HTTP {exc.code} {detail[:280]}".strip()
+        except Exception as exc:
+            last_error = f"model={model_name}: {exc}"
+
+    if last_error:
+        logger.warning("Together Qwen cleanup failed: %s, using original crop", last_error)
+    else:
+        logger.warning("Together Qwen cleanup failed: unknown error, using original crop")
+    return image_path
+
+
+def _extract_together_image_bytes(response_json: dict, *, timeout_seconds: float) -> Optional[bytes]:
+    data = response_json.get("data")
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            b64_json = str(first.get("b64_json") or "").strip()
+            if b64_json:
+                return _decode_image_b64(b64_json)
+            image_url = str(first.get("url") or "").strip()
+            if image_url:
+                with urllib_request.urlopen(image_url, timeout=timeout_seconds) as response:
+                    return response.read()
+    return None
+
+
+def _decode_image_b64(encoded: str) -> bytes:
+    # Handle both plain base64 strings and data URLs.
+    payload = encoded.split(",", 1)[1] if encoded.startswith("data:") and "," in encoded else encoded
+    return base64.b64decode(payload)
 
 
 def _cleanup_with_nano_banana(image_path: Path, output_path: Path) -> Optional[Path]:

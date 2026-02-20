@@ -76,6 +76,12 @@ variable "max_concurrent_jobs" {
   default     = 10
 }
 
+variable "pipeline_job_timeout_seconds" {
+  description = "Cloud Run Job timeout for pipeline execution"
+  type        = number
+  default     = 14400
+}
+
 variable "enable_notifications" {
   description = "Enable push notifications via FCM"
   type        = bool
@@ -333,7 +339,7 @@ resource "google_cloud_run_v2_job" "pipeline" {
     template {
       execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
       max_retries           = 3
-      timeout               = "3600s"  # 1 hour
+      timeout               = "${var.pipeline_job_timeout_seconds}s"
 
       service_account = google_service_account.pipeline_runner.email
 

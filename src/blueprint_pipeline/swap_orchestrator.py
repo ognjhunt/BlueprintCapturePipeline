@@ -381,6 +381,20 @@ def _write_pipeline_failure(
     write_json(pipeline_dir / ".swap_pipeline_failed.json", payload)
 
 
+def _scene_capture_from_descriptor_uri(descriptor_uri: str) -> tuple[str, str] | None:
+    """Best-effort scene/capture extraction from descriptor URI key path."""
+    try:
+        parsed = parse_gs_uri(descriptor_uri)
+    except Exception:
+        return None
+    parts = [part for part in parsed.key.split("/") if part]
+    if len(parts) < 4:
+        return None
+    if parts[0] == "scenes" and parts[2] == "captures":
+        return parts[1], parts[3]
+    return None
+
+
 def run_swap_pipeline(
     *,
     descriptor_gcs_uri: str,
@@ -395,20 +409,12 @@ def run_swap_pipeline(
     stage = "intake"
     debug: Dict[str, Any] = {}
 
-    descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
-    storage_root = infer_storage_root_from_scene_path(descriptor_path)
-
-    descriptor = CaptureDescriptor.from_file(descriptor_path)
-    parsed_uri = parse_gs_uri(descriptor_gcs_uri)
-    bucket = parsed_uri.bucket
-
-    scene_id = descriptor.scene_id
-    capture_id = descriptor.capture_id
-
-    pipeline_prefix = to_pipeline_prefix(scene_id, capture_id)
+    storage_root = cfg.gcs_root
+    bucket = ""
+    scene_id = "unknown_scene"
+    capture_id = "unknown_capture"
+    pipeline_prefix = "_pipeline_failures"
     pipeline_dir = storage_root / pipeline_prefix
-    ensure_dir(pipeline_dir)
-
     assets_prefix = _assets_prefix(scene_id)
     layout_prefix = _layout_prefix(scene_id)
     seg_prefix = _seg_prefix(scene_id)
@@ -422,6 +428,31 @@ def run_swap_pipeline(
     runtime_preflight_report: Dict[str, Any] = {}
 
     try:
+        parsed_uri = parse_gs_uri(descriptor_gcs_uri)
+        bucket = parsed_uri.bucket
+
+        uri_ids = _scene_capture_from_descriptor_uri(descriptor_gcs_uri)
+        if uri_ids is not None:
+            scene_id, capture_id = uri_ids
+            pipeline_prefix = to_pipeline_prefix(scene_id, capture_id)
+
+        descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
+        storage_root = infer_storage_root_from_scene_path(descriptor_path)
+        pipeline_dir = storage_root / pipeline_prefix
+        ensure_dir(pipeline_dir)
+
+        descriptor = CaptureDescriptor.from_file(descriptor_path)
+        scene_id = descriptor.scene_id
+        capture_id = descriptor.capture_id
+        pipeline_prefix = to_pipeline_prefix(scene_id, capture_id)
+        pipeline_dir = storage_root / pipeline_prefix
+        ensure_dir(pipeline_dir)
+
+        assets_prefix = _assets_prefix(scene_id)
+        layout_prefix = _layout_prefix(scene_id)
+        seg_prefix = _seg_prefix(scene_id)
+        usd_prefix = _usd_prefix(scene_id)
+
         # ------------------------------------------------------------------
         # Stage 0: runtime preflight
         # ------------------------------------------------------------------
@@ -570,7 +601,6 @@ def run_swap_pipeline(
         swap_candidates_payload["task_targets_uri"] = (
             f"gs://{bucket}/{pipeline_prefix}/task_targets.json"
         )
-        write_json(pipeline_dir / "swap_candidates.json", swap_candidates_payload)
         swap_candidates = swap_candidates_payload.get("candidates")
         if not isinstance(swap_candidates, list):
             raise StageError("swap_candidates", "invalid swap_candidates payload")
@@ -592,6 +622,7 @@ def run_swap_pipeline(
                     )
                     if result is not None and result != crop_path:
                         cand["reference_crop"] = str(result)
+        write_json(pipeline_dir / "swap_candidates.json", swap_candidates_payload)
 
         # ------------------------------------------------------------------
         # Stage D: SAM3D-first materialization
@@ -735,11 +766,33 @@ def run_swap_pipeline(
         articulation_detail = "all required articulated objects passed interactive validation"
         if failed_required_ids:
             stage = "retrieval_fallback"
+            failed_required_set = {
+                str(value).strip() for value in failed_required_ids if str(value).strip()
+            }
             failed_candidates = [
                 candidate
                 for candidate in swap_candidates
-                if str(candidate.get("object_id")) in set(failed_required_ids)
+                if str(candidate.get("object_id")).strip() in failed_required_set
             ]
+            matched_failed_ids = {
+                str(candidate.get("object_id")).strip()
+                for candidate in failed_candidates
+                if str(candidate.get("object_id")).strip()
+            }
+            unmapped_failed_ids = sorted(failed_required_set - matched_failed_ids)
+            if unmapped_failed_ids:
+                fallback_payload = {
+                    "schema_version": "v1",
+                    "scene_id": scene_id,
+                    "policy": "catalog_first",
+                    "generated_at": utc_now_iso(),
+                    "results": [],
+                    "resolved_ids": [],
+                    "unresolved_ids": unmapped_failed_ids,
+                    "mapping_error": "failed required articulation IDs missing from swap_candidates",
+                }
+                write_json(pipeline_dir / "retrieval_fallback_report.json", fallback_payload)
+                enforce_hard_fail_if_unresolved(fallback_payload)
 
             fallback_payload = run_retrieval_fallback(
                 runner=blueprint_runner,
@@ -914,14 +967,18 @@ def run_swap_pipeline(
     except Exception as exc:
         if isinstance(exc, StageError):
             stage = exc.stage
-        _write_pipeline_failure(
-            pipeline_dir=pipeline_dir,
-            descriptor_uri=descriptor_gcs_uri,
-            stage=stage,
-            error=exc,
-            gates=gates,
-            debug=debug,
-        )
+        try:
+            _write_pipeline_failure(
+                pipeline_dir=pipeline_dir,
+                descriptor_uri=descriptor_gcs_uri,
+                stage=stage,
+                error=exc,
+                gates=gates,
+                debug=debug,
+            )
+        except Exception:
+            # Preserve the original orchestration error if failure marker write fails.
+            pass
 
         quality_report = {
             "schema_version": "v1",
@@ -933,7 +990,11 @@ def run_swap_pipeline(
             "error": str(exc),
             "gates": [gate.to_dict() for gate in gates],
         }
-        write_json(pipeline_dir / "swap_quality_report.json", quality_report)
+        try:
+            write_json(pipeline_dir / "swap_quality_report.json", quality_report)
+        except Exception:
+            # Preserve the original orchestration error if quality report write fails.
+            pass
         raise
 
 

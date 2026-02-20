@@ -78,33 +78,13 @@ ENV GCS_ROOT=/mnt/gcs
 ENV PYTHONPATH=/app/scripts
 # 3DGRUT requires Python >=3.11 — installed alongside the default python3.10
 ENV THREEDGRUT_PYTHON=python3.11
+ENV CROP_CLEANUP_PROVIDER=skip
 
-# Pre-download Qwen-Image-Edit-2511 weights for object crop polish stage (Stage 7.5)
-# Pass HF_TOKEN at build time: docker build --build-arg HF_TOKEN=hf_xxx ...
-ARG HF_TOKEN
+# Keep the runtime path for optional externally-mounted Qwen weights, but do
+# not bake local Qwen-Image-Edit into snapshot images.
 ENV QWEN_IMAGE_EDIT_MODEL_PATH=/opt/qwen-image-edit
-
-RUN pip install --no-cache-dir \
-    "diffusers>=0.32.0" \
-    accelerate \
-    sentencepiece \
-    "open3d>=0.18.0" \
-    trimesh
-
 RUN mkdir -p /opt/qwen-image-edit && \
-    if [ -n "$HF_TOKEN" ]; then \
-      HF_TOKEN="$HF_TOKEN" huggingface-cli download \
-        Qwen/Qwen-Image-Edit-2511 \
-        --local-dir /opt/qwen-image-edit \
-        --token "$HF_TOKEN"; \
-      python3 -c " \
-import torch; \
-from diffusers import QwenImageEditPlusPipeline; \
-pipe = QwenImageEditPlusPipeline.from_pretrained('/opt/qwen-image-edit', torch_dtype=torch.bfloat16); \
-print('QWEN_IMAGE_EDIT_PREWARM_OK')"; \
-    else \
-      echo 'WARNING: HF_TOKEN not set — Qwen weights not downloaded. Pass --build-arg HF_TOKEN=hf_xxx'; \
-    fi
+    echo "Local Qwen-Image-Edit download disabled for snapshot builds"
 
 # Keep container alive — works for Vast.ai, RunPod, Lambda, etc.
 ENTRYPOINT ["bash", "-lc", "sleep infinity"]

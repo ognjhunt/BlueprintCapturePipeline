@@ -445,6 +445,73 @@ def test_run_colmap_sfm_unknown_matcher_falls_back_to_sequential(
     assert commands[1][1] == "sequential_matcher"
 
 
+def test_resolve_effective_max_frames_scales_for_long_videos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_MAX_FRAMES", "true")
+    monkeypatch.setenv("ADAPTIVE_MAX_FRAMES_TARGET_FPS", "0.5")
+    monkeypatch.setenv("ADAPTIVE_MAX_FRAMES_HARD_CAP", "1200")
+
+    max_frames, reason = module._resolve_effective_max_frames(1800.0, 450)
+    assert max_frames == 900
+    assert "adaptive_max_frames=enabled" in reason
+
+
+def test_resolve_effective_extract_fps_covers_long_video_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_EXTRACT_FPS", "true")
+    fps, reason = module._resolve_effective_extract_fps(1800.0, 6, 900)
+    assert fps == pytest.approx(0.5, rel=1e-3)
+    assert "adaptive_extract_fps=enabled" in reason
+
+
+def test_resolve_colmap_matcher_mode_auto_switches_for_large_frame_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("COLMAP_AUTO_EXHAUSTIVE_MAX_FRAMES", "420")
+
+    short_mode, _ = module._resolve_colmap_matcher_mode("auto", 300)
+    long_mode, _ = module._resolve_colmap_matcher_mode("auto", 900)
+    assert short_mode == "exhaustive"
+    assert long_mode == "sequential"
+
+
+def test_resolve_chunked_sfm_enabled_auto_threshold() -> None:
+    module = _load_nurec_shim_module()
+    enabled_short, _ = module._resolve_chunked_sfm_enabled("auto", 850, 900)
+    enabled_long, _ = module._resolve_chunked_sfm_enabled("auto", 1200, 900)
+    assert enabled_short is False
+    assert enabled_long is True
+
+
+def test_build_colmap_chunk_ranges_caps_count_and_covers_tail() -> None:
+    module = _load_nurec_shim_module()
+    ranges = module._build_colmap_chunk_ranges(
+        12000,
+        chunk_size=600,
+        chunk_overlap=120,
+        max_chunks=24,
+    )
+    assert len(ranges) <= 24
+    assert ranges[0][0] == 0
+    assert ranges[-1][1] == 12000
+    for start, end in ranges:
+        assert end > start
+
+
+def test_resolve_colmap_retry_matcher_mode_auto_scales(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("COLMAP_AUTO_EXHAUSTIVE_MAX_FRAMES", "600")
+    short_mode, _ = module._resolve_colmap_retry_matcher_mode("auto", 500)
+    long_mode, _ = module._resolve_colmap_retry_matcher_mode("auto", 1400)
+    assert short_mode == "exhaustive"
+    assert long_mode == "sequential"
+
+
 def test_robust_occupancy_grid_limits_outlier_impact() -> None:
     module = _load_nurec_shim_module()
     np = pytest.importorskip("numpy")
