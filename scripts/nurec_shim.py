@@ -163,6 +163,75 @@ def _resolve_effective_extract_fps(
     return effective, reason
 
 
+def _resolve_effective_max_n_gaussians(
+    *,
+    video_duration_sec: float | None,
+    registered_frame_count: int,
+    sfm_point_count: int,
+    n_iterations: int,
+    requested_max_n_gaussians: int,
+) -> tuple[int, int, str]:
+    """Resolve max Gaussian count and add-end-iteration for 3DGRUT MCMC strategy.
+
+    Uses two signals (SfM point count × multiplier, frame count × per-frame budget)
+    and takes the conservative minimum.  All tuning knobs are overridable via env vars.
+
+    Returns:
+        (max_n_gaussians, add_end_iteration, reason_string)
+    """
+    requested = max(0, int(requested_max_n_gaussians))
+    refinement_tail = max(0.0, min(0.5, _env_float("GRUT_REFINEMENT_TAIL_RATIO", 0.15)))
+    end_iter = max(1, int(n_iterations * (1.0 - refinement_tail)))
+
+    if not _env_flag("ADAPTIVE_MAX_N_GAUSSIANS", True):
+        effective = requested if requested > 0 else 1_000_000
+        return effective, end_iter, "adaptive_max_n_gaussians=disabled"
+
+    # Tuning knobs
+    sfm_multiplier = max(1.0, _env_float("GRUT_SFM_POINT_MULTIPLIER", 20.0))
+    per_frame_budget = max(100, _env_int("GRUT_PER_FRAME_GAUSSIAN_BUDGET", 2000))
+    hard_floor = max(10_000, _env_int("GRUT_MAX_N_GAUSSIANS_FLOOR", 100_000))
+    hard_ceiling = max(hard_floor, _env_int("GRUT_MAX_N_GAUSSIANS_CEILING", 2_000_000))
+
+    # Primary signal: SfM 3D point count
+    sfm_signal = int(sfm_point_count * sfm_multiplier) if sfm_point_count > 0 else 0
+
+    # Secondary signal: per-frame Gaussian budget
+    frame_signal = int(registered_frame_count * per_frame_budget) if registered_frame_count > 0 else 0
+
+    # Combine: conservative minimum of available signals
+    if sfm_signal > 0 and frame_signal > 0:
+        proposed = min(sfm_signal, frame_signal)
+        signal_source = "min(sfm,frame)"
+    elif sfm_signal > 0:
+        proposed = sfm_signal
+        signal_source = "sfm_only"
+    elif frame_signal > 0:
+        proposed = frame_signal
+        signal_source = "frame_only"
+    else:
+        proposed = hard_floor
+        signal_source = "fallback_floor"
+
+    # Clamp to [floor, ceiling]
+    resolved = max(hard_floor, min(hard_ceiling, proposed))
+
+    # If user explicitly requested a value (>0), honor it as an override
+    if requested > 0:
+        resolved = requested
+        signal_source = "user_override"
+
+    reason = (
+        "adaptive_max_n_gaussians=enabled "
+        f"(sfm_points={sfm_point_count} sfm_mult={sfm_multiplier:.1f} sfm_signal={sfm_signal} "
+        f"frames={registered_frame_count} per_frame={per_frame_budget} frame_signal={frame_signal} "
+        f"proposed={proposed} signal={signal_source} "
+        f"floor={hard_floor} ceiling={hard_ceiling} resolved={resolved} "
+        f"refinement_tail={refinement_tail:.2f} add_end_iter={end_iter})"
+    )
+    return resolved, end_iter, reason
+
+
 def extract_frames(video_path: Path, frames_dir: Path,
                    max_frames: int = 300, target_fps: float = 5) -> int:
     """Extract frames from video at reduced FPS for SfM."""
@@ -463,14 +532,16 @@ def build_capture_quality_report(frames_dir: Path) -> Dict[str, Any]:
     }
 
     if blur_entries:
-        sorted_blur = sorted(blur_entries, key=lambda item: item[1])
+        # ffmpeg blurdetect: higher score means blurrier frame.
+        sorted_sharpest = sorted(blur_entries, key=lambda item: item[1])
+        sorted_blurriest = sorted(blur_entries, key=lambda item: item[1], reverse=True)
         report["blurriest_frames"] = [
             {"frame": path.name, "score": float(score)}
-            for path, score in sorted_blur[:10]
+            for path, score in sorted_blurriest[:10]
         ]
         report["sharpest_frames"] = [
             {"frame": path.name, "score": float(score)}
-            for path, score in sorted(blur_entries, key=lambda item: item[1], reverse=True)[:10]
+            for path, score in sorted_sharpest[:10]
         ]
 
     if blur_scores:
@@ -1008,7 +1079,9 @@ def run_colmap_undistort(frames_dir: Path, sparse_dir: Path,
 # Stage 4: 3DGRUT Training → USDZ + PLY export
 # ---------------------------------------------------------------------------
 def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
-                         n_iterations: int = 7000) -> dict:
+                         n_iterations: int = 7000, *,
+                         max_n_gaussians: int = 0,
+                         add_end_iteration: int = 0) -> dict:
     """Train 3DGRUT on undistorted COLMAP data and export USDZ + PLY."""
     threedgrut_dir = Path(THREEDGRUT_DIR)
     train_script = threedgrut_dir / "train.py"
@@ -1022,7 +1095,7 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
     grut_out.mkdir(parents=True, exist_ok=True)
 
     _log(f"Starting 3DGRUT training ({n_iterations} iterations)...")
-    _run([
+    cmd = [
         THREEDGRUT_PYTHON, str(train_script),
         "--config-name", "apps/colmap_3dgut_mcmc",
         f"path={undistorted_dir}/",
@@ -1035,7 +1108,14 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
         "with_gui=false",
         "with_viser_gui=false",
         "num_workers=4",
-    ], cwd=str(threedgrut_dir))
+    ]
+    if max_n_gaussians > 0:
+        cmd.append(f"strategy.add.max_n_gaussians={max_n_gaussians}")
+        _log(f"  max_n_gaussians override: {max_n_gaussians}")
+    if add_end_iteration > 0:
+        cmd.append(f"strategy.add.end_iteration={add_end_iteration}")
+        _log(f"  add_end_iteration override: {add_end_iteration}")
+    _run(cmd, cwd=str(threedgrut_dir))
 
     # Find the output directory (3DGRUT creates a nested structure)
     experiment_dirs = sorted(
@@ -1064,6 +1144,8 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
         "ply": result_dir / "export_last.ply",
         "ingp": result_dir / "export_last.ingp",
         "metrics": metrics,
+        "max_n_gaussians": max_n_gaussians,
+        "add_end_iteration": add_end_iteration,
     }
 
 
@@ -2691,14 +2773,15 @@ def _quality_profile() -> str:
 def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
     table: Dict[str, Dict[str, Any]] = {
         "quality_first": {
-            "max_frames": 450,
-            "extract_fps": 6,
-            "n_iterations": 12000,
+            "max_frames": 320,
+            "extract_fps": 5,
+            "n_iterations": 9000,
             "colmap_matcher_mode": "auto",
             "colmap_sequential_overlap": 30,
             "blur_filter_keep_ratio": 0.85,
             "blur_filter_min_frames": 120,
             "resume": False,
+            "max_n_gaussians": 0,
         },
         "balanced": {
             "max_frames": 320,
@@ -2709,6 +2792,7 @@ def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
             "blur_filter_keep_ratio": 0.90,
             "blur_filter_min_frames": 120,
             "resume": False,
+            "max_n_gaussians": 0,
         },
         "fast": {
             "max_frames": 240,
@@ -2719,6 +2803,7 @@ def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
             "blur_filter_keep_ratio": 1.0,
             "blur_filter_min_frames": 120,
             "resume": True,
+            "max_n_gaussians": 500_000,
         },
     }
     return table.get(profile, table["quality_first"])
@@ -2884,6 +2969,20 @@ def _read_registered_image_count(model_dir: Path) -> int:
         return 0
 
 
+def _read_3d_point_count(model_dir: Path) -> int:
+    """Read number of 3D points from COLMAP's points3D.bin (uint64 LE header)."""
+    points3d_bin = model_dir / "points3D.bin"
+    if not _is_nonempty_file(points3d_bin):
+        return 0
+    try:
+        data = points3d_bin.read_bytes()[:8]
+        if len(data) < 8:
+            return 0
+        return int(struct.unpack("<Q", data)[0])
+    except Exception:
+        return 0
+
+
 def _registration_ratio(*, registered_images: int, extracted_frames: int) -> float:
     denom = max(1, int(extracted_frames))
     return float(max(0, int(registered_images))) / float(denom)
@@ -3008,6 +3107,7 @@ def _validate_stage14_resume_metadata(
     blur_filter_keep_ratio: float,
     blur_filter_min_frames: int,
     n_iterations: int,
+    max_n_gaussians: int = 0,
 ) -> list[str]:
     reasons: list[str] = []
     if str(metadata.get("schema_version") or "") != "v1":
@@ -3052,6 +3152,19 @@ def _validate_stage14_resume_metadata(
 
     if int(stage4.get("n_iterations", -1)) != int(n_iterations):
         reasons.append("n_iterations_changed")
+    # Compare against the requested value when available. This avoids false
+    # mismatches when adaptive mode is requested (max_n_gaussians=0) and the
+    # effective cached value is scene-dependent.
+    cached_requested_gaussians = stage4.get("max_n_gaussians_requested")
+    if cached_requested_gaussians is not None:
+        if int(cached_requested_gaussians) != int(max_n_gaussians):
+            reasons.append("max_n_gaussians_changed")
+    elif int(max_n_gaussians) > 0:
+        # Backward compatibility with older metadata that only stored effective
+        # values: only compare when current run explicitly requests a fixed cap.
+        cached_max_gaussians = stage4.get("max_n_gaussians")
+        if cached_max_gaussians is not None and int(cached_max_gaussians) != int(max_n_gaussians):
+            reasons.append("max_n_gaussians_changed")
 
     # Sanity-check cached workspace consistency (frames/sparse) against metadata.
     cached_frame_count = int(_count_extracted_frames(Path(str(metadata.get("frames_dir") or "")))) \
@@ -3082,6 +3195,7 @@ def _resolve_stage14_resume(
     blur_filter_keep_ratio: float,
     blur_filter_min_frames: int,
     n_iterations: int,
+    max_n_gaussians: int = 0,
 ) -> tuple[bool, Dict[str, Any] | None, list[str]]:
     if not resume_requested:
         return False, None, ["resume_not_requested"]
@@ -3115,6 +3229,7 @@ def _resolve_stage14_resume(
         blur_filter_keep_ratio=blur_filter_keep_ratio,
         blur_filter_min_frames=blur_filter_min_frames,
         n_iterations=n_iterations,
+        max_n_gaussians=max_n_gaussians,
     )
     if reasons:
         return False, None, reasons
@@ -3397,6 +3512,12 @@ def main() -> int:
         help="3DGRUT training iterations",
     )
     parser.add_argument(
+        "--max-n-gaussians",
+        type=int,
+        default=_env_int("MAX_N_GAUSSIANS", int(profile_defaults["max_n_gaussians"])),
+        help="Max Gaussians for 3DGRUT MCMC (0=adaptive from SfM point count)",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         default=_env_flag("NUREC_RESUME", bool(profile_defaults["resume"])),
@@ -3645,6 +3766,7 @@ def main() -> int:
         blur_filter_keep_ratio=float(args.blur_filter_keep_ratio),
         blur_filter_min_frames=int(args.blur_filter_min_frames),
         n_iterations=int(args.n_iterations),
+        max_n_gaussians=int(args.max_n_gaussians),
     )
 
     _log(f"Quality profile: {profile}")
@@ -3921,6 +4043,10 @@ def main() -> int:
     }
     capture_quality_path.write_text(json.dumps(capture_quality_report, indent=2), encoding="utf-8")
 
+    # Read SfM 3D point count for adaptive Gaussian budget
+    sfm_point_count = _read_3d_point_count(sparse_dir)
+    _log(f"SfM 3D points: {sfm_point_count}")
+
     # -----------------------------------------------------------------------
     # Stage 3: Undistort for 3DGRUT (PINHOLE cameras required)
     # -----------------------------------------------------------------------
@@ -3944,6 +4070,25 @@ def main() -> int:
     _log("=" * 60)
     _log("STAGE 4: 3DGRUT Neural Reconstruction")
     _log("=" * 60)
+
+    effective_max_n_gaussians, effective_add_end_iter, gaussians_reason = \
+        _resolve_effective_max_n_gaussians(
+            video_duration_sec=video_duration_sec,
+            registered_frame_count=registered_images,
+            sfm_point_count=sfm_point_count,
+            n_iterations=int(args.n_iterations),
+            requested_max_n_gaussians=int(args.max_n_gaussians),
+        )
+    _log(f"  {gaussians_reason}")
+
+    capture_quality_report["grut"] = {
+        "max_n_gaussians": int(effective_max_n_gaussians),
+        "add_end_iteration": int(effective_add_end_iter),
+        "sfm_point_count": int(sfm_point_count),
+        "adaptive_reason": gaussians_reason,
+    }
+    capture_quality_path.write_text(json.dumps(capture_quality_report, indent=2), encoding="utf-8")
+
     if existing_grut_result is not None:
         grut_result = existing_grut_result
         _log("Resuming Stage 4: using existing 3DGRUT exports in output directory")
@@ -3952,6 +4097,8 @@ def main() -> int:
             undistorted_dir,
             output_dir,
             args.n_iterations,
+            max_n_gaussians=effective_max_n_gaussians,
+            add_end_iteration=effective_add_end_iter,
         )
 
     # Copy 3DGRUT outputs to the expected locations
@@ -3995,6 +4142,10 @@ def main() -> int:
             },
             "stage4": {
                 "n_iterations": int(args.n_iterations),
+                "max_n_gaussians_requested": int(args.max_n_gaussians),
+                "max_n_gaussians": int(effective_max_n_gaussians),
+                "add_end_iteration": int(effective_add_end_iter),
+                "sfm_point_count": int(sfm_point_count),
                 "result_dir": str(grut_result.get("result_dir") or ""),
                 "export_usdz_bytes": int(usdz_dst.stat().st_size) if usdz_dst.exists() else 0,
                 "export_ply_bytes": int(ply_dst.stat().st_size) if ply_dst.exists() else 0,

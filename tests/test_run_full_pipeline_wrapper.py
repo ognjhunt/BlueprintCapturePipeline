@@ -35,9 +35,9 @@ def test_wrapper_validates_full_runtime_and_non_stub_scene() -> None:
 def test_wrapper_uses_quality_first_nurec_defaults() -> None:
     text = _script_text()
     assert 'NUREC_QUALITY_PROFILE="${NUREC_QUALITY_PROFILE:-quality_first}"' in text
-    assert 'MAX_FRAMES="${MAX_FRAMES:-450}"' in text
-    assert 'EXTRACT_FPS="${EXTRACT_FPS:-6}"' in text
-    assert 'N_ITERATIONS="${N_ITERATIONS:-12000}"' in text
+    assert 'MAX_FRAMES="${MAX_FRAMES:-320}"' in text
+    assert 'EXTRACT_FPS="${EXTRACT_FPS:-5}"' in text
+    assert 'N_ITERATIONS="${N_ITERATIONS:-9000}"' in text
     assert 'COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-auto}"' in text
     assert 'COLMAP_SEQUENTIAL_OVERLAP="${COLMAP_SEQUENTIAL_OVERLAP:-30}"' in text
     assert 'COLMAP_CHUNKED_MODE="${COLMAP_CHUNKED_MODE:-auto}"' in text
@@ -82,3 +82,12 @@ def test_wrapper_passes_chunked_colmap_flags_to_nurec_shim() -> None:
     assert '--colmap-chunk-max-chunks "$COLMAP_CHUNK_MAX_CHUNKS"' in text
     assert '--colmap-chunk-matcher-mode "$COLMAP_CHUNK_MATCHER_MODE"' in text
     assert '--colmap-retry-matcher-mode "$COLMAP_RETRY_MATCHER_MODE"' in text
+
+
+def test_wrapper_has_max_n_gaussians_default_and_passthrough() -> None:
+    text = _script_text()
+    assert 'MAX_N_GAUSSIANS="${MAX_N_GAUSSIANS:-}"' in text
+    assert "NUREC_GAUSSIAN_ARGS=()" in text
+    assert 'if [ -n "${MAX_N_GAUSSIANS}" ]; then' in text
+    assert 'NUREC_GAUSSIAN_ARGS+=(--max-n-gaussians "$MAX_N_GAUSSIANS")' in text
+    assert '"${NUREC_GAUSSIAN_ARGS[@]}"' in text

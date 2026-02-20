@@ -26,9 +26,10 @@ SKIP_NUREC="${SKIP_NUREC:-false}"
 
 # ── NuRec shim defaults ─────────────────────────────────────────────────────
 NUREC_QUALITY_PROFILE="${NUREC_QUALITY_PROFILE:-quality_first}"
-MAX_FRAMES="${MAX_FRAMES:-450}"
-EXTRACT_FPS="${EXTRACT_FPS:-6}"
-N_ITERATIONS="${N_ITERATIONS:-12000}"
+MAX_FRAMES="${MAX_FRAMES:-320}"
+EXTRACT_FPS="${EXTRACT_FPS:-5}"
+N_ITERATIONS="${N_ITERATIONS:-9000}"
+MAX_N_GAUSSIANS="${MAX_N_GAUSSIANS:-}"
 SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
 SKIP_FIXER="${SKIP_FIXER:---skip-fixer}"
 NUREC_RESUME="${NUREC_RESUME:-false}"
@@ -217,6 +218,11 @@ SPEC
     NUREC_FIXER_ARGS+=(--fixer-required)
   fi
 
+  NUREC_GAUSSIAN_ARGS=()
+  if [ -n "${MAX_N_GAUSSIANS}" ]; then
+    NUREC_GAUSSIAN_ARGS+=(--max-n-gaussians "$MAX_N_GAUSSIANS")
+  fi
+
   export NUREC_QUALITY_PROFILE VISUAL_MESH_METHOD NUREC_VISUAL_PRIMARY
   export COLMAP_MIN_REGISTERED_RATIO COLMAP_RETRY_MIN_REGISTERED_RATIO
   export VISUAL_MESH_TEXTURE_SIZE VISUAL_MESH_TEXTURE_MAX_ATLASES
@@ -228,6 +234,7 @@ SPEC
     --max-frames "$MAX_FRAMES" \
     --extract-fps "$EXTRACT_FPS" \
     --n-iterations "$N_ITERATIONS" \
+    "${NUREC_GAUSSIAN_ARGS[@]}" \
     --colmap-matcher-mode "$COLMAP_MATCHER_MODE" \
     --colmap-sequential-overlap "$COLMAP_SEQUENTIAL_OVERLAP" \
     --colmap-chunked-mode "$COLMAP_CHUNKED_MODE" \

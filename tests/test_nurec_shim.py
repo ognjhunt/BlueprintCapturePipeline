@@ -1116,7 +1116,8 @@ def test_build_capture_quality_report_has_expected_schema(
     assert report["blur"]["count"] == 3
     assert report["brightness"]["count"] == 3
     assert report["motion"]["count"] == 3
-    assert report["blurriest_frames"][0]["frame"] == "frame_00001.jpg"
+    assert report["blurriest_frames"][0]["frame"] == "frame_00003.jpg"
+    assert report["sharpest_frames"][0]["frame"] == "frame_00001.jpg"
 
 
 def test_sam3_preflight_non_strict_returns_skip(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1536,3 +1537,578 @@ def test_run_colmap_sfm_chunked_merges_two_chunks(
     assert report["enabled"] is True
     assert report["chunk_count_planned"] >= 2
     assert report["chunk_count_successful"] >= 2
+
+
+# ---------------------------------------------------------------------------
+# _read_3d_point_count
+# ---------------------------------------------------------------------------
+
+
+def test_read_3d_point_count_valid(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    model_dir = tmp_path / "sparse" / "0"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "points3D.bin").write_bytes(struct.pack("<Q", 15432))
+    assert module._read_3d_point_count(model_dir) == 15432
+
+
+def test_read_3d_point_count_missing(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    model_dir = tmp_path / "sparse" / "0"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    # No points3D.bin file
+    assert module._read_3d_point_count(model_dir) == 0
+
+
+def test_read_3d_point_count_empty_file(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    model_dir = tmp_path / "sparse" / "0"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "points3D.bin").write_bytes(b"")
+    assert module._read_3d_point_count(model_dir) == 0
+
+
+def test_read_3d_point_count_short_file(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    model_dir = tmp_path / "sparse" / "0"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "points3D.bin").write_bytes(b"\x01\x02\x03")  # Only 3 bytes, need 8
+    assert module._read_3d_point_count(model_dir) == 0
+
+
+# ---------------------------------------------------------------------------
+# _resolve_effective_max_n_gaussians
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_max_n_gaussians_small_scene(monkeypatch: pytest.MonkeyPatch) -> None:
+    """51s bedroom clip: 15K SfM pts, 134 frames → should be ~268K (min of 300K sfm, 268K frame)."""
+    module = _load_nurec_shim_module()
+    # Clear env overrides
+    for key in ("ADAPTIVE_MAX_N_GAUSSIANS", "GRUT_SFM_POINT_MULTIPLIER",
+                "GRUT_PER_FRAME_GAUSSIAN_BUDGET", "GRUT_MAX_N_GAUSSIANS_FLOOR",
+                "GRUT_MAX_N_GAUSSIANS_CEILING", "GRUT_REFINEMENT_TAIL_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=134,
+        sfm_point_count=15000,
+        n_iterations=9000,
+        requested_max_n_gaussians=0,
+    )
+    # sfm_signal = 15000 * 20 = 300000, frame_signal = 134 * 2000 = 268000
+    # min(300000, 268000) = 268000, clamped to [100K, 2M] → 268000
+    assert resolved == 268000
+    assert end_iter == int(9000 * 0.85)  # 7650
+    assert "adaptive_max_n_gaussians=enabled" in reason
+    assert "min(sfm,frame)" in reason
+
+
+def test_resolve_max_n_gaussians_medium_scene(monkeypatch: pytest.MonkeyPatch) -> None:
+    """51s clip at higher density: 30K SfM pts, 269 frames → ~538K."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MAX_N_GAUSSIANS", "GRUT_SFM_POINT_MULTIPLIER",
+                "GRUT_PER_FRAME_GAUSSIAN_BUDGET", "GRUT_MAX_N_GAUSSIANS_FLOOR",
+                "GRUT_MAX_N_GAUSSIANS_CEILING", "GRUT_REFINEMENT_TAIL_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=269,
+        sfm_point_count=30000,
+        n_iterations=12000,
+        requested_max_n_gaussians=0,
+    )
+    # sfm_signal = 30000 * 20 = 600000, frame_signal = 269 * 2000 = 538000
+    # min(600000, 538000) = 538000
+    assert resolved == 538000
+    assert end_iter == int(12000 * 0.85)  # 10200
+
+
+def test_resolve_max_n_gaussians_large_scene(monkeypatch: pytest.MonkeyPatch) -> None:
+    """5-min video: 200K SfM pts, 1500 frames → ceiling 2M."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MAX_N_GAUSSIANS", "GRUT_SFM_POINT_MULTIPLIER",
+                "GRUT_PER_FRAME_GAUSSIAN_BUDGET", "GRUT_MAX_N_GAUSSIANS_FLOOR",
+                "GRUT_MAX_N_GAUSSIANS_CEILING", "GRUT_REFINEMENT_TAIL_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=300.0,
+        registered_frame_count=1500,
+        sfm_point_count=200000,
+        n_iterations=12000,
+        requested_max_n_gaussians=0,
+    )
+    # sfm_signal = 200000 * 20 = 4000000, frame_signal = 1500 * 2000 = 3000000
+    # min(4M, 3M) = 3M, clamped to ceiling 2M
+    assert resolved == 2_000_000
+    assert "ceiling" in reason
+
+
+def test_resolve_max_n_gaussians_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ADAPTIVE_MAX_N_GAUSSIANS=false, use default 1M or user value."""
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_MAX_N_GAUSSIANS", "false")
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=134,
+        sfm_point_count=15000,
+        n_iterations=9000,
+        requested_max_n_gaussians=0,
+    )
+    assert resolved == 1_000_000
+    assert "adaptive_max_n_gaussians=disabled" in reason
+
+
+def test_resolve_max_n_gaussians_disabled_with_explicit_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When disabled + user override, use user value."""
+    module = _load_nurec_shim_module()
+    monkeypatch.setenv("ADAPTIVE_MAX_N_GAUSSIANS", "false")
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=134,
+        sfm_point_count=15000,
+        n_iterations=9000,
+        requested_max_n_gaussians=750000,
+    )
+    assert resolved == 750000
+    assert "adaptive_max_n_gaussians=disabled" in reason
+
+
+def test_resolve_max_n_gaussians_user_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit --max-n-gaussians > 0 overrides adaptive calculation."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MAX_N_GAUSSIANS", "GRUT_SFM_POINT_MULTIPLIER",
+                "GRUT_PER_FRAME_GAUSSIAN_BUDGET", "GRUT_MAX_N_GAUSSIANS_FLOOR",
+                "GRUT_MAX_N_GAUSSIANS_CEILING", "GRUT_REFINEMENT_TAIL_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=134,
+        sfm_point_count=15000,
+        n_iterations=9000,
+        requested_max_n_gaussians=400000,
+    )
+    assert resolved == 400000
+    assert "user_override" in reason
+
+
+def test_resolve_max_n_gaussians_no_sfm_points(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When SfM points not available, use frame signal only."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MAX_N_GAUSSIANS", "GRUT_SFM_POINT_MULTIPLIER",
+                "GRUT_PER_FRAME_GAUSSIAN_BUDGET", "GRUT_MAX_N_GAUSSIANS_FLOOR",
+                "GRUT_MAX_N_GAUSSIANS_CEILING", "GRUT_REFINEMENT_TAIL_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=134,
+        sfm_point_count=0,
+        n_iterations=9000,
+        requested_max_n_gaussians=0,
+    )
+    # frame_signal only = 134 * 2000 = 268000
+    assert resolved == 268000
+    assert "frame_only" in reason
+
+
+def test_resolve_max_n_gaussians_no_sfm_no_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When neither signal is available, fall back to floor."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MAX_N_GAUSSIANS", "GRUT_SFM_POINT_MULTIPLIER",
+                "GRUT_PER_FRAME_GAUSSIAN_BUDGET", "GRUT_MAX_N_GAUSSIANS_FLOOR",
+                "GRUT_MAX_N_GAUSSIANS_CEILING", "GRUT_REFINEMENT_TAIL_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=0,
+        sfm_point_count=0,
+        n_iterations=9000,
+        requested_max_n_gaussians=0,
+    )
+    assert resolved == 100_000  # hard_floor
+    assert "fallback_floor" in reason
+
+
+def test_resolve_max_n_gaussians_respects_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tiny scene: 100 SfM pts, 10 frames → floor of 100K."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MAX_N_GAUSSIANS", "GRUT_SFM_POINT_MULTIPLIER",
+                "GRUT_PER_FRAME_GAUSSIAN_BUDGET", "GRUT_MAX_N_GAUSSIANS_FLOOR",
+                "GRUT_MAX_N_GAUSSIANS_CEILING", "GRUT_REFINEMENT_TAIL_RATIO"):
+        monkeypatch.delenv(key, raising=False)
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=10.0,
+        registered_frame_count=10,
+        sfm_point_count=100,
+        n_iterations=7000,
+        requested_max_n_gaussians=0,
+    )
+    # sfm_signal = 100 * 20 = 2000, frame_signal = 10 * 2000 = 20000
+    # min(2000, 20000) = 2000, clamped to floor 100K
+    assert resolved == 100_000
+
+
+def test_resolve_max_n_gaussians_end_iteration_math(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify add_end_iteration = n_iterations * (1 - refinement_tail)."""
+    module = _load_nurec_shim_module()
+    for key in ("ADAPTIVE_MAX_N_GAUSSIANS", "GRUT_SFM_POINT_MULTIPLIER",
+                "GRUT_PER_FRAME_GAUSSIAN_BUDGET", "GRUT_MAX_N_GAUSSIANS_FLOOR",
+                "GRUT_MAX_N_GAUSSIANS_CEILING"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GRUT_REFINEMENT_TAIL_RATIO", "0.20")
+
+    _, end_iter, _ = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=134,
+        sfm_point_count=15000,
+        n_iterations=10000,
+        requested_max_n_gaussians=0,
+    )
+    # end_iter = int(10000 * (1.0 - 0.20)) = 8000
+    assert end_iter == 8000
+
+
+def test_resolve_max_n_gaussians_custom_env_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify env var overrides for multiplier, budget, floor, ceiling."""
+    module = _load_nurec_shim_module()
+    monkeypatch.delenv("ADAPTIVE_MAX_N_GAUSSIANS", raising=False)
+    monkeypatch.setenv("GRUT_SFM_POINT_MULTIPLIER", "10.0")
+    monkeypatch.setenv("GRUT_PER_FRAME_GAUSSIAN_BUDGET", "1000")
+    monkeypatch.setenv("GRUT_MAX_N_GAUSSIANS_FLOOR", "50000")
+    monkeypatch.setenv("GRUT_MAX_N_GAUSSIANS_CEILING", "500000")
+    monkeypatch.setenv("GRUT_REFINEMENT_TAIL_RATIO", "0.10")
+
+    resolved, end_iter, reason = module._resolve_effective_max_n_gaussians(
+        video_duration_sec=51.0,
+        registered_frame_count=134,
+        sfm_point_count=15000,
+        n_iterations=9000,
+        requested_max_n_gaussians=0,
+    )
+    # sfm_signal = 15000 * 10 = 150000, frame_signal = 134 * 1000 = 134000
+    # min(150000, 134000) = 134000, clamped to [50K, 500K] → 134000
+    assert resolved == 134000
+    assert end_iter == int(9000 * 0.90)  # 8100
+
+
+# ---------------------------------------------------------------------------
+# run_3dgrut_training: Hydra overrides
+# ---------------------------------------------------------------------------
+
+
+def test_run_3dgrut_training_passes_gaussian_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    threedgrut_dir = tmp_path / "3dgrut_src"
+    train_script = threedgrut_dir / "train.py"
+    train_script.parent.mkdir(parents=True, exist_ok=True)
+    train_script.write_text("# test", encoding="utf-8")
+    monkeypatch.setattr(module, "THREEDGRUT_DIR", str(threedgrut_dir))
+
+    output_dir = tmp_path / "output"
+    undistorted_dir = tmp_path / "undistorted"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    undistorted_dir.mkdir(parents=True, exist_ok=True)
+
+    observed: dict[str, object] = {}
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        observed["cmd"] = list(cmd)
+        result_root = output_dir / "3dgrut" / "nurec_scene"
+        result_dir = result_root / "run"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        (result_dir / "export_last.usdz").write_bytes(b"usdz")
+        (result_dir / "export_last.ply").write_bytes(b"ply")
+        (result_dir / "export_last.ingp").write_bytes(b"ingp")
+        return None
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    result = module.run_3dgrut_training(
+        undistorted_dir=undistorted_dir,
+        output_dir=output_dir,
+        n_iterations=9000,
+        max_n_gaussians=268000,
+        add_end_iteration=7650,
+    )
+
+    cmd = observed["cmd"]
+    assert "strategy.add.max_n_gaussians=268000" in cmd
+    assert "strategy.add.end_iteration=7650" in cmd
+    assert result["max_n_gaussians"] == 268000
+    assert result["add_end_iteration"] == 7650
+
+
+def test_run_3dgrut_training_omits_overrides_when_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    threedgrut_dir = tmp_path / "3dgrut_src"
+    train_script = threedgrut_dir / "train.py"
+    train_script.parent.mkdir(parents=True, exist_ok=True)
+    train_script.write_text("# test", encoding="utf-8")
+    monkeypatch.setattr(module, "THREEDGRUT_DIR", str(threedgrut_dir))
+
+    output_dir = tmp_path / "output"
+    undistorted_dir = tmp_path / "undistorted"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    undistorted_dir.mkdir(parents=True, exist_ok=True)
+
+    observed: dict[str, object] = {}
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        observed["cmd"] = list(cmd)
+        result_root = output_dir / "3dgrut" / "nurec_scene"
+        result_dir = result_root / "run"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        (result_dir / "export_last.usdz").write_bytes(b"usdz")
+        (result_dir / "export_last.ply").write_bytes(b"ply")
+        (result_dir / "export_last.ingp").write_bytes(b"ingp")
+        return None
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    result = module.run_3dgrut_training(
+        undistorted_dir=undistorted_dir,
+        output_dir=output_dir,
+        n_iterations=9000,
+        max_n_gaussians=0,
+        add_end_iteration=0,
+    )
+
+    cmd = observed["cmd"]
+    assert not any("strategy.add.max_n_gaussians" in str(c) for c in cmd)
+    assert not any("strategy.add.end_iteration" in str(c) for c in cmd)
+    assert result["max_n_gaussians"] == 0
+    assert result["add_end_iteration"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Resume validation: max_n_gaussians
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_stage14_resume_rejects_max_n_gaussians_change(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    output_dir = tmp_path / "out"
+    workspace = output_dir / "_colmap_workspace"
+    frames_dir = workspace / "frames"
+    sparse_dir = workspace / "sparse" / "0"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    sparse_dir.mkdir(parents=True, exist_ok=True)
+
+    (output_dir / "export_last.usdz").write_bytes(b"usdz")
+    (output_dir / "export_last.ply").write_bytes(b"ply")
+    for i in range(1, 11):
+        (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+    (sparse_dir / "images.bin").write_bytes(struct.pack("<Q", 10))
+
+    metadata = {
+        "schema_version": "v1",
+        "quality_profile": "quality_first",
+        "video": {"size_bytes": 123, "mtime_ns": 456},
+        "stage1": {
+            "frame_count": 10,
+            "requested_max_frames": 450,
+            "effective_max_frames": 450,
+            "requested_extract_fps": 6,
+            "effective_extract_fps": 6.0,
+            "blur_filter": {
+                "status": "ok",
+                "keep_ratio": 0.85,
+                "min_frames": 120,
+            },
+        },
+        "stage2": {"registered_images": 10},
+        "stage4": {
+            "n_iterations": 12000,
+            "max_n_gaussians_requested": 268000,
+            "max_n_gaussians": 268000,
+        },
+    }
+    (output_dir / module.STAGE14_RESUME_METADATA).write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    # Request different max_n_gaussians → cache should be rejected
+    ok, existing, reasons = module._resolve_stage14_resume(
+        resume_requested=True,
+        quality_guardrails=True,
+        output_dir=output_dir,
+        workspace=workspace,
+        profile="quality_first",
+        video_signature={"size_bytes": 123, "mtime_ns": 456},
+        requested_max_frames=450,
+        effective_max_frames=450,
+        requested_extract_fps=6,
+        effective_extract_fps=6.0,
+        blur_filter_keep_ratio=0.85,
+        blur_filter_min_frames=120,
+        n_iterations=12000,
+        max_n_gaussians=500000,  # CHANGED from 268000
+    )
+
+    assert ok is False
+    assert "max_n_gaussians_changed" in reasons
+
+
+def test_resolve_stage14_resume_accepts_matching_max_n_gaussians(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    output_dir = tmp_path / "out"
+    workspace = output_dir / "_colmap_workspace"
+    frames_dir = workspace / "frames"
+    sparse_dir = workspace / "sparse" / "0"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    sparse_dir.mkdir(parents=True, exist_ok=True)
+
+    (output_dir / "export_last.usdz").write_bytes(b"usdz")
+    (output_dir / "export_last.ply").write_bytes(b"ply")
+    for i in range(1, 11):
+        (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+    (sparse_dir / "images.bin").write_bytes(struct.pack("<Q", 10))
+
+    metadata = {
+        "schema_version": "v1",
+        "quality_profile": "quality_first",
+        "video": {"size_bytes": 123, "mtime_ns": 456},
+        "stage1": {
+            "frame_count": 10,
+            "requested_max_frames": 450,
+            "effective_max_frames": 450,
+            "requested_extract_fps": 6,
+            "effective_extract_fps": 6.0,
+            "blur_filter": {
+                "status": "ok",
+                "keep_ratio": 0.85,
+                "min_frames": 120,
+            },
+        },
+        "stage2": {"registered_images": 10},
+        "stage4": {
+            "n_iterations": 12000,
+            "max_n_gaussians_requested": 268000,
+            "max_n_gaussians": 268000,
+        },
+    }
+    (output_dir / module.STAGE14_RESUME_METADATA).write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    ok, existing, reasons = module._resolve_stage14_resume(
+        resume_requested=True,
+        quality_guardrails=True,
+        output_dir=output_dir,
+        workspace=workspace,
+        profile="quality_first",
+        video_signature={"size_bytes": 123, "mtime_ns": 456},
+        requested_max_frames=450,
+        effective_max_frames=450,
+        requested_extract_fps=6,
+        effective_extract_fps=6.0,
+        blur_filter_keep_ratio=0.85,
+        blur_filter_min_frames=120,
+        n_iterations=12000,
+        max_n_gaussians=268000,  # Same as cached
+    )
+
+    assert ok is True
+    assert existing is not None
+    assert reasons == ["metadata_match"]
+
+
+def test_resolve_stage14_resume_accepts_adaptive_requested_with_cached_effective(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    output_dir = tmp_path / "out"
+    workspace = output_dir / "_colmap_workspace"
+    frames_dir = workspace / "frames"
+    sparse_dir = workspace / "sparse" / "0"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    sparse_dir.mkdir(parents=True, exist_ok=True)
+
+    (output_dir / "export_last.usdz").write_bytes(b"usdz")
+    (output_dir / "export_last.ply").write_bytes(b"ply")
+    for i in range(1, 11):
+        (frames_dir / f"frame_{i:05d}.jpg").write_bytes(b"jpg")
+    (sparse_dir / "images.bin").write_bytes(struct.pack("<Q", 10))
+
+    metadata = {
+        "schema_version": "v1",
+        "quality_profile": "quality_first",
+        "video": {"size_bytes": 123, "mtime_ns": 456},
+        "stage1": {
+            "frame_count": 10,
+            "requested_max_frames": 450,
+            "effective_max_frames": 450,
+            "requested_extract_fps": 6,
+            "effective_extract_fps": 6.0,
+            "blur_filter": {
+                "status": "ok",
+                "keep_ratio": 0.85,
+                "min_frames": 120,
+            },
+        },
+        "stage2": {"registered_images": 10},
+        "stage4": {
+            "n_iterations": 12000,
+            "max_n_gaussians_requested": 0,
+            "max_n_gaussians": 268000,
+        },
+    }
+    (output_dir / module.STAGE14_RESUME_METADATA).write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    ok, existing, reasons = module._resolve_stage14_resume(
+        resume_requested=True,
+        quality_guardrails=True,
+        output_dir=output_dir,
+        workspace=workspace,
+        profile="quality_first",
+        video_signature={"size_bytes": 123, "mtime_ns": 456},
+        requested_max_frames=450,
+        effective_max_frames=450,
+        requested_extract_fps=6,
+        effective_extract_fps=6.0,
+        blur_filter_keep_ratio=0.85,
+        blur_filter_min_frames=120,
+        n_iterations=12000,
+        max_n_gaussians=0,
+    )
+
+    assert ok is True
+    assert existing is not None
+    assert reasons == ["metadata_match"]
+
+
+# ---------------------------------------------------------------------------
+# Quality profile defaults: max_n_gaussians
+# ---------------------------------------------------------------------------
+
+
+def test_quality_profile_defaults_set_max_n_gaussians() -> None:
+    module = _load_nurec_shim_module()
+    quality_first = module._quality_profile_defaults("quality_first")
+    balanced = module._quality_profile_defaults("balanced")
+    fast = module._quality_profile_defaults("fast")
+
+    assert quality_first["max_n_gaussians"] == 0  # adaptive
+    assert balanced["max_n_gaussians"] == 0  # adaptive
+    assert fast["max_n_gaussians"] == 500_000  # fixed cap for speed
