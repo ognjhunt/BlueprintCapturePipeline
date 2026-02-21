@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import struct
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -124,6 +125,9 @@ def _copy_matching_repaired_views(
 
     seen_sources: set = set()
     for row in accepted:
+        if bool(row.get("is_virtual")):
+            # Virtual repaired views are appended as new cameras, not overlaid onto real captures.
+            continue
         source_name = str(row.get("source_image") or "").strip()
         repaired_path = Path(str(row.get("repaired_image") or "").strip())
         if not source_name or not repaired_path.is_file():
@@ -173,6 +177,248 @@ def _run(cmd: List[str], *, cwd: Path | None = None, timeout_sec: int | None = N
         check=False,
         timeout=timeout_sec,
     )
+
+
+def _run_colmap_model_converter(*, input_path: Path, output_path: Path, output_type: str) -> Tuple[bool, str]:
+    cmd = [
+        "colmap",
+        "model_converter",
+        "--input_path",
+        str(input_path),
+        "--output_path",
+        str(output_path),
+        "--output_type",
+        str(output_type).upper(),
+    ]
+    try:
+        proc = _run(cmd)
+    except Exception as exc:
+        return False, f"colmap_model_converter_exception:{exc}"
+    if proc.returncode != 0:
+        tail = ((proc.stderr or "")[-300:] or (proc.stdout or "")[-300:]).strip().replace("\n", " ")
+        return False, f"colmap_model_converter_failed:{tail or 'unknown'}"
+    return True, ""
+
+
+def _ensure_sparse_text_model(sparse_dir: Path) -> Tuple[bool, str]:
+    """Ensure sparse_dir has text model files, converting from BIN when needed."""
+    required_txt = ("images.txt", "cameras.txt", "points3D.txt")
+    if all((sparse_dir / name).is_file() for name in required_txt):
+        return True, ""
+
+    required_bin = ("images.bin", "cameras.bin", "points3D.bin")
+    if not all((sparse_dir / name).is_file() for name in required_bin):
+        return False, "sparse_model_missing_text_and_binary"
+
+    tmp_txt = sparse_dir / "_tmp_txt_model"
+    if tmp_txt.exists():
+        shutil.rmtree(tmp_txt, ignore_errors=True)
+    tmp_txt.mkdir(parents=True, exist_ok=True)
+    try:
+        ok, reason = _run_colmap_model_converter(input_path=sparse_dir, output_path=tmp_txt, output_type="TXT")
+        if not ok:
+            return False, reason
+        for name in required_txt:
+            src = tmp_txt / name
+            if not src.is_file():
+                return False, f"model_converter_missing_{name}"
+            shutil.copy2(src, sparse_dir / name)
+    finally:
+        shutil.rmtree(tmp_txt, ignore_errors=True)
+    return True, ""
+
+
+def _regenerate_sparse_bin_model(sparse_dir: Path) -> Tuple[bool, str]:
+    """Regenerate binary sparse model files from updated TXT files."""
+    required_txt = ("images.txt", "cameras.txt", "points3D.txt")
+    if not all((sparse_dir / name).is_file() for name in required_txt):
+        return False, "sparse_text_model_missing_for_bin_regen"
+
+    tmp_bin = sparse_dir / "_tmp_bin_model"
+    if tmp_bin.exists():
+        shutil.rmtree(tmp_bin, ignore_errors=True)
+    tmp_bin.mkdir(parents=True, exist_ok=True)
+    try:
+        ok, reason = _run_colmap_model_converter(input_path=sparse_dir, output_path=tmp_bin, output_type="BIN")
+        if not ok:
+            return False, reason
+        for name in ("images.bin", "cameras.bin", "points3D.bin"):
+            src = tmp_bin / name
+            if not src.is_file():
+                return False, f"model_converter_missing_{name}"
+            shutil.copy2(src, sparse_dir / name)
+    finally:
+        shutil.rmtree(tmp_bin, ignore_errors=True)
+    return True, ""
+
+
+def _read_first_camera_id_from_cameras_bin(path: Path) -> int | None:
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    if len(data) < 12:
+        return None
+    try:
+        (num_cameras,) = struct.unpack_from("<Q", data, 0)
+        if num_cameras < 1:
+            return None
+        (camera_id,) = struct.unpack_from("<I", data, 8)
+        return int(camera_id)
+    except Exception:
+        return None
+
+
+def _resolve_primary_camera_id(sparse_dir: Path) -> int | None:
+    cameras_txt = sparse_dir / "cameras.txt"
+    if cameras_txt.is_file():
+        for line in cameras_txt.read_text(encoding="utf-8", errors="ignore").splitlines():
+            text = line.strip()
+            if not text or text.startswith("#"):
+                continue
+            parts = text.split()
+            if not parts:
+                continue
+            try:
+                return int(parts[0])
+            except Exception:
+                continue
+    return _read_first_camera_id_from_cameras_bin(sparse_dir / "cameras.bin")
+
+
+def _coerce_float_vec(value: Any, expected_len: int) -> List[float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) < expected_len:
+        return None
+    out: List[float] = []
+    try:
+        for idx in range(expected_len):
+            out.append(float(value[idx]))
+    except Exception:
+        return None
+    return out
+
+
+def _read_max_image_id_from_images_txt(path: Path) -> int:
+    """Find the highest IMAGE_ID in an images.txt file."""
+    max_id = 0
+    if not path.is_file():
+        return max_id
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 10:
+            try:
+                max_id = max(max_id, int(parts[0]))
+            except ValueError:
+                pass
+    return max_id
+
+
+def _append_virtual_images_to_colmap(
+    sparse_dir: Path,
+    virtual_candidates: List[Dict[str, Any]],
+    virtual_renders_dir: Path,
+    images_dir: Path,
+    starting_id: int,
+    *,
+    default_camera_id: int,
+) -> Tuple[int, int]:
+    """Append new virtual camera entries to images.txt and copy renders to images/.
+
+    Legacy fallback path for backwards compatibility. Returns:
+      (appended_count, skipped_missing_required_count)
+    """
+    images_txt = sparse_dir / "images.txt"
+    if not images_txt.is_file():
+        return 0, 0
+
+    appended = 0
+    skipped_missing_required = 0
+    with images_txt.open("a", encoding="utf-8") as f:
+        next_id = int(starting_id)
+        for idx, cand in enumerate(virtual_candidates):
+            render_name = str(cand.get("render_name") or f"{idx:05d}.png").strip()
+            render_src_str = str(cand.get("render_image") or "").strip()
+            render_src = Path(render_src_str) if render_src_str else (virtual_renders_dir / render_name)
+            if not render_src.is_file():
+                skipped_missing_required += 1
+                continue
+
+            qvec = _coerce_float_vec(cand.get("qvec"), 4)
+            tvec = _coerce_float_vec(cand.get("tvec"), 3)
+            if qvec is None or tvec is None:
+                skipped_missing_required += 1
+                continue
+
+            next_id += 1
+            dst_name = f"virtual_{idx:05d}.png"
+            dst_path = images_dir / dst_name
+            shutil.copy2(render_src, dst_path)
+
+            camera_id = int(cand.get("camera_id", default_camera_id) or default_camera_id)
+            f.write(
+                f"{next_id} "
+                f"{qvec[0]:.10f} {qvec[1]:.10f} {qvec[2]:.10f} {qvec[3]:.10f} "
+                f"{tvec[0]:.10f} {tvec[1]:.10f} {tvec[2]:.10f} "
+                f"{camera_id} {dst_name}\n"
+            )
+            f.write("\n")  # Empty 2D points line
+            appended += 1
+
+    return appended, skipped_missing_required
+
+
+def _append_virtual_from_accepted_rows(
+    *,
+    sparse_dir: Path,
+    accepted_views_jsonl: Path,
+    images_dir: Path,
+    starting_id: int,
+    default_camera_id: int,
+) -> Tuple[int, int]:
+    """Append virtual camera rows from accepted repaired rows.
+
+    Returns:
+      (appended_count, missing_required_count)
+    """
+    images_txt = sparse_dir / "images.txt"
+    if not images_txt.is_file():
+        return 0, 0
+
+    rows = _load_jsonl(accepted_views_jsonl)
+    virtual_rows = [row for row in rows if bool(row.get("is_virtual"))]
+    if not virtual_rows:
+        return 0, 0
+
+    appended = 0
+    missing_required = 0
+    next_id = int(starting_id)
+    with images_txt.open("a", encoding="utf-8") as f:
+        for idx, row in enumerate(virtual_rows):
+            repaired_path = Path(str(row.get("repaired_image") or "").strip())
+            qvec = _coerce_float_vec(row.get("qvec"), 4)
+            tvec = _coerce_float_vec(row.get("tvec"), 3)
+            if not repaired_path.is_file() or qvec is None or tvec is None:
+                missing_required += 1
+                continue
+
+            next_id += 1
+            dst_name = f"virtual_{idx:05d}.png"
+            dst_path = images_dir / dst_name
+            shutil.copy2(repaired_path, dst_path)
+
+            camera_id = int(row.get("camera_id", default_camera_id) or default_camera_id)
+            f.write(
+                f"{next_id} "
+                f"{qvec[0]:.10f} {qvec[1]:.10f} {qvec[2]:.10f} {qvec[3]:.10f} "
+                f"{tvec[0]:.10f} {tvec[1]:.10f} {tvec[2]:.10f} "
+                f"{camera_id} {dst_name}\n"
+            )
+            f.write("\n")
+            appended += 1
+
+    return appended, missing_required
 
 
 def _find_baseline_checkpoint(output_dir: Path) -> Path | None:
@@ -243,6 +489,8 @@ def run_post_stage4_distill(
     time_budget_min: int,
     threedgrut_python: str,
     threedgrut_dir: Path,
+    virtual_renders_dir: Path | None = None,
+    virtual_candidates_jsonl: Path | None = None,
 ) -> Dict[str, Any]:
     started = time.time()
     work_dir = output_dir / "post_stage4_distill"
@@ -261,6 +509,77 @@ def run_post_stage4_distill(
         sparse_dir=undistorted_dir / "sparse" / "0",
     )
 
+    # Append virtual camera entries (prefer accepted repaired virtual rows).
+    virtual_appended = 0
+    virtual_append_failed_reason = ""
+    resolved_primary_camera_id: int | None = None
+    used_legacy_virtual_fallback = False
+    has_legacy_virtual_inputs = (
+        virtual_renders_dir is not None
+        and virtual_candidates_jsonl is not None
+        and virtual_renders_dir.is_dir()
+        and virtual_candidates_jsonl.is_file()
+    )
+    accepted_rows = _load_jsonl(accepted_views_jsonl)
+    accepted_virtual_rows = [row for row in accepted_rows if bool(row.get("is_virtual"))]
+    if accepted_virtual_rows or has_legacy_virtual_inputs:
+        sparse_copy = dataset_dir / "sparse" / "0"
+        ok_text, text_reason = _ensure_sparse_text_model(sparse_copy)
+        if not ok_text:
+            virtual_append_failed_reason = text_reason
+        else:
+            images_txt = sparse_copy / "images.txt"
+            max_id = _read_max_image_id_from_images_txt(images_txt)
+            resolved_primary_camera_id = _resolve_primary_camera_id(sparse_copy)
+            default_camera_id = int(resolved_primary_camera_id or 1)
+
+            accepted_appended = 0
+            accepted_missing_required = 0
+            if accepted_virtual_rows:
+                accepted_appended, accepted_missing_required = _append_virtual_from_accepted_rows(
+                    sparse_dir=sparse_copy,
+                    accepted_views_jsonl=accepted_views_jsonl,
+                    images_dir=undistorted_images_dir,
+                    starting_id=max_id,
+                    default_camera_id=default_camera_id,
+                )
+                virtual_appended += int(accepted_appended)
+                max_id += int(accepted_appended)
+
+            if (
+                virtual_appended == 0
+                and accepted_virtual_rows
+                and accepted_missing_required > 0
+                and has_legacy_virtual_inputs
+                and virtual_renders_dir is not None
+                and virtual_candidates_jsonl is not None
+            ):
+                used_legacy_virtual_fallback = True
+                virtual_cands = _load_jsonl(virtual_candidates_jsonl)
+                virtual_cands = [c for c in virtual_cands if c.get("is_virtual")]
+                legacy_appended, _legacy_missing_required = _append_virtual_images_to_colmap(
+                    sparse_copy,
+                    virtual_cands,
+                    virtual_renders_dir,
+                    undistorted_images_dir,
+                    max_id,
+                    default_camera_id=default_camera_id,
+                )
+                virtual_appended += int(legacy_appended)
+                max_id += int(legacy_appended)
+                if legacy_appended == 0:
+                    virtual_append_failed_reason = (
+                        "virtual_accepted_rows_missing_required_fields_and_legacy_fallback_failed"
+                    )
+            elif virtual_appended == 0 and accepted_virtual_rows and accepted_missing_required > 0:
+                virtual_append_failed_reason = "virtual_accepted_rows_missing_required_fields"
+
+            if virtual_appended > 0:
+                ok_bin, bin_reason = _regenerate_sparse_bin_model(sparse_copy)
+                if not ok_bin:
+                    virtual_append_failed_reason = bin_reason
+                    virtual_appended = 0
+
     refined_usdz = output_dir / "export_last_refined.usdz"
     refined_ply = output_dir / "export_last_refined.ply"
     refined_ingp = output_dir / "export_last_refined.ingp"
@@ -271,16 +590,29 @@ def run_post_stage4_distill(
         "schema_version": "v1",
         "generated_at": _utc_now_iso(),
         "status": "",
+        "distill_ok": False,
         "work_dir": str(work_dir),
         "overlay_replaced_count": int(replaced_count),
         "overlay_replaced_paths": replaced_paths[:200],
+        "virtual_appended_count": int(virtual_appended),
+        "virtual_append_failed_reason": str(virtual_append_failed_reason or ""),
+        "used_legacy_virtual_fallback": bool(used_legacy_virtual_fallback),
+        "resolved_primary_camera_id": int(resolved_primary_camera_id) if resolved_primary_camera_id is not None else None,
         "distill_iters": int(distill_iters),
         "max_n_gaussians": int(max_n_gaussians),
         "time_budget_min": int(time_budget_min),
     }
     refined_metrics: Dict[str, Any] = {}
 
-    if replaced_count <= 0:
+    total_new_data = replaced_count + virtual_appended
+    if virtual_append_failed_reason:
+        shutil.copy2(base_usdz, refined_usdz)
+        shutil.copy2(base_ply, refined_ply)
+        if base_ingp is not None and base_ingp.is_file():
+            shutil.copy2(base_ingp, refined_ingp)
+        report["status"] = "fallback_baseline_copy_virtual_append_failed"
+        report["result_dir"] = ""
+    elif total_new_data <= 0:
         shutil.copy2(base_usdz, refined_usdz)
         shutil.copy2(base_ply, refined_ply)
         if base_ingp is not None and base_ingp.is_file():
@@ -293,6 +625,10 @@ def run_post_stage4_distill(
         cmd_template = os.getenv("POST_STAGE4_DISTILL_COMMAND", "").strip()
 
         baseline_ckpt = _find_baseline_checkpoint(output_dir)
+        # When virtual views are added, camera count changes — can't resume from checkpoint
+        if virtual_appended > 0:
+            baseline_ckpt = None
+            distill_iters = max(distill_iters, 5000)
         report["baseline_checkpoint"] = str(baseline_ckpt) if baseline_ckpt else None
 
         if cmd_template:
@@ -332,6 +668,7 @@ def run_post_stage4_distill(
                 if ingp_src.is_file():
                     shutil.copy2(ingp_src, refined_ingp)
                 report["status"] = "ok"
+                report["distill_ok"] = True
                 report["result_dir"] = str(result_dir)
                 refined_metrics = _read_metrics(result_dir)
             else:
@@ -353,6 +690,7 @@ def run_post_stage4_distill(
     report["refined_metrics"] = refined_metrics
     report["refined_usdz_bytes"] = int(refined_usdz.stat().st_size) if refined_usdz.is_file() else 0
     report["refined_ply_bytes"] = int(refined_ply.stat().st_size) if refined_ply.is_file() else 0
+    report["distill_ok"] = bool(str(report.get("status", "")).strip().lower() == "ok")
     report["elapsed_sec"] = float(time.time() - started)
 
     report_path = output_dir / "post_stage4_distill_report.json"
@@ -369,11 +707,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-ingp", default="")
     parser.add_argument("--accepted-views-jsonl", required=True)
     parser.add_argument("--repaired-views-dir", required=True)
-    parser.add_argument("--distill-iters", type=int, default=int(os.getenv("POST_STAGE4_DISTILL_ITERS", "1600")))
+    parser.add_argument("--distill-iters", type=int, default=int(os.getenv("POST_STAGE4_DISTILL_ITERS", "3000")))
     parser.add_argument("--max-n-gaussians", type=int, default=int(os.getenv("MAX_N_GAUSSIANS", "0")))
     parser.add_argument("--time-budget-min", type=int, default=int(os.getenv("POST_STAGE4_TIME_BUDGET_MIN", "90")))
     parser.add_argument("--threedgrut-python", default=os.getenv("THREEDGRUT_PYTHON", "python3.11"))
     parser.add_argument("--threedgrut-dir", default=os.getenv("THREEDGRUT_DIR", "/opt/3dgrut"))
+    parser.add_argument("--virtual-renders-dir", default="", help="Directory with virtual camera renders (from post_stage4_virtual_render.py)")
+    parser.add_argument("--virtual-candidates-jsonl", default="", help="JSONL with virtual candidates (is_virtual=True entries)")
     return parser
 
 
@@ -385,6 +725,9 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_ingp_path = Path(args.base_ingp) if str(args.base_ingp).strip() else None
+
+    virtual_renders = Path(args.virtual_renders_dir) if str(args.virtual_renders_dir).strip() else None
+    virtual_cands = Path(args.virtual_candidates_jsonl) if str(args.virtual_candidates_jsonl).strip() else None
 
     run_post_stage4_distill(
         output_dir=output_dir,
@@ -399,6 +742,8 @@ def main() -> int:
         time_budget_min=max(1, int(args.time_budget_min)),
         threedgrut_python=str(args.threedgrut_python),
         threedgrut_dir=Path(args.threedgrut_dir),
+        virtual_renders_dir=virtual_renders,
+        virtual_candidates_jsonl=virtual_cands,
     )
     return 0
 

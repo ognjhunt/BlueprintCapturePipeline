@@ -64,6 +64,7 @@ STAGE14_RESUME_METADATA = ".stage14_resume_metadata.json"
 POST_STAGE4_GAP_ANALYZER_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_gap_analyzer.py"
 POST_STAGE4_VIEW_REPAIR_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_view_repair.py"
 POST_STAGE4_DISTILL_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_distill.py"
+POST_STAGE4_VIRTUAL_RENDER_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_virtual_render.py"
 
 
 def _log(msg: str) -> None:
@@ -2900,6 +2901,95 @@ def _env_choice(name: str, default: str, allowed: Sequence[str]) -> str:
     return default
 
 
+def _prune_gaussian_splat(src_ply: Path, dst_ply: Path) -> bool:
+    """Remove low-quality Gaussians: low opacity, oversized, and outliers.
+
+    Returns True if pruning succeeded and *dst_ply* was written.
+    """
+    try:
+        import numpy as np
+        from plyfile import PlyData, PlyElement  # type: ignore[import-untyped]
+    except ImportError:
+        _log("  WARNING: plyfile not available; skipping Gaussian pruning")
+        return False
+
+    try:
+        plydata = PlyData.read(str(src_ply))
+    except Exception as exc:
+        _log(f"  WARNING: could not read PLY for pruning: {exc}")
+        return False
+
+    vertex = plydata["vertex"]
+    n_before = len(vertex.data)
+    if n_before < 100:
+        return False
+
+    # Read key Gaussian properties if they exist.
+    names = set(vertex.data.dtype.names or [])
+    keep = np.ones(n_before, dtype=bool)
+
+    # 1. Remove low-opacity Gaussians (< 0.01 after sigmoid).
+    if "opacity" in names:
+        opacity_raw = np.array(vertex["opacity"], dtype=np.float32)
+        # Gaussian PLY stores opacity as inverse-sigmoid (logit).
+        opacity = 1.0 / (1.0 + np.exp(-opacity_raw))
+        min_opacity = _env_float("PRUNE_MIN_OPACITY", 0.01)
+        keep &= opacity >= min_opacity
+
+    # 2. Remove oversized Gaussians (scale > 5× median).
+    scale_names = [n for n in ("scale_0", "scale_1", "scale_2") if n in names]
+    if len(scale_names) == 3:
+        scales = np.stack(
+            [np.array(vertex[s], dtype=np.float32) for s in scale_names],
+            axis=1,
+        )
+        # Scales are stored as log-scale; exp to get actual.
+        scales_actual = np.exp(scales)
+        max_per_gaussian = np.max(scales_actual, axis=1)
+        median_scale = float(np.median(max_per_gaussian))
+        scale_multiplier = _env_float("PRUNE_MAX_SCALE_MULTIPLIER", 5.0)
+        if median_scale > 0:
+            keep &= max_per_gaussian <= median_scale * scale_multiplier
+
+    # 3. Remove spatial outliers (> 1.5× IQR from median position).
+    if "x" in names and "y" in names and "z" in names:
+        xyz = np.stack(
+            [
+                np.array(vertex["x"], dtype=np.float32),
+                np.array(vertex["y"], dtype=np.float32),
+                np.array(vertex["z"], dtype=np.float32),
+            ],
+            axis=1,
+        )
+        centroid = np.median(xyz, axis=0)
+        dists = np.linalg.norm(xyz - centroid, axis=1)
+        q75 = float(np.percentile(dists, 75))
+        q25 = float(np.percentile(dists, 25))
+        iqr = q75 - q25
+        outlier_factor = _env_float("PRUNE_OUTLIER_IQR_FACTOR", 3.0)
+        cutoff = q75 + outlier_factor * iqr
+        keep &= dists <= cutoff
+
+    n_after = int(np.sum(keep))
+    n_removed = n_before - n_after
+    _log(
+        f"  Gaussian pruning: {n_before} → {n_after} "
+        f"(removed {n_removed}, {100.0 * n_removed / max(1, n_before):.1f}%)"
+    )
+
+    if n_after < 100:
+        _log("  WARNING: pruning would remove almost all Gaussians; skipping")
+        return False
+
+    if n_removed == 0:
+        return False
+
+    pruned_data = vertex.data[keep]
+    pruned_element = PlyElement.describe(pruned_data, "vertex")
+    PlyData([pruned_element], text=False).write(str(dst_ply))
+    return True
+
+
 def _normalize_scene_cleaning_mode(raw: str) -> str:
     mode = (raw or "").strip().lower()
     if mode in {"off", "auto", "force"}:
@@ -2923,9 +3013,9 @@ def _quality_profile() -> str:
 def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
     table: Dict[str, Dict[str, Any]] = {
         "quality_first": {
-            "max_frames": 320,
-            "extract_fps": 5,
-            "n_iterations": 9000,
+            "max_frames": 500,
+            "extract_fps": 8,
+            "n_iterations": 15000,
             "colmap_matcher_mode": "auto",
             "colmap_sequential_overlap": 30,
             "blur_filter_keep_ratio": 0.85,
@@ -3216,6 +3306,23 @@ def _load_json_dict(path: Path) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _load_jsonl_rows(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not _is_nonempty_file(path):
+        return rows
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
 def _video_signature(video_path: Path) -> Dict[str, Any]:
     signature: Dict[str, Any] = {
         "path": str(video_path),
@@ -3448,6 +3555,342 @@ def _has_valid_post_stage4_refine_cache(output_dir: Path) -> bool:
     refined_usdz = output_dir / "export_last_refined.usdz"
     refined_ply = output_dir / "export_last_refined.ply"
     return _is_nonempty_file(refined_usdz) and _is_nonempty_file(refined_ply)
+
+
+def _run_void_fill_loop(
+    *,
+    output_dir: Path,
+    workspace: Path,
+    undistorted_dir: Path,
+    active_gaussian_ply: Path,
+    active_visual_usdz: Path,
+    active_ingp: Path | None,
+    grut_result: Dict[str, Any],
+    void_fill_rounds: int,
+    void_fill_distill_iters: int,
+    void_fill_target_hole_ratio: float,
+    max_n_gaussians: int,
+    time_budget_min: int,
+) -> Dict[str, Any]:
+    """Iterative void-fill loop: render virtual views → Fixer inpaint → distill back.
+
+    Each round:
+      1. Run gap analyzer with points3D to generate virtual cameras
+      2. Render 3DGRUT from those virtual poses
+      3. Inpaint the rendered images with Fixer (via view_repair)
+      4. Distill repaired + virtual views back into 3DGRUT
+
+    Progressive fill thresholds: [0.35, 0.40, 0.50] — only process views
+    where Fixer can fill the void edges.
+    """
+    import time as _time
+
+    loop_started = _time.time()
+    round_reports: List[Dict[str, Any]] = []
+    round_thresholds = [0.35, 0.40, 0.50]
+
+    # Track current checkpoint and PLY across rounds
+    current_ckpt = None
+    grut_result_dir = grut_result.get("result_dir")
+    if grut_result_dir:
+        ckpt_candidates = sorted(Path(grut_result_dir).rglob("ckpt_last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if ckpt_candidates:
+            current_ckpt = ckpt_candidates[0]
+
+    if current_ckpt is None:
+        _log("WARNING: No 3DGRUT checkpoint found; cannot run void-fill loop")
+        return {"status": "skipped_no_checkpoint", "rounds": []}
+
+    sparse_dir = workspace / "undistorted" / "sparse" / "0"
+    points3d_bin = sparse_dir / "points3D.bin"
+
+    current_ply = active_gaussian_ply
+    current_usdz = active_visual_usdz
+    current_ingp = active_ingp
+    best_ply = active_gaussian_ply
+    best_usdz = active_visual_usdz
+
+    for round_idx in range(void_fill_rounds):
+        round_num = round_idx + 1
+        threshold = round_thresholds[round_idx] if round_idx < len(round_thresholds) else 0.50
+        round_dir = output_dir / f"void_fill_round_{round_num}"
+        round_dir.mkdir(parents=True, exist_ok=True)
+
+        _log(f"--- Void Fill Round {round_num}/{void_fill_rounds} (threshold={threshold:.0%}) ---")
+
+        try:
+            # 1. Gap analysis with virtual camera generation
+            renders_dirs = list(Path(str(grut_result_dir)).rglob("renders")) if grut_result_dir else []
+            if not renders_dirs:
+                _log(f"  Round {round_num}: No renders directory found; stopping loop")
+                break
+            renders_dir = renders_dirs[0]
+
+            gap_args: List[str] = [
+                sys.executable,
+                str(POST_STAGE4_GAP_ANALYZER_SCRIPT),
+                "--renders-dir", str(renders_dir),
+                "--output-dir", str(round_dir),
+                "--max-candidate-views", "96",
+                "--min-parallax-deg", "5.0",
+                "--max-virtual-candidates", "48",
+            ]
+            colmap_images_txt = sparse_dir / "images.txt"
+            colmap_images_bin = sparse_dir / "images.bin"
+            if colmap_images_txt.is_file():
+                gap_args.extend(["--colmap-images-txt", str(colmap_images_txt)])
+            if colmap_images_bin.is_file():
+                gap_args.extend(["--colmap-images-bin", str(colmap_images_bin)])
+            if points3d_bin.is_file():
+                gap_args.extend(["--colmap-points3d-bin", str(points3d_bin)])
+            _run(gap_args)
+
+            gap_report = _load_json_dict(round_dir / "gap_analysis_report.json")
+            current_hole_ratio = float(gap_report.get("global_hole_pixel_ratio", 1.0))
+            virtual_count = int(gap_report.get("virtual_candidates_selected", 0))
+
+            _log(f"  Round {round_num}: hole_ratio={current_hole_ratio:.3f}, virtual_candidates={virtual_count}")
+
+            if current_hole_ratio <= void_fill_target_hole_ratio:
+                _log(f"  Round {round_num}: target hole ratio met ({current_hole_ratio:.3f} <= {void_fill_target_hole_ratio:.3f}); stopping")
+                round_reports.append({"round": round_num, "status": "target_met", "hole_ratio": current_hole_ratio})
+                break
+
+            if virtual_count == 0:
+                _log(f"  Round {round_num}: No virtual candidates generated; stopping")
+                round_reports.append({"round": round_num, "status": "no_virtual_candidates", "hole_ratio": current_hole_ratio})
+                break
+
+            # 2. Render virtual views
+            _log(f"  Round {round_num}: Rendering {virtual_count} virtual views...")
+            virtual_render_dir = round_dir / "virtual_renders"
+            virtual_render_dir.mkdir(parents=True, exist_ok=True)
+
+            vrender_args: List[str] = [
+                sys.executable,
+                str(POST_STAGE4_VIRTUAL_RENDER_SCRIPT),
+                "--candidates-jsonl", str(round_dir / "gap_candidate_views.jsonl"),
+                "--checkpoint", str(current_ckpt),
+                "--reference-sparse-dir", str(sparse_dir),
+                "--work-dir", str(virtual_render_dir),
+                "--threedgrut-python", str(THREEDGRUT_PYTHON),
+                "--threedgrut-dir", str(THREEDGRUT_DIR),
+            ]
+            _run(vrender_args)
+            vrender_report = _load_json_dict(virtual_render_dir / "virtual_render_report.json")
+            rendered_count = int(vrender_report.get("rendered_count", 0))
+
+            if rendered_count == 0:
+                _log(f"  Round {round_num}: No virtual views rendered; stopping")
+                round_reports.append({"round": round_num, "status": "render_failed", "hole_ratio": current_hole_ratio})
+                break
+
+            mapping_path = Path(str(vrender_report.get("mapping_path", virtual_render_dir / "virtual_render_mapping.jsonl")))
+            mapping_rows = _load_jsonl_rows(mapping_path)
+            gap_candidates_path = round_dir / "gap_candidate_views.jsonl"
+            gap_candidates = _load_jsonl_rows(gap_candidates_path)
+            virtual_candidates_by_id: Dict[str, Dict[str, Any]] = {}
+            for cand in gap_candidates:
+                if not bool(cand.get("is_virtual")):
+                    continue
+                cand_id = str(cand.get("id") or "").strip()
+                if cand_id:
+                    virtual_candidates_by_id[cand_id] = cand
+
+            filtered_mapping_rows: List[Dict[str, Any]] = []
+            filtered_candidates: List[Dict[str, Any]] = []
+            for row in mapping_rows:
+                cand_id = str(row.get("candidate_id") or "").strip()
+                if not cand_id:
+                    continue
+                render_exists = bool(row.get("render_exists"))
+                try:
+                    hole_ratio = float(row.get("predicted_hole_ratio", 1.0))
+                except Exception:
+                    hole_ratio = 1.0
+                if not render_exists or hole_ratio > float(threshold):
+                    continue
+                filtered_mapping_rows.append(row)
+                base = dict(virtual_candidates_by_id.get(cand_id, {}))
+                base.update({
+                    "id": cand_id,
+                    "is_virtual": True,
+                    "source_image": str(row.get("source_image") or base.get("source_image") or ""),
+                    "render_image": "",
+                    "render_name": str(row.get("render_name") or ""),
+                    "qvec": row.get("qvec", base.get("qvec")),
+                    "tvec": row.get("tvec", base.get("tvec")),
+                    "camera_id": row.get("camera_id", base.get("camera_id")),
+                    "predicted_hole_ratio": hole_ratio,
+                })
+                filtered_candidates.append(base)
+
+            filtered_candidates_path = round_dir / "gap_candidate_views_filtered.jsonl"
+            filtered_mapping_path = round_dir / "virtual_render_mapping_filtered.jsonl"
+            with filtered_candidates_path.open("w", encoding="utf-8") as f:
+                for row in filtered_candidates:
+                    f.write(json.dumps(row, ensure_ascii=True) + "\n")
+            with filtered_mapping_path.open("w", encoding="utf-8") as f:
+                for row in filtered_mapping_rows:
+                    f.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+            if not filtered_candidates:
+                _log(f"  Round {round_num}: No virtual candidates remained after threshold filtering; stopping")
+                round_reports.append({
+                    "round": round_num,
+                    "status": "no_candidates_after_threshold",
+                    "hole_ratio": current_hole_ratio,
+                    "round_threshold": float(threshold),
+                    "virtual_rendered": int(rendered_count),
+                    "virtual_selected_for_repair": 0,
+                })
+                break
+
+            # 3. Inpaint virtual renders with Fixer
+            _log(
+                f"  Round {round_num}: Inpainting {len(filtered_candidates)} threshold-filtered virtual renders with Fixer..."
+            )
+            actual_renders_dir = Path(str(vrender_report.get("renders_dir", virtual_render_dir)))
+
+            repair_args: List[str] = [
+                sys.executable,
+                str(POST_STAGE4_VIEW_REPAIR_SCRIPT),
+                "--renders-dir", str(actual_renders_dir),
+                "--candidate-views", str(filtered_candidates_path),
+                "--virtual-render-mapping", str(filtered_mapping_path),
+                "--output-dir", str(round_dir),
+                "--model", "fixer",
+            ]
+            _run(repair_args)
+
+            # 4. Distill back with virtual camera augmentation
+            _log(f"  Round {round_num}: Distilling repaired views back into 3DGRUT...")
+            distill_args: List[str] = [
+                sys.executable,
+                str(POST_STAGE4_DISTILL_SCRIPT),
+                "--output-dir", str(round_dir),
+                "--undistorted-dir", str(undistorted_dir),
+                "--base-usdz", str(current_usdz),
+                "--base-ply", str(current_ply),
+                "--accepted-views-jsonl", str(round_dir / "accepted_repaired_views.jsonl"),
+                "--repaired-views-dir", str(round_dir / "post_stage4_repaired_views"),
+                "--distill-iters", str(void_fill_distill_iters),
+                "--max-n-gaussians", str(max(0, max_n_gaussians)),
+                "--time-budget-min", str(max(1, time_budget_min)),
+                "--threedgrut-python", str(THREEDGRUT_PYTHON),
+                "--threedgrut-dir", str(THREEDGRUT_DIR),
+                "--virtual-renders-dir", str(actual_renders_dir),
+                "--virtual-candidates-jsonl", str(filtered_candidates_path),
+            ]
+            if current_ingp is not None and _is_nonempty_file(current_ingp):
+                distill_args.extend(["--base-ingp", str(current_ingp)])
+            _run(distill_args)
+
+            distill_report = _load_json_dict(round_dir / "post_stage4_distill_report.json")
+
+            # Strict round acceptance: distill status + virtual append + refined assets + PSNR gate.
+            refined_ply_path = round_dir / "export_last_refined.ply"
+            refined_usdz_path = round_dir / "export_last_refined.usdz"
+            refined_ingp_path = round_dir / "export_last_refined.ingp"
+
+            baseline_metrics = grut_result.get("metrics") if isinstance(grut_result.get("metrics"), Mapping) else {}
+            refined_metrics = distill_report.get("refined_metrics") if isinstance(distill_report.get("refined_metrics"), Mapping) else {}
+
+            baseline_psnr = None
+            refined_psnr = None
+            try:
+                baseline_psnr = float(baseline_metrics.get("mean_psnr"))
+            except Exception:
+                pass
+            try:
+                refined_psnr = float(refined_metrics.get("mean_psnr"))
+            except Exception:
+                pass
+
+            psnr_drop = None
+            if baseline_psnr is not None and refined_psnr is not None:
+                psnr_drop = baseline_psnr - refined_psnr
+
+            distill_status = str(distill_report.get("status") or "").strip().lower()
+            distill_ok_flag = bool(distill_report.get("distill_ok", distill_status == "ok"))
+            distill_ok = distill_ok_flag and distill_status == "ok"
+            virtual_appended_count = int(distill_report.get("virtual_appended_count", 0) or 0)
+            refined_ply_ok = _is_nonempty_file(refined_ply_path)
+
+            rejection_reason = ""
+            if not distill_ok:
+                rejection_reason = f"distill_not_ok:{distill_status or 'missing'}"
+            elif not refined_ply_ok:
+                rejection_reason = "missing_refined_ply"
+            elif virtual_appended_count <= 0:
+                rejection_reason = "no_virtual_appended"
+            elif baseline_psnr is not None and refined_psnr is None:
+                rejection_reason = "missing_refined_psnr"
+            elif psnr_drop is not None and psnr_drop > 0.5:
+                rejection_reason = f"psnr_drop_exceeded:{psnr_drop:.3f}"
+
+            round_status = "ok" if not rejection_reason else "rejected"
+            if round_status == "ok":
+                # Accept this round's output.
+                current_ply = refined_ply_path
+                best_ply = refined_ply_path
+                if _is_nonempty_file(refined_usdz_path):
+                    current_usdz = refined_usdz_path
+                    best_usdz = refined_usdz_path
+                if _is_nonempty_file(refined_ingp_path):
+                    current_ingp = refined_ingp_path
+                # Update checkpoint for next round
+                new_ckpts = sorted(round_dir.rglob("ckpt_last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if new_ckpts:
+                    current_ckpt = new_ckpts[0]
+                # Update result_dir so next round's renders_dir lookup works
+                new_result = distill_report.get("result_dir")
+                if new_result:
+                    grut_result_dir = new_result
+                drop_text = f"{psnr_drop:.2f}" if psnr_drop is not None else "N/A"
+                _log(
+                    f"  Round {round_num}: Accepted (virtual_appended={virtual_appended_count}, PSNR drop={drop_text} dB)"
+                )
+            else:
+                _log(f"  Round {round_num}: Rejected ({rejection_reason}); stopping loop")
+
+            round_reports.append({
+                "round": round_num,
+                "status": round_status,
+                "rejection_reason": rejection_reason,
+                "hole_ratio": current_hole_ratio,
+                "virtual_rendered": rendered_count,
+                "virtual_selected_for_repair": len(filtered_candidates),
+                "round_threshold": float(threshold),
+                "distill_status": distill_status,
+                "distill_ok": bool(distill_ok),
+                "virtual_appended_count": int(virtual_appended_count),
+                "baseline_psnr": baseline_psnr,
+                "refined_psnr": refined_psnr,
+                "psnr_drop": psnr_drop,
+                "refined_ply": str(refined_ply_path) if _is_nonempty_file(refined_ply_path) else "",
+            })
+
+            if round_status != "ok":
+                break
+
+        except Exception as exc:
+            _log(f"  Round {round_num}: Error: {exc}")
+            round_reports.append({"round": round_num, "status": f"error:{exc}", "hole_ratio": 0.0})
+            break
+
+    report = {
+        "status": "completed",
+        "rounds_requested": void_fill_rounds,
+        "rounds_completed": len(round_reports),
+        "rounds": round_reports,
+        "best_ply": str(best_ply),
+        "best_usdz": str(best_usdz),
+        "elapsed_sec": float(_time.time() - loop_started),
+    }
+    report_path = output_dir / "void_fill_loop_report.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report
 
 
 def _evaluate_refinement_quality_gate(
@@ -3986,7 +4429,7 @@ def main() -> int:
     parser.add_argument(
         "--post-stage4-distill-iters",
         type=int,
-        default=_env_int("POST_STAGE4_DISTILL_ITERS", 1600),
+        default=_env_int("POST_STAGE4_DISTILL_ITERS", 3000),
         help="Distillation iterations for refined Stage-4 outputs",
     )
     parser.add_argument(
@@ -4037,6 +4480,34 @@ def main() -> int:
         help="Environment type for SAM3 detection prompts (auto recommended)",
     )
     parser.add_argument(
+        "--pipeline-mode",
+        default=(os.getenv("PIPELINE_MODE", "full").strip().lower() or "full"),
+        choices=["full", "photorealistic_scene"],
+        help=(
+            "Pipeline mode: 'full' (default, all stages incl. scene cleaning), "
+            "'photorealistic_scene' (skip Inpaint360GS, use 3DGRUT PLY directly, "
+            "focus on gap-fill quality)"
+        ),
+    )
+    parser.add_argument(
+        "--void-fill-rounds",
+        type=int,
+        default=_env_int("VOID_FILL_ROUNDS", 0),
+        help="Number of void-fill iterative rounds (0=disabled). Each round renders virtual cameras, inpaints with Fixer, and distills back.",
+    )
+    parser.add_argument(
+        "--void-fill-target-hole-ratio",
+        type=float,
+        default=_env_float("VOID_FILL_TARGET_HOLE_RATIO", 0.05),
+        help="Stop void-fill loop when global hole ratio drops below this threshold",
+    )
+    parser.add_argument(
+        "--void-fill-distill-iters",
+        type=int,
+        default=_env_int("VOID_FILL_DISTILL_ITERS", 5000),
+        help="3DGRUT training iterations per void-fill distill round",
+    )
+    parser.add_argument(
         "--sam3-n-frames",
         type=int,
         default=_env_int("SAM3_N_FRAMES", 0),
@@ -4053,6 +4524,11 @@ def main() -> int:
     args.sam3_mask_export_space = _normalize_mask_export_space(str(args.sam3_mask_export_space))
     if getattr(args, "skip_scene_cleaning", False):
         args.scene_cleaning_mode = "off"
+
+    # photorealistic_scene mode: skip Inpaint360GS, focus on 3DGRUT quality
+    if getattr(args, "pipeline_mode", "full") == "photorealistic_scene":
+        args.scene_cleaning_mode = "off"
+        _log("PIPELINE_MODE=photorealistic_scene: scene cleaning disabled, 3DGRUT PLY is primary output")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -4817,6 +5293,39 @@ def main() -> int:
             gate_path.write_text(json.dumps(gate_fallback, indent=2), encoding="utf-8")
 
     # -----------------------------------------------------------------------
+    # Stage 4.6: Iterative Void Fill Loop (optional)
+    # -----------------------------------------------------------------------
+    void_fill_rounds = getattr(args, "void_fill_rounds", 0)
+    if void_fill_rounds > 0 and grut_result is not None:
+        _log("=" * 60)
+        _log(f"STAGE 4.6: Void Fill Loop ({void_fill_rounds} rounds)")
+        _log("=" * 60)
+        try:
+            void_fill_report = _run_void_fill_loop(
+                output_dir=output_dir,
+                workspace=workspace,
+                undistorted_dir=undistorted_dir,
+                active_gaussian_ply=active_gaussian_ply,
+                active_visual_usdz=active_visual_usdz,
+                active_ingp=active_ingp,
+                grut_result=grut_result,
+                void_fill_rounds=void_fill_rounds,
+                void_fill_distill_iters=max(1, getattr(args, "void_fill_distill_iters", 5000)),
+                void_fill_target_hole_ratio=max(0.0, getattr(args, "void_fill_target_hole_ratio", 0.05)),
+                max_n_gaussians=max(0, int(effective_max_n_gaussians)),
+                time_budget_min=max(1, int(args.post_stage4_time_budget_min)),
+            )
+            best_ply = Path(str(void_fill_report.get("best_ply", "")))
+            best_usdz = Path(str(void_fill_report.get("best_usdz", "")))
+            if _is_nonempty_file(best_ply):
+                active_gaussian_ply = best_ply
+                _log(f"Void fill complete: using {best_ply.name}")
+            if _is_nonempty_file(best_usdz):
+                active_visual_usdz = best_usdz
+        except Exception as exc:
+            _log(f"WARNING: Void fill loop failed ({exc}); continuing with existing assets")
+
+    # -----------------------------------------------------------------------
     # Stage 6: Dense Reconstruction → Collision Mesh
     # -----------------------------------------------------------------------
     _log("=" * 60)
@@ -5019,6 +5528,31 @@ def main() -> int:
     )
 
     # -----------------------------------------------------------------------
+    # Stage 8.7: Photorealistic scene mode — promote 3DGRUT PLY + post-process
+    # -----------------------------------------------------------------------
+    if getattr(args, "pipeline_mode", "full") == "photorealistic_scene":
+        _log("=" * 60)
+        _log("STAGE 8.7: Photorealistic Scene — 3DGRUT PLY Promotion + Pruning")
+        _log("=" * 60)
+
+        # Promote the best available 3DGRUT PLY as the primary Gaussian artifact.
+        primary_ply = output_dir / "photorealistic_gaussian.ply"
+        source_ply = active_gaussian_ply  # refined or base
+        _log(f"  Primary Gaussian source: {source_ply.name}")
+        if source_ply.is_file():
+            # Prune low-quality Gaussians from the PLY before promoting.
+            pruned = _prune_gaussian_splat(source_ply, primary_ply)
+            if pruned:
+                _log(f"  Pruned PLY written to {primary_ply.name}")
+                active_gaussian_ply = primary_ply
+            else:
+                shutil.copy2(str(source_ply), str(primary_ply))
+                active_gaussian_ply = primary_ply
+                _log(f"  Copied (no pruning) to {primary_ply.name}")
+        else:
+            _log(f"  WARNING: source PLY not found: {source_ply}")
+
+    # -----------------------------------------------------------------------
     # Summary
     # -----------------------------------------------------------------------
     _log("=" * 60)
@@ -5068,6 +5602,7 @@ def main() -> int:
         "hallucinated_region_mask.png",
         "inpainted_visual_mesh.glb",
         "scene_cleaning_report.json",
+        "photorealistic_gaussian.ply",
     ]:
         path = output_dir / artifact
         if path.exists():

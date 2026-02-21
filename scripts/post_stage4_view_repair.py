@@ -153,13 +153,19 @@ def apply_acceptance_gate(
     for row in rows:
         reproj = float(row.get("cross_view_reprojection_error_px", 0.0))
         drift = float(row.get("photometric_drift_outside_mask", 1.0))
+        existing_reasons = row.get("gate_reasons")
         reasons: List[str] = []
+        if isinstance(existing_reasons, list):
+            reasons.extend(str(item) for item in existing_reasons if str(item).strip())
         if reproj > float(max_reprojection_error_px):
-            reasons.append("reprojection_error")
+            if "reprojection_error" not in reasons:
+                reasons.append("reprojection_error")
         if drift > float(max_photometric_drift):
-            reasons.append("outside_mask_drift")
+            if "outside_mask_drift" not in reasons:
+                reasons.append("outside_mask_drift")
         if str(row.get("backend_mode", "")).strip().lower() == "passthrough":
-            reasons.append("backend_passthrough")
+            if "backend_passthrough" not in reasons:
+                reasons.append("backend_passthrough")
 
         out = dict(row)
         out["gate_reasons"] = reasons
@@ -185,6 +191,26 @@ def _load_candidate_views(path: Path) -> List[Dict[str, Any]]:
             continue
         if isinstance(payload, dict):
             rows.append(payload)
+    return rows
+
+
+def _load_virtual_render_mapping(path: Path | None) -> Dict[str, Dict[str, Any]]:
+    rows: Dict[str, Dict[str, Any]] = {}
+    if path is None or not path.is_file():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        candidate_id = str(payload.get("candidate_id") or "").strip()
+        if candidate_id:
+            rows[candidate_id] = payload
     return rows
 
 
@@ -305,8 +331,10 @@ def repair_candidate_views(
     model_mode: str,
     max_reprojection_error_px: float,
     max_photometric_drift: float,
+    virtual_render_mapping_path: Path | None = None,
 ) -> Dict[str, Any]:
     candidates = _load_candidate_views(candidate_views_path)
+    virtual_render_mapping = _load_virtual_render_mapping(virtual_render_mapping_path)
 
     masks_dir = output_dir / "gap_mask_preview"
     masks_dir.mkdir(parents=True, exist_ok=True)
@@ -317,18 +345,68 @@ def repair_candidate_views(
     rows: List[Dict[str, Any]] = []
 
     for idx, cand in enumerate(candidates):
+        is_virtual = bool(cand.get("is_virtual"))
+        candidate_id = str(cand.get("id") or f"candidate_{idx:04d}")
+        mapping_row = virtual_render_mapping.get(candidate_id, {})
         render_image = str(cand.get("render_image") or "").strip()
         source_image = str(cand.get("source_image") or "").strip()
         if render_image:
             render_path = Path(render_image)
+        elif is_virtual:
+            mapped_render = str(mapping_row.get("render_image") or "").strip()
+            if mapped_render:
+                render_path = Path(mapped_render)
+            else:
+                rows.append(
+                    {
+                        "id": candidate_id,
+                        "candidate_id": candidate_id,
+                        "is_virtual": True,
+                        "source_image": source_image,
+                        "render_image": "",
+                        "repaired_image": "",
+                        "mask_image": "",
+                        "backend": "fixer",
+                        "backend_mode": "unresolved",
+                        "cross_view_reprojection_error_px": float(cand.get("cross_view_reprojection_error_px", 0.0)),
+                        "photometric_drift_outside_mask": 1.0,
+                        "gate_reasons": ["virtual_render_mapping_missing"],
+                        "qvec": cand.get("qvec", mapping_row.get("qvec")),
+                        "tvec": cand.get("tvec", mapping_row.get("tvec")),
+                        "camera_id": cand.get("camera_id", mapping_row.get("camera_id")),
+                        "predicted_hole_ratio": cand.get("predicted_hole_ratio", mapping_row.get("predicted_hole_ratio")),
+                    }
+                )
+                continue
         elif source_image:
             render_path = renders_dir / source_image
         else:
             continue
         if not render_path.is_file():
+            if is_virtual:
+                rows.append(
+                    {
+                        "id": candidate_id,
+                        "candidate_id": candidate_id,
+                        "is_virtual": True,
+                        "source_image": source_image,
+                        "render_image": str(render_path),
+                        "repaired_image": "",
+                        "mask_image": "",
+                        "backend": "fixer",
+                        "backend_mode": "unresolved",
+                        "cross_view_reprojection_error_px": float(cand.get("cross_view_reprojection_error_px", 0.0)),
+                        "photometric_drift_outside_mask": 1.0,
+                        "gate_reasons": ["virtual_render_missing"],
+                        "qvec": cand.get("qvec", mapping_row.get("qvec")),
+                        "tvec": cand.get("tvec", mapping_row.get("tvec")),
+                        "camera_id": cand.get("camera_id", mapping_row.get("camera_id")),
+                        "predicted_hole_ratio": cand.get("predicted_hole_ratio", mapping_row.get("predicted_hole_ratio")),
+                    }
+                )
             continue
 
-        view_id = str(cand.get("id") or f"candidate_{idx:04d}")
+        view_id = candidate_id
         original_rgb, original_alpha = _load_rgb_alpha(render_path)
         mask = build_repair_mask(original_rgb, alpha=original_alpha)
 
@@ -354,6 +432,8 @@ def repair_candidate_views(
 
         row: Dict[str, Any] = {
             "id": view_id,
+            "candidate_id": candidate_id,
+            "is_virtual": is_virtual,
             "source_image": source_image or render_path.name,
             "render_image": str(render_path),
             "repaired_image": str(repaired_path),
@@ -367,6 +447,10 @@ def repair_candidate_views(
             "post_hole_ratio": _hole_ratio(repaired_rgb, None),
             "pre_sharpness": _laplacian_variance(_gray(original_rgb)),
             "post_sharpness": _laplacian_variance(_gray(repaired_rgb)),
+            "qvec": cand.get("qvec", mapping_row.get("qvec")),
+            "tvec": cand.get("tvec", mapping_row.get("tvec")),
+            "camera_id": cand.get("camera_id", mapping_row.get("camera_id")),
+            "predicted_hole_ratio": cand.get("predicted_hole_ratio", mapping_row.get("predicted_hole_ratio")),
         }
 
         accepted, rejected = apply_acceptance_gate(
@@ -460,6 +544,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--renders-dir", required=True)
     parser.add_argument("--candidate-views", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--virtual-render-mapping", default="", help="Optional JSONL mapping from virtual candidate_id -> rendered image metadata")
     parser.add_argument(
         "--model",
         default=os.getenv("POST_STAGE4_REFINE_MODEL", "fixer+gsfix3d"),
@@ -490,6 +575,7 @@ def main() -> int:
         model_mode=str(args.model),
         max_reprojection_error_px=float(args.max_reprojection_error_px),
         max_photometric_drift=float(args.max_photometric_drift),
+        virtual_render_mapping_path=Path(args.virtual_render_mapping) if str(args.virtual_render_mapping).strip() else None,
     )
     return 0
 

@@ -251,6 +251,268 @@ def _load_colmap_images_bin(path: Path) -> Dict[str, Dict[str, Any]]:
     return poses
 
 
+def _rotmat_to_qvec(R: np.ndarray) -> List[float]:
+    """Convert 3x3 rotation matrix to COLMAP quaternion [qw, qx, qy, qz]."""
+    # Shepperd's method — numerically stable for all rotations.
+    m = np.asarray(R, dtype=np.float64)
+    tr = m[0, 0] + m[1, 1] + m[2, 2]
+    if tr > 0:
+        s = 0.5 / math.sqrt(tr + 1.0)
+        qw = 0.25 / s
+        qx = (m[2, 1] - m[1, 2]) * s
+        qy = (m[0, 2] - m[2, 0]) * s
+        qz = (m[1, 0] - m[0, 1]) * s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2])
+        qw = (m[2, 1] - m[1, 2]) / s
+        qx = 0.25 * s
+        qy = (m[0, 1] + m[1, 0]) / s
+        qz = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2])
+        qw = (m[0, 2] - m[2, 0]) / s
+        qx = (m[0, 1] + m[1, 0]) / s
+        qy = 0.25 * s
+        qz = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = 2.0 * math.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1])
+        qw = (m[1, 0] - m[0, 1]) / s
+        qx = (m[0, 2] + m[2, 0]) / s
+        qy = (m[1, 2] + m[2, 1]) / s
+        qz = 0.25 * s
+    norm = math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    if norm < 1e-12:
+        return [1.0, 0.0, 0.0, 0.0]
+    return [qw / norm, qx / norm, qy / norm, qz / norm]
+
+
+def _camera_center_from_pose(qvec: Sequence[float], tvec: Sequence[float]) -> np.ndarray:
+    """World-space camera center: C = -R^T @ t."""
+    R = _qvec_to_rotmat(qvec)
+    t = np.array([float(v) for v in tvec], dtype=np.float64)
+    return -R.T @ t
+
+
+def _look_at_qvec(eye: np.ndarray, target: np.ndarray) -> List[float]:
+    """COLMAP quaternion for a camera at *eye* looking toward *target*.
+
+    COLMAP camera convention: +Z points away from the scene (into the sensor),
+    +X right, +Y down. The world-to-camera rotation R satisfies R @ forward = [0,0,1]
+    where forward = normalize(target - eye).
+    """
+    fwd = np.asarray(target, dtype=np.float64) - np.asarray(eye, dtype=np.float64)
+    norm = float(np.linalg.norm(fwd))
+    if norm < 1e-8:
+        return [1.0, 0.0, 0.0, 0.0]
+    fwd = fwd / norm
+
+    # World up hint — use +Y if forward isn't nearly parallel to it
+    world_up = np.array([0.0, -1.0, 0.0], dtype=np.float64)  # COLMAP Y-down
+    if abs(float(np.dot(fwd, world_up))) > 0.99:
+        world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+    right = np.cross(fwd, world_up)
+    rnorm = float(np.linalg.norm(right))
+    if rnorm < 1e-8:
+        return [1.0, 0.0, 0.0, 0.0]
+    right = right / rnorm
+    down = np.cross(fwd, right)  # Y axis in camera frame
+
+    # Camera-from-world rotation: rows = camera axes expressed in world
+    # COLMAP: R maps world→camera, camera Z = -forward (looks opposite to fwd)
+    # Actually: camera +Z = fwd direction in COLMAP convention for the viewing direction
+    # R_cw = [[right], [down], [fwd]]  →  R @ fwd = [0,0,1]
+    R_cw = np.stack([right, down, fwd], axis=0)
+    return _rotmat_to_qvec(R_cw)
+
+
+def _load_colmap_points3d_bin(path: Path) -> np.ndarray:
+    """Read 3D point XYZ from COLMAP points3D.bin. Returns (N, 3) float64 array."""
+    if not path.is_file():
+        return np.zeros((0, 3), dtype=np.float64)
+    data = path.read_bytes()
+    if len(data) < 8:
+        return np.zeros((0, 3), dtype=np.float64)
+    (num_points,) = struct.unpack_from("<Q", data, 0)
+    pts = []
+    offset = 8
+    for _ in range(int(num_points)):
+        if offset + 43 > len(data):
+            break
+        # point3D_id(8) + xyz(24) + rgb(3) + error(8) = 43 bytes, then track(variable)
+        _pid = struct.unpack_from("<Q", data, offset)[0]
+        offset += 8
+        x, y, z = struct.unpack_from("<ddd", data, offset)
+        offset += 24
+        offset += 3  # rgb
+        offset += 8  # error
+        # track length + track entries
+        if offset + 8 > len(data):
+            pts.append([x, y, z])
+            break
+        (track_len,) = struct.unpack_from("<Q", data, offset)
+        offset += 8
+        offset += int(track_len) * 8  # each entry: image_id(4) + point2D_idx(4)
+        pts.append([x, y, z])
+    if not pts:
+        return np.zeros((0, 3), dtype=np.float64)
+    return np.array(pts, dtype=np.float64)
+
+
+def compute_scene_bounds(
+    points3d: np.ndarray,
+    camera_centers: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """Return (scene_center, scene_radius) from SfM points and camera positions."""
+    all_pts = np.concatenate([points3d, camera_centers], axis=0) if len(points3d) > 0 else camera_centers
+    if len(all_pts) == 0:
+        return np.zeros(3, dtype=np.float64), 1.0
+    center = np.median(all_pts, axis=0)
+    dists = np.linalg.norm(all_pts - center, axis=1)
+    # Use 95th percentile to exclude extreme outliers
+    radius = float(np.percentile(dists, 95)) if len(dists) > 0 else 1.0
+    return center, max(radius, 0.1)
+
+
+def _build_coverage_map(
+    camera_dirs: np.ndarray,
+    n_phi: int = 36,
+    n_theta: int = 18,
+) -> np.ndarray:
+    """2D histogram of camera viewing directions on the unit sphere.
+
+    phi (azimuth) ∈ [0, 2π), theta (elevation) ∈ [0, π].
+    Returns (n_theta, n_phi) int array of view counts per bin.
+    """
+    coverage = np.zeros((n_theta, n_phi), dtype=np.int32)
+    for d in camera_dirs:
+        norm = float(np.linalg.norm(d))
+        if norm < 1e-8:
+            continue
+        dn = d / norm
+        theta = math.acos(max(-1.0, min(1.0, float(dn[1]))))  # Y = up/down
+        phi = math.atan2(float(dn[0]), float(dn[2]))  # XZ plane
+        if phi < 0:
+            phi += 2.0 * math.pi
+        ti = min(int(theta / math.pi * n_theta), n_theta - 1)
+        pi = min(int(phi / (2.0 * math.pi) * n_phi), n_phi - 1)
+        coverage[ti, pi] += 1
+    return coverage
+
+
+def generate_void_filling_candidates(
+    scene_center: np.ndarray,
+    scene_radius: float,
+    existing_poses: Dict[str, Dict[str, Any]],
+    *,
+    max_candidates: int = 48,
+    n_phi: int = 36,
+    n_theta: int = 18,
+    orbit_radius_factor: float = 1.5,
+) -> List[Dict[str, Any]]:
+    """Place virtual cameras on a sphere in under-covered viewing directions.
+
+    Returns list of candidate dicts with is_virtual=True, compatible with
+    the existing candidate JSONL format.
+    """
+    # Extract existing camera centers and viewing directions
+    centers = []
+    dirs = []
+    for pose in existing_poses.values():
+        qvec = pose["qvec"]
+        tvec = pose["tvec"]
+        c = _camera_center_from_pose(qvec, tvec)
+        centers.append(c)
+        dirs.append(_view_dir_from_qvec(qvec))
+
+    if not centers:
+        return []
+
+    camera_centers = np.array(centers, dtype=np.float64)
+    camera_dirs = np.array(dirs, dtype=np.float64)
+
+    coverage = _build_coverage_map(camera_dirs, n_phi=n_phi, n_theta=n_theta)
+
+    # Generate candidate positions in under-covered bins
+    orbit_r = scene_radius * orbit_radius_factor
+    candidates: List[Dict[str, Any]] = []
+
+    # Score each bin by how under-covered it is
+    bin_scores: List[tuple[float, int, int]] = []
+    for ti in range(n_theta):
+        # Skip poles (extreme up/down) — usually floor/ceiling, not useful
+        theta_center = (ti + 0.5) / n_theta * math.pi
+        if theta_center < 0.15 * math.pi or theta_center > 0.85 * math.pi:
+            continue
+        for pi in range(n_phi):
+            count = int(coverage[ti, pi])
+            # Inverse coverage = higher score for less-covered bins
+            score = 1.0 / (1.0 + count)
+            bin_scores.append((score, ti, pi))
+
+    # Sort by score descending (least covered first)
+    bin_scores.sort(key=lambda x: x[0], reverse=True)
+
+    existing_view_dirs = [np.array(d, dtype=np.float64) for d in dirs]
+
+    for score, ti, pi in bin_scores:
+        if len(candidates) >= max_candidates:
+            break
+        if score <= 0.25:
+            # Already well-covered
+            break
+
+        theta = (ti + 0.5) / n_theta * math.pi
+        phi = (pi + 0.5) / n_phi * 2.0 * math.pi
+
+        # Camera position on sphere, looking inward
+        eye = scene_center + orbit_r * np.array([
+            math.sin(theta) * math.sin(phi),
+            math.cos(theta),
+            math.sin(theta) * math.cos(phi),
+        ], dtype=np.float64)
+
+        # View direction: from eye toward scene center
+        view_dir = scene_center - eye
+        vn = float(np.linalg.norm(view_dir))
+        if vn < 1e-8:
+            continue
+        view_dir = view_dir / vn
+
+        # Check parallax to existing views
+        min_angle = 180.0
+        for ed in existing_view_dirs:
+            angle = _angle_between_deg(view_dir, ed)
+            min_angle = min(min_angle, angle)
+
+        qvec = _look_at_qvec(eye, scene_center)
+        R = _qvec_to_rotmat(qvec)
+        tvec_arr = -R @ eye
+        tvec = [float(tvec_arr[0]), float(tvec_arr[1]), float(tvec_arr[2])]
+
+        candidates.append({
+            "id": f"virtual_theta{ti}_phi{pi}",
+            "source_image": "",
+            "render_image": "",
+            "hole_ratio": 0.0,
+            "hole_pixels": 0,
+            "cluster_count": 0,
+            "sharpness": 0.0,
+            "score": float(score) * 1000.0,
+            "yaw_offset_deg": 0.0,
+            "parallax_to_nearest_captured_deg": float(min_angle),
+            "view_dir": [float(view_dir[0]), float(view_dir[1]), float(view_dir[2])],
+            "qvec": [float(v) for v in qvec],
+            "tvec": tvec,
+            "camera_center": [float(eye[0]), float(eye[1]), float(eye[2])],
+            "is_virtual": True,
+            "coverage_bin": [ti, pi],
+            "coverage_count": int(coverage[ti, pi]),
+        })
+
+    return candidates
+
+
 def _fallback_pose_for_index(index: int, total: int) -> tuple[List[float], List[float], np.ndarray]:
     total_safe = max(1, total)
     theta = 2.0 * math.pi * (float(index) / float(total_safe))
@@ -319,6 +581,8 @@ def analyze_gap_observability(
     poses_jsonl: Path | None = None,
     colmap_images_txt: Path | None = None,
     colmap_images_bin: Path | None = None,
+    colmap_points3d_bin: Path | None = None,
+    max_virtual_candidates: int = 48,
 ) -> Dict[str, Any]:
     images = _collect_render_images(renders_dir)
     if not images:
@@ -401,8 +665,27 @@ def analyze_gap_observability(
                 }
             )
 
+    # Generate void-filling virtual cameras from under-covered sphere directions.
+    virtual_candidates: List[Dict[str, Any]] = []
+    if colmap_points3d_bin is not None and pose_map:
+        points3d = _load_colmap_points3d_bin(colmap_points3d_bin)
+        cam_centers = np.array(
+            [_camera_center_from_pose(p["qvec"], p["tvec"]) for p in pose_map.values()],
+            dtype=np.float64,
+        )
+        scene_center, scene_radius = compute_scene_bounds(points3d, cam_centers)
+        virtual_candidates = generate_void_filling_candidates(
+            scene_center,
+            scene_radius,
+            pose_map,
+            max_candidates=max(1, max_virtual_candidates),
+        )
+
+    # Merge yaw-perturbation and virtual candidates
+    all_candidates = pseudo_candidates + virtual_candidates
+
     selected = rank_candidate_views(
-        pseudo_candidates,
+        all_candidates,
         max_candidates=max_candidate_views,
         min_parallax_deg=min_parallax_deg,
     )
@@ -424,6 +707,8 @@ def analyze_gap_observability(
         "candidate_view_count": int(len(selected)),
         "max_candidate_views": int(max_candidate_views),
         "min_parallax_deg": float(min_parallax_deg),
+        "virtual_candidate_count": int(len(virtual_candidates)),
+        "virtual_candidates_selected": int(sum(1 for c in selected if c.get("is_virtual"))),
         "candidate_views_path": str(candidates_path),
         "mask_preview_dir": str(preview_dir),
         "top_hole_frames": [
@@ -472,6 +757,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional COLMAP images.bin (binary) path for camera poses",
     )
+    parser.add_argument(
+        "--colmap-points3d-bin",
+        default="",
+        help="Optional COLMAP points3D.bin path for scene bounds (enables void-fill cameras)",
+    )
+    parser.add_argument(
+        "--max-virtual-candidates",
+        type=int,
+        default=int(os.getenv("POST_STAGE4_MAX_VIRTUAL_CANDIDATES", "48")),
+        help="Maximum virtual void-fill camera candidates to generate",
+    )
     return parser
 
 
@@ -485,6 +781,7 @@ def main() -> int:
     poses_jsonl = Path(args.poses_jsonl) if str(args.poses_jsonl).strip() else None
     colmap_images_txt = Path(args.colmap_images_txt) if str(args.colmap_images_txt).strip() else None
     colmap_images_bin = Path(args.colmap_images_bin) if str(args.colmap_images_bin).strip() else None
+    colmap_points3d_bin = Path(args.colmap_points3d_bin) if str(args.colmap_points3d_bin).strip() else None
 
     analyze_gap_observability(
         renders_dir=renders_dir,
@@ -494,6 +791,8 @@ def main() -> int:
         poses_jsonl=poses_jsonl,
         colmap_images_txt=colmap_images_txt,
         colmap_images_bin=colmap_images_bin,
+        colmap_points3d_bin=colmap_points3d_bin,
+        max_virtual_candidates=max(1, int(args.max_virtual_candidates)),
     )
     return 0
 

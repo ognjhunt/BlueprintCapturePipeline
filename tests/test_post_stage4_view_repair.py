@@ -312,3 +312,166 @@ class TestRepairCandidateViews:
         assert report["rejected_count"] == 1
         assert report["rows"][0]["backend_mode"] == "passthrough"
         assert "backend_passthrough" in report["rows"][0]["gate_reasons"]
+
+    def test_virtual_candidate_resolves_render_from_mapping(self, tmp_path: Path) -> None:
+        renders_dir = tmp_path / "renders"
+        renders_dir.mkdir()
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        PILImage = pytest.importorskip("PIL.Image")
+        img = np.full((32, 32, 3), 180, dtype=np.uint8)
+        mapped_render = renders_dir / "00000.png"
+        PILImage.fromarray(img).save(mapped_render)
+
+        candidates_path = tmp_path / "candidates.jsonl"
+        candidates_path.write_text(
+            json.dumps(
+                {
+                    "id": "virtual_01",
+                    "is_virtual": True,
+                    "source_image": "00000.png",
+                    "render_image": "",
+                    "qvec": [1.0, 0.0, 0.0, 0.0],
+                    "tvec": [0.0, 0.0, 0.0],
+                    "camera_id": 7,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        mapping_path = tmp_path / "mapping.jsonl"
+        mapping_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": "virtual_01",
+                    "render_image": str(mapped_render),
+                    "qvec": [1.0, 0.0, 0.0, 0.0],
+                    "tvec": [0.0, 0.0, 0.0],
+                    "camera_id": 7,
+                    "predicted_hole_ratio": 0.2,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with mock.patch.dict("os.environ", {"POST_STAGE4_FIXER_IMAGE_COMMAND": ""}):
+            report = repair_candidate_views(
+                renders_dir=renders_dir,
+                candidate_views_path=candidates_path,
+                output_dir=output_dir,
+                model_mode="fixer",
+                max_reprojection_error_px=2.5,
+                max_photometric_drift=0.08,
+                virtual_render_mapping_path=mapping_path,
+            )
+
+        assert report["rejected_count"] == 1
+        row = report["rows"][0]
+        assert row["candidate_id"] == "virtual_01"
+        assert row["is_virtual"] is True
+        assert row["render_image"] == str(mapped_render)
+        assert row["camera_id"] == 7
+        assert float(row["predicted_hole_ratio"]) == pytest.approx(0.2)
+        assert row["qvec"] == [1.0, 0.0, 0.0, 0.0]
+        assert row["tvec"] == [0.0, 0.0, 0.0]
+
+    def test_virtual_candidate_missing_mapping_is_rejected_explicitly(self, tmp_path: Path) -> None:
+        renders_dir = tmp_path / "renders"
+        renders_dir.mkdir()
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        candidates_path = tmp_path / "candidates.jsonl"
+        candidates_path.write_text(
+            json.dumps(
+                {
+                    "id": "virtual_missing",
+                    "is_virtual": True,
+                    "source_image": "00000.png",
+                    "render_image": "",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        report = repair_candidate_views(
+            renders_dir=renders_dir,
+            candidate_views_path=candidates_path,
+            output_dir=output_dir,
+            model_mode="fixer",
+            max_reprojection_error_px=2.5,
+            max_photometric_drift=0.08,
+            virtual_render_mapping_path=None,
+        )
+        assert report["accepted_count"] == 0
+        assert report["rejected_count"] == 1
+        assert "virtual_render_mapping_missing" in report["rows"][0]["gate_reasons"]
+
+    def test_accepted_virtual_rows_preserve_metadata(self, tmp_path: Path) -> None:
+        renders_dir = tmp_path / "renders"
+        renders_dir.mkdir()
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        PILImage = pytest.importorskip("PIL.Image")
+        img = np.full((32, 32, 3), 200, dtype=np.uint8)
+        mapped_render = renders_dir / "00001.png"
+        PILImage.fromarray(img).save(mapped_render)
+
+        candidates_path = tmp_path / "candidates.jsonl"
+        candidates_path.write_text(
+            json.dumps(
+                {
+                    "id": "virtual_ok",
+                    "is_virtual": True,
+                    "source_image": "00001.png",
+                    "render_image": "",
+                    "qvec": [0.7071, 0.0, 0.7071, 0.0],
+                    "tvec": [1.0, 2.0, 3.0],
+                    "camera_id": 5,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        mapping_path = tmp_path / "mapping.jsonl"
+        mapping_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": "virtual_ok",
+                    "render_image": str(mapped_render),
+                    "qvec": [0.7071, 0.0, 0.7071, 0.0],
+                    "tvec": [1.0, 2.0, 3.0],
+                    "camera_id": 5,
+                    "predicted_hole_ratio": 0.1,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        def _fake_backend(*, input_path: Path, output_path: Path, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(input_path.read_bytes())
+            return True, "fixer_native"
+
+        with mock.patch("post_stage4_view_repair._run_backend", side_effect=_fake_backend):
+            report = repair_candidate_views(
+                renders_dir=renders_dir,
+                candidate_views_path=candidates_path,
+                output_dir=output_dir,
+                model_mode="fixer",
+                max_reprojection_error_px=2.5,
+                max_photometric_drift=0.08,
+                virtual_render_mapping_path=mapping_path,
+            )
+
+        assert report["accepted_count"] == 1
+        row = report["rows"][0]
+        assert row["accepted"] is True
+        assert row["is_virtual"] is True
+        assert row["candidate_id"] == "virtual_ok"
+        assert row["camera_id"] == 5
+        assert row["qvec"] == [0.7071, 0.0, 0.7071, 0.0]
+        assert row["tvec"] == [1.0, 2.0, 3.0]
