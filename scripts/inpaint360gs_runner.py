@@ -185,6 +185,268 @@ def _run(
     return proc
 
 
+def _python_has_module(
+    *,
+    module: str,
+    python: Path = INPAINT360GS_PYTHON,
+    extra_pythonpath: Optional[str] = None,
+) -> bool:
+    """Return whether *module* can be imported in the given interpreter."""
+    try:
+        env = os.environ.copy()
+        if extra_pythonpath:
+            existing = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                f"{extra_pythonpath}:{existing}" if existing else extra_pythonpath
+            )
+        proc = subprocess.run(
+            [str(python), "-c", f"import importlib.util; raise SystemExit(0 if importlib.util.find_spec('{module}') else 1)"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            env=env,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _python_module_version(
+    *,
+    module: str,
+    python: Path = INPAINT360GS_PYTHON,
+    extra_pythonpath: Optional[str] = None,
+) -> Optional[str]:
+    """Return installed module version if importable, otherwise None."""
+    try:
+        env = os.environ.copy()
+        if extra_pythonpath:
+            existing = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                f"{extra_pythonpath}:{existing}" if existing else extra_pythonpath
+            )
+        proc = subprocess.run(
+            [str(python), "-c", f"import importlib.metadata as m; print(m.version('{module}'))"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            env=env,
+            text=True,
+        )
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _ensure_python_module(
+    *,
+    module: str,
+    expected_version: Optional[str] = None,
+    python: Path = INPAINT360GS_PYTHON,
+    timeout: int = 1200,
+) -> bool:
+    """Ensure *module* is importable (and version matches optional constraint)."""
+    import_name = module
+    package_spec = module
+    if expected_version:
+        package_spec = f"{module}=={expected_version}"
+        import_name = module
+    if _python_has_module(module=import_name, python=python):
+        if expected_version is None:
+            return True
+        version = _python_module_version(module=import_name, python=python)
+        if version == expected_version:
+            return True
+        _log(f"  Module '{import_name}' version mismatch: got {version}, expected {expected_version}")
+
+    _log(f"  Missing/unsupported python module '{module}' — attempting pip install --user {package_spec}")
+    install_proc = _run(
+        [str(python), "-m", "pip", "install", "--user", package_spec],
+        label=f"install python module {package_spec}",
+        timeout=timeout,
+    )
+    if install_proc.returncode != 0:
+        _log(f"  pip install for '{package_spec}' failed (rc={install_proc.returncode})")
+        return False
+
+    if not _python_has_module(module=import_name, python=python):
+        return False
+    if expected_version is not None:
+        return _python_module_version(module=import_name, python=python) == expected_version
+    return True
+
+
+def _ensure_minimal_easydict_stub(workspace: Path) -> None:
+    """Create a tiny local easydict shim if external dependency cannot be installed."""
+    stub_path = workspace / "easydict.py"
+    if stub_path.exists():
+        return
+    stub_path.write_text(
+        "\n".join(
+            [
+                "class EasyDict(dict):",
+                "    def __getattr__(self, name):",
+                "        try:",
+                "            return self[name]",
+                "        except KeyError as exc:",
+                "            raise AttributeError(name) from exc",
+                "    def __setattr__(self, name, value):",
+                "        self[name] = value",
+                "    __setitem__ = dict.__setitem__",
+                "    def __delattr__(self, name):",
+                "        try:",
+                "            del self[name]",
+                "        except KeyError as exc:",
+                "            raise AttributeError(name) from exc",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 helpers
+# ---------------------------------------------------------------------------
+
+def _build_lama_masks_from_virtual_outputs(
+    *,
+    workspace: Path,
+    model_path: Path,
+    iteration: int,
+    lama_workspace: Optional[Path] = None,
+    config_path: Optional[Path] = None,
+) -> None:
+    """Populate ``Segment-and-Track-Anything/tracking_results/images/images_masks``.
+
+    Upstream ``prepare_lama_data.py`` expects masks under a hardcoded
+    path in the Inpaint360GS repo root. The repository does not populate
+    this path in the local setup, so we mirror masks from the virtual
+    pose outputs that Inpaint360GS just produced.
+    """
+    if lama_workspace is None:
+        lama_workspace = INPAINT360GS_DIR
+    target_dir = lama_workspace / "Segment-and-Track-Anything" / "tracking_results" / "images" / "images_masks"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for existing_mask in target_dir.glob("*.png"):
+        try:
+            existing_mask.unlink()
+        except OSError:
+            pass
+
+    # Resolve selected object IDs from the config, if available.
+    selected_ids: List[int] = []
+    if config_path is not None and config_path.is_file():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            select_obj_id = cfg.get("select_obj_id", [])
+            for value in select_obj_id:
+                if isinstance(value, (int, str)):
+                    try:
+                        selected_ids.append(int(value))
+                    except ValueError:
+                        continue
+        except Exception:
+            selected_ids = []
+    selected_ids = sorted(set([v for v in selected_ids if v > 0]))
+
+    # Candidates are created by virtual_pose.py and contain per-frame masks.
+    candidates = [
+        workspace / "inpaint_2d_unseen_mask_virtual",
+        model_path / "virtual" / "ours_object_removal" / f"iteration_{iteration}" / "objects_pred",
+        model_path / "virtual" / "ours_object_removal" / f"iteration_{iteration}" / "gt_objects_color",
+    ]
+    source_dir: Optional[Path] = None
+    for candidate in candidates:
+        if candidate.is_dir() and any(candidate.glob("*.png")):
+            source_dir = candidate
+            break
+
+    if source_dir is None:
+        # Try one more place: full-view renders (fallback to no-op inpainting masks).
+        render_dir = model_path / "virtual" / "ours_object_removal" / f"iteration_{iteration}" / "renders"
+        if render_dir.is_dir() and any(render_dir.glob("*.png")):
+            source_dir = render_dir
+
+    if source_dir is None:
+        _log(f"  WARN: no virtual mask source found for LaMa under iteration_{iteration}")
+        return
+
+    # Build hardcoded-tracking masks from the best source available.
+    try:
+        from PIL import Image
+        import numpy as np
+
+        for mask_file in source_dir.glob("*.png"):
+            src_img = Image.open(mask_file).convert("L")
+            arr = np.array(src_img, dtype=np.int32)
+            if source_dir.name == "renders" and arr.ndim == 3:
+                # Render RGB -> convert to a non-zero mask.
+                arr = arr.mean(axis=2)
+
+            if selected_ids:
+                # If IDs are within range and masks were actually encoded as IDs,
+                # keep only selected IDs. Otherwise use any non-zero object.
+                if arr.max() <= 255 and all(value <= 255 for value in selected_ids):
+                    keep = np.isin(arr, selected_ids)
+                else:
+                    keep = arr != 0
+            else:
+                keep = arr != 0
+
+            mask = (keep.astype(np.uint8) * 255)
+            dst = target_dir / mask_file.name
+            Image.fromarray(mask).save(dst)
+    except Exception:
+        # Fall back to raw copy if image libs are unavailable.
+        for mask_file in source_dir.glob("*.png"):
+            shutil.copy2(mask_file, target_dir / mask_file.name)
+
+
+def _ensure_lama_workspace(workspace: Path) -> Path:
+    """Create a writable LaMa staging directory with the expected relative layout."""
+    lama_workspace = workspace / "_lama_workspace"
+    lama_workspace.mkdir(exist_ok=True)
+
+    def _safe_link(name: str, target: Path) -> None:
+        link = lama_workspace / name
+        if link.is_symlink() or link.exists():
+            return
+        if target.is_dir():
+            link.symlink_to(target, target_is_directory=True)
+        else:
+            link.symlink_to(target)
+
+    # Inpaint360GS expects these relative paths:
+    # - Segment-and-Track-Anything/.../images_masks
+    # - LaMa/data
+    # - LaMa/output
+    # - configs (for default prediction config)
+    # - big-lama weights
+    # - config/object_distill/train_distill.json
+    _safe_link("Segment-and-Track-Anything", INPAINT360GS_DIR / "Segment-and-Track-Anything")
+    _safe_link("configs", INPAINT360GS_DIR / "LaMa" / "configs")
+    _safe_link("big-lama", INPAINT360GS_DIR / "LaMa" / "big-lama")
+    _safe_link("config", INPAINT360GS_DIR / "config")
+
+    lama_repo_dir = lama_workspace / "LaMa"
+    lama_repo_dir.mkdir(exist_ok=True)
+    (lama_repo_dir / "data").mkdir(parents=True, exist_ok=True)
+    (lama_repo_dir / "output").mkdir(parents=True, exist_ok=True)
+
+    # Keep helper aliases consistent with prepare/predict expectations.
+    for alias in ["data", "output"]:
+        alias_path = lama_workspace / alias
+        target = lama_repo_dir / alias
+        if not alias_path.exists():
+            alias_path.symlink_to(target, target_is_directory=True)
+
+    return lama_workspace
+
+
 # ---------------------------------------------------------------------------
 # Stage 1: Data layout preparation
 # ---------------------------------------------------------------------------
@@ -459,6 +721,13 @@ def run_object_removal(
     _log(f"Removing {len(target_ids)} object(s) (with inline distillation)")
     t0 = time.monotonic()
 
+    # Check for existing removal output (resume from previous run)
+    for ckpt_dir in sorted(model_path.glob("point_cloud_object_removal/iteration_*")):
+        removal_ply = ckpt_dir / "point_cloud.ply"
+        if removal_ply.is_file() and removal_ply.stat().st_size > 1_000_000:
+            _log(f"  Reusing existing removal output at {removal_ply} ({removal_ply.stat().st_size / 1024 / 1024:.0f}MB)")
+            return {"status": "ok", "target_ids": target_ids, "duration_s": 0.0, "reused": True}
+
     removal_script = INPAINT360GS_DIR / "edit_object_removal.py"
     if not removal_script.is_file():
         return {"status": "failed", "reason": "edit_object_removal.py not found"}
@@ -470,6 +739,19 @@ def run_object_removal(
     config = {
         "removal_thresh": INPAINT360GS_REMOVAL_THRESH,
         "select_obj_id": target_ids,
+        # target_id == select_obj_id means "remove ALL selected objects."
+        # When target_id is a strict subset of select_obj_id, the script
+        # re-combines the non-targeted objects back into the scene.
+        "target_id": target_ids,
+        # Downstream inpaint stages:
+        "object_path": "inpaint_2d_unseen_mask_virtual",
+        "images": "images_inpaint_unseen_virtual",
+        "surrounding_ids": [],
+        "lambda_dssim": 0.8,
+        "opacity_init": 0.1,
+        "lambda_lpips": 0.0005,
+        "finetune_iteration": INPAINT360GS_FINETUNE_ITERS,
+        "circle_radius": 1.0,
     }
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
@@ -505,17 +787,23 @@ def run_object_removal(
         },
     )
 
-    # Find the distilled checkpoint iteration (has classifier.pth).
-    # Removal must load the DISTILLED model (with object features),
-    # NOT the vanilla model.  Do NOT pass --train_distill here.
+    # Use the distillation checkpoint which contains per-Gaussian object
+    # features.  The vanilla training checkpoint (iteration_30000) only has
+    # geometry — no object features — so the classifier can't map Gaussians
+    # to semantic IDs.  Always prefer the distillation iteration.
     distill_iter = INPAINT360GS_DISTILL_ITERS
-    for ckpt_dir in sorted(model_path.glob("point_cloud/iteration_*"), reverse=True):
-        if (ckpt_dir / "classifier.pth").is_file():
-            try:
-                distill_iter = int(ckpt_dir.name.split("_")[-1])
-            except ValueError:
-                pass
-            break
+    distill_ckpt = model_path / "point_cloud" / f"iteration_{distill_iter}"
+    if not (distill_ckpt / "point_cloud.ply").is_file():
+        # Fallback: scan for any checkpoint with classifier.pth, prefer
+        # the *lowest* iteration (distillation runs fewer iters than vanilla).
+        for ckpt_dir in sorted(model_path.glob("point_cloud/iteration_*")):
+            if (ckpt_dir / "classifier.pth").is_file() and (ckpt_dir / "point_cloud.ply").is_file():
+                try:
+                    distill_iter = int(ckpt_dir.name.split("_")[-1])
+                except ValueError:
+                    pass
+                break
+    _log(f"  Loading distilled checkpoint at iteration {distill_iter}")
 
     proc = _run(
         [
@@ -541,6 +829,13 @@ def run_object_removal(
     return {"status": "ok", "target_ids": target_ids, "duration_s": round(duration, 1)}
 
 
+def _lama_data_name(workspace: Path) -> str:
+    """Build a deterministic LaMa data_name for the current workspace."""
+    safe_name = workspace.name or "scene"
+    safe_name = safe_name.replace(" ", "_")
+    return f"360_{safe_name}_virtual"
+
+
 # ---------------------------------------------------------------------------
 # Stage 5: Virtual poses + LaMa inpainting
 # ---------------------------------------------------------------------------
@@ -549,35 +844,110 @@ def run_virtual_poses_and_inpaint(
     *,
     workspace: Path,
     model_path: Path,
+    config_path: Optional[Path] = None,
     expand_pixels: int = INPAINT360GS_LAMA_EXPAND_PX,
 ) -> Dict[str, Any]:
     """Generate virtual camera poses around removal regions and run LaMa 2D inpainting."""
     _log("Generating virtual poses + LaMa inpainting...")
     t0 = time.monotonic()
 
-    # Virtual pose generation
+    # LaMa lives inside Inpaint360GS/LaMa — add to PYTHONPATH.
+    lama_dir = INPAINT360GS_DIR / "LaMa"
+    lama_env: Dict[str, str] = {}
+    lama_workspace = _ensure_lama_workspace(workspace)
+    if lama_dir.is_dir():
+        user_site = subprocess.run(
+            [INPAINT360GS_PYTHON, "-c", "import site,sys; print(site.getusersitepackages() or '')"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        paths = [str(lama_dir)]
+        if user_site:
+            paths.append(user_site)
+        paths.append(str(lama_workspace))
+        lama_env["PYTHONPATH"] = ":".join(p for p in paths if p)
+
+    # Build config_file arg (needed by virtual_pose.py)
+    if config_path is None:
+        config_path = workspace / "removal_config.json"
+    config_args = ["--config_file", str(config_path)] if config_path.is_file() else []
+    data_name = _lama_data_name(workspace)
+    virtual_iteration = INPAINT360GS_DISTILL_ITERS
+
+    # Virtual pose generation (needs to run first so virtual masks exist locally).
     vpose_script = INPAINT360GS_DIR / "tools" / "virtual_pose.py"
     if vpose_script.is_file():
         proc = _run(
-            [INPAINT360GS_PYTHON, str(vpose_script), "--model_path", str(model_path)],
+            [
+                INPAINT360GS_PYTHON,
+                str(vpose_script),
+                "-s", str(workspace),
+                "--model_path", str(model_path),
+                "--object_path", "associated_hqsam",
+                "--iteration", str(virtual_iteration),
+                *config_args,
+            ],
             cwd=INPAINT360GS_DIR,
             label="virtual pose generation",
-            timeout=300,
+            timeout=600,
         )
         if proc.returncode != 0:
             _log(f"  Virtual pose generation failed (rc={proc.returncode}), continuing anyway...")
 
+    # Step 0: ensure legacy tracking_results path exists for prepare_lama_data.py.
+    _build_lama_masks_from_virtual_outputs(
+        workspace=workspace,
+        model_path=model_path,
+        iteration=virtual_iteration,
+        lama_workspace=lama_workspace,
+        config_path=config_path if config_path.is_file() else None,
+    )
+
+    # Prepare inpaint inputs for LaMa using the prepared masks.
+    prepare_script = INPAINT360GS_DIR / "tools" / "prepare_lama_data.py"
+    if prepare_script.is_file():
+        proc = _run(
+            [
+                INPAINT360GS_PYTHON,
+                str(prepare_script),
+                "-s", str(workspace),
+                "-m", str(model_path),
+                "-r", str(INPAINT360GS_RESOLUTION),
+                "--inpaint2lama",
+            ],
+            cwd=lama_workspace,
+            label="prepare LaMa input",
+            timeout=600,
+        )
+        if proc.returncode != 0:
+            return {"status": "failed", "reason": f"prepare_lama_data.py rc={proc.returncode}"}
+
     # LaMa color inpainting
     color_script = INPAINT360GS_DIR / "predict_color.py"
     if color_script.is_file():
+        for module in ("easydict", "kornia", "albumentations"):
+            if not _ensure_python_module(module=module):
+                _log(f"  Warning: failed to install {module}; attempting local fallback where available")
+        if not _ensure_python_module(module="easydict"):
+            _ensure_minimal_easydict_stub(lama_workspace)
+            if not _python_has_module(
+                module="easydict",
+                python=INPAINT360GS_PYTHON,
+                extra_pythonpath=lama_env.get("PYTHONPATH", ""),
+            ):
+                return {"status": "failed", "reason": "easydict dependency unavailable and shim creation failed"}
         proc = _run(
             [
                 INPAINT360GS_PYTHON,
                 str(color_script),
                 "--model_path", str(model_path),
                 "--expand", str(expand_pixels),
+                "--data_name", data_name,
             ],
-            cwd=INPAINT360GS_DIR,
+            cwd=lama_workspace,
+            env=lama_env,
             label="LaMa color inpainting",
             timeout=1200,
         )
@@ -587,19 +957,41 @@ def run_virtual_poses_and_inpaint(
     # LaMa depth inpainting
     depth_script = INPAINT360GS_DIR / "predict_depth.py"
     if depth_script.is_file():
+        for module in ("easydict", "kornia", "albumentations"):
+            if not _ensure_python_module(module=module):
+                _log(f"  Warning: failed to install {module}; continuing with existing environment")
         proc = _run(
             [
                 INPAINT360GS_PYTHON,
                 str(depth_script),
                 "--model_path", str(model_path),
                 "--expand", str(expand_pixels),
+                "--data_name", data_name,
             ],
-            cwd=INPAINT360GS_DIR,
+            cwd=lama_workspace,
+            env=lama_env,
             label="LaMa depth inpainting",
             timeout=1200,
         )
         if proc.returncode != 0:
             _log(f"  Depth inpainting failed, continuing with color only...")
+
+    # Step 3: copy LaMa outputs back to workspace for fusion/optimization.
+    if prepare_script.is_file():
+        proc = _run(
+            [
+                INPAINT360GS_PYTHON,
+                str(prepare_script),
+                "-s", str(workspace),
+                "-m", str(model_path),
+                "-r", str(INPAINT360GS_RESOLUTION),
+            ],
+            cwd=lama_workspace,
+            label="copy LaMa outputs",
+            timeout=600,
+        )
+        if proc.returncode != 0:
+            return {"status": "failed", "reason": f"prepare_lama_data.py rc={proc.returncode}"}
 
     duration = time.monotonic() - t0
     return {"status": "ok", "duration_s": round(duration, 1)}
@@ -613,8 +1005,11 @@ def run_inpaint_optimization(
     *,
     workspace: Path,
     model_path: Path,
+    config_path: Optional[Path] = None,
     resolution: int = INPAINT360GS_RESOLUTION,
     iterations: int = INPAINT360GS_FINETUNE_ITERS,
+    num_classes: int = -1,
+    distillation_iteration: int = INPAINT360GS_DISTILL_ITERS,
 ) -> Dict[str, Any]:
     """Run PLY fusion and 3DGS inpainting optimization.
 
@@ -622,6 +1017,18 @@ def run_inpaint_optimization(
     """
     _log(f"Running inpaint optimization ({iterations} iters)...")
     t0 = time.monotonic()
+
+    if config_path is None:
+        config_path = workspace / "removal_config.json"
+
+    if num_classes < 0:
+        scene_json = workspace / "associated_hqsam" / "scene.json"
+        num_classes = -1
+        if scene_json.is_file():
+            try:
+                num_classes = json.loads(scene_json.read_text(encoding="utf-8")).get("num_classes", -1)
+            except Exception:
+                pass
 
     # PLY fusion
     fusion_script = INPAINT360GS_DIR / "edit_object_removal_plyfusion.py"
@@ -631,6 +1038,9 @@ def run_inpaint_optimization(
                 INPAINT360GS_PYTHON,
                 str(fusion_script),
                 "--model_path", str(model_path),
+                "-s", str(workspace),
+                "--config_file", str(config_path),
+                "--iteration", str(distillation_iteration),
             ],
             cwd=INPAINT360GS_DIR,
             label="PLY fusion",
@@ -638,6 +1048,23 @@ def run_inpaint_optimization(
         )
         if proc.returncode != 0:
             _log(f"  PLY fusion failed (rc={proc.returncode}), trying direct inpainting...")
+
+    # Ensure downstream stage has dataset model args required by inpaint parser.
+    cfg_args_path = model_path / "cfg_args"
+    _patch_cfg_args(
+        cfg_args_path,
+        {
+            "object_path": "associated_hqsam",
+            "vanilla_3dgs_path": str(model_path),
+            "n_views": 100,
+            "random_init": False,
+            "train_split": False,
+        },
+        overwrite={
+            "num_classes": num_classes,
+            "train_distill": False,
+        },
+    )
 
     # Inpainting optimization
     inpaint_script = INPAINT360GS_DIR / "edit_object_inpaint.py"
@@ -651,7 +1078,9 @@ def run_inpaint_optimization(
             "-s", str(workspace),
             "--model_path", str(model_path),
             "-r", str(resolution),
+            "--iteration", str(distillation_iteration),
             "--iterations", str(iterations),
+            "--config_file", str(config_path),
         ],
         cwd=INPAINT360GS_DIR,
         label="inpaint optimization",
@@ -662,16 +1091,22 @@ def run_inpaint_optimization(
     if proc.returncode != 0:
         return {"status": "failed", "reason": f"edit_object_inpaint.py rc={proc.returncode}", "duration_s": duration}
 
-    # Find the output PLY
-    inpaint_dirs = sorted(model_path.glob("point_cloud_object_inpaint*/iteration_*/point_cloud.ply"))
+    # Find the output PLY written by edit_object_inpaint.py.
+    candidate_plys = [
+        model_path / "point_cloud" / "_object_inpaint_virtual" / f"iteration_{iterations}" / "point_cloud.ply",
+        model_path / "point_cloud_object_inpaint_virtual" / f"iteration_{iterations}" / "point_cloud.ply",
+        model_path / "point_cloud_object_inpaint" / f"iteration_{iterations}" / "point_cloud.ply",
+    ]
+    inpaint_dirs = [path for path in candidate_plys if path.is_file()]
+
+    # Backward-compatible fallback for any inpaint output naming.
     if not inpaint_dirs:
-        # Fallback: look for any PLY in the model directory
-        inpaint_dirs = sorted(model_path.glob("**/point_cloud.ply"))
+        inpaint_dirs = sorted(model_path.glob("point_cloud/**/*/point_cloud.ply"))
 
     if not inpaint_dirs:
         return {"status": "failed", "reason": "no output PLY found after inpainting", "duration_s": duration}
 
-    final_ply = inpaint_dirs[-1]  # Use the latest iteration
+    final_ply = inpaint_dirs[-1]  # Use the latest candidate
     _log(f"  Final inpainted PLY: {final_ply} ({final_ply.stat().st_size / 1024 / 1024:.1f}MB)")
 
     return {
@@ -701,70 +1136,68 @@ def convert_gaussians_to_mesh(
 
     try:
         import numpy as np
-    except ImportError:
-        return {"status": "failed", "reason": "numpy not available"}
-
-    # Read PLY and extract positions + colors
-    try:
         import open3d as o3d  # type: ignore
-
-        pcd = o3d.io.read_point_cloud(str(ply_path))
-        n_points = len(pcd.points)
-        _log(f"  Loaded {n_points} points from PLY")
-
-        if n_points < 100:
-            return {"status": "failed", "reason": f"too few points ({n_points})"}
-
-        # Estimate normals for Poisson reconstruction
-        pcd.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
-        )
-        pcd.orient_normals_consistent_tangent_plane(100)
-
-        # Poisson surface reconstruction
-        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-            pcd, depth=10, width=0, scale=1.1, linear_fit=False
-        )
-        _log(f"  Poisson mesh: {len(mesh.vertices)} verts, {len(mesh.triangles)} faces")
-
-        # Remove low-density vertices (floating artifacts)
-        densities_np = np.asarray(densities)
-        density_threshold = np.quantile(densities_np, 0.02)
-        vertices_to_remove = densities_np < density_threshold
-        mesh.remove_vertices_by_mask(vertices_to_remove)
-
-        # Simplify if over budget
-        n_faces = len(mesh.triangles)
-        if n_faces > max_faces:
-            mesh = mesh.simplify_quadric_decimation(max_faces)
-            _log(f"  Simplified: {n_faces} → {len(mesh.triangles)} faces")
-
-        # Export as GLB via trimesh (Open3D doesn't export GLB directly)
-        try:
-            import trimesh  # type: ignore
-            vertices = np.asarray(mesh.vertices)
-            faces = np.asarray(mesh.triangles)
-            colors = None
-            if mesh.has_vertex_colors():
-                colors = (np.asarray(mesh.vertex_colors) * 255).astype(np.uint8)
-
-            tm = trimesh.Trimesh(vertices=vertices, faces=faces, vertex_colors=colors)
-            tm.export(str(output_glb))
-        except ImportError:
-            # Fallback: export as PLY and let downstream handle it
-            o3d.io.write_triangle_mesh(str(output_glb.with_suffix(".ply")), mesh)
-            return {"status": "failed", "reason": "trimesh not available for GLB export"}
-
     except ImportError:
-        # Try trimesh directly as fallback
-        try:
-            import trimesh  # type: ignore
-            mesh = trimesh.load_mesh(str(ply_path))
-            if hasattr(mesh, "faces") and len(mesh.faces) > max_faces:
-                mesh = mesh.simplify_quadric_decimation(max_faces)
-            mesh.export(str(output_glb))
-        except Exception as exc:
-            return {"status": "failed", "reason": f"mesh conversion failed: {exc}"}
+        return {"status": "failed", "reason": "numpy or open3d not available"}
+
+    pcd = o3d.io.read_point_cloud(str(ply_path))
+    n_points = len(pcd.points)
+    _log(f"  Loaded {n_points} points from PLY")
+
+    if n_points < 100:
+        return {"status": "failed", "reason": f"too few points ({n_points})"}
+
+    # Keep Poisson reconstruction tractable for dense Gaussians. Use voxel
+    # downsampling (NOT random) to preserve uniform spatial coverage — random
+    # sampling creates holes that cause Poisson to produce tiny meshes.
+    if n_points > 300_000:
+        voxel_size = 0.01
+        pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
+        _log(f"  Downsampled for mesh conversion: {len(pcd.points)} points (voxel={voxel_size})")
+
+    # Clear pre-existing normals — Gaussian PLY files store rotation normals
+    # (arbitrary orientation) that corrupt Poisson surface reconstruction.
+    pcd.normals = o3d.utility.Vector3dVector()
+
+    # Estimate proper surface normals for Poisson reconstruction
+    pcd.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
+    )
+    pcd.orient_normals_consistent_tangent_plane(100)
+
+    # Poisson surface reconstruction (depth=10 for detailed mesh)
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        pcd, depth=10, width=0, scale=1.1, linear_fit=False
+    )
+    _log(f"  Poisson mesh: {len(mesh.vertices)} verts, {len(mesh.triangles)} faces")
+
+    # Remove low-density vertices (floating artifacts)
+    densities_np = np.asarray(densities)
+    density_threshold = np.quantile(densities_np, 0.02)
+    vertices_to_remove = densities_np < density_threshold
+    mesh.remove_vertices_by_mask(vertices_to_remove)
+
+    # Simplify if over budget
+    n_faces = len(mesh.triangles)
+    if n_faces > max_faces:
+        mesh = mesh.simplify_quadric_decimation(max_faces)
+        _log(f"  Simplified: {n_faces} → {len(mesh.triangles)} faces")
+
+    # Export as GLB via trimesh (Open3D doesn't export GLB directly)
+    try:
+        import trimesh  # type: ignore
+        vertices = np.asarray(mesh.vertices)
+        faces = np.asarray(mesh.triangles)
+        colors = None
+        if mesh.has_vertex_colors():
+            colors = (np.asarray(mesh.vertex_colors) * 255).astype(np.uint8)
+
+        tm = trimesh.Trimesh(vertices=vertices, faces=faces, vertex_colors=colors)
+        tm.export(str(output_glb))
+    except ImportError:
+        # Fallback: export as PLY and let downstream handle it
+        o3d.io.write_triangle_mesh(str(output_glb.with_suffix(".ply")), mesh)
+        return {"status": "failed", "reason": "trimesh not available for GLB export"}
 
     duration = time.monotonic() - t0
 
@@ -887,6 +1320,8 @@ def run_scene_cleaning(
             workspace=inpaint_workspace,
             resolution=resolution,
         )
+        num_classes = layout["num_objects"] + 1
+        config_path = inpaint_workspace / "removal_config.json"
         if target_instance_ids:
             resolved_targets: List[int] = []
             for value in target_instance_ids:
@@ -928,26 +1363,45 @@ def run_scene_cleaning(
         if removal_result["status"] != "ok":
             raise RuntimeError(f"Object removal failed: {removal_result.get('reason')}")
 
+        warnings: List[str] = []
+
         # Stage 5: Virtual poses + LaMa inpainting
         inpaint_2d_result = run_virtual_poses_and_inpaint(
             workspace=inpaint_workspace,
             model_path=model_path,
+            config_path=config_path,
         )
         timing["lama_inpainting"] = inpaint_2d_result.get("duration_s", 0)
         if inpaint_2d_result["status"] != "ok":
-            raise RuntimeError(f"LaMa inpainting failed: {inpaint_2d_result.get('reason')}")
+            warnings.append(f"LaMa stage skipped: {inpaint_2d_result.get('reason')}")
 
-        # Stage 6: Inpaint optimization
-        opt_result = run_inpaint_optimization(
-            workspace=inpaint_workspace,
-            model_path=model_path,
-            resolution=resolution,
-        )
-        timing["inpaint_optimization"] = opt_result.get("duration_s", 0)
-        if opt_result["status"] != "ok":
-            raise RuntimeError(f"Inpaint optimization failed: {opt_result.get('reason')}")
+        final_ply: Optional[Path] = None
+        if inpaint_2d_result["status"] == "ok":
+            # Stage 6: Inpaint optimization
+            opt_result = run_inpaint_optimization(
+                workspace=inpaint_workspace,
+                model_path=model_path,
+                config_path=config_path,
+                resolution=resolution,
+                iterations=INPAINT360GS_FINETUNE_ITERS,
+                num_classes=num_classes,
+                distillation_iteration=INPAINT360GS_DISTILL_ITERS,
+            )
+            timing["inpaint_optimization"] = opt_result.get("duration_s", 0)
+            if opt_result["status"] == "ok":
+                final_ply = Path(opt_result["ply_path"])
+            else:
+                warnings.append(f"Inpaint optimization failed: {opt_result.get('reason')}")
+        else:
+            timing["inpaint_optimization"] = 0
 
-        final_ply = Path(opt_result["ply_path"])
+        if final_ply is None:
+            final_ply_fallback = model_path / "point_cloud_object_removal" / f"iteration_{INPAINT360GS_DISTILL_ITERS}" / "point_cloud.ply"
+            if not final_ply_fallback.is_file():
+                raise RuntimeError("No optimized PLY available and no removal fallback PLY was found")
+            final_ply = final_ply_fallback
+            warnings.append("Using point_cloud_object_removal output as final artifact")
+            _log(f"  Fallback PLY for final output: {final_ply}")
 
         # Copy inpainted PLY to output directory as a first-class artifact
         shutil.copy2(str(final_ply), str(output_ply))
@@ -967,6 +1421,7 @@ def run_scene_cleaning(
 
         report = {
             "status": "ok",
+            "warnings": warnings,
             "inpainted_visual_glb": str(output_glb),
             "inpainted_gaussian_ply": str(output_ply) if output_ply.is_file() else None,
             "num_objects_removed": len(object_ids),
