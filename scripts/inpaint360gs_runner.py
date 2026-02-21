@@ -57,6 +57,7 @@ INPAINT360GS_REMOVAL_THRESH = max(0.1, min(1.0, _env_float("INPAINT360GS_REMOVAL
 INPAINT360GS_LAMA_EXPAND_PX = max(5, _env_int("INPAINT360GS_LAMA_EXPAND_PX", 15))
 INPAINT360GS_MAX_OBJECTS = _env_int("INPAINT360GS_MAX_OBJECTS", 0)  # 0 = all
 INPAINT360GS_MAX_MESH_FACES = _env_int("INPAINT360GS_MAX_MESH_FACES", 500000)
+INPAINT360GS_DEFAULT_VIRTUAL_RADIUS = _env_float("INPAINT360GS_DEFAULT_VIRTUAL_RADIUS", 1.0)
 
 
 def _log(msg: str) -> None:
@@ -721,6 +722,38 @@ def run_object_removal(
     _log(f"Removing {len(target_ids)} object(s) (with inline distillation)")
     t0 = time.monotonic()
 
+    # Always write the config file (downstream inpaint stages need it even
+    # when the removal PLY is reused from a previous run).
+    config_path = workspace / "removal_config.json"
+    existing_config = {}
+    if config_path.is_file():
+        try:
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing_config = {}
+    existing_target_radius = existing_config.get("target_object_radius")
+    try:
+        existing_target_radius_f = float(existing_target_radius) if existing_target_radius is not None else INPAINT360GS_DEFAULT_VIRTUAL_RADIUS
+    except (TypeError, ValueError):
+        existing_target_radius_f = INPAINT360GS_DEFAULT_VIRTUAL_RADIUS
+
+    config = {
+        "removal_thresh": INPAINT360GS_REMOVAL_THRESH,
+        "select_obj_id": target_ids,
+        "target_id": target_ids,
+        # Downstream inpaint stages read these from the config JSON:
+        "object_path": "inpaint_2d_unseen_mask_virtual",
+        "images": "images_inpaint_unseen_virtual",
+        "surrounding_ids": [],
+        "lambda_dssim": 0.8,
+        "opacity_init": 0.1,
+        "lambda_lpips": 0.0005,
+        "finetune_iteration": INPAINT360GS_FINETUNE_ITERS,
+        "circle_radius": existing_config.get("circle_radius", 1.0),
+        "target_object_radius": existing_target_radius_f,
+    }
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
     # Check for existing removal output (resume from previous run)
     for ckpt_dir in sorted(model_path.glob("point_cloud_object_removal/iteration_*")):
         removal_ply = ckpt_dir / "point_cloud.ply"
@@ -731,29 +764,6 @@ def run_object_removal(
     removal_script = INPAINT360GS_DIR / "edit_object_removal.py"
     if not removal_script.is_file():
         return {"status": "failed", "reason": "edit_object_removal.py not found"}
-
-    # Write a config file with target IDs for removal.
-    # NOTE: train_distill=False here — removal loads the DISTILLED model
-    # directly (with object features), not the vanilla model.
-    config_path = workspace / "removal_config.json"
-    config = {
-        "removal_thresh": INPAINT360GS_REMOVAL_THRESH,
-        "select_obj_id": target_ids,
-        # target_id == select_obj_id means "remove ALL selected objects."
-        # When target_id is a strict subset of select_obj_id, the script
-        # re-combines the non-targeted objects back into the scene.
-        "target_id": target_ids,
-        # Downstream inpaint stages:
-        "object_path": "inpaint_2d_unseen_mask_virtual",
-        "images": "images_inpaint_unseen_virtual",
-        "surrounding_ids": [],
-        "lambda_dssim": 0.8,
-        "opacity_init": 0.1,
-        "lambda_lpips": 0.0005,
-        "finetune_iteration": INPAINT360GS_FINETUNE_ITERS,
-        "circle_radius": 1.0,
-    }
-    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     # Read num_classes from scene.json (needed by the removal script).
     scene_json = workspace / "associated_hqsam" / "scene.json"
@@ -942,8 +952,6 @@ def run_virtual_poses_and_inpaint(
             [
                 INPAINT360GS_PYTHON,
                 str(color_script),
-                "--model_path", str(model_path),
-                "--expand", str(expand_pixels),
                 "--data_name", data_name,
             ],
             cwd=lama_workspace,
@@ -964,8 +972,6 @@ def run_virtual_poses_and_inpaint(
             [
                 INPAINT360GS_PYTHON,
                 str(depth_script),
-                "--model_path", str(model_path),
-                "--expand", str(expand_pixels),
                 "--data_name", data_name,
             ],
             cwd=lama_workspace,
@@ -1030,6 +1036,27 @@ def run_inpaint_optimization(
             except Exception:
                 pass
 
+    # Ensure inpaint stage can always resolve image/mask folders.
+    if config_path.is_file():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            if cfg.get("target_object_radius") is None:
+                cfg["target_object_radius"] = INPAINT360GS_DEFAULT_VIRTUAL_RADIUS
+            changed = False
+            if cfg.get("object_path") is None:
+                cfg["object_path"] = "inpaint_2d_unseen_mask_virtual"
+                changed = True
+            if cfg.get("images") is None:
+                cfg["images"] = "images_inpaint_unseen_virtual"
+                changed = True
+            if cfg.get("circle_radius") is None:
+                cfg["circle_radius"] = 1.0
+                changed = True
+            if changed:
+                config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        except Exception:
+            _log(f"  WARNING: could not read/write config file {config_path} for inpaint defaults")
+
     # PLY fusion
     fusion_script = INPAINT360GS_DIR / "edit_object_removal_plyfusion.py"
     if fusion_script.is_file():
@@ -1088,8 +1115,6 @@ def run_inpaint_optimization(
     )
 
     duration = time.monotonic() - t0
-    if proc.returncode != 0:
-        return {"status": "failed", "reason": f"edit_object_inpaint.py rc={proc.returncode}", "duration_s": duration}
 
     # Find the output PLY written by edit_object_inpaint.py.
     candidate_plys = [
@@ -1097,6 +1122,22 @@ def run_inpaint_optimization(
         model_path / "point_cloud_object_inpaint_virtual" / f"iteration_{iterations}" / "point_cloud.ply",
         model_path / "point_cloud_object_inpaint" / f"iteration_{iterations}" / "point_cloud.ply",
     ]
+
+    if proc.returncode != 0:
+        existing = [path for path in candidate_plys if path.is_file()]
+        if existing:
+            final_ply = sorted(existing)[-1]
+            _log(
+                f"  Inpaint optimization exited with rc={proc.returncode} but output exists: "
+                f"{final_ply}"
+            )
+            return {
+                "status": "ok",
+                "ply_path": str(final_ply),
+                "duration_s": round(duration, 1),
+            }
+        return {"status": "failed", "reason": f"edit_object_inpaint.py rc={proc.returncode}", "duration_s": duration}
+
     inpaint_dirs = [path for path in candidate_plys if path.is_file()]
 
     # Backward-compatible fallback for any inpaint output naming.
@@ -1159,11 +1200,20 @@ def convert_gaussians_to_mesh(
     # (arbitrary orientation) that corrupt Poisson surface reconstruction.
     pcd.normals = o3d.utility.Vector3dVector()
 
-    # Estimate proper surface normals for Poisson reconstruction
+    # Estimate proper surface normals for Poisson reconstruction.
     pcd.estimate_normals(
         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
     )
-    pcd.orient_normals_consistent_tangent_plane(100)
+    try:
+        pcd.orient_normals_consistent_tangent_plane(100)
+    except Exception as exc:
+        _log(f"  WARN: tangent-plane normal orientation failed ({exc}); using camera-orientation fallback")
+        try:
+            pcd.orient_normals_towards_camera_location(
+                pcd.get_center() + np.array([0.0, 0.0, 1.0])
+            )
+        except Exception as fallback_exc:
+            _log(f"  WARN: normal orientation fallback failed ({fallback_exc}); continuing without reorientation")
 
     # Poisson surface reconstruction (depth=10 for detailed mesh)
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
@@ -1396,11 +1446,20 @@ def run_scene_cleaning(
             timing["inpaint_optimization"] = 0
 
         if final_ply is None:
-            final_ply_fallback = model_path / "point_cloud_object_removal" / f"iteration_{INPAINT360GS_DISTILL_ITERS}" / "point_cloud.ply"
+            final_ply_fallback = model_path / "point_cloud_object_inpaint_virtual" / f"iteration_{INPAINT360GS_FINETUNE_ITERS}" / "point_cloud.ply"
+            if not final_ply_fallback.is_file():
+                final_ply_fallback = model_path / "point_cloud" / "_object_inpaint_virtual" / f"iteration_{INPAINT360GS_FINETUNE_ITERS}" / "point_cloud.ply"
+            if not final_ply_fallback.is_file():
+                final_ply_fallback = model_path / "point_cloud_object_inpaint" / f"iteration_{INPAINT360GS_FINETUNE_ITERS}" / "point_cloud.ply"
+            if not final_ply_fallback.is_file():
+                final_ply_fallback = model_path / "point_cloud_object_removal" / f"iteration_{INPAINT360GS_DISTILL_ITERS}" / "point_cloud.ply"
             if not final_ply_fallback.is_file():
                 raise RuntimeError("No optimized PLY available and no removal fallback PLY was found")
             final_ply = final_ply_fallback
-            warnings.append("Using point_cloud_object_removal output as final artifact")
+            if "point_cloud_object_removal" in str(final_ply_fallback):
+                warnings.append("Using point_cloud_object_removal output as final artifact")
+            else:
+                warnings.append("Using point_cloud_object_inpaint output as final artifact")
             _log(f"  Fallback PLY for final output: {final_ply}")
 
         # Copy inpainted PLY to output directory as a first-class artifact
