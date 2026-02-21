@@ -3293,7 +3293,8 @@ def _validate_stage14_resume_metadata(
         reasons.append("effective_extract_fps_changed")
     if not _float_match(blur_meta.get("keep_ratio"), blur_filter_keep_ratio, atol=1e-6):
         reasons.append("blur_filter_keep_ratio_changed")
-    if int(blur_meta.get("min_frames", -1)) != int(blur_filter_min_frames):
+    saved_min = blur_meta.get("min_frames", blur_meta.get("min_keep", -1))
+    if int(saved_min) != int(blur_filter_min_frames):
         reasons.append("blur_filter_min_frames_changed")
     if float(blur_filter_keep_ratio) < 1.0:
         blur_status = str(blur_meta.get("status") or "")
@@ -4822,82 +4823,94 @@ def main() -> int:
     _log("STAGE 6: Collision Mesh (nvblox_mesh.ply)")
     _log("=" * 60)
     mesh_ply = output_dir / "nvblox_mesh.ply"
-    if args.skip_dense:
-        raise RuntimeError(
-            "--skip-dense is incompatible with collision mesh quality gate "
-            "(triangulated mesh required)"
-        )
-
     dense_dir = workspace / "dense"
     fused_ply_resume = dense_dir / "fused.ply"
     mesh_method_path = output_dir / "mesh_method.txt"
+    collision_report_path = output_dir / "collision_mesh_report.json"
     dense_result: Dict[str, Any] | None = None
     reused_dense_stage6 = False
-    if (
-        effective_resume
-        and _is_nonempty_file(mesh_ply)
-        and _is_nonempty_file(mesh_method_path)
-        and _is_nonempty_file(fused_ply_resume)
-    ):
-        try:
+
+    if args.skip_dense:
+        _log("--skip-dense: skipping PatchMatch; generating collision mesh from Gaussian PLY")
+        if _mesh_with_open3d_poisson(active_gaussian_ply, mesh_ply, force=True):
             _validate_collision_mesh(mesh_ply)
-            existing_mesh_method = mesh_method_path.read_text(encoding="utf-8").strip().lower()
-            if existing_mesh_method in {"poisson_open3d", "delaunay_colmap"}:
-                dense_result = {
-                    "mesh_method": existing_mesh_method,
-                    "fused_ply": fused_ply_resume,
-                    "dense_dir": dense_dir,
-                }
-                reused_dense_stage6 = True
-                _log(
-                    "Resuming Stage 6: using existing fused cloud + collision mesh "
-                    f"(method={existing_mesh_method})"
-                )
+            mesh_method = "poisson_open3d"
+            # Use Gaussian PLY as the visual pointcloud source (no fused.ply available).
+            fused_ply = active_gaussian_ply
+            _log(f"  Collision mesh from Gaussian PLY: {mesh_ply}")
+        else:
+            raise RuntimeError(
+                "--skip-dense collision mesh generation failed "
+                "(Open3D Poisson could not mesh the Gaussian PLY)"
+            )
+        collision_report = _postprocess_collision_mesh(mesh_ply)
+        collision_report_path.write_text(json.dumps(collision_report, indent=2), encoding="utf-8")
+        _enforce_collision_spike_gate(collision_report)
+    else:
+        if (
+            effective_resume
+            and _is_nonempty_file(mesh_ply)
+            and _is_nonempty_file(mesh_method_path)
+            and _is_nonempty_file(fused_ply_resume)
+        ):
+            try:
+                _validate_collision_mesh(mesh_ply)
+                existing_mesh_method = mesh_method_path.read_text(encoding="utf-8").strip().lower()
+                if existing_mesh_method in {"poisson_open3d", "delaunay_colmap"}:
+                    dense_result = {
+                        "mesh_method": existing_mesh_method,
+                        "fused_ply": fused_ply_resume,
+                        "dense_dir": dense_dir,
+                    }
+                    reused_dense_stage6 = True
+                    _log(
+                        "Resuming Stage 6: using existing fused cloud + collision mesh "
+                        f"(method={existing_mesh_method})"
+                    )
+                else:
+                    _log(
+                        "Resume check: invalid mesh method marker "
+                        f"{existing_mesh_method!r}; rerunning dense reconstruction"
+                    )
+            except Exception as exc:
+                _log(f"Resume check: existing collision mesh unusable ({exc}); rerunning Stage 6")
+
+        if dense_result is None:
+            dense_result = run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
+
+        mesh_method = str(dense_result.get("mesh_method") or "")
+        fused_ply = Path(str(dense_result.get("fused_ply") or ""))
+        if effective_resume and reused_dense_stage6 and _is_nonempty_file(collision_report_path):
+            collision_report = _load_json_dict(collision_report_path)
+            if collision_report:
+                _log("Resuming Stage 6: using existing collision postprocess report")
             else:
-                _log(
-                    "Resume check: invalid mesh method marker "
-                    f"{existing_mesh_method!r}; rerunning dense reconstruction"
-                )
-        except Exception as exc:
-            _log(f"Resume check: existing collision mesh unusable ({exc}); rerunning Stage 6")
-
-    if dense_result is None:
-        dense_result = run_dense_reconstruction(frames_dir, sparse_dir, workspace, mesh_ply)
-
-    mesh_method = str(dense_result.get("mesh_method") or "")
-    fused_ply = Path(str(dense_result.get("fused_ply") or ""))
-    collision_report_path = output_dir / "collision_mesh_report.json"
-    if effective_resume and reused_dense_stage6 and _is_nonempty_file(collision_report_path):
-        collision_report = _load_json_dict(collision_report_path)
-        if collision_report:
-            _log("Resuming Stage 6: using existing collision postprocess report")
+                collision_report = _postprocess_collision_mesh(mesh_ply)
+                collision_report_path.write_text(json.dumps(collision_report, indent=2), encoding="utf-8")
         else:
             collision_report = _postprocess_collision_mesh(mesh_ply)
             collision_report_path.write_text(json.dumps(collision_report, indent=2), encoding="utf-8")
-    else:
-        collision_report = _postprocess_collision_mesh(mesh_ply)
-        collision_report_path.write_text(json.dumps(collision_report, indent=2), encoding="utf-8")
 
-    try:
-        _enforce_collision_spike_gate(collision_report)
-    except RuntimeError as spike_error:
-        if mesh_method == "delaunay_colmap" and fused_ply.exists():
-            _log(f"Collision spike gate failed for Delaunay mesh ({spike_error})")
-            _log("Attempting collision fallback: forced Open3D Poisson from fused cloud...")
-            if _mesh_with_open3d_poisson(fused_ply, mesh_ply, force=True):
-                _validate_collision_mesh(mesh_ply)
-                mesh_method = "poisson_open3d"
-                collision_report = _postprocess_collision_mesh(mesh_ply)
-                collision_report_path.write_text(
-                    json.dumps(collision_report, indent=2), encoding="utf-8"
-                )
-                _enforce_collision_spike_gate(collision_report)
+        try:
+            _enforce_collision_spike_gate(collision_report)
+        except RuntimeError as spike_error:
+            if mesh_method == "delaunay_colmap" and fused_ply.exists():
+                _log(f"Collision spike gate failed for Delaunay mesh ({spike_error})")
+                _log("Attempting collision fallback: forced Open3D Poisson from fused cloud...")
+                if _mesh_with_open3d_poisson(fused_ply, mesh_ply, force=True):
+                    _validate_collision_mesh(mesh_ply)
+                    mesh_method = "poisson_open3d"
+                    collision_report = _postprocess_collision_mesh(mesh_ply)
+                    collision_report_path.write_text(
+                        json.dumps(collision_report, indent=2), encoding="utf-8"
+                    )
+                    _enforce_collision_spike_gate(collision_report)
+                else:
+                    raise RuntimeError(
+                        "Collision spike gate failed and fallback Poisson meshing was unavailable"
+                    ) from spike_error
             else:
-                raise RuntimeError(
-                    "Collision spike gate failed and fallback Poisson meshing was unavailable"
-                ) from spike_error
-        else:
-            raise
+                raise
 
     mesh_method_path.write_text(f"{mesh_method}\n", encoding="utf-8")
     _log(f"  Collision mesh method: {mesh_method}")

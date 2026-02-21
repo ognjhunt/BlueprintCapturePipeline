@@ -1236,6 +1236,31 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
             )
         return None
 
+    def _fake_mesh_with_open3d_poisson(fused_ply, output_ply, *, force=False):  # type: ignore[no-untyped-def]
+        del fused_ply, force
+        output_ply.parent.mkdir(parents=True, exist_ok=True)
+        # Write minimal valid PLY with a triangle so _validate_collision_mesh passes.
+        header = (
+            "ply\nformat ascii 1.0\n"
+            "element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+            "element face 1\nproperty list uchar int vertex_indices\nend_header\n"
+        )
+        body = "0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n"
+        output_ply.write_text(header + body, encoding="utf-8")
+        return True
+
+    def _fake_build_visual(*, output_dir, fused_ply, gaussian_ply, workspace=None, refined_images_dir=None):  # type: ignore[no-untyped-def]
+        del fused_ply, gaussian_ply, workspace, refined_images_dir
+        visual_mesh = output_dir / "visual_mesh.glb"
+        visual_pointcloud = output_dir / "visual_pointcloud.ply"
+        visual_mesh.write_bytes(b"glb")
+        visual_pointcloud.write_bytes(b"ply")
+        return {"enabled": True, "status": "ok", "selected_method": "gaussian_tsdf"}
+
+    def _fake_generate_occupancy(ply_path, output_bin, resolution=64):  # type: ignore[no-untyped-def]
+        del ply_path, resolution
+        output_bin.write_bytes(b"\x00" * 64)
+
     monkeypatch.setattr(module, "find_video", _fake_find_video)
     monkeypatch.setattr(module, "extract_frames", _fake_extract_frames)
     monkeypatch.setattr(module, "run_colmap_sfm", _fake_run_colmap_sfm)
@@ -1243,6 +1268,9 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
     monkeypatch.setattr(module, "run_3dgrut_training", _fake_run_3dgrut_training)
     monkeypatch.setattr(module, "_colmap_has_cuda", lambda: False)
     monkeypatch.setattr(module, "_run", _fake_run)
+    monkeypatch.setattr(module, "_mesh_with_open3d_poisson", _fake_mesh_with_open3d_poisson)
+    monkeypatch.setattr(module, "build_visual_mesh_artifacts", _fake_build_visual)
+    monkeypatch.setattr(module, "generate_occupancy", _fake_generate_occupancy)
     monkeypatch.setattr(
         module,
         "_run_sam3_preflight",
@@ -1281,8 +1309,7 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
         ],
     )
 
-    with pytest.raises(RuntimeError, match="--skip-dense is incompatible with collision mesh quality gate"):
-        module.main()
+    module.main()
 
     gap_cmd = next(
         cmd for cmd in captured_cmds if len(cmd) > 1 and cmd[1].endswith("post_stage4_gap_analyzer.py")
@@ -1291,6 +1318,9 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
     bin_idx = gap_cmd.index("--colmap-images-bin") + 1
     expected_bin = output_dir / "_colmap_workspace" / "undistorted" / "sparse" / "0" / "images.bin"
     assert gap_cmd[bin_idx] == str(expected_bin)
+    # Verify collision mesh was generated from Gaussian PLY (no PatchMatch).
+    assert (output_dir / "nvblox_mesh.ply").exists()
+    assert (output_dir / "mesh_method.txt").read_text(encoding="utf-8").strip() == "poisson_open3d"
 
 
 def test_build_capture_quality_report_has_expected_schema(

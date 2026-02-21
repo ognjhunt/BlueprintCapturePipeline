@@ -85,6 +85,67 @@ def probe_installation(*, install_dir: Path = INPAINT360GS_DIR) -> Dict[str, Any
 
 
 # ---------------------------------------------------------------------------
+# cfg_args patcher
+# ---------------------------------------------------------------------------
+
+def _patch_cfg_args(
+    cfg_args_path: Path,
+    extra: Dict[str, Any],
+    *,
+    overwrite: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Merge *extra* keys into an existing ``cfg_args`` Namespace file.
+
+    ``edit_object_removal.py`` uses ``ModelParams(parser, sentinel=True)``
+    which sets every default to ``None``.  ``get_combined_args`` starts
+    from ``cfg_args`` (written by vanilla ``train.py``) and only overwrites
+    with non-None CLI values.  Because ``train.py``'s ModelParams lacks
+    keys like ``object_path``, ``n_views``, ``random_init``, etc., they
+    end up absent from the merged Namespace and Scene.__init__ raises
+    ``AttributeError``.  Patching cfg_args is the safest fix — it does
+    not depend on whether argparse treats the value as None.
+
+    *extra* keys are only added when missing.  *overwrite* keys are always set.
+    """
+    if not cfg_args_path.is_file():
+        _log(f"  WARNING: cfg_args not found at {cfg_args_path}, skipping patch")
+        return
+
+    from argparse import Namespace  # needed for eval and for writing back
+
+    text = cfg_args_path.read_text(encoding="utf-8").strip()
+    try:
+        ns = eval(text)  # noqa: S307 — trusted file written by train.py
+        ns_dict = vars(ns)
+    except Exception as exc:
+        _log(f"  WARNING: could not parse cfg_args ({exc}), skipping patch")
+        return
+
+    changed = False
+    added_keys: list = []
+    for key, value in extra.items():
+        if key not in ns_dict:
+            ns_dict[key] = value
+            added_keys.append(key)
+            changed = True
+
+    overwritten_keys: list = []
+    for key, value in (overwrite or {}).items():
+        if ns_dict.get(key) != value:
+            ns_dict[key] = value
+            overwritten_keys.append(key)
+            changed = True
+
+    if changed:
+        patched_ns = Namespace(**ns_dict)
+        cfg_args_path.write_text(repr(patched_ns) + "\n", encoding="utf-8")
+        if added_keys:
+            _log(f"  Patched cfg_args — added: {added_keys}")
+        if overwritten_keys:
+            _log(f"  Patched cfg_args — overwritten: {overwritten_keys}")
+
+
+# ---------------------------------------------------------------------------
 # Subprocess runner
 # ---------------------------------------------------------------------------
 
@@ -100,6 +161,13 @@ def _run(
     label_str = f" ({label})" if label else ""
     _log(f"Running{label_str}: {' '.join(str(c) for c in cmd)}")
     merged_env = {**os.environ, **(env or {})}
+    # Ensure Inpaint360GS root is on PYTHONPATH so `from utils import ...`
+    # works even for scripts in subdirectories (e.g. seg/distillation.py).
+    if cwd and str(INPAINT360GS_DIR) in str(cwd):
+        existing = merged_env.get("PYTHONPATH", "")
+        inpaint_root = str(INPAINT360GS_DIR)
+        if inpaint_root not in existing:
+            merged_env["PYTHONPATH"] = f"{inpaint_root}:{existing}" if existing else inpaint_root
     proc = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -175,15 +243,18 @@ def prepare_data_layout(
 
     mask_files = sorted(instance_masks_dir.glob("*.png"))
     if resolution > 1 and mask_files:
-        # Need to downscale masks
+        # Need to downscale masks to match Inpaint360GS render resolution.
+        # camera_utils.py uses math.ceil(dim / resolution) for images but
+        # never resizes object masks, so masks must match exactly.
+        import math
         _log(f"  Rescaling {len(mask_files)} instance masks to 1/{resolution} resolution")
         try:
             from PIL import Image as PILImage
             import numpy as np
             for mf in mask_files:
                 img = PILImage.open(mf)
-                new_w = max(1, img.width // resolution)
-                new_h = max(1, img.height // resolution)
+                new_w = max(1, math.ceil(img.width / resolution))
+                new_h = max(1, math.ceil(img.height / resolution))
                 # Use NEAREST to preserve integer object IDs
                 resized = img.resize((new_w, new_h), PILImage.NEAREST)
                 resized.save(ws_masks / mf.name)
@@ -220,14 +291,18 @@ def run_training(
     iterations: int = INPAINT360GS_TRAIN_ITERS,
 ) -> Dict[str, Any]:
     """Train vanilla 3DGS on the COLMAP data."""
+    model_path = workspace / "output"
+    ckpt_dir = model_path / "point_cloud" / f"iteration_{iterations}"
+    if ckpt_dir.is_dir() and any(ckpt_dir.glob("point_cloud.*")):
+        _log(f"Reusing existing 3DGS training at {ckpt_dir}")
+        return {"status": "ok", "model_path": str(model_path), "duration_s": 0.0, "reused": True}
+
     _log(f"Training 3DGS (resolution=1/{resolution}, iters={iterations})...")
     t0 = time.monotonic()
 
     train_script = INPAINT360GS_DIR / "train.py"
     if not train_script.is_file():
         return {"status": "failed", "reason": "train.py not found"}
-
-    model_path = workspace / "output"
 
     proc = _run(
         [
@@ -266,33 +341,108 @@ def run_distillation(
     model_path: Path,
     iterations: int = INPAINT360GS_DISTILL_ITERS,
 ) -> Dict[str, Any]:
-    """Distill 2D instance masks into per-Gaussian 16-dim object embeddings."""
-    _log(f"Distilling semantic masks ({iterations} iters)...")
+    """Distill 2D instance masks into per-Gaussian object embeddings.
+
+    Runs ``seg/distillation.py`` which trains a lightweight classifier
+    on top of frozen Gaussian object features and saves ``classifier.pth``
+    alongside the point cloud checkpoint.  This is required before
+    ``edit_object_removal.py`` can identify which Gaussians to remove.
+    """
+    _log(f"Running semantic distillation ({iterations} iters)...")
+
+    # Check for existing classifier (resume)
+    # distillation saves classifier at iteration_{iterations}/classifier.pth
+    classifier_path = model_path / "point_cloud" / f"iteration_{iterations}" / "classifier.pth"
+    if classifier_path.is_file():
+        _log(f"  Reusing existing classifier at {classifier_path}")
+        return {"status": "ok", "duration_s": 0.0, "reused": True}
+
+    # Also check if classifier exists at the vanilla training iteration
+    for ckpt_dir in sorted(model_path.glob("point_cloud/iteration_*")):
+        existing_cls = ckpt_dir / "classifier.pth"
+        if existing_cls.is_file():
+            _log(f"  Reusing existing classifier at {existing_cls}")
+            return {"status": "ok", "duration_s": 0.0, "reused": True}
+
+    distill_script = INPAINT360GS_DIR / "seg" / "distillation.py"
+    if not distill_script.is_file():
+        return {"status": "failed", "reason": "seg/distillation.py not found"}
+
     t0 = time.monotonic()
 
-    finetune_script = INPAINT360GS_DIR / "train_finetune.py"
-    if not finetune_script.is_file():
-        return {"status": "failed", "reason": "train_finetune.py not found"}
+    # Write distillation config
+    config_path = workspace / "distill_config.json"
+    config = {
+        "reg3d_interval": 50,
+        "reg3d_k": 5,
+        "reg3d_lambda_val": 2,
+        "reg3d_max_points": 200000,
+        "reg3d_sample_size": 1000,
+        "iterations": iterations,
+        "train_distill": True,
+    }
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    # Patch cfg_args for distillation (needs vanilla_3dgs_path etc.)
+    cfg_args_path = model_path / "cfg_args"
+    _patch_cfg_args(cfg_args_path, {
+        "object_path": "associated_hqsam",
+        "vanilla_3dgs_path": str(model_path),
+        "n_views": 100,
+        "random_init": False,
+        "train_split": False,
+        "num_classes": -1,
+        "train_distill": True,
+    })
 
     proc = _run(
         [
             INPAINT360GS_PYTHON,
-            str(finetune_script),
+            str(distill_script),
             "-s", str(workspace),
             "--model_path", str(model_path),
-            "--finetune_semantic",
+            "--vanilla_3dgs_path", str(model_path),
+            "--object_path", "associated_hqsam",
+            "-r", str(INPAINT360GS_RESOLUTION),
             "--iterations", str(iterations),
+            "--save_iterations", str(iterations),
+            "--train_distill",
+            "--config_file", str(config_path),
         ],
         cwd=INPAINT360GS_DIR,
         label="semantic distillation",
-        timeout=1200,
+        timeout=3600,
     )
 
     duration = time.monotonic() - t0
     if proc.returncode != 0:
-        return {"status": "failed", "reason": f"train_finetune.py rc={proc.returncode}", "duration_s": duration}
+        return {"status": "failed", "reason": f"distillation.py rc={proc.returncode}", "duration_s": duration}
 
-    return {"status": "ok", "duration_s": round(duration, 1)}
+    # Verify classifier was produced
+    found_classifiers = list(model_path.glob("point_cloud/iteration_*/classifier.pth"))
+    if not found_classifiers:
+        return {"status": "failed", "reason": "classifier.pth not produced", "duration_s": duration}
+
+    latest_classifier = sorted(found_classifiers)[-1]
+    _log(f"  Classifier saved at {latest_classifier}")
+
+    # Copy classifier.pth to ALL checkpoint directories that lack it.
+    # edit_object_removal.py loads the classifier from iteration_{loaded_iter}
+    # which may be the vanilla training iteration (e.g. 30000), not the
+    # distillation iteration (e.g. 2000).
+    import shutil as _shutil
+    for ckpt_dir in sorted(model_path.glob("point_cloud/iteration_*")):
+        cls_dst = ckpt_dir / "classifier.pth"
+        if not cls_dst.is_file():
+            _shutil.copy2(str(latest_classifier), str(cls_dst))
+            _log(f"  Copied classifier.pth → {ckpt_dir.name}")
+
+    return {
+        "status": "ok",
+        "classifier_path": str(latest_classifier),
+        "iterations": iterations,
+        "duration_s": round(duration, 1),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -305,27 +455,83 @@ def run_object_removal(
     model_path: Path,
     target_ids: List[int],
 ) -> Dict[str, Any]:
-    """Remove Gaussians belonging to target objects."""
-    _log(f"Removing {len(target_ids)} object(s): {target_ids}")
+    """Run distillation + object removal via edit_object_removal.py."""
+    _log(f"Removing {len(target_ids)} object(s) (with inline distillation)")
     t0 = time.monotonic()
 
     removal_script = INPAINT360GS_DIR / "edit_object_removal.py"
     if not removal_script.is_file():
         return {"status": "failed", "reason": "edit_object_removal.py not found"}
 
-    # Inpaint360GS expects comma-separated target IDs
-    target_str = ",".join(str(i) for i in target_ids)
+    # Write a config file with target IDs for removal.
+    # NOTE: train_distill=False here — removal loads the DISTILLED model
+    # directly (with object features), not the vanilla model.
+    config_path = workspace / "removal_config.json"
+    config = {
+        "removal_thresh": INPAINT360GS_REMOVAL_THRESH,
+        "select_obj_id": target_ids,
+    }
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    # Read num_classes from scene.json (needed by the removal script).
+    scene_json = workspace / "associated_hqsam" / "scene.json"
+    num_classes = -1
+    if scene_json.is_file():
+        try:
+            num_classes = json.loads(scene_json.read_text(encoding="utf-8")).get("num_classes", -1)
+        except Exception:
+            pass
+
+    # Patch cfg_args so get_combined_args() merges the extra keys that
+    # edit_object_removal.py's ModelParams (sentinel=True) needs but
+    # vanilla train.py never wrote.  Without this, Scene.__init__
+    # throws AttributeError for object_path / n_views / etc.
+    # train_distill=False for removal (we load the distilled checkpoint).
+    cfg_args_path = model_path / "cfg_args"
+    _patch_cfg_args(
+        cfg_args_path,
+        {
+            "object_path": "associated_hqsam",
+            "vanilla_3dgs_path": str(model_path),
+            "n_views": 100,
+            "random_init": False,
+            "train_split": False,
+        },
+        overwrite={
+            "num_classes": num_classes,
+            # MUST be False for removal — we load the distilled model
+            # (with object features), not the vanilla model.
+            "train_distill": False,
+        },
+    )
+
+    # Find the distilled checkpoint iteration (has classifier.pth).
+    # Removal must load the DISTILLED model (with object features),
+    # NOT the vanilla model.  Do NOT pass --train_distill here.
+    distill_iter = INPAINT360GS_DISTILL_ITERS
+    for ckpt_dir in sorted(model_path.glob("point_cloud/iteration_*"), reverse=True):
+        if (ckpt_dir / "classifier.pth").is_file():
+            try:
+                distill_iter = int(ckpt_dir.name.split("_")[-1])
+            except ValueError:
+                pass
+            break
 
     proc = _run(
         [
             INPAINT360GS_PYTHON,
             str(removal_script),
+            "-s", str(workspace),
             "--model_path", str(model_path),
-            "--target_id", target_str,
+            "--object_path", "associated_hqsam",
+            "--num_classes", str(num_classes),
+            "--n_views", "100",
+            "--iteration", str(distill_iter),
+            "--config_file", str(config_path),
         ],
         cwd=INPAINT360GS_DIR,
         label="object removal",
-        timeout=600,
+        timeout=1800,
     )
 
     duration = time.monotonic() - t0

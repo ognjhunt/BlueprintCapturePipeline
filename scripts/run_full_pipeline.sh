@@ -32,6 +32,7 @@ N_ITERATIONS="${N_ITERATIONS:-9000}"
 MAX_N_GAUSSIANS="${MAX_N_GAUSSIANS:-}"
 SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
 SKIP_FIXER="${SKIP_FIXER:-false}"
+SKIP_DENSE="${SKIP_DENSE:-__UNSET__}"
 FIXER_MODE="${FIXER_MODE:-local}"
 NUREC_RESUME="${NUREC_RESUME:-false}"
 NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
@@ -122,6 +123,7 @@ Options:
   --workspace DIR         Working directory (default: /workspace)
   --resume                Enable NuRec resume mode (reuse Stage 1-4 artifacts)
   --skip-fixer            Disable Stage 5 Fixer refinement
+  --skip-dense            Skip dense reconstruction (PatchMatch). This defaults to true unless VISUAL_MESH_METHOD=patchmatch
   --fixer-rerun           Force rerun of Fixer in resume mode
   --fixer-required        Fail if Fixer does not produce refined outputs
   --post-stage4-refine MODE  Post-Stage-4 mode: off, auto, force (default: auto)
@@ -151,6 +153,7 @@ while [ $# -gt 0 ]; do
     --workspace)       WORKSPACE="$2";            shift 2 ;;
     --resume)          NUREC_RESUME=true;         shift ;;
     --skip-fixer)      SKIP_FIXER=true;           shift ;;
+    --skip-dense)      SKIP_DENSE=true;           shift ;;
     --fixer-rerun)     FIXER_RERUN=true;          shift ;;
     --fixer-required)  FIXER_REQUIRED=true;       shift ;;
     --post-stage4-refine) POST_STAGE4_REFINE="$2"; shift 2 ;;
@@ -173,6 +176,14 @@ done
 
 [ -n "$INPUT_VIDEO" ] || die "Input video is required. Usage: run_full_pipeline.sh <video>"
 [ -f "$INPUT_VIDEO" ] || die "Input video not found: $INPUT_VIDEO"
+if [ "$SKIP_DENSE" = "__UNSET__" ]; then
+  if [ "${VISUAL_MESH_METHOD,,}" = "patchmatch" ]; then
+    SKIP_DENSE="false"
+  else
+    SKIP_DENSE="true"
+  fi
+fi
+SKIP_DENSE="${SKIP_DENSE,,}"
 case "${ENVIRONMENT}" in
   auto|default|bedroom|warehouse|kitchen) ;;
   *) die "Invalid --environment '${ENVIRONMENT}'. Expected: auto, default, bedroom, warehouse, kitchen" ;;
@@ -217,6 +228,7 @@ log "Fixer rerun: $FIXER_RERUN"
 log "Fixer required: $FIXER_REQUIRED"
 log "Post-Stage-4 refine: $POST_STAGE4_REFINE (model=$POST_STAGE4_REFINE_MODEL, max_pseudoviews=$POST_STAGE4_MAX_PSEUDOVIEWS, distill_iters=$POST_STAGE4_DISTILL_ITERS, budget_min=$POST_STAGE4_TIME_BUDGET_MIN)"
 log "Blur filter keep ratio: $BLUR_FILTER_KEEP_RATIO (profile=$NUREC_QUALITY_PROFILE, min_frames=$BLUR_FILTER_MIN_FRAMES)"
+log "Skip dense reconstruction: $SKIP_DENSE (VISUAL_MESH_METHOD=$VISUAL_MESH_METHOD)"
 log "Scene cleaning mode: $SCENE_CLEANING_MODE (mask_export_space=$SAM3_MASK_EXPORT_SPACE)"
 
 # ── Stage 1: NuRec Shim (COLMAP + 3DGRUT + SAM3) ───────────────────────────
@@ -260,6 +272,11 @@ SPEC
   NUREC_PREVIEW_ARGS=()
   if [ "${SAM3_PREFLIGHT_STRICT,,}" = "true" ]; then
     NUREC_PREVIEW_ARGS+=(--sam3-strict-preflight)
+  fi
+
+  NUREC_DENSE_ARGS=()
+  if [ "${SKIP_DENSE,,}" = "true" ]; then
+    NUREC_DENSE_ARGS+=(--skip-dense)
   fi
 
   NUREC_FIXER_ARGS=()
@@ -321,6 +338,7 @@ SPEC
     "${NUREC_PARALLEL_ARGS[@]}" \
     "${NUREC_PREVIEW_ARGS[@]}" \
     "${NUREC_FIXER_ARGS[@]}" \
+    "${NUREC_DENSE_ARGS[@]}" \
     2>&1 | tee "${PIPELINE_DIR}/nurec.log"
 
   log "NuRec shim completed"

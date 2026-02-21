@@ -15,6 +15,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from post_stage4_distill import (
+    _build_render_index_to_frame_map,
     _copy_matching_repaired_views,
     _load_jsonl,
     run_post_stage4_distill,
@@ -51,6 +52,39 @@ class TestLoadJsonl:
 # Test: _copy_matching_repaired_views
 # ---------------------------------------------------------------------------
 
+class TestBuildRenderIndexToFrameMap:
+    def test_maps_render_indices_to_frame_names(self, tmp_path: Path) -> None:
+        """3DGRUT renders 00000.png..00002.png → frame_00001.jpg, frame_00003.jpg, frame_00005.jpg."""
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        # Gaps in numbering (frame_00002 and frame_00004 missing — dropped by SfM)
+        (images_dir / "frame_00001.jpg").write_text("a")
+        (images_dir / "frame_00003.jpg").write_text("b")
+        (images_dir / "frame_00005.jpg").write_text("c")
+
+        mapping = _build_render_index_to_frame_map(images_dir)
+        assert mapping == {
+            "00000.png": "frame_00001.jpg",
+            "00001.png": "frame_00003.jpg",
+            "00002.png": "frame_00005.jpg",
+        }
+
+    def test_empty_directory(self, tmp_path: Path) -> None:
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        assert _build_render_index_to_frame_map(images_dir) == {}
+
+    def test_ignores_non_image_files(self, tmp_path: Path) -> None:
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        (images_dir / "frame_00001.jpg").write_text("a")
+        (images_dir / "cameras.txt").write_text("not an image")
+        (images_dir / "points3D.bin").write_bytes(b"\x00")
+
+        mapping = _build_render_index_to_frame_map(images_dir)
+        assert mapping == {"00000.png": "frame_00001.jpg"}
+
+
 class TestCopyMatchingRepairedViews:
     def test_copies_matching_images(self, tmp_path: Path) -> None:
         images_dir = tmp_path / "images"
@@ -78,6 +112,58 @@ class TestCopyMatchingRepairedViews:
         assert count == 1
         assert (images_dir / "frame_01.png").read_text() == "fixed"
         assert (images_dir / "frame_02.png").read_text() == "original"
+
+    def test_translates_render_index_to_frame_name(self, tmp_path: Path) -> None:
+        """source_image='00000.png' should map to frame_00001.jpg via render index."""
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        (images_dir / "frame_00001.jpg").write_text("original_1")
+        (images_dir / "frame_00003.jpg").write_text("original_3")
+
+        repaired_dir = tmp_path / "repaired"
+        repaired_dir.mkdir()
+        (repaired_dir / "00000.png").write_text("fixed_0")
+
+        jsonl_path = tmp_path / "accepted.jsonl"
+        jsonl_path.write_text(
+            json.dumps({
+                "source_image": "00000.png",
+                "repaired_image": str(repaired_dir / "00000.png"),
+            }) + "\n"
+        )
+
+        count, paths = _copy_matching_repaired_views(
+            undistorted_images_dir=images_dir,
+            repaired_views_dir=repaired_dir,
+            accepted_views_jsonl=jsonl_path,
+        )
+        assert count == 1
+        # 00000.png → frame_00001.jpg (first in sorted order)
+        assert (images_dir / "frame_00001.jpg").read_text() == "fixed_0"
+        assert (images_dir / "frame_00003.jpg").read_text() == "original_3"
+
+    def test_deduplicates_same_source(self, tmp_path: Path) -> None:
+        """Multiple accepted views from the same source should only copy once."""
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        (images_dir / "frame_00001.jpg").write_text("original")
+
+        repaired_dir = tmp_path / "repaired"
+        repaired_dir.mkdir()
+        (repaired_dir / "00000.png").write_text("fixed")
+
+        jsonl_path = tmp_path / "accepted.jsonl"
+        jsonl_path.write_text(
+            json.dumps({"source_image": "00000.png", "repaired_image": str(repaired_dir / "00000.png")}) + "\n"
+            + json.dumps({"source_image": "00000.png", "repaired_image": str(repaired_dir / "00000.png")}) + "\n"
+        )
+
+        count, _ = _copy_matching_repaired_views(
+            undistorted_images_dir=images_dir,
+            repaired_views_dir=repaired_dir,
+            accepted_views_jsonl=jsonl_path,
+        )
+        assert count == 1
 
     def test_no_matching_returns_zero(self, tmp_path: Path) -> None:
         images_dir = tmp_path / "images"

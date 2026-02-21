@@ -42,28 +42,112 @@ def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _build_render_index_to_frame_map(undistorted_images_dir: Path) -> Dict[str, str]:
+    """Build mapping from 3DGRUT render index names to original frame filenames.
+
+    3DGRUT renders are 0-indexed PNGs (00000.png, 00001.png, ...) ordered by
+    the same training image order that COLMAP uses during reconstruction.
+    """
+    frame_files = sorted(
+        f.name
+        for f in undistorted_images_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
+    )
+    mapping: Dict[str, str] = {}
+    for idx, frame_name in enumerate(frame_files):
+        render_name = f"{idx:05d}.png"
+        mapping[render_name] = frame_name
+    return mapping
+
+
+def _build_render_index_to_frame_map_with_colmap(
+    undistorted_images_dir: Path,
+    sparse_dir: Path,
+) -> Dict[str, str] | None:
+    """Prefer mapping using COLMAP image registration order when available."""
+    images_txt = sparse_dir / "images.txt"
+    if not images_txt.is_file():
+        return None
+
+    try:
+        lines = images_txt.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return None
+
+    registered_images: list[str] = []
+    idx = 0
+    while idx < len(lines):
+        text = lines[idx].strip()
+        idx += 1
+        if not text or text.startswith("#"):
+            continue
+        parts = text.split()
+        if len(parts) >= 10:
+            registered_images.append(parts[9])
+            # Skip the following 2D-point line.
+            idx += 1
+
+    if not registered_images:
+        return None
+
+    mapping: Dict[str, str] = {}
+    available = {f.name: f.name for f in undistorted_images_dir.iterdir() if f.is_file()}
+    for idx, source_name in enumerate(registered_images):
+        render_name = f"{idx:05d}.png"
+        source_name = source_name.strip()
+        if not source_name:
+            continue
+        basename = Path(source_name).name
+        frame_name = available.get(basename)
+        if frame_name is not None:
+            mapping[render_name] = frame_name
+
+    return mapping if mapping else None
+
+
 def _copy_matching_repaired_views(
     *,
     undistorted_images_dir: Path,
     repaired_views_dir: Path,
     accepted_views_jsonl: Path,
+    sparse_dir: Path | None = None,
 ) -> Tuple[int, List[str]]:
     accepted = _load_jsonl(accepted_views_jsonl)
     replaced: List[str] = []
+
+    # Prefer COLMAP-ordered image mapping to avoid index drift on filtered input.
+    render_to_frame: Dict[str, str] = {}
+    if sparse_dir is not None:
+        render_to_frame.update(_build_render_index_to_frame_map_with_colmap(undistorted_images_dir, sparse_dir) or {})
+    if not render_to_frame:
+        render_to_frame = _build_render_index_to_frame_map(undistorted_images_dir)
+
+    seen_sources: set = set()
     for row in accepted:
         source_name = str(row.get("source_image") or "").strip()
         repaired_path = Path(str(row.get("repaired_image") or "").strip())
         if not source_name or not repaired_path.is_file():
             continue
 
-        dst = undistorted_images_dir / source_name
+        # Skip duplicates — multiple pseudo-views can share the same source.
+        if source_name in seen_sources:
+            continue
+        seen_sources.add(source_name)
+
+        # Translate render index name to original frame filename.
+        source_basename = Path(source_name).name
+        frame_name = render_to_frame.get(source_name) or render_to_frame.get(source_basename, source_name)
+
+        dst = undistorted_images_dir / frame_name
         if not dst.is_file():
-            # Some pipelines have nested image folders, try basename match.
-            matches = list(undistorted_images_dir.rglob(source_name))
-            if matches:
-                dst = matches[0]
-            else:
-                continue
+            # Fallback: try the original source_name directly.
+            dst = undistorted_images_dir / source_name
+            if not dst.is_file():
+                matches = list(undistorted_images_dir.rglob(source_name))
+                if matches:
+                    dst = matches[0]
+                else:
+                    continue
         shutil.copy2(repaired_path, dst)
         replaced.append(str(dst))
     return len(replaced), replaced
@@ -91,6 +175,15 @@ def _run(cmd: List[str], *, cwd: Path | None = None, timeout_sec: int | None = N
     )
 
 
+def _find_baseline_checkpoint(output_dir: Path) -> Path | None:
+    """Find the baseline 3DGRUT checkpoint from Stage 4 to resume from."""
+    grut_dir = output_dir / "3dgrut"
+    if not grut_dir.is_dir():
+        return None
+    candidates = sorted(grut_dir.rglob("ckpt_last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
 def _build_default_distill_cmd(
     *,
     threedgrut_python: str,
@@ -99,6 +192,7 @@ def _build_default_distill_cmd(
     out_dir: Path,
     distill_iters: int,
     max_n_gaussians: int,
+    baseline_checkpoint: Path | None = None,
 ) -> List[str]:
     train_script = threedgrut_dir / "train.py"
     cmd: List[str] = [
@@ -119,6 +213,8 @@ def _build_default_distill_cmd(
     ]
     if max_n_gaussians > 0:
         cmd.append(f"strategy.add.max_n_gaussians={int(max_n_gaussians)}")
+    if baseline_checkpoint is not None and baseline_checkpoint.is_file():
+        cmd.append(f"resume={baseline_checkpoint}")
     return cmd
 
 
@@ -162,6 +258,7 @@ def run_post_stage4_distill(
         undistorted_images_dir=undistorted_images_dir,
         repaired_views_dir=repaired_views_dir,
         accepted_views_jsonl=accepted_views_jsonl,
+        sparse_dir=undistorted_dir / "sparse" / "0",
     )
 
     refined_usdz = output_dir / "export_last_refined.usdz"
@@ -195,6 +292,9 @@ def run_post_stage4_distill(
         out_dir.mkdir(parents=True, exist_ok=True)
         cmd_template = os.getenv("POST_STAGE4_DISTILL_COMMAND", "").strip()
 
+        baseline_ckpt = _find_baseline_checkpoint(output_dir)
+        report["baseline_checkpoint"] = str(baseline_ckpt) if baseline_ckpt else None
+
         if cmd_template:
             cmd = cmd_template.format(
                 dataset_dir=str(dataset_dir),
@@ -212,6 +312,7 @@ def run_post_stage4_distill(
                 out_dir=out_dir,
                 distill_iters=distill_iters,
                 max_n_gaussians=max_n_gaussians,
+                baseline_checkpoint=baseline_ckpt,
             )
             proc = _run(cmd_list, cwd=threedgrut_dir, timeout_sec=max(60, int(time_budget_min) * 60))
             report["command"] = " ".join(cmd_list)
