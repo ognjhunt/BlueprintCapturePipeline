@@ -225,7 +225,13 @@ def _validate_quality_gate_dependencies(*, advanced_quality_gates_enabled: bool)
     return checks
 
 
-def _validate_blueprintpipeline_runtime(root: Path, *, standalone_mode: bool) -> list[PreflightCheck]:
+def _validate_blueprintpipeline_runtime(
+    root: Path,
+    *,
+    standalone_mode: bool,
+    completion_mode: str,
+    data_gen_enabled: bool = False,
+) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
     if standalone_mode:
@@ -252,6 +258,19 @@ def _validate_blueprintpipeline_runtime(root: Path, *, standalone_mode: bool) ->
         root / "usd-assembly-job/assemble_scene.py",
         root / "tools/source_pipeline/adapter.py",
     ]
+
+    normalized_mode = (completion_mode or "best_effort").strip().lower()
+    strict_downstream = normalized_mode == "full_required"
+
+    # ``data_gen_enabled`` is retained only for backward compatibility with
+    # older callers that still pass this flag.
+    if strict_downstream or data_gen_enabled:
+        required_scripts.extend([
+            root / "replicator-job/generate_replicator_bundle.py",
+            root / "variation-asset-pipeline-job/run_variation_asset_pipeline.py",
+            root / "genie-sim-export-job/export_to_geniesim.py",
+        ])
+
     for script in required_scripts:
         checks.append(
             PreflightCheck(
@@ -340,6 +359,51 @@ def _validate_risky_overrides(
     return checks
 
 
+def _validate_data_gen_requirements(*, completion_mode: str, data_gen_enabled: bool = False) -> list[PreflightCheck]:
+    """Validate dependencies for strict downstream data-generation stages."""
+    checks: list[PreflightCheck] = []
+    normalized_mode = (completion_mode or "best_effort").strip().lower()
+    strict_downstream = normalized_mode == "full_required"
+    if not strict_downstream and not data_gen_enabled:
+        checks.append(
+            PreflightCheck(
+                "data_gen_stack",
+                True,
+                "downstream data generation not required in best_effort mode",
+            )
+        )
+        return checks
+
+    # Gemini API key — required by variation-asset-pipeline-job.
+    gemini_key = _env_any("GOOGLE_GENAI_API_KEY", "GEMINI_API_KEY")
+    checks.append(
+        PreflightCheck(
+            "data_gen_gemini_key",
+            bool(gemini_key),
+            "Gemini API key present"
+            if gemini_key
+            else "missing GOOGLE_GENAI_API_KEY for full_required downstream stages",
+        )
+    )
+
+    # blueprint_sim importability (best-effort)
+    try:
+        importlib.import_module("blueprint_sim")
+        checks.append(
+            PreflightCheck("data_gen_blueprint_sim", True, "blueprint_sim importable")
+        )
+    except Exception:
+        checks.append(
+            PreflightCheck(
+                "data_gen_blueprint_sim",
+                False,
+                "blueprint_sim not importable — install BlueprintPipeline (pip install -e .)",
+            )
+        )
+
+    return checks
+
+
 def validate_runtime_preflight(
     *,
     gcs_root: Path,
@@ -351,6 +415,7 @@ def validate_runtime_preflight(
     advanced_quality_gates_enabled: bool,
     standalone_mode: bool = False,
     completion_mode: str = "best_effort",
+    data_gen_enabled: bool = False,
 ) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
@@ -366,6 +431,8 @@ def validate_runtime_preflight(
         _validate_blueprintpipeline_runtime(
             blueprintpipeline_root,
             standalone_mode=standalone_mode,
+            completion_mode=completion_mode,
+            data_gen_enabled=data_gen_enabled,
         )
     )
     checks.extend(_validate_provider_env(_parse_provider_chain(generation_provider_chain)))
@@ -382,6 +449,12 @@ def validate_runtime_preflight(
     checks.extend(
         _validate_quality_gate_dependencies(
             advanced_quality_gates_enabled=advanced_quality_gates_enabled
+        )
+    )
+    checks.extend(
+        _validate_data_gen_requirements(
+            completion_mode=completion_mode,
+            data_gen_enabled=data_gen_enabled,
         )
     )
 

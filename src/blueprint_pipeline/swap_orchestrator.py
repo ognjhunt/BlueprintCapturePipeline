@@ -85,7 +85,7 @@ class OrchestratorConfig:
         default=True,
     )
     completion_mode: str = _normalize_completion_mode(
-        os.getenv("PIPELINE_COMPLETION_MODE", "best_effort")
+        os.getenv("PIPELINE_COMPLETION_MODE", "full_required")
     )
     swap_policy_path: str = os.getenv("SWAP_POLICY_CONFIG_PATH", "").strip()
     swap_selection_mode: str = (os.getenv("SWAP_SELECTION_MODE", "hybrid") or "hybrid").strip().lower()
@@ -113,6 +113,13 @@ class OrchestratorConfig:
         default_factory=AdvancedQualityGateConfig
     )
     interactive_extra_env: Dict[str, str] = field(default_factory=dict)
+    data_gen_enabled: bool = parse_bool(
+        os.getenv("DATA_GEN_ENABLED"),
+        default=False,
+    )
+    replicator_policies: str = os.getenv("REPLICATOR_POLICIES", "").strip()
+    robot_type: str = (os.getenv("ROBOT_TYPE", "franka") or "franka").strip()
+    episode_min_quality: float = float(os.getenv("EPISODE_MIN_QUALITY", "0.7") or "0.7")
 
 
 @dataclass
@@ -158,6 +165,26 @@ def _usd_prefix(scene_id: str) -> str:
     return f"scenes/{scene_id}/usd"
 
 
+def _replicator_prefix(scene_id: str) -> str:
+    return f"scenes/{scene_id}/replicator"
+
+
+def _variation_assets_prefix(scene_id: str) -> str:
+    return f"scenes/{scene_id}/variation_assets"
+
+
+def _geniesim_prefix(scene_id: str) -> str:
+    return f"scenes/{scene_id}/geniesim"
+
+
+def _isaac_lab_prefix(scene_id: str) -> str:
+    return f"scenes/{scene_id}/isaac_lab"
+
+
+def _episodes_prefix(scene_id: str) -> str:
+    return f"scenes/{scene_id}/episodes"
+
+
 def _required_articulation_ids(candidates: List[Mapping[str, Any]]) -> List[str]:
     out: List[str] = []
     for candidate in candidates:
@@ -190,6 +217,58 @@ def _is_scene_usda_stub(path: Path) -> bool:
         'defaultPrim = "Scene"' in text
         and 'def Xform "Scene"' in text
         and "references = @" not in text
+    )
+
+
+def _emit_bp_completion_markers(
+    *,
+    storage_root: Path,
+    scene_id: str,
+    capture_id: str,
+    assets_prefix: str,
+    usd_prefix: str,
+) -> None:
+    """Write BlueprintPipeline step-completion markers.
+
+    BlueprintPipeline's ``run_local_pipeline.py`` checks for these markers
+    before executing downstream steps (replicator, isaac-lab, etc.).  By
+    emitting them after a successful Capture assembly, we allow downstream
+    data-generation jobs to run against Capture-produced scenes without
+    requiring a ``regen3d/`` directory.
+    """
+    ts = utc_now_iso()
+    origin = {"source": "capture_nurec_swap", "scene_id": scene_id, "capture_id": capture_id}
+
+    # .regen3d_complete — signals reconstruction data is available
+    write_json(
+        storage_root / assets_prefix / ".regen3d_complete",
+        {"completed_at": ts, **origin},
+    )
+
+    # .interactive_complete — interactive validation has already run
+    write_json(
+        storage_root / assets_prefix / ".interactive_complete",
+        {"completed_at": ts, **origin},
+    )
+
+    # .simready_complete — simready assets prepared
+    write_json(
+        storage_root / assets_prefix / ".simready_complete",
+        {"completed_at": ts, **origin},
+    )
+
+    # .usd_assembly_complete — scene.usda assembled
+    write_json(
+        storage_root / usd_prefix / ".usd_assembly_complete",
+        {"completed_at": ts, **origin},
+    )
+    write_json(
+        storage_root / assets_prefix / ".usd_assembly_complete",
+        {"completed_at": ts, **origin},
+    )
+    write_json(
+        storage_root / _scene_prefix(scene_id) / ".usd_assembly_complete",
+        {"completed_at": ts, **origin},
     )
 
 
@@ -277,6 +356,7 @@ def _build_pipeline_summary(
             "scene_cleaning_report_uri": f"gs://{bucket}/{pipeline_prefix}/scene_cleaning_report.json",
             "advanced_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/advanced_quality_report.json",
             "quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/swap_quality_report.json",
+            "downstream_report_uri": f"gs://{bucket}/{pipeline_prefix}/geniesim_export_report.json",
         },
         "source_files": {
             "runtime_preflight_report": _local_file_pointer(pipeline_dir / "runtime_preflight_report.json"),
@@ -285,6 +365,7 @@ def _build_pipeline_summary(
             "scene_cleaning_report": _local_file_pointer(pipeline_dir / "scene_cleaning_report.json"),
             "advanced_quality_report": _local_file_pointer(pipeline_dir / "advanced_quality_report.json"),
             "quality_report": _local_file_pointer(pipeline_dir / "swap_quality_report.json"),
+            "downstream_report": _local_file_pointer(pipeline_dir / "geniesim_export_report.json"),
             "nurec_outputs": _local_file_pointer(pipeline_dir / "nurec_outputs.json"),
         },
         "metrics": {
@@ -924,6 +1005,18 @@ def run_swap_pipeline(
             raise StageError("usd_assembly", f"assemble_scene.py failed with code {usd_result.return_code}")
 
         scene_usda_path = storage_root / usd_prefix / "scene.usda"
+
+        # Emit BlueprintPipeline-compatible completion markers so downstream
+        # stages (replicator, isaac-lab, episode-gen) can recognise a
+        # Capture-produced scene without requiring an actual regen3d/ dir.
+        _emit_bp_completion_markers(
+            storage_root=storage_root,
+            scene_id=scene_id,
+            capture_id=capture_id,
+            assets_prefix=assets_prefix,
+            usd_prefix=usd_prefix,
+        )
+
         assembly_gate_ok = has_nonempty_file(scene_usda_path)
         gates.append(
             _Gate(
@@ -974,6 +1067,232 @@ def run_swap_pipeline(
                 f"advanced quality gates failed: {advanced_quality_report.get('gates', [])}",
             )
 
+        # ------------------------------------------------------------------
+        # Stage J: downstream data-generation (replicator -> variation -> GenieSim export)
+        # ------------------------------------------------------------------
+        replicator_pref = _replicator_prefix(scene_id)
+        variation_assets_pref = _variation_assets_prefix(scene_id)
+        geniesim_pref = _geniesim_prefix(scene_id)
+        downstream_report: Dict[str, Any] = {
+            "schema_version": "v1",
+            "scene_id": scene_id,
+            "capture_id": capture_id,
+            "generated_at": utc_now_iso(),
+            "completion_mode": cfg.completion_mode,
+            "status": "skipped",
+            "reason": "downstream data generation runs only in full_required mode",
+        }
+
+        if cfg.completion_mode != "full_required":
+            gates.append(_Gate("downstream_data_gen_gate", True, "skipped in best_effort mode"))
+            write_json(pipeline_dir / "geniesim_export_report.json", downstream_report)
+        else:
+            replicator_extra: Dict[str, str] = {}
+            if cfg.replicator_policies:
+                replicator_extra["REQUESTED_POLICIES"] = cfg.replicator_policies
+
+            stage = "replicator"
+            replicator_result = blueprint_runner.run_replicator_job(
+                scene_id=scene_id,
+                seg_prefix=seg_prefix,
+                assets_prefix=assets_prefix,
+                usd_prefix=usd_prefix,
+                replicator_prefix=replicator_pref,
+                extra_env=replicator_extra or None,
+            )
+            debug["replicator_job"] = required_env_from_command_result(replicator_result)
+            replicator_marker = storage_root / replicator_pref / ".replicator_complete"
+            replicator_marker_ok = has_nonempty_file(replicator_marker)
+            replicator_ok = replicator_result.return_code == 0 and replicator_marker_ok
+            gates.append(
+                _Gate(
+                    "replicator_gate",
+                    replicator_ok,
+                    "replicator bundle generated and completion marker present"
+                    if replicator_ok
+                    else (
+                        f"replicator return_code={replicator_result.return_code}, "
+                        f"marker_exists={replicator_marker_ok}"
+                    ),
+                )
+            )
+            if replicator_result.return_code != 0:
+                downstream_report.update(
+                    {
+                        "status": "failed",
+                        "failed_stage": "replicator",
+                        "error": f"replicator failed (code {replicator_result.return_code})",
+                    }
+                )
+                write_json(pipeline_dir / "geniesim_export_report.json", downstream_report)
+                raise StageError("replicator", f"generate_replicator_bundle.py failed with code {replicator_result.return_code}")
+            if not replicator_marker_ok:
+                downstream_report.update(
+                    {
+                        "status": "failed",
+                        "failed_stage": "replicator",
+                        "error": f"missing replicator completion marker at {replicator_marker}",
+                    }
+                )
+                write_json(pipeline_dir / "geniesim_export_report.json", downstream_report)
+                raise StageError("replicator", f"missing replicator completion marker at {replicator_marker}")
+
+            stage = "variation_assets"
+            variation_result = blueprint_runner.run_variation_asset_pipeline_job(
+                scene_id=scene_id,
+                replicator_prefix=replicator_pref,
+                variation_assets_prefix=variation_assets_pref,
+            )
+            debug["variation_asset_pipeline_job"] = required_env_from_command_result(variation_result)
+            variation_marker = storage_root / variation_assets_pref / ".variation_pipeline_complete"
+            variation_manifest = storage_root / variation_assets_pref / "variation_assets.json"
+            variation_marker_ok = has_nonempty_file(variation_marker)
+            variation_manifest_ok = has_nonempty_file(variation_manifest)
+            variation_ok = (
+                variation_result.return_code == 0 and variation_marker_ok and variation_manifest_ok
+            )
+            gates.append(
+                _Gate(
+                    "variation_assets_gate",
+                    variation_ok,
+                    "variation assets generated"
+                    if variation_ok
+                    else (
+                        f"variation return_code={variation_result.return_code}, "
+                        f"marker_exists={variation_marker_ok}, "
+                        f"manifest_exists={variation_manifest_ok}"
+                    ),
+                )
+            )
+            if variation_result.return_code != 0:
+                downstream_report.update(
+                    {
+                        "status": "failed",
+                        "failed_stage": "variation_assets",
+                        "error": (
+                            "run_variation_asset_pipeline.py failed "
+                            f"with code {variation_result.return_code}"
+                        ),
+                    }
+                )
+                write_json(pipeline_dir / "geniesim_export_report.json", downstream_report)
+                raise StageError(
+                    "variation_assets",
+                    f"run_variation_asset_pipeline.py failed with code {variation_result.return_code}",
+                )
+            if not variation_marker_ok or not variation_manifest_ok:
+                downstream_report.update(
+                    {
+                        "status": "failed",
+                        "failed_stage": "variation_assets",
+                        "error": (
+                            "variation outputs missing; required "
+                            f"{variation_marker} and {variation_manifest}"
+                        ),
+                    }
+                )
+                write_json(pipeline_dir / "geniesim_export_report.json", downstream_report)
+                raise StageError(
+                    "variation_assets",
+                    (
+                        "variation outputs missing; required "
+                        f"{variation_marker} and {variation_manifest}"
+                    ),
+                )
+
+            stage = "geniesim_export"
+            geniesim_result = blueprint_runner.run_geniesim_export_job(
+                scene_id=scene_id,
+                assets_prefix=assets_prefix,
+                replicator_prefix=replicator_pref,
+                variation_assets_prefix=variation_assets_pref,
+                geniesim_prefix=geniesim_pref,
+                filter_commercial=True,
+            )
+            debug["geniesim_export_job"] = required_env_from_command_result(geniesim_result)
+            required_geniesim_outputs = {
+                "scene_graph": storage_root / geniesim_pref / "scene_graph.json",
+                "asset_index": storage_root / geniesim_pref / "asset_index.json",
+                "task_config": storage_root / geniesim_pref / "task_config.json",
+                "merged_scene_manifest": storage_root / geniesim_pref / "merged_scene_manifest.json",
+            }
+            missing_geniesim = [
+                name
+                for name, path in required_geniesim_outputs.items()
+                if not has_nonempty_file(path)
+            ]
+            geniesim_ok = geniesim_result.return_code == 0 and not missing_geniesim
+            gates.append(
+                _Gate(
+                    "geniesim_export_gate",
+                    geniesim_ok,
+                    "GenieSim export artifacts generated"
+                    if geniesim_ok
+                    else (
+                        f"geniesim_export return_code={geniesim_result.return_code}, "
+                        f"missing_outputs={missing_geniesim}"
+                    ),
+                )
+            )
+            if geniesim_result.return_code != 0:
+                downstream_report.update(
+                    {
+                        "status": "failed",
+                        "failed_stage": "geniesim_export",
+                        "error": (
+                            "export_to_geniesim.py failed "
+                            f"with code {geniesim_result.return_code}"
+                        ),
+                    }
+                )
+                write_json(pipeline_dir / "geniesim_export_report.json", downstream_report)
+                raise StageError(
+                    "geniesim_export",
+                    f"export_to_geniesim.py failed with code {geniesim_result.return_code}",
+                )
+            if missing_geniesim:
+                downstream_report.update(
+                    {
+                        "status": "failed",
+                        "failed_stage": "geniesim_export",
+                        "error": (
+                            "missing GenieSim export outputs: "
+                            + ", ".join(missing_geniesim)
+                        ),
+                    }
+                )
+                write_json(pipeline_dir / "geniesim_export_report.json", downstream_report)
+                raise StageError(
+                    "geniesim_export",
+                    "missing GenieSim export outputs: " + ", ".join(missing_geniesim),
+                )
+
+            downstream_report = {
+                "schema_version": "v1",
+                "scene_id": scene_id,
+                "capture_id": capture_id,
+                "generated_at": utc_now_iso(),
+                "completion_mode": cfg.completion_mode,
+                "status": "completed",
+                "stages": {
+                    "replicator": {"return_code": replicator_result.return_code},
+                    "variation_assets": {"return_code": variation_result.return_code},
+                    "geniesim_export": {"return_code": geniesim_result.return_code},
+                },
+                "artifacts": {
+                    name: f"gs://{bucket}/{relative_scene_path(path, storage_root)}"
+                    for name, path in required_geniesim_outputs.items()
+                },
+            }
+            write_json(pipeline_dir / "geniesim_export_report.json", downstream_report)
+            gates.append(
+                _Gate(
+                    "downstream_data_gen_gate",
+                    True,
+                    "replicator, variation, and GenieSim export completed",
+                )
+            )
+
         stage = "completion"
         quality_report = {
             "schema_version": "v1",
@@ -992,10 +1311,17 @@ def run_swap_pipeline(
                 "scene_cleaning_report": f"gs://{bucket}/{pipeline_prefix}/scene_cleaning_report.json",
                 "swap_execution_report": f"gs://{bucket}/{pipeline_prefix}/swap_execution_report.json",
                 "advanced_quality_report": f"gs://{bucket}/{pipeline_prefix}/advanced_quality_report.json",
+                "downstream_report": f"gs://{bucket}/{pipeline_prefix}/geniesim_export_report.json",
                 "manifest": f"gs://{bucket}/{relative_scene_path(artifact_paths['manifest_path'], storage_root)}",
                 "layout": f"gs://{bucket}/{relative_scene_path(artifact_paths['layout_path'], storage_root)}",
                 "inventory": f"gs://{bucket}/{relative_scene_path(artifact_paths['inventory_path'], storage_root)}",
                 "scene_usda": f"gs://{bucket}/{relative_scene_path(scene_usda_path, storage_root)}",
+                "replicator_complete": f"gs://{bucket}/{replicator_pref}/.replicator_complete",
+                "variation_assets_manifest": f"gs://{bucket}/{variation_assets_pref}/variation_assets.json",
+                "geniesim_scene_graph": f"gs://{bucket}/{geniesim_pref}/scene_graph.json",
+                "geniesim_asset_index": f"gs://{bucket}/{geniesim_pref}/asset_index.json",
+                "geniesim_task_config": f"gs://{bucket}/{geniesim_pref}/task_config.json",
+                "geniesim_merged_scene_manifest": f"gs://{bucket}/{geniesim_pref}/merged_scene_manifest.json",
                 "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             },
         }

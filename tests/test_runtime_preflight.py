@@ -9,7 +9,7 @@ import pytest
 from blueprint_pipeline.runtime_preflight import enforce_preflight, validate_runtime_preflight
 
 
-def _make_blueprintpipeline_stub(root: Path) -> None:
+def _make_blueprintpipeline_stub(root: Path, *, include_downstream: bool = False) -> None:
     (root / "interactive-job").mkdir(parents=True, exist_ok=True)
     (root / "simready-job").mkdir(parents=True, exist_ok=True)
     (root / "usd-assembly-job").mkdir(parents=True, exist_ok=True)
@@ -24,6 +24,23 @@ def _make_blueprintpipeline_stub(root: Path) -> None:
     (root / "tools/__init__.py").write_text("", encoding="utf-8")
     (root / "tools/source_pipeline/__init__.py").write_text("", encoding="utf-8")
     (root / "tools/scene_manifest/__init__.py").write_text("", encoding="utf-8")
+
+    if include_downstream:
+        (root / "replicator-job").mkdir(parents=True, exist_ok=True)
+        (root / "variation-asset-pipeline-job").mkdir(parents=True, exist_ok=True)
+        (root / "genie-sim-export-job").mkdir(parents=True, exist_ok=True)
+        (root / "replicator-job/generate_replicator_bundle.py").write_text(
+            "print('ok')\n",
+            encoding="utf-8",
+        )
+        (root / "variation-asset-pipeline-job/run_variation_asset_pipeline.py").write_text(
+            "print('ok')\n",
+            encoding="utf-8",
+        )
+        (root / "genie-sim-export-job/export_to_geniesim.py").write_text(
+            "print('ok')\n",
+            encoding="utf-8",
+        )
 
 
 def test_runtime_preflight_passes_with_configured_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,3 +181,97 @@ def test_runtime_preflight_rejects_standalone_in_full_required_mode(
     )
     failed = {item.name for item in checks if not item.passed}
     assert "full_completion_standalone_guard" in failed
+
+
+def test_runtime_preflight_full_required_requires_downstream_scripts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root, include_downstream=False)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="image_to_3d,proxy_box",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+        completion_mode="full_required",
+    )
+    failed = {item.name for item in checks if not item.passed}
+    assert "script_generate_replicator_bundle.py" in failed
+    assert "script_run_variation_asset_pipeline.py" in failed
+    assert "script_export_to_geniesim.py" in failed
+
+
+def test_runtime_preflight_full_required_requires_gemini_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root, include_downstream=True)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_API_KEY", raising=False)
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="image_to_3d,proxy_box",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+        completion_mode="full_required",
+    )
+    failed = {item.name for item in checks if not item.passed}
+    assert "data_gen_gemini_key" in failed
+
+
+def test_runtime_preflight_best_effort_does_not_require_downstream_scripts_or_gemini(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root, include_downstream=False)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_API_KEY", raising=False)
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="image_to_3d,proxy_box",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+        completion_mode="best_effort",
+    )
+    failed = {item.name for item in checks if not item.passed}
+    assert "script_generate_replicator_bundle.py" not in failed
+    assert "script_run_variation_asset_pipeline.py" not in failed
+    assert "script_export_to_geniesim.py" not in failed
+    assert "data_gen_gemini_key" not in failed

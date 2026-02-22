@@ -102,6 +102,9 @@ validate_full_runtime() {
     "interactive-job/run_interactive_assets.py"
     "simready-job/prepare_simready_assets.py"
     "usd-assembly-job/assemble_scene.py"
+    "replicator-job/generate_replicator_bundle.py"
+    "variation-asset-pipeline-job/run_variation_asset_pipeline.py"
+    "genie-sim-export-job/export_to_geniesim.py"
     "tools/source_pipeline/adapter.py"
   )
   [ -d "$root" ] || die "Full completion mode requires BLUEPRINTPIPELINE_ROOT directory: ${root}"
@@ -191,6 +194,38 @@ apply_nurec_rerun_profile() {
       die "Invalid --nurec-rerun-profile '${NUREC_RERUN_PROFILE}'. Expected: default, clear_over_faithful, photoreal_hallucination"
       ;;
   esac
+}
+
+collect_orchestrator_dependency_errors() {
+  local -n _out="$1"
+  _out=()
+
+  local standalone="${PIPELINE_STANDALONE_MODE:-false}"
+  local standalone_lc="${standalone,,}"
+  if [ "$standalone_lc" != "true" ]; then
+    if [ ! -d "$BLUEPRINTPIPELINE_ROOT" ]; then
+      _out+=("BLUEPRINTPIPELINE_ROOT missing: $BLUEPRINTPIPELINE_ROOT")
+    elif [ ! -f "$BLUEPRINTPIPELINE_ROOT/tools/source_pipeline/adapter.py" ]; then
+      _out+=("BlueprintPipeline runtime incomplete at $BLUEPRINTPIPELINE_ROOT (missing tools/source_pipeline/adapter.py)")
+    fi
+  fi
+
+  local provider_chain=",${GENERATION_PROVIDER_CHAIN,,},"
+  if [[ "$provider_chain" == *",sam3d,"* ]]; then
+    local sam3d_host="${TEXT_SAM3D_API_HOST:-${SAM3D_API_HOST:-${TEXT_SAM3D_BASE_URL:-}}}"
+    local sam3d_key="${TEXT_SAM3D_API_KEY:-${SAM3D_API_KEY:-}}"
+    if [ -z "${sam3d_host//[[:space:]]/}" ] || [ -z "${sam3d_key//[[:space:]]/}" ]; then
+      _out+=("SAM3D credentials missing (set TEXT_SAM3D_API_HOST + TEXT_SAM3D_API_KEY)")
+    fi
+  fi
+
+  if [[ "$provider_chain" == *",hunyuan3d,"* ]]; then
+    local hunyuan_host="${TEXT_HUNYUAN_API_HOST:-${HUNYUAN_API_HOST:-${TEXT_HUNYUAN_BASE_URL:-}}}"
+    local hunyuan_key="${TEXT_HUNYUAN_API_KEY:-${HUNYUAN_API_KEY:-}}"
+    if [ -z "${hunyuan_host//[[:space:]]/}" ] || [ -z "${hunyuan_key//[[:space:]]/}" ]; then
+      _out+=("Hunyuan credentials missing (set TEXT_HUNYUAN_API_HOST + TEXT_HUNYUAN_API_KEY)")
+    fi
+  fi
 }
 
 SCENE_ID=""
@@ -724,10 +759,71 @@ log "DESCRIPTOR_URI=$DESCRIPTOR_URI"
 log "NUREC_VISUAL_PRIMARY=$NUREC_VISUAL_PRIMARY"
 log "COLMAP coverage gate: min=${COLMAP_MIN_REGISTERED_RATIO}, retry_fail=${COLMAP_RETRY_MIN_REGISTERED_RATIO}"
 
-python3 -m blueprint_pipeline.swap_orchestrator \
-  --descriptor-gcs-uri "$DESCRIPTOR_URI" \
-  2>&1 | tee "${PIPELINE_DIR}/orchestrator.log"
+ORCHESTRATOR_STATUS="completed"
+ORCHESTRATOR_DEP_ERRORS=()
+if [ "$COMPLETION_MODE" = "best_effort" ]; then
+  collect_orchestrator_dependency_errors ORCHESTRATOR_DEP_ERRORS
+  if [ "${#ORCHESTRATOR_DEP_ERRORS[@]}" -gt 0 ]; then
+    ORCHESTRATOR_STATUS="skipped_missing_dependencies"
+    log "Skipping Phase 3 in best_effort due to missing dependencies:"
+    for dep_error in "${ORCHESTRATOR_DEP_ERRORS[@]}"; do
+      log "  - ${dep_error}"
+    done
+    export ORCHESTRATOR_STATUS PIPELINE_DIR
+    python3 - <<PY
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 
+report = {
+    "schema_version": "v1",
+    "status": os.getenv("ORCHESTRATOR_STATUS", "skipped_missing_dependencies"),
+    "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "reason": "best_effort_missing_dependencies",
+}
+Path(os.environ["PIPELINE_DIR"]).joinpath("orchestrator_run_report.json").write_text(
+    json.dumps(report, indent=2), encoding="utf-8"
+)
+PY
+  fi
+fi
+
+if [ "$ORCHESTRATOR_STATUS" = "completed" ]; then
+  set +e
+  python3 -m blueprint_pipeline.swap_orchestrator \
+    --descriptor-gcs-uri "$DESCRIPTOR_URI" \
+    2>&1 | tee "${PIPELINE_DIR}/orchestrator.log"
+  orch_rc=${PIPESTATUS[0]}
+  set -e
+  if [ "$orch_rc" -ne 0 ]; then
+    if [ "$COMPLETION_MODE" = "full_required" ]; then
+      die "swap_orchestrator failed with exit code ${orch_rc}"
+    fi
+    ORCHESTRATOR_STATUS="failed_best_effort"
+    log "WARNING: swap_orchestrator failed in best_effort mode (exit=${orch_rc}); continuing with NuRec-only outputs"
+    export ORCHESTRATOR_STATUS ORCHESTRATOR_EXIT_CODE="$orch_rc" PIPELINE_DIR
+    python3 - <<PY
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+report = {
+    "schema_version": "v1",
+    "status": os.getenv("ORCHESTRATOR_STATUS", "failed_best_effort"),
+    "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "reason": "best_effort_orchestrator_failed",
+    "exit_code": int(os.getenv("ORCHESTRATOR_EXIT_CODE", "1")),
+}
+Path(os.environ["PIPELINE_DIR"]).joinpath("orchestrator_run_report.json").write_text(
+    json.dumps(report, indent=2), encoding="utf-8"
+)
+PY
+  fi
+fi
+
+if [ "$ORCHESTRATOR_STATUS" = "completed" ]; then
 python3 - <<PY
 import json
 from pathlib import Path
@@ -773,16 +869,22 @@ is_stub = (
 if completion_mode == "full_required" and is_stub:
     raise SystemExit("scene.usda is a standalone stub; full assembly is required")
 PY
+fi
 
 log "============================================================"
 log "FULL PIPELINE COMPLETE"
 log "============================================================"
 log "Outputs:"
 log "  NuRec:        ${NUREC_OUTPUT_DIR}/"
-log "  Scene USD:    ${SCENE_ROOT}/usd/scene.usda"
-log "  Assets:       ${SCENE_ROOT}/assets/"
-log "  Quality:      ${PIPELINE_ROOT}/swap_quality_report.json"
-log "  Summary:      ${PIPELINE_ROOT}/pipeline_summary.json"
+if [ "$ORCHESTRATOR_STATUS" = "completed" ]; then
+  log "  Scene USD:    ${SCENE_ROOT}/usd/scene.usda"
+  log "  Assets:       ${SCENE_ROOT}/assets/"
+  log "  Quality:      ${PIPELINE_ROOT}/swap_quality_report.json"
+  log "  Summary:      ${PIPELINE_ROOT}/pipeline_summary.json"
+else
+  log "  Orchestrator: ${ORCHESTRATOR_STATUS} (best_effort fallback)"
+  log "  Orchestrator log/report: ${PIPELINE_DIR}/orchestrator.log ${PIPELINE_DIR}/orchestrator_run_report.json"
+fi
 
 if [ "${OPEN_OMNIVERSE_PREVIEW,,}" = "true" ]; then
   log "Preparing Omniverse WebRTC preview workflow..."

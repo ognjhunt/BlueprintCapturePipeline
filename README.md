@@ -199,6 +199,9 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `COLLISION_SPIKE_MAX_RATIO` (default: `0.02`; collision spike gate threshold)
 - `NUREC_RERUN_PROFILE` (`default` wrapper profile; `clear_over_faithful` applies high-capacity baseline-only settings, `photoreal_hallucination` applies baseline + aggressive synthetic repair settings)
 
+`scripts/run_full_pipeline.sh` behavior note:
+- In `best_effort` completion mode, if swap-orchestrator dependencies are missing (BlueprintPipeline runtime or required provider credentials), Phase 3 is skipped or soft-failed and the script still completes with NuRec outputs for visual QA (`orchestrator_run_report.json` records the fallback state).
+
 For production runtimes, pre-bake 3DGRUT build dependencies into the image (tiny-cuda-nn submodules and fused_ssim built against the image's torch) to avoid rebuild delays during retries.
 
 ### Scene Cleaning Runbook

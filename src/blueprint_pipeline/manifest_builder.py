@@ -266,6 +266,7 @@ def build_scene_artifacts(
     inventory = {
         "scene_id": scene_id,
         "source": "capture_nurec_swap",
+        "scene_type": descriptor.environment_type_hint or "generic",
         "environment_type": descriptor.environment_type_hint or "unknown",
         "objects": inventory_objects,
     }
@@ -277,6 +278,31 @@ def build_scene_artifacts(
     write_json(manifest_path, manifest)
     write_json(layout_path, layout)
     write_json(inventory_path, inventory)
+
+    # Write a stub variation_assets manifest so that downstream
+    # BlueprintPipeline GenieSim-export jobs can run without requiring
+    # a separate variation-gen step.  Objects default to ``cc0`` license.
+    variation_dir = storage_root / f"scenes/{scene_id}/variation_assets"
+    ensure_dir(variation_dir)
+    variation_objects = [
+        {
+            "id": str(candidate["object_id"]),
+            "name": str(candidate.get("label") or "object"),
+            "license": "cc0",
+            "is_variation_asset": False,
+            "source": "capture_nurec_swap",
+        }
+        for candidate in swap_candidates
+    ]
+    write_json(
+        variation_dir / "manifest.json",
+        {
+            "schema_version": "v1",
+            "scene_id": scene_id,
+            "source": "capture_nurec_swap",
+            "objects": variation_objects,
+        },
+    )
 
     return {
         "manifest_path": manifest_path,

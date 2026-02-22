@@ -164,17 +164,26 @@ class _StubBlueprintRunner:
         retrieval_resolves: bool = True,
         simready_code: int = 0,
         usd_code: int = 0,
+        replicator_code: int = 0,
+        variation_code: int = 0,
+        geniesim_export_code: int = 0,
     ) -> None:
         self.root = root
         self.fail_required_ids = fail_required_ids or set()
         self.retrieval_resolves = retrieval_resolves
         self.simready_code = simready_code
         self.usd_code = usd_code
+        self.replicator_code = replicator_code
+        self.variation_code = variation_code
+        self.geniesim_export_code = geniesim_export_code
 
         self.materialize_calls: List[Dict[str, Any]] = []
         self.interactive_calls: List[Dict[str, Any]] = []
         self.simready_calls: List[Dict[str, Any]] = []
         self.usd_calls: List[Dict[str, Any]] = []
+        self.replicator_calls: List[Dict[str, Any]] = []
+        self.variation_calls: List[Dict[str, Any]] = []
+        self.geniesim_export_calls: List[Dict[str, Any]] = []
 
     def ensure_expected_commit(self, expected_commit_hash: str) -> None:
         self.expected_commit_hash = expected_commit_hash
@@ -354,6 +363,102 @@ class _StubBlueprintRunner:
             command=["python", "usd-assembly-job/assemble_scene.py"],
         )
 
+    def run_replicator_job(
+        self,
+        *,
+        scene_id: str,
+        seg_prefix: str,
+        assets_prefix: str,
+        usd_prefix: str,
+        replicator_prefix: str,
+        extra_env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        self.replicator_calls.append(
+            {
+                "scene_id": scene_id,
+                "seg_prefix": seg_prefix,
+                "assets_prefix": assets_prefix,
+                "usd_prefix": usd_prefix,
+                "replicator_prefix": replicator_prefix,
+                "extra_env": dict(extra_env or {}),
+            }
+        )
+        if self.replicator_code == 0:
+            marker_path = self.root / replicator_prefix / ".replicator_complete"
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text("{}", encoding="utf-8")
+        return CommandResult(
+            return_code=self.replicator_code,
+            stdout="",
+            stderr="",
+            command=["python", "replicator-job/generate_replicator_bundle.py"],
+        )
+
+    def run_variation_asset_pipeline_job(
+        self,
+        *,
+        scene_id: str,
+        replicator_prefix: str,
+        variation_assets_prefix: str,
+        extra_env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        self.variation_calls.append(
+            {
+                "scene_id": scene_id,
+                "replicator_prefix": replicator_prefix,
+                "variation_assets_prefix": variation_assets_prefix,
+                "extra_env": dict(extra_env or {}),
+            }
+        )
+        if self.variation_code == 0:
+            marker_path = self.root / variation_assets_prefix / ".variation_pipeline_complete"
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text("{}", encoding="utf-8")
+            manifest_path = self.root / variation_assets_prefix / "variation_assets.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+        return CommandResult(
+            return_code=self.variation_code,
+            stdout="",
+            stderr="",
+            command=["python", "variation-asset-pipeline-job/run_variation_asset_pipeline.py"],
+        )
+
+    def run_geniesim_export_job(
+        self,
+        *,
+        scene_id: str,
+        assets_prefix: str,
+        replicator_prefix: str,
+        variation_assets_prefix: str,
+        geniesim_prefix: str,
+        filter_commercial: bool = True,
+        extra_env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        self.geniesim_export_calls.append(
+            {
+                "scene_id": scene_id,
+                "assets_prefix": assets_prefix,
+                "replicator_prefix": replicator_prefix,
+                "variation_assets_prefix": variation_assets_prefix,
+                "geniesim_prefix": geniesim_prefix,
+                "filter_commercial": filter_commercial,
+                "extra_env": dict(extra_env or {}),
+            }
+        )
+        if self.geniesim_export_code == 0:
+            geniesim_root = self.root / geniesim_prefix
+            geniesim_root.mkdir(parents=True, exist_ok=True)
+            (geniesim_root / "scene_graph.json").write_text("{}", encoding="utf-8")
+            (geniesim_root / "asset_index.json").write_text("{}", encoding="utf-8")
+            (geniesim_root / "task_config.json").write_text("{}", encoding="utf-8")
+            (geniesim_root / "merged_scene_manifest.json").write_text("{}", encoding="utf-8")
+        return CommandResult(
+            return_code=self.geniesim_export_code,
+            stdout="",
+            stderr="",
+            command=["python", "genie-sim-export-job/export_to_geniesim.py"],
+        )
+
 
 @pytest.fixture(autouse=True)
 def _patch_mesh_conversion(monkeypatch):
@@ -392,6 +497,10 @@ def _run_pipeline(
     *,
     fail_required_ids: Optional[Set[str]] = None,
     retrieval_resolves: bool = True,
+    completion_mode: str = "best_effort",
+    replicator_code: int = 0,
+    variation_code: int = 0,
+    geniesim_export_code: int = 0,
 ) -> tuple[Dict[str, Any], _StubBlueprintRunner]:
     descriptor_uri = _write_scene_descriptor(tmp_path)
 
@@ -404,6 +513,9 @@ def _run_pipeline(
         tmp_path / "bucket",
         fail_required_ids=fail_required_ids,
         retrieval_resolves=retrieval_resolves,
+        replicator_code=replicator_code,
+        variation_code=variation_code,
+        geniesim_export_code=geniesim_export_code,
     )
 
     result = run_swap_pipeline(
@@ -414,6 +526,7 @@ def _run_pipeline(
             expected_blueprintpipeline_commit="",
             fail_on_commit_mismatch=False,
             runtime_preflight_enabled=False,
+            completion_mode=completion_mode,
             advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
         ),
         nurec_client=nurec_client,
@@ -685,6 +798,86 @@ def test_downstream_job_invocations_receive_expected_prefixes(tmp_path: Path) ->
     assert simready_call["assets_prefix"] == "scenes/scene_demo/assets"
     assert simready_call["layout_prefix"] == "scenes/scene_demo/layout"
     assert usd_call["usd_prefix"] == "scenes/scene_demo/usd"
+
+
+def test_full_required_runs_replicator_variation_geniesim_export(tmp_path: Path) -> None:
+    result, runner = _run_pipeline(
+        tmp_path,
+        fail_required_ids=set(),
+        retrieval_resolves=True,
+        completion_mode="full_required",
+    )
+
+    assert result["status"] == "completed"
+    assert len(runner.replicator_calls) == 1
+    assert len(runner.variation_calls) == 1
+    assert len(runner.geniesim_export_calls) == 1
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    downstream_report = json.loads((pipeline_dir / "geniesim_export_report.json").read_text(encoding="utf-8"))
+    assert downstream_report["status"] == "completed"
+
+    quality = json.loads((pipeline_dir / "swap_quality_report.json").read_text(encoding="utf-8"))
+    artifacts = quality.get("artifacts", {})
+    assert "downstream_report" in artifacts
+    assert "variation_assets_manifest" in artifacts
+    assert "geniesim_scene_graph" in artifacts
+    assert "geniesim_asset_index" in artifacts
+    assert "geniesim_task_config" in artifacts
+    assert "geniesim_merged_scene_manifest" in artifacts
+
+    assert (tmp_path / "bucket/scenes/scene_demo/replicator/.replicator_complete").is_file()
+    assert (tmp_path / "bucket/scenes/scene_demo/variation_assets/.variation_pipeline_complete").is_file()
+    assert (tmp_path / "bucket/scenes/scene_demo/variation_assets/variation_assets.json").is_file()
+    assert (tmp_path / "bucket/scenes/scene_demo/geniesim/scene_graph.json").is_file()
+    assert (tmp_path / "bucket/scenes/scene_demo/geniesim/asset_index.json").is_file()
+    assert (tmp_path / "bucket/scenes/scene_demo/geniesim/task_config.json").is_file()
+    assert (tmp_path / "bucket/scenes/scene_demo/geniesim/merged_scene_manifest.json").is_file()
+
+
+def test_full_required_replicator_failure_is_hard_failure(tmp_path: Path) -> None:
+    with pytest.raises(Exception):
+        _run_pipeline(
+            tmp_path,
+            fail_required_ids=set(),
+            retrieval_resolves=True,
+            completion_mode="full_required",
+            replicator_code=1,
+        )
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    failed = json.loads((pipeline_dir / ".swap_pipeline_failed.json").read_text(encoding="utf-8"))
+    assert failed["stage"] == "replicator"
+
+
+def test_full_required_variation_failure_is_hard_failure(tmp_path: Path) -> None:
+    with pytest.raises(Exception):
+        _run_pipeline(
+            tmp_path,
+            fail_required_ids=set(),
+            retrieval_resolves=True,
+            completion_mode="full_required",
+            variation_code=1,
+        )
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    failed = json.loads((pipeline_dir / ".swap_pipeline_failed.json").read_text(encoding="utf-8"))
+    assert failed["stage"] == "variation_assets"
+
+
+def test_full_required_geniesim_export_failure_is_hard_failure(tmp_path: Path) -> None:
+    with pytest.raises(Exception):
+        _run_pipeline(
+            tmp_path,
+            fail_required_ids=set(),
+            retrieval_resolves=True,
+            completion_mode="full_required",
+            geniesim_export_code=1,
+        )
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    failed = json.loads((pipeline_dir / ".swap_pipeline_failed.json").read_text(encoding="utf-8"))
+    assert failed["stage"] == "geniesim_export"
 
 
 def test_end_to_end_dry_outputs_written(tmp_path: Path) -> None:

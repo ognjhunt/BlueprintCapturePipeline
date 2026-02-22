@@ -29,6 +29,9 @@ def test_wrapper_validates_full_runtime_and_non_stub_scene() -> None:
     text = _script_text()
     assert "validate_full_runtime" in text
     assert "usd-assembly-job/assemble_scene.py" in text
+    assert "replicator-job/generate_replicator_bundle.py" in text
+    assert "variation-asset-pipeline-job/run_variation_asset_pipeline.py" in text
+    assert "genie-sim-export-job/export_to_geniesim.py" in text
     assert "scene.usda is a standalone stub" in text
 
 
@@ -150,3 +153,15 @@ def test_wrapper_exposes_clear_over_faithful_rerun_profile() -> None:
     assert '--void-fill-rounds "$VOID_FILL_ROUNDS"' in text
     assert '--void-fill-target-hole-ratio "$VOID_FILL_TARGET_HOLE_RATIO"' in text
     assert '--void-fill-distill-iters "$VOID_FILL_DISTILL_ITERS"' in text
+
+
+def test_wrapper_best_effort_orchestrator_dependency_fallback() -> None:
+    text = _script_text()
+    assert "collect_orchestrator_dependency_errors()" in text
+    assert 'if [ "$COMPLETION_MODE" = "best_effort" ]; then' in text
+    assert 'ORCHESTRATOR_STATUS="skipped_missing_dependencies"' in text
+    assert 'Skipping Phase 3 in best_effort due to missing dependencies' in text
+    assert 'ORCHESTRATOR_STATUS="failed_best_effort"' in text
+    assert 'swap_orchestrator failed in best_effort mode' in text
+    assert 'orchestrator_run_report.json' in text
+    assert 'if [ "$ORCHESTRATOR_STATUS" = "completed" ]; then' in text

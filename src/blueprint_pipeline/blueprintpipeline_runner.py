@@ -17,6 +17,10 @@ DEFAULT_GCS_MOUNT_ROOT = Path("/mnt/gcs")
 ROOT_OVERRIDE_SCRIPT_PATHS = {
     "simready-job/prepare_simready_assets.py",
     "usd-assembly-job/assemble_scene.py",
+    "replicator-job/generate_replicator_bundle.py",
+    "variation-asset-pipeline-job/run_variation_asset_pipeline.py",
+    "isaac-lab-job/generate_isaac_lab_task.py",
+    "episode-generation-job/generate_episodes.py",
 }
 
 
@@ -70,6 +74,9 @@ class BlueprintPipelineRunner:
             root / "interactive-job/run_interactive_assets.py",
             root / "simready-job/prepare_simready_assets.py",
             root / "usd-assembly-job/assemble_scene.py",
+            root / "replicator-job/generate_replicator_bundle.py",
+            root / "variation-asset-pipeline-job/run_variation_asset_pipeline.py",
+            root / "genie-sim-export-job/export_to_geniesim.py",
             root / "tools/source_pipeline/adapter.py",
         ]
         return root.is_dir() and all(path.is_file() for path in required_scripts)
@@ -489,6 +496,246 @@ def Xform "Root" (
         }
         return self._run_job_script(
             script_rel_path="usd-assembly-job/assemble_scene.py",
+            env=env,
+        )
+
+    # ------------------------------------------------------------------
+    # Data-generation downstream jobs
+    # ------------------------------------------------------------------
+
+    def run_replicator_job(
+        self,
+        *,
+        scene_id: str,
+        seg_prefix: str,
+        assets_prefix: str,
+        usd_prefix: str,
+        replicator_prefix: str,
+        extra_env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        """Generate Omniverse Replicator bundle (placement regions, policies, variation manifest)."""
+        if self._use_internal_standalone():
+            replicator_root = self._prefix_to_path(replicator_prefix)
+            ensure_dir(replicator_root)
+            write_json(
+                replicator_root / ".replicator_complete",
+                {
+                    "schema_version": "v1",
+                    "scene_id": scene_id,
+                    "status": "ok",
+                    "mode": "standalone_internal",
+                },
+            )
+            return CommandResult(
+                return_code=0,
+                stdout="standalone replicator success",
+                stderr="",
+                command=["internal", "run_replicator_job"],
+            )
+
+        env: Dict[str, str] = {
+            "BUCKET": self.config.bucket,
+            "SCENE_ID": scene_id,
+            "SEG_PREFIX": self._job_prefix_path(seg_prefix),
+            "ASSETS_PREFIX": self._job_prefix_path(assets_prefix),
+            "USD_PREFIX": self._job_prefix_path(usd_prefix),
+            "REPLICATOR_PREFIX": self._job_prefix_path(replicator_prefix),
+        }
+        if extra_env:
+            env.update({str(k): str(v) for k, v in extra_env.items()})
+        return self._run_job_script(
+            script_rel_path="replicator-job/generate_replicator_bundle.py",
+            env=env,
+        )
+
+    def run_isaac_lab_job(
+        self,
+        *,
+        scene_id: str,
+        assets_prefix: str,
+        replicator_prefix: str,
+        isaac_lab_prefix: str,
+        extra_env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        """Generate Isaac Lab training task package (env_cfg, task, rewards)."""
+        if self._use_internal_standalone():
+            isaac_lab_root = self._prefix_to_path(isaac_lab_prefix)
+            ensure_dir(isaac_lab_root)
+            write_json(
+                isaac_lab_root / ".isaac_lab_complete",
+                {
+                    "schema_version": "v1",
+                    "scene_id": scene_id,
+                    "status": "ok",
+                    "mode": "standalone_internal",
+                },
+            )
+            return CommandResult(
+                return_code=0,
+                stdout="standalone isaac-lab success",
+                stderr="",
+                command=["internal", "run_isaac_lab_job"],
+            )
+
+        env: Dict[str, str] = {
+            "BUCKET": self.config.bucket,
+            "SCENE_ID": scene_id,
+            "ASSETS_PREFIX": self._job_prefix_path(assets_prefix),
+            "REPLICATOR_PREFIX": self._job_prefix_path(replicator_prefix),
+            "ISAAC_LAB_PREFIX": self._job_prefix_path(isaac_lab_prefix),
+        }
+        if extra_env:
+            env.update({str(k): str(v) for k, v in extra_env.items()})
+        return self._run_job_script(
+            script_rel_path="isaac-lab-job/generate_isaac_lab_task.py",
+            env=env,
+        )
+
+    def run_variation_asset_pipeline_job(
+        self,
+        *,
+        scene_id: str,
+        replicator_prefix: str,
+        variation_assets_prefix: str,
+        extra_env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        """Generate variation assets manifest from replicator outputs."""
+        if self._use_internal_standalone():
+            variation_root = self._prefix_to_path(variation_assets_prefix)
+            ensure_dir(variation_root)
+            write_json(
+                variation_root / ".variation_pipeline_complete",
+                {
+                    "schema_version": "v1",
+                    "scene_id": scene_id,
+                    "status": "ok",
+                    "mode": "standalone_internal",
+                },
+            )
+            write_json(
+                variation_root / "variation_assets.json",
+                {
+                    "schema_version": "v1",
+                    "scene_id": scene_id,
+                    "source": "standalone_internal",
+                    "objects": [],
+                },
+            )
+            return CommandResult(
+                return_code=0,
+                stdout="standalone variation-asset pipeline success",
+                stderr="",
+                command=["internal", "run_variation_asset_pipeline_job"],
+            )
+
+        env: Dict[str, str] = {
+            "BUCKET": self.config.bucket,
+            "SCENE_ID": scene_id,
+            "REPLICATOR_PREFIX": self._job_prefix_path(replicator_prefix),
+            "VARIATION_ASSETS_PREFIX": self._job_prefix_path(variation_assets_prefix),
+        }
+        if extra_env:
+            env.update({str(k): str(v) for k, v in extra_env.items()})
+        return self._run_job_script(
+            script_rel_path="variation-asset-pipeline-job/run_variation_asset_pipeline.py",
+            env=env,
+        )
+
+    def run_geniesim_export_job(
+        self,
+        *,
+        scene_id: str,
+        assets_prefix: str,
+        replicator_prefix: str,
+        variation_assets_prefix: str,
+        geniesim_prefix: str,
+        filter_commercial: bool = True,
+        extra_env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        """Export assembled scene + selected assets into GenieSim package format."""
+        if self._use_internal_standalone():
+            geniesim_root = self._prefix_to_path(geniesim_prefix)
+            ensure_dir(geniesim_root)
+            write_json(
+                geniesim_root / "scene_graph.json",
+                {"schema_version": "v1", "scene_id": scene_id, "source": "standalone_internal"},
+            )
+            write_json(
+                geniesim_root / "asset_index.json",
+                {"schema_version": "v1", "scene_id": scene_id, "assets": []},
+            )
+            write_json(
+                geniesim_root / "task_config.json",
+                {"schema_version": "v1", "scene_id": scene_id, "tasks": []},
+            )
+            write_json(
+                geniesim_root / "merged_scene_manifest.json",
+                {"schema_version": "v1", "scene_id": scene_id, "objects": []},
+            )
+            return CommandResult(
+                return_code=0,
+                stdout="standalone genie-sim-export success",
+                stderr="",
+                command=["internal", "run_geniesim_export_job"],
+            )
+
+        env: Dict[str, str] = {
+            "BUCKET": self.config.bucket,
+            "SCENE_ID": scene_id,
+            "ASSETS_PREFIX": self._job_prefix_path(assets_prefix),
+            "REPLICATOR_PREFIX": self._job_prefix_path(replicator_prefix),
+            "VARIATION_ASSETS_PREFIX": self._job_prefix_path(variation_assets_prefix),
+            "GENIESIM_PREFIX": self._job_prefix_path(geniesim_prefix),
+            "FILTER_COMMERCIAL": "true" if filter_commercial else "false",
+            "GCSFUSE_MOUNT_PATH": str(self.config.gcs_root),
+        }
+        if extra_env:
+            env.update({str(k): str(v) for k, v in extra_env.items()})
+        return self._run_job_script(
+            script_rel_path="genie-sim-export-job/export_to_geniesim.py",
+            env=env,
+        )
+
+    def run_episode_generation_job(
+        self,
+        *,
+        scene_id: str,
+        assets_prefix: str,
+        episodes_prefix: str,
+        robot_type: str = "franka",
+        extra_env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        """Generate robot demonstration episodes (LeRobot Parquet format)."""
+        if self._use_internal_standalone():
+            episodes_root = self._prefix_to_path(episodes_prefix)
+            ensure_dir(episodes_root)
+            write_json(
+                episodes_root / ".episodes_complete",
+                {
+                    "schema_version": "v1",
+                    "scene_id": scene_id,
+                    "status": "ok",
+                    "mode": "standalone_internal",
+                },
+            )
+            return CommandResult(
+                return_code=0,
+                stdout="standalone episode-generation success",
+                stderr="",
+                command=["internal", "run_episode_generation_job"],
+            )
+
+        env: Dict[str, str] = {
+            "BUCKET": self.config.bucket,
+            "SCENE_ID": scene_id,
+            "ASSETS_PREFIX": self._job_prefix_path(assets_prefix),
+            "EPISODES_PREFIX": self._job_prefix_path(episodes_prefix),
+            "ROBOT_TYPE": robot_type,
+        }
+        if extra_env:
+            env.update({str(k): str(v) for k, v in extra_env.items()})
+        return self._run_job_script(
+            script_rel_path="episode-generation-job/generate_episodes.py",
             env=env,
         )
 

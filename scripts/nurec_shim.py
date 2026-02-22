@@ -1633,6 +1633,105 @@ def run_dense_reconstruction(
         raise RuntimeError("Dense stereo fusion produced no output mesh candidates")
 
 
+def _safe_read_point_cloud(o3d, np, ply_path: Path):
+    """Read a PLY as an Open3D point cloud, stripping Gaussian-specific properties.
+
+    3DGRUT Gaussian PLY files contain f_dc_*, f_rest_*, scale_*, rotation_*,
+    and opacity properties that can cause Open3D to segfault during random_down_sample
+    or Poisson reconstruction.  This helper reads only xyz (and nx/ny/nz if present)
+    via numpy, avoiding the problematic code paths.
+    """
+    try:
+        # Fast path: try Open3D directly (works fine for fused.ply from PatchMatch).
+        header_bytes = ply_path.read_bytes()[:2048]
+        header_text = header_bytes.decode("ascii", errors="replace")
+        is_gaussian = "f_dc_0" in header_text or "f_rest_0" in header_text
+        if not is_gaussian:
+            return o3d.io.read_point_cloud(str(ply_path))
+    except Exception:
+        return o3d.io.read_point_cloud(str(ply_path))
+
+    # Gaussian PLY: parse header and extract xyz + normals only.
+    _log("  Gaussian PLY detected; extracting xyz+normals for safe Open3D loading...")
+    import struct
+
+    with open(ply_path, "rb") as f:
+        header_lines = []
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            header_lines.append(line.decode("ascii", errors="replace").strip())
+            if line.strip() == b"end_header":
+                break
+
+        # Parse vertex count and properties.
+        n_vertices = 0
+        props = []  # list of (name, dtype_char, byte_size)
+        for hl in header_lines:
+            if hl.startswith("element vertex"):
+                n_vertices = int(hl.split()[-1])
+            elif hl.startswith("property"):
+                parts = hl.split()
+                dtype = parts[1]
+                name = parts[2]
+                if dtype in ("float", "float32"):
+                    props.append((name, "f", 4))
+                elif dtype in ("double", "float64"):
+                    props.append((name, "d", 8))
+                elif dtype in ("uchar", "uint8"):
+                    props.append((name, "B", 1))
+                elif dtype in ("int", "int32"):
+                    props.append((name, "i", 4))
+                elif dtype in ("short", "int16"):
+                    props.append((name, "h", 2))
+                else:
+                    props.append((name, "f", 4))  # fallback
+
+        vertex_size = sum(p[2] for p in props)
+        prop_names = [p[0] for p in props]
+
+        # Build index for xyz and normals.
+        xyz_indices = []
+        normal_indices = []
+        offset = 0
+        prop_offsets = []
+        for name, _, size in props:
+            prop_offsets.append(offset)
+            if name in ("x", "y", "z"):
+                xyz_indices.append((name, offset))
+            elif name in ("nx", "ny", "nz"):
+                normal_indices.append((name, offset))
+            offset += size
+
+        # Read all vertex data at once.
+        raw = f.read(n_vertices * vertex_size)
+
+    # Extract arrays.
+    all_data = np.frombuffer(raw, dtype=np.uint8).reshape(n_vertices, vertex_size)
+    xyz = np.zeros((n_vertices, 3), dtype=np.float32)
+    for i, (name, off) in enumerate(sorted(xyz_indices, key=lambda t: "xyz".index(t[0]))):
+        xyz[:, i] = np.frombuffer(
+            all_data[:, off : off + 4].tobytes(), dtype=np.float32
+        )
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
+
+    if len(normal_indices) == 3:
+        normals = np.zeros((n_vertices, 3), dtype=np.float32)
+        for i, (name, off) in enumerate(
+            sorted(normal_indices, key=lambda t: "nxnynz".index(t[0]))
+        ):
+            normals[:, i] = np.frombuffer(
+                all_data[:, off : off + 4].tobytes(), dtype=np.float32
+            )
+        pcd.normals = o3d.utility.Vector3dVector(normals.astype(np.float64))
+
+    _log(f"  Extracted {n_vertices} points (has_normals={pcd.has_normals()})")
+    return pcd
+
+
 def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path, *, force: bool = False) -> bool:
     """Attempt Open3D Poisson meshing; return True on success."""
     _apply_open3d_thread_overrides()
@@ -1666,7 +1765,9 @@ def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path, *, force: bool 
 
     _log("Running Open3D Poisson mesh reconstruction...")
     try:
-        pcd = o3d.io.read_point_cloud(str(fused_ply))
+        # Gaussian PLY files have many extra properties (f_dc_*, scale_*, rotation_*)
+        # that can cause Open3D segfaults.  Extract only xyz + normals via numpy.
+        pcd = _safe_read_point_cloud(o3d, np, fused_ply)
         point_count = len(pcd.points)
         _log(f"  Point cloud: {point_count} points")
 
@@ -1684,7 +1785,21 @@ def _mesh_with_open3d_poisson(fused_ply: Path, output_ply: Path, *, force: bool 
                 "  Downsampling point cloud for Poisson "
                 f"(target={downsample_target}, ratio={ratio:.3f})..."
             )
-            pcd = pcd.random_down_sample(ratio)
+            # Use numpy random choice instead of Open3D random_down_sample which
+            # can segfault on Gaussian PLY data with many float properties.
+            keep_n = max(1, int(point_count * ratio))
+            indices = np.random.choice(point_count, size=keep_n, replace=False)
+            indices.sort()
+            pts = np.asarray(pcd.points)[indices]
+            pcd_down = o3d.geometry.PointCloud()
+            pcd_down.points = o3d.utility.Vector3dVector(pts)
+            if pcd.has_normals():
+                nrm = np.asarray(pcd.normals)[indices]
+                pcd_down.normals = o3d.utility.Vector3dVector(nrm)
+            if pcd.has_colors():
+                clr = np.asarray(pcd.colors)[indices]
+                pcd_down.colors = o3d.utility.Vector3dVector(clr)
+            pcd = pcd_down
             point_count = len(pcd.points)
             _log(f"  Downsampled point cloud: {point_count} points")
 
