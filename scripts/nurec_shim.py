@@ -327,7 +327,7 @@ def _frame_blur_scores(frames_dir: Path, *, fail_on_error: bool = False) -> list
     frames = sorted(frames_dir.glob("frame_*.jpg"))
     if not frames:
         return []
-    ffmpeg_input = str(frames_dir / "frame_%05d.jpg")
+    ffmpeg_input = str(frames_dir / "frame_*.jpg")
     blur_report = frames_dir / ".blurdetect_report.txt"
     try:
         _run([
@@ -335,8 +335,8 @@ def _frame_blur_scores(frames_dir: Path, *, fail_on_error: bool = False) -> list
             "-hide_banner",
             "-loglevel",
             "warning",
-            "-start_number",
-            "1",
+            "-pattern_type",
+            "glob",
             "-i",
             ffmpeg_input,
             "-vf",
@@ -363,30 +363,28 @@ def _frame_blur_scores(frames_dir: Path, *, fail_on_error: bool = False) -> list
         return []
     text = blur_report.read_text(encoding="utf-8", errors="ignore")
     frame_to_score: dict[int, float] = {}
-    current_frame: int | None = None
+    current_frame_idx: int | None = None
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("frame:"):
             try:
                 token = line.split()[0]
-                current_frame = int(token.split(":", 1)[1])
+                current_frame_idx = int(token.split(":", 1)[1])
             except Exception:
-                current_frame = None
+                current_frame_idx = None
             continue
-        if line.startswith("lavfi.blur=") and current_frame is not None:
+        if line.startswith("lavfi.blur=") and current_frame_idx is not None:
             try:
-                frame_to_score[current_frame + 1] = float(line.split("=", 1)[1])
+                frame_to_score[current_frame_idx] = float(line.split("=", 1)[1])
             except Exception:
                 pass
 
     out: list[tuple[Path, float]] = []
-    for path in frames:
-        try:
-            frame_num = int(path.stem.split("_")[-1])
-        except Exception:
+    for idx, path in enumerate(frames):
+        score = frame_to_score.get(idx)
+        if score is None:
             continue
-        if frame_num in frame_to_score:
-            out.append((path, frame_to_score[frame_num]))
+        out.append((path, score))
     return out
 
 
@@ -505,7 +503,13 @@ def _frame_signal_stats(frames_dir: Path) -> Dict[str, Dict[int, float]]:
     if not frames:
         return {"yavg": {}, "ydif": {}}
 
-    ffmpeg_input = str(frames_dir / "frame_%05d.jpg")
+    ffmpeg_input = str(frames_dir / "frame_*.jpg")
+    frame_numbers: list[int] = []
+    for frame_path in frames:
+        try:
+            frame_numbers.append(int(frame_path.stem.split("_")[-1]))
+        except Exception:
+            frame_numbers.append(0)
     stats_report = frames_dir / ".signalstats_report.txt"
     try:
         _run([
@@ -513,8 +517,8 @@ def _frame_signal_stats(frames_dir: Path) -> Dict[str, Dict[int, float]]:
             "-hide_banner",
             "-loglevel",
             "warning",
-            "-start_number",
-            "1",
+            "-pattern_type",
+            "glob",
             "-i",
             ffmpeg_input,
             "-vf",
@@ -531,7 +535,7 @@ def _frame_signal_stats(frames_dir: Path) -> Dict[str, Dict[int, float]]:
         return {"yavg": {}, "ydif": {}}
 
     text = stats_report.read_text(encoding="utf-8", errors="ignore")
-    current_frame: int | None = None
+    current_frame_number: int | None = None
     yavg: Dict[int, float] = {}
     ydif: Dict[int, float] = {}
     for line in text.splitlines():
@@ -539,20 +543,24 @@ def _frame_signal_stats(frames_dir: Path) -> Dict[str, Dict[int, float]]:
         if entry.startswith("frame:"):
             try:
                 token = entry.split()[0]
-                current_frame = int(token.split(":", 1)[1]) + 1
+                current_idx = int(token.split(":", 1)[1])
+                if 0 <= current_idx < len(frame_numbers):
+                    current_frame_number = frame_numbers[current_idx]
+                else:
+                    current_frame_number = None
             except Exception:
-                current_frame = None
+                current_frame_number = None
             continue
-        if current_frame is None:
+        if current_frame_number is None:
             continue
         if entry.startswith("lavfi.signalstats.YAVG="):
             try:
-                yavg[current_frame] = float(entry.split("=", 1)[1])
+                yavg[current_frame_number] = float(entry.split("=", 1)[1])
             except Exception:
                 pass
         elif entry.startswith("lavfi.signalstats.YDIF="):
             try:
-                ydif[current_frame] = float(entry.split("=", 1)[1])
+                ydif[current_frame_number] = float(entry.split("=", 1)[1])
             except Exception:
                 pass
     return {"yavg": yavg, "ydif": ydif}
@@ -3552,6 +3560,124 @@ def _resolve_post_stage4_refine_mode(requested_mode: str) -> str:
     return "auto"
 
 
+def _apply_pipeline_mode_overrides(args: argparse.Namespace) -> None:
+    mode = str(getattr(args, "pipeline_mode", "full") or "full").strip().lower()
+    if mode not in {"full", "photorealistic_scene", "photoreal_hallucination"}:
+        _log(f"WARNING: Unknown PIPELINE_MODE={mode!r}; falling back to 'full'")
+        mode = "full"
+    args.pipeline_mode = mode
+
+    if mode == "photorealistic_scene":
+        args.scene_cleaning_mode = "off"
+        _log("PIPELINE_MODE=photorealistic_scene: scene cleaning disabled, 3DGRUT PLY is primary output")
+        return
+
+    if mode == "photoreal_hallucination":
+        args.scene_cleaning_mode = "off"
+        args.max_frames = max(int(args.max_frames), _env_int("HALLUCINATION_MIN_MAX_FRAMES", 500))
+        args.extract_fps = max(int(args.extract_fps), _env_int("HALLUCINATION_MIN_EXTRACT_FPS", 8))
+        args.n_iterations = max(int(args.n_iterations), _env_int("HALLUCINATION_MIN_ITERATIONS", 22000))
+        desired_max_gaussians = max(10_000, _env_int("HALLUCINATION_MIN_MAX_N_GAUSSIANS", 500_000))
+        args.max_n_gaussians = max(int(args.max_n_gaussians), desired_max_gaussians)
+        args.blur_filter_keep_ratio = min(
+            float(args.blur_filter_keep_ratio),
+            max(0.0, min(1.0, _env_float("HALLUCINATION_MAX_BLUR_KEEP_RATIO", 0.70))),
+        )
+        args.colmap_matcher_mode = "sequential"
+        args.colmap_sequential_overlap = max(
+            int(args.colmap_sequential_overlap),
+            _env_int("HALLUCINATION_MIN_COLMAP_OVERLAP", 40),
+        )
+        args.post_stage4_refine = "force"
+        args.post_stage4_refine_model = "fixer+gsfix3d"
+        args.post_stage4_max_pseudoviews = max(
+            int(args.post_stage4_max_pseudoviews),
+            _env_int("HALLUCINATION_MIN_MAX_PSEUDOVIEWS", 160),
+        )
+        args.post_stage4_distill_iters = max(
+            int(args.post_stage4_distill_iters),
+            _env_int("HALLUCINATION_MIN_DISTILL_ITERS", 6000),
+        )
+        args.post_stage4_time_budget_min = max(
+            int(args.post_stage4_time_budget_min),
+            _env_int("HALLUCINATION_MIN_TIME_BUDGET_MIN", 120),
+        )
+        # Keep void-fill loop disabled in this mode; hallucination comes from post-stage4 synthetic repair.
+        args.void_fill_rounds = 0
+        _log(
+            "PIPELINE_MODE=photoreal_hallucination: "
+            "applied clarity-first overrides (high-capacity baseline + forced synthetic repair)"
+        )
+
+
+def _resolve_refinement_quality_gate_profile(*, pipeline_mode: str) -> Dict[str, Any]:
+    requested = (os.getenv("REFINEMENT_QUALITY_GATE_PROFILE", "auto").strip().lower() or "auto")
+    if requested in {"default", "strict"}:
+        resolved = "strict"
+    elif requested in {"relaxed", "hallucination"}:
+        resolved = "hallucination"
+    elif requested == "auto":
+        resolved = "hallucination" if pipeline_mode == "photoreal_hallucination" else "strict"
+    else:
+        _log(
+            "WARNING: Unknown REFINEMENT_QUALITY_GATE_PROFILE="
+            f"{requested!r}; falling back to auto"
+        )
+        resolved = "hallucination" if pipeline_mode == "photoreal_hallucination" else "strict"
+
+    if resolved == "hallucination":
+        defaults = {
+            "min_hole_improvement_ratio": -0.20,
+            "max_sharpness_drop_ratio": 0.30,
+            "max_psnr_drop_db": 4.0,
+            "enforce_psnr": False,
+        }
+    else:
+        defaults = {
+            "min_hole_improvement_ratio": 0.30,
+            "max_sharpness_drop_ratio": 0.05,
+            "max_psnr_drop_db": 0.50,
+            "enforce_psnr": True,
+        }
+
+    min_hole_improvement_ratio = max(
+        -1.0,
+        min(
+            1.0,
+            _env_float(
+                "REFINEMENT_GATE_MIN_HOLE_IMPROVEMENT_RATIO",
+                defaults["min_hole_improvement_ratio"],
+            ),
+        ),
+    )
+    max_sharpness_drop_ratio = max(
+        0.0,
+        min(
+            1.0,
+            _env_float(
+                "REFINEMENT_GATE_MAX_SHARPNESS_DROP_RATIO",
+                defaults["max_sharpness_drop_ratio"],
+            ),
+        ),
+    )
+    max_psnr_drop_db = max(
+        0.0,
+        _env_float(
+            "REFINEMENT_GATE_MAX_PSNR_DROP_DB",
+            defaults["max_psnr_drop_db"],
+        ),
+    )
+    enforce_psnr = _env_flag("REFINEMENT_GATE_ENFORCE_PSNR", defaults["enforce_psnr"])
+    return {
+        "requested_profile": requested,
+        "resolved_profile": resolved,
+        "min_hole_improvement_ratio": float(min_hole_improvement_ratio),
+        "max_sharpness_drop_ratio": float(max_sharpness_drop_ratio),
+        "max_psnr_drop_db": float(max_psnr_drop_db),
+        "enforce_psnr": bool(enforce_psnr),
+    }
+
+
 def _has_valid_post_stage4_refine_cache(output_dir: Path) -> bool:
     gate = _load_json_dict(output_dir / "refinement_quality_gate.json")
     if str(gate.get("status") or "").strip().lower() != "passed":
@@ -4010,10 +4136,15 @@ def _evaluate_refinement_quality_gate(
     baseline_psnr: float | None,
     refined_psnr: float | None,
     metric_basis: str = "candidate_pre_post_repair",
+    min_hole_improvement_ratio: float = 0.30,
+    max_sharpness_drop_ratio: float = 0.05,
+    max_psnr_drop_db: float = 0.50,
+    enforce_psnr_gate: bool = True,
+    gate_profile: str = "strict",
 ) -> Dict[str, Any]:
-    min_hole_improvement = 0.30
-    max_sharpness_drop = 0.05
-    max_psnr_drop = 0.50
+    min_hole_improvement = max(-1.0, min(1.0, float(min_hole_improvement_ratio)))
+    max_sharpness_drop = max(0.0, min(1.0, float(max_sharpness_drop_ratio)))
+    max_psnr_drop = max(0.0, float(max_psnr_drop_db))
 
     baseline_hole = max(0.0, float(baseline_hole_ratio))
     refined_hole = max(0.0, float(refined_hole_ratio))
@@ -4027,7 +4158,7 @@ def _evaluate_refinement_quality_gate(
         sharp_drop = (float(pre_sharpness) - float(post_sharpness)) / float(pre_sharpness)
     sharpness_gate_pass = sharp_drop <= max_sharpness_drop
 
-    psnr_gate_enforced = baseline_psnr is not None and refined_psnr is not None
+    psnr_gate_enforced = bool(enforce_psnr_gate) and baseline_psnr is not None and refined_psnr is not None
     psnr_drop = None
     psnr_gate_pass = True
     if psnr_gate_enforced:
@@ -4039,6 +4170,7 @@ def _evaluate_refinement_quality_gate(
         "schema_version": "v1",
         "generated_at": _utc_now_iso(),
         "status": status,
+        "gate_profile": str(gate_profile or "strict"),
         "metric_basis": str(metric_basis or "candidate_pre_post_repair"),
         "thresholds": {
             "min_hole_improvement_ratio": min_hole_improvement,
@@ -4592,11 +4724,13 @@ def main() -> int:
     parser.add_argument(
         "--pipeline-mode",
         default=(os.getenv("PIPELINE_MODE", "full").strip().lower() or "full"),
-        choices=["full", "photorealistic_scene"],
+        choices=["full", "photorealistic_scene", "photoreal_hallucination"],
         help=(
             "Pipeline mode: 'full' (default, all stages incl. scene cleaning), "
             "'photorealistic_scene' (skip Inpaint360GS, use 3DGRUT PLY directly, "
-            "focus on gap-fill quality)"
+            "focus on gap-fill quality), "
+            "'photoreal_hallucination' (clarity-first high-capacity baseline then "
+            "forced synthetic repair with relaxed quality gates)"
         ),
     )
     parser.add_argument(
@@ -4634,11 +4768,7 @@ def main() -> int:
     args.sam3_mask_export_space = _normalize_mask_export_space(str(args.sam3_mask_export_space))
     if getattr(args, "skip_scene_cleaning", False):
         args.scene_cleaning_mode = "off"
-
-    # photorealistic_scene mode: skip Inpaint360GS, focus on 3DGRUT quality
-    if getattr(args, "pipeline_mode", "full") == "photorealistic_scene":
-        args.scene_cleaning_mode = "off"
-        _log("PIPELINE_MODE=photorealistic_scene: scene cleaning disabled, 3DGRUT PLY is primary output")
+    _apply_pipeline_mode_overrides(args)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -5154,6 +5284,18 @@ def main() -> int:
     # Stage 4.5/5A/5B/5C: Gap analysis + pseudo-view repair + distill + gate
     # -----------------------------------------------------------------------
     post_stage4_mode = _resolve_post_stage4_refine_mode(args.post_stage4_refine)
+    gate_profile = _resolve_refinement_quality_gate_profile(
+        pipeline_mode=str(getattr(args, "pipeline_mode", "full")),
+    )
+    _log(
+        "Refinement quality gate profile: "
+        f"{gate_profile['resolved_profile']} "
+        f"(requested={gate_profile['requested_profile']}, "
+        f"min_hole_improvement={gate_profile['min_hole_improvement_ratio']:.2f}, "
+        f"max_sharpness_drop={gate_profile['max_sharpness_drop_ratio']:.2f}, "
+        f"max_psnr_drop={gate_profile['max_psnr_drop_db']:.2f}, "
+        f"enforce_psnr={gate_profile['enforce_psnr']})"
+    )
     refinement_report["mode"] = post_stage4_mode
     if post_stage4_mode == "off":
         _log("Skipping post-Stage-4 refinement (--post-stage4-refine=off)")
@@ -5386,6 +5528,11 @@ def main() -> int:
                         baseline_psnr=baseline_psnr,
                         refined_psnr=refined_psnr,
                         metric_basis="candidate_pre_post_repair",
+                        min_hole_improvement_ratio=float(gate_profile["min_hole_improvement_ratio"]),
+                        max_sharpness_drop_ratio=float(gate_profile["max_sharpness_drop_ratio"]),
+                        max_psnr_drop_db=float(gate_profile["max_psnr_drop_db"]),
+                        enforce_psnr_gate=bool(gate_profile["enforce_psnr"]),
+                        gate_profile=str(gate_profile["resolved_profile"]),
                     )
                     gate_report["reports"] = {
                         "gap_analysis": "gap_analysis_report.json",

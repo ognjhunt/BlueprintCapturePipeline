@@ -122,6 +122,11 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `POST_STAGE4_DISTILL_ITERS` (`1600` default; refinement distillation iterations)
 - `POST_STAGE4_TIME_BUDGET_MIN` (`90` default; refinement distillation budget)
 - `POST_STAGE4_MIN_PARALLAX_DEG` (`7.0` default; minimum pseudo-view parallax)
+- `REFINEMENT_QUALITY_GATE_PROFILE` (`auto` default; `strict`/`hallucination`; `auto` resolves to `hallucination` when `PIPELINE_MODE=photoreal_hallucination`)
+- `REFINEMENT_GATE_MIN_HOLE_IMPROVEMENT_RATIO` (optional gate override; default depends on profile)
+- `REFINEMENT_GATE_MAX_SHARPNESS_DROP_RATIO` (optional gate override; default depends on profile)
+- `REFINEMENT_GATE_MAX_PSNR_DROP_DB` (optional gate override; default depends on profile)
+- `REFINEMENT_GATE_ENFORCE_PSNR` (optional gate override; default depends on profile)
 - `VOID_FILL_ROUNDS` (`0` default; enables iterative virtual-render→repair→distill loop)
 - `VOID_FILL_TARGET_HOLE_RATIO` (`0.05` default; stop threshold based on virtual probe p90 hole ratio)
 - `VOID_FILL_DISTILL_ITERS` (`5000` default; distillation iterations per void-fill round)
@@ -160,6 +165,7 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `SAM3_PREFLIGHT_STRICT` (`false` default; if true, fail before reconstruction when SAM3 access is unavailable)
 - `SAM3_N_FRAMES` (`0` default = auto-scaled by capture length)
 - `SAM3_MIN_FRAME_DETECTIONS` (`0` default = env-aware auto)
+- `PIPELINE_MODE` (`full` default; `photorealistic_scene` for baseline-clear 3DGRUT-first output, `photoreal_hallucination` for clarity-first high-capacity baseline + forced synthetic repair)
 - `SCENE_CLEANING_MODE` (`off` default; `auto` best-effort candidate-scoped cleaning, `force` hard-fails when prerequisites/cleaning fail)
 - `SAM3_MASK_EXPORT_SPACE` (`undistorted` default when cleaning is enabled; `raw` or `undistorted`)
 - `INPAINT360GS_DIR` (default: `/opt/Inpaint360GS`)
@@ -191,6 +197,7 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `OPEN3D_CPU_THREADS` (`0` default = Open3D/runtime default threading; set explicit thread count for CPU Poisson stages)
 - `COLLISION_MAX_EDGE_M` (default: `5.0`; long-edge spike filter threshold)
 - `COLLISION_SPIKE_MAX_RATIO` (default: `0.02`; collision spike gate threshold)
+- `NUREC_RERUN_PROFILE` (`default` wrapper profile; `clear_over_faithful` applies high-capacity baseline-only settings, `photoreal_hallucination` applies baseline + aggressive synthetic repair settings)
 
 For production runtimes, pre-bake 3DGRUT build dependencies into the image (tiny-cuda-nn submodules and fused_ssim built against the image's torch) to avoid rebuild delays during retries.
 

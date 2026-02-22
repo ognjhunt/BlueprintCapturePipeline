@@ -8,6 +8,7 @@ import os
 import struct
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1418,6 +1419,127 @@ def test_build_capture_quality_report_has_expected_schema(
     assert report["motion"]["count"] == 3
     assert report["blurriest_frames"][0]["frame"] == "frame_00003.jpg"
     assert report["sharpest_frames"][0]["frame"] == "frame_00001.jpg"
+
+
+def test_frame_blur_scores_handles_non_contiguous_frame_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for frame_num in (1, 3, 7):
+        (frames_dir / f"frame_{frame_num:05d}.jpg").write_bytes(b"jpg")
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del cmd, kwargs
+        (frames_dir / ".blurdetect_report.txt").write_text(
+            "\n".join(
+                [
+                    "frame:0 pts:0 pts_time:0",
+                    "lavfi.blur=1.5",
+                    "frame:1 pts:1 pts_time:0.04",
+                    "lavfi.blur=2.5",
+                    "frame:2 pts:2 pts_time:0.08",
+                    "lavfi.blur=3.5",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    entries = module._frame_blur_scores(frames_dir)
+    assert [path.name for path, _score in entries] == [
+        "frame_00001.jpg",
+        "frame_00003.jpg",
+        "frame_00007.jpg",
+    ]
+    assert [score for _path, score in entries] == [pytest.approx(1.5), pytest.approx(2.5), pytest.approx(3.5)]
+
+
+def test_frame_signal_stats_handles_non_contiguous_frame_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_nurec_shim_module()
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for frame_num in (2, 5, 9):
+        (frames_dir / f"frame_{frame_num:05d}.jpg").write_bytes(b"jpg")
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del cmd, kwargs
+        (frames_dir / ".signalstats_report.txt").write_text(
+            "\n".join(
+                [
+                    "frame:0 pts:0 pts_time:0",
+                    "lavfi.signalstats.YAVG=100.0",
+                    "lavfi.signalstats.YDIF=10.0",
+                    "frame:1 pts:1 pts_time:0.04",
+                    "lavfi.signalstats.YAVG=110.0",
+                    "lavfi.signalstats.YDIF=11.0",
+                    "frame:2 pts:2 pts_time:0.08",
+                    "lavfi.signalstats.YAVG=120.0",
+                    "lavfi.signalstats.YDIF=12.0",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    stats = module._frame_signal_stats(frames_dir)
+    assert stats["yavg"] == {2: pytest.approx(100.0), 5: pytest.approx(110.0), 9: pytest.approx(120.0)}
+    assert stats["ydif"] == {2: pytest.approx(10.0), 5: pytest.approx(11.0), 9: pytest.approx(12.0)}
+
+
+def test_pipeline_mode_photoreal_hallucination_applies_clarity_overrides() -> None:
+    module = _load_nurec_shim_module()
+    args = SimpleNamespace(
+        pipeline_mode="photoreal_hallucination",
+        scene_cleaning_mode="auto",
+        max_frames=180,
+        extract_fps=4,
+        n_iterations=9000,
+        max_n_gaussians=0,
+        blur_filter_keep_ratio=0.90,
+        colmap_matcher_mode="auto",
+        colmap_sequential_overlap=20,
+        post_stage4_refine="auto",
+        post_stage4_refine_model="fixer",
+        post_stage4_max_pseudoviews=96,
+        post_stage4_distill_iters=1600,
+        post_stage4_time_budget_min=90,
+        void_fill_rounds=2,
+    )
+    module._apply_pipeline_mode_overrides(args)
+    assert args.scene_cleaning_mode == "off"
+    assert args.max_frames >= 500
+    assert args.extract_fps >= 8
+    assert args.n_iterations >= 22000
+    assert args.max_n_gaussians >= 500000
+    assert args.blur_filter_keep_ratio <= 0.70
+    assert args.colmap_matcher_mode == "sequential"
+    assert args.colmap_sequential_overlap >= 40
+    assert args.post_stage4_refine == "force"
+    assert args.post_stage4_refine_model == "fixer+gsfix3d"
+    assert args.void_fill_rounds == 0
+
+
+def test_refinement_gate_profile_auto_uses_hallucination_for_hallucination_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_nurec_shim_module()
+    monkeypatch.delenv("REFINEMENT_QUALITY_GATE_PROFILE", raising=False)
+    monkeypatch.delenv("REFINEMENT_GATE_ENFORCE_PSNR", raising=False)
+    gate = module._resolve_refinement_quality_gate_profile(
+        pipeline_mode="photoreal_hallucination",
+    )
+    assert gate["resolved_profile"] == "hallucination"
+    assert gate["enforce_psnr"] is False
 
 
 def test_sam3_preflight_non_strict_returns_skip(monkeypatch: pytest.MonkeyPatch) -> None:

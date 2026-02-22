@@ -26,10 +26,12 @@ SKIP_NUREC="${SKIP_NUREC:-false}"
 
 # ── NuRec shim defaults ─────────────────────────────────────────────────────
 NUREC_QUALITY_PROFILE="${NUREC_QUALITY_PROFILE:-quality_first}"
+NUREC_RERUN_PROFILE="${NUREC_RERUN_PROFILE:-default}"
 MAX_FRAMES="${MAX_FRAMES:-320}"
 EXTRACT_FPS="${EXTRACT_FPS:-5}"
 N_ITERATIONS="${N_ITERATIONS:-9000}"
 MAX_N_GAUSSIANS="${MAX_N_GAUSSIANS:-}"
+PIPELINE_MODE="${PIPELINE_MODE:-full}"
 SAM3_N_FRAMES="${SAM3_N_FRAMES:-0}"
 SKIP_FIXER="${SKIP_FIXER:-false}"
 SKIP_DENSE="${SKIP_DENSE:-__UNSET__}"
@@ -43,6 +45,10 @@ POST_STAGE4_REFINE_MODEL="${POST_STAGE4_REFINE_MODEL:-fixer+gsfix3d}"
 POST_STAGE4_MAX_PSEUDOVIEWS="${POST_STAGE4_MAX_PSEUDOVIEWS:-96}"
 POST_STAGE4_DISTILL_ITERS="${POST_STAGE4_DISTILL_ITERS:-1600}"
 POST_STAGE4_TIME_BUDGET_MIN="${POST_STAGE4_TIME_BUDGET_MIN:-90}"
+VOID_FILL_ROUNDS="${VOID_FILL_ROUNDS:-0}"
+VOID_FILL_TARGET_HOLE_RATIO="${VOID_FILL_TARGET_HOLE_RATIO:-0.05}"
+VOID_FILL_DISTILL_ITERS="${VOID_FILL_DISTILL_ITERS:-5000}"
+REFINEMENT_QUALITY_GATE_PROFILE="${REFINEMENT_QUALITY_GATE_PROFILE:-auto}"
 COLMAP_MATCHER_MODE="${COLMAP_MATCHER_MODE:-auto}"
 COLMAP_SEQUENTIAL_OVERLAP="${COLMAP_SEQUENTIAL_OVERLAP:-30}"
 COLMAP_CHUNKED_MODE="${COLMAP_CHUNKED_MODE:-auto}"
@@ -120,6 +126,7 @@ Usage:
 Options:
   --environment ENV       Scene environment: auto, default, bedroom, warehouse, kitchen (default: auto)
   --completion-mode MODE  Completion mode: full_required, best_effort (default: full_required)
+  --nurec-rerun-profile PROFILE  NuRec rerun profile: default, clear_over_faithful, photoreal_hallucination
   --workspace DIR         Working directory (default: /workspace)
   --resume                Enable NuRec resume mode (reuse Stage 1-4 artifacts)
   --skip-fixer            Disable Stage 5 Fixer refinement
@@ -142,6 +149,50 @@ Options:
 EOF
 }
 
+apply_nurec_rerun_profile() {
+  case "${NUREC_RERUN_PROFILE}" in
+    default)
+      return 0
+      ;;
+    clear_over_faithful)
+      # Baseline-only sharpness profile (no pseudo-view repair/void-fill).
+      PIPELINE_MODE="photorealistic_scene"
+      SCENE_CLEANING_MODE="off"
+      MAX_FRAMES="${PROFILE_CLEAR_MAX_FRAMES:-500}"
+      EXTRACT_FPS="${PROFILE_CLEAR_EXTRACT_FPS:-8}"
+      N_ITERATIONS="${PROFILE_CLEAR_ITERATIONS:-22000}"
+      MAX_N_GAUSSIANS="${PROFILE_CLEAR_MAX_N_GAUSSIANS:-500000}"
+      BLUR_FILTER_KEEP_RATIO="${PROFILE_CLEAR_BLUR_FILTER_KEEP_RATIO:-0.70}"
+      COLMAP_MATCHER_MODE="sequential"
+      COLMAP_SEQUENTIAL_OVERLAP="${PROFILE_CLEAR_COLMAP_OVERLAP:-40}"
+      POST_STAGE4_REFINE="off"
+      VOID_FILL_ROUNDS="0"
+      ;;
+    photoreal_hallucination)
+      # Baseline-first settings + aggressive synthetic repair for clarity-over-faithfulness.
+      PIPELINE_MODE="photoreal_hallucination"
+      SCENE_CLEANING_MODE="off"
+      MAX_FRAMES="${PROFILE_CLEAR_MAX_FRAMES:-500}"
+      EXTRACT_FPS="${PROFILE_CLEAR_EXTRACT_FPS:-8}"
+      N_ITERATIONS="${PROFILE_CLEAR_ITERATIONS:-22000}"
+      MAX_N_GAUSSIANS="${PROFILE_CLEAR_MAX_N_GAUSSIANS:-500000}"
+      BLUR_FILTER_KEEP_RATIO="${PROFILE_CLEAR_BLUR_FILTER_KEEP_RATIO:-0.70}"
+      COLMAP_MATCHER_MODE="sequential"
+      COLMAP_SEQUENTIAL_OVERLAP="${PROFILE_CLEAR_COLMAP_OVERLAP:-40}"
+      POST_STAGE4_REFINE="force"
+      POST_STAGE4_REFINE_MODEL="fixer+gsfix3d"
+      POST_STAGE4_MAX_PSEUDOVIEWS="${PROFILE_HALLUCINATION_MAX_PSEUDOVIEWS:-160}"
+      POST_STAGE4_DISTILL_ITERS="${PROFILE_HALLUCINATION_DISTILL_ITERS:-6000}"
+      POST_STAGE4_TIME_BUDGET_MIN="${PROFILE_HALLUCINATION_TIME_BUDGET_MIN:-120}"
+      VOID_FILL_ROUNDS="0"
+      REFINEMENT_QUALITY_GATE_PROFILE="${PROFILE_HALLUCINATION_GATE_PROFILE:-hallucination}"
+      ;;
+    *)
+      die "Invalid --nurec-rerun-profile '${NUREC_RERUN_PROFILE}'. Expected: default, clear_over_faithful, photoreal_hallucination"
+      ;;
+  esac
+}
+
 SCENE_ID=""
 NUREC_OUTPUT_DIR=""
 INPUT_VIDEO=""
@@ -150,6 +201,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --environment)     ENVIRONMENT="$2";          shift 2 ;;
     --completion-mode) COMPLETION_MODE="$2";      shift 2 ;;
+    --nurec-rerun-profile) NUREC_RERUN_PROFILE="$2"; shift 2 ;;
     --workspace)       WORKSPACE="$2";            shift 2 ;;
     --resume)          NUREC_RESUME=true;         shift ;;
     --skip-fixer)      SKIP_FIXER=true;           shift ;;
@@ -176,6 +228,11 @@ done
 
 [ -n "$INPUT_VIDEO" ] || die "Input video is required. Usage: run_full_pipeline.sh <video>"
 [ -f "$INPUT_VIDEO" ] || die "Input video not found: $INPUT_VIDEO"
+case "${NUREC_RERUN_PROFILE}" in
+  default|clear_over_faithful|photoreal_hallucination) ;;
+  *) die "Invalid --nurec-rerun-profile '${NUREC_RERUN_PROFILE}'. Expected: default, clear_over_faithful, photoreal_hallucination" ;;
+esac
+apply_nurec_rerun_profile
 if [ "$SKIP_DENSE" = "__UNSET__" ]; then
   if [ "${VISUAL_MESH_METHOD,,}" = "patchmatch" ]; then
     SKIP_DENSE="false"
@@ -221,12 +278,15 @@ log "Scene ID: $SCENE_ID"
 log "Capture ID: $CAPTURE_ID"
 log "Environment: $ENVIRONMENT"
 log "Completion mode: $COMPLETION_MODE"
+log "NuRec rerun profile: $NUREC_RERUN_PROFILE"
 log "NuRec resume: $NUREC_RESUME"
 log "Skip fixer: $SKIP_FIXER"
 log "Fixer mode: $FIXER_MODE"
 log "Fixer rerun: $FIXER_RERUN"
 log "Fixer required: $FIXER_REQUIRED"
 log "Post-Stage-4 refine: $POST_STAGE4_REFINE (model=$POST_STAGE4_REFINE_MODEL, max_pseudoviews=$POST_STAGE4_MAX_PSEUDOVIEWS, distill_iters=$POST_STAGE4_DISTILL_ITERS, budget_min=$POST_STAGE4_TIME_BUDGET_MIN)"
+log "Pipeline mode: $PIPELINE_MODE"
+log "Void fill: rounds=$VOID_FILL_ROUNDS target_hole=$VOID_FILL_TARGET_HOLE_RATIO distill_iters=$VOID_FILL_DISTILL_ITERS"
 log "Blur filter keep ratio: $BLUR_FILTER_KEEP_RATIO (profile=$NUREC_QUALITY_PROFILE, min_frames=$BLUR_FILTER_MIN_FRAMES)"
 log "Skip dense reconstruction: $SKIP_DENSE (VISUAL_MESH_METHOD=$VISUAL_MESH_METHOD)"
 log "Scene cleaning mode: $SCENE_CLEANING_MODE (mask_export_space=$SAM3_MASK_EXPORT_SPACE)"
@@ -302,6 +362,8 @@ SPEC
   export SAM3_PREFLIGHT_STRICT SAM3_TRACKING_MODE
   export POST_STAGE4_REFINE POST_STAGE4_REFINE_MODEL
   export POST_STAGE4_MAX_PSEUDOVIEWS POST_STAGE4_DISTILL_ITERS POST_STAGE4_TIME_BUDGET_MIN
+  export VOID_FILL_ROUNDS VOID_FILL_TARGET_HOLE_RATIO VOID_FILL_DISTILL_ITERS
+  export PIPELINE_MODE REFINEMENT_QUALITY_GATE_PROFILE
   export SCENE_CLEANING_MODE SAM3_MASK_EXPORT_SPACE INPAINT360GS_RESOLUTION
   python3 "${APP_DIR}/scripts/nurec_shim.py" \
     --job-spec "$JOB_SPEC" \
@@ -332,6 +394,10 @@ SPEC
     --post-stage4-max-pseudoviews "$POST_STAGE4_MAX_PSEUDOVIEWS" \
     --post-stage4-distill-iters "$POST_STAGE4_DISTILL_ITERS" \
     --post-stage4-time-budget-min "$POST_STAGE4_TIME_BUDGET_MIN" \
+    --void-fill-rounds "$VOID_FILL_ROUNDS" \
+    --void-fill-target-hole-ratio "$VOID_FILL_TARGET_HOLE_RATIO" \
+    --void-fill-distill-iters "$VOID_FILL_DISTILL_ITERS" \
+    --pipeline-mode "$PIPELINE_MODE" \
     --scene-cleaning-mode "$SCENE_CLEANING_MODE" \
     --sam3-mask-export-space "$SAM3_MASK_EXPORT_SPACE" \
     "${NUREC_RESUME_ARGS[@]}" \

@@ -136,3 +136,17 @@ def test_wrapper_has_scene_cleaning_env_vars_and_passthrough() -> None:
     # Inpainted PLY artifact detection in .nurec_complete
     assert 'inpainted_gaussian_splat.ply' in text
     assert 'inpainted_gaussian_ply' in text
+
+
+def test_wrapper_exposes_clear_over_faithful_rerun_profile() -> None:
+    text = _script_text()
+    assert 'NUREC_RERUN_PROFILE="${NUREC_RERUN_PROFILE:-default}"' in text
+    assert "--nurec-rerun-profile PROFILE" in text
+    assert '--nurec-rerun-profile) NUREC_RERUN_PROFILE="$2"; shift 2 ;;' in text
+    assert "apply_nurec_rerun_profile" in text
+    assert "clear_over_faithful" in text
+    assert "photoreal_hallucination" in text
+    assert '--pipeline-mode "$PIPELINE_MODE"' in text
+    assert '--void-fill-rounds "$VOID_FILL_ROUNDS"' in text
+    assert '--void-fill-target-hole-ratio "$VOID_FILL_TARGET_HOLE_RATIO"' in text
+    assert '--void-fill-distill-iters "$VOID_FILL_DISTILL_ITERS"' in text
