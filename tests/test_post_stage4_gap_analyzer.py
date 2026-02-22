@@ -29,6 +29,7 @@ from post_stage4_gap_analyzer import (
     _view_dir_from_qvec,
     analyze_gap_observability,
     compute_hole_mask,
+    generate_void_filling_candidates,
     rank_candidate_views,
 )
 
@@ -316,3 +317,78 @@ class TestAnalyzeGapObservability:
         assert report["input_render_count"] == 1
         # Global hole ratio should be ~1.0 (all black image).
         assert report["global_hole_pixel_ratio"] > 0.9
+
+
+# ---------------------------------------------------------------------------
+# Test: generate_void_filling_candidates
+# ---------------------------------------------------------------------------
+
+class TestGenerateVoidFillingCandidates:
+    def _horizontal_ring_poses(self) -> dict[str, dict[str, Any]]:
+        """Create poses only in the horizontal ring — leaves poles uncovered."""
+        poses: dict[str, dict[str, Any]] = {}
+        for i in range(12):
+            phi = i * (2.0 * math.pi / 12)
+            # Camera at radius 3 on horizontal ring, looking inward
+            eye = np.array([3.0 * math.sin(phi), 0.0, 3.0 * math.cos(phi)])
+            forward = -eye / np.linalg.norm(eye)
+            # Simple qvec — identity is fine; coverage is computed from
+            # direction of (eye - scene_center), not from qvec.
+            poses[f"frame_{i:04d}.jpg"] = {
+                "qvec": [1.0, 0.0, 0.0, 0.0],
+                "tvec": list(-eye),  # tvec = -R @ center, with R=I
+            }
+        return poses
+
+    def test_generates_candidates_near_poles(self) -> None:
+        """Virtual cameras should be generated near floor/ceiling (poles)."""
+        poses = self._horizontal_ring_poses()
+        candidates = generate_void_filling_candidates(
+            scene_center=np.zeros(3),
+            scene_radius=2.0,
+            existing_poses=poses,
+            max_candidates=48,
+        )
+        assert len(candidates) > 0
+        # Check that at least one candidate has a high or low elevation
+        elevations = []
+        for c in candidates:
+            eye = np.array(c["camera_center"])
+            r = np.linalg.norm(eye)
+            if r > 1e-8:
+                y_norm = abs(eye[1]) / r
+                elevations.append(y_norm)
+        # At least one candidate should point toward pole (|y/r| > 0.7)
+        assert any(e > 0.7 for e in elevations), (
+            f"No near-pole candidates found; max |elevation|={max(elevations):.2f}"
+        )
+
+    def test_well_covered_bins_skipped_not_blocking(self) -> None:
+        """Well-covered bins (score<=0.25) should be skipped, not block others."""
+        # Create dense coverage in some directions but leave gaps
+        poses: dict[str, dict[str, Any]] = {}
+        # 20 cameras all pointing roughly the same direction
+        for i in range(20):
+            angle = i * 0.01  # tiny spread
+            eye = np.array([3.0 * math.sin(angle), 0.0, 3.0 * math.cos(angle)])
+            poses[f"dense_{i:04d}.jpg"] = {
+                "qvec": [1.0, 0.0, 0.0, 0.0],
+                "tvec": list(-eye),
+            }
+        candidates = generate_void_filling_candidates(
+            scene_center=np.zeros(3),
+            scene_radius=2.0,
+            existing_poses=poses,
+            max_candidates=48,
+        )
+        # Should still generate candidates for the uncovered directions
+        assert len(candidates) > 0
+
+    def test_empty_poses_returns_empty(self) -> None:
+        candidates = generate_void_filling_candidates(
+            scene_center=np.zeros(3),
+            scene_radius=2.0,
+            existing_poses={},
+            max_candidates=48,
+        )
+        assert candidates == []

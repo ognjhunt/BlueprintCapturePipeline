@@ -442,7 +442,7 @@ def generate_void_filling_candidates(
     for ti in range(n_theta):
         # Skip poles (extreme up/down) — usually floor/ceiling, not useful
         theta_center = (ti + 0.5) / n_theta * math.pi
-        if theta_center < 0.15 * math.pi or theta_center > 0.85 * math.pi:
+        if theta_center < 0.05 * math.pi or theta_center > 0.95 * math.pi:
             continue
         for pi in range(n_phi):
             count = int(coverage[ti, pi])
@@ -459,8 +459,8 @@ def generate_void_filling_candidates(
         if len(candidates) >= max_candidates:
             break
         if score <= 0.25:
-            # Already well-covered
-            break
+            # Already well-covered — skip but keep processing other bins
+            continue
 
         theta = (ti + 0.5) / n_theta * math.pi
         phi = (pi + 0.5) / n_phi * 2.0 * math.pi

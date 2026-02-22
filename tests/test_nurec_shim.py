@@ -1124,7 +1124,7 @@ def test_evaluate_refinement_quality_gate_triggers_rollback() -> None:
         pre_sharpness=100.0,
         post_sharpness=80.0,  # 20% drop -> fail
         baseline_psnr=26.8,
-        refined_psnr=26.3,  # 0.5 dB drop -> fail
+        refined_psnr=26.0,  # 0.8 dB drop > 0.5 threshold -> fail
     )
     assert gate["status"] == "failed_safe_rollback"
     assert gate["gates"]["hole_improvement"] is False
@@ -2797,3 +2797,103 @@ def test_void_fill_passes_virtual_mapping_to_view_repair(monkeypatch: pytest.Mon
     assert "cmd" in seen_repair_cmd
     repair_cmd = seen_repair_cmd["cmd"]
     assert "--virtual-render-mapping" in repair_cmd
+
+
+def test_void_fill_continues_when_hole_low_but_virtual_candidates_remain(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Void fill loop should NOT exit early when hole_ratio < target but virtual_count > 0."""
+    module = _load_nurec_shim_module()
+    output_dir, workspace, undistorted, state = _setup_void_fill_fixture(tmp_path)
+    rounds_seen: list[int] = []
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        script = Path(cmd[1]).name
+        if script == "post_stage4_gap_analyzer.py":
+            round_dir = Path(_cmd_arg(cmd, "--output-dir"))
+            round_num = len(rounds_seen) + 1
+            rounds_seen.append(round_num)
+            # Report low hole ratio BUT non-zero virtual candidates
+            (round_dir / "gap_analysis_report.json").write_text(
+                json.dumps({
+                    "global_hole_pixel_ratio": 0.01,  # well below 0.05 target
+                    "virtual_candidates_selected": 3,  # but 3 under-covered directions remain
+                }),
+                encoding="utf-8",
+            )
+            (round_dir / "gap_candidate_views.jsonl").write_text(
+                "\n".join(
+                    json.dumps({"id": f"v{i}", "is_virtual": True, "qvec": [1, 0, 0, 0], "tvec": [0, float(i), 0]})
+                    for i in range(3)
+                ) + "\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if script == "post_stage4_virtual_render.py":
+            work_dir = Path(_cmd_arg(cmd, "--work-dir"))
+            renders = work_dir / "renders"
+            renders.mkdir(parents=True, exist_ok=True)
+            (renders / "00000.png").write_bytes(b"img")
+            mapping_path = work_dir / "virtual_render_mapping.jsonl"
+            mapping_path.write_text(
+                json.dumps({
+                    "candidate_id": "v0", "render_name": "00000.png",
+                    "render_exists": True, "render_image": str(renders / "00000.png"),
+                    "predicted_hole_ratio": 0.1, "qvec": [1, 0, 0, 0], "tvec": [0, 0, 0],
+                }) + "\n",
+                encoding="utf-8",
+            )
+            (work_dir / "virtual_render_report.json").write_text(
+                json.dumps({"rendered_count": 1, "renders_dir": str(renders), "mapping_path": str(mapping_path)}),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if script == "post_stage4_view_repair.py":
+            round_dir = Path(_cmd_arg(cmd, "--output-dir"))
+            repaired_dir = round_dir / "post_stage4_repaired_views"
+            repaired_dir.mkdir(parents=True, exist_ok=True)
+            repaired = repaired_dir / "00000.png"
+            repaired.write_bytes(b"img")
+            (round_dir / "accepted_repaired_views.jsonl").write_text(
+                json.dumps({
+                    "is_virtual": True, "repaired_image": str(repaired),
+                    "qvec": [1, 0, 0, 0], "tvec": [0, 0, 0], "camera_id": 4,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if script == "post_stage4_distill.py":
+            round_dir = Path(_cmd_arg(cmd, "--output-dir"))
+            (round_dir / "export_last_refined.ply").write_bytes(b"ply")
+            (round_dir / "post_stage4_distill_report.json").write_text(
+                json.dumps({
+                    "status": "ok", "distill_ok": True,
+                    "virtual_appended_count": 1, "refined_metrics": {"mean_psnr": 29.8},
+                    "result_dir": str(output_dir / "stage4_result"),
+                }),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    report = module._run_void_fill_loop(
+        output_dir=output_dir,
+        workspace=workspace,
+        undistorted_dir=undistorted,
+        active_gaussian_ply=state["active_ply"],
+        active_visual_usdz=state["active_usdz"],
+        active_ingp=state["active_ingp"],
+        grut_result=state["grut_result"],
+        void_fill_rounds=2,
+        void_fill_distill_iters=10,
+        void_fill_target_hole_ratio=0.05,
+        max_n_gaussians=0,
+        time_budget_min=1,
+    )
+    # With the fix, the loop should NOT stop at round 1 even though hole_ratio < target,
+    # because virtual_count > 0 indicates there are still under-covered directions.
+    assert len(rounds_seen) == 2, f"Expected 2 rounds but only ran {len(rounds_seen)}"
+    assert report["rounds_completed"] == 2

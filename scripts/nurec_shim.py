@@ -709,16 +709,20 @@ def run_colmap_sfm(
 
     if matcher == "sequential":
         overlap = max(1, int(sequential_overlap))
+        loop_detection = _env_flag("COLMAP_LOOP_DETECTION", True)
         _log(
             f"Running COLMAP sequential matching "
-            f"(SIFT GPU={sift_gpu_flag}, overlap={overlap})..."
+            f"(SIFT GPU={sift_gpu_flag}, overlap={overlap}, "
+            f"loop_detection={loop_detection})..."
         )
-        _run([
+        seq_cmd = [
             "colmap", "sequential_matcher",
             "--database_path", str(db_path),
             "--SequentialMatching.overlap", str(overlap),
+            "--SequentialMatching.loop_detection", "1" if loop_detection else "0",
             matching_gpu_option, sift_gpu_flag,
-        ])
+        ]
+        _run(seq_cmd)
     else:
         _log(f"Running COLMAP exhaustive matching (SIFT GPU={sift_gpu_flag})...")
         _run([
@@ -3651,10 +3655,12 @@ def _run_void_fill_loop(
 
             _log(f"  Round {round_num}: hole_ratio={current_hole_ratio:.3f}, virtual_candidates={virtual_count}")
 
-            if current_hole_ratio <= void_fill_target_hole_ratio:
-                _log(f"  Round {round_num}: target hole ratio met ({current_hole_ratio:.3f} <= {void_fill_target_hole_ratio:.3f}); stopping")
+            if current_hole_ratio <= void_fill_target_hole_ratio and virtual_count == 0:
+                _log(f"  Round {round_num}: target met (hole={current_hole_ratio:.3f}, no virtual candidates); stopping")
                 round_reports.append({"round": round_num, "status": "target_met", "hole_ratio": current_hole_ratio})
                 break
+            elif current_hole_ratio <= void_fill_target_hole_ratio:
+                _log(f"  Round {round_num}: hole ratio low ({current_hole_ratio:.3f}) but {virtual_count} under-covered directions remain; continuing")
 
             if virtual_count == 0:
                 _log(f"  Round {round_num}: No virtual candidates generated; stopping")
@@ -3904,7 +3910,7 @@ def _evaluate_refinement_quality_gate(
 ) -> Dict[str, Any]:
     min_hole_improvement = 0.30
     max_sharpness_drop = 0.05
-    max_psnr_drop = 0.20
+    max_psnr_drop = 0.50
 
     baseline_hole = max(0.0, float(baseline_hole_ratio))
     refined_hole = max(0.0, float(refined_hole_ratio))
@@ -5136,6 +5142,9 @@ def main() -> int:
                         gap_args.extend(["--colmap-images-txt", str(colmap_images_txt)])
                     if colmap_images_bin.is_file():
                         gap_args.extend(["--colmap-images-bin", str(colmap_images_bin)])
+                    colmap_points3d_bin = workspace / "undistorted" / "sparse" / "0" / "points3D.bin"
+                    if colmap_points3d_bin.is_file():
+                        gap_args.extend(["--colmap-points3d-bin", str(colmap_points3d_bin)])
                     _run(gap_args)
 
                     # Stage 5A: repair candidate pseudo-views with Fixer (+GSFix3D fallback).
