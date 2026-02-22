@@ -597,6 +597,7 @@ def run_post_stage4_distill(
         "virtual_appended_count": int(virtual_appended),
         "virtual_append_failed_reason": str(virtual_append_failed_reason or ""),
         "used_legacy_virtual_fallback": bool(used_legacy_virtual_fallback),
+        "resume_disabled_reason": "",
         "resolved_primary_camera_id": int(resolved_primary_camera_id) if resolved_primary_camera_id is not None else None,
         "distill_iters": int(distill_iters),
         "max_n_gaussians": int(max_n_gaussians),
@@ -629,6 +630,7 @@ def run_post_stage4_distill(
         if virtual_appended > 0:
             baseline_ckpt = None
             distill_iters = max(distill_iters, 5000)
+            report["resume_disabled_reason"] = "virtual_views_appended_camera_count_changed"
         report["baseline_checkpoint"] = str(baseline_ckpt) if baseline_ckpt else None
 
         if cmd_template:

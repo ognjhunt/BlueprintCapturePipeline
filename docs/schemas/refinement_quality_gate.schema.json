@@ -9,6 +9,7 @@
     "generated_at": {"type": "string"},
     "status": {"type": "string"},
     "reason": {"type": "string"},
+    "metric_basis": {"type": "string"},
     "thresholds": {"type": "object"},
     "metrics": {
       "type": "object",

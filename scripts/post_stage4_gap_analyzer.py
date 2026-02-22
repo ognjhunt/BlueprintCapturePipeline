@@ -188,12 +188,13 @@ def _load_colmap_images_txt(path: Path) -> Dict[str, Dict[str, Any]]:
         if len(parts) < 10:
             continue
         try:
+            image_id = int(parts[0])
             qvec = [float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])]
             tvec = [float(parts[5]), float(parts[6]), float(parts[7])]
             name = parts[9]
         except Exception:
             continue
-        poses[name] = {"qvec": qvec, "tvec": tvec}
+        poses[name] = {"qvec": qvec, "tvec": tvec, "image_id": image_id}
         # Skip 2D points line.
         if idx < len(lines):
             idx += 1
@@ -245,10 +246,31 @@ def _load_colmap_images_bin(path: Path) -> Dict[str, Dict[str, Any]]:
             poses[name] = {
                 "qvec": [float(qw), float(qx), float(qy), float(qz)],
                 "tvec": [float(tx), float(ty), float(tz)],
+                "image_id": int(image_id),
             }
         except (struct.error, UnicodeDecodeError):
             break
     return poses
+
+
+def _build_render_index_pose_map(pose_map: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Map 3DGRUT render indices (00000.png) to ordered COLMAP poses."""
+    indexed: List[tuple[int, Dict[str, Any]]] = []
+    for pose in pose_map.values():
+        try:
+            image_id = int(pose.get("image_id"))
+        except Exception:
+            continue
+        indexed.append((image_id, pose))
+    if not indexed:
+        return {}
+
+    indexed.sort(key=lambda item: item[0])
+    index_pose_map: Dict[str, Dict[str, Any]] = {}
+    for idx, (_image_id, pose) in enumerate(indexed):
+        key = f"{idx:05d}.png"
+        index_pose_map[key] = pose
+    return index_pose_map
 
 
 def _rotmat_to_qvec(R: np.ndarray) -> List[float]:
@@ -409,6 +431,8 @@ def generate_void_filling_candidates(
     n_phi: int = 36,
     n_theta: int = 18,
     orbit_radius_factor: float = 1.5,
+    exclude_poles: bool = False,
+    pole_exclusion_fraction: float = 0.05,
 ) -> List[Dict[str, Any]]:
     """Place virtual cameras on a sphere in under-covered viewing directions.
 
@@ -440,10 +464,12 @@ def generate_void_filling_candidates(
     # Score each bin by how under-covered it is
     bin_scores: List[tuple[float, int, int]] = []
     for ti in range(n_theta):
-        # Skip poles (extreme up/down) — usually floor/ceiling, not useful
+        # Optional compatibility mode for callers that want to skip poles.
         theta_center = (ti + 0.5) / n_theta * math.pi
-        if theta_center < 0.05 * math.pi or theta_center > 0.95 * math.pi:
-            continue
+        if exclude_poles:
+            frac = max(0.0, min(0.49, float(pole_exclusion_fraction)))
+            if theta_center < frac * math.pi or theta_center > (1.0 - frac) * math.pi:
+                continue
         for pi in range(n_phi):
             count = int(coverage[ti, pi])
             # Inverse coverage = higher score for less-covered bins
@@ -583,6 +609,7 @@ def analyze_gap_observability(
     colmap_images_bin: Path | None = None,
     colmap_points3d_bin: Path | None = None,
     max_virtual_candidates: int = 48,
+    exclude_poles: bool = False,
 ) -> Dict[str, Any]:
     images = _collect_render_images(renders_dir)
     if not images:
@@ -595,6 +622,7 @@ def analyze_gap_observability(
         pose_map.update(_load_colmap_images_bin(colmap_images_bin))
     if colmap_images_txt is not None:
         pose_map.update(_load_colmap_images_txt(colmap_images_txt))
+    render_index_pose_map = _build_render_index_pose_map(pose_map)
 
     preview_dir = output_dir / "gap_mask_preview"
     preview_dir.mkdir(parents=True, exist_ok=True)
@@ -603,6 +631,8 @@ def analyze_gap_observability(
     total_pixels = 0
     total_hole_pixels = 0
     total_clusters = 0
+    pose_match_count = 0
+    pose_index_match_count = 0
 
     for idx, image_path in enumerate(images):
         rgb, alpha = _load_image_rgb_alpha(image_path)
@@ -618,9 +648,18 @@ def analyze_gap_observability(
         sharpness = _laplacian_variance(gray)
 
         pose = pose_map.get(image_path.name)
+        if pose is None and render_index_pose_map:
+            pose = render_index_pose_map.get(image_path.name)
+            if pose is None:
+                stem = image_path.stem.strip()
+                if stem.isdigit():
+                    pose = render_index_pose_map.get(f"{int(stem):05d}.png")
+            if pose is not None:
+                pose_index_match_count += 1
         if pose is None:
             qvec, tvec, view_dir = _fallback_pose_for_index(idx, len(images))
         else:
+            pose_match_count += 1
             qvec = [float(v) for v in pose.get("qvec", [1.0, 0.0, 0.0, 0.0])]
             tvec = [float(v) for v in pose.get("tvec", [0.0, 0.0, 0.0])]
             view_dir = _view_dir_from_qvec(qvec)
@@ -679,6 +718,7 @@ def analyze_gap_observability(
             scene_radius,
             pose_map,
             max_candidates=max(1, max_virtual_candidates),
+            exclude_poles=bool(exclude_poles),
         )
 
     # Merge yaw-perturbation and virtual candidates
@@ -700,6 +740,10 @@ def analyze_gap_observability(
         "generated_at": _utc_now_iso(),
         "renders_dir": str(renders_dir),
         "input_render_count": int(len(frame_stats)),
+        "pose_mapping_mode": "name_or_colmap_index" if render_index_pose_map else "name_only",
+        "pose_match_count": int(pose_match_count),
+        "pose_fallback_count": int(max(0, len(frame_stats) - pose_match_count)),
+        "pose_index_match_count": int(pose_index_match_count),
         "global_hole_pixel_ratio": float(total_hole_pixels) / float(max(1, total_pixels)),
         "total_hole_pixels": int(total_hole_pixels),
         "total_pixels": int(total_pixels),
@@ -768,6 +812,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=int(os.getenv("POST_STAGE4_MAX_VIRTUAL_CANDIDATES", "48")),
         help="Maximum virtual void-fill camera candidates to generate",
     )
+    parser.add_argument(
+        "--exclude-poles",
+        action="store_true",
+        default=str(os.getenv("POST_STAGE4_EXCLUDE_POLES", "false")).strip().lower() in {"1", "true", "yes", "on"},
+        help="Exclude near-pole directions when generating virtual void-fill candidates",
+    )
     return parser
 
 
@@ -793,6 +843,7 @@ def main() -> int:
         colmap_images_bin=colmap_images_bin,
         colmap_points3d_bin=colmap_points3d_bin,
         max_virtual_candidates=max(1, int(args.max_virtual_candidates)),
+        exclude_poles=bool(args.exclude_poles),
     )
     return 0
 

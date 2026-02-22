@@ -3561,6 +3561,44 @@ def _has_valid_post_stage4_refine_cache(output_dir: Path) -> bool:
     return _is_nonempty_file(refined_usdz) and _is_nonempty_file(refined_ply)
 
 
+def _select_primary_renders_dir(result_dir: Path | str | None) -> Path | None:
+    """Pick the most recent renders directory deterministically."""
+    if result_dir is None:
+        return None
+    root = Path(str(result_dir))
+    if not root.exists():
+        return None
+    candidates = [p for p in root.rglob("renders") if p.is_dir()]
+    if not candidates:
+        return None
+
+    def _safe_mtime(path: Path) -> float:
+        try:
+            return float(path.stat().st_mtime)
+        except Exception:
+            return 0.0
+
+    def _newest_image_mtime(path: Path) -> float:
+        newest = 0.0
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+            for image in path.glob(ext):
+                newest = max(newest, _safe_mtime(image))
+        return newest if newest > 0.0 else _safe_mtime(path)
+
+    candidates.sort(
+        key=lambda p: (_newest_image_mtime(p), _safe_mtime(p), -len(str(p))),
+        reverse=True,
+    )
+    return candidates[0]
+
+
+def _find_latest_checkpoint_in_result_dir(result_dir: Path | str | None) -> Path | None:
+    if result_dir is None:
+        return None
+    candidates = sorted(Path(str(result_dir)).rglob("ckpt_last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
 def _run_void_fill_loop(
     *,
     output_dir: Path,
@@ -3584,22 +3622,21 @@ def _run_void_fill_loop(
       3. Inpaint the rendered images with Fixer (via view_repair)
       4. Distill repaired + virtual views back into 3DGRUT
 
-    Progressive fill thresholds: [0.35, 0.40, 0.50] — only process views
-    where Fixer can fill the void edges.
+    Stops based on virtual probe render statistics (p90 hole ratio), not
+    pre-render global hole ratio.
     """
+    import numpy as np
     import time as _time
 
     loop_started = _time.time()
     round_reports: List[Dict[str, Any]] = []
-    round_thresholds = [0.35, 0.40, 0.50]
+    min_hole_ratio = max(0.0, min(1.0, _env_float("VOID_FILL_MIN_HOLE_RATIO", 0.03)))
+    max_hole_ratio = max(min_hole_ratio, min(1.0, _env_float("VOID_FILL_MAX_HOLE_RATIO", 0.98)))
+    max_repair_per_round = max(1, _env_int("VOID_FILL_MAX_REPAIR_PER_ROUND", 24))
 
     # Track current checkpoint and PLY across rounds
-    current_ckpt = None
     grut_result_dir = grut_result.get("result_dir")
-    if grut_result_dir:
-        ckpt_candidates = sorted(Path(grut_result_dir).rglob("ckpt_last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if ckpt_candidates:
-            current_ckpt = ckpt_candidates[0]
+    current_ckpt = _find_latest_checkpoint_in_result_dir(grut_result_dir)
 
     if current_ckpt is None:
         _log("WARNING: No 3DGRUT checkpoint found; cannot run void-fill loop")
@@ -3616,19 +3653,20 @@ def _run_void_fill_loop(
 
     for round_idx in range(void_fill_rounds):
         round_num = round_idx + 1
-        threshold = round_thresholds[round_idx] if round_idx < len(round_thresholds) else 0.50
         round_dir = output_dir / f"void_fill_round_{round_num}"
         round_dir.mkdir(parents=True, exist_ok=True)
 
-        _log(f"--- Void Fill Round {round_num}/{void_fill_rounds} (threshold={threshold:.0%}) ---")
+        _log(
+            f"--- Void Fill Round {round_num}/{void_fill_rounds} "
+            f"(hole_filter=[{min_hole_ratio:.0%},{max_hole_ratio:.0%}], max_repair={max_repair_per_round}) ---"
+        )
 
         try:
             # 1. Gap analysis with virtual camera generation
-            renders_dirs = list(Path(str(grut_result_dir)).rglob("renders")) if grut_result_dir else []
-            if not renders_dirs:
+            renders_dir = _select_primary_renders_dir(grut_result_dir)
+            if renders_dir is None:
                 _log(f"  Round {round_num}: No renders directory found; stopping loop")
                 break
-            renders_dir = renders_dirs[0]
 
             gap_args: List[str] = [
                 sys.executable,
@@ -3655,16 +3693,19 @@ def _run_void_fill_loop(
 
             _log(f"  Round {round_num}: hole_ratio={current_hole_ratio:.3f}, virtual_candidates={virtual_count}")
 
-            if current_hole_ratio <= void_fill_target_hole_ratio and virtual_count == 0:
-                _log(f"  Round {round_num}: target met (hole={current_hole_ratio:.3f}, no virtual candidates); stopping")
-                round_reports.append({"round": round_num, "status": "target_met", "hole_ratio": current_hole_ratio})
-                break
-            elif current_hole_ratio <= void_fill_target_hole_ratio:
-                _log(f"  Round {round_num}: hole ratio low ({current_hole_ratio:.3f}) but {virtual_count} under-covered directions remain; continuing")
-
             if virtual_count == 0:
-                _log(f"  Round {round_num}: No virtual candidates generated; stopping")
-                round_reports.append({"round": round_num, "status": "no_virtual_candidates", "hole_ratio": current_hole_ratio})
+                status = "no_virtual_candidates"
+                _log(f"  Round {round_num}: No virtual candidates generated; stopping ({status})")
+                round_reports.append(
+                    {
+                        "round": round_num,
+                        "status": status,
+                        "hole_ratio": current_hole_ratio,
+                        "probe_hole_ratio_mean": None,
+                        "probe_hole_ratio_p90": None,
+                        "probe_render_count": 0,
+                    }
+                )
                 break
 
             # 2. Render virtual views
@@ -3693,6 +3734,44 @@ def _run_void_fill_loop(
 
             mapping_path = Path(str(vrender_report.get("mapping_path", virtual_render_dir / "virtual_render_mapping.jsonl")))
             mapping_rows = _load_jsonl_rows(mapping_path)
+
+            probe_hole_values: List[float] = []
+            for row in mapping_rows:
+                if not bool(row.get("render_exists")):
+                    continue
+                try:
+                    hole_ratio = float(row.get("predicted_hole_ratio", 1.0))
+                except Exception:
+                    hole_ratio = 1.0
+                if not math.isfinite(hole_ratio):
+                    continue
+                probe_hole_values.append(max(0.0, min(1.0, hole_ratio)))
+
+            probe_render_count = len(probe_hole_values)
+            probe_hole_ratio_mean = float(np.mean(probe_hole_values)) if probe_hole_values else None
+            probe_hole_ratio_p90 = float(np.percentile(probe_hole_values, 90.0)) if probe_hole_values else None
+
+            if probe_hole_ratio_p90 is not None and probe_hole_ratio_p90 <= void_fill_target_hole_ratio:
+                _log(
+                    f"  Round {round_num}: target met by probe p90 "
+                    f"({probe_hole_ratio_p90:.3f} <= {void_fill_target_hole_ratio:.3f}); stopping"
+                )
+                round_reports.append(
+                    {
+                        "round": round_num,
+                        "status": "target_met",
+                        "hole_ratio": current_hole_ratio,
+                        "probe_hole_ratio_mean": probe_hole_ratio_mean,
+                        "probe_hole_ratio_p90": probe_hole_ratio_p90,
+                        "probe_render_count": probe_render_count,
+                        "virtual_rendered": int(rendered_count),
+                        "virtual_selected_for_repair": 0,
+                        "filtered_low_hole_count": 0,
+                        "filtered_high_hole_count": 0,
+                    }
+                )
+                break
+
             gap_candidates_path = round_dir / "gap_candidate_views.jsonl"
             gap_candidates = _load_jsonl_rows(gap_candidates_path)
             virtual_candidates_by_id: Dict[str, Dict[str, Any]] = {}
@@ -3705,6 +3784,9 @@ def _run_void_fill_loop(
 
             filtered_mapping_rows: List[Dict[str, Any]] = []
             filtered_candidates: List[Dict[str, Any]] = []
+            bounded_rows: List[tuple[float, Dict[str, Any], Dict[str, Any]]] = []
+            filtered_low_hole_count = 0
+            filtered_high_hole_count = 0
             for row in mapping_rows:
                 cand_id = str(row.get("candidate_id") or "").strip()
                 if not cand_id:
@@ -3714,9 +3796,14 @@ def _run_void_fill_loop(
                     hole_ratio = float(row.get("predicted_hole_ratio", 1.0))
                 except Exception:
                     hole_ratio = 1.0
-                if not render_exists or hole_ratio > float(threshold):
+                if not render_exists:
                     continue
-                filtered_mapping_rows.append(row)
+                if hole_ratio < min_hole_ratio:
+                    filtered_low_hole_count += 1
+                    continue
+                if hole_ratio > max_hole_ratio:
+                    filtered_high_hole_count += 1
+                    continue
                 base = dict(virtual_candidates_by_id.get(cand_id, {}))
                 base.update({
                     "id": cand_id,
@@ -3729,7 +3816,12 @@ def _run_void_fill_loop(
                     "camera_id": row.get("camera_id", base.get("camera_id")),
                     "predicted_hole_ratio": hole_ratio,
                 })
-                filtered_candidates.append(base)
+                bounded_rows.append((hole_ratio, row, base))
+
+            bounded_rows.sort(key=lambda item: item[0], reverse=True)
+            selected_rows = bounded_rows[:max_repair_per_round]
+            filtered_mapping_rows = [row for _hole, row, _base in selected_rows]
+            filtered_candidates = [base for _hole, _row, base in selected_rows]
 
             filtered_candidates_path = round_dir / "gap_candidate_views_filtered.jsonl"
             filtered_mapping_path = round_dir / "virtual_render_mapping_filtered.jsonl"
@@ -3741,20 +3833,25 @@ def _run_void_fill_loop(
                     f.write(json.dumps(row, ensure_ascii=True) + "\n")
 
             if not filtered_candidates:
-                _log(f"  Round {round_num}: No virtual candidates remained after threshold filtering; stopping")
+                _log(f"  Round {round_num}: No virtual candidates remained after bounded filtering; stopping")
                 round_reports.append({
                     "round": round_num,
                     "status": "no_candidates_after_threshold",
                     "hole_ratio": current_hole_ratio,
-                    "round_threshold": float(threshold),
+                    "round_threshold": float(max_hole_ratio),
                     "virtual_rendered": int(rendered_count),
                     "virtual_selected_for_repair": 0,
+                    "probe_hole_ratio_mean": probe_hole_ratio_mean,
+                    "probe_hole_ratio_p90": probe_hole_ratio_p90,
+                    "probe_render_count": probe_render_count,
+                    "filtered_low_hole_count": int(filtered_low_hole_count),
+                    "filtered_high_hole_count": int(filtered_high_hole_count),
                 })
                 break
 
             # 3. Inpaint virtual renders with Fixer
             _log(
-                f"  Round {round_num}: Inpainting {len(filtered_candidates)} threshold-filtered virtual renders with Fixer..."
+                f"  Round {round_num}: Inpainting {len(filtered_candidates)} bounded-filtered virtual renders with Fixer..."
             )
             actual_renders_dir = Path(str(vrender_report.get("renders_dir", virtual_render_dir)))
 
@@ -3867,7 +3964,7 @@ def _run_void_fill_loop(
                 "hole_ratio": current_hole_ratio,
                 "virtual_rendered": rendered_count,
                 "virtual_selected_for_repair": len(filtered_candidates),
-                "round_threshold": float(threshold),
+                "round_threshold": float(max_hole_ratio),
                 "distill_status": distill_status,
                 "distill_ok": bool(distill_ok),
                 "virtual_appended_count": int(virtual_appended_count),
@@ -3875,6 +3972,11 @@ def _run_void_fill_loop(
                 "refined_psnr": refined_psnr,
                 "psnr_drop": psnr_drop,
                 "refined_ply": str(refined_ply_path) if _is_nonempty_file(refined_ply_path) else "",
+                "probe_hole_ratio_mean": probe_hole_ratio_mean,
+                "probe_hole_ratio_p90": probe_hole_ratio_p90,
+                "probe_render_count": probe_render_count,
+                "filtered_low_hole_count": int(filtered_low_hole_count),
+                "filtered_high_hole_count": int(filtered_high_hole_count),
             })
 
             if round_status != "ok":
@@ -3907,6 +4009,7 @@ def _evaluate_refinement_quality_gate(
     post_sharpness: float,
     baseline_psnr: float | None,
     refined_psnr: float | None,
+    metric_basis: str = "candidate_pre_post_repair",
 ) -> Dict[str, Any]:
     min_hole_improvement = 0.30
     max_sharpness_drop = 0.05
@@ -3936,6 +4039,7 @@ def _evaluate_refinement_quality_gate(
         "schema_version": "v1",
         "generated_at": _utc_now_iso(),
         "status": status,
+        "metric_basis": str(metric_basis or "candidate_pre_post_repair"),
         "thresholds": {
             "min_hole_improvement_ratio": min_hole_improvement,
             "max_sharpness_drop_ratio": max_sharpness_drop,
@@ -4505,7 +4609,7 @@ def main() -> int:
         "--void-fill-target-hole-ratio",
         type=float,
         default=_env_float("VOID_FILL_TARGET_HOLE_RATIO", 0.05),
-        help="Stop void-fill loop when global hole ratio drops below this threshold",
+        help="Stop void-fill loop when virtual probe p90 hole ratio drops below this threshold",
     )
     parser.add_argument(
         "--void-fill-distill-iters",
@@ -5022,10 +5126,10 @@ def main() -> int:
                 "rerunning Stage 5 to avoid partial outputs"
             )
         if should_run_fixer:
-            renders_dirs = list(Path(str(grut_result["result_dir"])).rglob("renders"))
-            if renders_dirs:
+            renders_dir = _select_primary_renders_dir(grut_result.get("result_dir"))
+            if renders_dir is not None:
                 fixer_result = run_fixer_refinement(
-                    renders_dirs[0],
+                    renders_dir,
                     output_dir,
                     mode=args.fixer_mode,
                     h100_script=Path(args.fixer_h100_script),
@@ -5034,7 +5138,7 @@ def main() -> int:
                     h100_max_hourly=args.fixer_h100_max_hourly,
                     h100_disk_gb=args.fixer_h100_disk_gb,
                 )
-                if fixer_result != renders_dirs[0] and _has_image_outputs(fixer_result):
+                if fixer_result != renders_dir and _has_image_outputs(fixer_result):
                     fixer_refined_images_dir = fixer_result
                 elif args.fixer_required:
                     raise RuntimeError(
@@ -5083,9 +5187,10 @@ def main() -> int:
             _log("=" * 60)
             _log("STAGE 4.5/5A/5B/5C: Post-Stage-4 Gap Fill + Distill")
             _log("=" * 60)
-            renders_dirs = list(Path(str(grut_result["result_dir"])).rglob("renders"))
+            renders_dir = _select_primary_renders_dir(grut_result.get("result_dir"))
             required_scripts = [
                 POST_STAGE4_GAP_ANALYZER_SCRIPT,
+                POST_STAGE4_VIRTUAL_RENDER_SCRIPT,
                 POST_STAGE4_VIEW_REPAIR_SCRIPT,
                 POST_STAGE4_DISTILL_SCRIPT,
             ]
@@ -5103,7 +5208,7 @@ def main() -> int:
                     "active_visual_asset": active_visual_usdz.name,
                     "active_gaussian_asset": active_gaussian_ply.name,
                 }
-            elif not renders_dirs:
+            elif renders_dir is None:
                 msg = "stage4_renders_missing"
                 if post_stage4_mode == "force":
                     raise RuntimeError("Post-Stage-4 refinement requested but Stage-4 renders are unavailable")
@@ -5117,11 +5222,12 @@ def main() -> int:
                     "active_gaussian_asset": active_gaussian_ply.name,
                 }
             else:
-                renders_dir = renders_dirs[0]
                 gap_report: Dict[str, Any] = {}
                 view_repair_report: Dict[str, Any] = {}
                 distill_report: Dict[str, Any] = {}
                 gate_report: Dict[str, Any] = {}
+                stage4_virtual_mapping_path: Path | None = None
+                stage4_virtual_renders_dir: Path | None = None
                 try:
                     # Stage 4.5: identify high-value hole regions and pseudo-view candidates.
                     gap_args: List[str] = [
@@ -5135,6 +5241,8 @@ def main() -> int:
                         str(max(1, int(args.post_stage4_max_pseudoviews))),
                         "--min-parallax-deg",
                         str(max(0.0, _env_float("POST_STAGE4_MIN_PARALLAX_DEG", 7.0))),
+                        "--max-virtual-candidates",
+                        str(max(1, _env_int("POST_STAGE4_MAX_VIRTUAL_CANDIDATES", 48))),
                     ]
                     colmap_images_txt = workspace / "undistorted" / "sparse" / "0" / "images.txt"
                     colmap_images_bin = workspace / "undistorted" / "sparse" / "0" / "images.bin"
@@ -5146,6 +5254,40 @@ def main() -> int:
                     if colmap_points3d_bin.is_file():
                         gap_args.extend(["--colmap-points3d-bin", str(colmap_points3d_bin)])
                     _run(gap_args)
+                    gap_report = _load_json_dict(output_dir / "gap_analysis_report.json")
+
+                    virtual_selected = int(gap_report.get("virtual_candidates_selected", 0) or 0)
+                    if virtual_selected > 0:
+                        stage4_ckpt = _find_latest_checkpoint_in_result_dir(grut_result.get("result_dir"))
+                        if stage4_ckpt is None:
+                            _log("WARNING: no checkpoint found for Stage 4.5 virtual renders; virtual candidates may be rejected")
+                        else:
+                            stage4_virtual_work_dir = output_dir / "post_stage4_virtual_renders"
+                            stage4_virtual_work_dir.mkdir(parents=True, exist_ok=True)
+                            vrender_args: List[str] = [
+                                sys.executable,
+                                str(POST_STAGE4_VIRTUAL_RENDER_SCRIPT),
+                                "--candidates-jsonl",
+                                str(output_dir / "gap_candidate_views.jsonl"),
+                                "--checkpoint",
+                                str(stage4_ckpt),
+                                "--reference-sparse-dir",
+                                str(workspace / "undistorted" / "sparse" / "0"),
+                                "--work-dir",
+                                str(stage4_virtual_work_dir),
+                                "--threedgrut-python",
+                                str(THREEDGRUT_PYTHON),
+                                "--threedgrut-dir",
+                                str(THREEDGRUT_DIR),
+                            ]
+                            _run(vrender_args)
+                            vrender_report = _load_json_dict(stage4_virtual_work_dir / "virtual_render_report.json")
+                            stage4_virtual_mapping_path = Path(
+                                str(vrender_report.get("mapping_path", stage4_virtual_work_dir / "virtual_render_mapping.jsonl"))
+                            )
+                            stage4_virtual_renders_dir = Path(
+                                str(vrender_report.get("renders_dir", stage4_virtual_work_dir))
+                            )
 
                     # Stage 5A: repair candidate pseudo-views with Fixer (+GSFix3D fallback).
                     view_repair_args: List[str] = [
@@ -5160,6 +5302,8 @@ def main() -> int:
                         "--model",
                         str(args.post_stage4_refine_model),
                     ]
+                    if stage4_virtual_mapping_path is not None and stage4_virtual_mapping_path.is_file():
+                        view_repair_args.extend(["--virtual-render-mapping", str(stage4_virtual_mapping_path)])
                     _run(view_repair_args)
 
                     # Stage 5B: distill accepted repaired views back into refined Gaussian outputs.
@@ -5189,6 +5333,10 @@ def main() -> int:
                         "--threedgrut-dir",
                         str(THREEDGRUT_DIR),
                     ]
+                    if stage4_virtual_renders_dir is not None and stage4_virtual_renders_dir.is_dir():
+                        distill_args.extend(["--virtual-renders-dir", str(stage4_virtual_renders_dir)])
+                    if (output_dir / "gap_candidate_views.jsonl").is_file():
+                        distill_args.extend(["--virtual-candidates-jsonl", str(output_dir / "gap_candidate_views.jsonl")])
                     if active_ingp is not None and _is_nonempty_file(active_ingp):
                         distill_args.extend(["--base-ingp", str(active_ingp)])
                     _run(distill_args)
@@ -5218,18 +5366,26 @@ def main() -> int:
                     except Exception:
                         refined_psnr = None
 
+                    candidate_pre_hole = float(
+                        view_repair_report.get(
+                            "pre_repair_hole_ratio_mean",
+                            gap_report.get("global_hole_pixel_ratio", 1.0),
+                        )
+                    )
+                    candidate_post_hole = float(
+                        view_repair_report.get(
+                            "post_repair_hole_ratio_mean",
+                            candidate_pre_hole,
+                        )
+                    )
                     gate_report = _evaluate_refinement_quality_gate(
-                        baseline_hole_ratio=float(gap_report.get("global_hole_pixel_ratio", 1.0)),
-                        refined_hole_ratio=float(
-                            view_repair_report.get(
-                                "post_repair_hole_ratio_mean",
-                                gap_report.get("global_hole_pixel_ratio", 1.0),
-                            )
-                        ),
+                        baseline_hole_ratio=candidate_pre_hole,
+                        refined_hole_ratio=candidate_post_hole,
                         pre_sharpness=float(view_repair_report.get("pre_sharpness_mean", 0.0)),
                         post_sharpness=float(view_repair_report.get("post_sharpness_mean", 0.0)),
                         baseline_psnr=baseline_psnr,
                         refined_psnr=refined_psnr,
+                        metric_basis="candidate_pre_post_repair",
                     )
                     gate_report["reports"] = {
                         "gap_analysis": "gap_analysis_report.json",

@@ -318,6 +318,35 @@ class TestAnalyzeGapObservability:
         # Global hole ratio should be ~1.0 (all black image).
         assert report["global_hole_pixel_ratio"] > 0.9
 
+    def test_resolves_numeric_render_name_with_colmap_index_mapping(self, tmp_path: Path) -> None:
+        """Render 00000.png should map to COLMAP image_id order when names differ."""
+        PILImage = pytest.importorskip("PIL.Image")
+        renders_dir = tmp_path / "renders"
+        renders_dir.mkdir()
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        img = np.full((64, 64, 3), 200, dtype=np.uint8)
+        PILImage.fromarray(img).save(renders_dir / "00000.png")
+
+        # COLMAP name does not match render name, but index 0 should match.
+        poses = [("frame_0042.jpg", [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 2.0])]
+        bin_path = tmp_path / "images.bin"
+        bin_path.write_bytes(_make_colmap_images_bin(poses))
+
+        report = analyze_gap_observability(
+            renders_dir=renders_dir,
+            output_dir=output_dir,
+            max_candidate_views=10,
+            min_parallax_deg=5.0,
+            colmap_images_bin=bin_path,
+        )
+
+        assert report["pose_mapping_mode"] == "name_or_colmap_index"
+        assert report["pose_match_count"] == 1
+        assert report["pose_fallback_count"] == 0
+        assert report["pose_index_match_count"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Test: generate_void_filling_candidates
@@ -383,6 +412,25 @@ class TestGenerateVoidFillingCandidates:
         )
         # Should still generate candidates for the uncovered directions
         assert len(candidates) > 0
+
+    def test_exclude_poles_removes_near_pole_candidates(self) -> None:
+        poses = self._horizontal_ring_poses()
+        candidates = generate_void_filling_candidates(
+            scene_center=np.zeros(3),
+            scene_radius=2.0,
+            existing_poses=poses,
+            max_candidates=96,
+            exclude_poles=True,
+            pole_exclusion_fraction=0.15,
+        )
+        assert len(candidates) > 0
+        elevations = []
+        for c in candidates:
+            eye = np.array(c["camera_center"])
+            r = np.linalg.norm(eye)
+            if r > 1e-8:
+                elevations.append(abs(eye[1]) / r)
+        assert max(elevations) < 0.85
 
     def test_empty_poses_returns_empty(self) -> None:
         candidates = generate_void_filling_candidates(

@@ -1127,6 +1127,7 @@ def test_evaluate_refinement_quality_gate_triggers_rollback() -> None:
         refined_psnr=26.0,  # 0.8 dB drop > 0.5 threshold -> fail
     )
     assert gate["status"] == "failed_safe_rollback"
+    assert gate["metric_basis"] == "candidate_pre_post_repair"
     assert gate["gates"]["hole_improvement"] is False
     assert gate["gates"]["sharpness"] is False
     assert gate["gates"]["psnr"] is False
@@ -1178,6 +1179,7 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
         und_sparse.mkdir(parents=True, exist_ok=True)
         (und_images / "frame_00001.jpg").write_bytes(b"jpg")
         (und_sparse / "images.bin").write_bytes(struct.pack("<Q", 120))
+        (und_sparse / "points3D.bin").write_bytes(b"\x00")
         return undistorted_dir
 
     def _fake_run_3dgrut_training(  # type: ignore[no-untyped-def]
@@ -1195,6 +1197,7 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
         usdz = result_dir / "export_last.usdz"
         ply = result_dir / "export_last.ply"
         ingp = result_dir / "export_last.ingp"
+        (result_dir / "ckpt_last.pt").write_bytes(b"ckpt")
         usdz.write_bytes(b"usdz")
         ply.write_bytes(b"ply")
         ingp.write_bytes(b"ingp")
@@ -1211,9 +1214,45 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
         captured_cmds.append([str(part) for part in cmd])
         cmd_path = str(cmd[1]) if len(cmd) > 1 else ""
         if cmd_path.endswith("post_stage4_gap_analyzer.py"):
-            (output_dir / "gap_candidate_views.jsonl").write_text("", encoding="utf-8")
+            (output_dir / "gap_candidate_views.jsonl").write_text(
+                json.dumps(
+                    {
+                        "id": "stage45_virtual_1",
+                        "is_virtual": True,
+                        "qvec": [1.0, 0.0, 0.0, 0.0],
+                        "tvec": [0.0, 0.0, 0.0],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             (output_dir / "gap_analysis_report.json").write_text(
-                json.dumps({"global_hole_pixel_ratio": 0.4}),
+                json.dumps({"global_hole_pixel_ratio": 0.4, "virtual_candidates_selected": 1}),
+                encoding="utf-8",
+            )
+        elif cmd_path.endswith("post_stage4_virtual_render.py"):
+            work_dir = Path(_cmd_arg(cmd, "--work-dir"))
+            renders = work_dir / "renders"
+            renders.mkdir(parents=True, exist_ok=True)
+            (renders / "00000.png").write_bytes(b"img")
+            mapping_path = work_dir / "virtual_render_mapping.jsonl"
+            mapping_path.write_text(
+                json.dumps(
+                    {
+                        "candidate_id": "stage45_virtual_1",
+                        "render_name": "00000.png",
+                        "render_exists": True,
+                        "render_image": str((renders / "00000.png").resolve()),
+                        "predicted_hole_ratio": 0.2,
+                        "qvec": [1.0, 0.0, 0.0, 0.0],
+                        "tvec": [0.0, 0.0, 0.0],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (work_dir / "virtual_render_report.json").write_text(
+                json.dumps({"rendered_count": 1, "renders_dir": str(renders), "mapping_path": str(mapping_path)}),
                 encoding="utf-8",
             )
         elif cmd_path.endswith("post_stage4_view_repair.py"):
@@ -1319,6 +1358,25 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
     bin_idx = gap_cmd.index("--colmap-images-bin") + 1
     expected_bin = output_dir / "_colmap_workspace" / "undistorted" / "sparse" / "0" / "images.bin"
     assert gap_cmd[bin_idx] == str(expected_bin)
+    assert "--colmap-points3d-bin" in gap_cmd
+    assert "--max-virtual-candidates" in gap_cmd
+
+    virtual_render_cmd = next(
+        cmd for cmd in captured_cmds if len(cmd) > 1 and cmd[1].endswith("post_stage4_virtual_render.py")
+    )
+    assert "--candidates-jsonl" in virtual_render_cmd
+    assert "--checkpoint" in virtual_render_cmd
+
+    view_repair_cmd = next(
+        cmd for cmd in captured_cmds if len(cmd) > 1 and cmd[1].endswith("post_stage4_view_repair.py")
+    )
+    assert "--virtual-render-mapping" in view_repair_cmd
+
+    distill_cmd = next(
+        cmd for cmd in captured_cmds if len(cmd) > 1 and cmd[1].endswith("post_stage4_distill.py")
+    )
+    assert "--virtual-renders-dir" in distill_cmd
+    assert "--virtual-candidates-jsonl" in distill_cmd
     # Verify collision mesh was generated from Gaussian PLY (no PatchMatch).
     assert (output_dir / "nvblox_mesh.ply").exists()
     assert (output_dir / "mesh_method.txt").read_text(encoding="utf-8").strip() == "poisson_open3d"
@@ -2659,7 +2717,7 @@ def test_void_fill_threshold_filtering_stops_when_no_candidates(monkeypatch: pyt
                         "render_name": "00000.png",
                         "render_exists": True,
                         "render_image": str((renders / "00000.png").resolve()),
-                        "predicted_hole_ratio": 0.95,
+                        "predicted_hole_ratio": 0.995,
                         "qvec": [1.0, 0.0, 0.0, 0.0],
                         "tvec": [0.0, 0.0, 0.0],
                     }
@@ -2692,6 +2750,116 @@ def test_void_fill_threshold_filtering_stops_when_no_candidates(monkeypatch: pyt
         time_budget_min=1,
     )
     assert report["rounds"][0]["status"] == "no_candidates_after_threshold"
+    assert report["rounds"][0]["filtered_high_hole_count"] == 1
+
+
+def test_void_fill_target_met_uses_probe_p90_after_render(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    output_dir, workspace, undistorted, state = _setup_void_fill_fixture(tmp_path)
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        script = Path(cmd[1]).name
+        if script == "post_stage4_gap_analyzer.py":
+            round_dir = Path(_cmd_arg(cmd, "--output-dir"))
+            (round_dir / "gap_analysis_report.json").write_text(
+                json.dumps({"global_hole_pixel_ratio": 0.8, "virtual_candidates_selected": 1}),
+                encoding="utf-8",
+            )
+            (round_dir / "gap_candidate_views.jsonl").write_text(
+                json.dumps({"id": "v_tgt", "is_virtual": True, "qvec": [1.0, 0.0, 0.0, 0.0], "tvec": [0.0, 0.0, 0.0]}) + "\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if script == "post_stage4_virtual_render.py":
+            work_dir = Path(_cmd_arg(cmd, "--work-dir"))
+            renders = work_dir / "renders"
+            renders.mkdir(parents=True, exist_ok=True)
+            (renders / "00000.png").write_bytes(b"img")
+            mapping_path = work_dir / "virtual_render_mapping.jsonl"
+            # Probe p90 should be below target (0.05), so loop should stop before repair/distill.
+            mapping_path.write_text(
+                json.dumps(
+                    {
+                        "candidate_id": "v_tgt",
+                        "render_name": "00000.png",
+                        "render_exists": True,
+                        "render_image": str((renders / "00000.png").resolve()),
+                        "predicted_hole_ratio": 0.01,
+                        "qvec": [1.0, 0.0, 0.0, 0.0],
+                        "tvec": [0.0, 0.0, 0.0],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (work_dir / "virtual_render_report.json").write_text(
+                json.dumps({"rendered_count": 1, "renders_dir": str(renders), "mapping_path": str(mapping_path)}),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if script in {"post_stage4_view_repair.py", "post_stage4_distill.py"}:
+            raise AssertionError("repair/distill should not run when probe p90 already meets target")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    report = module._run_void_fill_loop(
+        output_dir=output_dir,
+        workspace=workspace,
+        undistorted_dir=undistorted,
+        active_gaussian_ply=state["active_ply"],
+        active_visual_usdz=state["active_usdz"],
+        active_ingp=state["active_ingp"],
+        grut_result=state["grut_result"],
+        void_fill_rounds=1,
+        void_fill_distill_iters=10,
+        void_fill_target_hole_ratio=0.05,
+        max_n_gaussians=0,
+        time_budget_min=1,
+    )
+    assert report["rounds"][0]["status"] == "target_met"
+    assert report["rounds"][0]["probe_hole_ratio_p90"] == pytest.approx(0.01, abs=1e-6)
+
+
+def test_void_fill_no_virtual_candidates_does_not_mark_target_met(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_nurec_shim_module()
+    output_dir, workspace, undistorted, state = _setup_void_fill_fixture(tmp_path)
+
+    def _fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        script = Path(cmd[1]).name
+        if script == "post_stage4_gap_analyzer.py":
+            round_dir = Path(_cmd_arg(cmd, "--output-dir"))
+            # Even if global hole ratio is below target, target_met must only come from probe p90.
+            (round_dir / "gap_analysis_report.json").write_text(
+                json.dumps({"global_hole_pixel_ratio": 0.01, "virtual_candidates_selected": 0}),
+                encoding="utf-8",
+            )
+            (round_dir / "gap_candidate_views.jsonl").write_text("", encoding="utf-8")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if script in {"post_stage4_virtual_render.py", "post_stage4_view_repair.py", "post_stage4_distill.py"}:
+            raise AssertionError("virtual-render/repair/distill should not run with zero virtual candidates")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+    report = module._run_void_fill_loop(
+        output_dir=output_dir,
+        workspace=workspace,
+        undistorted_dir=undistorted,
+        active_gaussian_ply=state["active_ply"],
+        active_visual_usdz=state["active_usdz"],
+        active_ingp=state["active_ingp"],
+        grut_result=state["grut_result"],
+        void_fill_rounds=1,
+        void_fill_distill_iters=10,
+        void_fill_target_hole_ratio=0.05,
+        max_n_gaussians=0,
+        time_budget_min=1,
+    )
+    assert report["rounds"][0]["status"] == "no_virtual_candidates"
+    assert report["rounds"][0]["probe_hole_ratio_p90"] is None
 
 
 def test_void_fill_passes_virtual_mapping_to_view_repair(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

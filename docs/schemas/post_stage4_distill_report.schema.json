@@ -17,6 +17,7 @@
     "work_dir": {"type": "string"},
     "overlay_replaced_count": {"type": "integer", "minimum": 0},
     "overlay_replaced_paths": {"type": "array", "items": {"type": "string"}},
+    "resume_disabled_reason": {"type": "string"},
     "distill_iters": {"type": "integer", "minimum": 1},
     "max_n_gaussians": {"type": "integer", "minimum": 0},
     "time_budget_min": {"type": "integer", "minimum": 1},

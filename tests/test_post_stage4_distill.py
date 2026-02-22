@@ -464,6 +464,7 @@ class TestRunPostStage4Distill:
         assert report["status"] == "ok"
         assert report["distill_ok"] is True
         assert report["virtual_appended_count"] == 1
+        assert report["resume_disabled_reason"] == "virtual_views_appended_camera_count_changed"
 
         sparse_copy = Path(report["work_dir"]) / "undistorted_refine" / "sparse" / "0"
         images_txt = sparse_copy / "images.txt"
