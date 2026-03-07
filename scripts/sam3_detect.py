@@ -31,6 +31,7 @@ import re
 import shlex
 import subprocess
 import uuid
+from urllib.parse import urlparse
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -239,6 +240,22 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _validate_local_video_path(raw_video_path: str) -> Path:
+    """Validate --video input to ensure it is a local filesystem file."""
+    parsed = urlparse((raw_video_path or "").strip())
+    if parsed.scheme:
+        raise ValueError("--video must be a local filesystem path, not a URI")
+
+    video_path = Path(raw_video_path).expanduser().resolve()
+    if not video_path.is_file():
+        raise ValueError(f"--video does not exist or is not a file: {video_path}")
+
+    if video_path.suffix.lower() not in {".mp4", ".mov"}:
+        raise ValueError("--video must point to a .mp4 or .mov file")
+
+    return video_path
 
 
 def _normalize_dimension_completion_mode(value: Optional[str]) -> str:
@@ -3331,7 +3348,12 @@ def main() -> int:
     if not args.frames_dir and not args.video:
         parser.error("Either --frames-dir or --video is required")
 
-    video_path = Path(args.video) if args.video else None
+    video_path = None
+    if args.video:
+        try:
+            video_path = _validate_local_video_path(args.video)
+        except ValueError as exc:
+            parser.error(str(exc))
     frames_dir = Path(args.frames_dir) if args.frames_dir else None
 
     # Scene semantics: Gemini-first environment inference
