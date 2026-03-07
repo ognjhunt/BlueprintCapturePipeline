@@ -27,6 +27,10 @@ def _log(msg: str) -> None:
     print(f"[virtual-render] {msg}", flush=True)
 
 
+MAX_CAMERA_DIMENSION = 8192
+MAX_CAMERA_PIXELS = 8192 * 8192
+
+
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     if not path.is_file():
@@ -134,6 +138,14 @@ def _read_colmap_cameras_txt(path: Path) -> Dict[str, Any] | None:
     return None
 
 
+def _is_valid_camera_dims(width: int, height: int) -> bool:
+    if width <= 0 or height <= 0:
+        return False
+    if width > MAX_CAMERA_DIMENSION or height > MAX_CAMERA_DIMENSION:
+        return False
+    return (width * height) <= MAX_CAMERA_PIXELS
+
+
 def write_colmap_cameras_txt(path: Path, camera: Dict[str, Any]) -> None:
     """Write cameras.txt with a single camera entry."""
     params_str = " ".join(f"{p:.10f}" for p in camera["params"])
@@ -189,6 +201,11 @@ def build_virtual_colmap_dataset(
     images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
+    width = int(reference_camera["width"])
+    height = int(reference_camera["height"])
+    if not _is_valid_camera_dims(width, height):
+        raise ValueError(f"Invalid reference camera dimensions: {width}x{height}")
+
     write_colmap_cameras_txt(sparse_dir / "cameras.txt", reference_camera)
     write_colmap_points3d_txt(sparse_dir / "points3D.txt")
 
@@ -204,7 +221,7 @@ def build_virtual_colmap_dataset(
             "name": image_name,
         })
         # Create placeholder image (3DGRUT requires images to exist)
-        _create_placeholder_image(images_dir / image_name, reference_camera["width"], reference_camera["height"])
+        _create_placeholder_image(images_dir / image_name, width, height)
 
     write_colmap_images_txt(sparse_dir / "images.txt", entries)
     return output_dir
@@ -334,6 +351,15 @@ def render_and_collect_virtual_views(
     )
     if ref_camera is None:
         return {"status": "error_no_reference_camera", "rendered_count": 0, "elapsed_sec": 0.0}
+    width = int(ref_camera.get("width", 0))
+    height = int(ref_camera.get("height", 0))
+    if not _is_valid_camera_dims(width, height):
+        _log(f"Rejected suspicious camera dimensions from reference sparse data: {width}x{height}")
+        return {
+            "status": "error_invalid_reference_camera_dimensions",
+            "rendered_count": 0,
+            "elapsed_sec": float(time.time() - started),
+        }
 
     # Build synthetic COLMAP dataset
     dataset_dir = work_dir / "virtual_dataset"
