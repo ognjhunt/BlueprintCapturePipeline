@@ -279,9 +279,10 @@ EOF
 
 log "Verifying installed stack..."
 colmap help 2>&1 | head -n 5
-python3 - <<PY
+TORCH_VERSION_EXPECTED="$TORCH_VERSION" python3 - <<'PY'
+import os
 import torch
-expected = "${TORCH_VERSION}"
+expected = os.environ["TORCH_VERSION_EXPECTED"]
 if not str(torch.__version__).startswith(expected):
     raise SystemExit(f"Unexpected torch version {torch.__version__!r}; expected prefix {expected!r}")
 print(f"TORCH={torch.__version__} CUDA={torch.version.cuda} GPU={torch.cuda.is_available()}")

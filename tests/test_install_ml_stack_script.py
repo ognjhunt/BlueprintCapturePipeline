@@ -32,3 +32,9 @@ def test_install_script_keeps_required_ml_stack_steps() -> None:
     ]
     for snippet in required_snippets:
         assert snippet in text
+
+
+def test_install_script_avoids_torch_version_code_injection() -> None:
+    text = _script_text()
+    assert 'TORCH_VERSION_EXPECTED="$TORCH_VERSION" python3 - <<\'PY\'' in text
+    assert 'expected = os.environ["TORCH_VERSION_EXPECTED"]' in text
