@@ -250,7 +250,11 @@ def _ensure_python_module(
     python: Path = INPAINT360GS_PYTHON,
     timeout: int = 1200,
 ) -> bool:
-    """Ensure *module* is importable (and version matches optional constraint)."""
+    """Ensure *module* is importable (and version matches optional constraint).
+
+    Security note: this helper intentionally does not install packages at runtime.
+    Dependencies must be provisioned ahead of time in a trusted environment.
+    """
     import_name = module
     package_spec = module
     if expected_version:
@@ -264,21 +268,11 @@ def _ensure_python_module(
             return True
         _log(f"  Module '{import_name}' version mismatch: got {version}, expected {expected_version}")
 
-    _log(f"  Missing/unsupported python module '{module}' — attempting pip install --user {package_spec}")
-    install_proc = _run(
-        [str(python), "-m", "pip", "install", "--user", package_spec],
-        label=f"install python module {package_spec}",
-        timeout=timeout,
+    _log(
+        f"  Missing/unsupported python module '{module}'. "
+        "Automatic runtime installation is disabled; please preinstall dependencies."
     )
-    if install_proc.returncode != 0:
-        _log(f"  pip install for '{package_spec}' failed (rc={install_proc.returncode})")
-        return False
-
-    if not _python_has_module(module=import_name, python=python):
-        return False
-    if expected_version is not None:
-        return _python_module_version(module=import_name, python=python) == expected_version
-    return True
+    return False
 
 
 def _ensure_minimal_easydict_stub(workspace: Path) -> None:
@@ -939,7 +933,7 @@ def run_virtual_poses_and_inpaint(
     if color_script.is_file():
         for module in ("easydict", "kornia", "albumentations"):
             if not _ensure_python_module(module=module):
-                _log(f"  Warning: failed to install {module}; attempting local fallback where available")
+                _log(f"  Warning: dependency '{module}' is unavailable; attempting local fallback where available")
         if not _ensure_python_module(module="easydict"):
             _ensure_minimal_easydict_stub(lama_workspace)
             if not _python_has_module(
@@ -967,7 +961,7 @@ def run_virtual_poses_and_inpaint(
     if depth_script.is_file():
         for module in ("easydict", "kornia", "albumentations"):
             if not _ensure_python_module(module=module):
-                _log(f"  Warning: failed to install {module}; continuing with existing environment")
+                _log(f"  Warning: dependency '{module}' is unavailable; continuing with existing environment")
         proc = _run(
             [
                 INPAINT360GS_PYTHON,
