@@ -1124,19 +1124,11 @@ def run_inpaint_optimization(
     ]
 
     if proc.returncode != 0:
-        existing = [path for path in candidate_plys if path.is_file()]
-        if existing:
-            final_ply = sorted(existing)[-1]
-            _log(
-                f"  Inpaint optimization exited with rc={proc.returncode} but output exists: "
-                f"{final_ply}"
-            )
-            return {
-                "status": "ok",
-                "ply_path": str(final_ply),
-                "duration_s": round(duration, 1),
-            }
-        return {"status": "failed", "reason": f"edit_object_inpaint.py rc={proc.returncode}", "duration_s": duration}
+        return {
+            "status": "failed",
+            "reason": f"edit_object_inpaint.py rc={proc.returncode}",
+            "duration_s": duration,
+        }
 
     inpaint_dirs = [path for path in candidate_plys if path.is_file()]
 
