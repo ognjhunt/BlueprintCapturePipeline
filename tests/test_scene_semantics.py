@@ -106,3 +106,31 @@ def test_scene_semantics_falls_back_when_gemini_unavailable(monkeypatch, tmp_pat
     out_path = tmp_path / "scene_semantics_report.json"
     scene_semantics.write_scene_semantics_report(out_path, report)
     assert out_path.is_file()
+
+
+def test_scene_semantics_ignores_non_dict_detected_objects(monkeypatch, tmp_path: Path) -> None:
+    """Non-dict Gemini object entries should be ignored instead of crashing."""
+    frames_dir = _make_frames(tmp_path)
+
+    monkeypatch.setattr(
+        scene_semantics,
+        "_infer_with_gemini",
+        lambda **_kwargs: scene_semantics._GeminiResult(
+            environment="warehouse",
+            confidence=0.82,
+            model="gemini-3.0-pro",
+            raw_text='{"room_type":"warehouse","confidence":0.82}',
+            detected_objects=[
+                "not-a-dict",  # malformed Gemini item
+                {"object_id": "tool_chest", "sam_prompt": "tool chest"},
+            ],
+        ),
+    )
+
+    report = scene_semantics.infer_scene_semantics(
+        frames_dir=frames_dir,
+        requested_environment="auto",
+    )
+    assert report["resolved_environment"] == "warehouse"
+    assert report["prompt_source"] == "gemini_object_enumeration"
+    assert report["detection_prompts"] == ["tool chest"]
