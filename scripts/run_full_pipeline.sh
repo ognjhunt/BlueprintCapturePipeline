@@ -497,15 +497,16 @@ if [ -d "${NUREC_OUTPUT_DIR}/colmap_undistorted" ]; then
 fi
 
 # Fix reference_crop paths in object index to point to GCS-like structure
-python3 - <<PY
+RAW_ROOT="$RAW_ROOT" NUREC_ROOT="$NUREC_ROOT" python3 - <<'PY'
 import json
+import os
 from pathlib import Path
 
-idx_path = Path("${RAW_ROOT}/object_point_cloud_index.json")
+idx_path = Path(os.environ["RAW_ROOT"]) / "object_point_cloud_index.json"
 data = json.loads(idx_path.read_text())
 objects = data.get("objects", data if isinstance(data, list) else [])
 
-crops_dir = Path("${NUREC_ROOT}/object_crops")
+crops_dir = Path(os.environ["NUREC_ROOT"]) / "object_crops"
 for obj in objects:
     ref = obj.get("reference_crop")
     if ref:
@@ -527,16 +528,17 @@ idx_path.write_text(json.dumps(data, indent=2))
 print(f"Updated {len(objects)} object crop paths")
 PY
 
-RESOLVED_ENVIRONMENT="$(python3 - <<PY
+RESOLVED_ENVIRONMENT="$(RAW_ROOT="$RAW_ROOT" ENVIRONMENT="$ENVIRONMENT" python3 - <<'PY'
 import json
+import os
 from pathlib import Path
-idx_path = Path("${RAW_ROOT}/object_point_cloud_index.json")
+idx_path = Path(os.environ["RAW_ROOT"]) / "object_point_cloud_index.json"
 try:
     payload = json.loads(idx_path.read_text(encoding="utf-8"))
 except Exception:
     payload = {}
 env = str(payload.get("environment") if isinstance(payload, dict) else "").strip().lower()
-print(env or "${ENVIRONMENT}")
+print(env or os.environ["ENVIRONMENT"])
 PY
 )"
 case "$RESOLVED_ENVIRONMENT" in
@@ -560,7 +562,17 @@ cat > "${RAW_ROOT}/manifest.json" <<MANIFEST
   "scale_hint_m_per_unit": 1.0,
   "intended_space_type": "${RESOLVED_ENVIRONMENT}",
   "object_point_cloud_index": "object_point_cloud_index.json",
-  "object_point_cloud_count": $(python3 -c "import json; d=json.load(open('${RAW_ROOT}/object_point_cloud_index.json')); print(len(d.get('objects', d if isinstance(d, list) else [])))" 2>/dev/null || echo 0),
+  "object_point_cloud_count": $(RAW_ROOT="$RAW_ROOT" python3 - <<'PY' 2>/dev/null || echo 0
+import json
+import os
+from pathlib import Path
+
+idx_path = Path(os.environ["RAW_ROOT"]) / "object_point_cloud_index.json"
+payload = json.loads(idx_path.read_text(encoding="utf-8"))
+objects = payload.get("objects", payload if isinstance(payload, list) else [])
+print(len(objects))
+PY
+),
   "capture_source": "iphone",
   "capture_tier_hint": "tier1_iphone"
 }
@@ -613,10 +625,11 @@ log "Created capture_descriptor.json"
 
 # Create .nurec_complete marker (so orchestrator skips NuRec execution)
 NUREC_PREFIX_URI="gs://${BUCKET}/scenes/${SCENE_ID}/captures/${CAPTURE_ID}/pipeline/nurec"
-PRIMARY_VISUAL_ASSET="$(python3 - <<PY
+PRIMARY_VISUAL_ASSET="$(NUREC_OUTPUT_DIR="$NUREC_OUTPUT_DIR" python3 - <<'PY'
 import json
+import os
 from pathlib import Path
-manifest_path = Path("${NUREC_OUTPUT_DIR}/mesh_manifest.json")
+manifest_path = Path(os.environ["NUREC_OUTPUT_DIR"]) / "mesh_manifest.json"
 primary = "export_last.usdz"
 if manifest_path.exists():
     try:
@@ -632,18 +645,19 @@ PY
 if [ ! -f "${NUREC_OUTPUT_DIR}/${PRIMARY_VISUAL_ASSET}" ]; then
   PRIMARY_VISUAL_ASSET="export_last.usdz"
 fi
-python3 - <<PY
+SCENE_ID="$SCENE_ID" CAPTURE_ID="$CAPTURE_ID" NUREC_OUTPUT_DIR="$NUREC_OUTPUT_DIR" NUREC_PREFIX_URI="$NUREC_PREFIX_URI" PRIMARY_VISUAL_ASSET="$PRIMARY_VISUAL_ASSET" PIPELINE_ROOT="$PIPELINE_ROOT" NUREC_ROOT="$NUREC_ROOT" python3 - <<'PY'
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-scene_id = "${SCENE_ID}"
-capture_id = "${CAPTURE_ID}"
-nurec_output_dir = Path("${NUREC_OUTPUT_DIR}")
-nurec_prefix_uri = "${NUREC_PREFIX_URI}"
-primary_visual_asset = "${PRIMARY_VISUAL_ASSET}"
-pipeline_root = Path("${PIPELINE_ROOT}")
-nurec_root = "${NUREC_ROOT}"
+scene_id = os.environ["SCENE_ID"]
+capture_id = os.environ["CAPTURE_ID"]
+nurec_output_dir = Path(os.environ["NUREC_OUTPUT_DIR"])
+nurec_prefix_uri = os.environ["NUREC_PREFIX_URI"]
+primary_visual_asset = os.environ["PRIMARY_VISUAL_ASSET"]
+pipeline_root = Path(os.environ["PIPELINE_ROOT"])
+nurec_root = os.environ["NUREC_ROOT"]
 
 outputs = {
     "visual_usdz": f"{nurec_prefix_uri}/{primary_visual_asset}",
@@ -824,13 +838,14 @@ PY
 fi
 
 if [ "$ORCHESTRATOR_STATUS" = "completed" ]; then
-python3 - <<PY
+COMPLETION_MODE="$COMPLETION_MODE" PIPELINE_ROOT="$PIPELINE_ROOT" SCENE_ROOT="$SCENE_ROOT" python3 - <<'PY'
 import json
+import os
 from pathlib import Path
 
-completion_mode = "${COMPLETION_MODE}"
-quality_report_path = Path("${PIPELINE_ROOT}/swap_quality_report.json")
-scene_usda_path = Path("${SCENE_ROOT}/usd/scene.usda")
+completion_mode = os.environ["COMPLETION_MODE"]
+quality_report_path = Path(os.environ["PIPELINE_ROOT"]) / "swap_quality_report.json"
+scene_usda_path = Path(os.environ["SCENE_ROOT"]) / "usd" / "scene.usda"
 
 if not quality_report_path.exists():
     raise SystemExit(f"Missing quality report: {quality_report_path}")
