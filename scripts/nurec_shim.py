@@ -2572,7 +2572,9 @@ def build_visual_mesh_artifacts(
     refined_images_dir: Path | None = None,
 ) -> Dict[str, Any]:
     enabled = _env_flag("VISUAL_MESH_ENABLED", True)
-    target_faces = _env_int("VISUAL_MESH_TARGET_FACES", 0)
+    # Keep a bounded default mesh size to avoid unbounded resource usage
+    # on unusually large or untrusted fused point clouds.
+    target_faces = _env_int("VISUAL_MESH_TARGET_FACES", 500000)
     method = (os.getenv("VISUAL_MESH_METHOD", "textured_colmap") or "textured_colmap").strip().lower()
 
     visual_pointcloud = output_dir / "visual_pointcloud.ply"
