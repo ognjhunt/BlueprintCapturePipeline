@@ -327,7 +327,22 @@ def infer_scene_semantics(
     has_explicit_hint = requested not in {"", "auto", "default"} and normalized_requested in _SUPPORTED_ENVIRONMENTS
     keyframes = _sample_frame_paths(frames_dir, 8)
 
-    # Always attempt Gemini inference first, regardless of explicit hint.
+    # Honor explicit hints to avoid external inference/egress when the
+    # operator selected an environment directly.
+    if has_explicit_hint:
+        return {
+            "schema_version": "v1",
+            "generated_at": _utc_now_iso(),
+            "requested_environment": requested,
+            "resolved_environment": normalized_requested,
+            "environment_source": "explicit_hint",
+            "environment_confidence": 1.0,
+            "prompt_source": "explicit_hint",
+            "detection_prompts": list(_PROMPTS_BY_ENV[normalized_requested]),
+            "keyframes_used": [str(path) for path in keyframes],
+            "fallback_reason": "",
+        }
+
     gemini_result = _infer_with_gemini(frames=keyframes, timeout_sec=max(5, int(timeout_sec)))
     if gemini_result is not None:
         resolved = _normalize_environment(gemini_result.environment)
