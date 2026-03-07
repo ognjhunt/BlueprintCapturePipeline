@@ -52,15 +52,30 @@ if [ "$MODE" = "mesh" ]; then
   PRIMARY="$MESHCANDIDATE"
 elif [ "$MODE" = "auto" ]; then
   if [ -f "$MANIFEST" ]; then
-    manifest_primary="$(python3 - "$MANIFEST" <<'PY'
-import json, sys
+    manifest_primary="$(python3 - "$MANIFEST" "$OUTPUT_DIR" <<'PY'
+import json
+import os
+import sys
 
 path = sys.argv[1]
+output_dir = os.path.realpath(sys.argv[2])
 try:
     payload = json.loads(open(path, "r", encoding="utf-8").read())
     value = (payload.get("primary_visual_asset") or "").strip()
-    if value:
-        print(value)
+    if not value:
+        raise ValueError("empty")
+    if os.path.isabs(value):
+        raise ValueError("absolute")
+    normalized = os.path.normpath(value)
+    if normalized in (".", "") or normalized.startswith("../"):
+        raise ValueError("traversal")
+    candidate = os.path.realpath(os.path.join(output_dir, normalized))
+    if os.path.commonpath([output_dir, candidate]) != output_dir:
+        raise ValueError("outside output")
+    rel = os.path.relpath(candidate, output_dir)
+    if rel.startswith("../"):
+        raise ValueError("outside output")
+    print(rel)
 except Exception:
     pass
 PY
