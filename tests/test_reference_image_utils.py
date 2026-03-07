@@ -156,6 +156,43 @@ def test_cleanup_crop_together_qwen_success(tmp_path: Path) -> None:
     assert out.read_bytes() == cleaned_bytes
 
 
+def test_extract_together_image_bytes_rejects_non_https_url() -> None:
+    response_json = {"data": [{"url": "file:///tmp/secret.txt"}]}
+
+    with patch.object(ref_utils.urllib_request, "urlopen") as mocked_urlopen:
+        result = ref_utils._extract_together_image_bytes(response_json, timeout_seconds=1.0)
+
+    assert result is None
+    mocked_urlopen.assert_not_called()
+
+
+def test_extract_together_image_bytes_rejects_non_together_host() -> None:
+    response_json = {"data": [{"url": "https://169.254.169.254/latest/meta-data"}]}
+
+    with patch.object(ref_utils.urllib_request, "urlopen") as mocked_urlopen:
+        result = ref_utils._extract_together_image_bytes(response_json, timeout_seconds=1.0)
+
+    assert result is None
+    mocked_urlopen.assert_not_called()
+
+
+def test_extract_together_image_bytes_accepts_https_together_host() -> None:
+    response_json = {"data": [{"url": "https://cdn.together.xyz/generated/image.png"}]}
+    expected_bytes = b"image-bytes"
+
+    mock_response = MagicMock()
+    mock_response.read.return_value = expected_bytes
+    mock_context = MagicMock()
+    mock_context.__enter__.return_value = mock_response
+    mock_context.__exit__.return_value = False
+
+    with patch.object(ref_utils.urllib_request, "urlopen", return_value=mock_context) as mocked_urlopen:
+        result = ref_utils._extract_together_image_bytes(response_json, timeout_seconds=2.5)
+
+    assert result == expected_bytes
+    mocked_urlopen.assert_called_once_with("https://cdn.together.xyz/generated/image.png", timeout=2.5)
+
+
 def test_cleanup_crop_qwen_success(tmp_path: Path) -> None:
     """Qwen-Image-Edit produces a cleaned output image."""
     img = tmp_path / "crop.png"

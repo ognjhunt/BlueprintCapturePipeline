@@ -10,9 +10,15 @@ import os
 from pathlib import Path
 from typing import Optional
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 logger = logging.getLogger(__name__)
+
+_TOGETHER_ALLOWED_IMAGE_HOST_SUFFIXES = (
+    "together.xyz",
+    "together.ai",
+)
 
 
 def load_reference_image_base64(image_path: str) -> Optional[str]:
@@ -381,9 +387,24 @@ def _extract_together_image_bytes(response_json: dict, *, timeout_seconds: float
                 return _decode_image_b64(b64_json)
             image_url = str(first.get("url") or "").strip()
             if image_url:
+                if not _is_allowed_together_image_url(image_url):
+                    logger.warning("Rejected Together image URL with non-allowed scheme or host")
+                    return None
                 with urllib_request.urlopen(image_url, timeout=timeout_seconds) as response:
                     return response.read()
     return None
+
+
+def _is_allowed_together_image_url(url: str) -> bool:
+    parsed = urllib_parse.urlparse(url)
+    if parsed.scheme.lower() != "https":
+        return False
+
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in _TOGETHER_ALLOWED_IMAGE_HOST_SUFFIXES)
 
 
 def _decode_image_b64(encoded: str) -> bytes:
