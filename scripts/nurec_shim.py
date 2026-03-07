@@ -3342,7 +3342,8 @@ def _read_3d_point_count(model_dir: Path) -> int:
     if not _is_nonempty_file(points3d_bin):
         return 0
     try:
-        data = points3d_bin.read_bytes()[:8]
+        with points3d_bin.open("rb") as f:
+            data = f.read(8)
         if len(data) < 8:
             return 0
         return int(struct.unpack("<Q", data)[0])

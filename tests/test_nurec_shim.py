@@ -1998,6 +1998,35 @@ def test_read_3d_point_count_short_file(tmp_path: Path) -> None:
     assert module._read_3d_point_count(model_dir) == 0
 
 
+def test_read_3d_point_count_reads_only_header(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_nurec_shim_module()
+    model_dir = tmp_path / "sparse" / "0"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    points3d = model_dir / "points3D.bin"
+    points3d.write_bytes(b"placeholder")
+
+    class _Reader:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size: int = -1) -> bytes:
+            assert size == 8
+            return struct.pack("<Q", 42)
+
+    def _patched_open(self: Path, mode: str = "r", *args, **kwargs):
+        if self == points3d and mode == "rb":
+            return _Reader()
+        return original_open(self, mode, *args, **kwargs)
+
+    original_open = Path.open
+    monkeypatch.setattr(Path, "open", _patched_open)
+
+    assert module._read_3d_point_count(model_dir) == 42
+
+
 # ---------------------------------------------------------------------------
 # _resolve_effective_max_n_gaussians
 # ---------------------------------------------------------------------------
