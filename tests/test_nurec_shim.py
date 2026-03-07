@@ -3187,3 +3187,62 @@ def test_void_fill_continues_when_hole_low_but_virtual_candidates_remain(
     # because virtual_count > 0 indicates there are still under-covered directions.
     assert len(rounds_seen) == 2, f"Expected 2 rounds but only ran {len(rounds_seen)}"
     assert report["rounds_completed"] == 2
+
+
+
+def _write_binary_gaussian_ply(path: Path, *, n_vertices: int, payload: bytes = b"") -> None:
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {n_vertices}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "property float f_dc_0\n"
+        "end_header\n"
+    ).encode("ascii")
+    path.write_bytes(header + payload)
+
+
+def test_safe_read_point_cloud_rejects_excessive_vertex_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_nurec_shim_module()
+    np = pytest.importorskip("numpy")
+    ply_path = tmp_path / "gaussian_large_vertices.ply"
+    _write_binary_gaussian_ply(ply_path, n_vertices=10)
+
+    monkeypatch.setenv("OPEN3D_GAUSSIAN_MAX_VERTICES", "5")
+    with pytest.raises(ValueError, match="exceeds safety limit"):
+        module._safe_read_point_cloud(SimpleNamespace(), np, ply_path)
+
+
+def test_safe_read_point_cloud_rejects_excessive_data_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_nurec_shim_module()
+    np = pytest.importorskip("numpy")
+    ply_path = tmp_path / "gaussian_large_payload.ply"
+    _write_binary_gaussian_ply(ply_path, n_vertices=10)
+
+    monkeypatch.setenv("OPEN3D_GAUSSIAN_MAX_DATA_BYTES", "100")
+    with pytest.raises(ValueError, match="data size .* exceeds safety limit"):
+        module._safe_read_point_cloud(SimpleNamespace(), np, ply_path)
+
+
+def test_safe_read_point_cloud_rejects_truncated_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_nurec_shim_module()
+    np = pytest.importorskip("numpy")
+    ply_path = tmp_path / "gaussian_truncated.ply"
+    # 2 vertices * 16 bytes each expected, but only provide 8 bytes.
+    _write_binary_gaussian_ply(ply_path, n_vertices=2, payload=b"\x00" * 8)
+
+    monkeypatch.setenv("OPEN3D_GAUSSIAN_MAX_VERTICES", "10")
+    monkeypatch.setenv("OPEN3D_GAUSSIAN_MAX_DATA_BYTES", "1024")
+    with pytest.raises(ValueError, match="payload truncated"):
+        module._safe_read_point_cloud(SimpleNamespace(), np, ply_path)
