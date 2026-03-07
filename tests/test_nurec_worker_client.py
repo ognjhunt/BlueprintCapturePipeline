@@ -187,3 +187,55 @@ def test_collect_outputs_includes_optional_scene_cleaning_artifacts(tmp_path: Pa
     assert "sam3_instance_masks_dir" in artifacts
     assert "colmap_undistorted_sparse_dir" in artifacts
     assert "colmap_undistorted_images_dir" in artifacts
+
+
+def test_collect_outputs_ignores_traversal_in_manifest_primary_visual(tmp_path: Path) -> None:
+    client = NurecWorkerClient(
+        storage_root=tmp_path,
+        bucket="bucket",
+        pipeline_prefix="scenes/scene_1/captures/cap_1/pipeline",
+        config=NurecWorkerConfig(worker_mode="external_markers"),
+    )
+    nurec_dir = client.nurec_dir
+    nurec_dir.mkdir(parents=True, exist_ok=True)
+    export_usdz = nurec_dir / "export_last.usdz"
+    export_usdz.write_bytes(b"safe")
+    _write_collision_mesh(nurec_dir / "nvblox_mesh.ply")
+    (nurec_dir / "occupancy.bin").write_bytes(b"occ")
+    (nurec_dir / "visual_mesh.glb").write_bytes(b"glb")
+
+    outside = tmp_path / "secret.usdz"
+    outside.write_bytes(b"secret")
+    (nurec_dir / "mesh_manifest.json").write_text(
+        '{"primary_visual_asset": "../../../../../secret.usdz"}',
+        encoding="utf-8",
+    )
+
+    payload = client.collect_outputs()
+    assert payload["artifacts"]["visual_usdz"].endswith("/export_last.usdz")
+
+
+def test_collect_outputs_allows_scoped_manifest_primary_visual(tmp_path: Path) -> None:
+    client = NurecWorkerClient(
+        storage_root=tmp_path,
+        bucket="bucket",
+        pipeline_prefix="scenes/scene_1/captures/cap_1/pipeline",
+        config=NurecWorkerConfig(worker_mode="external_markers"),
+    )
+    nurec_dir = client.nurec_dir
+    nurec_dir.mkdir(parents=True, exist_ok=True)
+    (nurec_dir / "export_last.usdz").write_bytes(b"safe")
+    _write_collision_mesh(nurec_dir / "nvblox_mesh.ply")
+    (nurec_dir / "occupancy.bin").write_bytes(b"occ")
+    (nurec_dir / "visual_mesh.glb").write_bytes(b"glb")
+
+    alt = nurec_dir / "variants" / "alt.usdz"
+    alt.parent.mkdir(parents=True, exist_ok=True)
+    alt.write_bytes(b"alt")
+    (nurec_dir / "mesh_manifest.json").write_text(
+        '{"primary_visual_asset": "variants/alt.usdz"}',
+        encoding="utf-8",
+    )
+
+    payload = client.collect_outputs()
+    assert payload["artifacts"]["visual_usdz"].endswith("/variants/alt.usdz")

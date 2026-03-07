@@ -69,6 +69,17 @@ class NurecWorkerClient:
     def _marker(self, name: str) -> Path:
         return self.pipeline_dir / name
 
+    def _manifest_scoped_file(self, relative_name: str) -> Path | None:
+        candidate = Path(relative_name.strip())
+        if not candidate.parts or candidate.is_absolute() or ".." in candidate.parts:
+            return None
+        scoped = self.nurec_dir / candidate
+        try:
+            scoped.resolve().relative_to(self.nurec_dir.resolve())
+        except ValueError:
+            return None
+        return scoped
+
     def build_job_spec(
         self,
         *,
@@ -297,13 +308,13 @@ class NurecWorkerClient:
             if isinstance(manifest_payload, dict):
                 primary_visual = str(manifest_payload.get("primary_visual_asset") or "").strip()
                 if primary_visual.lower().endswith(".usdz"):
-                    candidate_visual = self.nurec_dir / primary_visual
-                    if has_nonempty_file(candidate_visual):
+                    candidate_visual = self._manifest_scoped_file(primary_visual)
+                    if candidate_visual is not None and has_nonempty_file(candidate_visual):
                         selected_visual_usdz = candidate_visual
                 hallucinated_mask_name = str(manifest_payload.get("hallucinated_region_mask") or "").strip()
                 if hallucinated_mask_name:
-                    candidate_mask = self.nurec_dir / hallucinated_mask_name
-                    if has_nonempty_file(candidate_mask):
+                    candidate_mask = self._manifest_scoped_file(hallucinated_mask_name)
+                    if candidate_mask is not None and has_nonempty_file(candidate_mask):
                         hallucinated_region_mask = candidate_mask
 
         mesh_stats = self._mesh_stats(mesh_ply)
