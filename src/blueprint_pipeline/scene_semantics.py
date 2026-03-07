@@ -299,7 +299,7 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
         detected_objects: List[Dict[str, Any]] = []
         raw_objects = payload.get("objects", [])
         if isinstance(raw_objects, list):
-            detected_objects = raw_objects
+            detected_objects = [obj for obj in raw_objects if isinstance(obj, dict)]
 
         return _GeminiResult(
             environment=room_type, confidence=confidence, model=model,
@@ -352,7 +352,12 @@ def infer_scene_semantics(
         if gemini_result.detected_objects:
             sam_prompts = []
             for obj in gemini_result.detected_objects:
-                prompt = (obj.get("sam_prompt") or obj.get("object_id") or "").strip()
+                if not isinstance(obj, dict):
+                    continue
+                prompt = (obj.get("sam_prompt") or obj.get("object_id") or "")
+                if not isinstance(prompt, str):
+                    prompt = str(prompt)
+                prompt = prompt.strip()
                 if prompt:
                     # Normalize: replace underscores with spaces for SAM text prompts
                     sam_prompts.append(prompt.replace("_", " "))
