@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import time
+import ast
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -112,11 +113,11 @@ def _patch_cfg_args(
         _log(f"  WARNING: cfg_args not found at {cfg_args_path}, skipping patch")
         return
 
-    from argparse import Namespace  # needed for eval and for writing back
+    from argparse import Namespace
 
     text = cfg_args_path.read_text(encoding="utf-8").strip()
     try:
-        ns = eval(text)  # noqa: S307 — trusted file written by train.py
+        ns = _parse_cfg_args_namespace(text)
         ns_dict = vars(ns)
     except Exception as exc:
         _log(f"  WARNING: could not parse cfg_args ({exc}), skipping patch")
@@ -144,6 +145,30 @@ def _patch_cfg_args(
             _log(f"  Patched cfg_args — added: {added_keys}")
         if overwritten_keys:
             _log(f"  Patched cfg_args — overwritten: {overwritten_keys}")
+
+
+def _parse_cfg_args_namespace(text: str):
+    """Parse ``Namespace(...)`` text written by argparse without executing code."""
+    from argparse import Namespace
+
+    expr = ast.parse(text, mode="eval")
+    call = expr.body
+    if not isinstance(call, ast.Call):
+        raise ValueError("cfg_args is not a call expression")
+
+    if not isinstance(call.func, ast.Name) or call.func.id != "Namespace":
+        raise ValueError("cfg_args is not a Namespace(...) expression")
+
+    if call.args:
+        raise ValueError("cfg_args Namespace(...) uses unsupported positional args")
+
+    ns_dict: Dict[str, Any] = {}
+    for kw in call.keywords:
+        if kw.arg is None:
+            raise ValueError("cfg_args Namespace(...) uses unsupported **kwargs")
+        ns_dict[kw.arg] = ast.literal_eval(kw.value)
+
+    return Namespace(**ns_dict)
 
 
 # ---------------------------------------------------------------------------
