@@ -89,12 +89,26 @@ def get_best_crops_per_object(crops_dir: Path, index_path: Path):
         best_file = max(files, key=lambda f: f.stat().st_size)
         best[label] = best_file
 
+    allowed_root = crops_dir.resolve()
+
     # Override with reference_crop_path from index if present
     for obj in objects:
         ref = obj.get("reference_crop_path")
-        if ref and Path(ref).exists():
-            label_key = re.sub(r"[\s/]", "_", obj.get("label", "").lower())
-            best[label_key] = Path(ref)
+        if not ref:
+            continue
+
+        ref_path = Path(ref)
+        if not ref_path.is_absolute():
+            ref_path = crops_dir / ref_path
+
+        try:
+            resolved_ref = ref_path.resolve(strict=True)
+            resolved_ref.relative_to(allowed_root)
+        except (FileNotFoundError, ValueError):
+            continue
+
+        label_key = re.sub(r"[\s/]", "_", obj.get("label", "").lower())
+        best[label_key] = resolved_ref
 
     return best, objects
 
