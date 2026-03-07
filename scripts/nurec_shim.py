@@ -61,6 +61,7 @@ FIXER_DIR = os.getenv("FIXER_DIR", "/opt/Fixer")
 FIXER_WEIGHTS_DIR = os.getenv("FIXER_WEIGHTS_DIR", "/opt/fixer_weights")
 DEFAULT_FIXER_H100_SCRIPT = os.getenv("FIXER_H100_SCRIPT", "/app/scripts/fixer_h100_stage.sh")
 STAGE14_RESUME_METADATA = ".stage14_resume_metadata.json"
+STAGE9_RESUME_METADATA = ".stage9_resume_metadata.json"
 POST_STAGE4_GAP_ANALYZER_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_gap_analyzer.py"
 POST_STAGE4_VIEW_REPAIR_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_view_repair.py"
 POST_STAGE4_DISTILL_SCRIPT = REPO_ROOT / "scripts" / "post_stage4_distill.py"
@@ -3463,6 +3464,71 @@ def _video_signature(video_path: Path) -> Dict[str, Any]:
     return signature
 
 
+def _file_signature(path: Path) -> Dict[str, Any]:
+    signature: Dict[str, Any] = {
+        "path": str(path),
+    }
+    try:
+        stat = path.stat()
+        signature["size_bytes"] = int(stat.st_size)
+        signature["mtime_ns"] = int(stat.st_mtime_ns)
+    except Exception:
+        pass
+    return signature
+
+
+def _load_stage9_resume_metadata(output_dir: Path) -> Dict[str, Any]:
+    return _load_json_dict(output_dir / STAGE9_RESUME_METADATA)
+
+
+def _write_stage9_resume_metadata(output_dir: Path, payload: Mapping[str, Any]) -> None:
+    metadata_path = output_dir / STAGE9_RESUME_METADATA
+    metadata_path.write_text(json.dumps(dict(payload), indent=2), encoding="utf-8")
+
+
+def _validate_stage9_resume_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    video_signature: Mapping[str, Any],
+    gaussian_signature: Mapping[str, Any],
+    requested_environment: str,
+    requested_n_frames: int,
+    requested_min_frame_detections: int,
+    scene_cleaning_mode: str,
+    sam3_mask_export_space: str,
+) -> list[str]:
+    reasons: list[str] = []
+    if str(metadata.get("schema_version") or "") != "v1":
+        reasons.append("stage9_resume_metadata_schema_mismatch")
+
+    if str(metadata.get("requested_environment") or "") != str(requested_environment):
+        reasons.append("stage9_requested_environment_changed")
+    if int(metadata.get("requested_n_frames", -1)) != int(requested_n_frames):
+        reasons.append("stage9_requested_n_frames_changed")
+    if int(metadata.get("requested_min_frame_detections", -1)) != int(requested_min_frame_detections):
+        reasons.append("stage9_requested_min_frame_detections_changed")
+    if str(metadata.get("scene_cleaning_mode") or "") != str(scene_cleaning_mode):
+        reasons.append("stage9_scene_cleaning_mode_changed")
+    if str(metadata.get("sam3_mask_export_space") or "") != str(sam3_mask_export_space):
+        reasons.append("stage9_mask_export_space_changed")
+
+    meta_video = metadata.get("video") if isinstance(metadata.get("video"), Mapping) else {}
+    for key in ("size_bytes", "mtime_ns"):
+        expected = video_signature.get(key)
+        actual = meta_video.get(key)
+        if expected is not None and actual is not None and int(expected) != int(actual):
+            reasons.append(f"stage9_video_{key}_changed")
+
+    meta_gaussian = metadata.get("gaussian_ply") if isinstance(metadata.get("gaussian_ply"), Mapping) else {}
+    for key in ("size_bytes", "mtime_ns"):
+        expected = gaussian_signature.get(key)
+        actual = meta_gaussian.get(key)
+        if expected is not None and actual is not None and int(expected) != int(actual):
+            reasons.append(f"stage9_gaussian_{key}_changed")
+
+    return reasons
+
+
 def _float_match(left: Any, right: Any, *, atol: float = 1e-6) -> bool:
     try:
         return abs(float(left) - float(right)) <= float(atol)
@@ -4323,6 +4389,7 @@ def _run_stage9_sam3(
     requested_n_frames: int,
     requested_min_frame_detections: int,
     gaussian_ply: Path,
+    video_signature: Mapping[str, Any],
     resume: bool,
     scene_cleaning_mode: str,
     sam3_mask_export_space: str,
@@ -4351,7 +4418,24 @@ def _run_stage9_sam3(
             scene_cleaning_enabled = False
 
     if resume and _is_nonempty_file(scene_semantics_path) and _is_nonempty_file(index_output):
-        if scene_cleaning_enabled:
+        stage9_metadata = _load_stage9_resume_metadata(output_dir)
+        gaussian_signature = _file_signature(gaussian_ply)
+        resume_reasons = _validate_stage9_resume_metadata(
+            stage9_metadata,
+            video_signature=video_signature,
+            gaussian_signature=gaussian_signature,
+            requested_environment=requested_environment,
+            requested_n_frames=requested_n_frames,
+            requested_min_frame_detections=requested_min_frame_detections,
+            scene_cleaning_mode=scene_cleaning_mode,
+            sam3_mask_export_space=sam3_mask_export_space,
+        )
+        if resume_reasons:
+            _log(
+                "Resume miss: Stage 9 metadata validation failed ("
+                f"{', '.join(resume_reasons)}); rerunning Stage 9"
+            )
+        elif scene_cleaning_enabled:
             has_masks = instance_masks_dir.is_dir() and any(instance_masks_dir.glob("*.png"))
             if has_masks:
                 _log("Resuming Stage 9: using existing scene semantics + SAM3 object index + instance masks")
@@ -4440,6 +4524,24 @@ def _run_stage9_sam3(
         )
 
         n_objects = len(sam3_result.get("objects", []))
+        _write_stage9_resume_metadata(
+            output_dir,
+            {
+                "schema_version": "v1",
+                "generated_at": _utc_now_iso(),
+                "video": dict(video_signature),
+                "gaussian_ply": _file_signature(gaussian_ply),
+                "requested_environment": str(requested_environment),
+                "requested_n_frames": int(requested_n_frames),
+                "requested_min_frame_detections": int(requested_min_frame_detections),
+                "scene_cleaning_mode": str(scene_cleaning_mode),
+                "sam3_mask_export_space": str(sam3_mask_export_space),
+                "resolved_environment": str(resolved_environment),
+                "effective_n_frames": int(sam3_n_frames),
+                "effective_min_frame_detections": int(sam3_min_frame_detections),
+                "object_count": int(n_objects),
+            },
+        )
         _log(f"SAM3 detected {n_objects} objects")
         return index_output
     except Exception as exc:
@@ -5891,6 +5993,7 @@ def main() -> int:
             requested_n_frames=args.sam3_n_frames,
             requested_min_frame_detections=args.sam3_min_frame_detections,
             gaussian_ply=active_gaussian_ply,
+            video_signature=video_signature,
             resume=effective_resume,
             scene_cleaning_mode=args.scene_cleaning_mode,
             sam3_mask_export_space=args.sam3_mask_export_space,

@@ -155,6 +155,81 @@ def test_resolve_stage14_resume_accepts_matching_metadata(tmp_path: Path) -> Non
     assert reasons == ["metadata_match"]
 
 
+def test_validate_stage9_resume_metadata_rejects_mismatch() -> None:
+    module = _load_nurec_shim_module()
+    reasons = module._validate_stage9_resume_metadata(
+        {
+            "schema_version": "v1",
+            "video": {"size_bytes": 111, "mtime_ns": 222},
+            "gaussian_ply": {"size_bytes": 333, "mtime_ns": 444},
+            "requested_environment": "warehouse",
+            "requested_n_frames": 20,
+            "requested_min_frame_detections": 2,
+            "scene_cleaning_mode": "off",
+            "sam3_mask_export_space": "undistorted",
+        },
+        video_signature={"size_bytes": 111, "mtime_ns": 999},
+        gaussian_signature={"size_bytes": 333, "mtime_ns": 444},
+        requested_environment="warehouse",
+        requested_n_frames=20,
+        requested_min_frame_detections=2,
+        scene_cleaning_mode="off",
+        sam3_mask_export_space="undistorted",
+    )
+
+    assert "stage9_video_mtime_ns_changed" in reasons
+
+
+def test_run_stage9_resume_uses_matching_metadata(tmp_path: Path) -> None:
+    module = _load_nurec_shim_module()
+    output_dir = tmp_path / "out"
+    workspace = tmp_path / "ws"
+    frames_dir = tmp_path / "frames"
+    undistorted_images = tmp_path / "undist"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    undistorted_images.mkdir(parents=True, exist_ok=True)
+
+    gaussian_ply = output_dir / "export_last.ply"
+    gaussian_ply.write_bytes(b"ply")
+    (output_dir / "scene_semantics_report.json").write_text("{}", encoding="utf-8")
+    index_path = output_dir / "object_point_cloud_index.json"
+    index_path.write_text('{"objects": []}', encoding="utf-8")
+
+    video_signature = {"size_bytes": 123, "mtime_ns": 456}
+    module._write_stage9_resume_metadata(
+        output_dir,
+        {
+            "schema_version": "v1",
+            "video": dict(video_signature),
+            "gaussian_ply": module._file_signature(gaussian_ply),
+            "requested_environment": "warehouse",
+            "requested_n_frames": 20,
+            "requested_min_frame_detections": 2,
+            "scene_cleaning_mode": "off",
+            "sam3_mask_export_space": "undistorted",
+        },
+    )
+
+    result = module._run_stage9_sam3(
+        output_dir=output_dir,
+        workspace=workspace,
+        frames_dir=frames_dir,
+        undistorted_images_dir=undistorted_images,
+        frame_count=0,
+        requested_environment="warehouse",
+        requested_n_frames=20,
+        requested_min_frame_detections=2,
+        gaussian_ply=gaussian_ply,
+        video_signature=video_signature,
+        resume=True,
+        scene_cleaning_mode="off",
+        sam3_mask_export_space="undistorted",
+    )
+
+    assert result == index_path
+
 def test_run_3dgrut_training_selects_newest_export(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
