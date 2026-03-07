@@ -482,6 +482,33 @@ class TestRunInpaintOptimization:
         assert result["status"] == "failed"
         assert "edit_object_inpaint.py not found" in result.get("reason", "")
 
+    def test_fails_when_inpaint_process_fails_even_with_existing_ply(self, tmp_path: Path, monkeypatch) -> None:
+        inpaint_dir = tmp_path / "inpaint360gs"
+        inpaint_dir.mkdir()
+        (inpaint_dir / "edit_object_inpaint.py").write_text("", encoding="utf-8")
+
+        stale_ply = (
+            tmp_path
+            / "point_cloud"
+            / "_object_inpaint_virtual"
+            / "iteration_5000"
+            / "point_cloud.ply"
+        )
+        stale_ply.parent.mkdir(parents=True)
+        stale_ply.write_text("ply", encoding="utf-8")
+
+        monkeypatch.setattr(runner, "INPAINT360GS_DIR", inpaint_dir)
+
+        def _fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(args=["python"], returncode=1)
+
+        monkeypatch.setattr(runner, "_run", _fake_run)
+
+        result = runner.run_inpaint_optimization(workspace=tmp_path, model_path=tmp_path)
+
+        assert result["status"] == "failed"
+        assert "edit_object_inpaint.py rc=1" in result.get("reason", "")
+
 
 # ---------------------------------------------------------------------------
 # TestEnvHelpers
