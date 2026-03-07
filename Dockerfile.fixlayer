@@ -135,6 +135,8 @@ RUN mkdir -p /opt/qwen-image-edit && \
 # cuDNN 9 headers needed by transformer-engine at import time.
 ENV FIXER_DIR=/opt/Fixer
 ENV FIXER_WEIGHTS_DIR=/opt/fixer_weights
+ENV FLASH_ATTN_WHEEL_URL="https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.6.3%2Bcu124torch2.6-cp310-cp310-linux_x86_64.whl"
+ENV FLASH_ATTN_WHEEL_SHA256="1d3e95f920f6e97c511bbe1e85ab7c94668bb5741abe76d1fe76d2f5774c1122"
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libcudnn8-dev libcudnn9-cuda-12 && \
     rm -rf /var/lib/apt/lists/*
@@ -144,10 +146,13 @@ RUN git clone https://github.com/nv-tlabs/Fixer.git /opt/Fixer && \
     pip install --no-cache-dir \
       "transformer-engine==1.12.0" \
       "transformer-engine-cu12==1.12.0" && \
-    # flash-attn prebuilt wheel for torch 2.6 + cu124 + cp310 (ABI=0).
+    # flash-attn prebuilt wheel for torch 2.6 + cu124 + cp310 (ABI=0),
+    # downloaded with pinned SHA256 for integrity verification.
     # cosmos-predict2 requires flash-attn >= 2.1.1, <= 2.6.3.
-    pip install --no-deps \
-      "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.6.3%2Bcu124torch2.6-cp310-cp310-linux_x86_64.whl" && \
+    curl -fsSL "$FLASH_ATTN_WHEEL_URL" -o /tmp/flash_attn.whl && \
+    echo "$FLASH_ATTN_WHEEL_SHA256  /tmp/flash_attn.whl" | sha256sum -c - && \
+    pip install --no-deps /tmp/flash_attn.whl && \
+    rm -f /tmp/flash_attn.whl && \
     pip install --no-cache-dir \
       "accelerate==1.7.0" \
       clean-fid \
