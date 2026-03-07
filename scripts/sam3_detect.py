@@ -1226,8 +1226,8 @@ def _resolve_detection_prompts(
                 frames_dir=shlex.quote(str(frames_dir)),
                 environment=shlex.quote(environment),
                 keyframes=" ".join(shlex.quote(str(path)) for path in keyframes),
-                keyframes_csv=",".join(str(path) for path in keyframes),
-                keyframes_json=json.dumps([str(path) for path in keyframes]),
+                keyframes_csv=shlex.quote(",".join(str(path) for path in keyframes)),
+                keyframes_json=shlex.quote(json.dumps([str(path) for path in keyframes])),
                 output_json=shlex.quote(str(output_hint)),
             )
         except Exception:
