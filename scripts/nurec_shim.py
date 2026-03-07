@@ -1641,9 +1641,16 @@ def _safe_read_point_cloud(o3d, np, ply_path: Path):
     or Poisson reconstruction.  This helper reads only xyz (and nx/ny/nz if present)
     via numpy, avoiding the problematic code paths.
     """
+    max_gaussian_vertices = max(1, _env_int("OPEN3D_GAUSSIAN_MAX_VERTICES", 5_000_000))
+    max_gaussian_data_bytes = max(
+        1,
+        _env_int("OPEN3D_GAUSSIAN_MAX_DATA_BYTES", 512 * 1024 * 1024),
+    )
+
     try:
         # Fast path: try Open3D directly (works fine for fused.ply from PatchMatch).
-        header_bytes = ply_path.read_bytes()[:2048]
+        with open(ply_path, "rb") as f:
+            header_bytes = f.read(2048)
         header_text = header_bytes.decode("ascii", errors="replace")
         is_gaussian = "f_dc_0" in header_text or "f_rest_0" in header_text
         if not is_gaussian:
@@ -1664,6 +1671,7 @@ def _safe_read_point_cloud(o3d, np, ply_path: Path):
             header_lines.append(line.decode("ascii", errors="replace").strip())
             if line.strip() == b"end_header":
                 break
+        data_start = f.tell()
 
         # Parse vertex count and properties.
         n_vertices = 0
@@ -1689,7 +1697,29 @@ def _safe_read_point_cloud(o3d, np, ply_path: Path):
                     props.append((name, "f", 4))  # fallback
 
         vertex_size = sum(p[2] for p in props)
-        prop_names = [p[0] for p in props]
+
+        if n_vertices <= 0:
+            raise ValueError(f"Invalid Gaussian PLY vertex count: {n_vertices}")
+        if n_vertices > max_gaussian_vertices:
+            raise ValueError(
+                f"Gaussian PLY vertex count {n_vertices} exceeds safety limit "
+                f"{max_gaussian_vertices}"
+            )
+        if vertex_size <= 0:
+            raise ValueError("Gaussian PLY has no readable vertex properties")
+
+        expected_data_bytes = n_vertices * vertex_size
+        if expected_data_bytes > max_gaussian_data_bytes:
+            raise ValueError(
+                f"Gaussian PLY vertex data size {expected_data_bytes} exceeds safety "
+                f"limit {max_gaussian_data_bytes}"
+            )
+        available_data_bytes = max(0, ply_path.stat().st_size - data_start)
+        if expected_data_bytes > available_data_bytes:
+            raise ValueError(
+                f"Gaussian PLY payload truncated: expected {expected_data_bytes} bytes, "
+                f"found {available_data_bytes} bytes"
+            )
 
         # Build index for xyz and normals.
         xyz_indices = []
@@ -1705,7 +1735,7 @@ def _safe_read_point_cloud(o3d, np, ply_path: Path):
             offset += size
 
         # Read all vertex data at once.
-        raw = f.read(n_vertices * vertex_size)
+        raw = f.read(expected_data_bytes)
 
     # Extract arrays.
     all_data = np.frombuffer(raw, dtype=np.uint8).reshape(n_vertices, vertex_size)
