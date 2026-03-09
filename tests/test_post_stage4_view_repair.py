@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 from unittest import mock
@@ -16,6 +17,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from post_stage4_view_repair import (
+    _build_parser,
     apply_acceptance_gate,
     build_repair_mask,
     compute_photometric_drift_outside_mask,
@@ -246,6 +248,76 @@ class TestRunBackend:
         assert ok is True
         assert mode == "passthrough"
 
+    def test_worldforge_template_command_success(self, tmp_path: Path) -> None:
+        input_path = tmp_path / "input.png"
+        PILImage = pytest.importorskip("PIL.Image")
+        PILImage.fromarray(np.full((16, 16, 3), 128, dtype=np.uint8)).save(input_path)
+        mask_path = tmp_path / "mask.png"
+        PILImage.fromarray(np.zeros((16, 16), dtype=np.uint8)).save(mask_path)
+        output_path = tmp_path / "output.png"
+
+        with mock.patch.dict("os.environ", {"POST_STAGE4_WORLDFORGE_IMAGE_COMMAND": "template"}):
+            with mock.patch("post_stage4_view_repair._run_template_command", return_value=True) as run_template:
+                with mock.patch("post_stage4_view_repair._run_worldforge_native") as run_native:
+                    ok, mode = _run_backend(
+                        backend="worldforge",
+                        input_path=input_path,
+                        mask_path=mask_path,
+                        output_path=output_path,
+                    )
+        assert ok is True
+        assert mode == "command"
+        run_template.assert_called_once()
+        run_native.assert_not_called()
+
+    def test_worldforge_native_fallback_when_template_unset(self, tmp_path: Path) -> None:
+        input_path = tmp_path / "input.png"
+        PILImage = pytest.importorskip("PIL.Image")
+        PILImage.fromarray(np.full((16, 16, 3), 128, dtype=np.uint8)).save(input_path)
+        mask_path = tmp_path / "mask.png"
+        PILImage.fromarray(np.zeros((16, 16), dtype=np.uint8)).save(mask_path)
+        output_path = tmp_path / "output.png"
+
+        with mock.patch.dict("os.environ", {"POST_STAGE4_WORLDFORGE_IMAGE_COMMAND": ""}):
+            with mock.patch(
+                "post_stage4_view_repair._run_worldforge_native",
+                return_value=(True, "worldforge_native_longcat"),
+            ) as run_native:
+                ok, mode = _run_backend(
+                    backend="worldforge",
+                    input_path=input_path,
+                    mask_path=mask_path,
+                    output_path=output_path,
+                )
+        assert ok is True
+        assert mode == "worldforge_native_longcat"
+        run_native.assert_called_once()
+
+    def test_worldforge_missing_falls_back_to_passthrough(self, tmp_path: Path) -> None:
+        input_path = tmp_path / "input.png"
+        PILImage = pytest.importorskip("PIL.Image")
+        source = np.full((16, 16, 3), 96, dtype=np.uint8)
+        PILImage.fromarray(source).save(input_path)
+        mask_path = tmp_path / "mask.png"
+        PILImage.fromarray(np.zeros((16, 16), dtype=np.uint8)).save(mask_path)
+        output_path = tmp_path / "output.png"
+
+        with mock.patch.dict("os.environ", {"POST_STAGE4_WORLDFORGE_IMAGE_COMMAND": ""}):
+            with mock.patch(
+                "post_stage4_view_repair._run_worldforge_native",
+                return_value=(False, "worldforge_missing"),
+            ):
+                ok, mode = _run_backend(
+                    backend="worldforge",
+                    input_path=input_path,
+                    mask_path=mask_path,
+                    output_path=output_path,
+                )
+        assert ok is True
+        assert mode == "passthrough"
+        out = np.asarray(PILImage.open(output_path).convert("RGB"))
+        assert np.all(out == source)
+
 
 # ---------------------------------------------------------------------------
 # Test: E2E repair_candidate_views
@@ -475,3 +547,74 @@ class TestRepairCandidateViews:
         assert row["camera_id"] == 5
         assert row["qvec"] == [0.7071, 0.0, 0.7071, 0.0]
         assert row["tvec"] == [1.0, 2.0, 3.0]
+
+    def test_worldforge_plus_gsfix3d_fallback_on_rejection(self, tmp_path: Path) -> None:
+        renders_dir = tmp_path / "renders"
+        renders_dir.mkdir()
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        PILImage = pytest.importorskip("PIL.Image")
+        img = np.full((64, 64, 3), 200, dtype=np.uint8)
+        img[:32, :, :] = 0
+        render_path = renders_dir / "frame_0001.png"
+        PILImage.fromarray(img).save(render_path)
+
+        candidates_path = tmp_path / "candidates.jsonl"
+        candidates_path.write_text(
+            json.dumps(
+                {
+                    "id": "wf_01",
+                    "source_image": "frame_0001.png",
+                    "render_image": str(render_path),
+                    "cross_view_reprojection_error_px": 0.0,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        def _fake_backend(*, backend: str, input_path: Path, output_path: Path, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if backend == "worldforge":
+                PILImage.fromarray(np.zeros((64, 64, 3), dtype=np.uint8)).save(output_path)
+                return True, "worldforge_native_longcat"
+            if backend == "gsfix3d":
+                shutil.copy2(input_path, output_path)
+                return True, "command"
+            raise AssertionError(f"unexpected backend {backend}")
+
+        with mock.patch("post_stage4_view_repair._run_backend", side_effect=_fake_backend):
+            report = repair_candidate_views(
+                renders_dir=renders_dir,
+                candidate_views_path=candidates_path,
+                output_dir=output_dir,
+                model_mode="worldforge+gsfix3d",
+                max_reprojection_error_px=2.5,
+                max_photometric_drift=0.08,
+            )
+
+        assert report["accepted_count"] == 1
+        assert report["rejected_count"] == 0
+        row = report["rows"][0]
+        assert row["backend"] == "gsfix3d"
+        assert row["backend_mode"] == "command"
+        assert row["accepted"] is True
+
+
+def test_parser_accepts_worldforge_modes() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--renders-dir",
+            "renders",
+            "--candidate-views",
+            "candidates.jsonl",
+            "--output-dir",
+            "out",
+            "--model",
+            "worldforge+gsfix3d",
+        ]
+    )
+    assert args.model == "worldforge+gsfix3d"

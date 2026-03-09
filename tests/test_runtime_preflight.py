@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.runtime_preflight import enforce_preflight, validate_runtime_preflight
+from blueprint_pipeline.runtime_preflight import (
+    PreflightCheck,
+    enforce_preflight,
+    format_failed_preflight_checks,
+    validate_runtime_preflight,
+)
 
 
 def _make_blueprintpipeline_stub(root: Path, *, include_downstream: bool = False) -> None:
@@ -96,6 +101,68 @@ def test_runtime_preflight_fails_when_provider_missing(tmp_path: Path, monkeypat
 
     failed_names = {item.name for item in checks if not item.passed}
     assert "provider_sam3d" in failed_names
+
+
+def test_runtime_preflight_accepts_ttt_lrm_with_command_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND", "ttt_lrm_cli --input {REFERENCE_IMAGE} --out {OUTPUT_GLB}")
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="ttt_lrm",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+    )
+    enforce_preflight(checks)
+    failed_names = {item.name for item in checks if not item.passed}
+    assert "provider_ttt_lrm" not in failed_names
+
+
+def test_runtime_preflight_fails_when_ttt_lrm_unconfigured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.delenv("STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND", raising=False)
+    monkeypatch.delenv("STAGE_D_TTT_LRM_IMAGE_TO_3D_COMMAND", raising=False)
+    monkeypatch.delenv("TEXT_TTTLRM_API_HOST", raising=False)
+    monkeypatch.delenv("TEXT_TTTLRM_API_KEY", raising=False)
+    monkeypatch.delenv("TEXT_TTT_LRM_API_HOST", raising=False)
+    monkeypatch.delenv("TEXT_TTT_LRM_API_KEY", raising=False)
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="ttt_lrm",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+    )
+    failed_names = {item.name for item in checks if not item.passed}
+    assert "provider_ttt_lrm" in failed_names
 
 
 def test_runtime_preflight_standalone_mode_skips_blueprintpipeline_requirements(
@@ -275,3 +342,27 @@ def test_runtime_preflight_best_effort_does_not_require_downstream_scripts_or_ge
     assert "script_run_variation_asset_pipeline.py" not in failed
     assert "script_export_to_geniesim.py" not in failed
     assert "data_gen_gemini_key" not in failed
+
+
+def test_format_failed_preflight_checks_is_multiline_and_actionable() -> None:
+    checks = [
+        PreflightCheck(name="provider_sam3d", passed=False, detail="missing host"),
+        PreflightCheck(name="data_gen_gemini_key", passed=False, detail="missing GOOGLE_GENAI_API_KEY"),
+    ]
+    text = format_failed_preflight_checks(checks)
+    assert text.startswith("2 check(s) failed:")
+    assert "- provider_sam3d: missing host" in text
+    assert "- data_gen_gemini_key: missing GOOGLE_GENAI_API_KEY" in text
+
+
+def test_enforce_preflight_uses_structured_failure_text() -> None:
+    checks = [
+        PreflightCheck(name="gcs_root", passed=True, detail="ok"),
+        PreflightCheck(name="provider_sam3d", passed=False, detail="missing host+key"),
+    ]
+    with pytest.raises(Exception) as exc:
+        enforce_preflight(checks)
+    message = str(exc.value)
+    assert "runtime_preflight:" in message
+    assert "1 check(s) failed:" in message
+    assert "- provider_sam3d: missing host+key" in message

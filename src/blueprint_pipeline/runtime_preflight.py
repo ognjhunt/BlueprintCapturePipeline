@@ -7,7 +7,6 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
 
 from .common import StageError
 
@@ -34,8 +33,24 @@ def _env_any(*keys: str) -> str:
     return ""
 
 
+def _normalize_provider(raw: str) -> str:
+    value = (raw or "").strip().lower().replace("-", "_")
+    if value in {"ttt", "tttlrm", "ttt_lrm"}:
+        return "ttt_lrm"
+    return value
+
+
 def _parse_provider_chain(raw_chain: str) -> list[str]:
-    providers = [part.strip().lower() for part in raw_chain.split(",") if part.strip()]
+    providers: list[str] = []
+    seen: set[str] = set()
+    for part in raw_chain.split(","):
+        normalized = _normalize_provider(part)
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        providers.append(normalized)
     return providers or ["image_to_3d", "proxy_box"]
 
 
@@ -75,6 +90,44 @@ def _validate_provider_env(provider_chain: list[str]) -> list[PreflightCheck]:
                 "hunyuan host+key present"
                 if host and key
                 else "missing Hunyuan credentials — set TEXT_HUNYUAN_API_HOST + TEXT_HUNYUAN_API_KEY",
+            )
+        )
+
+    if "ttt_lrm" in provider_chain:
+        host = _env_any(
+            "TEXT_TTTLRM_API_HOST",
+            "TEXT_TTT_LRM_API_HOST",
+            "TTTLRM_API_HOST",
+            "TTT_LRM_API_HOST",
+            "TEXT_TTTLRM_BASE_URL",
+            "TEXT_TTT_LRM_BASE_URL",
+        )
+        key = _env_any(
+            "TEXT_TTTLRM_API_KEY",
+            "TEXT_TTT_LRM_API_KEY",
+            "TTTLRM_API_KEY",
+            "TTT_LRM_API_KEY",
+        )
+        command = _env_any(
+            "STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND",
+            "STAGE_D_TTT_LRM_IMAGE_TO_3D_COMMAND",
+            "TTTLRM_IMAGE_TO_3D_COMMAND",
+            "TTT_LRM_IMAGE_TO_3D_COMMAND",
+        )
+        checks.append(
+            PreflightCheck(
+                "provider_ttt_lrm",
+                bool(command) or bool(host and key),
+                "ttt_lrm command template present"
+                if command
+                else (
+                    "ttt_lrm host+key present"
+                    if host and key
+                    else (
+                        "missing ttt_lrm configuration — set STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND "
+                        "or TEXT_TTTLRM_API_HOST + TEXT_TTTLRM_API_KEY"
+                    )
+                ),
             )
         )
 
@@ -465,5 +518,14 @@ def enforce_preflight(checks: list[PreflightCheck]) -> None:
     failed = [check for check in checks if not check.passed]
     if not failed:
         return
-    messages = "; ".join(f"{check.name}: {check.detail}" for check in failed)
-    raise StageError("runtime_preflight", messages)
+    raise StageError("runtime_preflight", format_failed_preflight_checks(failed))
+
+
+def format_failed_preflight_checks(checks: list[PreflightCheck]) -> str:
+    """Render failed checks into a compact multi-line debug summary."""
+    if not checks:
+        return "no failed checks"
+    lines = [f"{len(checks)} check(s) failed:"]
+    for check in checks:
+        lines.append(f"- {check.name}: {check.detail}")
+    return "\n".join(lines)

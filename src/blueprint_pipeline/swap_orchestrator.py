@@ -1438,6 +1438,34 @@ def _startup_checks() -> List[str]:
                 "SAM3D credentials missing. Set TEXT_SAM3D_API_HOST and TEXT_SAM3D_API_KEY "
                 "(or SAM3D_API_HOST / SAM3D_API_KEY)."
             )
+    if "ttt_lrm" in provider_chain or "tttlrm" in provider_chain or "ttt-lrm" in provider_chain:
+        command = (
+            os.getenv("STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND")
+            or os.getenv("STAGE_D_TTT_LRM_IMAGE_TO_3D_COMMAND")
+            or os.getenv("TTTLRM_IMAGE_TO_3D_COMMAND")
+            or os.getenv("TTT_LRM_IMAGE_TO_3D_COMMAND")
+            or ""
+        )
+        host = (
+            os.getenv("TEXT_TTTLRM_API_HOST")
+            or os.getenv("TEXT_TTT_LRM_API_HOST")
+            or os.getenv("TTTLRM_API_HOST")
+            or os.getenv("TTT_LRM_API_HOST")
+            or ""
+        )
+        key = (
+            os.getenv("TEXT_TTTLRM_API_KEY")
+            or os.getenv("TEXT_TTT_LRM_API_KEY")
+            or os.getenv("TTTLRM_API_KEY")
+            or os.getenv("TTT_LRM_API_KEY")
+            or ""
+        )
+        if not command.strip() and (not host.strip() or not key.strip()):
+            errors.append(
+                "ttt_lrm provider configured but missing runtime setup. "
+                "Set STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND (or STAGE_D_TTT_LRM_IMAGE_TO_3D_COMMAND) "
+                "or TEXT_TTTLRM_API_HOST + TEXT_TTTLRM_API_KEY."
+            )
 
     # Check NuRec worker config
     nurec_cmd = (os.getenv("NUREC_PIPELINE_COMMAND") or "").strip()

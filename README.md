@@ -116,7 +116,19 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `FIXER_RERUN` (`false` default; set `true` with resume to force rerun Stage 5 Fixer)
 - `FIXER_REQUIRED` (`false` default; set `true` to fail instead of falling back to unrefined renders)
 - `POST_STAGE4_REFINE` (`auto` default; `off`/`auto`/`force` for Stage 4.5/5A/5B/5C flow)
-- `POST_STAGE4_REFINE_MODEL` (`fixer+gsfix3d` default; `fixer` or `fixer+gsfix3d`)
+- `POST_STAGE4_REFINE_MODEL` (`worldforge+gsfix3d` default; `fixer`, `fixer+gsfix3d`, `worldforge`, or `worldforge+gsfix3d`)
+- `POST_STAGE4_WORLDFORGE_IMAGE_COMMAND` (optional command template override using placeholders `{input}`, `{mask}`, `{output}`)
+- `POST_STAGE4_WORLDFORGE_ROOT` (default: `/opt/WorldForge`)
+- `POST_STAGE4_WORLDFORGE_BACKEND` (`longcat` default; `longcat` or `wan`)
+- `POST_STAGE4_WORLDFORGE_CHECKPOINT_DIR` (required for native `longcat` backend)
+- `POST_STAGE4_WORLDFORGE_MODELS_DIR` (required for native `wan` backend)
+- `POST_STAGE4_WORLDFORGE_PROMPT` (optional text prompt for native `longcat`)
+- `POST_STAGE4_WORLDFORGE_SCENE` (optional scene key for native `wan`; default: `truck`)
+- `POST_STAGE4_WORLDFORGE_RESOLUTION` (`480p` default; `480p` or `720p`)
+- `POST_STAGE4_WORLDFORGE_NUM_FRAMES` (`17` default)
+- `POST_STAGE4_WORLDFORGE_NUM_INFERENCE_STEPS` (`16` default for `longcat`, `50` for `wan`)
+- `POST_STAGE4_WORLDFORGE_TIMEOUT_SECONDS` (`600` default)
+- `POST_STAGE4_WORLDFORGE_STATIC` (`True` default; `True`/`False`)
 - `POST_STAGE4_MAX_PSEUDOVIEWS` (`96` default; candidate pseudo-view cap)
 - `POST_STAGE4_MAX_VIRTUAL_CANDIDATES` (`48` default; cap on generated virtual void-fill cameras)
 - `POST_STAGE4_DISTILL_ITERS` (`1600` default; refinement distillation iterations)
@@ -168,6 +180,12 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `PIPELINE_MODE` (`full` default; `photorealistic_scene` for baseline-clear 3DGRUT-first output, `photoreal_hallucination` for clarity-first high-capacity baseline + forced synthetic repair)
 - `SCENE_CLEANING_MODE` (`off` default; `auto` best-effort candidate-scoped cleaning, `force` hard-fails when prerequisites/cleaning fail)
 - `SAM3_MASK_EXPORT_SPACE` (`undistorted` default when cleaning is enabled; `raw` or `undistorted`)
+- `RECONSTRUCTION_BACKEND` (`nurec_3dgrut` default, `ttt_lrm` experimental)
+- `RECONSTRUCTION_COMPARE_BACKENDS` (optional comma-separated candidate backends for A/B)
+- `RECONSTRUCTION_COMPARE_WINNER` (`auto` or backend name; selects winner output when comparing)
+- `RECONSTRUCTION_COMPARE_REPORT` (path to backend comparison JSON report)
+- `TTT_LRM_CMD_TEMPLATE` (command template for experimental tttLRM; placeholders: `INPUT_VIDEO`, `OUTPUT_DIR`, `SCENE_ID`, `CAPTURE_ID`, `JOB_SPEC_PATH`)
+- `TTT_LRM_EXECUTABLE` (fallback executable for tttLRM; receives `--input-video` and `--output-dir`)
 - `INPAINT360GS_DIR` (default: `/opt/Inpaint360GS`)
 - `INPAINT360GS_PYTHON` (default: `python3.10`)
 - `INPAINT360GS_RESOLUTION` (`2` default; `1`=full, `2`=half, `4`=quarter)
@@ -201,6 +219,35 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 
 `scripts/run_full_pipeline.sh` behavior note:
 - In `best_effort` completion mode, if swap-orchestrator dependencies are missing (BlueprintPipeline runtime or required provider credentials), Phase 3 is skipped or soft-failed and the script still completes with NuRec outputs for visual QA (`orchestrator_run_report.json` records the fallback state).
+- Stage 1 now routes reconstruction through `scripts/reconstruction_backend_router.py`.
+- Use `--reconstruction-backend nurec_3dgrut|ttt_lrm`, plus optional:
+  - `--reconstruction-compare-backends nurec_3dgrut,ttt_lrm`
+  - `--reconstruction-compare-winner auto|ttt_lrm|nurec_3dgrut`
+  - `--reconstruction-compare-report /tmp/compare_report.json`
+- Winner metadata is written to `reconstruction_backend_meta.json` and comparison details to the configured report path.
+
+### Run Operations Toolkit
+
+- Each wrapper run now writes:
+  - `full_pipeline/run_summary.json` + `full_pipeline/run_summary.md` (`inputs`, `commit`, `params`, `outputs`, `runtime`, `failures`)
+  - `full_pipeline/log_summary.json` + `full_pipeline/log_summary.md` (parsed stage timings/errors from pipeline logs)
+- Log parser can be run manually:
+
+```bash
+python3 scripts/summarize_pipeline_logs.py --pipeline-dir /path/to/full_pipeline
+```
+
+- Fast smoke wiring check (tiny synthetic fixture, no expensive NuRec/orchestrator execution):
+
+```bash
+bash scripts/run_pipeline_smoke.sh
+```
+
+- Supporting docs:
+  - `docs/templates/RUN_SUMMARY_TEMPLATE.md`
+  - `docs/PIPELINE_EXPERIMENT_MATRIX.md`
+  - `docs/PIPELINE_FAILURE_RUNBOOK.md`
+  - `docs/OUTPUT_VALIDATION_CHECKLIST.md`
 
 For production runtimes, pre-bake 3DGRUT build dependencies into the image (tiny-cuda-nn submodules and fused_ssim built against the image's torch) to avoid rebuild delays during retries.
 
@@ -268,9 +315,33 @@ Asset generation/retrieval providers:
 - `TOGETHER_QWEN_IMAGE_EDIT_WIDTH` / `TOGETHER_QWEN_IMAGE_EDIT_HEIGHT` (optional; defaults `1024x1024`)
 - `TOGETHER_QWEN_IMAGE_EDIT_STEPS` (optional; default `28`)
 - `TOGETHER_QWEN_IMAGE_EDIT_TIMEOUT_SECONDS` (optional; default `90`)
-- `TEXT_ASSET_GENERATION_PROVIDER_CHAIN` (default: `sam3d,hunyuan3d`)
+- `TEXT_ASSET_GENERATION_PROVIDER_CHAIN` (default: `sam3d,hunyuan3d`; supports `ttt_lrm` as experimental provider)
 - `TEXT_SAM3D_API_HOST` + `TEXT_SAM3D_API_KEY` (or `SAM3D_API_HOST` + `SAM3D_API_KEY`)
 - `TEXT_HUNYUAN_API_HOST` + `TEXT_HUNYUAN_API_KEY` (or `HUNYUAN_API_HOST` + `HUNYUAN_API_KEY`)
+- `STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND` (or `STAGE_D_TTT_LRM_IMAGE_TO_3D_COMMAND`; preferred for local image-conditioned `ttt_lrm` execution)
+- `TEXT_TTTLRM_API_HOST` + `TEXT_TTTLRM_API_KEY` (or `TEXT_TTT_LRM_API_HOST` + `TEXT_TTT_LRM_API_KEY`; for remote/API `ttt_lrm` setups)
+
+Concrete `ttt_lrm` command templates:
+
+```bash
+# Stage D provider command used by the swap pipeline
+export STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND="bash /app/scripts/run_ttt_lrm_stage_d.sh \
+  {REFERENCE_IMAGE} {OUTPUT_GLB} {OUTPUT_DIR} {SCENE_ID} {OBJECT_ID} {ROOM_TYPE}"
+
+# Stage 1 reconstruction backend command used by reconstruction_backend_router.py
+export TTT_LRM_CMD_TEMPLATE="bash /app/scripts/run_ttt_lrm_reconstruction.sh \
+  {INPUT_VIDEO} {OUTPUT_DIR} {SCENE_ID} {CAPTURE_ID} {JOB_SPEC_PATH}"
+
+# Local runtime binary mode (preferred)
+export TTT_LRM_STAGE_D_BIN="/opt/tttLRM/bin/tttlrm_stage_d"
+export TTT_LRM_RECON_BIN="/opt/tttLRM/bin/tttlrm_reconstruct"
+
+# Container runtime mode (if binaries are only available in a GPU container)
+export TTT_LRM_STAGE_D_CONTAINER_IMAGE="nijelhunt/blueprint-capture-pipeline:latest"
+export TTT_LRM_STAGE_D_CONTAINER_BIN="/opt/tttLRM/bin/tttlrm_stage_d"
+export TTT_LRM_RECON_CONTAINER_IMAGE="nijelhunt/blueprint-capture-pipeline:latest"
+export TTT_LRM_RECON_CONTAINER_BIN="/opt/tttLRM/bin/tttlrm_reconstruct"
+```
 
 Interactive backend env:
 

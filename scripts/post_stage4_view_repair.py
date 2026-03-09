@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
@@ -288,6 +289,202 @@ def _run_fixer_native(
         shutil.rmtree(tmp_out, ignore_errors=True)
 
 
+def _env_int(name: str, default: int, *, min_value: int = 0) -> int:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(default)
+    return max(min_value, value)
+
+
+def _resolve_backend_plan(model_mode: str) -> tuple[str, bool]:
+    mode = str(model_mode or "").strip().lower()
+    if mode == "fixer":
+        return "fixer", False
+    if mode == "fixer+gsfix3d":
+        return "fixer", True
+    if mode == "worldforge":
+        return "worldforge", False
+    if mode == "worldforge+gsfix3d":
+        return "worldforge", True
+    raise ValueError(
+        f"Unsupported model_mode={model_mode!r}; expected "
+        "fixer|fixer+gsfix3d|worldforge|worldforge+gsfix3d"
+    )
+
+
+def _extract_first_frame_from_video(video_path: Path, output_path: Path) -> Path | None:
+    if not video_path.is_file():
+        return None
+    try:
+        import cv2  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        ok, frame = cap.read()
+    finally:
+        cap.release()
+    if not ok or frame is None:
+        return None
+    try:
+        cv2.imwrite(str(output_path), frame)
+    except Exception:
+        return None
+    return output_path if output_path.is_file() and output_path.stat().st_size > 0 else None
+
+
+def _find_worldforge_output_frame(work_dir: Path, output_video: Path) -> Path | None:
+    png_candidates: List[Path] = []
+    for path in sorted(work_dir.rglob("*.png")):
+        if not path.is_file():
+            continue
+        if "video_ref" in path.parts:
+            continue
+        if path.name.lower().startswith("mask_"):
+            continue
+        png_candidates.append(path)
+    if png_candidates:
+        return png_candidates[0]
+    return _extract_first_frame_from_video(output_video, work_dir / "first_frame.png")
+
+
+def _run_worldforge_native(
+    *,
+    input_path: Path,
+    mask_path: Path,
+    output_path: Path,
+) -> tuple[bool, str]:
+    wf_root = Path(os.getenv("POST_STAGE4_WORLDFORGE_ROOT", "/opt/WorldForge")).resolve()
+    wf_backend = str(os.getenv("POST_STAGE4_WORLDFORGE_BACKEND", "longcat")).strip().lower()
+    wf_resolution = str(os.getenv("POST_STAGE4_WORLDFORGE_RESOLUTION", "480p")).strip().lower() or "480p"
+    wf_num_frames = _env_int("POST_STAGE4_WORLDFORGE_NUM_FRAMES", 17, min_value=1)
+    default_steps = 16 if wf_backend == "longcat" else 50
+    wf_num_steps = _env_int("POST_STAGE4_WORLDFORGE_NUM_INFERENCE_STEPS", default_steps, min_value=1)
+    wf_timeout = _env_int("POST_STAGE4_WORLDFORGE_TIMEOUT_SECONDS", 600, min_value=1)
+    wf_static = str(os.getenv("POST_STAGE4_WORLDFORGE_STATIC", "True")).strip()
+    if wf_static not in {"True", "False"}:
+        wf_static = "True"
+    wf_prompt = str(
+        os.getenv(
+            "POST_STAGE4_WORLDFORGE_PROMPT",
+            "A static indoor room, completely frozen, utterly motionless, high detail, photorealistic.",
+        )
+    ).strip()
+    wf_scene = str(os.getenv("POST_STAGE4_WORLDFORGE_SCENE", "truck")).strip() or "truck"
+
+    if wf_backend not in {"longcat", "wan"}:
+        return False, "worldforge_missing"
+    if not wf_root.is_dir():
+        return False, "worldforge_missing"
+    if wf_resolution not in {"480p", "720p"}:
+        wf_resolution = "480p"
+
+    with tempfile.TemporaryDirectory(prefix=".worldforge_", dir=str(output_path.parent)) as tmp_dir:
+        work_dir = Path(tmp_dir)
+        video_ref = work_dir / "video_ref"
+        video_ref.mkdir(parents=True, exist_ok=True)
+        ref_frame = video_ref / "00000.png"
+        ref_mask = video_ref / "mask_00000.png"
+        shutil.copy2(input_path, ref_frame)
+        shutil.copy2(mask_path, ref_mask)
+
+        output_video = work_dir / "output.mp4"
+        cmd: List[str]
+        if wf_backend == "longcat":
+            checkpoint_dir = str(os.getenv("POST_STAGE4_WORLDFORGE_CHECKPOINT_DIR", "")).strip()
+            script_path = wf_root / "longcat_for_worldforge" / "run_longcat_worldforge_single.py"
+            if not checkpoint_dir or not script_path.is_file():
+                return False, "worldforge_missing"
+            cmd = [
+                "python3",
+                str(script_path),
+                "--checkpoint_dir",
+                checkpoint_dir,
+                "--video-ref",
+                str(video_ref),
+                "--prompt",
+                wf_prompt,
+                "--resolution",
+                wf_resolution,
+                "--num-frames",
+                str(wf_num_frames),
+                "--num-inference-steps",
+                str(wf_num_steps),
+                "--guided",
+                "--soften-mask",
+                "--transition-distance",
+                "15",
+                "--static",
+                wf_static,
+                "--save-png",
+                "--output",
+                str(output_video),
+            ]
+        else:
+            models_dir = str(os.getenv("POST_STAGE4_WORLDFORGE_MODELS_DIR", "")).strip()
+            script_path = wf_root / "wan_for_worldforge" / "infer_worldforge.py"
+            if not models_dir or not script_path.is_file():
+                return False, "worldforge_missing"
+            cmd = [
+                "python3",
+                str(script_path),
+                "--model",
+                wf_resolution,
+                "--models-dir",
+                models_dir,
+                "--video-ref",
+                str(video_ref),
+                "--scene",
+                wf_scene,
+                "--num-frames",
+                str(wf_num_frames),
+                "--num-inference-steps",
+                str(wf_num_steps),
+                "--guided",
+                "--soften-mask",
+                "--transition-distance",
+                "15",
+                "--static",
+                wf_static,
+                "--save-png",
+                "--output",
+                str(output_video),
+            ]
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(wf_root),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=wf_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "worldforge_error_rc124"
+        except Exception:
+            return False, "worldforge_missing"
+
+        if proc.returncode != 0:
+            return False, f"worldforge_error_rc{proc.returncode}"
+
+        fixed_frame = _find_worldforge_output_frame(work_dir, output_video)
+        if fixed_frame is None:
+            return False, "worldforge_no_output_frame"
+
+        composed_ok, composed_mode = _compose_repair_with_mask(
+            input_path=input_path,
+            fixed_path=fixed_frame,
+            mask_path=mask_path,
+            output_path=output_path,
+        )
+        if not composed_ok:
+            return False, composed_mode
+        return True, f"worldforge_native_{wf_backend}"
+
+
 def _run_backend(
     *,
     backend: str,
@@ -300,6 +497,8 @@ def _run_backend(
         template = os.getenv("POST_STAGE4_FIXER_IMAGE_COMMAND", "").strip()
     elif backend == "gsfix3d":
         template = os.getenv("POST_STAGE4_GSFIX3D_IMAGE_COMMAND", "").strip()
+    elif backend == "worldforge":
+        template = os.getenv("POST_STAGE4_WORLDFORGE_IMAGE_COMMAND", "").strip()
     else:
         template = ""
 
@@ -311,6 +510,14 @@ def _run_backend(
     # Try native Fixer runtime when backend is "fixer".
     if backend == "fixer":
         ok, mode = _run_fixer_native(
+            input_path=input_path,
+            mask_path=mask_path,
+            output_path=output_path,
+        )
+        if ok:
+            return True, mode
+    elif backend == "worldforge":
+        ok, mode = _run_worldforge_native(
             input_path=input_path,
             mask_path=mask_path,
             output_path=output_path,
@@ -341,7 +548,7 @@ def repair_candidate_views(
     repaired_dir = output_dir / "post_stage4_repaired_views"
     repaired_dir.mkdir(parents=True, exist_ok=True)
 
-    use_gsfix3d = model_mode.strip().lower() == "fixer+gsfix3d"
+    primary_backend, use_gsfix3d = _resolve_backend_plan(model_mode)
     rows: List[Dict[str, Any]] = []
 
     for idx, cand in enumerate(candidates):
@@ -366,7 +573,7 @@ def repair_candidate_views(
                         "render_image": "",
                         "repaired_image": "",
                         "mask_image": "",
-                        "backend": "fixer",
+                        "backend": primary_backend,
                         "backend_mode": "unresolved",
                         "cross_view_reprojection_error_px": float(cand.get("cross_view_reprojection_error_px", 0.0)),
                         "photometric_drift_outside_mask": 1.0,
@@ -393,7 +600,7 @@ def repair_candidate_views(
                         "render_image": str(render_path),
                         "repaired_image": "",
                         "mask_image": "",
-                        "backend": "fixer",
+                        "backend": primary_backend,
                         "backend_mode": "unresolved",
                         "cross_view_reprojection_error_px": float(cand.get("cross_view_reprojection_error_px", 0.0)),
                         "photometric_drift_outside_mask": 1.0,
@@ -415,10 +622,10 @@ def repair_candidate_views(
         Image.fromarray((mask.astype(np.uint8) * 255), mode="L").save(mask_path)
 
         repaired_path = repaired_dir / render_path.name
-        backend_used = "fixer"
+        backend_used = primary_backend
         backend_mode = ""
         ok, backend_mode = _run_backend(
-            backend="fixer",
+            backend=primary_backend,
             input_path=render_path,
             mask_path=mask_path,
             output_path=repaired_path,
@@ -509,6 +716,13 @@ def repair_candidate_views(
     post_sharp = [float(r.get("post_sharpness", 0.0)) for r in accepted_rows]
     pre_holes_mean = float(np.mean(pre_holes)) if pre_holes else 0.0
     pre_sharp_mean = float(np.mean(pre_sharp)) if pre_sharp else 0.0
+    backend_counts: Dict[str, int] = {}
+    backend_mode_counts: Dict[str, int] = {}
+    for row in rows:
+        backend_key = str(row.get("backend") or "unknown")
+        mode_key = str(row.get("backend_mode") or "unknown")
+        backend_counts[backend_key] = backend_counts.get(backend_key, 0) + 1
+        backend_mode_counts[mode_key] = backend_mode_counts.get(mode_key, 0) + 1
 
     report = {
         "schema_version": "v1",
@@ -521,6 +735,10 @@ def repair_candidate_views(
         "repaired_views_dir": str(repaired_dir),
         "max_reprojection_error_px": float(max_reprojection_error_px),
         "max_photometric_drift": float(max_photometric_drift),
+        "primary_backend": primary_backend,
+        "fallback_backend_enabled": bool(use_gsfix3d),
+        "backend_counts": backend_counts,
+        "backend_mode_counts": backend_mode_counts,
         "pre_repair_hole_ratio_mean": pre_holes_mean,
         "post_repair_hole_ratio_mean": float(np.mean(post_holes)) if post_holes else pre_holes_mean,
         "pre_sharpness_mean": pre_sharp_mean,
@@ -547,8 +765,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--virtual-render-mapping", default="", help="Optional JSONL mapping from virtual candidate_id -> rendered image metadata")
     parser.add_argument(
         "--model",
-        default=os.getenv("POST_STAGE4_REFINE_MODEL", "fixer+gsfix3d"),
-        choices=["fixer", "fixer+gsfix3d"],
+        default=os.getenv("POST_STAGE4_REFINE_MODEL", "worldforge+gsfix3d"),
+        choices=["fixer", "fixer+gsfix3d", "worldforge", "worldforge+gsfix3d"],
     )
     parser.add_argument(
         "--max-reprojection-error-px",

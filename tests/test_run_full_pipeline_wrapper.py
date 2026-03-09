@@ -78,7 +78,7 @@ def test_wrapper_enables_fixer_by_default() -> None:
 def test_wrapper_passes_post_stage4_refine_flags() -> None:
     text = _script_text()
     assert 'POST_STAGE4_REFINE="${POST_STAGE4_REFINE:-auto}"' in text
-    assert 'POST_STAGE4_REFINE_MODEL="${POST_STAGE4_REFINE_MODEL:-fixer+gsfix3d}"' in text
+    assert 'POST_STAGE4_REFINE_MODEL="${POST_STAGE4_REFINE_MODEL:-worldforge+gsfix3d}"' in text
     assert 'POST_STAGE4_MAX_PSEUDOVIEWS="${POST_STAGE4_MAX_PSEUDOVIEWS:-96}"' in text
     assert 'POST_STAGE4_DISTILL_ITERS="${POST_STAGE4_DISTILL_ITERS:-1600}"' in text
     assert 'POST_STAGE4_TIME_BUDGET_MIN="${POST_STAGE4_TIME_BUDGET_MIN:-90}"' in text
@@ -87,6 +87,11 @@ def test_wrapper_passes_post_stage4_refine_flags() -> None:
     assert '--post-stage4-max-pseudoviews "$POST_STAGE4_MAX_PSEUDOVIEWS"' in text
     assert '--post-stage4-distill-iters "$POST_STAGE4_DISTILL_ITERS"' in text
     assert '--post-stage4-time-budget-min "$POST_STAGE4_TIME_BUDGET_MIN"' in text
+
+
+def test_wrapper_accepts_worldforge_refine_modes() -> None:
+    text = _script_text()
+    assert "fixer|fixer+gsfix3d|worldforge|worldforge+gsfix3d" in text
 
 
 def test_wrapper_copies_object_index_before_rewrite() -> None:
@@ -165,3 +170,33 @@ def test_wrapper_best_effort_orchestrator_dependency_fallback() -> None:
     assert 'swap_orchestrator failed in best_effort mode' in text
     assert 'orchestrator_run_report.json' in text
     assert 'if [ "$ORCHESTRATOR_STATUS" = "completed" ]; then' in text
+
+
+def test_wrapper_generates_run_summary_and_log_summary_artifacts() -> None:
+    text = _script_text()
+    assert "write_run_summary()" in text
+    assert "generate_log_summary()" in text
+    assert 'RUN_SUMMARY_JSON_PATH="${PIPELINE_DIR}/run_summary.json"' in text
+    assert 'RUN_SUMMARY_MD_PATH="${PIPELINE_DIR}/run_summary.md"' in text
+    assert 'python3 "${APP_DIR}/scripts/summarize_pipeline_logs.py" --pipeline-dir "${PIPELINE_DIR}"' in text
+    assert 'log "  Log summary:  ${PIPELINE_DIR}/log_summary.json"' in text
+
+
+def test_wrapper_runs_guardrail_checks_before_expensive_stages() -> None:
+    text = _script_text()
+    assert "run_guardrail_checks()" in text
+    assert "Guardrail preflight passed" in text
+    assert "COLMAP_RETRY_MIN_REGISTERED_RATIO cannot be greater than COLMAP_MIN_REGISTERED_RATIO" in text
+    assert "POST_STAGE4_REFINE=force with fixer-based model requires SKIP_FIXER=false" in text
+    assert "full_required with ttt_lrm provider requires STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND" in text
+    assert "loger backend requested but LOGER_CMD_TEMPLATE / LOGER_EXECUTABLE are both unset" in text
+    assert "SCENE_CLEANING_MODE=force is unsupported with loger backend" in text
+
+
+def test_wrapper_advertises_loger_backend_support() -> None:
+    text = _script_text()
+    assert "Reconstruction backend: nurec_3dgrut (default), tttLRM, loger" in text
+    assert "expected nurec_3dgrut, tttLRM, or loger" in text
+    assert "expected nurec_3dgrut, tttLRM, loger, or auto" in text
+    assert "NUREC_VISUAL_PRIMARY defaulted to mesh for loger backend compatibility" in text
+    assert "loger_backend_report.json" in text

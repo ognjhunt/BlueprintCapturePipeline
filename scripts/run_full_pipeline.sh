@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
+GCS_ROOT_SET_BY_ENV="${GCS_ROOT+x}"
 WORKSPACE="${WORKSPACE:-/workspace}"
 GCS_ROOT="${GCS_ROOT:-${WORKSPACE}/gcs_root}"
 BUCKET="${BUCKET:-blueprint-local}"
@@ -41,7 +42,7 @@ NUREC_PARALLEL_POST_STAGE6="${NUREC_PARALLEL_POST_STAGE6:-true}"
 FIXER_RERUN="${FIXER_RERUN:-false}"
 FIXER_REQUIRED="${FIXER_REQUIRED:-false}"
 POST_STAGE4_REFINE="${POST_STAGE4_REFINE:-auto}"
-POST_STAGE4_REFINE_MODEL="${POST_STAGE4_REFINE_MODEL:-fixer+gsfix3d}"
+POST_STAGE4_REFINE_MODEL="${POST_STAGE4_REFINE_MODEL:-worldforge+gsfix3d}"
 POST_STAGE4_MAX_PSEUDOVIEWS="${POST_STAGE4_MAX_PSEUDOVIEWS:-96}"
 POST_STAGE4_DISTILL_ITERS="${POST_STAGE4_DISTILL_ITERS:-1600}"
 POST_STAGE4_TIME_BUDGET_MIN="${POST_STAGE4_TIME_BUDGET_MIN:-90}"
@@ -72,6 +73,15 @@ SCENE_CLEANING_MODE="${SCENE_CLEANING_MODE:-off}"
 SAM3_MASK_EXPORT_SPACE="${SAM3_MASK_EXPORT_SPACE:-undistorted}"
 INPAINT360GS_RESOLUTION="${INPAINT360GS_RESOLUTION:-2}"
 OPEN_OMNIVERSE_PREVIEW="${OPEN_OMNIVERSE_PREVIEW:-false}"
+RECONSTRUCTION_BACKEND="${RECONSTRUCTION_BACKEND:-nurec_3dgrut}"
+RECONSTRUCTION_COMPARE_BACKENDS="${RECONSTRUCTION_COMPARE_BACKENDS:-}"
+RECONSTRUCTION_COMPARE_WINNER="${RECONSTRUCTION_COMPARE_WINNER:-auto}"
+RECONSTRUCTION_COMPARE_REPORT="${RECONSTRUCTION_COMPARE_REPORT:-${WORKSPACE}/full_pipeline/reconstruction_compare_report.json}"
+RUN_STARTED_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RUN_STARTED_AT_EPOCH="$(date +%s)"
+RUN_FAILURES=()
+PIPELINE_DIR=""
+ORCHESTRATOR_STATUS="not_started"
 
 # Backward compatibility with older SKIP_FIXER env style ("--skip-fixer").
 if [ "${SKIP_FIXER}" = "--skip-fixer" ]; then
@@ -91,10 +101,433 @@ log() {
   echo "[run-full-pipeline] $*"
 }
 
+record_failure() {
+  RUN_FAILURES+=("$*")
+}
+
 die() {
+  record_failure "$*"
   echo "[run-full-pipeline] ERROR: $*" >&2
   exit 1
 }
+
+generate_log_summary() {
+  [ -n "${PIPELINE_DIR:-}" ] || return 0
+  [ -d "${PIPELINE_DIR}" ] || mkdir -p "${PIPELINE_DIR}"
+  if python3 "${APP_DIR}/scripts/summarize_pipeline_logs.py" --pipeline-dir "${PIPELINE_DIR}" >/dev/null 2>&1; then
+    log "Generated log summary: ${PIPELINE_DIR}/log_summary.json ${PIPELINE_DIR}/log_summary.md"
+    return 0
+  fi
+  record_failure "Failed to generate log summary from pipeline logs"
+  log "WARNING: Failed to generate log summary artifacts"
+  return 0
+}
+
+write_run_summary() {
+  local exit_code="$1"
+  local run_status="passed"
+  if [ "$exit_code" -ne 0 ]; then
+    run_status="failed"
+  fi
+
+  if [ -z "${PIPELINE_DIR:-}" ]; then
+    PIPELINE_DIR="${WORKSPACE}/full_pipeline"
+  fi
+  mkdir -p "${PIPELINE_DIR}" || return 0
+  generate_log_summary
+
+  local ended_at_utc
+  ended_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local ended_at_epoch
+  ended_at_epoch="$(date +%s)"
+  local duration_sec=0
+  if [ "${RUN_STARTED_AT_EPOCH}" -le "${ended_at_epoch}" ]; then
+    duration_sec=$((ended_at_epoch - RUN_STARTED_AT_EPOCH))
+  fi
+
+  local run_failures_file="${PIPELINE_DIR}/run_failures.txt"
+  : > "${run_failures_file}"
+  if [ "${#RUN_FAILURES[@]}" -gt 0 ]; then
+    printf '%s\n' "${RUN_FAILURES[@]}" > "${run_failures_file}"
+  fi
+  if [ "$exit_code" -ne 0 ] && [ ! -s "${run_failures_file}" ]; then
+    printf 'Script exited with status %s\n' "$exit_code" > "${run_failures_file}"
+  fi
+
+  local repo_commit="unknown"
+  if command -v git >/dev/null 2>&1; then
+    repo_commit="$(git -C "${APP_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
+  fi
+  local blueprintpipeline_commit="${BLUEPRINTPIPELINE_COMMIT_HASH:-}"
+  if [ -z "${blueprintpipeline_commit//[[:space:]]/}" ] && command -v git >/dev/null 2>&1; then
+    blueprintpipeline_commit="$(git -C "${BLUEPRINTPIPELINE_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+  fi
+  if [ -z "${blueprintpipeline_commit//[[:space:]]/}" ]; then
+    blueprintpipeline_commit="unknown"
+  fi
+
+  export RUN_SUMMARY_JSON_PATH="${PIPELINE_DIR}/run_summary.json"
+  export RUN_SUMMARY_MD_PATH="${PIPELINE_DIR}/run_summary.md"
+  export RUN_FAILURES_FILE="${run_failures_file}"
+  export RUN_STATUS="${run_status}"
+  export RUN_EXIT_CODE="${exit_code}"
+  export RUN_ENDED_AT_UTC="${ended_at_utc}"
+  export RUN_DURATION_SEC="${duration_sec}"
+  export RUN_REPO_COMMIT="${repo_commit}"
+  export RUN_BLUEPRINTPIPELINE_COMMIT="${blueprintpipeline_commit}"
+  export RUN_STARTED_AT_UTC
+  export INPUT_VIDEO SCENE_ID CAPTURE_ID WORKSPACE GCS_ROOT BUCKET
+  export COMPLETION_MODE NUREC_RERUN_PROFILE NUREC_QUALITY_PROFILE
+  export SKIP_NUREC SKIP_FIXER SKIP_DENSE FIXER_MODE
+  export RECONSTRUCTION_BACKEND RECONSTRUCTION_COMPARE_BACKENDS RECONSTRUCTION_COMPARE_WINNER
+  export RECONSTRUCTION_COMPARE_REPORT
+  export POST_STAGE4_REFINE POST_STAGE4_REFINE_MODEL
+  export GENERATION_PROVIDER_CHAIN SCENE_CLEANING_MODE
+  export SAM3_MASK_EXPORT_SPACE INPAINT360GS_RESOLUTION PIPELINE_MODE
+  export COLMAP_MIN_REGISTERED_RATIO COLMAP_RETRY_MIN_REGISTERED_RATIO
+  export PIPELINE_DIR NUREC_OUTPUT_DIR SCENE_ROOT PIPELINE_ROOT ORCHESTRATOR_STATUS
+
+  python3 - <<PY
+import json
+import os
+from pathlib import Path
+
+run_summary_json = Path(os.environ["RUN_SUMMARY_JSON_PATH"])
+run_summary_md = Path(os.environ["RUN_SUMMARY_MD_PATH"])
+failures_file = Path(os.environ["RUN_FAILURES_FILE"])
+run_status = os.environ.get("RUN_STATUS", "unknown")
+exit_code = int(os.environ.get("RUN_EXIT_CODE", "1"))
+
+def _path_record(path_str: str) -> dict:
+    path = Path(path_str)
+    return {"path": path_str, "exists": path.exists()}
+
+failures = []
+if failures_file.is_file():
+    for line in failures_file.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped:
+            failures.append(stripped)
+
+  params = {
+      "completion_mode": os.getenv("COMPLETION_MODE", ""),
+      "nurec_rerun_profile": os.getenv("NUREC_RERUN_PROFILE", ""),
+      "nurec_quality_profile": os.getenv("NUREC_QUALITY_PROFILE", ""),
+      "reconstruction_backend": os.getenv("RECONSTRUCTION_BACKEND", ""),
+      "reconstruction_compare_backends": os.getenv("RECONSTRUCTION_COMPARE_BACKENDS", ""),
+      "reconstruction_compare_winner": os.getenv("RECONSTRUCTION_COMPARE_WINNER", ""),
+      "reconstruction_compare_report": os.getenv("RECONSTRUCTION_COMPARE_REPORT", ""),
+      "skip_nurec": os.getenv("SKIP_NUREC", ""),
+      "skip_fixer": os.getenv("SKIP_FIXER", ""),
+      "skip_dense": os.getenv("SKIP_DENSE", ""),
+    "fixer_mode": os.getenv("FIXER_MODE", ""),
+    "post_stage4_refine": os.getenv("POST_STAGE4_REFINE", ""),
+    "post_stage4_refine_model": os.getenv("POST_STAGE4_REFINE_MODEL", ""),
+    "generation_provider_chain": os.getenv("GENERATION_PROVIDER_CHAIN", ""),
+    "scene_cleaning_mode": os.getenv("SCENE_CLEANING_MODE", ""),
+    "sam3_mask_export_space": os.getenv("SAM3_MASK_EXPORT_SPACE", ""),
+    "inpaint360gs_resolution": os.getenv("INPAINT360GS_RESOLUTION", ""),
+    "pipeline_mode": os.getenv("PIPELINE_MODE", ""),
+    "colmap_min_registered_ratio": os.getenv("COLMAP_MIN_REGISTERED_RATIO", ""),
+    "colmap_retry_min_registered_ratio": os.getenv("COLMAP_RETRY_MIN_REGISTERED_RATIO", ""),
+}
+
+pipeline_dir = os.getenv("PIPELINE_DIR", "")
+nurec_output_dir = os.getenv("NUREC_OUTPUT_DIR", "")
+scene_root = os.getenv("SCENE_ROOT", "")
+pipeline_root = os.getenv("PIPELINE_ROOT", "")
+orchestrator_status = os.getenv("ORCHESTRATOR_STATUS", "not_started")
+
+outputs = {
+    "nurec_output_dir": _path_record(nurec_output_dir),
+    "pipeline_dir": _path_record(pipeline_dir),
+    "scene_root": _path_record(scene_root) if scene_root else {"path": "", "exists": False},
+    "pipeline_root": _path_record(pipeline_root) if pipeline_root else {"path": "", "exists": False},
+    "scene_usda": _path_record(f"{scene_root}/usd/scene.usda") if scene_root else {"path": "", "exists": False},
+    "swap_quality_report": _path_record(f"{pipeline_root}/swap_quality_report.json")
+    if pipeline_root
+    else {"path": "", "exists": False},
+    "reconstruction_compare_report": _path_record(
+      os.getenv("RECONSTRUCTION_COMPARE_REPORT", "")
+    ),
+    "pipeline_summary_json": _path_record(f"{pipeline_root}/pipeline_summary.json")
+    if pipeline_root
+    else {"path": "", "exists": False},
+    "orchestrator_run_report": _path_record(f"{pipeline_dir}/orchestrator_run_report.json")
+    if pipeline_dir
+    else {"path": "", "exists": False},
+    "log_summary_json": _path_record(f"{pipeline_dir}/log_summary.json")
+    if pipeline_dir
+    else {"path": "", "exists": False},
+    "log_summary_md": _path_record(f"{pipeline_dir}/log_summary.md")
+    if pipeline_dir
+    else {"path": "", "exists": False},
+}
+
+payload = {
+    "schema_version": "v1",
+    "inputs": {
+        "input_video": os.getenv("INPUT_VIDEO", ""),
+        "scene_id": os.getenv("SCENE_ID", ""),
+        "capture_id": os.getenv("CAPTURE_ID", ""),
+        "workspace": os.getenv("WORKSPACE", ""),
+        "gcs_root": os.getenv("GCS_ROOT", ""),
+        "bucket": os.getenv("BUCKET", ""),
+    },
+    "commit": {
+        "blueprint_capture_pipeline": os.getenv("RUN_REPO_COMMIT", "unknown"),
+        "blueprintpipeline": os.getenv("RUN_BLUEPRINTPIPELINE_COMMIT", "unknown"),
+    },
+    "params": params,
+    "outputs": outputs,
+    "runtime": {
+        "started_at_utc": os.getenv("RUN_STARTED_AT_UTC", ""),
+        "ended_at_utc": os.getenv("RUN_ENDED_AT_UTC", ""),
+        "duration_sec": int(os.getenv("RUN_DURATION_SEC", "0")),
+        "status": run_status,
+        "exit_code": exit_code,
+        "orchestrator_status": orchestrator_status,
+    },
+    "failures": failures,
+}
+run_summary_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+lines = [
+    "# Pipeline Run Summary",
+    "",
+    "## Inputs",
+    f"- input_video: `{payload['inputs']['input_video']}`",
+    f"- scene_id: `{payload['inputs']['scene_id']}`",
+    f"- capture_id: `{payload['inputs']['capture_id']}`",
+    f"- workspace: `{payload['inputs']['workspace']}`",
+    "",
+    "## Commit",
+    f"- blueprint_capture_pipeline: `{payload['commit']['blueprint_capture_pipeline']}`",
+    f"- blueprintpipeline: `{payload['commit']['blueprintpipeline']}`",
+    "",
+    "## Params",
+]
+for key in sorted(params):
+    lines.append(f"- {key}: `{params[key]}`")
+
+lines.extend(["", "## Outputs"])
+for key, info in outputs.items():
+    if isinstance(info, dict):
+        lines.append(f"- {key}: `{info.get('path', '')}` (exists={info.get('exists', False)})")
+
+lines.extend(
+    [
+        "",
+        "## Runtime",
+        f"- started_at_utc: `{payload['runtime']['started_at_utc']}`",
+        f"- ended_at_utc: `{payload['runtime']['ended_at_utc']}`",
+        f"- duration_sec: `{payload['runtime']['duration_sec']}`",
+        f"- status: `{payload['runtime']['status']}`",
+        f"- exit_code: `{payload['runtime']['exit_code']}`",
+        f"- orchestrator_status: `{payload['runtime']['orchestrator_status']}`",
+        "",
+        "## Failures",
+    ]
+)
+if failures:
+    for failure in failures:
+        lines.append(f"- {failure}")
+else:
+    lines.append("- none")
+
+run_summary_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+
+  log "Run summary written: ${RUN_SUMMARY_JSON_PATH} ${RUN_SUMMARY_MD_PATH}"
+}
+
+run_guardrail_checks() {
+  local errors=()
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    errors+=("python3 is required but not found in PATH")
+  fi
+  if [ "$SKIP_NUREC" = "false" ]; then
+    case "${RECONSTRUCTION_BACKEND,,}" in
+      nurec_3dgrut|nurec_3d|nurec|nurec3d|3dgrut)
+        if [ ! -f "${APP_DIR}/scripts/nurec_shim.py" ]; then
+          errors+=("missing script: ${APP_DIR}/scripts/nurec_shim.py (required for nurec_3dgrut backend)")
+        fi
+        ;;
+      ttt_lrm|tttlrm|ttt)
+        if [ -z "${TTT_LRM_CMD_TEMPLATE}" ] && [ -z "${TTT_LRM_EXECUTABLE}" ]; then
+          errors+=("tttLRM backend requested but TTT_LRM_CMD_TEMPLATE / TTT_LRM_EXECUTABLE are both unset")
+        fi
+        ;;
+      loger)
+        if [ -z "${LOGER_CMD_TEMPLATE:-}" ] && [ -z "${LOGER_EXECUTABLE:-}" ]; then
+          errors+=("loger backend requested but LOGER_CMD_TEMPLATE / LOGER_EXECUTABLE are both unset")
+        fi
+        if [ "${SCENE_CLEANING_MODE}" = "force" ]; then
+          errors+=("SCENE_CLEANING_MODE=force is unsupported with loger backend")
+        fi
+        ;;
+      *)
+        errors+=("unsupported reconstruction backend: ${RECONSTRUCTION_BACKEND} (expected nurec_3dgrut, tttLRM, or loger)")
+        ;;
+    esac
+
+    IFS=',' read -r -a _reconstruction_compare_backends <<< "${RECONSTRUCTION_COMPARE_BACKENDS}"
+    local compare_backend
+    for compare_backend in "${_reconstruction_compare_backends[@]}"; do
+      compare_backend="${compare_backend//[[:space:]]/}"
+      case "${compare_backend,,}" in
+        "" )
+          ;;
+        nurec_3dgrut|nurec_3d|nurec|nurec3d|3dgrut)
+          ;;
+        ttt_lrm|tttlrm|ttt)
+          if [ -z "${TTT_LRM_CMD_TEMPLATE}" ] && [ -z "${TTT_LRM_EXECUTABLE}" ]; then
+            errors+=("tttLRM included in --reconstruction-compare-backends but TTT_LRM_CMD_TEMPLATE / TTT_LRM_EXECUTABLE are both unset")
+          fi
+          ;;
+        loger)
+          if [ -z "${LOGER_CMD_TEMPLATE:-}" ] && [ -z "${LOGER_EXECUTABLE:-}" ]; then
+            errors+=("loger included in --reconstruction-compare-backends but LOGER_CMD_TEMPLATE / LOGER_EXECUTABLE are both unset")
+          fi
+          if [ "${SCENE_CLEANING_MODE}" = "force" ]; then
+            errors+=("SCENE_CLEANING_MODE=force is unsupported when loger is included in reconstruction compare backends")
+          fi
+          ;;
+        *)
+          errors+=("unsupported reconstruction compare backend: ${compare_backend} (expected nurec_3dgrut, tttLRM, or loger)")
+          ;;
+      esac
+    done
+
+    if [ "${RECONSTRUCTION_COMPARE_WINNER,,}" != "auto" ]; then
+      local compare_winner="${RECONSTRUCTION_COMPARE_WINNER,,}"
+      case "$compare_winner" in
+        nurec_3dgrut|nurec|nurec3d|3dgrut|ttt_lrm|tttlrm|ttt|loger)
+          ;;
+        *)
+          errors+=("unsupported reconstruction compare winner: ${RECONSTRUCTION_COMPARE_WINNER} (expected nurec_3dgrut, tttLRM, loger, or auto)")
+          ;;
+      esac
+    fi
+  fi
+  if [ "$SKIP_NUREC" = "true" ]; then
+    if [ -z "${NUREC_OUTPUT_DIR//[[:space:]]/}" ]; then
+      errors+=("--skip-nurec requires --nurec-output-dir or NUREC_OUTPUT_DIR")
+    elif [ ! -d "${NUREC_OUTPUT_DIR}" ]; then
+      errors+=("skip-nurec output directory does not exist: ${NUREC_OUTPUT_DIR}")
+    fi
+  fi
+
+  local refine_model_lc="${POST_STAGE4_REFINE_MODEL,,}"
+  if [ "$POST_STAGE4_REFINE" = "force" ] && [ "${SKIP_FIXER,,}" = "true" ] && [[ "$refine_model_lc" == fixer* ]]; then
+    errors+=("POST_STAGE4_REFINE=force with fixer-based model requires SKIP_FIXER=false")
+  fi
+
+  local provider_chain=",${GENERATION_PROVIDER_CHAIN,,},"
+  if [ "$COMPLETION_MODE" = "full_required" ]; then
+    if [[ "$provider_chain" == *",sam3d,"* ]]; then
+      local sam3d_host="${TEXT_SAM3D_API_HOST:-${SAM3D_API_HOST:-${TEXT_SAM3D_BASE_URL:-}}}"
+      local sam3d_key="${TEXT_SAM3D_API_KEY:-${SAM3D_API_KEY:-}}"
+      if [ -z "${sam3d_host//[[:space:]]/}" ] || [ -z "${sam3d_key//[[:space:]]/}" ]; then
+        errors+=("full_required with sam3d provider requires TEXT_SAM3D_API_HOST + TEXT_SAM3D_API_KEY")
+      fi
+    fi
+    if [[ "$provider_chain" == *",hunyuan3d,"* ]]; then
+      local hunyuan_host="${TEXT_HUNYUAN_API_HOST:-${HUNYUAN_API_HOST:-${TEXT_HUNYUAN_BASE_URL:-}}}"
+      local hunyuan_key="${TEXT_HUNYUAN_API_KEY:-${HUNYUAN_API_KEY:-}}"
+      if [ -z "${hunyuan_host//[[:space:]]/}" ] || [ -z "${hunyuan_key//[[:space:]]/}" ]; then
+        errors+=("full_required with hunyuan3d provider requires TEXT_HUNYUAN_API_HOST + TEXT_HUNYUAN_API_KEY")
+      fi
+    fi
+    if [[ "$provider_chain" == *",ttt_lrm,"* || "$provider_chain" == *",tttlrm,"* || "$provider_chain" == *",ttt-lrm,"* ]]; then
+      local ttt_cmd="${STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND:-${STAGE_D_TTT_LRM_IMAGE_TO_3D_COMMAND:-${TTTLRM_IMAGE_TO_3D_COMMAND:-${TTT_LRM_IMAGE_TO_3D_COMMAND:-}}}}"
+      local ttt_host="${TEXT_TTTLRM_API_HOST:-${TEXT_TTT_LRM_API_HOST:-${TTTLRM_API_HOST:-${TTT_LRM_API_HOST:-}}}}"
+      local ttt_key="${TEXT_TTTLRM_API_KEY:-${TEXT_TTT_LRM_API_KEY:-${TTTLRM_API_KEY:-${TTT_LRM_API_KEY:-}}}}"
+      if [ -z "${ttt_cmd//[[:space:]]/}" ] && { [ -z "${ttt_host//[[:space:]]/}" ] || [ -z "${ttt_key//[[:space:]]/}" ]; }; then
+        errors+=("full_required with ttt_lrm provider requires STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND or TEXT_TTTLRM_API_HOST + TEXT_TTTLRM_API_KEY")
+      fi
+    fi
+  fi
+
+  local numeric_guardrail_errors
+  numeric_guardrail_errors="$(python3 - <<'PY'
+import os
+
+errors: list[str] = []
+
+def parse_float(name: str) -> float | None:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        errors.append(f"{name} must be numeric, got {raw!r}")
+        return None
+
+def parse_int(name: str) -> int | None:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        errors.append(f"{name} must be an integer, got {raw!r}")
+        return None
+
+min_ratio = parse_float("COLMAP_MIN_REGISTERED_RATIO")
+retry_ratio = parse_float("COLMAP_RETRY_MIN_REGISTERED_RATIO")
+if min_ratio is not None and retry_ratio is not None and retry_ratio > min_ratio:
+    errors.append(
+        "COLMAP_RETRY_MIN_REGISTERED_RATIO cannot be greater than COLMAP_MIN_REGISTERED_RATIO"
+    )
+
+void_fill_rounds = parse_int("VOID_FILL_ROUNDS")
+if void_fill_rounds is not None and void_fill_rounds < 0:
+    errors.append("VOID_FILL_ROUNDS must be >= 0")
+if void_fill_rounds is not None and void_fill_rounds > 0:
+    refine_mode = (os.getenv("POST_STAGE4_REFINE", "") or "").strip().lower()
+    if refine_mode == "off":
+        errors.append("VOID_FILL_ROUNDS > 0 requires POST_STAGE4_REFINE=auto or force")
+
+max_pseudoviews = parse_int("POST_STAGE4_MAX_PSEUDOVIEWS")
+if max_pseudoviews is not None and max_pseudoviews <= 0:
+    errors.append("POST_STAGE4_MAX_PSEUDOVIEWS must be > 0")
+
+distill_iters = parse_int("POST_STAGE4_DISTILL_ITERS")
+if distill_iters is not None and distill_iters <= 0:
+    errors.append("POST_STAGE4_DISTILL_ITERS must be > 0")
+
+for item in errors:
+    print(item)
+PY
+)"
+  if [ -n "${numeric_guardrail_errors}" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && errors+=("$line")
+    done <<< "${numeric_guardrail_errors}"
+  fi
+
+  if [ "${#errors[@]}" -gt 0 ]; then
+    log "Guardrail preflight failed with ${#errors[@]} issue(s):"
+    for issue in "${errors[@]}"; do
+      record_failure "$issue"
+      log "  - ${issue}"
+    done
+    die "Preflight guardrails failed"
+  fi
+  log "Guardrail preflight passed"
+}
+
+on_exit() {
+  local exit_code=$?
+  trap - EXIT
+  set +e
+  write_run_summary "$exit_code"
+  exit "$exit_code"
+}
+trap on_exit EXIT
 
 validate_full_runtime() {
   local root="$1"
@@ -137,7 +570,7 @@ Options:
   --fixer-rerun           Force rerun of Fixer in resume mode
   --fixer-required        Fail if Fixer does not produce refined outputs
   --post-stage4-refine MODE  Post-Stage-4 mode: off, auto, force (default: auto)
-  --post-stage4-refine-model MODE  Repair stack: fixer, fixer+gsfix3d (default: fixer+gsfix3d)
+  --post-stage4-refine-model MODE  Repair stack: fixer, fixer+gsfix3d, worldforge, worldforge+gsfix3d (default: worldforge+gsfix3d)
   --post-stage4-max-pseudoviews N  Max pseudo-views (default: 96)
   --post-stage4-distill-iters N    Distillation iterations (default: 1600)
   --post-stage4-time-budget-min N  Distillation budget minutes (default: 90)
@@ -146,6 +579,10 @@ Options:
   --skip-scene-cleaning        Backward-compatible alias for --scene-cleaning-mode off
   --skip-nurec            Skip NuRec shim (use existing outputs in --nurec-output-dir)
   --nurec-output-dir DIR  NuRec output directory (default: auto from workspace)
+  --reconstruction-backend BACKEND  Reconstruction backend: nurec_3dgrut (default), tttLRM, loger
+  --reconstruction-compare-backends CSV  Comma-separated compare backends (e.g. tttLRM, loger)
+  --reconstruction-compare-winner NAME|auto  Winner policy (auto or backend name)
+  --reconstruction-compare-report FILE  Path for backend compare report JSON
   --crop-cleanup PROV     Crop cleanup: skip, together_qwen_image_edit, qwen_image_edit, nano_banana, gpt_image (default: skip)
   --scene-id ID           Scene ID (default: derived from input filename)
   -h, --help              Show this help
@@ -183,7 +620,7 @@ apply_nurec_rerun_profile() {
       COLMAP_MATCHER_MODE="sequential"
       COLMAP_SEQUENTIAL_OVERLAP="${PROFILE_CLEAR_COLMAP_OVERLAP:-40}"
       POST_STAGE4_REFINE="force"
-      POST_STAGE4_REFINE_MODEL="fixer+gsfix3d"
+      POST_STAGE4_REFINE_MODEL="worldforge+gsfix3d"
       POST_STAGE4_MAX_PSEUDOVIEWS="${PROFILE_HALLUCINATION_MAX_PSEUDOVIEWS:-160}"
       POST_STAGE4_DISTILL_ITERS="${PROFILE_HALLUCINATION_DISTILL_ITERS:-6000}"
       POST_STAGE4_TIME_BUDGET_MIN="${PROFILE_HALLUCINATION_TIME_BUDGET_MIN:-120}"
@@ -226,6 +663,14 @@ collect_orchestrator_dependency_errors() {
       _out+=("Hunyuan credentials missing (set TEXT_HUNYUAN_API_HOST + TEXT_HUNYUAN_API_KEY)")
     fi
   fi
+  if [[ "$provider_chain" == *",ttt_lrm,"* || "$provider_chain" == *",tttlrm,"* || "$provider_chain" == *",ttt-lrm,"* ]]; then
+    local ttt_cmd="${STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND:-${STAGE_D_TTT_LRM_IMAGE_TO_3D_COMMAND:-${TTTLRM_IMAGE_TO_3D_COMMAND:-${TTT_LRM_IMAGE_TO_3D_COMMAND:-}}}}"
+    local ttt_host="${TEXT_TTTLRM_API_HOST:-${TEXT_TTT_LRM_API_HOST:-${TTTLRM_API_HOST:-${TTT_LRM_API_HOST:-}}}}"
+    local ttt_key="${TEXT_TTTLRM_API_KEY:-${TEXT_TTT_LRM_API_KEY:-${TTTLRM_API_KEY:-${TTT_LRM_API_KEY:-}}}}"
+    if [ -z "${ttt_cmd//[[:space:]]/}" ] && { [ -z "${ttt_host//[[:space:]]/}" ] || [ -z "${ttt_key//[[:space:]]/}" ]; }; then
+      _out+=("ttt_lrm provider missing configuration (set STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND or TEXT_TTTLRM_API_HOST + TEXT_TTTLRM_API_KEY)")
+    fi
+  fi
 }
 
 SCENE_ID=""
@@ -253,6 +698,10 @@ while [ $# -gt 0 ]; do
     --skip-scene-cleaning) SCENE_CLEANING_MODE="off"; shift ;;
     --skip-nurec)      SKIP_NUREC=true;           shift ;;
     --nurec-output-dir) NUREC_OUTPUT_DIR="$2";    shift 2 ;;
+    --reconstruction-backend) RECONSTRUCTION_BACKEND="$2"; shift 2 ;;
+    --reconstruction-compare-backends) RECONSTRUCTION_COMPARE_BACKENDS="$2"; shift 2 ;;
+    --reconstruction-compare-winner) RECONSTRUCTION_COMPARE_WINNER="$2"; shift 2 ;;
+    --reconstruction-compare-report) RECONSTRUCTION_COMPARE_REPORT="$2"; shift 2 ;;
     --crop-cleanup)    CROP_CLEANUP_PROVIDER="$2"; shift 2 ;;
     --scene-id)        SCENE_ID="$2";             shift 2 ;;
     -h|--help)         usage; exit 0 ;;
@@ -260,6 +709,13 @@ while [ $# -gt 0 ]; do
     *)                 INPUT_VIDEO="$1";           shift ;;
   esac
 done
+
+if [ -z "${GCS_ROOT_SET_BY_ENV}" ]; then
+  GCS_ROOT="${WORKSPACE}/gcs_root"
+fi
+PIPELINE_DIR="${WORKSPACE}/full_pipeline"
+NUREC_OUTPUT_DIR="${NUREC_OUTPUT_DIR:-${PIPELINE_DIR}/output}"
+RECONSTRUCTION_COMPARE_REPORT="${RECONSTRUCTION_COMPARE_REPORT:-${PIPELINE_DIR}/reconstruction_compare_report.json}"
 
 [ -n "$INPUT_VIDEO" ] || die "Input video is required. Usage: run_full_pipeline.sh <video>"
 [ -f "$INPUT_VIDEO" ] || die "Input video not found: $INPUT_VIDEO"
@@ -289,8 +745,8 @@ case "${POST_STAGE4_REFINE}" in
   *) die "Invalid --post-stage4-refine '${POST_STAGE4_REFINE}'. Expected: off, auto, or force" ;;
 esac
 case "${POST_STAGE4_REFINE_MODEL}" in
-  fixer|fixer+gsfix3d) ;;
-  *) die "Invalid --post-stage4-refine-model '${POST_STAGE4_REFINE_MODEL}'. Expected: fixer or fixer+gsfix3d" ;;
+  fixer|fixer+gsfix3d|worldforge|worldforge+gsfix3d) ;;
+  *) die "Invalid --post-stage4-refine-model '${POST_STAGE4_REFINE_MODEL}'. Expected: fixer, fixer+gsfix3d, worldforge, or worldforge+gsfix3d" ;;
 esac
 case "${SCENE_CLEANING_MODE}" in
   off|auto|force) ;;
@@ -303,11 +759,21 @@ esac
 if [ "$COMPLETION_MODE" = "full_required" ]; then
   validate_full_runtime "$BLUEPRINTPIPELINE_ROOT"
 fi
+run_guardrail_checks
 
 # ── Derive identifiers ──────────────────────────────────────────────────────
 VIDEO_BASENAME="$(basename "$INPUT_VIDEO" | sed 's/\.[^.]*$//')"
 SCENE_ID="${SCENE_ID:-scene_${VIDEO_BASENAME}}"
 CAPTURE_ID="cap_$(date +%Y%m%d_%H%M%S)"
+
+case "${RECONSTRUCTION_BACKEND,,},${RECONSTRUCTION_COMPARE_BACKENDS,,}" in
+  *loger*)
+    if [ "${NUREC_VISUAL_PRIMARY}" = "usdz" ]; then
+      NUREC_VISUAL_PRIMARY="mesh"
+      log "NUREC_VISUAL_PRIMARY defaulted to mesh for loger backend compatibility"
+    fi
+    ;;
+esac
 
 log "Scene ID: $SCENE_ID"
 log "Capture ID: $CAPTURE_ID"
@@ -327,13 +793,23 @@ log "Skip dense reconstruction: $SKIP_DENSE (VISUAL_MESH_METHOD=$VISUAL_MESH_MET
 log "Scene cleaning mode: $SCENE_CLEANING_MODE (mask_export_space=$SAM3_MASK_EXPORT_SPACE)"
 
 # ── Stage 1: NuRec Shim (COLMAP + 3DGRUT + SAM3) ───────────────────────────
-PIPELINE_DIR="${WORKSPACE}/full_pipeline"
-NUREC_OUTPUT_DIR="${NUREC_OUTPUT_DIR:-${PIPELINE_DIR}/output}"
 
 if [ "$SKIP_NUREC" = "false" ]; then
   log "============================================================"
   log "PHASE 1: NuRec Shim (Stages 1-8)"
   log "============================================================"
+  log "Reconstruction backend: ${RECONSTRUCTION_BACKEND}"
+  if [ -n "${RECONSTRUCTION_COMPARE_BACKENDS}" ]; then
+    log "Reconstruction compare-backends: ${RECONSTRUCTION_COMPARE_BACKENDS}"
+  else
+    log "Reconstruction compare-backends: (none)"
+  fi
+  if [ "${RECONSTRUCTION_COMPARE_WINNER}" != "auto" ]; then
+    log "Reconstruction compare-winner: ${RECONSTRUCTION_COMPARE_WINNER}"
+  else
+    log "Reconstruction compare-winner: auto"
+  fi
+  log "Reconstruction compare report: ${RECONSTRUCTION_COMPARE_REPORT}"
 
   JOB_SPEC="${PIPELINE_DIR}/job_spec.json"
   mkdir -p "$PIPELINE_DIR"
@@ -400,10 +876,16 @@ SPEC
   export VOID_FILL_ROUNDS VOID_FILL_TARGET_HOLE_RATIO VOID_FILL_DISTILL_ITERS
   export PIPELINE_MODE REFINEMENT_QUALITY_GATE_PROFILE
   export SCENE_CLEANING_MODE SAM3_MASK_EXPORT_SPACE INPAINT360GS_RESOLUTION
-  python3 "${APP_DIR}/scripts/nurec_shim.py" \
+  python3 "${APP_DIR}/scripts/reconstruction_backend_router.py" \
+    --backend "$RECONSTRUCTION_BACKEND" \
+    --compare-backends "$RECONSTRUCTION_COMPARE_BACKENDS" \
+    --compare-winner "$RECONSTRUCTION_COMPARE_WINNER" \
+    --compare-report "$RECONSTRUCTION_COMPARE_REPORT" \
     --job-spec "$JOB_SPEC" \
     --output-dir "$NUREC_OUTPUT_DIR" \
-    --raw-prefix "$INPUT_VIDEO" \
+    --input-video "$INPUT_VIDEO" \
+    --scene-id "$SCENE_ID" \
+    --capture-id "$CAPTURE_ID" \
     --max-frames "$MAX_FRAMES" \
     --extract-fps "$EXTRACT_FPS" \
     --n-iterations "$N_ITERATIONS" \
@@ -470,7 +952,7 @@ mkdir -p "$RAW_ROOT" "$NUREC_ROOT" "$PIPELINE_ROOT" \
          "${SCENE_ROOT}/seg" "${SCENE_ROOT}/usd"
 
 # Copy NuRec outputs into expected location
-for f in export_last.usdz export_last.ply export_last.ingp export_last_refined.usdz export_last_refined.ply export_last_refined.ingp nvblox_mesh.ply visual_mesh.glb visual_mesh_robust.glb visual_pointcloud.ply mesh_manifest.json collision_mesh_report.json occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt capture_quality_report.json sam3_preflight_report.json gap_analysis_report.json gap_candidate_views.jsonl view_repair_report.json accepted_repaired_views.jsonl post_stage4_distill_report.json refinement_quality_gate.json hallucinated_region_mask.png; do
+for f in export_last.usdz export_last.ply export_last.ingp export_last_refined.usdz export_last_refined.ply export_last_refined.ingp nvblox_mesh.ply visual_mesh.glb visual_mesh_robust.glb visual_pointcloud.ply mesh_manifest.json collision_mesh_report.json occupancy.bin scene_semantics_report.json mesh_method.txt quality_profile.txt capture_quality_report.json sam3_preflight_report.json gap_analysis_report.json gap_candidate_views.jsonl view_repair_report.json accepted_repaired_views.jsonl post_stage4_distill_report.json refinement_quality_gate.json hallucinated_region_mask.png loger_backend_report.json; do
   src="${NUREC_OUTPUT_DIR}/${f}"
   [ -f "$src" ] && ln -sf "$src" "${NUREC_ROOT}/${f}"
 done
@@ -781,6 +1263,7 @@ if [ "$COMPLETION_MODE" = "best_effort" ]; then
     ORCHESTRATOR_STATUS="skipped_missing_dependencies"
     log "Skipping Phase 3 in best_effort due to missing dependencies:"
     for dep_error in "${ORCHESTRATOR_DEP_ERRORS[@]}"; do
+      record_failure "best_effort_dependency_gap: ${dep_error}"
       log "  - ${dep_error}"
     done
     export ORCHESTRATOR_STATUS PIPELINE_DIR
@@ -815,6 +1298,7 @@ if [ "$ORCHESTRATOR_STATUS" = "completed" ]; then
       die "swap_orchestrator failed with exit code ${orch_rc}"
     fi
     ORCHESTRATOR_STATUS="failed_best_effort"
+    record_failure "best_effort_orchestrator_failed_exit=${orch_rc}"
     log "WARNING: swap_orchestrator failed in best_effort mode (exit=${orch_rc}); continuing with NuRec-only outputs"
     export ORCHESTRATOR_STATUS ORCHESTRATOR_EXIT_CODE="$orch_rc" PIPELINE_DIR
     python3 - <<PY
@@ -885,12 +1369,15 @@ if completion_mode == "full_required" and is_stub:
     raise SystemExit("scene.usda is a standalone stub; full assembly is required")
 PY
 fi
+generate_log_summary
 
 log "============================================================"
 log "FULL PIPELINE COMPLETE"
 log "============================================================"
 log "Outputs:"
 log "  NuRec:        ${NUREC_OUTPUT_DIR}/"
+log "  Log summary:  ${PIPELINE_DIR}/log_summary.json"
+log "  Log markdown: ${PIPELINE_DIR}/log_summary.md"
 if [ "$ORCHESTRATOR_STATUS" = "completed" ]; then
   log "  Scene USD:    ${SCENE_ROOT}/usd/scene.usda"
   log "  Assets:       ${SCENE_ROOT}/assets/"

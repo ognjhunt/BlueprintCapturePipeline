@@ -1176,7 +1176,8 @@ def run_colmap_undistort(frames_dir: Path, sparse_dir: Path,
 def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
                          n_iterations: int = 7000, *,
                          max_n_gaussians: int = 0,
-                         add_end_iteration: int = 0) -> dict:
+                         add_end_iteration: int = 0,
+                         post_plan: Mapping[str, Any] | None = None) -> dict:
     """Train 3DGRUT on undistorted COLMAP data and export USDZ + PLY."""
     threedgrut_dir = Path(THREEDGRUT_DIR)
     train_script = threedgrut_dir / "train.py"
@@ -1189,7 +1190,31 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
         shutil.rmtree(grut_out)
     grut_out.mkdir(parents=True, exist_ok=True)
 
-    _log(f"Starting 3DGRUT training ({n_iterations} iterations)...")
+    resolved_post_plan = (
+        dict(post_plan)
+        if isinstance(post_plan, Mapping)
+        else _resolve_grut_post_processing_plan(int(n_iterations))
+    )
+    requested_n_iterations = int(resolved_post_plan.get("n_iterations_requested", n_iterations))
+    effective_n_iterations = max(
+        1,
+        int(resolved_post_plan.get("n_iterations_effective", requested_n_iterations)),
+    )
+
+    if bool(resolved_post_plan.get("enabled", False)):
+        _log(
+            "3DGRUT post-processing: ppisp "
+            f"(distill_steps={int(resolved_post_plan.get('distill_steps', 0))}, "
+            f"keep_main_iters={bool(resolved_post_plan.get('keep_main_iters', False))}, "
+            f"n_iterations={requested_n_iterations}->{effective_n_iterations})"
+        )
+    else:
+        _log("3DGRUT post-processing: disabled")
+
+    _log(
+        "Starting 3DGRUT training "
+        f"({requested_n_iterations} requested, {effective_n_iterations} effective iterations)..."
+    )
     cmd = [
         THREEDGRUT_PYTHON, str(train_script),
         "--config-name", "apps/colmap_3dgut_mcmc",
@@ -1199,11 +1224,13 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
         "export_usdz.enabled=true",
         "export_usdz.apply_normalizing_transform=true",
         "export_ply.enabled=true",
-        f"n_iterations={n_iterations}",
+        f"n_iterations={effective_n_iterations}",
         "with_gui=false",
         "with_viser_gui=false",
         "num_workers=4",
     ]
+    for override in resolved_post_plan.get("hydra_overrides", []):
+        cmd.append(str(override))
     if max_n_gaussians > 0:
         cmd.append(f"strategy.add.max_n_gaussians={max_n_gaussians}")
         _log(f"  max_n_gaussians override: {max_n_gaussians}")
@@ -1239,8 +1266,14 @@ def run_3dgrut_training(undistorted_dir: Path, output_dir: Path,
         "ply": result_dir / "export_last.ply",
         "ingp": result_dir / "export_last.ingp",
         "metrics": metrics,
+        "n_iterations_requested": int(requested_n_iterations),
+        "n_iterations_effective": int(effective_n_iterations),
         "max_n_gaussians": max_n_gaussians,
         "add_end_iteration": add_end_iteration,
+        "post_processing_enabled": bool(resolved_post_plan.get("enabled", False)),
+        "post_processing_method": str(resolved_post_plan.get("method", "none") or "none"),
+        "post_processing_distill_steps": int(resolved_post_plan.get("distill_steps", 0)),
+        "post_processing_keep_main_iters": bool(resolved_post_plan.get("keep_main_iters", False)),
     }
 
 
@@ -3209,6 +3242,53 @@ def _quality_profile_defaults(profile: str) -> Dict[str, Any]:
     return table.get(profile, table["quality_first"])
 
 
+def _resolve_grut_post_processing_plan(n_iterations: int) -> Dict[str, Any]:
+    requested_method = (os.getenv("GRUT_POST_PROCESSING_METHOD") or "").strip().lower()
+    if requested_method in {"", "none", "off", "null"}:
+        return {
+            "enabled": False,
+            "method": "none",
+            "n_iterations_requested": int(n_iterations),
+            "n_iterations_effective": int(n_iterations),
+            "distill_steps": 0,
+            "keep_main_iters": False,
+            "hydra_overrides": [],
+        }
+    if requested_method != "ppisp":
+        _log(
+            "WARNING: Unknown GRUT_POST_PROCESSING_METHOD="
+            f"{requested_method!r}; disabling post-processing"
+        )
+        return {
+            "enabled": False,
+            "method": "none",
+            "n_iterations_requested": int(n_iterations),
+            "n_iterations_effective": int(n_iterations),
+            "distill_steps": 0,
+            "keep_main_iters": False,
+            "hydra_overrides": [],
+        }
+
+    distill_steps = max(0, _env_int("GRUT_PPISP_DISTILL_STEPS", 5000))
+    keep_main_iters = _env_flag("GRUT_PPISP_KEEP_MAIN_ITERS", True)
+    effective_n_iterations = int(n_iterations)
+    if keep_main_iters and distill_steps > 0:
+        effective_n_iterations = int(n_iterations) + int(distill_steps)
+
+    return {
+        "enabled": True,
+        "method": "ppisp",
+        "n_iterations_requested": int(n_iterations),
+        "n_iterations_effective": int(effective_n_iterations),
+        "distill_steps": int(distill_steps),
+        "keep_main_iters": bool(keep_main_iters),
+        "hydra_overrides": [
+            "post_processing.method=ppisp",
+            f"post_processing.n_distillation_steps={int(distill_steps)}",
+        ],
+    }
+
+
 def _resolve_colmap_matcher_mode(requested_mode: str, frame_count: int) -> tuple[str, str]:
     mode = (requested_mode or "").strip().lower()
     if mode in {"sequential", "exhaustive"}:
@@ -3591,6 +3671,9 @@ def _validate_stage14_resume_metadata(
     blur_filter_min_frames: int,
     n_iterations: int,
     max_n_gaussians: int = 0,
+    post_processing_method: str = "none",
+    post_processing_distill_steps: int = 0,
+    post_processing_keep_main_iters: bool = False,
 ) -> list[str]:
     reasons: list[str] = []
     if str(metadata.get("schema_version") or "") != "v1":
@@ -3636,6 +3719,16 @@ def _validate_stage14_resume_metadata(
 
     if int(stage4.get("n_iterations", -1)) != int(n_iterations):
         reasons.append("n_iterations_changed")
+    expected_post_method = str(post_processing_method or "none").strip().lower()
+    cached_post_method = str(stage4.get("post_processing_method") or "none").strip().lower()
+    if cached_post_method != expected_post_method:
+        reasons.append("post_processing_method_changed")
+    cached_post_distill = int(stage4.get("post_processing_distill_steps", 0) or 0)
+    if cached_post_distill != int(post_processing_distill_steps):
+        reasons.append("post_processing_distill_steps_changed")
+    cached_keep_main = bool(stage4.get("post_processing_keep_main_iters", False))
+    if cached_keep_main != bool(post_processing_keep_main_iters):
+        reasons.append("post_processing_keep_main_iters_changed")
     # Compare against the requested value when available. This avoids false
     # mismatches when adaptive mode is requested (max_n_gaussians=0) and the
     # effective cached value is scene-dependent.
@@ -3680,6 +3773,9 @@ def _resolve_stage14_resume(
     blur_filter_min_frames: int,
     n_iterations: int,
     max_n_gaussians: int = 0,
+    post_processing_method: str = "none",
+    post_processing_distill_steps: int = 0,
+    post_processing_keep_main_iters: bool = False,
 ) -> tuple[bool, Dict[str, Any] | None, list[str]]:
     if not resume_requested:
         return False, None, ["resume_not_requested"]
@@ -3714,6 +3810,9 @@ def _resolve_stage14_resume(
         blur_filter_min_frames=blur_filter_min_frames,
         n_iterations=n_iterations,
         max_n_gaussians=max_n_gaussians,
+        post_processing_method=post_processing_method,
+        post_processing_distill_steps=post_processing_distill_steps,
+        post_processing_keep_main_iters=post_processing_keep_main_iters,
     )
     if reasons:
         return False, None, reasons
@@ -3803,7 +3902,7 @@ def _apply_pipeline_mode_overrides(args: argparse.Namespace) -> None:
             _env_int("HALLUCINATION_MIN_COLMAP_OVERLAP", 40),
         )
         args.post_stage4_refine = "force"
-        args.post_stage4_refine_model = "fixer+gsfix3d"
+        args.post_stage4_refine_model = "worldforge+gsfix3d"
         args.post_stage4_max_pseudoviews = max(
             int(args.post_stage4_max_pseudoviews),
             _env_int("HALLUCINATION_MIN_MAX_PSEUDOVIEWS", 160),
@@ -4908,8 +5007,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--post-stage4-refine-model",
-        default=(os.getenv("POST_STAGE4_REFINE_MODEL", "fixer+gsfix3d").strip().lower() or "fixer+gsfix3d"),
-        choices=["fixer", "fixer+gsfix3d"],
+        default=(
+            os.getenv("POST_STAGE4_REFINE_MODEL", "worldforge+gsfix3d").strip().lower()
+            or "worldforge+gsfix3d"
+        ),
+        choices=["fixer", "fixer+gsfix3d", "worldforge", "worldforge+gsfix3d"],
         help="Model stack for pseudo-view repair",
     )
     parser.add_argument(
@@ -5045,6 +5147,7 @@ def main() -> int:
         int(effective_max_frames),
     )
     video_signature = _video_signature(video_path)
+    grut_post_plan = _resolve_grut_post_processing_plan(int(args.n_iterations))
     effective_resume, existing_grut_result, resume_reasons = _resolve_stage14_resume(
         resume_requested=bool(args.resume),
         quality_guardrails=bool(args.quality_guardrails),
@@ -5058,11 +5161,25 @@ def main() -> int:
         effective_extract_fps=float(effective_extract_fps),
         blur_filter_keep_ratio=float(args.blur_filter_keep_ratio),
         blur_filter_min_frames=int(args.blur_filter_min_frames),
-        n_iterations=int(args.n_iterations),
+        n_iterations=int(grut_post_plan.get("n_iterations_effective", int(args.n_iterations))),
         max_n_gaussians=int(args.max_n_gaussians),
+        post_processing_method=str(grut_post_plan.get("method", "none")),
+        post_processing_distill_steps=int(grut_post_plan.get("distill_steps", 0)),
+        post_processing_keep_main_iters=bool(grut_post_plan.get("keep_main_iters", False)),
     )
 
     _log(f"Quality profile: {profile}")
+    if bool(grut_post_plan.get("enabled", False)):
+        _log(
+            "3DGRUT post-processing plan: "
+            f"{grut_post_plan.get('method')} "
+            f"(distill_steps={int(grut_post_plan.get('distill_steps', 0))}, "
+            f"keep_main_iters={bool(grut_post_plan.get('keep_main_iters', False))}, "
+            f"n_iterations={int(grut_post_plan.get('n_iterations_requested', args.n_iterations))}"
+            f"->{int(grut_post_plan.get('n_iterations_effective', args.n_iterations))})"
+        )
+    else:
+        _log("3DGRUT post-processing plan: disabled")
     _log(
         "Quality guardrails: "
         f"{'enabled' if args.quality_guardrails else 'disabled'} "
@@ -5410,6 +5527,7 @@ def main() -> int:
             args.n_iterations,
             max_n_gaussians=effective_max_n_gaussians,
             add_end_iteration=effective_add_end_iter,
+            post_plan=grut_post_plan,
         )
 
     # Copy 3DGRUT outputs to the expected locations
@@ -5465,10 +5583,30 @@ def main() -> int:
                 "matcher_mode_effective": str(effective_matcher_mode),
             },
             "stage4": {
-                "n_iterations": int(args.n_iterations),
+                "n_iterations_requested": int(
+                    grut_result.get(
+                        "n_iterations_requested",
+                        grut_post_plan.get("n_iterations_requested", args.n_iterations),
+                    )
+                ),
+                "n_iterations": int(
+                    grut_result.get(
+                        "n_iterations_effective",
+                        grut_post_plan.get("n_iterations_effective", args.n_iterations),
+                    )
+                ),
                 "max_n_gaussians_requested": int(args.max_n_gaussians),
                 "max_n_gaussians": int(effective_max_n_gaussians),
                 "add_end_iteration": int(effective_add_end_iter),
+                "post_processing_method": str(
+                    grut_result.get("post_processing_method", grut_post_plan.get("method", "none"))
+                ),
+                "post_processing_distill_steps": int(
+                    grut_result.get("post_processing_distill_steps", grut_post_plan.get("distill_steps", 0))
+                ),
+                "post_processing_keep_main_iters": bool(
+                    grut_result.get("post_processing_keep_main_iters", grut_post_plan.get("keep_main_iters", False))
+                ),
                 "sfm_point_count": int(sfm_point_count),
                 "result_dir": str(grut_result.get("result_dir") or ""),
                 "export_usdz_bytes": int(usdz_dst.stat().st_size) if usdz_dst.exists() else 0,

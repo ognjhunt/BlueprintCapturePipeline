@@ -233,6 +233,59 @@ def _int_env(name: str, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _env_any(*names: str) -> str:
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _normalize_generation_provider(raw: str) -> str:
+    value = (raw or "").strip().lower().replace("-", "_")
+    if value in {"ttt", "tttlrm", "ttt_lrm"}:
+        return "ttt_lrm"
+    return value
+
+
+def _parse_generation_provider_chain(raw_chain: str) -> List[str]:
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for token in (raw_chain or "").split(","):
+        normalized = _normalize_generation_provider(token)
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+
+    return ordered or ["image_to_3d", "proxy_box"]
+
+
+def _provider_image_to_3d_command(provider: str, *, generic_command: str) -> str:
+    if provider == "sam3d":
+        return _env_any(
+            "STAGE_D_SAM3D_IMAGE_TO_3D_COMMAND",
+            "SAM3D_IMAGE_TO_3D_COMMAND",
+        ) or generic_command
+    if provider == "hunyuan3d":
+        return _env_any(
+            "STAGE_D_HUNYUAN3D_IMAGE_TO_3D_COMMAND",
+            "HUNYUAN3D_IMAGE_TO_3D_COMMAND",
+        ) or generic_command
+    if provider == "ttt_lrm":
+        return _env_any(
+            "STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND",
+            "STAGE_D_TTT_LRM_IMAGE_TO_3D_COMMAND",
+            "TTTLRM_IMAGE_TO_3D_COMMAND",
+            "TTT_LRM_IMAGE_TO_3D_COMMAND",
+        ) or generic_command
+    if provider == "image_to_3d":
+        return generic_command
+    return ""
+
+
 def _coerce_float(value: Any, *, default: float) -> float:
     try:
         return float(value)
@@ -527,6 +580,7 @@ def _materialize_with_image_conditioned_pipeline(
         or os.getenv("IMAGE_TO_3D_COMMAND")
         or ""
     ).strip()
+    provider_order = _parse_generation_provider_chain(generation_provider_chain)
     top_k_references = _int_env("STAGE_D_IMAGE_TO_3D_TOPK", 3)
     max_reference_candidates = _int_env("STAGE_D_REFERENCE_MAX_CROPS", 12)
     cleanup_top_k = _int_env("STAGE_D_CLEANUP_TOPK", 1)
@@ -679,38 +733,81 @@ def _materialize_with_image_conditioned_pipeline(
         source_kind = ""
         command_error = ""
         image_to_3d_invocation: Dict[str, Any] = {}
+        provider_attempts: List[Dict[str, Any]] = []
+        selected_provider = ""
         tried_image_to_3d = False
 
-        if image_to_3d_command and working_reference_path and working_reference_path.is_file():
-            tried_image_to_3d = True
-            ok, detail, invocation = _run_image_to_3d_command(
-                command_template=image_to_3d_command,
-                reference_image=working_reference_path,
-                reference_images=working_reference_paths or [working_reference_path],
-                output_glb=mesh_glb_path,
-                output_dir=asset_dir,
-                scene_id=scene_id,
-                object_id=object_id,
-                asset_dir_name=asset_dir_name,
-                room_type=room_type,
-                timeout_seconds=timeout_seconds,
-            )
-            image_to_3d_invocation = invocation
-            if ok:
-                source_kind = "image_to_3d"
-                method_counts["image_to_3d"] += 1
-            else:
-                command_error = detail
+        if working_reference_path and working_reference_path.is_file():
+            for provider in provider_order:
+                if provider == "proxy_box":
+                    continue
+
+                provider_command = _provider_image_to_3d_command(
+                    provider,
+                    generic_command=image_to_3d_command,
+                )
+                if not provider_command:
+                    provider_attempts.append(
+                        {
+                            "provider": provider,
+                            "status": "skipped_unconfigured",
+                            "detail": "no command template configured",
+                        }
+                    )
+                    continue
+
+                tried_image_to_3d = True
+                rendered_command = provider_command.replace("{PROVIDER}", provider)
+                ok, detail, invocation = _run_image_to_3d_command(
+                    command_template=rendered_command,
+                    reference_image=working_reference_path,
+                    reference_images=working_reference_paths or [working_reference_path],
+                    output_glb=mesh_glb_path,
+                    output_dir=asset_dir,
+                    scene_id=scene_id,
+                    object_id=object_id,
+                    asset_dir_name=asset_dir_name,
+                    room_type=room_type,
+                    timeout_seconds=timeout_seconds,
+                )
+                invocation = dict(invocation)
+                invocation["provider"] = provider
+                image_to_3d_invocation = invocation
+                provider_attempts.append(
+                    {
+                        "provider": provider,
+                        "status": "success" if ok else "failed",
+                        "detail": detail,
+                        "return_code": invocation.get("return_code"),
+                    }
+                )
+                if ok:
+                    selected_provider = provider
+                    source_kind = (
+                        "image_to_3d"
+                        if provider == "image_to_3d"
+                        else f"image_to_3d_{provider}"
+                    )
+                    method_counts["image_to_3d"] += 1
+                    provider_metric = f"image_to_3d_{provider}"
+                    method_counts[provider_metric] = int(method_counts.get(provider_metric, 0)) + 1
+                    command_error = ""
+                    break
+
+                command_error = f"{provider}: {detail}"
                 method_counts["failed"] += 1
 
         if not has_nonempty_file(mesh_glb_path):
             if not allow_proxy_fallback:
+                error_detail = (
+                    "image-conditioned generation produced no mesh.glb and "
+                    "STAGE_D_ALLOW_PROXY_FALLBACK=false"
+                )
+                if command_error:
+                    error_detail = f"{error_detail}; last_error={command_error}"
                 raise StageError(
                     "sam3d",
-                    (
-                        "image-conditioned generation produced no mesh.glb and "
-                        "STAGE_D_ALLOW_PROXY_FALLBACK=false"
-                    ),
+                    error_detail,
                 )
             _write_proxy_mesh_glb(candidate, mesh_glb_path)
             source_kind = source_kind or "image_conditioned_proxy_box"
@@ -731,6 +828,9 @@ def _materialize_with_image_conditioned_pipeline(
             "status": "success",
             "room_type": room_type,
             "generation_provider_chain": generation_provider_chain,
+            "image_to_3d_provider_chain": provider_order,
+            "image_to_3d_selected_provider": selected_provider,
+            "image_to_3d_provider_attempts": provider_attempts,
             "cleanup_provider": cleanup_provider,
             "reference_image_original": str(original_reference_path) if original_reference_path else "",
             "reference_image": str(working_reference_path) if working_reference_path else "",

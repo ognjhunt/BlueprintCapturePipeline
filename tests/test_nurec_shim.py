@@ -1264,8 +1264,9 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
         n_iterations,
         max_n_gaussians=0,
         add_end_iteration=0,
+        post_plan=None,
     ):
-        del undistorted_dir, n_iterations, max_n_gaussians, add_end_iteration
+        del undistorted_dir, n_iterations, max_n_gaussians, add_end_iteration, post_plan
         result_dir = output_dir / "3dgrut" / "scene"
         renders_dir = result_dir / "renders"
         renders_dir.mkdir(parents=True, exist_ok=True)
@@ -1447,6 +1448,9 @@ def test_main_forwards_colmap_images_bin_to_gap_analyzer(
         cmd for cmd in captured_cmds if len(cmd) > 1 and cmd[1].endswith("post_stage4_view_repair.py")
     )
     assert "--virtual-render-mapping" in view_repair_cmd
+    assert "--model" in view_repair_cmd
+    model_idx = view_repair_cmd.index("--model") + 1
+    assert view_repair_cmd[model_idx] == "worldforge+gsfix3d"
 
     distill_cmd = next(
         cmd for cmd in captured_cmds if len(cmd) > 1 and cmd[1].endswith("post_stage4_distill.py")
@@ -1600,7 +1604,7 @@ def test_pipeline_mode_photoreal_hallucination_applies_clarity_overrides() -> No
     assert args.colmap_matcher_mode == "sequential"
     assert args.colmap_sequential_overlap >= 40
     assert args.post_stage4_refine == "force"
-    assert args.post_stage4_refine_model == "fixer+gsfix3d"
+    assert args.post_stage4_refine_model == "worldforge+gsfix3d"
     assert args.void_fill_rounds == 0
 
 
