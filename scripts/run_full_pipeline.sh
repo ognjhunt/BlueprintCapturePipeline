@@ -943,7 +943,7 @@ log "============================================================"
 # Paths matching swap_orchestrator expectations
 SCENE_ROOT="${GCS_ROOT}/${BUCKET}/scenes/${SCENE_ID}"
 CAPTURE_ROOT="${SCENE_ROOT}/captures/${CAPTURE_ID}"
-RAW_ROOT="${SCENE_ROOT}/iphone/${CAPTURE_ID}/raw"
+RAW_ROOT="${SCENE_ROOT}/captures/${CAPTURE_ID}/raw"
 NUREC_ROOT="${CAPTURE_ROOT}/pipeline/nurec"
 PIPELINE_ROOT="${CAPTURE_ROOT}/pipeline"
 
@@ -1080,8 +1080,8 @@ log "Created qa_report.json"
 
 # Create capture_descriptor.json
 DESCRIPTOR_URI="gs://${BUCKET}/scenes/${SCENE_ID}/captures/${CAPTURE_ID}/capture_descriptor.json"
-RAW_PREFIX_URI="gs://${BUCKET}/scenes/${SCENE_ID}/iphone/${CAPTURE_ID}/raw"
-FRAMES_INDEX_URI="gs://${BUCKET}/scenes/${SCENE_ID}/iphone/${CAPTURE_ID}/raw/frames/index.jsonl"
+RAW_PREFIX_URI="gs://${BUCKET}/scenes/${SCENE_ID}/captures/${CAPTURE_ID}/raw"
+FRAMES_INDEX_URI="gs://${BUCKET}/scenes/${SCENE_ID}/captures/${CAPTURE_ID}/raw/frames/index.jsonl"
 QA_URI="gs://${BUCKET}/scenes/${SCENE_ID}/captures/${CAPTURE_ID}/qa_report.json"
 
 cat > "${CAPTURE_ROOT}/capture_descriptor.json" <<DESC

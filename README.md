@@ -84,9 +84,11 @@ Written under:
   - `opportunity_handoff.json`
   - `task_targets.json`
   - `runtime_preflight_report.json`
+  - `qualification_quality_report.json`
   - `swap_quality_report.json` (compatibility alias)
   - `pipeline_summary.json`
-  - `.swap_pipeline_complete` or `.swap_pipeline_failed.json`
+  - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
+  - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
 - Advanced geometry artifacts when explicitly requested:
   - `nurec_job_spec.json`
   - `nurec_outputs.json`
@@ -427,7 +429,7 @@ Worker entrypoints in `functions/storage_trigger.py`:
 8. Retrieval fallback resolves required articulation failures (hard fail if unresolved).
 9. SimReady + USD assembly runs unchanged BlueprintPipeline jobs.
 10. Advanced quality gates run drop/jitter/tunneling/perf and complexity budgets.
-11. Completion writes `swap_quality_report.json`, `pipeline_summary.json`, and `.swap_pipeline_complete`.
+11. Completion writes `qualification_quality_report.json`, `pipeline_summary.json`, and `.qualification_pipeline_complete` plus temporary `swap_*` aliases for compatibility.
 
 ## Tests
 

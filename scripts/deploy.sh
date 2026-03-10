@@ -365,7 +365,7 @@ print_summary() {
     echo "    - Pub/Sub Topic: pipeline-trigger"
     echo ""
     echo "  To test the deployment, upload a capture to:"
-    echo "    gs://$BUCKET_NAME/scenes/{scene_id}/iphone/{timestamp}/raw/"
+    echo "    gs://$BUCKET_NAME/scenes/{scene_id}/captures/{capture_id}/raw/"
     echo ""
     echo "  Monitor logs:"
     echo "    gcloud logging read 'resource.type=cloud_run_job' --project=$PROJECT_ID"

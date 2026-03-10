@@ -9,13 +9,27 @@ from typing import Any, Dict, List, Mapping, Optional
 
 
 _ALLOWED_NUREC_MODES = {"mono_pose_assisted", "mono_slam"}
-_ALLOWED_SWAP_FOCUS = {"default", "bedroom", "kitchen", "warehouse"}
-_ALLOWED_ENVIRONMENT_HINTS = {"default", "bedroom", "kitchen", "warehouse"}
+_ALLOWED_SWAP_FOCUS = {
+    "default",
+    "bedroom",
+    "kitchen",
+    "warehouse",
+    "industrial_unknown",
+    "fulfillment",
+    "manufacturing",
+    "brownfield_site",
+}
+_ALLOWED_ENVIRONMENT_HINTS = set(_ALLOWED_SWAP_FOCUS)
 _ALLOWED_REQUESTED_LANES = {"qualification", "advanced_geometry"}
 _ALLOWED_CAPTURE_MODALITIES = {
     "iphone_arkit_lidar",
     "glasses_video_only",
     "glasses_plus_scaffolding",
+}
+_ALLOWED_EVIDENCE_TIERS = {
+    "pre_screen_video",
+    "qualified_metric_capture",
+    "glasses_with_validated_scaffolding",
 }
 
 
@@ -45,6 +59,10 @@ def _normalize_environment_hint(raw_environment: Any) -> Optional[str]:
         "living_room": "default",
         "residential": "default",
         "home": "default",
+        "industrial": "industrial_unknown",
+        "factory": "manufacturing",
+        "plant": "manufacturing",
+        "warehouse_floor": "warehouse",
     }
     lowered = aliases.get(lowered, lowered)
     if lowered in _ALLOWED_ENVIRONMENT_HINTS:
@@ -152,6 +170,41 @@ def _normalize_uncertainty_priors(raw_value: Any) -> Dict[str, float]:
     return out
 
 
+def _normalize_scaffolding_validation(raw_value: Any) -> Dict[str, Any]:
+    if not isinstance(raw_value, Mapping):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in (
+        "scale_anchor_count",
+        "checkpoint_count",
+        "validated_scale_m",
+        "validated_pose_coverage",
+        "hidden_zone_bound",
+    ):
+        if raw_value.get(key) is None:
+            continue
+        try:
+            out[key] = float(raw_value[key])
+        except (TypeError, ValueError):
+            continue
+    if "validated_metric_bundle" in raw_value:
+        out["validated_metric_bundle"] = bool(raw_value.get("validated_metric_bundle"))
+    return out
+
+
+def _resolve_evidence_tier(raw_value: Any, capture_modality: str, quality: Mapping[str, Any]) -> str:
+    explicit = _optional_str(raw_value)
+    if explicit:
+        lowered = explicit.lower()
+        if lowered in _ALLOWED_EVIDENCE_TIERS:
+            return lowered
+    if capture_modality == "iphone_arkit_lidar":
+        return "qualified_metric_capture"
+    if capture_modality == "glasses_plus_scaffolding":
+        return "glasses_with_validated_scaffolding"
+    return "pre_screen_video"
+
+
 def _resolve_capture_modality(
     *,
     raw_modality: Any,
@@ -196,10 +249,12 @@ class CaptureDescriptor:
     qa_status: Optional[str] = None
     environment_type_hint: Optional[str] = None
     capture_modality: str = "iphone_arkit_lidar"
+    evidence_tier: str = "pre_screen_video"
     scaffolding_used: List[str] = field(default_factory=list)
     intake_packet_uri: Optional[str] = None
     coverage_plan: List[str] = field(default_factory=list)
     calibration_assets: List[str] = field(default_factory=list)
+    scaffolding_validation: Dict[str, Any] = field(default_factory=dict)
     uncertainty_priors: Dict[str, float] = field(default_factory=dict)
     requested_lanes: List[str] = field(default_factory=lambda: ["qualification"])
     swap_focus: List[str] = field(default_factory=list)
@@ -246,6 +301,17 @@ class CaptureDescriptor:
             _optional_str(data.get("environment_type_hint"))
             or _optional_str(data.get("intended_space_type"))
         )
+        capture_modality = _resolve_capture_modality(
+            raw_modality=data.get("capture_modality") or capture_bundle.get("capture_modality"),
+            capture_source=capture_source,
+            quality=quality,
+            scaffolding_used=scaffolding_used,
+        )
+        evidence_tier = _resolve_evidence_tier(
+            data.get("evidence_tier") or capture_bundle.get("evidence_tier"),
+            capture_modality,
+            quality,
+        )
 
         return cls(
             schema_version=schema_version,
@@ -282,12 +348,8 @@ class CaptureDescriptor:
             qa_report_uri=_optional_str(data.get("qa_report_uri")),
             qa_status=_optional_str(data.get("qa_status")),
             environment_type_hint=environment_type_hint,
-            capture_modality=_resolve_capture_modality(
-                raw_modality=data.get("capture_modality") or capture_bundle.get("capture_modality"),
-                capture_source=capture_source,
-                quality=quality,
-                scaffolding_used=scaffolding_used,
-            ),
+            capture_modality=capture_modality,
+            evidence_tier=evidence_tier,
             scaffolding_used=scaffolding_used,
             intake_packet_uri=(
                 _optional_str(data.get("intake_packet_uri"))
@@ -298,6 +360,11 @@ class CaptureDescriptor:
             ),
             calibration_assets=_normalize_string_list(
                 data.get("calibration_assets") or capture_bundle.get("calibration_assets")
+            ),
+            scaffolding_validation=_normalize_scaffolding_validation(
+                data.get("scaffolding_validation")
+                or capture_bundle.get("scaffolding_validation")
+                or metadata.get("scaffolding_validation")
             ),
             uncertainty_priors=_normalize_uncertainty_priors(
                 data.get("uncertainty_priors") or capture_bundle.get("uncertainty_priors")
@@ -346,6 +413,7 @@ class CaptureDescriptor:
             "qa_status": self.qa_status,
             "environment_type_hint": self.environment_type_hint,
             "capture_modality": self.capture_modality,
+            "evidence_tier": self.evidence_tier,
             "intake_packet_uri": self.intake_packet_uri,
         }
         for key, value in optional.items():
@@ -354,6 +422,7 @@ class CaptureDescriptor:
         payload["scaffolding_used"] = list(self.scaffolding_used)
         payload["coverage_plan"] = list(self.coverage_plan)
         payload["calibration_assets"] = list(self.calibration_assets)
+        payload["scaffolding_validation"] = dict(self.scaffolding_validation)
         payload["uncertainty_priors"] = dict(self.uncertainty_priors)
         return payload
 
@@ -383,10 +452,12 @@ def build_capture_bundle_constraints(
         "quality": dict(descriptor.quality),
         "environment_type_hint": descriptor.environment_type_hint,
         "capture_modality": descriptor.capture_modality,
+        "evidence_tier": descriptor.evidence_tier,
         "scaffolding_used": list(descriptor.scaffolding_used),
         "intake_packet_uri": descriptor.intake_packet_uri,
         "coverage_plan": list(descriptor.coverage_plan),
         "calibration_assets": list(descriptor.calibration_assets),
+        "scaffolding_validation": dict(descriptor.scaffolding_validation),
         "uncertainty_priors": dict(descriptor.uncertainty_priors),
         "descriptor_uri": descriptor_uri,
         "qa_report_uri": qa_report_uri or descriptor.qa_report_uri,

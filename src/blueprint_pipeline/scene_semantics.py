@@ -12,7 +12,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-_SUPPORTED_ENVIRONMENTS = {"default", "warehouse", "kitchen", "bedroom"}
+_SUPPORTED_ENVIRONMENTS = {
+    "default",
+    "warehouse",
+    "kitchen",
+    "bedroom",
+    "industrial_unknown",
+    "manufacturing",
+    "fulfillment",
+    "brownfield_site",
+}
 
 _PROMPTS_BY_ENV: Dict[str, List[str]] = {
     "default": [
@@ -52,6 +61,54 @@ _PROMPTS_BY_ENV: Dict[str, List[str]] = {
         "rack",
         "barrel",
         "drum",
+    ],
+    "industrial_unknown": [
+        "aisle",
+        "rack",
+        "tote",
+        "bin",
+        "pallet",
+        "threshold",
+        "forklift",
+        "charger",
+        "barrier",
+        "workcell",
+        "handoff point",
+        "traffic zone",
+        "door",
+        "floor hazard",
+    ],
+    "manufacturing": [
+        "workcell",
+        "rack",
+        "bin",
+        "tote",
+        "threshold",
+        "forklift",
+        "cart",
+        "charger",
+        "barrier",
+        "door",
+    ],
+    "fulfillment": [
+        "aisle",
+        "rack",
+        "tote",
+        "pallet",
+        "forklift",
+        "traffic zone",
+        "handoff point",
+        "door",
+    ],
+    "brownfield_site": [
+        "aisle",
+        "threshold",
+        "door",
+        "traffic zone",
+        "workcell",
+        "floor hazard",
+        "rack",
+        "tote",
     ],
     "kitchen": [
         "cabinet",
@@ -111,6 +168,9 @@ def _normalize_environment(value: str) -> str:
         "bed room": "bedroom",
         "bed-room": "bedroom",
         "bedchamber": "bedroom",
+        "industrial": "industrial_unknown",
+        "factory": "manufacturing",
+        "plant": "manufacturing",
     }
     text = aliases.get(text, text)
     return text if text in _SUPPORTED_ENVIRONMENTS else "default"
@@ -251,13 +311,13 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
     # Single combined call: room classification + object enumeration
     combined_prompt = (
         "Analyze these video frames of an indoor scene. Do TWO things:\n\n"
-        "1. CLASSIFY the room type as one of: bedroom, kitchen, warehouse, default.\n"
+        "1. CLASSIFY the environment type as one of: industrial_unknown, manufacturing, fulfillment, warehouse, bedroom, kitchen, default.\n"
         "2. LIST ALL distinct physical objects visible that could be manipulated in a "
         "robotics simulator (pick up, open, move, interact with). Include furniture with "
         "movable parts (drawers, doors), containers, items on surfaces, things on the floor, "
         "hanging items, etc.\n\n"
         "Return a single JSON object with these keys:\n"
-        "- room_type: string (one of: bedroom, kitchen, warehouse, default)\n"
+        "- room_type: string (one of: industrial_unknown, manufacturing, fulfillment, warehouse, bedroom, kitchen, default)\n"
         "- confidence: number 0-1\n"
         "- rationale: short string explaining classification\n"
         "- objects: array of objects, each with:\n"

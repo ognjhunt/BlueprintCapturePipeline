@@ -80,8 +80,10 @@ Default qualification artifacts:
 - `opportunity_handoff.json` (v1)
 - `task_targets.json` (v1)
 - `runtime_preflight_report.json` (v1)
+- `qualification_quality_report.json` (v1)
 - `swap_quality_report.json` (compatibility alias, lane=`qualification`)
-- `.swap_pipeline_complete` or `.swap_pipeline_failed.json`
+- `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
+- `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
 
 Advanced geometry artifacts when explicitly requested:
 

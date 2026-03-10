@@ -48,7 +48,7 @@ def _write_scene_descriptor(
     descriptor_uri = f"gs://bucket/scenes/{scene_id}/captures/{capture_id}/capture_descriptor.json"
     descriptor_path = root / "bucket/scenes" / scene_id / "captures" / capture_id / "capture_descriptor.json"
 
-    raw_prefix_uri = f"gs://bucket/scenes/{scene_id}/iphone/{capture_id}/raw"
+    raw_prefix_uri = f"gs://bucket/scenes/{scene_id}/captures/{capture_id}/raw"
     qa_uri = f"gs://bucket/scenes/{scene_id}/captures/{capture_id}/qa_report.json"
 
     descriptor = {
@@ -94,7 +94,7 @@ def _write_scene_descriptor(
         "object_point_cloud_index": "arkit/objects/index.json",
         "object_point_cloud_count": 2,
     }
-    _write_json(root / "bucket/scenes" / scene_id / "iphone" / capture_id / "raw/manifest.json", manifest)
+    _write_json(root / "bucket/scenes" / scene_id / "captures" / capture_id / "raw/manifest.json", manifest)
 
     object_index = [
         {
@@ -121,7 +121,7 @@ def _write_scene_descriptor(
         },
     ]
     _write_json(
-        root / "bucket/scenes" / scene_id / "iphone" / capture_id / "raw/arkit/objects/index.json",
+        root / "bucket/scenes" / scene_id / "captures" / capture_id / "raw/arkit/objects/index.json",
         {"objects": object_index},
     )
 
@@ -747,7 +747,7 @@ def test_missing_descriptor_writes_failure_artifacts(tmp_path: Path) -> None:
 def test_swap_candidates_file_matches_post_mutation_payload(tmp_path: Path) -> None:
     descriptor_uri = _write_scene_descriptor(tmp_path)
     object_index_path = (
-        tmp_path / "bucket/scenes/scene_demo/iphone/capture_demo/raw/arkit/objects/index.json"
+        tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/raw/arkit/objects/index.json"
     )
     object_index = json.loads(object_index_path.read_text(encoding="utf-8"))
     objects = object_index["objects"]
@@ -1123,6 +1123,8 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
         "opportunity_handoff.json",
         "task_targets.json",
         "pipeline_summary.json",
+        "qualification_quality_report.json",
+        ".qualification_pipeline_complete",
         "swap_quality_report.json",
         ".swap_pipeline_complete",
     ):
@@ -1134,7 +1136,7 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     scorecard = json.loads((pipeline_dir / "capture_qa_scorecard.json").read_text(encoding="utf-8"))
     qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
     handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
-    quality_report = json.loads((pipeline_dir / "swap_quality_report.json").read_text(encoding="utf-8"))
+    quality_report = json.loads((pipeline_dir / "qualification_quality_report.json").read_text(encoding="utf-8"))
     validated_handoff = _validate_handoff_contract(handoff)
 
     assert scorecard["completeness_status"] == "sufficient"

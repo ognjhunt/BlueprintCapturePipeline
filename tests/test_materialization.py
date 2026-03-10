@@ -97,3 +97,52 @@ def test_materialize_capture_bundle_for_video_only_glasses_stays_degraded(tmp_pa
     assert result["descriptor"]["requested_lanes"] == ["qualification"]
     assert result["qa_report"]["status"] == "degraded"
     assert result["qa_report"]["escalation_recommendation"]["human_review_required"] is True
+
+
+def test_materialize_capture_bundle_for_validated_glasses_scaffolding(tmp_path: Path) -> None:
+    raw_root = tmp_path / "bucket/scenes/scene_c/captures/cap_c/raw"
+    _write_json(
+        raw_root / "manifest.json",
+        {
+            "scene_id": "scene_c",
+            "capture_source": "glasses",
+            "capture_tier_hint": "tier2_glasses",
+            "video_uri": "gs://bucket/scenes/scene_c/captures/cap_c/raw/walkthrough.mov",
+            "intended_space_type": "industrial_unknown",
+        },
+    )
+    _write_json(
+        raw_root / "intake_packet.json",
+        {
+            "workflowName": "Material handoff",
+            "taskSteps": ["entry", "workcell", "handoff"],
+            "zone": "cell_2",
+            "owner": "ops_manager",
+        },
+    )
+    _write_json(
+        raw_root / "capture_context.json",
+        {
+            "captureModality": "glasses_plus_scaffolding",
+            "scaffoldingUsed": ["scale_anchor", "checkpoint_stills", "companion_phone_pass"],
+            "coveragePlan": ["entry", "workcell", "handoff"],
+            "calibrationAssets": ["scaffolding/calibration_manifest.json"],
+            "scaleAnchorAssets": ["scaffolding/scale_anchor_01.jpg"],
+            "checkpointAssets": ["scaffolding/checkpoint_01.jpg"],
+            "validatedScaleMeters": 1.0,
+            "validatedPoseCoverage": 0.82,
+            "hiddenZoneBound": 0.2,
+        },
+    )
+    (raw_root / "walkthrough.mov").write_bytes(b"mov")
+
+    result = materialize_capture_bundle(
+        bucket="bucket",
+        scene_id="scene_c",
+        capture_id="cap_c",
+        gcs_root=tmp_path,
+    )
+
+    assert result["descriptor"]["evidence_tier"] == "glasses_with_validated_scaffolding"
+    assert result["descriptor"]["requested_lanes"] == ["qualification", "advanced_geometry"]
+    assert result["qa_report"]["status"] == "passed"

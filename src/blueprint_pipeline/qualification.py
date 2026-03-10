@@ -23,6 +23,7 @@ from .common import (
     write_json,
     write_text,
 )
+from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
 from .task_targets import infer_task_targets, write_task_targets
 
@@ -95,9 +96,17 @@ def _has_structured_intake(descriptor: CaptureDescriptor) -> bool:
 
 
 def _modality_supports_metric_automation(descriptor: CaptureDescriptor) -> bool:
-    if descriptor.capture_modality == "iphone_arkit_lidar":
+    if descriptor.evidence_tier == "qualified_metric_capture":
         return True
-    if descriptor.capture_modality == "glasses_plus_scaffolding" and descriptor.calibration_assets:
+    scaffolding_validation = (
+        descriptor.scaffolding_validation
+        if isinstance(descriptor.scaffolding_validation, Mapping)
+        else {}
+    )
+    if (
+        descriptor.evidence_tier == "glasses_with_validated_scaffolding"
+        and bool(scaffolding_validation.get("validated_metric_bundle"))
+    ):
         return True
     return False
 
@@ -476,6 +485,31 @@ def _build_qualification_record(
     target_object_ids = scope_record.get("target_object_ids", [])
     articulation_required_ids = scope_record.get("articulation_required_ids", [])
     scope_status = str(scope_record.get("scope_status") or "needs_clarification")
+    metric_ready = _modality_supports_metric_automation(descriptor)
+    route_widths = []
+    target_distances = []
+    grouped = _group_objects_by_entity_type(object_index_entries)
+    route_objects = (
+        grouped.get("aisle", [])
+        + grouped.get("threshold", [])
+        + grouped.get("door_type", [])
+        + grouped.get("forklift_lane", [])
+        + grouped.get("traffic_zone", [])
+    )
+    for entry in route_objects:
+        width = _measure_width(_entry_extents(entry))
+        if width > 0.0:
+            route_widths.append(width)
+    zone_center = _zone_center(
+        scope_record.get("task_zone") if isinstance(scope_record.get("task_zone"), Mapping) else {},
+        object_index_entries,
+    )
+    for entry in object_index_entries:
+        entry_id = str(entry.get("id") or entry.get("object_id") or "").strip()
+        if entry_id and entry_id in target_object_ids:
+            target_distances.append(_distance(zone_center, _entry_center(entry)))
+    measured_route_width = min(route_widths) if route_widths else None
+    max_target_reach = max(target_distances) if target_distances else None
 
     privacy_restricted = bool(descriptor.metadata.get("privacy_restrictions")) if isinstance(descriptor.metadata, Mapping) else False
     safety_concerns = descriptor.metadata.get("safety_concerns") if isinstance(descriptor.metadata, Mapping) else []
@@ -483,23 +517,25 @@ def _build_qualification_record(
 
     rubric = {
         "physical_access": _score_bucket(
-            0.92 if descriptor.capture_modality == "iphone_arkit_lidar" and object_index_entries else
-            0.68 if descriptor.capture_modality == "glasses_plus_scaffolding" and descriptor.calibration_assets else
-            0.22,
-            "Metric geometry is available for clearance and route checks."
-            if descriptor.capture_modality == "iphone_arkit_lidar"
-            else "Scaffolding may support bounded geometry checks."
-            if descriptor.capture_modality == "glasses_plus_scaffolding" and descriptor.calibration_assets
-            else "Physical clearances remain uncertain because the capture is not metric-ready.",
+            0.9
+            if metric_ready and measured_route_width is not None and measured_route_width >= _GENERIC_CAPABILITY_ENVELOPE["minimum_path_width_m"]
+            else 0.6
+            if metric_ready
+            else 0.15,
+            (
+                f"Measured route width {round(measured_route_width, 4)} m supports clearance checks."
+                if metric_ready and measured_route_width is not None
+                else "Metric geometry is incomplete for route clearance checks."
+            ),
         ),
         "task_repeatability": _score_bucket(
-            0.75 if target_object_ids else 0.4,
+            0.82 if target_object_ids else 0.35,
             "Task targets were inferred from the capture package."
             if target_object_ids
             else "No stable task targets were inferred from the current evidence.",
         ),
         "environmental_conditions": _score_bucket(
-            0.8 if qa_status == "passed" else 0.3,
+            0.82 if qa_status == "passed" else 0.25,
             "Capture QA passed."
             if qa_status == "passed"
             else "Capture QA did not pass, so the environment evidence is unreliable.",
@@ -511,7 +547,7 @@ def _build_qualification_record(
             else "No explicit safety blockers were supplied in metadata.",
         ),
         "integration_friction": _score_bucket(
-            0.55 if articulation_required_ids else 0.8,
+            0.5 if articulation_required_ids else 0.78,
             "Articulated targets suggest extra integration complexity."
             if articulation_required_ids
             else "No articulated manipulation requirement was inferred.",
@@ -519,9 +555,9 @@ def _build_qualification_record(
         "evidence_completeness": _score_bucket(
             min(
                 float(scorecard.get("score") or 0.0),
-                0.6 if descriptor.capture_modality == "glasses_video_only" else 1.0,
+                0.5 if descriptor.evidence_tier == "pre_screen_video" else 1.0,
             ),
-            f"Completeness status is {completeness_status} for modality={descriptor.capture_modality}.",
+            f"Completeness status is {completeness_status} for evidence_tier={descriptor.evidence_tier}.",
         ),
     }
 
@@ -553,22 +589,40 @@ def _build_qualification_record(
                 "detail": "Articulated targets indicate a more complex manipulation environment.",
             }
         )
-    if descriptor.capture_modality == "glasses_video_only":
+    if descriptor.evidence_tier == "pre_screen_video":
         risks.append(
             {
                 "id": "non_metric_capture",
                 "severity": "high",
                 "category": "geometry",
-                "detail": "Video-only glasses capture is not sufficient for geometry-backed readiness automation.",
+                "detail": "Pre-screen capture is not sufficient for geometry-backed readiness automation.",
             }
         )
-    elif descriptor.capture_modality == "glasses_plus_scaffolding" and not descriptor.calibration_assets:
+    elif descriptor.capture_modality == "glasses_plus_scaffolding" and not bool(descriptor.scaffolding_validation.get("validated_metric_bundle")):
         risks.append(
             {
-                "id": "missing_calibration_assets",
+                "id": "missing_validated_scaffolding",
                 "severity": "high",
                 "category": "geometry",
-                "detail": "Glasses scaffolding lacks calibration assets required for metric checks.",
+                "detail": "Glasses scaffolding lacks validated scale and pose coverage required for metric checks.",
+            }
+        )
+    if metric_ready and measured_route_width is not None and measured_route_width < _GENERIC_CAPABILITY_ENVELOPE["minimum_path_width_m"]:
+        risks.append(
+            {
+                "id": "route_clearance_risk",
+                "severity": "high",
+                "category": "geometry",
+                "detail": f"Measured minimum route width {round(measured_route_width, 4)} m is below the generic clearance threshold.",
+            }
+        )
+    if metric_ready and max_target_reach is not None and max_target_reach > _GENERIC_CAPABILITY_ENVELOPE["maximum_target_reach_distance_m"]:
+        risks.append(
+            {
+                "id": "reach_risk",
+                "severity": "medium",
+                "category": "task_fit",
+                "detail": f"Inferred target reach distance {round(max_target_reach, 4)} m exceeds the bounded pilot envelope.",
             }
         )
     if privacy_restricted:
@@ -594,14 +648,12 @@ def _build_qualification_record(
 
     if completeness_status != "sufficient":
         readiness_state = "not_ready_yet"
-    elif confidence >= 0.78 and not any(risk["severity"] == "high" for risk in risks):
+    elif confidence >= 0.8 and not any(risk["severity"] == "high" for risk in risks):
         readiness_state = "ready"
     else:
         readiness_state = "risky"
 
-    advanced_geometry_recommended = completeness_status == "sufficient" and bool(
-        target_object_ids or articulation_required_ids
-    )
+    advanced_geometry_recommended = metric_ready and completeness_status == "sufficient" and bool(target_object_ids or articulation_required_ids)
 
     return {
         "schema_version": "v1",
@@ -611,9 +663,14 @@ def _build_qualification_record(
         "generated_at": utc_now_iso(),
         "readiness_state": readiness_state,
         "capture_modality": descriptor.capture_modality,
+        "evidence_tier": descriptor.evidence_tier,
         "confidence": confidence,
         "advanced_geometry_recommended": advanced_geometry_recommended,
         "rubric": rubric,
+        "measurements": {
+            "minimum_route_width_m": round(measured_route_width, 4) if measured_route_width is not None else None,
+            "maximum_target_reach_m": round(max_target_reach, 4) if max_target_reach is not None else None,
+        },
         "risks": risks,
         "blockers": blockers,
         "escalation": {
@@ -642,7 +699,7 @@ def _build_qualification_brief(
     if bool(qualification_record.get("advanced_geometry_recommended")):
         next_steps.append("Escalate to the advanced geometry lane for richer object-localized geometry outputs.")
     if not next_steps:
-        next_steps.append("Route the opportunity handoff to robot-team review.")
+        next_steps.append("Route the opportunity handoff to deployment, process, and safety reviewers.")
     return {
         "schema_version": "v1",
         "lane": "qualification",
@@ -673,7 +730,7 @@ def _build_opportunity_handoff(
     readiness_state = str(qualification_record.get("readiness_state") or "not_ready_yet")
     completeness_status = str(scorecard.get("completeness_status") or "need_more_evidence")
     confidence = float(qualification_record.get("confidence") or 0.0)
-    match_ready = completeness_status == "sufficient" and readiness_state == "ready" and confidence >= 0.78
+    match_ready = completeness_status == "sufficient" and readiness_state == "ready" and confidence >= 0.8
     recommended_lane = (
         "advanced_geometry"
         if bool(qualification_record.get("advanced_geometry_recommended"))
@@ -727,12 +784,6 @@ def _build_opportunity_handoff(
         if isinstance(metadata.get("target_robot_team"), Mapping)
         else {}
     )
-    robot_platform = (
-        str(target_robot_team.get("robot_platform") or "").strip()
-        or str(metadata.get("robot_platform") or "").strip()
-        or str(getattr(config, "robot_type", "") or "").strip()
-        or "franka"
-    )
     handoff = {
         "schema_version": "v1",
         "lane": "qualification",
@@ -758,25 +809,33 @@ def _build_opportunity_handoff(
             "privacy_security_constraints": privacy_security_constraints,
             "known_blockers": known_blockers,
         },
-        "target_robot_team": {
-            "team_name_or_id": (
-                str(target_robot_team.get("team_name_or_id") or "").strip()
-                or str(metadata.get("team_name_or_id") or "").strip()
-                or "default_robot_team"
-            ),
-            "robot_platform": robot_platform,
-            "embodiment_notes": (
-                str(target_robot_team.get("embodiment_notes") or "").strip()
-                or str(metadata.get("embodiment_notes") or "").strip()
-                or f"Qualification-default targeting for {robot_platform}"
-            ),
-        },
         "match_ready": match_ready,
         "recommended_lane": recommended_lane,
         "readiness_state": readiness_state,
         "confidence": confidence,
         "risks": qualification_record.get("risks", []),
+        "qualification_focus": "neutral_site_readiness",
     }
+    if target_robot_team or metadata.get("robot_platform") or getattr(config, "robot_type", None):
+        robot_platform = (
+            str(target_robot_team.get("robot_platform") or "").strip()
+            or str(metadata.get("robot_platform") or "").strip()
+            or str(getattr(config, "robot_type", "") or "").strip()
+        )
+        if robot_platform:
+            handoff["target_robot_team"] = {
+                "team_name_or_id": (
+                    str(target_robot_team.get("team_name_or_id") or "").strip()
+                    or str(metadata.get("team_name_or_id") or "").strip()
+                    or "named_robot_team_required"
+                ),
+                "robot_platform": robot_platform,
+                "embodiment_notes": (
+                    str(target_robot_team.get("embodiment_notes") or "").strip()
+                    or str(metadata.get("embodiment_notes") or "").strip()
+                    or f"Explicit downstream evaluation target for {robot_platform}"
+                ),
+            }
     return attach_handoff_package_paths(handoff, pipeline_dir=pipeline_dir, metadata=metadata)
 
 
@@ -810,6 +869,7 @@ def _build_pipeline_summary(
             "qualification_brief_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_brief.json",
             "opportunity_handoff_uri": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
             "runtime_preflight_report_uri": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
+            "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
         },
         "source_files": {
             "runtime_preflight_report": _local_file_pointer(pipeline_dir / "runtime_preflight_report.json"),
@@ -821,6 +881,7 @@ def _build_pipeline_summary(
             "qualification_record": _local_file_pointer(pipeline_dir / "qualification_record.json"),
             "qualification_brief": _local_file_pointer(pipeline_dir / "qualification_brief.json"),
             "opportunity_handoff": _local_file_pointer(pipeline_dir / "opportunity_handoff.json"),
+            "qualification_quality_report": _local_file_pointer(pipeline_dir / "qualification_quality_report.json"),
         },
         "metrics": {
             "completeness_status": str(scorecard.get("completeness_status") or "need_more_evidence"),
@@ -839,6 +900,73 @@ def _build_pipeline_summary(
     }
 
 
+_GENERIC_CAPABILITY_ENVELOPE = {
+    "minimum_path_width_m": 0.95,
+    "preferred_path_width_m": 1.15,
+    "maximum_threshold_height_m": 0.04,
+    "maximum_target_reach_distance_m": 1.1,
+    "maximum_workcell_span_m": 2.5,
+    "maximum_hidden_zone_bound": 0.35,
+    "maximum_uncertainty_score": 0.3,
+}
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _entry_center(entry: Mapping[str, Any]) -> List[float]:
+    box = entry.get("boundingBox") if isinstance(entry.get("boundingBox"), Mapping) else {}
+    center = box.get("center") if isinstance(box.get("center"), list) else [0.0, 0.0, 0.0]
+    return [_safe_float(center[idx] if idx < len(center) else 0.0, 0.0) for idx in range(3)]
+
+
+def _entry_extents(entry: Mapping[str, Any]) -> List[float]:
+    box = entry.get("boundingBox") if isinstance(entry.get("boundingBox"), Mapping) else {}
+    extents = box.get("extents") if isinstance(box.get("extents"), list) else [0.0, 0.0, 0.0]
+    values = [_safe_float(extents[idx] if idx < len(extents) else 0.0, 0.0) for idx in range(3)]
+    return [max(0.0, value) for value in values]
+
+
+def _distance(a: List[float], b: List[float]) -> float:
+    return sum((a[idx] - b[idx]) ** 2 for idx in range(3)) ** 0.5
+
+
+def _measure_width(extents: List[float]) -> float:
+    planar = [value for value in extents[:2] if value > 0.0]
+    if not planar:
+        return 0.0
+    return min(planar)
+
+
+def _zone_center(task_zone: Mapping[str, Any], object_index_entries: List[Mapping[str, Any]]) -> List[float]:
+    if isinstance(task_zone.get("center"), list):
+        center = task_zone.get("center")
+        return [_safe_float(center[idx] if idx < len(center) else 0.0, 0.0) for idx in range(3)]
+    if object_index_entries:
+        centers = [_entry_center(entry) for entry in object_index_entries if isinstance(entry, Mapping)]
+        if centers:
+            return [
+                sum(center[idx] for center in centers) / float(len(centers))
+                for idx in range(3)
+            ]
+    return [0.0, 0.0, 0.0]
+
+
+def _group_objects_by_entity_type(object_index_entries: List[Mapping[str, Any]]) -> Dict[str, List[Mapping[str, Any]]]:
+    grouped: Dict[str, List[Mapping[str, Any]]] = {}
+    for entry in object_index_entries:
+        if not isinstance(entry, Mapping):
+            continue
+        label = str(entry.get("label") or entry.get("name") or "object").strip()
+        entity = classify_industrial_entity(label)
+        grouped.setdefault(entity.entity_type, []).append(entry)
+    return grouped
+
+
 def _build_scene_graph(
     *,
     descriptor: CaptureDescriptor,
@@ -854,16 +982,22 @@ def _build_scene_graph(
             continue
         label = str(entry.get("label") or entry.get("name") or "object").strip()
         obb = entry.get("boundingBox") if isinstance(entry.get("boundingBox"), Mapping) else {}
+        entity = classify_industrial_entity(label)
         nodes.append(
             {
                 "id": node_id,
                 "type": "object",
                 "label": label,
-                "category": label.lower().replace(" ", "_"),
+                "category": entity.entity_type,
+                "tags": industrial_tags_for_label(label),
                 "geometry": dict(obb),
+                "center_m": _entry_center(entry),
+                "extents_m": _entry_extents(entry),
+                "ontology": entity.to_dict(),
             }
         )
     task_zone = scope_record.get("task_zone") if isinstance(scope_record.get("task_zone"), Mapping) else {}
+    zone_center = _zone_center(task_zone, object_index_entries)
     if task_zone:
         nodes.append(
             {
@@ -871,14 +1005,42 @@ def _build_scene_graph(
                 "type": "zone",
                 "label": str(task_zone.get("label") or "task_zone"),
                 "attributes": dict(task_zone),
+                "center_m": zone_center,
+                "tags": ["task_zone", *derive_capture_plan_tags([task_zone.get("label")])],
             }
         )
     metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
     for system in _string_list(metadata.get("adjacent_systems")):
-        nodes.append({"id": f"system:{system}", "type": "system", "label": system})
+        nodes.append(
+            {
+                "id": f"system:{system}",
+                "type": "system",
+                "label": system,
+                "tags": ["adjacent_system"],
+            }
+        )
+    for plan_tag in derive_capture_plan_tags(descriptor.coverage_plan):
+        nodes.append(
+            {
+                "id": f"capture_plan:{plan_tag}",
+                "type": "capture_plan_hint",
+                "label": plan_tag,
+                "tags": ["capture_plan_hint", plan_tag],
+            }
+        )
     edges: List[Dict[str, Any]] = []
     for object_id in _string_list(scope_record.get("target_object_ids")):
         edges.append({"source": "task_zone", "target": object_id, "relation": "contains_target"})
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        if node.get("id") == "task_zone":
+            continue
+        ontology = node.get("ontology") if isinstance(node.get("ontology"), Mapping) else {}
+        if ontology.get("hazard_relevant"):
+            edges.append({"source": node.get("id"), "target": "task_zone", "relation": "hazard_near_task"})
+        if ontology.get("route_relevant"):
+            edges.append({"source": "task_zone", "target": node.get("id"), "relation": "route_context"})
     return {
         "schema_version": "v1",
         "scene_id": descriptor.scene_id,
@@ -894,16 +1056,70 @@ def _build_route_graph(
     descriptor: CaptureDescriptor,
     scene_graph: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    nodes = [
-        {"id": "entry", "type": "waypoint", "label": "capture_entry"},
-        {"id": "task_zone", "type": "waypoint", "label": "task_zone"},
-        {"id": "handoff", "type": "waypoint", "label": "handoff"},
+    graph_nodes = [
+        dict(node)
+        for node in scene_graph.get("nodes", [])
+        if isinstance(node, Mapping)
     ]
-    edges = [
-        {"source": "entry", "target": "task_zone", "status": "candidate"},
-        {"source": "task_zone", "target": "handoff", "status": "candidate"},
-    ]
-    if not any(node.get("id") == "task_zone" for node in scene_graph.get("nodes", []) if isinstance(node, Mapping)):
+    route_context = []
+    for node in graph_nodes:
+        ontology = node.get("ontology") if isinstance(node.get("ontology"), Mapping) else {}
+        if ontology.get("route_relevant"):
+            route_context.append(node)
+    route_context.sort(key=lambda item: _distance(item.get("center_m", [0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]))
+    nodes = [{"id": "entry", "type": "waypoint", "label": "capture_entry", "center_m": [0.0, 0.0, 0.0]}]
+    for node in route_context:
+        nodes.append(
+            {
+                "id": f"route:{node.get('id')}",
+                "type": "route_context",
+                "label": node.get("label"),
+                "entity_type": node.get("category"),
+                "center_m": node.get("center_m"),
+                "width_m": _measure_width(node.get("extents_m", [0.0, 0.0, 0.0])),
+            }
+        )
+    if any(node.get("id") == "task_zone" for node in graph_nodes if isinstance(node, Mapping)):
+        task_zone = next(node for node in graph_nodes if node.get("id") == "task_zone")
+        nodes.append({"id": "task_zone", "type": "waypoint", "label": "task_zone", "center_m": task_zone.get("center_m", [0.0, 0.0, 0.0])})
+    handoff_nodes = [node for node in graph_nodes if node.get("category") == "handoff_point"]
+    if handoff_nodes:
+        for idx, node in enumerate(handoff_nodes):
+            nodes.append(
+                {
+                    "id": f"handoff:{idx}",
+                    "type": "handoff",
+                    "label": node.get("label"),
+                    "center_m": node.get("center_m", [0.0, 0.0, 0.0]),
+                }
+            )
+    elif any(node.get("id") == "task_zone" for node in graph_nodes if isinstance(node, Mapping)):
+        nodes.append({"id": "handoff", "type": "handoff", "label": "handoff", "center_m": [0.0, 0.0, 0.0]})
+
+    edges: List[Dict[str, Any]] = []
+    for idx in range(len(nodes) - 1):
+        source = nodes[idx]
+        target = nodes[idx + 1]
+        source_center = source.get("center_m", [0.0, 0.0, 0.0])
+        target_center = target.get("center_m", [0.0, 0.0, 0.0])
+        edges.append(
+            {
+                "source": source["id"],
+                "target": target["id"],
+                "status": "measured" if idx > 0 else "candidate",
+                "distance_m": round(_distance(source_center, target_center), 4),
+                "constraining_width_m": round(
+                    min(
+                        [
+                            _safe_float(source.get("width_m"), 99.0),
+                            _safe_float(target.get("width_m"), 99.0),
+                        ]
+                    ),
+                    4,
+                ),
+            }
+        )
+    if not any(node.get("id") == "task_zone" for node in graph_nodes if isinstance(node, Mapping)):
         edges = []
     return {
         "schema_version": "v1",
@@ -921,18 +1137,50 @@ def _build_geometry_evidence(
     qa_report: Mapping[str, Any],
     object_index_entries: List[Mapping[str, Any]],
 ) -> Dict[str, Any]:
+    grouped = _group_objects_by_entity_type(object_index_entries)
+    task_objects = grouped.get("tote", []) + grouped.get("pallet_zone", []) + grouped.get("rack", []) + grouped.get("handoff_point", [])
+    route_objects = grouped.get("aisle", []) + grouped.get("threshold", []) + grouped.get("door_type", []) + grouped.get("forklift_lane", []) + grouped.get("traffic_zone", [])
+    path_widths = [_measure_width(_entry_extents(entry)) for entry in route_objects if _measure_width(_entry_extents(entry)) > 0.0]
+    target_distances = []
+    if task_objects:
+        zone_center = _zone_center({}, task_objects)
+        target_distances = [_distance(zone_center, _entry_center(entry)) for entry in task_objects]
+    all_centers = [_entry_center(entry) for entry in object_index_entries if isinstance(entry, Mapping)]
+    if all_centers:
+        mins = [min(center[idx] for center in all_centers) for idx in range(3)]
+        maxs = [max(center[idx] for center in all_centers) for idx in range(3)]
+        workcell_span = max(maxs[idx] - mins[idx] for idx in range(3))
+    else:
+        workcell_span = 0.0
+    scaffolding_validation = (
+        descriptor.scaffolding_validation
+        if isinstance(descriptor.scaffolding_validation, Mapping)
+        else {}
+    )
     return {
         "schema_version": "v1",
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
         "capture_modality": descriptor.capture_modality,
+        "evidence_tier": descriptor.evidence_tier,
         "metric_ready": _modality_supports_metric_automation(descriptor),
         "object_count": len(object_index_entries),
         "uncertainty_score": float(qa_report.get("uncertainty_score") or 0.0),
         "hidden_zone_score": float(qa_report.get("hidden_zone_score") or 0.0),
+        "hidden_zone_bound": float(
+            qa_report.get("hidden_zone_bound")
+            or scaffolding_validation.get("hidden_zone_bound")
+            or (0.25 if _modality_supports_metric_automation(descriptor) else 1.0)
+        ),
         "scaffolding_used": list(descriptor.scaffolding_used),
         "calibration_assets": list(descriptor.calibration_assets),
+        "measured_route_width_m": round(min(path_widths), 4) if path_widths else None,
+        "target_reach_distance_m": round(max(target_distances), 4) if target_distances else None,
+        "workcell_span_m": round(float(workcell_span), 4),
+        "route_entity_counts": {key: len(value) for key, value in grouped.items() if value},
+        "validated_pose_coverage": float(scaffolding_validation.get("validated_pose_coverage") or 0.0),
+        "validated_scale_m": scaffolding_validation.get("validated_scale_m"),
     }
 
 
@@ -946,31 +1194,83 @@ def _build_capability_checks(
     metric_ready = bool(geometry_evidence.get("metric_ready"))
     target_count = len(_string_list(scope_record.get("target_object_ids")))
     route_edges = route_graph.get("edges") if isinstance(route_graph.get("edges"), list) else []
+    measured_route_width = geometry_evidence.get("measured_route_width_m")
+    target_reach_distance = geometry_evidence.get("target_reach_distance_m")
+    workcell_span = _safe_float(geometry_evidence.get("workcell_span_m"), 0.0)
+    hidden_zone_bound = _safe_float(geometry_evidence.get("hidden_zone_bound"), 1.0)
+    uncertainty_score = _safe_float(geometry_evidence.get("uncertainty_score"), 1.0)
+
+    def _status_for_threshold(value: Any, *, maximum: float | None = None, minimum: float | None = None) -> str:
+        if value is None or not metric_ready:
+            return "needs_more_evidence"
+        numeric = _safe_float(value, 0.0)
+        if maximum is not None and numeric > maximum:
+            return "blocked"
+        if minimum is not None and numeric < minimum:
+            return "blocked"
+        return "pass"
+
     checks = [
         {
             "id": "clearance_precheck",
-            "status": "pass" if metric_ready and route_edges else "needs_more_evidence",
-            "detail": "Route geometry is available for clearance checks." if metric_ready and route_edges else "Metric route geometry is not yet sufficient.",
+            "status": _status_for_threshold(
+                measured_route_width,
+                minimum=_GENERIC_CAPABILITY_ENVELOPE["minimum_path_width_m"],
+            )
+            if route_edges
+            else "needs_more_evidence",
+            "detail": (
+                f"Measured minimum route width is {measured_route_width} m."
+                if measured_route_width is not None
+                else "Route width is not yet measured."
+            ),
         },
         {
             "id": "reach_envelope_precheck",
-            "status": "pass" if metric_ready and target_count else "needs_more_evidence",
-            "detail": "Target-local geometry is available for reach checks." if metric_ready and target_count else "Target geometry is insufficient for reach checks.",
+            "status": _status_for_threshold(
+                target_reach_distance,
+                maximum=_GENERIC_CAPABILITY_ENVELOPE["maximum_target_reach_distance_m"],
+            )
+            if target_count
+            else "needs_more_evidence",
+            "detail": (
+                f"Maximum inferred target reach distance is {target_reach_distance} m."
+                if target_reach_distance is not None
+                else "Target geometry is insufficient for reach checks."
+            ),
         },
         {
             "id": "workcell_occupancy_analysis",
-            "status": "pass" if metric_ready and target_count else "needs_more_evidence",
-            "detail": "Object-local geometry supports occupancy analysis." if metric_ready and target_count else "Occupancy analysis needs stronger geometry.",
+            "status": _status_for_threshold(
+                workcell_span,
+                maximum=_GENERIC_CAPABILITY_ENVELOPE["maximum_workcell_span_m"],
+            )
+            if target_count
+            else "needs_more_evidence",
+            "detail": f"Estimated workcell span is {round(workcell_span, 4)} m.",
         },
         {
             "id": "choke_point_detection",
-            "status": "pass" if metric_ready and route_edges else "needs_more_evidence",
-            "detail": "Candidate route graph supports choke-point detection." if metric_ready and route_edges else "Route graph is not yet strong enough for choke-point detection.",
+            "status": (
+                "blocked"
+                if measured_route_width is not None and measured_route_width < _GENERIC_CAPABILITY_ENVELOPE["preferred_path_width_m"]
+                else "pass"
+            )
+            if metric_ready and route_edges
+            else "needs_more_evidence",
+            "detail": (
+                f"Preferred route width threshold is {_GENERIC_CAPABILITY_ENVELOPE['preferred_path_width_m']} m; measured {measured_route_width} m."
+                if measured_route_width is not None
+                else "Route graph is not yet strong enough for choke-point detection."
+            ),
         },
         {
             "id": "occlusion_analysis",
-            "status": "pass" if metric_ready else "needs_more_evidence",
-            "detail": "Metric capture supports bounded occlusion analysis." if metric_ready else "Occlusion analysis would be speculative on the current capture.",
+            "status": _status_for_threshold(
+                hidden_zone_bound,
+                maximum=_GENERIC_CAPABILITY_ENVELOPE["maximum_hidden_zone_bound"],
+            ),
+            "detail": f"Hidden-zone bound is {round(hidden_zone_bound, 4)}.",
         },
         {
             "id": "candidate_charger_placement",
@@ -979,13 +1279,30 @@ def _build_capability_checks(
         },
         {
             "id": "route_viability_hypotheses",
-            "status": "pass" if metric_ready and route_edges else "needs_more_evidence",
-            "detail": "Route graph can support viability hypotheses." if metric_ready and route_edges else "Route viability remains uncertain.",
+            "status": (
+                "pass"
+                if metric_ready and route_edges and uncertainty_score <= _GENERIC_CAPABILITY_ENVELOPE["maximum_uncertainty_score"]
+                else "blocked"
+            )
+            if metric_ready and route_edges
+            else "needs_more_evidence",
+            "detail": f"Uncertainty score is {round(uncertainty_score, 4)}.",
         },
         {
             "id": "scenario_batches_in_simulation",
             "status": "pass" if metric_ready and len(descriptor.requested_lanes) > 1 else "needs_more_evidence",
             "detail": "Capture is eligible for geometry-backed simulation batches." if metric_ready and len(descriptor.requested_lanes) > 1 else "Simulation batches require advanced geometry outputs.",
+        },
+        {
+            "id": "coexistence_fit",
+            "status": (
+                "blocked"
+                if hidden_zone_bound > _GENERIC_CAPABILITY_ENVELOPE["maximum_hidden_zone_bound"]
+                else "pass"
+            )
+            if metric_ready
+            else "needs_more_evidence",
+            "detail": "Shared-space coexistence is gated by hidden-zone coverage and traffic visibility.",
         },
     ]
     return {
@@ -993,6 +1310,7 @@ def _build_capability_checks(
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
+        "capability_envelope": dict(_GENERIC_CAPABILITY_ENVELOPE),
         "checks": checks,
     }
 
@@ -1016,6 +1334,7 @@ def _build_blocker_register(
                 "detail": str(risk.get("detail") or ""),
                 "evidence": {
                     "capture_modality": descriptor.capture_modality,
+                    "evidence_tier": descriptor.evidence_tier,
                     "uncertainty_score": float(geometry_evidence.get("uncertainty_score") or 0.0),
                 },
             }
@@ -1026,10 +1345,13 @@ def _build_blocker_register(
         entries.append(
             {
                 "id": str(check.get("id") or f"check_{len(entries)}"),
-                "severity": "high",
+                "severity": "high" if check.get("status") == "blocked" else "medium",
                 "category": "automation_gap",
                 "detail": str(check.get("detail") or ""),
-                "evidence": {"source_check": str(check.get("id") or "")},
+                "evidence": {
+                    "source_check": str(check.get("id") or ""),
+                    "status": str(check.get("status") or "needs_more_evidence"),
+                },
             }
         )
     return {
@@ -1050,21 +1372,35 @@ def _build_readiness_decision(
     geometry_evidence: Mapping[str, Any],
 ) -> Dict[str, Any]:
     blockers = blocker_register.get("entries", []) if isinstance(blocker_register.get("entries"), list) else []
-    human_review_required = (
-        descriptor.capture_modality != "iphone_arkit_lidar"
-        or float(geometry_evidence.get("uncertainty_score") or 0.0) >= 0.4
-        or bool(blockers)
-    )
+    unresolved_high_blockers = [
+        entry for entry in blockers
+        if isinstance(entry, Mapping) and str(entry.get("severity") or "").lower() == "high"
+    ]
+    uncertainty_score = float(geometry_evidence.get("uncertainty_score") or 0.0)
+    hidden_zone_bound = float(geometry_evidence.get("hidden_zone_bound") or 1.0)
+    human_review_required = True
     remediation = [entry.get("detail") for entry in blockers[:5] if isinstance(entry, Mapping)]
+    status = str(qualification_record.get("readiness_state") or "not_ready_yet")
+    if unresolved_high_blockers or uncertainty_score > _GENERIC_CAPABILITY_ENVELOPE["maximum_uncertainty_score"]:
+        status = "not_ready_yet"
+    elif status == "ready" and hidden_zone_bound > _GENERIC_CAPABILITY_ENVELOPE["maximum_hidden_zone_bound"]:
+        status = "risky"
     return {
         "schema_version": "v1",
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
-        "status": qualification_record.get("readiness_state"),
+        "status": status,
         "confidence": qualification_record.get("confidence"),
         "capture_modality": descriptor.capture_modality,
+        "evidence_tier": descriptor.evidence_tier,
         "human_review_required": human_review_required,
+        "human_review_scope": [
+            "workflow boundary confirmation",
+            "safety and non-routine review",
+            "hidden conditions and restricted zones",
+            "final readiness signoff",
+        ],
         "evidence_gaps": [item.get("detail") for item in blockers if isinstance(item, Mapping)],
         "blockers": blockers,
         "capability_checks": capability_checks.get("checks", []),
@@ -1084,10 +1420,23 @@ def _render_readiness_report(
         f"- Status: `{readiness_decision.get('status', 'not_ready_yet')}`",
         f"- Confidence: `{readiness_decision.get('confidence', 0.0)}`",
         f"- Capture modality: `{descriptor.capture_modality}`",
+        f"- Evidence tier: `{descriptor.evidence_tier}`",
         f"- Human review required: `{bool(readiness_decision.get('human_review_required'))}`",
         "",
-        "## Blockers",
+        "## Review Scope",
     ]
+    review_scope = readiness_decision.get("human_review_scope") if isinstance(readiness_decision.get("human_review_scope"), list) else []
+    if not review_scope:
+        lines.append("- Final human signoff remains required.")
+    else:
+        for item in review_scope:
+            lines.append(f"- {item}")
+    lines.extend(
+        [
+            "",
+        "## Blockers",
+        ]
+    )
     blockers = blocker_register.get("entries", []) if isinstance(blocker_register.get("entries"), list) else []
     if not blockers:
         lines.append("- None recorded")
@@ -1119,6 +1468,7 @@ def _write_failure(
         "failed_at": utc_now_iso(),
         "gates": [gate.to_dict() for gate in gates],
     }
+    write_json(pipeline_dir / ".qualification_pipeline_failed.json", payload)
     write_json(pipeline_dir / ".swap_pipeline_failed.json", payload)
 
 
@@ -1355,6 +1705,7 @@ def run_qualification_pipeline(
             capability_checks=capability_checks,
             geometry_evidence=geometry_evidence,
         )
+        qualification_record["readiness_state"] = readiness_decision.get("status")
         opportunity_handoff = _build_opportunity_handoff(
             descriptor=descriptor,
             scorecard=scorecard,
@@ -1372,6 +1723,13 @@ def run_qualification_pipeline(
             "blocker_register_uri": f"gs://{bucket}/{pipeline_prefix}/blocker_register.json",
             "readiness_decision_uri": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
         }
+        opportunity_handoff["readiness_state"] = readiness_decision.get("status")
+        opportunity_handoff["qualification_state"] = readiness_decision.get("status")
+        opportunity_handoff["downstream_evaluation_eligibility"] = readiness_decision.get("status") == "ready"
+        opportunity_handoff["match_ready"] = bool(
+            readiness_decision.get("status") == "ready"
+            and opportunity_handoff.get("downstream_evaluation_eligibility") is True
+        )
         write_json(pipeline_dir / "qualification_record.json", qualification_record)
         write_json(pipeline_dir / "qualification_brief.json", qualification_brief)
         write_json(pipeline_dir / "scene_graph.json", scene_graph)
@@ -1418,7 +1776,7 @@ def run_qualification_pipeline(
             "capture_id": descriptor.capture_id,
             "status": "passed",
             "generated_at": utc_now_iso(),
-            "readiness_state": qualification_record.get("readiness_state"),
+            "readiness_state": readiness_decision.get("status"),
             "completeness_status": scorecard.get("completeness_status"),
             "gates": [gate.to_dict() for gate in gates],
             "artifacts": {
@@ -1443,6 +1801,7 @@ def run_qualification_pipeline(
                 "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             },
         }
+        write_json(pipeline_dir / "qualification_quality_report.json", quality_report)
         write_json(pipeline_dir / "swap_quality_report.json", quality_report)
 
         completion_payload = {
@@ -1452,11 +1811,12 @@ def run_qualification_pipeline(
             "capture_id": descriptor.capture_id,
             "status": "completed",
             "completed_at": utc_now_iso(),
-            "quality_report": f"gs://{bucket}/{pipeline_prefix}/swap_quality_report.json",
+            "quality_report": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
             "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             "qualification_record": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
             "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
         }
+        write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
 
         return {
@@ -1482,20 +1842,19 @@ def run_qualification_pipeline(
                 error=exc,
                 gates=gates,
             )
-            write_json(
-                pipeline_dir / "swap_quality_report.json",
-                {
-                    "schema_version": "v1",
-                    "lane": "qualification",
-                    "scene_id": scene_id,
-                    "capture_id": capture_id,
-                    "status": "failed",
-                    "generated_at": utc_now_iso(),
-                    "failed_stage": stage,
-                    "error": str(exc),
-                    "gates": [gate.to_dict() for gate in gates],
-                },
-            )
+            failure_quality_report = {
+                "schema_version": "v1",
+                "lane": "qualification",
+                "scene_id": scene_id,
+                "capture_id": capture_id,
+                "status": "failed",
+                "generated_at": utc_now_iso(),
+                "failed_stage": stage,
+                "error": str(exc),
+                "gates": [gate.to_dict() for gate in gates],
+            }
+            write_json(pipeline_dir / "qualification_quality_report.json", failure_quality_report)
+            write_json(pipeline_dir / "swap_quality_report.json", failure_quality_report)
         except Exception:
             pass
         raise PipelineError(str(exc)) from exc

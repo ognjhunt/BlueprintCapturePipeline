@@ -37,7 +37,7 @@ _DEFAULT_CLASS_CAPS: Dict[str, int] = {
     # detections of the same physical object rather than arbitrarily capping
     # classes.  Override via SWAP_PER_CLASS_MAX_COUNTS_JSON env var if needed.
 }
-_RESIDENTIAL_ENVIRONMENTS = {"default", "bedroom", "kitchen"}
+_RESIDENTIAL_ENVIRONMENTS = {"bedroom", "kitchen"}
 _RESIDENTIAL_DEFAULT_CLASS_CAPS: Dict[str, int] = {
     "door": 4,
     "drawer": 8,
@@ -421,7 +421,7 @@ def _resolve_default_class_caps_for_descriptor(
     for hint in hints:
         if hint in _RESIDENTIAL_ENVIRONMENTS:
             return dict(_RESIDENTIAL_DEFAULT_CLASS_CAPS), hint
-    return dict(_DEFAULT_CLASS_CAPS), hints[0] if hints else "unknown"
+    return dict(_DEFAULT_CLASS_CAPS), hints[0] if hints else "industrial_unknown"
 
 
 def _resolve_per_class_caps(
