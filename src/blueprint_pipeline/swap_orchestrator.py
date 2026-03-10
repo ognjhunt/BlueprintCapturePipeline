@@ -42,6 +42,7 @@ from .ios_manifest import load_object_index, load_raw_manifest, resolve_object_i
 from .manifest_builder import build_scene_artifacts
 from .nurec_worker_client import NurecWorkerClient, NurecWorkerConfig
 from .quality_gates import AdvancedQualityGateConfig, run_advanced_quality_gates
+from .qualification import attach_handoff_package_paths
 from .retrieval_fallback import enforce_hard_fail_if_unresolved, run_retrieval_fallback
 from .runtime_preflight import enforce_preflight, validate_runtime_preflight
 from .sam3d_assets import materialize_candidate_assets, materialize_scene_shell_assets
@@ -1016,6 +1017,14 @@ def run_swap_pipeline(
             swap_candidates=[candidate for candidate in swap_candidates if isinstance(candidate, Mapping)],
             nurec_outputs=nurec_outputs,
         )
+        handoff_path = pipeline_dir / "opportunity_handoff.json"
+        if handoff_path.is_file():
+            refreshed_handoff = attach_handoff_package_paths(
+                read_json(handoff_path),
+                pipeline_dir=pipeline_dir,
+                metadata=descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {},
+            )
+            write_json(handoff_path, refreshed_handoff)
 
         # ------------------------------------------------------------------
         # Stage F: interactive articulation validation

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
@@ -21,7 +22,26 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(payload), indent=2), encoding="utf-8")
 
 
-def _write_scene_descriptor(root: Path) -> str:
+def _blueprint_validation_src() -> Path:
+    return Path(__file__).resolve().parents[2] / "BlueprintValidation" / "src"
+
+
+def _validate_handoff_contract(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    validation_src = _blueprint_validation_src()
+    if str(validation_src) not in sys.path:
+        sys.path.insert(0, str(validation_src))
+
+    from blueprint_validation.validation import validate_qualified_opportunity_handoff
+
+    return validate_qualified_opportunity_handoff(dict(payload))
+
+
+def _write_scene_descriptor(
+    root: Path,
+    *,
+    requested_lanes: Optional[List[str]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> str:
     scene_id = "scene_demo"
     capture_id = "capture_demo"
 
@@ -46,6 +66,10 @@ def _write_scene_descriptor(root: Path) -> str:
         "intended_space_type": "kitchen",
         "qa_report_uri": qa_uri,
     }
+    if requested_lanes is not None:
+        descriptor["requested_lanes"] = list(requested_lanes)
+    if metadata is not None:
+        descriptor["metadata"] = dict(metadata)
     _write_json(descriptor_path, descriptor)
 
     qa_report = {
@@ -1097,10 +1121,16 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
     handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
     quality_report = json.loads((pipeline_dir / "swap_quality_report.json").read_text(encoding="utf-8"))
+    validated_handoff = _validate_handoff_contract(handoff)
 
     assert scorecard["completeness_status"] == "sufficient"
     assert qualification["readiness_state"] in {"ready", "risky"}
-    assert handoff["match_ready"] is True
+    assert validated_handoff["qualification_state"] == qualification["readiness_state"]
+    assert validated_handoff["downstream_evaluation_eligibility"] == (
+        qualification["readiness_state"] == "ready"
+    )
+    assert validated_handoff["site_submission_id"] == "scene_demo:capture_demo"
+    assert validated_handoff["opportunity_id"] == "scene_demo:capture_demo"
     assert quality_report["lane"] == "qualification"
 
 
@@ -1129,10 +1159,13 @@ def test_qualification_completeness_failure_produces_need_more_evidence(tmp_path
     scorecard = json.loads((pipeline_dir / "capture_qa_scorecard.json").read_text(encoding="utf-8"))
     qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
     handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
+    validated_handoff = _validate_handoff_contract(handoff)
 
     assert scorecard["completeness_status"] == "need_more_evidence"
     assert qualification["readiness_state"] == "not_ready_yet"
     assert any(item["id"] == "need_more_evidence" for item in qualification["risks"])
+    assert validated_handoff["qualification_state"] == "not_ready_yet"
+    assert validated_handoff["downstream_evaluation_eligibility"] is False
     assert handoff["match_ready"] is False
 
 
@@ -1219,3 +1252,45 @@ def test_advanced_geometry_bundle_writes_preferred_ply_when_available(tmp_path: 
     assert (pipeline_dir / "advanced_geometry/task_targets.synthetic.json").is_file()
     assert (pipeline_dir / "advanced_geometry/advanced_geometry_bundle.json").is_file()
     assert (pipeline_dir / "advanced_geometry/3dgs_compressed.ply").is_file()
+
+
+def test_combined_lane_run_backfills_geometry_package_into_handoff(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(
+        tmp_path,
+        requested_lanes=["qualification", "advanced_geometry"],
+    )
+    nurec_client = _StubNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+    runner = _StubBlueprintRunner(tmp_path / "bucket")
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+        nurec_client=nurec_client,
+        blueprint_runner=runner,
+    )
+
+    assert result["status"] == "completed"
+    assert result["lanes"] == ["qualification", "advanced_geometry"]
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
+    validated_handoff = _validate_handoff_contract(handoff)
+
+    assert validated_handoff["geometry_package"]["bundle_path"] == "advanced_geometry"
+    assert validated_handoff["geometry_package"]["labels_path"] == "advanced_geometry/labels.json"
+    assert validated_handoff["geometry_package"]["structure_path"] == "advanced_geometry/structure.json"
+    assert (
+        validated_handoff["geometry_package"]["task_hints_path"]
+        == "advanced_geometry/task_targets.synthetic.json"
+    )

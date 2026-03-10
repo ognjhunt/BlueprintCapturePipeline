@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
@@ -68,6 +69,85 @@ def _try_read_json(path: Path) -> Optional[Dict[str, Any]]:
         return read_json(path)
     except Exception:
         return None
+
+
+def _string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = [value]
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _relative_path_from(base_dir: Path, target_path: Path) -> str:
+    return Path(os.path.relpath(target_path, base_dir)).as_posix()
+
+
+def _normalize_local_path(path_value: Any, *, base_dir: Path) -> Optional[str]:
+    raw = str(path_value or "").strip()
+    if not raw or raw.startswith("gs://"):
+        return None
+    candidate = Path(raw)
+    resolved = candidate if candidate.is_absolute() else (base_dir / candidate).resolve()
+    return _relative_path_from(base_dir, resolved)
+
+
+def _metadata_scene_package_path(metadata: Mapping[str, Any], *, base_dir: Path) -> Optional[str]:
+    scene_package = (
+        metadata.get("scene_package")
+        if isinstance(metadata.get("scene_package"), Mapping)
+        else {}
+    )
+    for value in (
+        scene_package.get("scene_package_path"),
+        scene_package.get("root_path"),
+        scene_package.get("bundle_path"),
+        metadata.get("scene_package_path"),
+    ):
+        normalized = _normalize_local_path(value, base_dir=base_dir)
+        if normalized:
+            return normalized
+    return None
+
+
+def attach_handoff_package_paths(
+    handoff_payload: Mapping[str, Any],
+    *,
+    pipeline_dir: Path,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload = dict(handoff_payload)
+    handoff_dir = pipeline_dir
+    advanced_dir = pipeline_dir / "advanced_geometry"
+    bundle_manifest = advanced_dir / "advanced_geometry_bundle.json"
+
+    if bundle_manifest.is_file():
+        geometry_package: Dict[str, Any] = {"bundle_path": _relative_path_from(handoff_dir, advanced_dir)}
+        optional_files = {
+            "ply_path": advanced_dir / "3dgs_compressed.ply",
+            "labels_path": advanced_dir / "labels.json",
+            "structure_path": advanced_dir / "structure.json",
+            "task_hints_path": advanced_dir / "task_targets.synthetic.json",
+        }
+        for key, path in optional_files.items():
+            if path.is_file():
+                geometry_package[key] = _relative_path_from(handoff_dir, path)
+        payload["geometry_package"] = geometry_package
+    else:
+        payload.pop("geometry_package", None)
+
+    metadata_mapping = metadata if isinstance(metadata, Mapping) else {}
+    scene_package_path = _metadata_scene_package_path(metadata_mapping, base_dir=handoff_dir)
+    if scene_package_path:
+        payload["scene_package"] = {"scene_package_path": scene_package_path}
+    else:
+        payload.pop("scene_package", None)
+
+    return payload
 
 
 def _disabled_task_targets(scene_id: str, capture_id: str, reason: str) -> Dict[str, Any]:
@@ -511,40 +591,121 @@ def _build_opportunity_handoff(
     *,
     descriptor: CaptureDescriptor,
     scorecard: Mapping[str, Any],
+    scope_record: Mapping[str, Any],
     qualification_record: Mapping[str, Any],
     brief: Mapping[str, Any],
+    config: Any,
+    pipeline_dir: Path,
 ) -> Dict[str, Any]:
+    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
     readiness_state = str(qualification_record.get("readiness_state") or "not_ready_yet")
     completeness_status = str(scorecard.get("completeness_status") or "need_more_evidence")
     confidence = float(qualification_record.get("confidence") or 0.0)
     match_ready = completeness_status == "sufficient" and readiness_state == "ready" and confidence >= 0.78
-    routing_status = "match_ready" if match_ready else "needs_follow_up"
     recommended_lane = (
         "advanced_geometry"
         if bool(qualification_record.get("advanced_geometry_recommended"))
         else "qualification"
     )
-    return {
+    site_submission_id = str(metadata.get("site_submission_id") or "").strip() or (
+        f"{descriptor.scene_id}:{descriptor.capture_id}"
+    )
+    opportunity_id = str(metadata.get("opportunity_id") or "").strip() or site_submission_id
+    task_statement = (
+        str(metadata.get("task_statement") or "").strip()
+        or str(metadata.get("workflow_context") or "").strip()
+        or f"Qualification review for {descriptor.scene_id}/{descriptor.capture_id}"
+    )
+    operating_constraints = _string_list(metadata.get("operating_constraints"))
+    if not operating_constraints:
+        operating_hours = str(metadata.get("operating_hours") or "").strip()
+        if operating_hours:
+            operating_constraints = [operating_hours]
+    if not operating_constraints:
+        operating_constraints = ["Not provided in intake metadata"]
+
+    privacy_security_constraints = _string_list(metadata.get("privacy_restrictions"))
+    privacy_security_constraints.extend(
+        value
+        for value in _string_list(metadata.get("security_restrictions"))
+        if value not in privacy_security_constraints
+    )
+    if not privacy_security_constraints:
+        privacy_security_constraints = ["Not provided in intake metadata"]
+
+    known_blockers = _string_list(scope_record.get("blockers"))
+    if not known_blockers:
+        known_blockers = _string_list(metadata.get("known_blockers"))
+    if not known_blockers:
+        known_blockers = ["No known blockers supplied"]
+
+    task_zone = scope_record.get("task_zone") if isinstance(scope_record.get("task_zone"), Mapping) else {}
+    target_object_ids = _string_list(scope_record.get("target_object_ids"))
+    in_scope_zone: Any
+    if task_zone:
+        in_scope_zone = dict(task_zone)
+    elif target_object_ids:
+        in_scope_zone = target_object_ids
+    else:
+        in_scope_zone = descriptor.environment_type_hint or descriptor.scene_id
+
+    success_criteria = _string_list(scope_record.get("success_criteria"))
+    target_robot_team = (
+        metadata.get("target_robot_team")
+        if isinstance(metadata.get("target_robot_team"), Mapping)
+        else {}
+    )
+    robot_platform = (
+        str(target_robot_team.get("robot_platform") or "").strip()
+        or str(metadata.get("robot_platform") or "").strip()
+        or str(getattr(config, "robot_type", "") or "").strip()
+        or "franka"
+    )
+    handoff = {
         "schema_version": "v1",
         "lane": "qualification",
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
-        "routing_status": routing_status,
+        "site_submission_id": site_submission_id,
+        "opportunity_id": opportunity_id,
+        "qualification_state": readiness_state,
+        "downstream_evaluation_eligibility": readiness_state == "ready",
+        "operator_approved_summary": (
+            str(metadata.get("operator_approved_summary") or "").strip()
+            or str(brief.get("headline") or "").strip()
+        ),
+        "scoped_task_definition": {
+            "task_id": str(metadata.get("task_id") or "").strip() or opportunity_id,
+            "scoped_task_statement": task_statement,
+            "success_criteria": success_criteria,
+            "in_scope_zone": in_scope_zone,
+        },
+        "site_constraints": {
+            "operating_constraints": operating_constraints,
+            "privacy_security_constraints": privacy_security_constraints,
+            "known_blockers": known_blockers,
+        },
+        "target_robot_team": {
+            "team_name_or_id": (
+                str(target_robot_team.get("team_name_or_id") or "").strip()
+                or str(metadata.get("team_name_or_id") or "").strip()
+                or "default_robot_team"
+            ),
+            "robot_platform": robot_platform,
+            "embodiment_notes": (
+                str(target_robot_team.get("embodiment_notes") or "").strip()
+                or str(metadata.get("embodiment_notes") or "").strip()
+                or f"Qualification-default targeting for {robot_platform}"
+            ),
+        },
         "match_ready": match_ready,
         "recommended_lane": recommended_lane,
         "readiness_state": readiness_state,
         "confidence": confidence,
-        "summary": brief.get("headline"),
-        "constraints": {
-            "environment_type_hint": descriptor.environment_type_hint or "unknown",
-            "swap_focus": list(descriptor.swap_focus),
-            "privacy_restrictions": descriptor.metadata.get("privacy_restrictions")
-            if isinstance(descriptor.metadata, Mapping)
-            else None,
-        },
         "risks": qualification_record.get("risks", []),
     }
+    return attach_handoff_package_paths(handoff, pipeline_dir=pipeline_dir, metadata=metadata)
 
 
 def _build_pipeline_summary(
@@ -813,8 +974,11 @@ def run_qualification_pipeline(
         opportunity_handoff = _build_opportunity_handoff(
             descriptor=descriptor,
             scorecard=scorecard,
+            scope_record=scope_record,
             qualification_record=qualification_record,
             brief=qualification_brief,
+            config=config,
+            pipeline_dir=pipeline_dir,
         )
         write_json(pipeline_dir / "qualification_record.json", qualification_record)
         write_json(pipeline_dir / "qualification_brief.json", qualification_brief)
