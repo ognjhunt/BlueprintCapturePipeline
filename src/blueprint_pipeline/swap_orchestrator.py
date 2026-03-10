@@ -34,6 +34,7 @@ from .common import (
     utc_now_iso,
     write_json,
 )
+from .grounding_adapter import infer_spatial_grounding, normalize_spatial_grounding_backend
 from .interactive_reconciliation import (
     find_required_articulation_failures,
     reconcile_interactive_results,
@@ -102,6 +103,9 @@ class OrchestratorConfig:
     generation_provider_chain: str = os.getenv(
         "TEXT_ASSET_GENERATION_PROVIDER_CHAIN", "image_to_3d,proxy_box"
     ).strip()
+    spatial_grounding_backend: str = normalize_spatial_grounding_backend(
+        os.getenv("SPATIAL_GROUNDING_BACKEND", "legacy")
+    )
     image_conditioned_generation: bool = parse_bool(
         os.getenv("IMAGE_CONDITIONED_GENERATION_ENABLED"), default=True
     )
@@ -312,6 +316,7 @@ def _build_pipeline_summary(
     swap_candidates_payload: Mapping[str, Any],
     task_targets_payload: Mapping[str, Any],
     nurec_outputs: Mapping[str, Any],
+    grounding_payload: Mapping[str, Any],
     object_index_count: int,
 ) -> Dict[str, Any]:
     generated_at = utc_now_iso()
@@ -354,6 +359,7 @@ def _build_pipeline_summary(
             "qa_report_uri": qa_report_uri,
             "object_index_uri": object_index_uri,
             "runtime_preflight_report_uri": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
+            "holi_spatial_grounding_uri": f"gs://{bucket}/{pipeline_prefix}/holi_spatial_grounding.json",
             "task_targets_uri": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
             "swap_candidates_uri": f"gs://{bucket}/{pipeline_prefix}/swap_candidates.json",
             "scene_cleaning_report_uri": f"gs://{bucket}/{pipeline_prefix}/scene_cleaning_report.json",
@@ -363,6 +369,7 @@ def _build_pipeline_summary(
         },
         "source_files": {
             "runtime_preflight_report": _local_file_pointer(pipeline_dir / "runtime_preflight_report.json"),
+            "holi_spatial_grounding": _local_file_pointer(pipeline_dir / "holi_spatial_grounding.json"),
             "task_targets": _local_file_pointer(pipeline_dir / "task_targets.json"),
             "swap_candidates": _local_file_pointer(pipeline_dir / "swap_candidates.json"),
             "scene_cleaning_report": _local_file_pointer(pipeline_dir / "scene_cleaning_report.json"),
@@ -378,6 +385,11 @@ def _build_pipeline_summary(
                 [candidate for candidate in candidates if isinstance(candidate, Mapping)]
             ),
             "task_target_count": len(target_ids),
+            "grounded_object_count": len(
+                grounding_payload.get("grounded_objects", [])
+                if isinstance(grounding_payload.get("grounded_objects"), list)
+                else []
+            ),
             "object_index_count": int(max(0, object_index_count)),
             "quality_gate_total": len(quality_gates),
             "quality_gate_passed": quality_gates_passed,
@@ -430,6 +442,142 @@ def _pick_preferred_geometry_uri(nurec_outputs: Mapping[str, Any]) -> str:
     return ""
 
 
+def _bbox_from_mapping(entry: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    raw = entry.get("boundingBox") if isinstance(entry.get("boundingBox"), Mapping) else None
+    if raw is None and isinstance(entry.get("obb"), Mapping):
+        raw = entry.get("obb")
+    return dict(raw) if isinstance(raw, Mapping) else None
+
+
+def _build_advanced_task_hints_payload(
+    *,
+    descriptor: CaptureDescriptor,
+    bucket: str,
+    pipeline_prefix: str,
+    task_targets_payload: Mapping[str, Any],
+    swap_candidates: List[Mapping[str, Any]],
+    grounding_payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    grounded_by_id: Dict[str, Mapping[str, Any]] = {}
+    grounded_objects = (
+        grounding_payload.get("grounded_objects")
+        if isinstance(grounding_payload.get("grounded_objects"), list)
+        else []
+    )
+    for item in grounded_objects:
+        if not isinstance(item, Mapping):
+            continue
+        object_id = str(item.get("object_id") or item.get("instance_id") or "").strip()
+        if object_id and object_id not in grounded_by_id:
+            grounded_by_id[object_id] = item
+
+    def _store_hint(
+        store: Dict[str, Dict[str, Any]],
+        *,
+        instance_id: str,
+        label: str,
+        confidence: float,
+        category: str,
+        bbox: Optional[Mapping[str, Any]],
+        source: str,
+    ) -> None:
+        if not instance_id:
+            return
+        payload: Dict[str, Any] = {
+            "instance_id": instance_id,
+            "label": label or "object",
+            "confidence": max(0.0, min(1.0, float(confidence))),
+            "category": category,
+            "source": source,
+        }
+        if bbox is not None:
+            payload["boundingBox"] = dict(bbox)
+        existing = store.get(instance_id)
+        if existing is None or float(payload["confidence"]) >= float(existing.get("confidence", 0.0)):
+            store[instance_id] = payload
+
+    manipulation_store: Dict[str, Dict[str, Any]] = {}
+    articulation_store: Dict[str, Dict[str, Any]] = {}
+    navigation_store: Dict[str, Dict[str, Any]] = {}
+    category_to_store = {
+        "manipulation_candidates": (manipulation_store, "manipulation"),
+        "articulation_hints": (articulation_store, "articulation"),
+        "navigation_hints": (navigation_store, "navigation"),
+    }
+
+    for key, (store, default_category) in category_to_store.items():
+        for item in task_targets_payload.get(key, []):
+            if not isinstance(item, Mapping):
+                continue
+            instance_id = str(item.get("instance_id") or item.get("object_id") or "").strip()
+            grounded = grounded_by_id.get(instance_id)
+            bbox = _bbox_from_mapping(item) or (_bbox_from_mapping(grounded) if grounded is not None else None)
+            _store_hint(
+                store,
+                instance_id=instance_id,
+                label=str(item.get("label") or (grounded.get("label") if grounded is not None else "object")),
+                confidence=float(item.get("confidence", grounded.get("confidence", 0.75) if grounded else 0.75)),
+                category=str(item.get("category") or default_category),
+                bbox=bbox,
+                source=str(item.get("source") or "task_targets"),
+            )
+
+    for item in swap_candidates:
+        if not isinstance(item, Mapping):
+            continue
+        instance_id = str(item.get("object_id") or "").strip()
+        grounded = grounded_by_id.get(instance_id)
+        articulation = item.get("articulation") if isinstance(item.get("articulation"), Mapping) else {}
+        store = articulation_store if bool(articulation.get("required", False)) else manipulation_store
+        bbox = _bbox_from_mapping(item) or (_bbox_from_mapping(grounded) if grounded is not None else None)
+        _store_hint(
+            store,
+            instance_id=instance_id,
+            label=str(item.get("label") or (grounded.get("label") if grounded is not None else "object")),
+            confidence=float(
+                item.get("selection", {}).get("rank_score", grounded.get("confidence", 0.8) if grounded else 0.8)
+            ),
+            category="articulation" if store is articulation_store else "manipulation",
+            bbox=bbox,
+            source="swap_candidates",
+        )
+
+    return {
+        "schema_version": "v1",
+        "lane": "advanced_geometry",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "source_task_targets_uri": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
+        "grounding_backend": str(grounding_payload.get("backend") or "legacy"),
+        "target_object_ids": [
+            str(value)
+            for value in task_targets_payload.get("target_object_ids", [])
+            if str(value).strip()
+        ] if isinstance(task_targets_payload.get("target_object_ids"), list) else [],
+        "articulation_required_ids": [
+            str(value)
+            for value in task_targets_payload.get("articulation_required_ids", [])
+            if str(value).strip()
+        ] if isinstance(task_targets_payload.get("articulation_required_ids"), list) else [],
+        "manipulation_candidates": list(manipulation_store.values()),
+        "articulation_hints": list(articulation_store.values()),
+        "navigation_hints": list(navigation_store.values()),
+        "tasks": [
+            dict(item) for item in task_targets_payload.get("tasks", []) if isinstance(item, Mapping)
+        ],
+        "synthetic_hints": [
+            {
+                "object_id": str(item.get("object_id") or ""),
+                "label": str(item.get("label") or "object"),
+                "sim_role": str(item.get("sim_role") or "manipulable_object"),
+            }
+            for item in swap_candidates
+            if isinstance(item, Mapping)
+        ],
+    }
+
+
 def _write_advanced_geometry_bundle(
     *,
     storage_root: Path,
@@ -438,6 +586,7 @@ def _write_advanced_geometry_bundle(
     pipeline_dir: Path,
     descriptor: CaptureDescriptor,
     object_index_entries: List[Mapping[str, Any]],
+    grounding_payload: Mapping[str, Any],
     task_targets_payload: Mapping[str, Any],
     swap_candidates: List[Mapping[str, Any]],
     nurec_outputs: Mapping[str, Any],
@@ -489,29 +638,16 @@ def _write_advanced_geometry_bundle(
     }
     write_json(advanced_dir / "structure.json", structure_payload)
 
-    synthetic_targets_payload = {
-        "schema_version": "v1",
-        "lane": "advanced_geometry",
-        "scene_id": descriptor.scene_id,
-        "capture_id": descriptor.capture_id,
-        "generated_at": utc_now_iso(),
-        "source_task_targets_uri": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
-        "target_object_ids": sorted(target_ids),
-        "articulation_required_ids": [
-            str(value)
-            for value in task_targets_payload.get("articulation_required_ids", [])
-            if str(value).strip()
-        ] if isinstance(task_targets_payload.get("articulation_required_ids"), list) else [],
-        "synthetic_hints": [
-            {
-                "object_id": str(item.get("object_id") or ""),
-                "label": str(item.get("label") or "object"),
-                "sim_role": str(item.get("sim_role") or "manipulable_object"),
-            }
-            for item in swap_candidates
-            if isinstance(item, Mapping)
-        ],
-    }
+    write_json(advanced_dir / "holi_spatial_grounding.json", grounding_payload)
+
+    synthetic_targets_payload = _build_advanced_task_hints_payload(
+        descriptor=descriptor,
+        bucket=bucket,
+        pipeline_prefix=pipeline_prefix,
+        task_targets_payload=task_targets_payload,
+        swap_candidates=swap_candidates,
+        grounding_payload=grounding_payload,
+    )
     write_json(advanced_dir / "task_targets.synthetic.json", synthetic_targets_payload)
 
     preferred_geometry_uri = _pick_preferred_geometry_uri(nurec_outputs)
@@ -537,6 +673,9 @@ def _write_advanced_geometry_bundle(
         "bundle_artifacts": {
             "labels": f"gs://{bucket}/{relative_scene_path(advanced_dir / 'labels.json', storage_root)}",
             "structure": f"gs://{bucket}/{relative_scene_path(advanced_dir / 'structure.json', storage_root)}",
+            "holi_spatial_grounding": (
+                f"gs://{bucket}/{relative_scene_path(advanced_dir / 'holi_spatial_grounding.json', storage_root)}"
+            ),
             "task_targets_synthetic": (
                 f"gs://{bucket}/{relative_scene_path(advanced_dir / 'task_targets.synthetic.json', storage_root)}"
             ),
@@ -553,6 +692,9 @@ def _write_advanced_geometry_bundle(
         ),
         "labels": f"gs://{bucket}/{relative_scene_path(advanced_dir / 'labels.json', storage_root)}",
         "structure": f"gs://{bucket}/{relative_scene_path(advanced_dir / 'structure.json', storage_root)}",
+        "holi_spatial_grounding": (
+            f"gs://{bucket}/{relative_scene_path(advanced_dir / 'holi_spatial_grounding.json', storage_root)}"
+        ),
         "task_targets_synthetic": (
             f"gs://{bucket}/{relative_scene_path(advanced_dir / 'task_targets.synthetic.json', storage_root)}"
         ),
@@ -798,7 +940,21 @@ def run_swap_pipeline(
             raise StageError("nurec", "required NuRec artifacts missing from nurec_outputs")
 
         # ------------------------------------------------------------------
-        # Stage C: swap candidate selection
+        # Stage C: spatial grounding
+        # ------------------------------------------------------------------
+        stage = "spatial_grounding"
+        grounding_payload = infer_spatial_grounding(
+            descriptor=descriptor,
+            storage_root=storage_root,
+            object_index_uri=object_index_uri,
+            object_index_entries=object_index_entries,
+            nurec_outputs=nurec_outputs,
+            backend=cfg.spatial_grounding_backend,
+        )
+        write_json(pipeline_dir / "holi_spatial_grounding.json", grounding_payload)
+
+        # ------------------------------------------------------------------
+        # Stage D: swap candidate selection
         # ------------------------------------------------------------------
         stage = "swap_candidates"
         if cfg.task_target_inference_enabled:
@@ -808,6 +964,7 @@ def run_swap_pipeline(
                 object_index_entries=object_index_entries,
                 object_index_uri=object_index_uri,
                 storage_root=storage_root,
+                grounding_payload=grounding_payload,
                 max_targets=max(1, cfg.task_target_max_objects),
             )
         else:
@@ -820,6 +977,7 @@ def run_swap_pipeline(
                 "video_analysis": {"external_inference": {"status": "skipped", "reason": "disabled"}},
                 "manipulation_candidates": [dict(item) for item in descriptor.manipulation_candidates],
                 "articulation_hints": [dict(item) for item in descriptor.articulation_hints],
+                "navigation_hints": [],
                 "target_object_ids": sorted(
                     {
                         str(item.get("instance_id") or item.get("id") or "").strip()
@@ -873,7 +1031,7 @@ def run_swap_pipeline(
         write_json(pipeline_dir / "swap_candidates.json", swap_candidates_payload)
 
         # ------------------------------------------------------------------
-        # Stage C.5: candidate-scoped scene cleaning
+        # Stage D.5: candidate-scoped scene cleaning
         # ------------------------------------------------------------------
         stage = "scene_cleaning"
         scene_cleaning_report = run_candidate_scene_cleaning(
@@ -991,7 +1149,7 @@ def run_swap_pipeline(
             raise StageError("sam3d", swap_gate_detail)
 
         # ------------------------------------------------------------------
-        # Stage E: manifest/layout synthesis
+        # Stage F: manifest/layout synthesis
         # ------------------------------------------------------------------
         stage = "manifest"
         artifact_paths = build_scene_artifacts(
@@ -1013,6 +1171,7 @@ def run_swap_pipeline(
             pipeline_dir=pipeline_dir,
             descriptor=descriptor,
             object_index_entries=object_index_entries,
+            grounding_payload=grounding_payload,
             task_targets_payload=task_targets_payload,
             swap_candidates=[candidate for candidate in swap_candidates if isinstance(candidate, Mapping)],
             nurec_outputs=nurec_outputs,
@@ -1027,7 +1186,7 @@ def run_swap_pipeline(
             write_json(handoff_path, refreshed_handoff)
 
         # ------------------------------------------------------------------
-        # Stage F: interactive articulation validation
+        # Stage G: interactive articulation validation
         # ------------------------------------------------------------------
         stage = "interactive"
         interactive_result = blueprint_runner.run_interactive_job(
@@ -1517,6 +1676,7 @@ def run_swap_pipeline(
             swap_candidates_payload=swap_candidates_payload,
             task_targets_payload=task_targets_payload,
             nurec_outputs=nurec_outputs,
+            grounding_payload=grounding_payload,
             object_index_count=len(object_index_entries),
         )
         write_json(pipeline_dir / "pipeline_summary.json", pipeline_summary)

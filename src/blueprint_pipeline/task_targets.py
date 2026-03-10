@@ -24,62 +24,12 @@ from .common import (
 from .ios_manifest import IOSManifest
 from .swap_candidates import build_swap_candidates_payload
 
-_ARTICULATION_KEYWORDS = {
-    "door",
-    "drawer",
-    "cabinet",
-    "cupboard",
-    "closet",
-    "locker",
-    "fridge",
-    "refrigerator",
-    "microwave",
-    "oven",
-    "washer",
-    "dryer",
-    "freezer",
-}
-
-_MANIPULATION_KEYWORDS = {
-    "tote",
-    "bin",
-    "box",
-    "crate",
-    "carton",
-    "package",
-    "container",
-    "pallet",
-    "bottle",
-    "can",
-    "tool",
-    "part",
-    "object",
-    "cup",
-    "mug",
-}
-
-_STRUCTURAL_KEYWORDS = {
-    "wall",
-    "floor",
-    "ceiling",
-    "window",
-    "stairs",
-    "pillar",
-    "column",
-    "beam",
-    "light_fixture",
-    "outlet",
-    "rack",
-    "shelf",
-    "conveyor",
-    "safety_barrier",
-}
-
 _SELECTION_MODES = {"explicit_only", "hybrid", "policy_only"}
 _SOURCE_PRIORITY = {
     "descriptor": 3,
+    "grounding_backend": 2,
     "video_inference": 2,
-    "heuristic": 1,
+    "legacy_object_index": 1,
 }
 
 _DEFAULT_CLASS_CAPS: Dict[str, int] = {
@@ -637,16 +587,6 @@ def _apply_per_class_caps(
     return kept, report
 
 
-def _entry_text(entry: Mapping[str, Any]) -> str:
-    return _normalized_text(
-        _candidate_label(entry),
-        entry.get("name"),
-        entry.get("class_name"),
-        entry.get("category"),
-        entry.get("description"),
-    )
-
-
 def _normalize_hint_entry(
     entry: Mapping[str, Any],
     *,
@@ -665,6 +605,14 @@ def _normalize_hint_entry(
         "source": source,
         "role": role,
         "reason": reason,
+        "category": str(entry.get("category") or role),
+        "boundingBox": (
+            dict(entry.get("boundingBox"))
+            if isinstance(entry.get("boundingBox"), Mapping)
+            else dict(entry.get("obb"))
+            if isinstance(entry.get("obb"), Mapping)
+            else None
+        ),
     }
 
 
@@ -713,7 +661,7 @@ def _dedupe_hint_entries(entries: Iterable[Mapping[str, Any]]) -> List[Dict[str,
             continue
 
         existing = by_key.get(key)
-        source = str(entry.get("source") or "heuristic").strip() or "heuristic"
+        source = str(entry.get("source") or "grounding_backend").strip() or "grounding_backend"
         score = (
             _SOURCE_PRIORITY.get(source, 0),
             _safe_float(entry.get("confidence"), 0.0),
@@ -722,7 +670,7 @@ def _dedupe_hint_entries(entries: Iterable[Mapping[str, Any]]) -> List[Dict[str,
             by_key[key] = dict(entry)
             continue
 
-        existing_source = str(existing.get("source") or "heuristic").strip() or "heuristic"
+        existing_source = str(existing.get("source") or "grounding_backend").strip() or "grounding_backend"
         existing_score = (
             _SOURCE_PRIORITY.get(existing_source, 0),
             _safe_float(existing.get("confidence"), 0.0),
@@ -767,109 +715,94 @@ def _descriptor_target_entries(
     return manip, artic
 
 
-def _heuristic_task_inference(
-    *,
-    descriptor: CaptureDescriptor,
-    object_index_entries: List[Mapping[str, Any]],
-    max_targets: int,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-    env_hint = str(descriptor.environment_type_hint or "").strip().lower()
-    manip_keywords = set(_MANIPULATION_KEYWORDS)
-    artic_keywords = set(_ARTICULATION_KEYWORDS)
-    structural_keywords = set(_STRUCTURAL_KEYWORDS)
+def _grounding_objects(
+    grounding_payload: Optional[Mapping[str, Any]],
+    fallback_entries: List[Mapping[str, Any]],
+) -> List[Mapping[str, Any]]:
+    if isinstance(grounding_payload, Mapping):
+        grounded = grounding_payload.get("grounded_objects")
+        if isinstance(grounded, list):
+            return [item for item in grounded if isinstance(item, Mapping)]
+    return [item for item in fallback_entries if isinstance(item, Mapping)]
 
-    if env_hint == "warehouse":
-        manip_keywords.update({"parcel", "shipment", "tote", "bin", "carton"})
-        artic_keywords.update({"rolling_door", "docking_door"})
-    elif env_hint == "kitchen":
-        manip_keywords.update({"plate", "bowl", "pot", "pan", "utensil"})
-        artic_keywords.update({"pantry", "cabinet_door"})
 
-    manip_entries: List[Dict[str, Any]] = []
-    artic_entries: List[Dict[str, Any]] = []
-
-    for entry in object_index_entries:
-        if not isinstance(entry, Mapping):
-            continue
+def _grounding_lookup(
+    grounding_payload: Optional[Mapping[str, Any]],
+    fallback_entries: List[Mapping[str, Any]],
+) -> Tuple[Dict[str, Mapping[str, Any]], Dict[str, List[Mapping[str, Any]]]]:
+    by_id: Dict[str, Mapping[str, Any]] = {}
+    by_label: Dict[str, List[Mapping[str, Any]]] = {}
+    for entry in _grounding_objects(grounding_payload, fallback_entries):
         obj_id = _candidate_id(entry)
-        label = _candidate_label(entry)
-        text = _entry_text(entry)
-        if not text:
-            continue
-        if any(token in text for token in structural_keywords):
-            continue
+        if obj_id and obj_id not in by_id:
+            by_id[obj_id] = entry
+        label = _semantic_label_bucket(_candidate_label(entry))
+        if label:
+            by_label.setdefault(label, []).append(entry)
+    return by_id, by_label
 
-        salience = _object_salience_score(entry)
-        confidence = _safe_float(entry.get("mean_confidence"), _safe_float(entry.get("confidence"), 0.0))
-        blended_conf = _clamp01((salience * 0.65) + (confidence * 0.35))
 
-        has_artic = any(token in text for token in artic_keywords)
-        has_manip = any(token in text for token in manip_keywords)
-        if has_artic:
-            artic_entries.append(
-                {
-                    "instance_id": obj_id,
-                    "label": label,
-                    "confidence": max(0.45, blended_conf),
-                    "source": "heuristic",
-                    "role": "articulation",
-                    "reason": f"keyword+salience (score={blended_conf:.2f})",
-                }
+def _normalize_bbox(entry: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    raw = entry.get("boundingBox") if isinstance(entry.get("boundingBox"), Mapping) else None
+    if raw is None and isinstance(entry.get("obb"), Mapping):
+        raw = entry.get("obb")
+    if not isinstance(raw, Mapping):
+        return None
+    center = raw.get("center") if isinstance(raw.get("center"), list) else None
+    extents = raw.get("extents") if isinstance(raw.get("extents"), list) else None
+    if not isinstance(center, list) or not isinstance(extents, list):
+        return None
+    axes = raw.get("axes") if isinstance(raw.get("axes"), list) else [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    quat = (
+        raw.get("orientationQuaternion")
+        if isinstance(raw.get("orientationQuaternion"), list)
+        else [1.0, 0.0, 0.0, 0.0]
+    )
+    return {
+        "center": [try_parse_float(center[idx] if idx < len(center) else 0.0, 0.0) for idx in range(3)],
+        "extents": [max(0.02, try_parse_float(extents[idx] if idx < len(extents) else 0.25, 0.25)) for idx in range(3)],
+        "axes": axes,
+        "orientationQuaternion": [try_parse_float(quat[idx] if idx < len(quat) else 0.0, 0.0) for idx in range(4)],
+    }
+
+
+def _enrich_hints_with_grounding(
+    hints: List[Dict[str, Any]],
+    *,
+    grounding_payload: Optional[Mapping[str, Any]],
+    fallback_entries: List[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    by_id, by_label = _grounding_lookup(grounding_payload, fallback_entries)
+    enriched: List[Dict[str, Any]] = []
+    for hint in hints:
+        item = dict(hint)
+        obj_id = str(item.get("instance_id") or "").strip()
+        label_bucket = _semantic_label_bucket(item.get("label"))
+
+        grounded: Optional[Mapping[str, Any]] = None
+        if obj_id:
+            grounded = by_id.get(obj_id)
+        if grounded is None and label_bucket:
+            options = by_label.get(label_bucket, [])
+            if len(options) == 1:
+                grounded = options[0]
+
+        if grounded is not None:
+            grounded_id = _candidate_id(grounded)
+            grounded_label = _candidate_label(grounded)
+            if grounded_id and not obj_id:
+                item["instance_id"] = grounded_id
+            if str(item.get("label") or "").strip().lower() in {"", "object", "unknown"} and grounded_label:
+                item["label"] = grounded_label
+            bbox = _normalize_bbox(grounded)
+            if bbox is not None:
+                item["boundingBox"] = bbox
+            item["confidence"] = max(
+                _safe_float(item.get("confidence"), 0.0),
+                _safe_float(grounded.get("confidence"), _safe_float(grounded.get("mean_confidence"), 0.0)),
             )
-            continue
-        if has_manip:
-            manip_entries.append(
-                {
-                    "instance_id": obj_id,
-                    "label": label,
-                    "confidence": max(0.35, blended_conf),
-                    "source": "heuristic",
-                    "role": "manipulation",
-                    "reason": f"keyword+salience (score={blended_conf:.2f})",
-                }
-            )
-
-    manip_entries = _dedupe_hint_entries(manip_entries)[:max_targets]
-    artic_entries = _dedupe_hint_entries(artic_entries)[:max_targets]
-
-    tasks: List[Dict[str, Any]] = []
-    if artic_entries:
-        tasks.append(
-            {
-                "task_id": "open_close_access_points",
-                "confidence": round(
-                    sum(_safe_float(item.get("confidence"), 0.0) for item in artic_entries)
-                    / max(1, len(artic_entries)),
-                    3,
-                ),
-                "target_object_ids": [
-                    str(item.get("instance_id"))
-                    for item in artic_entries
-                    if str(item.get("instance_id") or "").strip()
-                ],
-                "rationale": "Detected articulated affordances (doors/drawers/cabinets).",
-            }
-        )
-
-    if manip_entries:
-        tasks.append(
-            {
-                "task_id": "pick_place_manipulation",
-                "confidence": round(
-                    sum(_safe_float(item.get("confidence"), 0.0) for item in manip_entries)
-                    / max(1, len(manip_entries)),
-                    3,
-                ),
-                "target_object_ids": [
-                    str(item.get("instance_id"))
-                    for item in manip_entries
-                    if str(item.get("instance_id") or "").strip()
-                ],
-                "rationale": "Detected portable/manipulable object classes.",
-            }
-        )
-
-    return manip_entries, artic_entries, tasks
+        enriched.append(item)
+    return enriched
 
 
 def _resolve_video_uri_and_path(
@@ -994,9 +927,10 @@ def infer_task_targets(
     object_index_entries: List[Mapping[str, Any]],
     object_index_uri: str,
     storage_root: Path,
+    grounding_payload: Optional[Mapping[str, Any]] = None,
     max_targets: int = 24,
 ) -> Dict[str, Any]:
-    """Infer task-relevant targets from descriptor hints + video/object signals."""
+    """Infer task-relevant targets from explicit hints + grounding signals."""
 
     max_targets = max(1, int(max_targets or 1))
     dedupe_iou = _safe_float(
@@ -1021,34 +955,54 @@ def infer_task_targets(
         storage_root=storage_root,
     )
 
-    external_payload, external_report = _run_external_video_task_inference(
-        descriptor=descriptor,
-        object_index_uri=object_index_uri,
-        storage_root=storage_root,
-        video_uri=video_uri,
-        video_path=video_path,
+    external_payload = (
+        dict(grounding_payload)
+        if isinstance(grounding_payload, Mapping)
+        else {}
+    )
+    external_report = (
+        dict(external_payload.get("backend_report"))
+        if isinstance(external_payload.get("backend_report"), Mapping)
+        else {
+            "status": str(external_payload.get("backend_status") or "skipped"),
+            "backend": str(external_payload.get("backend") or ""),
+            "reason": "no_grounding_backend" if not external_payload else "",
+        }
     )
     ext_manip = _normalize_hint_list(
         external_payload.get("manipulation_candidates", []),
-        source="video_inference",
+        source="grounding_backend",
         role="manipulation",
         default_confidence=0.7,
     )
     ext_artic = _normalize_hint_list(
         external_payload.get("articulation_hints", []),
-        source="video_inference",
+        source="grounding_backend",
         role="articulation",
         default_confidence=0.75,
     )
-
-    heur_manip, heur_artic, heur_tasks = _heuristic_task_inference(
-        descriptor=descriptor,
-        object_index_entries=preprocessed_entries,
-        max_targets=max_targets,
+    ext_nav = _normalize_hint_list(
+        external_payload.get("navigation_hints", []),
+        source="grounding_backend",
+        role="navigation",
+        default_confidence=0.65,
     )
 
-    manip_entries = _dedupe_hint_entries([*desc_manip, *ext_manip, *heur_manip])[:max_targets]
-    artic_entries = _dedupe_hint_entries([*desc_artic, *ext_artic, *heur_artic])[:max_targets]
+    manip_entries = _enrich_hints_with_grounding(
+        _dedupe_hint_entries([*desc_manip, *ext_manip])[:max_targets],
+        grounding_payload=grounding_payload,
+        fallback_entries=preprocessed_entries,
+    )
+    artic_entries = _enrich_hints_with_grounding(
+        _dedupe_hint_entries([*desc_artic, *ext_artic])[:max_targets],
+        grounding_payload=grounding_payload,
+        fallback_entries=preprocessed_entries,
+    )
+    nav_entries = _enrich_hints_with_grounding(
+        _dedupe_hint_entries(ext_nav)[:max_targets],
+        grounding_payload=grounding_payload,
+        fallback_entries=preprocessed_entries,
+    )
 
     target_ids = [
         str(item.get("instance_id"))
@@ -1087,13 +1041,14 @@ def infer_task_targets(
     if isinstance(tasks_payload, list):
         tasks = [dict(item) for item in tasks_payload if isinstance(item, Mapping)]
     else:
-        tasks = heur_tasks
+        tasks = []
 
-    inference_mode = "heuristic"
-    if str(external_report.get("status") or "") == "ok":
-        inference_mode = "external+heuristic"
-    if not heur_manip and not heur_artic and desc_manip and not tasks:
+    if ext_manip or ext_artic or ext_nav or tasks:
+        inference_mode = "descriptor+external" if (desc_manip or desc_artic) else "external"
+    elif desc_manip or desc_artic:
         inference_mode = "descriptor_only"
+    else:
+        inference_mode = "empty"
 
     return {
         "schema_version": "v1",
@@ -1111,6 +1066,7 @@ def infer_task_targets(
         },
         "manipulation_candidates": manip_entries,
         "articulation_hints": artic_entries,
+        "navigation_hints": nav_entries,
         "target_object_ids": sorted(set(target_ids)),
         "articulation_required_ids": sorted(set(articulation_ids)),
         "explicit_target_object_ids": explicit_target_ids,
@@ -1125,35 +1081,12 @@ def _merge_descriptor_with_task_targets(
     descriptor: CaptureDescriptor,
     task_targets: Optional[Mapping[str, Any]],
 ) -> CaptureDescriptor:
-    """Merge *non-heuristic* task-target entries into the descriptor.
-
-    Heuristic entries are NOT merged because they originate from the same
-    keyword matching that ``swap_candidates.py`` already applies.  Merging
-    them would force-select every heuristic detection, bypassing per-class
-    caps and spatial deduplication.
-    """
+    """Merge task-target entries into the descriptor for candidate selection."""
     if not isinstance(task_targets, Mapping):
         return descriptor
 
-    allow_heuristic = str(
-        os.getenv("SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT", "false")
-    ).strip().lower() in {"1", "true", "yes", "on"}
-
     desc_manip = [dict(item) for item in descriptor.manipulation_candidates]
     desc_artic = [dict(item) for item in descriptor.articulation_hints]
-
-    def _non_heuristic(entries: Iterable[Any]) -> List[Any]:
-        """Filter out heuristic-sourced entries unless explicitly allowed."""
-        if allow_heuristic:
-            return list(entries)
-        out: List[Any] = []
-        for entry in entries:
-            if isinstance(entry, Mapping):
-                source = str(entry.get("source") or "").strip().lower()
-                if source == "heuristic":
-                    continue
-            out.append(entry)
-        return out
 
     def _merge(
         base: List[Dict[str, Any]],
@@ -1165,8 +1098,8 @@ def _merge_descriptor_with_task_targets(
             [
                 *_normalize_hint_list(base, source="descriptor", role=role, default_confidence=1.0),
                 *_normalize_hint_list(
-                    _non_heuristic(incoming),
-                    source="video_inference",
+                    incoming,
+                    source="grounding_backend",
                     role=role,
                     default_confidence=0.75,
                 ),
@@ -1238,17 +1171,11 @@ def _extract_explicit_sets(
             descriptor_labels.add(_semantic_label_bucket(label))
 
     if isinstance(task_targets, Mapping):
-        allow_heuristic_explicit = str(
-            os.getenv("SWAP_INCLUDE_HEURISTIC_AS_EXPLICIT", "false")
-        ).strip().lower() in {"1", "true", "yes", "on"}
         inference_mode = str(task_targets.get("inference_mode") or "").strip().lower()
 
         for key in ("manipulation_candidates", "articulation_hints"):
             for raw in task_targets.get(key, []):
                 if isinstance(raw, Mapping):
-                    source = str(raw.get("source") or "").strip().lower()
-                    if source == "heuristic" and not allow_heuristic_explicit:
-                        continue
                     obj_id = _candidate_id(raw)
                     label = _candidate_label(raw).strip().lower()
                     if obj_id:
@@ -1278,16 +1205,6 @@ def _extract_explicit_sets(
                 label = str(raw_label or "").strip().lower()
                 if label and label not in {"object", "unknown"}:
                     task_labels.add(_semantic_label_bucket(label))
-
-        if allow_heuristic_explicit:
-            for obj_id in task_targets.get("target_object_ids", []):
-                text = str(obj_id).strip()
-                if text:
-                    task_obj_ids.add(text)
-            for obj_id in task_targets.get("articulation_required_ids", []):
-                text = str(obj_id).strip()
-                if text:
-                    task_obj_ids.add(text)
 
     return {
         "descriptor_obj_ids": descriptor_obj_ids,

@@ -59,7 +59,7 @@ def _ensure_index_file(gcs_root: Path, entries: list[dict]) -> str:
     return "gs://bucket/scenes/scene_task/captures/cap_task/objects/object_point_cloud_index.json"
 
 
-def test_infer_task_targets_heuristic_from_object_index(tmp_path: Path) -> None:
+def test_infer_task_targets_stays_empty_with_object_index_only(tmp_path: Path) -> None:
     descriptor = _descriptor()
     manifest = _manifest()
     entries = [
@@ -99,10 +99,82 @@ def test_infer_task_targets_heuristic_from_object_index(tmp_path: Path) -> None:
         max_targets=10,
     )
 
-    assert "door_1" in payload["articulation_required_ids"]
-    assert "box_1" in payload["target_object_ids"]
-    assert "wall_1" not in payload["target_object_ids"]
-    assert payload["inference_mode"] in {"heuristic", "external+heuristic", "descriptor_only"}
+    assert payload["articulation_required_ids"] == []
+    assert payload["target_object_ids"] == []
+    assert payload["tasks"] == []
+    assert payload["inference_mode"] == "empty"
+
+
+def test_infer_task_targets_uses_descriptor_hints_and_enriches_with_grounding(tmp_path: Path) -> None:
+    descriptor = _descriptor(manip=[{"instance_id": "box_1", "label": "object"}])
+    manifest = _manifest()
+    entries = [
+        {
+            "id": "box_1",
+            "label": "package box",
+            "boundingBox": {"center": [1.0, 2.0, 0.5], "extents": [0.4, 0.3, 0.2]},
+            "mean_confidence": 0.88,
+            "n_total_detections": 20,
+        }
+    ]
+    index_uri = _ensure_index_file(tmp_path / "bucket", entries)
+
+    payload = infer_task_targets(
+        descriptor=descriptor,
+        manifest=manifest,
+        object_index_entries=entries,
+        object_index_uri=index_uri,
+        storage_root=tmp_path,
+        max_targets=10,
+    )
+
+    assert payload["target_object_ids"] == ["box_1"]
+    assert payload["inference_mode"] == "descriptor_only"
+    assert payload["manipulation_candidates"][0]["label"] == "package box"
+    assert payload["manipulation_candidates"][0]["boundingBox"]["center"] == [1.0, 2.0, 0.5]
+
+
+def test_infer_task_targets_uses_grounding_backend_candidates(tmp_path: Path) -> None:
+    descriptor = _descriptor()
+    manifest = _manifest()
+    entries = [
+        {
+            "id": "drawer_1",
+            "label": "drawer",
+            "boundingBox": {"center": [0.5, 1.0, 0.5], "extents": [0.7, 0.4, 0.4]},
+            "mean_confidence": 0.9,
+            "n_total_detections": 10,
+        }
+    ]
+    index_uri = _ensure_index_file(tmp_path / "bucket", entries)
+    grounding_payload = {
+        "backend": "holi_adapter",
+        "grounded_objects": [
+            {
+                "object_id": "drawer_1",
+                "label": "drawer",
+                "confidence": 0.92,
+                "boundingBox": {"center": [0.5, 1.0, 0.5], "extents": [0.7, 0.4, 0.4]},
+            }
+        ],
+        "articulation_hints": [{"instance_id": "drawer_1", "label": "drawer"}],
+        "tasks": [{"task_id": "open_drawer", "target_object_ids": ["drawer_1"]}],
+        "backend_report": {"status": "ok"},
+    }
+
+    payload = infer_task_targets(
+        descriptor=descriptor,
+        manifest=manifest,
+        object_index_entries=entries,
+        object_index_uri=index_uri,
+        storage_root=tmp_path,
+        grounding_payload=grounding_payload,
+        max_targets=10,
+    )
+
+    assert payload["articulation_required_ids"] == ["drawer_1"]
+    assert payload["inference_mode"] == "external"
+    assert payload["tasks"][0]["task_id"] == "open_drawer"
 
 
 def test_explicit_only_mode_filters_policy_candidates(tmp_path: Path) -> None:
@@ -344,7 +416,7 @@ def test_per_class_caps_applied_before_candidate_selection() -> None:
     assert class_caps["dropped_by_label"].get("door", 0) >= 1
 
 
-def test_heuristic_targets_do_not_become_explicit_by_default() -> None:
+def test_grounding_backend_targets_become_explicit() -> None:
     descriptor = _descriptor()
     object_entries = [
         {
@@ -365,9 +437,9 @@ def test_heuristic_targets_do_not_become_explicit_by_default() -> None:
         },
     ]
     task_targets = {
-        "inference_mode": "heuristic",
-        "manipulation_candidates": [{"instance_id": "box_1", "label": "box", "source": "heuristic"}],
-        "articulation_hints": [{"instance_id": "door_1", "label": "door", "source": "heuristic"}],
+        "inference_mode": "external",
+        "manipulation_candidates": [{"instance_id": "box_1", "label": "box", "source": "grounding_backend"}],
+        "articulation_hints": [{"instance_id": "door_1", "label": "door", "source": "grounding_backend"}],
         "target_object_ids": ["box_1"],
         "articulation_required_ids": ["door_1"],
     }
@@ -377,10 +449,10 @@ def test_heuristic_targets_do_not_become_explicit_by_default() -> None:
         object_index_entries=object_entries,
         task_targets=task_targets,
         selection_mode="hybrid",
-        max_candidates=1,
+        max_candidates=2,
     )
 
-    assert payload["selection_summary"]["explicit_count"] == 0
+    assert payload["selection_summary"]["explicit_count"] == 2
 
 
 def test_detection_support_filter_drops_low_support_fragments() -> None:
@@ -482,10 +554,10 @@ def test_per_class_caps_enforced_when_explicitly_set() -> None:
         for i in range(10)
     ]
     task_targets = {
-        "inference_mode": "heuristic",
+        "inference_mode": "external",
         "manipulation_candidates": [],
         "articulation_hints": [
-            {"instance_id": f"door_{i}", "label": "door", "source": "heuristic"}
+            {"instance_id": f"door_{i}", "label": "door", "source": "grounding_backend"}
             for i in range(10)
         ],
         "target_object_ids": [],
@@ -502,10 +574,10 @@ def test_per_class_caps_enforced_when_explicitly_set() -> None:
     )
 
     doors = [c for c in payload["candidates"] if c["label"] == "door"]
-    assert len(doors) == 4, f"expected 4 doors, got {len(doors)}"
-    assert payload["selection_summary"]["explicit_count"] == 0
+    assert len(doors) == 10, f"expected all explicit doors to bypass caps, got {len(doors)}"
+    assert payload["selection_summary"]["explicit_count"] == 10
     class_caps = payload["index_preprocessing"]["class_caps"]
-    assert class_caps["dropped_by_label"].get("door", 0) == 6
+    assert class_caps["dropped_by_label"].get("door", 0) == 0
 
 
 def test_no_default_per_class_caps() -> None:

@@ -131,6 +131,7 @@ def attach_handoff_package_paths(
             "ply_path": advanced_dir / "3dgs_compressed.ply",
             "labels_path": advanced_dir / "labels.json",
             "structure_path": advanced_dir / "structure.json",
+            "holi_spatial_grounding_path": advanced_dir / "holi_spatial_grounding.json",
             "task_hints_path": advanced_dir / "task_targets.synthetic.json",
         }
         for key, path in optional_files.items():
@@ -160,6 +161,7 @@ def _disabled_task_targets(scene_id: str, capture_id: str, reason: str) -> Dict[
         "video_analysis": {"external_inference": {"status": "skipped", "reason": reason}},
         "manipulation_candidates": [],
         "articulation_hints": [],
+        "navigation_hints": [],
         "target_object_ids": [],
         "articulation_required_ids": [],
         "tasks": [],

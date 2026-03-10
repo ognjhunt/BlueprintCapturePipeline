@@ -1249,9 +1249,48 @@ def test_advanced_geometry_bundle_writes_preferred_ply_when_available(tmp_path: 
     pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
     assert (pipeline_dir / "advanced_geometry/labels.json").is_file()
     assert (pipeline_dir / "advanced_geometry/structure.json").is_file()
+    assert (pipeline_dir / "advanced_geometry/holi_spatial_grounding.json").is_file()
     assert (pipeline_dir / "advanced_geometry/task_targets.synthetic.json").is_file()
     assert (pipeline_dir / "advanced_geometry/advanced_geometry_bundle.json").is_file()
     assert (pipeline_dir / "advanced_geometry/3dgs_compressed.ply").is_file()
+
+    synthetic_payload = json.loads(
+        (pipeline_dir / "advanced_geometry/task_targets.synthetic.json").read_text(encoding="utf-8")
+    )
+    assert "manipulation_candidates" in synthetic_payload
+    assert "articulation_hints" in synthetic_payload
+
+
+def test_advanced_geometry_run_supports_holi_adapter_placeholder(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    nurec_client = _StubNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+    runner = _StubBlueprintRunner(tmp_path / "bucket")
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="advanced_geometry",
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            spatial_grounding_backend="holi_adapter",
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+        nurec_client=nurec_client,
+        blueprint_runner=runner,
+    )
+
+    assert result["status"] == "completed"
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    grounding_payload = json.loads((pipeline_dir / "holi_spatial_grounding.json").read_text(encoding="utf-8"))
+    assert grounding_payload["backend"] == "holi_adapter"
+    assert grounding_payload["backend_status"] == "placeholder_fallback"
 
 
 def test_combined_lane_run_backfills_geometry_package_into_handoff(tmp_path: Path) -> None:
@@ -1290,6 +1329,10 @@ def test_combined_lane_run_backfills_geometry_package_into_handoff(tmp_path: Pat
     assert validated_handoff["geometry_package"]["bundle_path"] == "advanced_geometry"
     assert validated_handoff["geometry_package"]["labels_path"] == "advanced_geometry/labels.json"
     assert validated_handoff["geometry_package"]["structure_path"] == "advanced_geometry/structure.json"
+    assert (
+        validated_handoff["geometry_package"]["holi_spatial_grounding_path"]
+        == "advanced_geometry/holi_spatial_grounding.json"
+    )
     assert (
         validated_handoff["geometry_package"]["task_hints_path"]
         == "advanced_geometry/task_targets.synthetic.json"
