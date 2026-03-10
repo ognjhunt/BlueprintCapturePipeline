@@ -1,54 +1,276 @@
 {
-  "schema_version": "v1",
+  "schema_version": "v2",
   "name": "industrial_humanoid_site_guidance",
+  "last_updated": "2026-03-10",
   "entries": [
     {
       "id": "route-clearance-envelope",
       "title": "Route Clearance Envelope",
-      "categories": ["geometry", "traffic", "route_access"],
-      "summary": "Keep route-clearance claims bounded to measured widths, choke points, and obstruction visibility. Do not infer safe autonomous passage from partial captures.",
-      "applicability": "Use when route width, aisle clearance, or shared-lane access is under review.",
-      "citation": "Blueprint Industrial Guidance v1, Section 2.1"
+      "categories": ["geometry_clearance", "traffic_shared", "geometry_floor"],
+      "site_types": ["warehouse", "manufacturing", "dock", "distribution_center"],
+      "standard_number": "ISO 3691-4:2023, OSHA 1910.176, ANSI/ITSDF B56.1",
+      "summary": "Route clearance for humanoid passage requires 0.5 m on each side of the vehicle path for a height of 2.1 m (ISO 3691-4 operating zone). OSHA requires 'sufficient safe clearance' without a specific number. ANSI B56.1 requires aisles 3 ft wider than the largest equipment. For shared forklift aisles, use forklift width + platform width + 0.9 m minimum.",
+      "dimensional_values": {
+        "iso_3691_4_side_clearance_m": 0.5,
+        "iso_3691_4_height_m": 2.1,
+        "ansi_b56_1_additional_width_ft": 3,
+        "iso_3691_4_speed_threshold_ms": 1.2
+      },
+      "applicability": "Use when route width, aisle clearance, or shared-lane access is under review. Always apply ISO 3691-4 clearance as the baseline. Add ANSI B56.1 clearance when forklifts are present.",
+      "limitation_note": "ISO 3691-4 was designed for wheeled AGVs, not bipedal humanoids. Bipedal robots may need wider clearance due to lateral sway during locomotion. The 0.5 m value is a minimum starting point. ISO 25785-1 (draft) may specify different values when published.",
+      "citation": "ISO 3691-4:2023 Section 5.3, OSHA 1910.176, ANSI/ITSDF B56.1 Section 4.3"
     },
     {
       "id": "workcell-hidden-zone-review",
       "title": "Workcell Hidden-Zone Review",
-      "categories": ["hidden_zone", "safety", "capture_quality"],
-      "summary": "If hidden zones or restricted views remain material, keep readiness at risky or not_ready_yet until a human confirms coverage or authorizes recapture.",
-      "applicability": "Use when hidden-zone bounds, privacy restrictions, or occluded workcells appear in evidence.",
-      "citation": "Blueprint Industrial Guidance v1, Section 3.4"
+      "categories": ["capture_coverage", "safety_fall", "capture_quality"],
+      "site_types": ["warehouse", "manufacturing"],
+      "standard_number": null,
+      "summary": "Hidden zones — areas referenced in the workflow but not covered by capture evidence — must be identified and tracked. If hidden zones remain in workcell or traffic areas, readiness cannot exceed 'risky' until human review confirms coverage or authorizes recapture. Hidden zones in safety-critical areas (shared traffic, machine interfaces) are blockers.",
+      "dimensional_values": null,
+      "applicability": "Use when hidden-zone bounds, privacy restrictions, or occluded workcells appear in evidence audit findings.",
+      "limitation_note": "Hidden zones cannot be resolved by this pipeline. They require physical site access and capture, or human confirmation that the zone is not material to the qualification.",
+      "citation": "Blueprint Industrial Guidance v2, Section 3.4"
     },
     {
-      "id": "shared-space-risk",
-      "title": "Shared Human-Robot Space Risk",
-      "categories": ["safety", "traffic", "workflow_ambiguity"],
-      "summary": "Shared pedestrian traffic, forklifts, and non-routine site behaviors require explicit human review and should not be auto-cleared by geometry alone.",
-      "applicability": "Use for active industrial aisles, docks, cells, and workcells with mixed traffic.",
-      "citation": "Blueprint Industrial Guidance v1, Section 4.2"
+      "id": "shared-space-forklift-traffic",
+      "title": "Shared Forklift-Humanoid Traffic Management",
+      "categories": ["traffic_shared", "safety_force", "safety_fall"],
+      "site_types": ["warehouse", "manufacturing", "dock", "distribution_center"],
+      "standard_number": "ANSI/ITSDF B56.1, ISO 3691-4:2023, OSHA 1910.178",
+      "summary": "Active forklift traffic in any humanoid operating zone is a hard blocker unless a traffic management protocol is documented and verified. Geometry alone cannot clear shared forklift zones — operational traffic management (physical separation, time-based separation, or signal-based coordination) must be verified by a human. Reach truck zones are single-occupancy — humanoid and reach truck cannot coexist in a narrow aisle.",
+      "dimensional_values": {
+        "min_shared_aisle_width_formula": "forklift_width + humanoid_width + 0.9m",
+        "reach_truck_zone": "single_occupancy_only",
+        "forklift_speed_shared_zone_kmh": 5,
+        "forklift_speed_pedestrian_zone_kmh": 3
+      },
+      "applicability": "Use for any zone where forklift or powered industrial truck traffic overlaps with proposed humanoid routes.",
+      "limitation_note": "This pipeline cannot verify traffic management protocols from capture evidence alone. Traffic patterns vary by shift, season, and day. A single capture session does not represent all traffic conditions.",
+      "citation": "ANSI/ITSDF B56.1 Section 4.3, ISO 3691-4:2023, OSHA 1910.178"
+    },
+    {
+      "id": "shared-space-pedestrian",
+      "title": "Shared Pedestrian-Humanoid Space",
+      "categories": ["traffic_pedestrian", "safety_force"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center"],
+      "standard_number": "ISO/TS 15066:2016, ISO 10218-2:2025, ANSI/RIA R15.08",
+      "summary": "Humanoids sharing space with pedestrian workers must comply with collaborative robot safety requirements. ISO/TS 15066 biomechanical force limits apply to any contact scenario. Speed and Separation Monitoring (SSM) separation distance formula: Sp = Sh + Sr + Ss + C + Zd + Zr. Recommended collaborative speed: 250 mm/s or less.",
+      "dimensional_values": {
+        "collaborative_speed_recommendation_ms": 0.25,
+        "ssm_formula": "Sp = Sh + Sr + Ss + C + Zd + Zr",
+        "skull_quasi_static_force_N": 110,
+        "sternum_quasi_static_force_N": 80,
+        "hand_transient_force_N": 150
+      },
+      "applicability": "Use when humanoid operates in proximity to pedestrian workers. Applies to all shared pick zones, pack stations, and mixed-use aisles.",
+      "limitation_note": "ISO/TS 15066 force limits were developed for traditional collaborative robot arms, not full humanoid bodies. A falling humanoid (65-73 kg from 1.7 m CG) generates impact energy far exceeding these limits. ISO 25785-1 (draft) will address fall hazard specifically.",
+      "citation": "ISO/TS 15066:2016 Annex A, ISO 10218-2:2025, ANSI/RIA R15.08 Part 2"
     },
     {
       "id": "capture-evidence-sufficiency",
-      "title": "Capture Evidence Sufficiency",
-      "categories": ["capture_quality", "evidence", "geometry"],
-      "summary": "Video-only capture can support pre-screening and blocker discovery, but decision-grade readiness requires structured intake and bounded metric evidence.",
-      "applicability": "Use when intake, QA, or metric scaffolding is incomplete.",
-      "citation": "Blueprint Industrial Guidance v1, Section 1.3"
+      "title": "Capture Evidence Grade Classification",
+      "categories": ["capture_quality", "capture_coverage"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center", "dock"],
+      "standard_number": null,
+      "summary": "Evidence grades: metric (calibrated sensor, confidence > 0.8, supports qualification decisions), estimated (uncalibrated reconstruction, confidence 0.5-0.8, pre-screening only), inferred (heuristic/object recognition, confidence < 0.5, flagging only), absent (no evidence, supports nothing). Video-only and splat-only capture can support pre-screening and blocker discovery but must NOT silently become decision-grade readiness.",
+      "dimensional_values": {
+        "metric_confidence_threshold": 0.8,
+        "estimated_confidence_range": "0.5-0.8",
+        "inferred_confidence_threshold": 0.5
+      },
+      "applicability": "Use when evaluating whether evidence is sufficient for a specific claim. Apply at the individual measurement level, not the overall capture level.",
+      "limitation_note": "Even metric evidence has limitations — it represents the state at capture time. Site conditions change. Environmental conditions (lighting, floor wetness) vary by time of day and season.",
+      "citation": "Blueprint Industrial Guidance v2, Section 1.3"
     },
     {
       "id": "humanoid-reach-envelope",
-      "title": "Humanoid Reach Envelope",
-      "categories": ["geometry", "task_fit", "workcell"],
-      "summary": "Reach and manipulation claims must stay bounded to measured target distance, workcell span, and confirmed task-zone geometry.",
-      "applicability": "Use when task targets or articulated objects drive the qualification decision.",
-      "citation": "Blueprint Industrial Guidance v1, Section 2.6"
+      "title": "Humanoid Reach Envelope Bounds",
+      "categories": ["geometry_reach", "machine_interface", "platform_limitation"],
+      "site_types": ["warehouse", "manufacturing"],
+      "standard_number": null,
+      "summary": "Reach claims must be bounded to measured target distance and platform specifications. Current platform reach ranges: forward 0.7-0.8 m, vertical 0.1-2.1 m, payload 16-25 kg. Machine interface geometry requires metric-grade evidence (confidence >= 0.9). Articulation complexity maps to platform hand DOF: simple grasp (4 DOF), lever (6 DOF), knob (12+ DOF), tool use (16+ DOF).",
+      "dimensional_values": {
+        "digit_forward_reach_m": 0.7,
+        "figure02_forward_reach_m": 0.8,
+        "min_payload_kg": 16,
+        "max_payload_kg": 25,
+        "machine_interface_confidence_threshold": 0.9,
+        "figure02_placement_accuracy_mm": 5
+      },
+      "applicability": "Use when task targets or articulated objects drive the qualification decision. Always cross-reference against specific platform specs when target platform is known.",
+      "limitation_note": "Published reach values are specification maxima, not operational guarantees. Real-world reach is affected by payload, approach angle, balance constraints, and calibration. Field testing is required for validation.",
+      "citation": "Blueprint Industrial Guidance v2, Section 2.6; Platform spec sheets"
     },
     {
       "id": "industrial-blocker-taxonomy",
-      "title": "Industrial Blocker Taxonomy",
-      "categories": ["workflow_ambiguity", "systems", "privacy", "geometry", "safety"],
-      "summary": "Every blocker should map to a concrete category with evidence references so humans can decide whether to recapture, redesign scope, or stop evaluation.",
-      "applicability": "Use whenever blocker register entries need normalization or escalation routing.",
-      "citation": "Blueprint Industrial Guidance v1, Section 5.1"
+      "title": "Industrial Humanoid Blocker Taxonomy",
+      "categories": ["workflow_ambiguity", "systems_integration", "privacy_security", "geometry_clearance", "safety_estop"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center", "dock"],
+      "standard_number": null,
+      "summary": "21 primary blocker categories specific to industrial humanoid qualification: geometry_clearance, geometry_reach, geometry_floor, traffic_shared, traffic_pedestrian, safety_estop, safety_force, safety_guarding, safety_fall, environmental, machine_interface, workflow_ambiguity, workflow_timing, systems_integration, capture_quality, capture_coverage, privacy_security, non_routine, loto_maintenance, infrastructure, platform_limitation. Each blocker must have: primary category, severity (hard_blocker/high/medium/low/informational), evidence source, and resolution path (recapture/scope_change/site_modification/human_review/platform_change/oem_consultation/not_resolvable).",
+      "dimensional_values": null,
+      "applicability": "Use whenever blocker register entries need normalization, severity assignment, or escalation routing.",
+      "limitation_note": "The taxonomy is designed for screening and qualification, not for operational risk management during deployment. Deployment-phase risk assessment requires additional hazard analysis per ISO 10218-2.",
+      "citation": "Blueprint Industrial Guidance v2, Section 5.1"
+    },
+    {
+      "id": "estop-humanoid-fall-hazard",
+      "title": "E-Stop and Humanoid Fall Hazard",
+      "categories": ["safety_estop", "safety_fall", "non_routine"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center", "dock"],
+      "standard_number": "IEC 60204-1, ISO 13850, ISO 25785-1 (draft)",
+      "summary": "E-stop Category 0 (immediate power removal) causes a humanoid to fall uncontrolled. A 65-73 kg robot falling from 1.7 m center of gravity generates approximately 1,100-1,250 J of impact energy — a serious personnel hazard. Category 1 (controlled deceleration then power removal) is preferred for humanoids, allowing controlled crouch/kneel. ISO 13850 and IEC 60204-1 limit e-stop to Categories 0 and 1 only. Fall zone calculations will be required per ISO 25785-1 (draft).",
+      "dimensional_values": {
+        "humanoid_mass_range_kg": "65-73",
+        "cg_height_range_m": "0.85-0.95",
+        "fall_energy_estimate_J": "1100-1250",
+        "estop_categories_allowed": [0, 1]
+      },
+      "applicability": "Use for every zone where a humanoid operates, especially shared spaces. E-stop plan is a mandatory qualification requirement.",
+      "limitation_note": "ISO 25785-1 is still in draft as of 2026-03. Fall zone calculations are not yet standardized. Fall energy estimates are approximate — actual values depend on platform mass, CG, and fall dynamics. Platform manufacturer must provide fall zone specifications.",
+      "citation": "IEC 60204-1 Section 9.2.5.4, ISO 13850:2015, ISO 25785-1 Working Draft"
+    },
+    {
+      "id": "loto-humanoid-energy",
+      "title": "LOTO for Humanoid Hazardous Energy",
+      "categories": ["loto_maintenance", "safety_estop", "non_routine"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center"],
+      "standard_number": "OSHA 29 CFR 1910.147",
+      "summary": "OSHA requires LOTO for all maintenance and jam clearing. For humanoids, hazardous energy sources include: electrical power (main and battery), pneumatic/hydraulic energy (if applicable), stored mechanical energy (springs, gravity — powered-down humanoid may still fall), and battery energy (lithium-ion fire risk). LOTO procedure must address the humanoid as an energy source. Battery isolation must be explicitly addressed.",
+      "dimensional_values": null,
+      "applicability": "Use when maintenance, jam clearing, or any non-routine physical interaction with the humanoid is in scope.",
+      "limitation_note": "OSHA 29 CFR 1910.147 is US-specific. Other jurisdictions have equivalent requirements. Consult local regulations.",
+      "citation": "OSHA 29 CFR 1910.147"
+    },
+    {
+      "id": "floor-condition-bipedal",
+      "title": "Floor Condition for Bipedal Locomotion",
+      "categories": ["geometry_floor", "infrastructure"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center", "dock"],
+      "standard_number": "ACI 117",
+      "summary": "Floor flatness affects bipedal stability more than wheeled robot stability. ACI 117 F-numbers: FF25 = minimum acceptable (roughly +/- 6 mm defect in 3 m), FF50 = recommended (roughly +/- 3 mm defect in 3 m). Standing water, oil, coolant, debris, and loose material are slip hazards for bipedal robots. Dock plate transitions must be < 50 mm step and < 5 degree slope. Manufacturing cell floors with coolant/chips require explicit verification.",
+      "dimensional_values": {
+        "ff_minimum": 25,
+        "ff_recommended": 50,
+        "max_step_height_mm": 50,
+        "max_slope_deg": 5,
+        "max_slope_workcell_deg": 3,
+        "max_cross_slope_deg": 3
+      },
+      "applicability": "Use for all route segments and workcell areas. Bipedal floor requirements are tighter than wheeled AMR requirements.",
+      "limitation_note": "F-number measurement requires a professional floor survey. It cannot be determined from video or splat captures. Floor condition at capture time may not represent typical conditions (e.g., periodic cleaning, seasonal moisture).",
+      "citation": "ACI 117 Specification for Tolerances for Concrete Construction"
+    },
+    {
+      "id": "iso-10218-humanoid-applicability",
+      "title": "ISO 10218:2025 Humanoid Applicability",
+      "categories": ["safety_force", "safety_guarding"],
+      "site_types": ["warehouse", "manufacturing"],
+      "standard_number": "ISO 10218-1:2025, ISO 10218-2:2025",
+      "summary": "The 2025 revision now allows robots with mobile platforms (including humanoids) but explicitly excludes mobility hazards from its scope. The manipulator portion of a humanoid can be certified under ISO 10218. TS 15066 biomechanical force limits are now normative (integrated into 10218-2). Two robot classes: Class I (large industrial) and Class II (smaller collaborative). Cybersecurity requirements added (IEC 62443). Performance Level is now risk-based per safety function rather than blanket PLd.",
+      "dimensional_values": {
+        "teach_mode_max_speed_ms": 0.25,
+        "class_II_applicable": true
+      },
+      "applicability": "Use for all humanoid qualification where the humanoid performs manipulation in an industrial setting. The manipulator safety aspects apply; the mobility safety aspects do not (they fall under R15.08 and ISO 25785-1).",
+      "limitation_note": "The standard was published in 2025 and may not yet be adopted in all jurisdictions. The exclusion of mobility hazards means a significant portion of humanoid risk is NOT covered by this standard alone.",
+      "citation": "ISO 10218-1:2025, ISO 10218-2:2025"
+    },
+    {
+      "id": "mobile-manipulator-safety",
+      "title": "Industrial Mobile Robot (Mobile Manipulator) Safety",
+      "categories": ["traffic_shared", "safety_force", "safety_guarding"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center"],
+      "standard_number": "ANSI/RIA R15.08",
+      "summary": "R15.08 defines three IMR types: Type A (AMR without attachments), Type B (AMR with non-industrial-robot attachments), Type C (AMR + industrial manipulator). Humanoids are most similar to Type C. Part 1 (2020): IMR safety requirements. Part 2 (2023): System and application requirements. Part 3 (targeted 2025): User requirements. Standard covers workplace safety-trained workers only. PLd minimum safety programming with two redundant channels.",
+      "dimensional_values": {
+        "minimum_performance_level": "PLd",
+        "redundant_channels": 2
+      },
+      "applicability": "Use when assessing whether the humanoid platform meets mobile manipulator safety requirements. Most relevant for route traversal with active manipulation.",
+      "limitation_note": "R15.08 was designed for wheeled mobile manipulators, not bipedal humanoids. Dynamic stability concerns are not fully addressed. Apply in combination with ISO 25785-1 (when available) for bipedal-specific hazards.",
+      "citation": "ANSI/RIA R15.08 Parts 1-3"
+    },
+    {
+      "id": "dynamically-stable-robot-safety",
+      "title": "Dynamically Stable Robot Safety (Bipedal)",
+      "categories": ["safety_fall", "safety_estop", "safety_force"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center", "dock"],
+      "standard_number": "ISO 25785-1 (Working Draft)",
+      "summary": "ISO 25785-1 is the emerging standard most directly relevant to humanoid bipedal robots. Covers 'dynamically stable industrial mobile robots' — robots requiring active control just to stand. Key concepts: fall zone calculations based on manufacturer specs, power-loss-equals-fall hazard, uncontrolled-force-equals-fall hazard. Led by Agility Robotics, Boston Dynamics, and A3. Expected publication 2026-2027.",
+      "dimensional_values": null,
+      "applicability": "Use when assessing any humanoid fall hazard, e-stop design, or dynamic stability concern. This is the most directly relevant standard for bipedal humanoids, even in draft form.",
+      "limitation_note": "THIS IS A DRAFT STANDARD. It cannot be cited as a binding requirement. Use it for guidance on what will likely become required. Specific dimensional requirements are not yet published.",
+      "citation": "ISO 25785-1 Working Draft (ISO/TC 299/WG 6)"
+    },
+    {
+      "id": "warehouse-aisle-types",
+      "title": "Warehouse Aisle Width by Type",
+      "categories": ["geometry_clearance", "traffic_shared"],
+      "site_types": ["warehouse", "distribution_center", "fulfillment"],
+      "standard_number": null,
+      "summary": "Standard warehouse aisle types: Conventional/wide (3.7-4.0+ m) for two-way forklift traffic; Narrow (2.4-3.0 m) for reach truck single-direction; Very Narrow Aisle/VNA (1.5-2.1 m) for turret truck only, no pedestrians. VNA zones are likely exclusion zones for humanoids. Narrow aisles with reach trucks are single-occupancy — humanoid and reach truck cannot coexist.",
+      "dimensional_values": {
+        "conventional_aisle_width_m": "3.7-4.0+",
+        "narrow_aisle_width_m": "2.4-3.0",
+        "vna_aisle_width_m": "1.5-2.1",
+        "vna_humanoid_status": "exclusion_zone"
+      },
+      "applicability": "Use when classifying warehouse aisles for route access review. Aisle type determines traffic management requirements and humanoid access feasibility.",
+      "limitation_note": "These are typical ranges, not standards-mandated values. Actual aisle widths vary by facility and racking configuration. Always use measured values from geometry evidence.",
+      "citation": "Industry standard warehouse design references"
+    },
+    {
+      "id": "manufacturing-machine-interface",
+      "title": "Machine Interface Requirements for Humanoid Tending",
+      "categories": ["machine_interface", "geometry_reach", "workflow_timing"],
+      "site_types": ["manufacturing", "assembly", "production"],
+      "standard_number": null,
+      "summary": "Machine tending (CNC, press, injection mold) requires: machine door operation force and handle type, button/control positions and heights, fixture interface geometry and clamping force, chuck/collet interface dimensions, cycle coordination signals, coolant management, and chip clearing. Machine interface measurements require metric-grade evidence (confidence >= 0.9). Figure 02 demonstrated 5 mm placement accuracy at BMW — current benchmark. Cycle time: humanoid must complete task within takt time or the production line stops.",
+      "dimensional_values": {
+        "machine_interface_confidence_threshold": 0.9,
+        "figure02_placement_accuracy_mm": 5,
+        "figure02_cycle_time_s": 37
+      },
+      "applicability": "Use when qualification scope includes machine tending or manufacturing cell tasks. Machine interface is the highest-risk humanoid workcell task type.",
+      "limitation_note": "No confirmed production-scale humanoid machine tending deployments exist as of 2026-03 (except Figure 02 sheet metal loading at BMW). Treat all machine tending qualification as requiring the highest evidence bar.",
+      "citation": "Blueprint Industrial Guidance v2, Section 6.2; Figure AI BMW deployment data"
+    },
+    {
+      "id": "network-infrastructure-humanoid",
+      "title": "Network Infrastructure for Humanoid Operations",
+      "categories": ["infrastructure", "systems_integration"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center"],
+      "standard_number": null,
+      "summary": "Real-time humanoid operations require: < 20 ms network latency, < 10 ms for multi-robot coordination. Bandwidth: ~200 Mbps per robot for continuous sensor streaming. WiFi 6/6E or private 5G recommended. Metal warehouse structures create WiFi dead zones — RF site survey required. Edge computing may reduce bandwidth needs.",
+      "dimensional_values": {
+        "max_latency_single_robot_ms": 20,
+        "max_latency_multi_robot_ms": 10,
+        "bandwidth_per_robot_mbps": 200
+      },
+      "applicability": "Use when infrastructure assessment includes network coverage and latency.",
+      "limitation_note": "These are guideline values from general industrial robotics. Actual requirements depend on the humanoid platform's architecture (edge compute vs. cloud). Some platforms (e.g., NEO with Jetson Thor) process locally and need less bandwidth.",
+      "citation": "Industrial IoT and robotics infrastructure guidelines"
+    },
+    {
+      "id": "humanoid-speed-threshold",
+      "title": "Humanoid Speed vs. Safety Thresholds",
+      "categories": ["traffic_shared", "traffic_pedestrian", "safety_force"],
+      "site_types": ["warehouse", "manufacturing", "distribution_center", "dock"],
+      "standard_number": "ISO 3691-4:2023, ISO/TS 15066:2016",
+      "summary": "ISO 3691-4 critical speed threshold: 1.2 m/s — above this, confined-zone-equivalent requirements apply. Current humanoid walking speeds: Digit 1.4 m/s, Figure 02 1.2 m/s, NEO 1.4 m/s (walk), 6.2 m/s (run). All current humanoids except Figure 02 exceed the 1.2 m/s threshold at nominal speed. ISO/TS 15066 collaborative speed recommendation: 250 mm/s (0.25 m/s). Speed governance is required in all shared zones.",
+      "dimensional_values": {
+        "iso_3691_4_threshold_ms": 1.2,
+        "ts_15066_collaborative_ms": 0.25,
+        "digit_walk_speed_ms": 1.4,
+        "figure02_walk_speed_ms": 1.2,
+        "neo_walk_speed_ms": 1.4,
+        "neo_run_speed_ms": 6.2
+      },
+      "applicability": "Use when assessing humanoid speed in shared traffic zones. Speed governance is always required unless the humanoid operates in a fully isolated zone.",
+      "limitation_note": "Speed governance is a platform capability — it must be confirmed with the OEM. The pipeline cannot verify that speed governance is implemented, only that it is required.",
+      "citation": "ISO 3691-4:2023 Section 5.4, ISO/TS 15066:2016"
     }
   ]
 }
