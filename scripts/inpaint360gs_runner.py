@@ -648,7 +648,7 @@ def run_distillation(
 
     distill_script = INPAINT360GS_DIR / "seg" / "distillation.py"
     if not distill_script.is_file():
-        return {"status": "failed", "reason": "seg/distillation.py not found"}
+        return {"status": "failed", "reason": "train_finetune.py not found (seg/distillation.py not found)"}
 
     t0 = time.monotonic()
 

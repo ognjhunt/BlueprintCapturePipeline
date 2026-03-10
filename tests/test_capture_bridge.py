@@ -37,6 +37,7 @@ def test_capture_descriptor_parses_alias_fields() -> None:
     assert descriptor.environment_type_hint == "kitchen"
     assert descriptor.arkit_poses_uri == "gs://bucket/.../arkit/poses.jsonl"
     assert descriptor.arkit_intrinsics_uri == "gs://bucket/.../arkit/intrinsics.json"
+    assert descriptor.requested_lanes == ["qualification"]
 
 
 def test_capture_descriptor_infers_nurec_mode() -> None:
@@ -95,3 +96,12 @@ def test_capture_descriptor_rejects_unsupported_schema() -> None:
     payload["schema_version"] = "v2"
     with pytest.raises(ValueError):
         CaptureDescriptor.from_dict(payload)
+
+
+def test_capture_descriptor_normalizes_requested_lanes() -> None:
+    payload = _sample_descriptor_payload()
+    payload["requested_lanes"] = ["qualification", "advanced_geometry", "all", "qualification"]
+
+    descriptor = CaptureDescriptor.from_dict(payload)
+
+    assert descriptor.requested_lanes == ["qualification", "advanced_geometry"]

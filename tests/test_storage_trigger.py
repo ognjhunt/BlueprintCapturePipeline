@@ -72,7 +72,7 @@ def test_dispatch_payload_direct_mode(monkeypatch) -> None:
     def _fake_run(*, descriptor_gcs_uri: str):
         captured["descriptor"] = descriptor_gcs_uri
 
-    monkeypatch.setattr(storage_trigger, "run_swap_pipeline", _fake_run)
+    monkeypatch.setattr(storage_trigger, "run_capture_pipeline", _fake_run)
     monkeypatch.setenv("SWAP_TRIGGER_ALLOW_DIRECT", "true")
 
     result = storage_trigger._dispatch_payload(
@@ -117,7 +117,7 @@ def test_on_swap_dispatch_runs_pipeline(monkeypatch) -> None:
     def _fake_run(*, descriptor_gcs_uri: str):
         captured["descriptor"] = descriptor_gcs_uri
 
-    monkeypatch.setattr(storage_trigger, "run_swap_pipeline", _fake_run)
+    monkeypatch.setattr(storage_trigger, "run_capture_pipeline", _fake_run)
 
     payload = {
         "descriptor_gcs_uri": "gs://bucket/scenes/scene_a/captures/cap_b/capture_descriptor.json"
@@ -135,7 +135,7 @@ def test_on_swap_dispatch_http(monkeypatch) -> None:
     def _fake_run(*, descriptor_gcs_uri: str):
         captured["descriptor"] = descriptor_gcs_uri
 
-    monkeypatch.setattr(storage_trigger, "run_swap_pipeline", _fake_run)
+    monkeypatch.setattr(storage_trigger, "run_capture_pipeline", _fake_run)
 
     class _Req:
         def __init__(self, payload):

@@ -1,12 +1,15 @@
 # BlueprintCapturePipeline
 
-NuRec-first orchestration for converting BlueprintCapture descriptors into sim-ready scenes with swappable assets.
+Qualification-first orchestration for converting BlueprintCapture descriptors into qualification artifacts by default, with explicit advanced geometry escalation when requested.
 
 ## Scope
 
-This repo is intentionally thin. It orchestrates one path:
+This repo is intentionally thin. It now orchestrates two lanes:
 
-`capture_descriptor.json` -> NuRec reconstruction -> swap candidate policy -> SAM3D-first asset materialization -> interactive articulation validation/fallback -> simready + USD assembly.
+- Default qualification lane:
+  `capture_descriptor.json` -> QA/completeness -> scoping -> risk extraction -> qualification artifacts
+- Explicit advanced geometry lane:
+  `capture_descriptor.json` -> NuRec reconstruction -> swap candidate policy -> SAM3D-first asset materialization -> interactive articulation validation/fallback -> simready + USD assembly
 
 It reuses existing jobs and helper logic from:
 
@@ -14,7 +17,20 @@ It reuses existing jobs and helper logic from:
 
 ## Entry Points
 
-Orchestrator:
+Default lane orchestrator:
+
+```bash
+python -m blueprint_pipeline.capture_orchestrator \
+  --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json
+```
+
+Or via installed script:
+
+```bash
+blueprint-capture-pipeline --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json
+```
+
+Advanced geometry orchestrator:
 
 ```bash
 python -m blueprint_pipeline.swap_orchestrator \
@@ -54,15 +70,30 @@ Written under:
 
 `scenes/<scene_id>/captures/<capture_id>/pipeline/`
 
-- `nurec_job_spec.json`
-- `nurec_outputs.json`
-- `swap_candidates.json`
-- `swap_execution_report.json`
-- `runtime_preflight_report.json`
-- `advanced_quality_report.json`
-- `swap_quality_report.json`
-- `pipeline_summary.json`
-- `.swap_pipeline_complete` or `.swap_pipeline_failed.json`
+- Default qualification artifacts:
+  - `site_intake.json`
+  - `capture_package_manifest.json`
+  - `capture_qa_scorecard.json`
+  - `task_scope_record.json`
+  - `qualification_record.json`
+  - `qualification_brief.json`
+  - `opportunity_handoff.json`
+  - `task_targets.json`
+  - `runtime_preflight_report.json`
+  - `swap_quality_report.json` (compatibility alias)
+  - `pipeline_summary.json`
+  - `.swap_pipeline_complete` or `.swap_pipeline_failed.json`
+- Advanced geometry artifacts when explicitly requested:
+  - `nurec_job_spec.json`
+  - `nurec_outputs.json`
+  - `swap_candidates.json`
+  - `swap_execution_report.json`
+  - `advanced_quality_report.json`
+  - `advanced_geometry/advanced_geometry_bundle.json`
+  - `advanced_geometry/labels.json`
+  - `advanced_geometry/structure.json`
+  - `advanced_geometry/task_targets.synthetic.json`
+  - optional `advanced_geometry/3dgs_compressed.ply`
 
 Scene artifacts written under:
 
@@ -89,6 +120,7 @@ NuRec artifact roles under `.../pipeline/nurec/`:
 
 ## Environment
 
+- `PIPELINE_LANE` (optional; `qualification`, `advanced_geometry`, or `all`; default resolves from descriptor `requested_lanes` and falls back to `qualification`)
 - `GCS_ROOT` (default: `/mnt/gcs`)
 - `BLUEPRINTPIPELINE_ROOT` (default: `/Users/nijelhunt_1/workspace/BlueprintPipeline`)
 - `BLUEPRINTPIPELINE_COMMIT_HASH` (optional pin)

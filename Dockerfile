@@ -60,4 +60,4 @@ ENV GCS_ROOT=/mnt/gcs
 # Ensure scripts/ is importable (nurec_shim.py imports sam3_detect)
 ENV PYTHONPATH=/app/scripts
 
-ENTRYPOINT ["python", "-m", "blueprint_pipeline.swap_orchestrator"]
+ENTRYPOINT ["python", "-m", "blueprint_pipeline.capture_orchestrator"]

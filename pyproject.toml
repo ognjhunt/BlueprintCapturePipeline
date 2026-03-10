@@ -1,7 +1,7 @@
 [project]
 name = "blueprint-capture-pipeline"
 version = "2.0.0"
-description = "NuRec-first swappable asset orchestration for BlueprintCapture descriptors"
+description = "Qualification-first capture orchestration with explicit advanced geometry escalation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -45,6 +45,7 @@ dev = [
 
 [project.scripts]
 blueprint-capture-swap = "blueprint_pipeline.swap_orchestrator:main"
+blueprint-capture-pipeline = "blueprint_pipeline.capture_orchestrator:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

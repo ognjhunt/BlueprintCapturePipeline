@@ -1,4 +1,4 @@
-"""Capture descriptor contracts for NuRec-first swap orchestration."""
+"""Capture descriptor contracts for qualification-first orchestration."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional
 _ALLOWED_NUREC_MODES = {"mono_pose_assisted", "mono_slam"}
 _ALLOWED_SWAP_FOCUS = {"default", "bedroom", "kitchen", "warehouse"}
 _ALLOWED_ENVIRONMENT_HINTS = {"default", "bedroom", "kitchen", "warehouse"}
+_ALLOWED_REQUESTED_LANES = {"qualification", "advanced_geometry"}
 
 
 def _optional_str(value: Any) -> Optional[str]:
@@ -78,6 +79,31 @@ def _resolve_nurec_mode(
     return "mono_slam"
 
 
+def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
+    if raw_requested_lanes is None:
+        return ["qualification"]
+    if isinstance(raw_requested_lanes, str):
+        values = [raw_requested_lanes]
+    elif isinstance(raw_requested_lanes, (list, tuple, set)):
+        values = [str(v) for v in raw_requested_lanes]
+    else:
+        values = [str(raw_requested_lanes)]
+
+    normalized: List[str] = []
+    for value in values:
+        lowered = value.strip().lower()
+        if not lowered:
+            continue
+        if lowered == "all":
+            for lane in ("qualification", "advanced_geometry"):
+                if lane not in normalized:
+                    normalized.append(lane)
+            continue
+        if lowered in _ALLOWED_REQUESTED_LANES and lowered not in normalized:
+            normalized.append(lowered)
+    return normalized or ["qualification"]
+
+
 def _infer_capture_source(raw_source: str, capture_tier: str) -> str:
     source = raw_source.strip().lower()
     if source in {"iphone", "glasses"}:
@@ -110,6 +136,7 @@ class CaptureDescriptor:
     qa_report_uri: Optional[str] = None
     qa_status: Optional[str] = None
     environment_type_hint: Optional[str] = None
+    requested_lanes: List[str] = field(default_factory=lambda: ["qualification"])
     swap_focus: List[str] = field(default_factory=list)
     manipulation_candidates: List[Dict[str, Any]] = field(default_factory=list)
     articulation_hints: List[Dict[str, Any]] = field(default_factory=list)
@@ -187,6 +214,7 @@ class CaptureDescriptor:
             qa_report_uri=_optional_str(data.get("qa_report_uri")),
             qa_status=_optional_str(data.get("qa_status")),
             environment_type_hint=environment_type_hint,
+            requested_lanes=_normalize_requested_lanes(data.get("requested_lanes")),
             swap_focus=swap_focus,
             manipulation_candidates=_dict_list(data.get("manipulation_candidates")),
             articulation_hints=_dict_list(data.get("articulation_hints")),
@@ -213,6 +241,7 @@ class CaptureDescriptor:
             "frames_index_uri": self.frames_index_uri,
             "nurec_mode": self.nurec_mode,
             "quality": dict(self.quality),
+            "requested_lanes": list(self.requested_lanes),
             "swap_focus": list(self.swap_focus),
             "manipulation_candidates": list(self.manipulation_candidates),
             "articulation_hints": list(self.articulation_hints),
@@ -255,6 +284,7 @@ def build_capture_bundle_constraints(
         "frames_index_uri": descriptor.frames_index_uri,
         "keyframe_uri": descriptor.keyframe_uri,
         "nurec_mode": descriptor.nurec_mode,
+        "requested_lanes": list(descriptor.requested_lanes),
         "swap_focus": list(descriptor.swap_focus),
         "quality": dict(descriptor.quality),
         "environment_type_hint": descriptor.environment_type_hint,
@@ -343,6 +373,7 @@ def build_scene_manifest_seed(
         "environment": {
             "type_hint": descriptor.environment_type_hint or "unknown",
             "nurec_mode": descriptor.nurec_mode,
+            "requested_lanes": list(descriptor.requested_lanes),
             "swap_focus": list(descriptor.swap_focus),
         },
         "scene_shell": {

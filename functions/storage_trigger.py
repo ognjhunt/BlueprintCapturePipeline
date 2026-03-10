@@ -1,4 +1,4 @@
-"""Storage trigger for NuRec-first swap orchestration."""
+"""Storage trigger for qualification-first capture orchestration."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
-from blueprint_pipeline.swap_orchestrator import run_swap_pipeline
+from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
 
 
 logging.basicConfig(level=logging.INFO)
@@ -148,7 +148,7 @@ def _dispatch_payload(payload: Dict[str, Any], *, mode: Optional[str] = None) ->
                 "SWAP_TRIGGER_DISPATCH_MODE=direct is blocked by default. "
                 "Set SWAP_TRIGGER_ALLOW_DIRECT=true for local/dev only."
             )
-        run_swap_pipeline(descriptor_gcs_uri=str(payload["descriptor_gcs_uri"]))
+        run_capture_pipeline(descriptor_gcs_uri=str(payload["descriptor_gcs_uri"]))
         return "direct:completed"
     raise RuntimeError(f"Unsupported SWAP_TRIGGER_DISPATCH_MODE: {dispatch_mode}")
 
@@ -173,7 +173,7 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
         capture_id=parsed["capture_id"],
     )
     logger.info(
-        "Queueing swap orchestrator for scene=%s capture=%s descriptor=%s",
+        "Queueing capture pipeline for scene=%s capture=%s descriptor=%s",
         parsed["scene_id"],
         parsed["capture_id"],
         payload["descriptor_gcs_uri"],
@@ -195,8 +195,8 @@ def on_swap_dispatch(event: Dict[str, Any], context: Any) -> None:  # noqa: ARG0
     if not descriptor_uri:
         raise RuntimeError("Dispatch payload missing descriptor_gcs_uri")
 
-    logger.info("Running swap pipeline from dispatch message: %s", descriptor_uri)
-    run_swap_pipeline(descriptor_gcs_uri=descriptor_uri)
+    logger.info("Running capture pipeline from dispatch message: %s", descriptor_uri)
+    run_capture_pipeline(descriptor_gcs_uri=descriptor_uri)
 
 
 def on_swap_dispatch_http(request: Any):  # type: ignore[no-untyped-def]
@@ -210,6 +210,6 @@ def on_swap_dispatch_http(request: Any):  # type: ignore[no-untyped-def]
     if not descriptor_uri:
         return ("Missing descriptor_gcs_uri", 400)
 
-    logger.info("Running swap pipeline from HTTP dispatch: %s", descriptor_uri)
-    run_swap_pipeline(descriptor_gcs_uri=descriptor_uri)
+    logger.info("Running capture pipeline from HTTP dispatch: %s", descriptor_uri)
+    run_capture_pipeline(descriptor_gcs_uri=descriptor_uri)
     return ("ok", 200)

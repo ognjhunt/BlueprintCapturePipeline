@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import traceback
+from shutil import copyfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -341,6 +342,7 @@ def _build_pipeline_summary(
 
     return {
         "schema_version": "v1",
+        "lane": "advanced_geometry",
         "run_id": run_id,
         "generated_at": generated_at,
         "scene_id": scene_id,
@@ -408,6 +410,155 @@ def _validate_swap_assets(
     if missing:
         return False, f"missing assets for object IDs: {', '.join(missing)}"
     return True, "all swap assets materialized"
+
+
+def _pick_preferred_geometry_uri(nurec_outputs: Mapping[str, Any]) -> str:
+    artifacts = nurec_outputs.get("artifacts") if isinstance(nurec_outputs.get("artifacts"), Mapping) else {}
+    if not isinstance(artifacts, Mapping):
+        return ""
+    for key in (
+        "3dgs_compressed_ply",
+        "compressed_ply",
+        "gaussian_splat_ply",
+        "inpainted_gaussian_ply",
+        "export_last_refined_ply",
+    ):
+        value = str(artifacts.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _write_advanced_geometry_bundle(
+    *,
+    storage_root: Path,
+    bucket: str,
+    pipeline_prefix: str,
+    pipeline_dir: Path,
+    descriptor: CaptureDescriptor,
+    object_index_entries: List[Mapping[str, Any]],
+    task_targets_payload: Mapping[str, Any],
+    swap_candidates: List[Mapping[str, Any]],
+    nurec_outputs: Mapping[str, Any],
+) -> Dict[str, str]:
+    advanced_dir = pipeline_dir / "advanced_geometry"
+    ensure_dir(advanced_dir)
+
+    target_ids = {
+        str(value).strip()
+        for value in task_targets_payload.get("target_object_ids", [])
+        if str(value).strip()
+    } if isinstance(task_targets_payload.get("target_object_ids"), list) else set()
+    selected_ids = {
+        str(item.get("object_id")).strip()
+        for item in swap_candidates
+        if isinstance(item, Mapping) and str(item.get("object_id")).strip()
+    }
+
+    labels_payload = {
+        "schema_version": "v1",
+        "lane": "advanced_geometry",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "labels": [
+            {
+                "object_id": str(entry.get("id") or entry.get("instance_id") or ""),
+                "label": str(entry.get("label") or entry.get("name") or "object"),
+                "selected_for_geometry": str(entry.get("id") or entry.get("instance_id") or "") in selected_ids,
+                "task_target": str(entry.get("id") or entry.get("instance_id") or "") in target_ids,
+            }
+            for entry in object_index_entries
+            if isinstance(entry, Mapping)
+        ],
+    }
+    write_json(advanced_dir / "labels.json", labels_payload)
+
+    mesh_stats = nurec_outputs.get("mesh_stats") if isinstance(nurec_outputs.get("mesh_stats"), Mapping) else {}
+    structure_payload = {
+        "schema_version": "v1",
+        "lane": "advanced_geometry",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "environment_type_hint": descriptor.environment_type_hint or "unknown",
+        "mesh_stats": dict(mesh_stats) if isinstance(mesh_stats, Mapping) else {},
+        "selected_object_ids": sorted(selected_ids),
+        "requested_lanes": list(descriptor.requested_lanes),
+    }
+    write_json(advanced_dir / "structure.json", structure_payload)
+
+    synthetic_targets_payload = {
+        "schema_version": "v1",
+        "lane": "advanced_geometry",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "source_task_targets_uri": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
+        "target_object_ids": sorted(target_ids),
+        "articulation_required_ids": [
+            str(value)
+            for value in task_targets_payload.get("articulation_required_ids", [])
+            if str(value).strip()
+        ] if isinstance(task_targets_payload.get("articulation_required_ids"), list) else [],
+        "synthetic_hints": [
+            {
+                "object_id": str(item.get("object_id") or ""),
+                "label": str(item.get("label") or "object"),
+                "sim_role": str(item.get("sim_role") or "manipulable_object"),
+            }
+            for item in swap_candidates
+            if isinstance(item, Mapping)
+        ],
+    }
+    write_json(advanced_dir / "task_targets.synthetic.json", synthetic_targets_payload)
+
+    preferred_geometry_uri = _pick_preferred_geometry_uri(nurec_outputs)
+    compressed_rel_uri = ""
+    if preferred_geometry_uri:
+        try:
+            source_path = resolve_gs_uri_to_path(preferred_geometry_uri, storage_root)
+        except Exception:
+            source_path = None
+        if source_path and has_nonempty_file(source_path):
+            target_path = advanced_dir / "3dgs_compressed.ply"
+            copyfile(source_path, target_path)
+            compressed_rel_uri = f"gs://{bucket}/{relative_scene_path(target_path, storage_root)}"
+
+    bundle_payload = {
+        "schema_version": "v1",
+        "lane": "advanced_geometry",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "preferred_geometry_uri": compressed_rel_uri or preferred_geometry_uri or None,
+        "geometry_source_uri": preferred_geometry_uri or None,
+        "bundle_artifacts": {
+            "labels": f"gs://{bucket}/{relative_scene_path(advanced_dir / 'labels.json', storage_root)}",
+            "structure": f"gs://{bucket}/{relative_scene_path(advanced_dir / 'structure.json', storage_root)}",
+            "task_targets_synthetic": (
+                f"gs://{bucket}/{relative_scene_path(advanced_dir / 'task_targets.synthetic.json', storage_root)}"
+            ),
+            "compressed_geometry": compressed_rel_uri or None,
+        },
+        "task_target_count": len(target_ids),
+        "selected_object_count": len(selected_ids),
+    }
+    write_json(advanced_dir / "advanced_geometry_bundle.json", bundle_payload)
+
+    artifact_uris = {
+        "advanced_geometry_bundle": (
+            f"gs://{bucket}/{relative_scene_path(advanced_dir / 'advanced_geometry_bundle.json', storage_root)}"
+        ),
+        "labels": f"gs://{bucket}/{relative_scene_path(advanced_dir / 'labels.json', storage_root)}",
+        "structure": f"gs://{bucket}/{relative_scene_path(advanced_dir / 'structure.json', storage_root)}",
+        "task_targets_synthetic": (
+            f"gs://{bucket}/{relative_scene_path(advanced_dir / 'task_targets.synthetic.json', storage_root)}"
+        ),
+    }
+    if compressed_rel_uri:
+        artifact_uris["3dgs_compressed_ply"] = compressed_rel_uri
+    return artifact_uris
 
 
 def _read_interactive_results(path: Path) -> Dict[str, Any]:
@@ -521,6 +672,7 @@ def run_swap_pipeline(
     advanced_quality_report: Dict[str, Any] = {}
     runtime_preflight_report: Dict[str, Any] = {}
     scene_cleaning_report: Dict[str, Any] = {}
+    advanced_geometry_artifacts: Dict[str, str] = {}
 
     try:
         parsed_uri = parse_gs_uri(descriptor_gcs_uri)
@@ -852,6 +1004,17 @@ def run_swap_pipeline(
             assets_prefix=assets_prefix,
             layout_prefix=layout_prefix,
             seg_prefix=seg_prefix,
+        )
+        advanced_geometry_artifacts = _write_advanced_geometry_bundle(
+            storage_root=storage_root,
+            bucket=bucket,
+            pipeline_prefix=pipeline_prefix,
+            pipeline_dir=pipeline_dir,
+            descriptor=descriptor,
+            object_index_entries=object_index_entries,
+            task_targets_payload=task_targets_payload,
+            swap_candidates=[candidate for candidate in swap_candidates if isinstance(candidate, Mapping)],
+            nurec_outputs=nurec_outputs,
         )
 
         # ------------------------------------------------------------------
@@ -1296,6 +1459,7 @@ def run_swap_pipeline(
         stage = "completion"
         quality_report = {
             "schema_version": "v1",
+            "lane": "advanced_geometry",
             "scene_id": scene_id,
             "capture_id": capture_id,
             "status": "passed",
@@ -1323,6 +1487,7 @@ def run_swap_pipeline(
                 "geniesim_task_config": f"gs://{bucket}/{geniesim_pref}/task_config.json",
                 "geniesim_merged_scene_manifest": f"gs://{bucket}/{geniesim_pref}/merged_scene_manifest.json",
                 "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
+                **advanced_geometry_artifacts,
             },
         }
         write_json(pipeline_dir / "swap_quality_report.json", quality_report)
@@ -1349,6 +1514,7 @@ def run_swap_pipeline(
 
         completion_payload = {
             "schema_version": "v1",
+            "lane": "advanced_geometry",
             "scene_id": scene_id,
             "capture_id": capture_id,
             "status": "completed",
@@ -1360,6 +1526,7 @@ def run_swap_pipeline(
 
         return {
             "status": "completed",
+            "lane": "advanced_geometry",
             "scene_id": scene_id,
             "capture_id": capture_id,
             "pipeline_prefix": pipeline_prefix,
@@ -1384,6 +1551,7 @@ def run_swap_pipeline(
 
         quality_report = {
             "schema_version": "v1",
+            "lane": "advanced_geometry",
             "scene_id": scene_id,
             "capture_id": capture_id,
             "status": "failed",

@@ -10,6 +10,7 @@ import pytest
 
 import blueprint_pipeline.swap_orchestrator as swap_orchestrator_module
 from blueprint_pipeline.blueprintpipeline_runner import CommandResult
+from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
 from blueprint_pipeline.quality_gates import AdvancedQualityGateConfig
 from blueprint_pipeline.swap_orchestrator import OrchestratorConfig, run_swap_pipeline
 from functions.storage_trigger import parse_descriptor_path
@@ -1053,3 +1054,168 @@ def test_storage_trigger_path_parser() -> None:
     }
 
     assert parse_descriptor_path("scenes/abc/raw/manifest.json") is None
+
+
+def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=True,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+    )
+
+    assert result["status"] == "completed"
+    assert result["lanes"] == ["qualification"]
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    for name in (
+        "site_intake.json",
+        "capture_package_manifest.json",
+        "capture_qa_scorecard.json",
+        "task_scope_record.json",
+        "qualification_record.json",
+        "qualification_brief.json",
+        "opportunity_handoff.json",
+        "task_targets.json",
+        "pipeline_summary.json",
+        "swap_quality_report.json",
+        ".swap_pipeline_complete",
+    ):
+        assert (pipeline_dir / name).is_file(), name
+
+    assert not (tmp_path / "bucket/scenes/scene_demo/assets/scene_manifest.json").exists()
+    assert not (tmp_path / "bucket/scenes/scene_demo/usd/scene.usda").exists()
+
+    scorecard = json.loads((pipeline_dir / "capture_qa_scorecard.json").read_text(encoding="utf-8"))
+    qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
+    handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
+    quality_report = json.loads((pipeline_dir / "swap_quality_report.json").read_text(encoding="utf-8"))
+
+    assert scorecard["completeness_status"] == "sufficient"
+    assert qualification["readiness_state"] in {"ready", "risky"}
+    assert handoff["match_ready"] is True
+    assert quality_report["lane"] == "qualification"
+
+
+def test_qualification_completeness_failure_produces_need_more_evidence(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    qa_path = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/qa_report.json"
+    qa_payload = json.loads(qa_path.read_text(encoding="utf-8"))
+    qa_payload["status"] = "failed"
+    qa_path.write_text(json.dumps(qa_payload, indent=2), encoding="utf-8")
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=True,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+    )
+
+    assert result["status"] == "completed"
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    scorecard = json.loads((pipeline_dir / "capture_qa_scorecard.json").read_text(encoding="utf-8"))
+    qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
+    handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
+
+    assert scorecard["completeness_status"] == "need_more_evidence"
+    assert qualification["readiness_state"] == "not_ready_yet"
+    assert any(item["id"] == "need_more_evidence" for item in qualification["risks"])
+    assert handoff["match_ready"] is False
+
+
+def test_capture_pipeline_advanced_lane_preserves_existing_flow(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    nurec_client = _StubNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+    runner = _StubBlueprintRunner(tmp_path / "bucket")
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="advanced_geometry",
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+        nurec_client=nurec_client,
+        blueprint_runner=runner,
+    )
+
+    assert result["status"] == "completed"
+    assert result["lanes"] == ["advanced_geometry"]
+    assert len(runner.simready_calls) == 1
+
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    advanced_bundle = pipeline_dir / "advanced_geometry" / "advanced_geometry_bundle.json"
+    assert advanced_bundle.is_file()
+    assert (pipeline_dir / "swap_quality_report.json").is_file()
+    assert (tmp_path / "bucket/scenes/scene_demo/assets/scene_manifest.json").is_file()
+
+
+def test_advanced_geometry_bundle_writes_preferred_ply_when_available(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+
+    class _BundleNurecClient(_StubNurecClient):
+        def run(self, *, descriptor, descriptor_uri: str, object_index_uri: str):  # noqa: ANN001
+            outputs = super().run(
+                descriptor=descriptor,
+                descriptor_uri=descriptor_uri,
+                object_index_uri=object_index_uri,
+            )
+            pipeline_dir = self.root / self.pipeline_prefix
+            refined_ply = pipeline_dir / "nurec" / "export_last_refined.ply"
+            refined_ply.write_text("ply\nformat ascii 1.0\nend_header\n", encoding="utf-8")
+            outputs["artifacts"]["export_last_refined_ply"] = (
+                f"gs://{self.bucket}/{self.pipeline_prefix}/nurec/export_last_refined.ply"
+            )
+            _write_json(pipeline_dir / "nurec_outputs.json", outputs)
+            return outputs
+
+    nurec_client = _BundleNurecClient(
+        tmp_path / "bucket",
+        "bucket",
+        "scenes/scene_demo/captures/capture_demo/pipeline",
+    )
+    runner = _StubBlueprintRunner(tmp_path / "bucket")
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="advanced_geometry",
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=False,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+        nurec_client=nurec_client,
+        blueprint_runner=runner,
+    )
+
+    assert result["status"] == "completed"
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    assert (pipeline_dir / "advanced_geometry/labels.json").is_file()
+    assert (pipeline_dir / "advanced_geometry/structure.json").is_file()
+    assert (pipeline_dir / "advanced_geometry/task_targets.synthetic.json").is_file()
+    assert (pipeline_dir / "advanced_geometry/advanced_geometry_bundle.json").is_file()
+    assert (pipeline_dir / "advanced_geometry/3dgs_compressed.ply").is_file()
