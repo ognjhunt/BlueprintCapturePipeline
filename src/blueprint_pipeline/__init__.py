@@ -7,7 +7,7 @@ from .capture_bridge import (
     build_scene_request_from_descriptor,
 )
 from .capture_orchestrator import run_capture_pipeline
-from .materialization import materialize_capture_bundle
+from .materialization import materialize_capture_bundle, preview_capture_bundle
 from .swap_orchestrator import OrchestratorConfig, run_swap_pipeline
 
 __version__ = "2.0.0"
@@ -20,6 +20,7 @@ __all__ = [
     "build_scene_request_from_descriptor",
     "run_capture_pipeline",
     "materialize_capture_bundle",
+    "preview_capture_bundle",
     "OrchestratorConfig",
     "run_swap_pipeline",
 ]

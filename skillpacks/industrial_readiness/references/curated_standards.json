@@ -1,0 +1,54 @@
+{
+  "schema_version": "v1",
+  "name": "industrial_humanoid_site_guidance",
+  "entries": [
+    {
+      "id": "route-clearance-envelope",
+      "title": "Route Clearance Envelope",
+      "categories": ["geometry", "traffic", "route_access"],
+      "summary": "Keep route-clearance claims bounded to measured widths, choke points, and obstruction visibility. Do not infer safe autonomous passage from partial captures.",
+      "applicability": "Use when route width, aisle clearance, or shared-lane access is under review.",
+      "citation": "Blueprint Industrial Guidance v1, Section 2.1"
+    },
+    {
+      "id": "workcell-hidden-zone-review",
+      "title": "Workcell Hidden-Zone Review",
+      "categories": ["hidden_zone", "safety", "capture_quality"],
+      "summary": "If hidden zones or restricted views remain material, keep readiness at risky or not_ready_yet until a human confirms coverage or authorizes recapture.",
+      "applicability": "Use when hidden-zone bounds, privacy restrictions, or occluded workcells appear in evidence.",
+      "citation": "Blueprint Industrial Guidance v1, Section 3.4"
+    },
+    {
+      "id": "shared-space-risk",
+      "title": "Shared Human-Robot Space Risk",
+      "categories": ["safety", "traffic", "workflow_ambiguity"],
+      "summary": "Shared pedestrian traffic, forklifts, and non-routine site behaviors require explicit human review and should not be auto-cleared by geometry alone.",
+      "applicability": "Use for active industrial aisles, docks, cells, and workcells with mixed traffic.",
+      "citation": "Blueprint Industrial Guidance v1, Section 4.2"
+    },
+    {
+      "id": "capture-evidence-sufficiency",
+      "title": "Capture Evidence Sufficiency",
+      "categories": ["capture_quality", "evidence", "geometry"],
+      "summary": "Video-only capture can support pre-screening and blocker discovery, but decision-grade readiness requires structured intake and bounded metric evidence.",
+      "applicability": "Use when intake, QA, or metric scaffolding is incomplete.",
+      "citation": "Blueprint Industrial Guidance v1, Section 1.3"
+    },
+    {
+      "id": "humanoid-reach-envelope",
+      "title": "Humanoid Reach Envelope",
+      "categories": ["geometry", "task_fit", "workcell"],
+      "summary": "Reach and manipulation claims must stay bounded to measured target distance, workcell span, and confirmed task-zone geometry.",
+      "applicability": "Use when task targets or articulated objects drive the qualification decision.",
+      "citation": "Blueprint Industrial Guidance v1, Section 2.6"
+    },
+    {
+      "id": "industrial-blocker-taxonomy",
+      "title": "Industrial Blocker Taxonomy",
+      "categories": ["workflow_ambiguity", "systems", "privacy", "geometry", "safety"],
+      "summary": "Every blocker should map to a concrete category with evidence references so humans can decide whether to recapture, redesign scope, or stop evaluation.",
+      "applicability": "Use whenever blocker register entries need normalization or escalation routing.",
+      "citation": "Blueprint Industrial Guidance v1, Section 5.1"
+    }
+  ]
+}

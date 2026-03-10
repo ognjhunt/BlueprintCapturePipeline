@@ -1119,6 +1119,7 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
         "capability_checks.json",
         "blocker_register.json",
         "readiness_decision.json",
+        "human_actions_required.json",
         "readiness_report.md",
         "opportunity_handoff.json",
         "task_targets.json",

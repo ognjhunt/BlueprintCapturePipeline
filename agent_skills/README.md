@@ -1,13 +1,20 @@
 # Qualification Agent Skills
 
-These skills are intended for a Claude Agent SDK orchestration layer. They are deliberately scoped to structured artifacts produced by `BlueprintCapturePipeline`, not raw video or raw splats.
+The markdown files in this folder are legacy drafting notes.
 
-Available skills:
+The canonical skill source of truth now lives under:
 
-- `intake_normalizer.md`
-- `evidence_auditor.md`
-- `blocker_taxonomist.md`
-- `capability_envelope_writer.md`
-- `standards_retriever.md`
-- `readiness_report_writer.md`
-- `recapture_planner.md`
+- `skillpacks/industrial_readiness/skills/`
+
+Synced runtime layouts are generated into:
+
+- `.claude/skills/`
+- `.agents/skills/`
+
+Use:
+
+```bash
+blueprint-sync-skills
+```
+
+to regenerate the Claude and Codex/OpenAI skill trees from the canonical skill pack.

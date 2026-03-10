@@ -1,0 +1,19 @@
+{
+  "schema_version": "v1",
+  "name": "industrial_readiness",
+  "source_root": "skillpacks/industrial_readiness/skills",
+  "references_root": "skillpacks/industrial_readiness/references",
+  "skills": [
+    "intake_normalizer",
+    "evidence_auditor",
+    "blocker_taxonomist",
+    "capability_envelope_writer",
+    "readiness_report_writer",
+    "recapture_planner",
+    "standards_retriever",
+    "humanoid_site_readiness_reviewer",
+    "humanoid_workcell_risk_reviewer",
+    "humanoid_route_access_reviewer",
+    "oem_handoff_writer"
+  ]
+}

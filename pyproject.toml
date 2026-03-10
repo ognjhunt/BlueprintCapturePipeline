@@ -46,6 +46,10 @@ dev = [
 [project.scripts]
 blueprint-capture-swap = "blueprint_pipeline.swap_orchestrator:main"
 blueprint-capture-pipeline = "blueprint_pipeline.capture_orchestrator:main"
+blueprint-preflight-capture = "blueprint_pipeline.preflight_capture:main"
+blueprint-agent-review = "blueprint_pipeline.agent_review_cli:main"
+blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"
+blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

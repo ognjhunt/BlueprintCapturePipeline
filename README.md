@@ -15,6 +15,21 @@ Raw-upload materialization path:
 
 - `raw/capture_upload_complete.json` -> descriptor materialization -> modality-aware `qa_report.json` -> qualification orchestration
 
+Local raw-capture contract for `blueprint-run-e2e`:
+
+- required:
+  - `raw/manifest.json`
+  - `raw/intake_packet.json`
+  - `raw/capture_context.json`
+  - one video file under `raw/` or a `video_uri` in `manifest.json`
+  - `raw/capture_upload_complete.json`
+- optional:
+  - ARKit pose/intrinsics/depth files
+  - scaffolding calibration assets
+  - splat / 3DGS artifacts
+
+Splat / 3DGS artifacts are supplemental only. They can be attached to agent review and downstream geometry packaging, but they do not bypass intake, QA, or readiness gates.
+
 It reuses existing jobs and helper logic from:
 
 - `/Users/nijelhunt_1/workspace/BlueprintPipeline`
@@ -32,6 +47,29 @@ Or via installed script:
 
 ```bash
 blueprint-capture-pipeline --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json
+```
+
+Local raw-capture preflight:
+
+```bash
+blueprint-preflight-capture \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+Local agent review over qualification artifacts:
+
+```bash
+blueprint-agent-review \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --provider claude
+```
+
+One-command local report flow:
+
+```bash
+blueprint-run-e2e \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --provider openai
 ```
 
 Advanced geometry orchestrator:
@@ -85,8 +123,11 @@ Written under:
   - `task_targets.json`
   - `runtime_preflight_report.json`
   - `qualification_quality_report.json`
+  - `human_actions_required.json`
   - `swap_quality_report.json` (compatibility alias)
   - `pipeline_summary.json`
+  - `agent_review_bundle.json` (when `blueprint-agent-review` or `blueprint-run-e2e` is used)
+  - `agent_readiness_memo.md` (when `blueprint-agent-review` or `blueprint-run-e2e` is used)
   - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
   - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
 - Advanced geometry artifacts when explicitly requested:

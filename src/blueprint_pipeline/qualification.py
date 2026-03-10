@@ -869,6 +869,7 @@ def _build_pipeline_summary(
             "qualification_brief_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_brief.json",
             "opportunity_handoff_uri": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
             "runtime_preflight_report_uri": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
+            "human_actions_required_uri": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
             "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
         },
         "source_files": {
@@ -880,6 +881,7 @@ def _build_pipeline_summary(
             "task_scope_record": _local_file_pointer(pipeline_dir / "task_scope_record.json"),
             "qualification_record": _local_file_pointer(pipeline_dir / "qualification_record.json"),
             "qualification_brief": _local_file_pointer(pipeline_dir / "qualification_brief.json"),
+            "human_actions_required": _local_file_pointer(pipeline_dir / "human_actions_required.json"),
             "opportunity_handoff": _local_file_pointer(pipeline_dir / "opportunity_handoff.json"),
             "qualification_quality_report": _local_file_pointer(pipeline_dir / "qualification_quality_report.json"),
         },
@@ -1413,6 +1415,7 @@ def _render_readiness_report(
     descriptor: CaptureDescriptor,
     readiness_decision: Mapping[str, Any],
     blocker_register: Mapping[str, Any],
+    human_actions_required: Optional[Mapping[str, Any]] = None,
 ) -> str:
     lines = [
         f"# Readiness Report: {descriptor.scene_id}/{descriptor.capture_id}",
@@ -1447,7 +1450,96 @@ def _render_readiness_report(
             lines.append(
                 f"- [{blocker.get('severity', 'medium')}] {blocker.get('detail', '')}"
             )
+    lines.extend(["", "## Human Actions Required"])
+    actions = (
+        human_actions_required.get("actions", [])
+        if isinstance(human_actions_required, Mapping)
+        else []
+    )
+    if not actions:
+        lines.append("- Final human signoff remains required.")
+    else:
+        for action in actions:
+            if not isinstance(action, Mapping):
+                continue
+            lines.append(f"- {action.get('action', '')}")
     return "\n".join(lines) + "\n"
+
+
+def _build_human_actions_required(
+    *,
+    descriptor: CaptureDescriptor,
+    scorecard: Mapping[str, Any],
+    qualification_record: Mapping[str, Any],
+    readiness_decision: Mapping[str, Any],
+    blocker_register: Mapping[str, Any],
+    geometry_evidence: Mapping[str, Any],
+) -> Dict[str, Any]:
+    actions: List[Dict[str, Any]] = [
+        {
+            "action": "Confirm workflow boundary and success criteria.",
+            "required": True,
+            "owner": "human_reviewer",
+            "reason": "Workflow fit remains a human accountability boundary.",
+        },
+        {
+            "action": "Confirm the in-scope zone and accountable site owner.",
+            "required": True,
+            "owner": "human_reviewer",
+            "reason": "Task ownership and zone boundaries are required for deployment routing.",
+        },
+        {
+            "action": "Review non-routine modes and safety/EHS constraints.",
+            "required": True,
+            "owner": "human_reviewer",
+            "reason": "Safety, recovery, and non-routine modes are not auto-approved.",
+        },
+        {
+            "action": "Confirm hidden or restricted areas were adequately captured.",
+            "required": True,
+            "owner": "human_reviewer",
+            "reason": "Privacy restrictions and hidden zones can hide decision-critical evidence.",
+        },
+        {
+            "action": "Approve recapture when evidence is incomplete.",
+            "required": str(scorecard.get("completeness_status") or "need_more_evidence") != "sufficient",
+            "owner": "human_reviewer",
+            "reason": "Incomplete capture evidence must be accepted or recaptured by a human.",
+        },
+        {
+            "action": "Make the final readiness signoff.",
+            "required": True,
+            "owner": "human_reviewer",
+            "reason": f"Pipeline status is {readiness_decision.get('status', 'not_ready_yet')}.",
+        },
+        {
+            "action": "Choose the OEM, integrator, or target robot platform for downstream evaluation.",
+            "required": True,
+            "owner": "human_reviewer",
+            "reason": "The repo does not auto-select downstream deployment targets.",
+        },
+    ]
+    blocker_details = [
+        str(item.get("detail") or "").strip()
+        for item in blocker_register.get("entries", [])
+        if isinstance(item, Mapping)
+    ]
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "readiness_state": readiness_decision.get("status"),
+        "completeness_status": scorecard.get("completeness_status"),
+        "capture_modality": descriptor.capture_modality,
+        "evidence_tier": descriptor.evidence_tier,
+        "hidden_zone_bound": geometry_evidence.get("hidden_zone_bound"),
+        "risk_count": len(qualification_record.get("risks", []))
+        if isinstance(qualification_record.get("risks"), list)
+        else 0,
+        "blocker_details": blocker_details[:10],
+        "actions": actions,
+    }
 
 
 def _write_failure(
@@ -1705,6 +1797,14 @@ def run_qualification_pipeline(
             capability_checks=capability_checks,
             geometry_evidence=geometry_evidence,
         )
+        human_actions_required = _build_human_actions_required(
+            descriptor=descriptor,
+            scorecard=scorecard,
+            qualification_record=qualification_record,
+            readiness_decision=readiness_decision,
+            blocker_register=blocker_register,
+            geometry_evidence=geometry_evidence,
+        )
         qualification_record["readiness_state"] = readiness_decision.get("status")
         opportunity_handoff = _build_opportunity_handoff(
             descriptor=descriptor,
@@ -1738,12 +1838,14 @@ def run_qualification_pipeline(
         write_json(pipeline_dir / "capability_checks.json", capability_checks)
         write_json(pipeline_dir / "blocker_register.json", blocker_register)
         write_json(pipeline_dir / "readiness_decision.json", readiness_decision)
+        write_json(pipeline_dir / "human_actions_required.json", human_actions_required)
         write_text(
             pipeline_dir / "readiness_report.md",
             _render_readiness_report(
                 descriptor=descriptor,
                 readiness_decision=readiness_decision,
                 blocker_register=blocker_register,
+                human_actions_required=human_actions_required,
             ),
         )
         write_json(pipeline_dir / "opportunity_handoff.json", opportunity_handoff)
@@ -1796,6 +1898,7 @@ def run_qualification_pipeline(
                 "capability_checks": f"gs://{bucket}/{pipeline_prefix}/capability_checks.json",
                 "blocker_register": f"gs://{bucket}/{pipeline_prefix}/blocker_register.json",
                 "readiness_decision": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
+                "human_actions_required": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
                 "readiness_report": f"gs://{bucket}/{pipeline_prefix}/readiness_report.md",
                 "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
                 "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",

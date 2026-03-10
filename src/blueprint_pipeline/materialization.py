@@ -154,6 +154,28 @@ def materialize_capture_bundle(
     gcs_root: Path,
     raw_prefix_uri: Optional[str] = None,
 ) -> Dict[str, Any]:
+    result = build_capture_bundle_records(
+        bucket=bucket,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        gcs_root=gcs_root,
+        raw_prefix_uri=raw_prefix_uri,
+    )
+    capture_root = resolve_gs_uri_to_path(str(result["descriptor_uri"]), gcs_root).parent
+    write_json(capture_root / "capture_descriptor.json", result["descriptor"])
+    write_json(capture_root / "qa_report.json", result["qa_report"])
+    return result
+
+
+def build_capture_bundle_records(
+    *,
+    bucket: str,
+    scene_id: str,
+    capture_id: str,
+    gcs_root: Path,
+    raw_prefix_uri: Optional[str] = None,
+    write_frames_index: bool = True,
+) -> Dict[str, Any]:
     raw_prefix_uri = raw_prefix_uri or f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/raw"
     raw_root = resolve_gs_uri_to_path(raw_prefix_uri, gcs_root)
     capture_root = raw_root.parent
@@ -190,7 +212,6 @@ def materialize_capture_bundle(
 
     frames_index_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/frames/index.jsonl"
     frames_dir = capture_root / "frames"
-    ensure_dir(frames_dir)
     frames_path = frames_dir / "index.jsonl"
     frame_index_payload = {
         "schema_version": "v1",
@@ -200,7 +221,9 @@ def materialize_capture_bundle(
         "video_candidates": _raw_video_candidates(raw_root),
         "generated_at": utc_now_iso(),
     }
-    frames_path.write_text(json.dumps(frame_index_payload) + "\n", encoding="utf-8")
+    if write_frames_index:
+        ensure_dir(frames_dir)
+        frames_path.write_text(json.dumps(frame_index_payload) + "\n", encoding="utf-8")
 
     video_candidates = _raw_video_candidates(raw_root)
     raw_video_uri = join_gs_uri(raw_prefix_uri, video_candidates[0]) if video_candidates else str(manifest.get("video_uri") or "").strip() or None
@@ -387,12 +410,27 @@ def materialize_capture_bundle(
         },
     }
 
-    write_json(capture_root / "capture_descriptor.json", descriptor)
-    write_json(capture_root / "qa_report.json", qa_report)
-
     return {
         "descriptor_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/capture_descriptor.json",
         "qa_report_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/qa_report.json",
         "descriptor": descriptor,
         "qa_report": qa_report,
     }
+
+
+def preview_capture_bundle(
+    *,
+    bucket: str,
+    scene_id: str,
+    capture_id: str,
+    gcs_root: Path,
+    raw_prefix_uri: Optional[str] = None,
+) -> Dict[str, Any]:
+    return build_capture_bundle_records(
+        bucket=bucket,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        gcs_root=gcs_root,
+        raw_prefix_uri=raw_prefix_uri,
+        write_frames_index=False,
+    )
