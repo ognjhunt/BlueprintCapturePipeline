@@ -1,6 +1,6 @@
 # BlueprintCapturePipeline
 
-Qualification-first orchestration for converting BlueprintCapture descriptors into qualification artifacts by default, with explicit advanced geometry escalation when requested.
+Qualification-first orchestration for converting BlueprintCapture raw uploads or descriptors into qualification artifacts. Metric-ready captures default into geometry-capable qualification, while video-only captures remain supported but are prevented from silently becoming decision-grade.
 
 ## Scope
 
@@ -10,6 +10,10 @@ This repo is intentionally thin. It now orchestrates two lanes:
   `capture_descriptor.json` -> QA/completeness -> scoping -> risk extraction -> qualification artifacts
 - Explicit advanced geometry lane:
   `capture_descriptor.json` -> NuRec reconstruction -> swap candidate policy -> SAM3D-first asset materialization -> interactive articulation validation/fallback -> simready + USD assembly
+
+Raw-upload materialization path:
+
+- `raw/capture_upload_complete.json` -> descriptor materialization -> modality-aware `qa_report.json` -> qualification orchestration
 
 It reuses existing jobs and helper logic from:
 

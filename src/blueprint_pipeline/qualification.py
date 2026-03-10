@@ -21,6 +21,7 @@ from .common import (
     to_pipeline_prefix,
     utc_now_iso,
     write_json,
+    write_text,
 )
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
 from .task_targets import infer_task_targets, write_task_targets
@@ -81,6 +82,24 @@ def _string_list(value: Any) -> List[str]:
     else:
         values = [value]
     return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _has_structured_intake(descriptor: CaptureDescriptor) -> bool:
+    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    task_statement = str(metadata.get("task_statement") or "").strip()
+    workflow_context = str(metadata.get("workflow_context") or "").strip()
+    task_zone = metadata.get("task_zone") if isinstance(metadata.get("task_zone"), Mapping) else {}
+    zone_label = str(task_zone.get("label") or "").strip()
+    success_criteria = _string_list(metadata.get("success_criteria"))
+    return bool((task_statement or workflow_context) and (zone_label or descriptor.intake_packet_uri) and success_criteria)
+
+
+def _modality_supports_metric_automation(descriptor: CaptureDescriptor) -> bool:
+    if descriptor.capture_modality == "iphone_arkit_lidar":
+        return True
+    if descriptor.capture_modality == "glasses_plus_scaffolding" and descriptor.calibration_assets:
+        return True
+    return False
 
 
 def _relative_path_from(base_dir: Path, target_path: Path) -> str:
@@ -289,6 +308,9 @@ def _build_completeness_scorecard(
     object_index_entries: List[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     qa_status = str(qa_report.get("status") or "missing").strip().lower()
+    structured_intake = _has_structured_intake(descriptor)
+    metric_ready = _modality_supports_metric_automation(descriptor)
+    calibration_sufficient = descriptor.capture_modality != "glasses_plus_scaffolding" or bool(descriptor.calibration_assets)
     checks = [
         QualificationGate(
             "qa_report_present",
@@ -322,6 +344,27 @@ def _build_completeness_scorecard(
             if descriptor.frames_index_uri or descriptor.raw_video_uri or descriptor.keyframe_uri
             else "missing capture evidence URIs",
         ),
+        QualificationGate(
+            "structured_intake_present",
+            structured_intake,
+            "workflow, zone, and success criteria are present"
+            if structured_intake
+            else "missing workflow, zone, or success criteria",
+        ),
+        QualificationGate(
+            "metric_capture_supported",
+            metric_ready,
+            "capture modality supports geometry-backed automation"
+            if metric_ready
+            else f"capture modality {descriptor.capture_modality} is not metric-ready",
+        ),
+        QualificationGate(
+            "calibration_sufficient",
+            calibration_sufficient,
+            "calibration/scaffolding artifacts are sufficient"
+            if calibration_sufficient
+            else "scaffolding capture is missing calibration assets",
+        ),
     ]
     follow_ups = [check.detail for check in checks if not check.passed]
     passed_count = sum(1 for check in checks if check.passed)
@@ -334,6 +377,7 @@ def _build_completeness_scorecard(
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
         "qa_status": qa_status,
+        "capture_modality": descriptor.capture_modality,
         "completeness_status": completeness_status,
         "score": score,
         "checks": [check.to_dict() for check in checks],
@@ -439,10 +483,14 @@ def _build_qualification_record(
 
     rubric = {
         "physical_access": _score_bucket(
-            0.8 if object_index_entries else 0.35,
-            "Object index coverage provides a usable view of the task zone."
-            if object_index_entries
-            else "Physical clearances remain uncertain because the object index is missing.",
+            0.92 if descriptor.capture_modality == "iphone_arkit_lidar" and object_index_entries else
+            0.68 if descriptor.capture_modality == "glasses_plus_scaffolding" and descriptor.calibration_assets else
+            0.22,
+            "Metric geometry is available for clearance and route checks."
+            if descriptor.capture_modality == "iphone_arkit_lidar"
+            else "Scaffolding may support bounded geometry checks."
+            if descriptor.capture_modality == "glasses_plus_scaffolding" and descriptor.calibration_assets
+            else "Physical clearances remain uncertain because the capture is not metric-ready.",
         ),
         "task_repeatability": _score_bucket(
             0.75 if target_object_ids else 0.4,
@@ -469,8 +517,11 @@ def _build_qualification_record(
             else "No articulated manipulation requirement was inferred.",
         ),
         "evidence_completeness": _score_bucket(
-            float(scorecard.get("score") or 0.0),
-            f"Completeness status is {completeness_status}.",
+            min(
+                float(scorecard.get("score") or 0.0),
+                0.6 if descriptor.capture_modality == "glasses_video_only" else 1.0,
+            ),
+            f"Completeness status is {completeness_status} for modality={descriptor.capture_modality}.",
         ),
     }
 
@@ -500,6 +551,24 @@ def _build_qualification_record(
                 "severity": "medium",
                 "category": "integration",
                 "detail": "Articulated targets indicate a more complex manipulation environment.",
+            }
+        )
+    if descriptor.capture_modality == "glasses_video_only":
+        risks.append(
+            {
+                "id": "non_metric_capture",
+                "severity": "high",
+                "category": "geometry",
+                "detail": "Video-only glasses capture is not sufficient for geometry-backed readiness automation.",
+            }
+        )
+    elif descriptor.capture_modality == "glasses_plus_scaffolding" and not descriptor.calibration_assets:
+        risks.append(
+            {
+                "id": "missing_calibration_assets",
+                "severity": "high",
+                "category": "geometry",
+                "detail": "Glasses scaffolding lacks calibration assets required for metric checks.",
             }
         )
     if privacy_restricted:
@@ -541,6 +610,7 @@ def _build_qualification_record(
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
         "readiness_state": readiness_state,
+        "capture_modality": descriptor.capture_modality,
         "confidence": confidence,
         "advanced_geometry_recommended": advanced_geometry_recommended,
         "rubric": rubric,
@@ -769,6 +839,268 @@ def _build_pipeline_summary(
     }
 
 
+def _build_scene_graph(
+    *,
+    descriptor: CaptureDescriptor,
+    scope_record: Mapping[str, Any],
+    object_index_entries: List[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    nodes: List[Dict[str, Any]] = []
+    for entry in object_index_entries:
+        if not isinstance(entry, Mapping):
+            continue
+        node_id = str(entry.get("id") or entry.get("object_id") or "").strip()
+        if not node_id:
+            continue
+        label = str(entry.get("label") or entry.get("name") or "object").strip()
+        obb = entry.get("boundingBox") if isinstance(entry.get("boundingBox"), Mapping) else {}
+        nodes.append(
+            {
+                "id": node_id,
+                "type": "object",
+                "label": label,
+                "category": label.lower().replace(" ", "_"),
+                "geometry": dict(obb),
+            }
+        )
+    task_zone = scope_record.get("task_zone") if isinstance(scope_record.get("task_zone"), Mapping) else {}
+    if task_zone:
+        nodes.append(
+            {
+                "id": "task_zone",
+                "type": "zone",
+                "label": str(task_zone.get("label") or "task_zone"),
+                "attributes": dict(task_zone),
+            }
+        )
+    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    for system in _string_list(metadata.get("adjacent_systems")):
+        nodes.append({"id": f"system:{system}", "type": "system", "label": system})
+    edges: List[Dict[str, Any]] = []
+    for object_id in _string_list(scope_record.get("target_object_ids")):
+        edges.append({"source": "task_zone", "target": object_id, "relation": "contains_target"})
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def _build_route_graph(
+    *,
+    descriptor: CaptureDescriptor,
+    scene_graph: Mapping[str, Any],
+) -> Dict[str, Any]:
+    nodes = [
+        {"id": "entry", "type": "waypoint", "label": "capture_entry"},
+        {"id": "task_zone", "type": "waypoint", "label": "task_zone"},
+        {"id": "handoff", "type": "waypoint", "label": "handoff"},
+    ]
+    edges = [
+        {"source": "entry", "target": "task_zone", "status": "candidate"},
+        {"source": "task_zone", "target": "handoff", "status": "candidate"},
+    ]
+    if not any(node.get("id") == "task_zone" for node in scene_graph.get("nodes", []) if isinstance(node, Mapping)):
+        edges = []
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def _build_geometry_evidence(
+    *,
+    descriptor: CaptureDescriptor,
+    qa_report: Mapping[str, Any],
+    object_index_entries: List[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "capture_modality": descriptor.capture_modality,
+        "metric_ready": _modality_supports_metric_automation(descriptor),
+        "object_count": len(object_index_entries),
+        "uncertainty_score": float(qa_report.get("uncertainty_score") or 0.0),
+        "hidden_zone_score": float(qa_report.get("hidden_zone_score") or 0.0),
+        "scaffolding_used": list(descriptor.scaffolding_used),
+        "calibration_assets": list(descriptor.calibration_assets),
+    }
+
+
+def _build_capability_checks(
+    *,
+    descriptor: CaptureDescriptor,
+    geometry_evidence: Mapping[str, Any],
+    route_graph: Mapping[str, Any],
+    scope_record: Mapping[str, Any],
+) -> Dict[str, Any]:
+    metric_ready = bool(geometry_evidence.get("metric_ready"))
+    target_count = len(_string_list(scope_record.get("target_object_ids")))
+    route_edges = route_graph.get("edges") if isinstance(route_graph.get("edges"), list) else []
+    checks = [
+        {
+            "id": "clearance_precheck",
+            "status": "pass" if metric_ready and route_edges else "needs_more_evidence",
+            "detail": "Route geometry is available for clearance checks." if metric_ready and route_edges else "Metric route geometry is not yet sufficient.",
+        },
+        {
+            "id": "reach_envelope_precheck",
+            "status": "pass" if metric_ready and target_count else "needs_more_evidence",
+            "detail": "Target-local geometry is available for reach checks." if metric_ready and target_count else "Target geometry is insufficient for reach checks.",
+        },
+        {
+            "id": "workcell_occupancy_analysis",
+            "status": "pass" if metric_ready and target_count else "needs_more_evidence",
+            "detail": "Object-local geometry supports occupancy analysis." if metric_ready and target_count else "Occupancy analysis needs stronger geometry.",
+        },
+        {
+            "id": "choke_point_detection",
+            "status": "pass" if metric_ready and route_edges else "needs_more_evidence",
+            "detail": "Candidate route graph supports choke-point detection." if metric_ready and route_edges else "Route graph is not yet strong enough for choke-point detection.",
+        },
+        {
+            "id": "occlusion_analysis",
+            "status": "pass" if metric_ready else "needs_more_evidence",
+            "detail": "Metric capture supports bounded occlusion analysis." if metric_ready else "Occlusion analysis would be speculative on the current capture.",
+        },
+        {
+            "id": "candidate_charger_placement",
+            "status": "pass" if metric_ready else "needs_more_evidence",
+            "detail": "Scene geometry is available for charger placement hypotheses." if metric_ready else "Candidate charger placement requires stronger metric context.",
+        },
+        {
+            "id": "route_viability_hypotheses",
+            "status": "pass" if metric_ready and route_edges else "needs_more_evidence",
+            "detail": "Route graph can support viability hypotheses." if metric_ready and route_edges else "Route viability remains uncertain.",
+        },
+        {
+            "id": "scenario_batches_in_simulation",
+            "status": "pass" if metric_ready and len(descriptor.requested_lanes) > 1 else "needs_more_evidence",
+            "detail": "Capture is eligible for geometry-backed simulation batches." if metric_ready and len(descriptor.requested_lanes) > 1 else "Simulation batches require advanced geometry outputs.",
+        },
+    ]
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "checks": checks,
+    }
+
+
+def _build_blocker_register(
+    *,
+    descriptor: CaptureDescriptor,
+    qualification_record: Mapping[str, Any],
+    capability_checks: Mapping[str, Any],
+    geometry_evidence: Mapping[str, Any],
+) -> Dict[str, Any]:
+    entries: List[Dict[str, Any]] = []
+    for risk in qualification_record.get("risks", []):
+        if not isinstance(risk, Mapping):
+            continue
+        entries.append(
+            {
+                "id": str(risk.get("id") or f"risk_{len(entries)}"),
+                "severity": str(risk.get("severity") or "medium"),
+                "category": str(risk.get("category") or "general"),
+                "detail": str(risk.get("detail") or ""),
+                "evidence": {
+                    "capture_modality": descriptor.capture_modality,
+                    "uncertainty_score": float(geometry_evidence.get("uncertainty_score") or 0.0),
+                },
+            }
+        )
+    for check in capability_checks.get("checks", []):
+        if not isinstance(check, Mapping) or check.get("status") == "pass":
+            continue
+        entries.append(
+            {
+                "id": str(check.get("id") or f"check_{len(entries)}"),
+                "severity": "high",
+                "category": "automation_gap",
+                "detail": str(check.get("detail") or ""),
+                "evidence": {"source_check": str(check.get("id") or "")},
+            }
+        )
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "entries": entries,
+    }
+
+
+def _build_readiness_decision(
+    *,
+    descriptor: CaptureDescriptor,
+    qualification_record: Mapping[str, Any],
+    blocker_register: Mapping[str, Any],
+    capability_checks: Mapping[str, Any],
+    geometry_evidence: Mapping[str, Any],
+) -> Dict[str, Any]:
+    blockers = blocker_register.get("entries", []) if isinstance(blocker_register.get("entries"), list) else []
+    human_review_required = (
+        descriptor.capture_modality != "iphone_arkit_lidar"
+        or float(geometry_evidence.get("uncertainty_score") or 0.0) >= 0.4
+        or bool(blockers)
+    )
+    remediation = [entry.get("detail") for entry in blockers[:5] if isinstance(entry, Mapping)]
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "status": qualification_record.get("readiness_state"),
+        "confidence": qualification_record.get("confidence"),
+        "capture_modality": descriptor.capture_modality,
+        "human_review_required": human_review_required,
+        "evidence_gaps": [item.get("detail") for item in blockers if isinstance(item, Mapping)],
+        "blockers": blockers,
+        "capability_checks": capability_checks.get("checks", []),
+        "remediation": remediation,
+    }
+
+
+def _render_readiness_report(
+    *,
+    descriptor: CaptureDescriptor,
+    readiness_decision: Mapping[str, Any],
+    blocker_register: Mapping[str, Any],
+) -> str:
+    lines = [
+        f"# Readiness Report: {descriptor.scene_id}/{descriptor.capture_id}",
+        "",
+        f"- Status: `{readiness_decision.get('status', 'not_ready_yet')}`",
+        f"- Confidence: `{readiness_decision.get('confidence', 0.0)}`",
+        f"- Capture modality: `{descriptor.capture_modality}`",
+        f"- Human review required: `{bool(readiness_decision.get('human_review_required'))}`",
+        "",
+        "## Blockers",
+    ]
+    blockers = blocker_register.get("entries", []) if isinstance(blocker_register.get("entries"), list) else []
+    if not blockers:
+        lines.append("- None recorded")
+    else:
+        for blocker in blockers[:10]:
+            if not isinstance(blocker, Mapping):
+                continue
+            lines.append(
+                f"- [{blocker.get('severity', 'medium')}] {blocker.get('detail', '')}"
+            )
+    return "\n".join(lines) + "\n"
+
+
 def _write_failure(
     *,
     pipeline_dir: Path,
@@ -866,6 +1198,7 @@ def run_qualification_pipeline(
         )
 
         stage = "intake"
+        metadata_mapping = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
         site_intake = {
             "schema_version": "v1",
             "lane": "qualification",
@@ -879,18 +1212,34 @@ def run_qualification_pipeline(
                 "scene_id": descriptor.scene_id,
                 "capture_id": descriptor.capture_id,
                 "environment_type_hint": descriptor.environment_type_hint or "unknown",
+                "capture_modality": descriptor.capture_modality,
             },
             "task_context": {
-                "buyer_type": descriptor.metadata.get("buyer_type") if isinstance(descriptor.metadata, Mapping) else None,
-                "task_statement": descriptor.metadata.get("task_statement") if isinstance(descriptor.metadata, Mapping) else None,
-                "workflow_context": descriptor.metadata.get("workflow_context") if isinstance(descriptor.metadata, Mapping) else None,
-                "operating_hours": descriptor.metadata.get("operating_hours") if isinstance(descriptor.metadata, Mapping) else None,
+                "buyer_type": metadata_mapping.get("buyer_type"),
+                "task_statement": metadata_mapping.get("task_statement"),
+                "workflow_context": metadata_mapping.get("workflow_context"),
+                "operating_hours": metadata_mapping.get("operating_hours"),
+                "workflow_decomposition": _string_list(metadata_mapping.get("workflow_decomposition"))
+                or _string_list(metadata_mapping.get("workflow_context")),
+                "task_zone": metadata_mapping.get("task_zone") if isinstance(metadata_mapping.get("task_zone"), Mapping) else {},
+                "success_criteria": _string_list(metadata_mapping.get("success_criteria")),
+                "owner": metadata_mapping.get("owner"),
+                "adjacent_systems": _string_list(metadata_mapping.get("adjacent_systems")),
+                "non_routine_modes": _string_list(metadata_mapping.get("non_routine_modes")),
+                "people_traffic_notes": _string_list(metadata_mapping.get("people_traffic_notes")),
             },
             "constraints": {
-                "privacy_restrictions": descriptor.metadata.get("privacy_restrictions") if isinstance(descriptor.metadata, Mapping) else None,
-                "security_restrictions": descriptor.metadata.get("security_restrictions") if isinstance(descriptor.metadata, Mapping) else None,
-                "known_blockers": descriptor.metadata.get("known_blockers") if isinstance(descriptor.metadata, Mapping) else [],
-                "safety_concerns": descriptor.metadata.get("safety_concerns") if isinstance(descriptor.metadata, Mapping) else [],
+                "privacy_restrictions": metadata_mapping.get("privacy_restrictions"),
+                "security_restrictions": metadata_mapping.get("security_restrictions"),
+                "known_blockers": metadata_mapping.get("known_blockers") if isinstance(metadata_mapping, Mapping) else [],
+                "safety_concerns": metadata_mapping.get("safety_concerns") if isinstance(metadata_mapping, Mapping) else [],
+                "capture_restrictions": _string_list(metadata_mapping.get("capture_restrictions")),
+            },
+            "capture_plan": {
+                "scaffolding_used": list(descriptor.scaffolding_used),
+                "coverage_plan": list(descriptor.coverage_plan),
+                "calibration_assets": list(descriptor.calibration_assets),
+                "uncertainty_priors": dict(descriptor.uncertainty_priors),
             },
         }
         write_json(pipeline_dir / "site_intake.json", site_intake)
@@ -973,6 +1322,39 @@ def run_qualification_pipeline(
             scope_record=scope_record,
             qualification_record=qualification_record,
         )
+        scene_graph = _build_scene_graph(
+            descriptor=descriptor,
+            scope_record=scope_record,
+            object_index_entries=object_index_entries,
+        )
+        route_graph = _build_route_graph(
+            descriptor=descriptor,
+            scene_graph=scene_graph,
+        )
+        geometry_evidence = _build_geometry_evidence(
+            descriptor=descriptor,
+            qa_report=qa_report,
+            object_index_entries=object_index_entries,
+        )
+        capability_checks = _build_capability_checks(
+            descriptor=descriptor,
+            geometry_evidence=geometry_evidence,
+            route_graph=route_graph,
+            scope_record=scope_record,
+        )
+        blocker_register = _build_blocker_register(
+            descriptor=descriptor,
+            qualification_record=qualification_record,
+            capability_checks=capability_checks,
+            geometry_evidence=geometry_evidence,
+        )
+        readiness_decision = _build_readiness_decision(
+            descriptor=descriptor,
+            qualification_record=qualification_record,
+            blocker_register=blocker_register,
+            capability_checks=capability_checks,
+            geometry_evidence=geometry_evidence,
+        )
         opportunity_handoff = _build_opportunity_handoff(
             descriptor=descriptor,
             scorecard=scorecard,
@@ -982,8 +1364,30 @@ def run_qualification_pipeline(
             config=config,
             pipeline_dir=pipeline_dir,
         )
+        opportunity_handoff["evidence_bundle"] = {
+            "scene_graph_uri": f"gs://{bucket}/{pipeline_prefix}/scene_graph.json",
+            "route_graph_uri": f"gs://{bucket}/{pipeline_prefix}/route_graph.json",
+            "geometry_evidence_uri": f"gs://{bucket}/{pipeline_prefix}/geometry_evidence.json",
+            "capability_checks_uri": f"gs://{bucket}/{pipeline_prefix}/capability_checks.json",
+            "blocker_register_uri": f"gs://{bucket}/{pipeline_prefix}/blocker_register.json",
+            "readiness_decision_uri": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
+        }
         write_json(pipeline_dir / "qualification_record.json", qualification_record)
         write_json(pipeline_dir / "qualification_brief.json", qualification_brief)
+        write_json(pipeline_dir / "scene_graph.json", scene_graph)
+        write_json(pipeline_dir / "route_graph.json", route_graph)
+        write_json(pipeline_dir / "geometry_evidence.json", geometry_evidence)
+        write_json(pipeline_dir / "capability_checks.json", capability_checks)
+        write_json(pipeline_dir / "blocker_register.json", blocker_register)
+        write_json(pipeline_dir / "readiness_decision.json", readiness_decision)
+        write_text(
+            pipeline_dir / "readiness_report.md",
+            _render_readiness_report(
+                descriptor=descriptor,
+                readiness_decision=readiness_decision,
+                blocker_register=blocker_register,
+            ),
+        )
         write_json(pipeline_dir / "opportunity_handoff.json", opportunity_handoff)
         gates.append(
             QualificationGate(
@@ -1028,6 +1432,13 @@ def run_qualification_pipeline(
                 "task_scope_record": f"gs://{bucket}/{pipeline_prefix}/task_scope_record.json",
                 "qualification_record": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
                 "qualification_brief": f"gs://{bucket}/{pipeline_prefix}/qualification_brief.json",
+                "scene_graph": f"gs://{bucket}/{pipeline_prefix}/scene_graph.json",
+                "route_graph": f"gs://{bucket}/{pipeline_prefix}/route_graph.json",
+                "geometry_evidence": f"gs://{bucket}/{pipeline_prefix}/geometry_evidence.json",
+                "capability_checks": f"gs://{bucket}/{pipeline_prefix}/capability_checks.json",
+                "blocker_register": f"gs://{bucket}/{pipeline_prefix}/blocker_register.json",
+                "readiness_decision": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
+                "readiness_report": f"gs://{bucket}/{pipeline_prefix}/readiness_report.md",
                 "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
                 "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             },

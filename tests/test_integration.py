@@ -68,8 +68,15 @@ def _write_scene_descriptor(
     }
     if requested_lanes is not None:
         descriptor["requested_lanes"] = list(requested_lanes)
-    if metadata is not None:
-        descriptor["metadata"] = dict(metadata)
+    descriptor["metadata"] = {
+        "task_statement": "Move tote from inbound staging to outbound handoff",
+        "workflow_context": "Inbound aisle to outbound handoff",
+        "success_criteria": ["handoff throughput"],
+        "task_zone": {"label": "dock_lane_a"},
+        "owner": "warehouse_supervisor",
+        "adjacent_systems": ["WMS"],
+        **(dict(metadata) if metadata is not None else {}),
+    }
     _write_json(descriptor_path, descriptor)
 
     qa_report = {
@@ -1106,6 +1113,13 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
         "task_scope_record.json",
         "qualification_record.json",
         "qualification_brief.json",
+        "scene_graph.json",
+        "route_graph.json",
+        "geometry_evidence.json",
+        "capability_checks.json",
+        "blocker_register.json",
+        "readiness_decision.json",
+        "readiness_report.md",
         "opportunity_handoff.json",
         "task_targets.json",
         "pipeline_summary.json",
@@ -1132,6 +1146,7 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     assert validated_handoff["site_submission_id"] == "scene_demo:capture_demo"
     assert validated_handoff["opportunity_id"] == "scene_demo:capture_demo"
     assert quality_report["lane"] == "qualification"
+    assert "evidence_bundle" in handoff
 
 
 def test_qualification_completeness_failure_produces_need_more_evidence(tmp_path: Path) -> None:
@@ -1167,6 +1182,43 @@ def test_qualification_completeness_failure_produces_need_more_evidence(tmp_path
     assert validated_handoff["qualification_state"] == "not_ready_yet"
     assert validated_handoff["downstream_evaluation_eligibility"] is False
     assert handoff["match_ready"] is False
+
+
+def test_qualification_video_only_capture_never_returns_ready(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(
+        tmp_path,
+        metadata={
+            "task_statement": "Walk a single aisle",
+            "workflow_context": "Aisle walkthrough",
+            "success_criteria": ["aisle visibility"],
+            "task_zone": {"label": "aisle_7"},
+        },
+    )
+    descriptor_path = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/capture_descriptor.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["capture_source"] = "glasses"
+    descriptor["capture_tier"] = "tier2_glasses"
+    descriptor["capture_modality"] = "glasses_video_only"
+    descriptor["quality"] = {"pose_match_rate": 0.35}
+    descriptor_path.write_text(json.dumps(descriptor, indent=2), encoding="utf-8")
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=True,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+    )
+
+    assert result["status"] == "completed"
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
+    assert qualification["readiness_state"] != "ready"
+    assert any(item["id"] == "non_metric_capture" for item in qualification["risks"])
 
 
 def test_capture_pipeline_advanced_lane_preserves_existing_flow(tmp_path: Path) -> None:

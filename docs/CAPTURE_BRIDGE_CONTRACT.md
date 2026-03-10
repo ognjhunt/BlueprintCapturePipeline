@@ -8,6 +8,10 @@ Object finalize trigger:
 
 `scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json`
 
+Raw-upload materialization trigger:
+
+`scenes/<scene_id>/captures/<capture_id>/raw/capture_upload_complete.json`
+
 The storage trigger is enqueue-first (async). Dispatch backends:
 
 - Pub/Sub (`SWAP_TRIGGER_DISPATCH_MODE=pubsub`)
@@ -30,6 +34,12 @@ Common optional fields:
 - `swap_focus`
 - `quality`
 - `qa_report_uri`
+- `capture_modality`
+- `scaffolding_used`
+- `intake_packet_uri`
+- `coverage_plan`
+- `calibration_assets`
+- `uncertainty_priors`
 - `manipulation_candidates`
 - `articulation_hints`
 

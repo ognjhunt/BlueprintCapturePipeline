@@ -18,6 +18,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
+from blueprint_pipeline.materialization import materialize_capture_bundle
 
 
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 _DESCRIPTOR_PATTERN = re.compile(
     r"^scenes/(?P<scene_id>[^/]+)/captures/(?P<capture_id>[^/]+)/capture_descriptor\.json$"
+)
+_RAW_COMPLETE_PATTERN = re.compile(
+    r"^scenes/(?P<scene_id>[^/]+)/captures/(?P<capture_id>[^/]+)/raw/capture_upload_complete\.json$"
 )
 
 
@@ -34,6 +38,15 @@ def _utc_now_iso() -> str:
 
 def parse_descriptor_path(object_name: str) -> Optional[Dict[str, str]]:
     match = _DESCRIPTOR_PATTERN.match(object_name)
+    if not match:
+        return None
+    data = match.groupdict()
+    data["object_name"] = object_name
+    return data
+
+
+def parse_raw_upload_complete_path(object_name: str) -> Optional[Dict[str, str]]:
+    match = _RAW_COMPLETE_PATTERN.match(object_name)
     if not match:
         return None
     data = match.groupdict()
@@ -162,24 +175,48 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
         return
 
     parsed = parse_descriptor_path(object_name)
-    if parsed is None:
-        logger.debug("Ignoring non-descriptor object: gs://%s/%s", bucket, object_name)
+    if parsed is not None:
+        payload = _build_dispatch_payload(
+            bucket=bucket,
+            object_name=object_name,
+            scene_id=parsed["scene_id"],
+            capture_id=parsed["capture_id"],
+        )
+        logger.info(
+            "Queueing capture pipeline for scene=%s capture=%s descriptor=%s",
+            parsed["scene_id"],
+            parsed["capture_id"],
+            payload["descriptor_gcs_uri"],
+        )
+        dispatch_result = _dispatch_payload(payload)
+        logger.info("Dispatch success: %s", dispatch_result)
         return
 
+    raw_complete = parse_raw_upload_complete_path(object_name)
+    if raw_complete is None:
+        logger.debug("Ignoring non-pipeline object: gs://%s/%s", bucket, object_name)
+        return
+
+    logger.info(
+        "Materializing capture descriptor from raw upload completion for scene=%s capture=%s",
+        raw_complete["scene_id"],
+        raw_complete["capture_id"],
+    )
+    materialized = materialize_capture_bundle(
+        bucket=bucket,
+        scene_id=raw_complete["scene_id"],
+        capture_id=raw_complete["capture_id"],
+        gcs_root=Path(os.getenv("GCS_ROOT", "/mnt/gcs")),
+    )
     payload = _build_dispatch_payload(
         bucket=bucket,
-        object_name=object_name,
-        scene_id=parsed["scene_id"],
-        capture_id=parsed["capture_id"],
+        object_name=f"scenes/{raw_complete['scene_id']}/captures/{raw_complete['capture_id']}/capture_descriptor.json",
+        scene_id=raw_complete["scene_id"],
+        capture_id=raw_complete["capture_id"],
     )
-    logger.info(
-        "Queueing capture pipeline for scene=%s capture=%s descriptor=%s",
-        parsed["scene_id"],
-        parsed["capture_id"],
-        payload["descriptor_gcs_uri"],
-    )
+    payload["descriptor_gcs_uri"] = str(materialized["descriptor_uri"])
     dispatch_result = _dispatch_payload(payload)
-    logger.info("Dispatch success: %s", dispatch_result)
+    logger.info("Dispatch success after materialization: %s", dispatch_result)
 
 
 def on_swap_dispatch(event: Dict[str, Any], context: Any) -> None:  # noqa: ARG001

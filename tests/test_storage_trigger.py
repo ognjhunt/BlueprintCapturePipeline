@@ -25,6 +25,17 @@ def test_parse_descriptor_path_invalid() -> None:
     assert storage_trigger.parse_descriptor_path("scenes/scene_a/raw/manifest.json") is None
 
 
+def test_parse_raw_upload_complete_path_valid() -> None:
+    parsed = storage_trigger.parse_raw_upload_complete_path(
+        "scenes/scene_a/captures/cap_b/raw/capture_upload_complete.json"
+    )
+    assert parsed == {
+        "scene_id": "scene_a",
+        "capture_id": "cap_b",
+        "object_name": "scenes/scene_a/captures/cap_b/raw/capture_upload_complete.json",
+    }
+
+
 def test_on_storage_finalize_ignores_non_descriptor(monkeypatch) -> None:
     called = {"count": 0}
 
@@ -40,6 +51,34 @@ def test_on_storage_finalize_ignores_non_descriptor(monkeypatch) -> None:
     )
 
     assert called["count"] == 0
+
+
+def test_on_storage_finalize_materializes_from_raw_completion(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_dispatch(payload):  # noqa: ANN001
+        captured.update(payload)
+        return "ok"
+
+    def _fake_materialize(**kwargs):  # noqa: ANN001
+        return {
+            "descriptor_uri": "gs://bucket/scenes/scene_1/captures/cap_1/capture_descriptor.json"
+        }
+
+    monkeypatch.setattr(storage_trigger, "_dispatch_payload", _fake_dispatch)
+    monkeypatch.setattr(storage_trigger, "materialize_capture_bundle", _fake_materialize)
+
+    storage_trigger.on_storage_finalize(
+        {
+            "bucket": "bucket",
+            "name": "scenes/scene_1/captures/cap_1/raw/capture_upload_complete.json",
+        },
+        None,
+    )
+
+    assert captured["scene_id"] == "scene_1"
+    assert captured["capture_id"] == "cap_1"
+    assert captured["descriptor_gcs_uri"].endswith("/capture_descriptor.json")
 
 
 def test_on_storage_finalize_dispatches_payload(monkeypatch) -> None:

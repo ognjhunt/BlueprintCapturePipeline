@@ -12,6 +12,11 @@ _ALLOWED_NUREC_MODES = {"mono_pose_assisted", "mono_slam"}
 _ALLOWED_SWAP_FOCUS = {"default", "bedroom", "kitchen", "warehouse"}
 _ALLOWED_ENVIRONMENT_HINTS = {"default", "bedroom", "kitchen", "warehouse"}
 _ALLOWED_REQUESTED_LANES = {"qualification", "advanced_geometry"}
+_ALLOWED_CAPTURE_MODALITIES = {
+    "iphone_arkit_lidar",
+    "glasses_video_only",
+    "glasses_plus_scaffolding",
+}
 
 
 def _optional_str(value: Any) -> Optional[str]:
@@ -114,6 +119,60 @@ def _infer_capture_source(raw_source: str, capture_tier: str) -> str:
     return "iphone"
 
 
+def _normalize_string_list(raw_value: Any) -> List[str]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, str):
+        values = [raw_value]
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = [str(v) for v in raw_value]
+    else:
+        values = [str(raw_value)]
+
+    normalized: List[str] = []
+    for value in values:
+        text = value.strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _normalize_uncertainty_priors(raw_value: Any) -> Dict[str, float]:
+    if not isinstance(raw_value, Mapping):
+        return {}
+    out: Dict[str, float] = {}
+    for key, value in raw_value.items():
+        text = str(key).strip()
+        if not text:
+            continue
+        try:
+            out[text] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _resolve_capture_modality(
+    *,
+    raw_modality: Any,
+    capture_source: str,
+    quality: Mapping[str, Any],
+    scaffolding_used: List[str],
+) -> str:
+    explicit = _optional_str(raw_modality)
+    if explicit:
+        lowered = explicit.lower()
+        if lowered in _ALLOWED_CAPTURE_MODALITIES:
+            return lowered
+    if capture_source == "iphone" and float(quality.get("pose_match_rate", 0.0) or 0.0) >= 0.9:
+        return "iphone_arkit_lidar"
+    if capture_source == "glasses" and scaffolding_used:
+        return "glasses_plus_scaffolding"
+    if capture_source == "glasses":
+        return "glasses_video_only"
+    return "iphone_arkit_lidar"
+
+
 @dataclass(frozen=True)
 class CaptureDescriptor:
     """Canonical descriptor produced by BlueprintCapture ``extract-frames``."""
@@ -136,6 +195,12 @@ class CaptureDescriptor:
     qa_report_uri: Optional[str] = None
     qa_status: Optional[str] = None
     environment_type_hint: Optional[str] = None
+    capture_modality: str = "iphone_arkit_lidar"
+    scaffolding_used: List[str] = field(default_factory=list)
+    intake_packet_uri: Optional[str] = None
+    coverage_plan: List[str] = field(default_factory=list)
+    calibration_assets: List[str] = field(default_factory=list)
+    uncertainty_priors: Dict[str, float] = field(default_factory=dict)
     requested_lanes: List[str] = field(default_factory=lambda: ["qualification"])
     swap_focus: List[str] = field(default_factory=list)
     manipulation_candidates: List[Dict[str, Any]] = field(default_factory=list)
@@ -168,6 +233,9 @@ class CaptureDescriptor:
         metadata = data.get("metadata") if isinstance(data.get("metadata"), Mapping) else {}
         capture_bundle = (
             data.get("capture_bundle") if isinstance(data.get("capture_bundle"), Mapping) else {}
+        )
+        scaffolding_used = _normalize_string_list(
+            data.get("scaffolding_used") or capture_bundle.get("scaffolding_used")
         )
 
         swap_focus = _normalize_swap_focus(data.get("swap_focus"))
@@ -214,6 +282,26 @@ class CaptureDescriptor:
             qa_report_uri=_optional_str(data.get("qa_report_uri")),
             qa_status=_optional_str(data.get("qa_status")),
             environment_type_hint=environment_type_hint,
+            capture_modality=_resolve_capture_modality(
+                raw_modality=data.get("capture_modality") or capture_bundle.get("capture_modality"),
+                capture_source=capture_source,
+                quality=quality,
+                scaffolding_used=scaffolding_used,
+            ),
+            scaffolding_used=scaffolding_used,
+            intake_packet_uri=(
+                _optional_str(data.get("intake_packet_uri"))
+                or _optional_str(capture_bundle.get("intake_packet_uri"))
+            ),
+            coverage_plan=_normalize_string_list(
+                data.get("coverage_plan") or capture_bundle.get("coverage_plan")
+            ),
+            calibration_assets=_normalize_string_list(
+                data.get("calibration_assets") or capture_bundle.get("calibration_assets")
+            ),
+            uncertainty_priors=_normalize_uncertainty_priors(
+                data.get("uncertainty_priors") or capture_bundle.get("uncertainty_priors")
+            ),
             requested_lanes=_normalize_requested_lanes(data.get("requested_lanes")),
             swap_focus=swap_focus,
             manipulation_candidates=_dict_list(data.get("manipulation_candidates")),
@@ -257,10 +345,16 @@ class CaptureDescriptor:
             "qa_report_uri": self.qa_report_uri,
             "qa_status": self.qa_status,
             "environment_type_hint": self.environment_type_hint,
+            "capture_modality": self.capture_modality,
+            "intake_packet_uri": self.intake_packet_uri,
         }
         for key, value in optional.items():
             if value is not None:
                 payload[key] = value
+        payload["scaffolding_used"] = list(self.scaffolding_used)
+        payload["coverage_plan"] = list(self.coverage_plan)
+        payload["calibration_assets"] = list(self.calibration_assets)
+        payload["uncertainty_priors"] = dict(self.uncertainty_priors)
         return payload
 
 
@@ -288,6 +382,12 @@ def build_capture_bundle_constraints(
         "swap_focus": list(descriptor.swap_focus),
         "quality": dict(descriptor.quality),
         "environment_type_hint": descriptor.environment_type_hint,
+        "capture_modality": descriptor.capture_modality,
+        "scaffolding_used": list(descriptor.scaffolding_used),
+        "intake_packet_uri": descriptor.intake_packet_uri,
+        "coverage_plan": list(descriptor.coverage_plan),
+        "calibration_assets": list(descriptor.calibration_assets),
+        "uncertainty_priors": dict(descriptor.uncertainty_priors),
         "descriptor_uri": descriptor_uri,
         "qa_report_uri": qa_report_uri or descriptor.qa_report_uri,
     }
