@@ -11,7 +11,7 @@ from .common import PipelineError, parse_gs_uri, resolve_gs_uri_to_path
 from .qualification import run_qualification_pipeline
 from .swap_orchestrator import OrchestratorConfig, run_swap_pipeline
 
-_SUPPORTED_LANES = {"qualification", "advanced_geometry", "all"}
+_SUPPORTED_LANES = {"qualification", "scene_memory", "advanced_geometry", "all"}
 
 
 def _normalize_lane_value(raw: Optional[str]) -> Optional[str]:
@@ -32,13 +32,19 @@ def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
         if lane is None:
             continue
         if lane == "all":
-            for expanded in ("qualification", "advanced_geometry"):
+            for expanded in ("qualification", "scene_memory", "advanced_geometry"):
                 if expanded not in normalized:
                     normalized.append(expanded)
             continue
+        if lane == "advanced_geometry" and "scene_memory" not in normalized:
+            normalized.append("scene_memory")
         if lane not in normalized:
             normalized.append(lane)
-    return normalized
+    ordered: List[str] = []
+    for lane in ("qualification", "scene_memory", "advanced_geometry"):
+        if lane in normalized and lane not in ordered:
+            ordered.append(lane)
+    return ordered
 
 
 def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> List[str]:
@@ -90,14 +96,27 @@ def run_capture_pipeline(
     )
 
     results: List[Dict[str, Any]] = []
+    qualification_result: Optional[Dict[str, Any]] = None
     for selected_lane in lanes:
-        if selected_lane == "qualification":
-            results.append(
-                run_qualification_pipeline(
+        if selected_lane in {"qualification", "scene_memory"}:
+            if qualification_result is None:
+                qualification_result = run_qualification_pipeline(
                     descriptor_gcs_uri=descriptor_gcs_uri,
                     config=cfg,
                 )
-            )
+            if selected_lane == "qualification":
+                results.append(qualification_result)
+            else:
+                results.append(
+                    {
+                        "status": "completed",
+                        "lane": "scene_memory",
+                        "scene_id": qualification_result.get("scene_id"),
+                        "capture_id": qualification_result.get("capture_id"),
+                        "pipeline_prefix": qualification_result.get("pipeline_prefix"),
+                        "source": "qualification_artifacts",
+                    }
+                )
             continue
         if selected_lane == "advanced_geometry":
             results.append(

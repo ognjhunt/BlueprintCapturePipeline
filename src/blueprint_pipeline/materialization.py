@@ -59,6 +59,12 @@ def _dict_float(value: Any) -> Dict[str, float]:
     return out
 
 
+def _scene_memory_requested_lanes(evidence_tier: str) -> List[str]:
+    if evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"}:
+        return ["qualification", "scene_memory", "advanced_geometry"]
+    return ["qualification"]
+
+
 def _raw_video_candidates(raw_root: Path) -> List[str]:
     names = [
         "walkthrough.mov",
@@ -294,6 +300,24 @@ def build_capture_bundle_records(
         "uncertainty_priors": uncertainty_priors,
         "scaffolding_validation": scaffolding_validation,
         "task_hypothesis": task_hypothesis if task_hypothesis else None,
+        "capture_rights": {
+            "derived_scene_generation_allowed": True,
+            "data_licensing_allowed": False,
+            "capture_contributor_payout_eligible": False,
+        },
+        "scene_memory_capture": {
+            "continuity_score": 0.9 if raw_video_uri else 0.0,
+            "lighting_consistency": "unknown",
+            "dynamic_object_density": "unknown",
+            "sensor_availability": {
+                "arkit_poses": arkit_poses_uri is not None,
+                "arkit_intrinsics": arkit_intrinsics_uri is not None,
+                "arkit_depth": arkit_depth_prefix_uri is not None,
+                "arkit_confidence": arkit_confidence_prefix_uri is not None,
+            },
+            "operator_notes": [],
+            "world_model_candidate": evidence_tier != "pre_screen_video",
+        },
     }
 
     descriptor = {
@@ -321,15 +345,12 @@ def build_capture_bundle_records(
         "calibration_assets": calibration_assets,
         "scaffolding_validation": scaffolding_validation,
         "uncertainty_priors": uncertainty_priors,
-        "requested_lanes": (
-            ["qualification", "advanced_geometry"]
-            if evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"}
-            else ["qualification"]
-        ),
+        "requested_lanes": _scene_memory_requested_lanes(evidence_tier),
         "quality": {
             "pose_match_rate": try_parse_float(manifest.get("pose_match_rate"), 0.95 if modality == "iphone_arkit_lidar" else 0.35),
             "has_metric_geometry": evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"},
             "intake_complete": intake_complete,
+            "world_model_candidate": evidence_tier != "pre_screen_video",
         },
         "metadata": metadata,
     }
@@ -405,13 +426,18 @@ def build_capture_bundle_records(
         "scaffolding_validation": scaffolding_validation,
         "checks": checks,
         "escalation_recommendation": {
-            "recommended_lane": "advanced_geometry" if status == "passed" and descriptor["requested_lanes"] == ["qualification", "advanced_geometry"] else "qualification",
+            "recommended_lane": "scene_memory" if status == "passed" and "scene_memory" in descriptor["requested_lanes"] else "qualification",
             "human_review_required": evidence_tier != "qualified_metric_capture" or uncertainty_score >= 0.3,
             "reason": (
-                "validated metric capture supports geometry-backed automation"
+                "validated metric capture supports scene-memory derivation and explicit geometry conditioning"
                 if evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"}
                 else "capture remains pre-screen only because metric evidence is incomplete"
             ),
+        },
+        "scene_memory_readiness": {
+            "world_model_candidate": evidence_tier != "pre_screen_video",
+            "recommended_lane": "scene_memory" if "scene_memory" in descriptor["requested_lanes"] else "qualification",
+            "derived_only": True,
         },
     }
 

@@ -473,6 +473,15 @@ def attach_handoff_package_paths(
         payload.pop("geometry_package", None)
 
     metadata_mapping = metadata if isinstance(metadata, Mapping) else {}
+    scene_memory_manifest = pipeline_dir / "scene_memory" / "scene_memory_manifest.json"
+    if scene_memory_manifest.is_file():
+        payload["scene_memory_package"] = {
+            "bundle_path": _relative_path_from(handoff_dir, scene_memory_manifest.parent),
+            "scene_memory_manifest_path": _relative_path_from(handoff_dir, scene_memory_manifest),
+        }
+    else:
+        payload.pop("scene_memory_package", None)
+
     scene_package_path = _metadata_scene_package_path(metadata_mapping, base_dir=handoff_dir)
     if scene_package_path:
         payload["scene_package"] = {"scene_package_path": scene_package_path}
@@ -480,6 +489,250 @@ def attach_handoff_package_paths(
         payload.pop("scene_package", None)
 
     return payload
+
+
+def _capture_rights(metadata: Mapping[str, Any]) -> Dict[str, Any]:
+    raw = metadata.get("capture_rights") if isinstance(metadata.get("capture_rights"), Mapping) else {}
+    return {
+        "derived_scene_generation_allowed": bool(raw.get("derived_scene_generation_allowed", True)),
+        "data_licensing_allowed": bool(raw.get("data_licensing_allowed", False)),
+        "capture_contributor_payout_eligible": bool(raw.get("capture_contributor_payout_eligible", False)),
+    }
+
+
+def _scene_memory_capture_summary(descriptor: CaptureDescriptor) -> Dict[str, Any]:
+    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    capture_summary = (
+        metadata.get("scene_memory_capture")
+        if isinstance(metadata.get("scene_memory_capture"), Mapping)
+        else {}
+    )
+    quality = descriptor.quality if isinstance(descriptor.quality, Mapping) else {}
+    return {
+        "continuity_score": float(capture_summary.get("continuity_score", 0.0) or 0.0),
+        "lighting_consistency": str(capture_summary.get("lighting_consistency") or "unknown"),
+        "dynamic_object_density": str(capture_summary.get("dynamic_object_density") or "unknown"),
+        "sensor_availability": (
+            dict(capture_summary.get("sensor_availability"))
+            if isinstance(capture_summary.get("sensor_availability"), Mapping)
+            else {
+                "arkit_poses": descriptor.arkit_poses_uri is not None,
+                "arkit_intrinsics": descriptor.arkit_intrinsics_uri is not None,
+                "arkit_depth": descriptor.arkit_depth_prefix_uri is not None,
+                "arkit_confidence": descriptor.arkit_confidence_prefix_uri is not None,
+            }
+        ),
+        "operator_notes": _string_list(capture_summary.get("operator_notes")),
+        "world_model_candidate": bool(
+            capture_summary.get("world_model_candidate", quality.get("world_model_candidate"))
+        ),
+    }
+
+
+def _build_scene_memory_readiness(
+    *,
+    descriptor: CaptureDescriptor,
+    scorecard: Mapping[str, Any],
+    qualification_record: Mapping[str, Any],
+) -> Dict[str, Any]:
+    capture_summary = _scene_memory_capture_summary(descriptor)
+    completeness_status = str(scorecard.get("completeness_status") or "unknown")
+    metric_ready = bool(qualification_record.get("metric_ready"))
+    rights = _capture_rights(descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {})
+    status = (
+        "ready"
+        if capture_summary["world_model_candidate"]
+        and completeness_status == "sufficient"
+        and bool(descriptor.raw_video_uri)
+        and rights["derived_scene_generation_allowed"]
+        else "needs_more_evidence"
+    )
+    return {
+        "schema_version": "v1",
+        "lane": "scene_memory",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "status": status,
+        "derived_only": True,
+        "authoritative_source": "qualification_and_capture_evidence",
+        "world_model_candidate": capture_summary["world_model_candidate"],
+        "rights": rights,
+        "capture_summary": capture_summary,
+        "qualification_alignment": {
+            "readiness_state": str(qualification_record.get("readiness_state") or "not_ready_yet"),
+            "metric_ready": metric_ready,
+            "completeness_status": completeness_status,
+        },
+        "gates": [
+            {
+                "name": "raw_video_present",
+                "passed": bool(descriptor.raw_video_uri),
+                "detail": "raw walkthrough video available" if descriptor.raw_video_uri else "raw walkthrough video missing",
+            },
+            {
+                "name": "qualification_completeness",
+                "passed": completeness_status == "sufficient",
+                "detail": f"qualification completeness is {completeness_status}",
+            },
+            {
+                "name": "derived_scene_rights",
+                "passed": rights["derived_scene_generation_allowed"],
+                "detail": "capture is rights-cleared for derived scene generation"
+                if rights["derived_scene_generation_allowed"]
+                else "capture rights do not permit derived scene generation",
+            },
+            {
+                "name": "explicit_conditioning_available",
+                "passed": metric_ready or descriptor.arkit_poses_uri is not None,
+                "detail": "explicit conditioning is available from metric geometry or ARKit poses"
+                if (metric_ready or descriptor.arkit_poses_uri is not None)
+                else "scene memory will rely on monocular-only conditioning",
+            },
+        ],
+    }
+
+
+def _write_scene_memory_bundle(
+    *,
+    storage_root: Path,
+    bucket: str,
+    pipeline_prefix: str,
+    pipeline_dir: Path,
+    descriptor: CaptureDescriptor,
+    scorecard: Mapping[str, Any],
+    qualification_record: Mapping[str, Any],
+) -> Dict[str, str]:
+    scene_memory_dir = pipeline_dir / "scene_memory"
+    adapter_dir = scene_memory_dir / "adapter_manifests"
+    preview_dir = pipeline_dir / "preview_simulation"
+    ensure_dir(scene_memory_dir)
+    ensure_dir(adapter_dir)
+    ensure_dir(preview_dir)
+
+    readiness_payload = _build_scene_memory_readiness(
+        descriptor=descriptor,
+        scorecard=scorecard,
+        qualification_record=qualification_record,
+    )
+    write_json(scene_memory_dir / "scene_memory_readiness.json", readiness_payload)
+
+    advanced_dir = pipeline_dir / "advanced_geometry"
+    explicit_conditioning: Dict[str, Any] = {}
+    for name, rel_path in {
+        "advanced_geometry_bundle_uri": "advanced_geometry_bundle.json",
+        "compressed_geometry_uri": "3dgs_compressed.ply",
+        "labels_uri": "labels.json",
+        "structure_uri": "structure.json",
+        "task_hints_uri": "task_targets.synthetic.json",
+    }.items():
+        path = advanced_dir / rel_path
+        if path.is_file():
+            explicit_conditioning[name] = f"gs://{bucket}/{relative_scene_path(path, storage_root)}"
+
+    conditioning_bundle = {
+        "schema_version": "v1",
+        "lane": "scene_memory",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "raw_video_uri": descriptor.raw_video_uri,
+        "frames_index_uri": descriptor.frames_index_uri,
+        "keyframe_uri": descriptor.keyframe_uri,
+        "arkit": {
+            "poses_uri": descriptor.arkit_poses_uri,
+            "intrinsics_uri": descriptor.arkit_intrinsics_uri,
+            "depth_prefix_uri": descriptor.arkit_depth_prefix_uri,
+            "confidence_prefix_uri": descriptor.arkit_confidence_prefix_uri,
+        },
+        "explicit_conditioning": explicit_conditioning,
+        "qualification_artifacts": {
+            "qualification_record_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
+            "readiness_decision_uri": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
+            "geometry_evidence_uri": f"gs://{bucket}/{pipeline_prefix}/geometry_evidence.json",
+            "opportunity_handoff_uri": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
+        },
+        "output_policy": {
+            "derived_only": True,
+            "authoritative_record": "qualification_record.json",
+            "generated_outputs_cannot_override_readiness": True,
+        },
+    }
+    write_json(scene_memory_dir / "conditioning_bundle.json", conditioning_bundle)
+
+    scene_memory_manifest = {
+        "schema_version": "v1",
+        "lane": "scene_memory",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "scene_memory_readiness_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_readiness.json', storage_root)}",
+        "conditioning_bundle_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'conditioning_bundle.json', storage_root)}",
+        "authoritative_artifacts": {
+            "qualification_record_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
+            "qualification_brief_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_brief.json",
+            "readiness_decision_uri": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
+            "human_actions_required_uri": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
+        },
+        "rights": readiness_payload["rights"],
+    }
+    write_json(scene_memory_dir / "scene_memory_manifest.json", scene_memory_manifest)
+
+    adapter_specs = {
+        "gen3c": {
+            "family": "GEN3C",
+            "preferred_conditioning": ["rgb_video", "camera_poses", "depth", "explicit_geometry"],
+            "status": "ready_for_local_experiment",
+        },
+        "neoverse": {
+            "family": "NeoVerse",
+            "preferred_conditioning": ["rgb_video", "camera_trajectory", "feed_forward_4d_reconstruction"],
+            "status": "ready_for_local_experiment",
+        },
+        "cosmos_transfer": {
+            "family": "Cosmos Transfer",
+            "preferred_conditioning": ["rgb_video", "depth", "segmentation", "edge"],
+            "status": "ready_for_local_experiment",
+        },
+    }
+    adapter_artifacts: Dict[str, str] = {}
+    for adapter_id, spec in adapter_specs.items():
+        payload = {
+            "schema_version": "v1",
+            "scene_id": descriptor.scene_id,
+            "capture_id": descriptor.capture_id,
+            "adapter_id": adapter_id,
+            "family": spec["family"],
+            "generated_at": utc_now_iso(),
+            "conditioning_bundle_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'conditioning_bundle.json', storage_root)}",
+            "preferred_conditioning": spec["preferred_conditioning"],
+            "status": spec["status"],
+            "derived_only": True,
+        }
+        path = adapter_dir / f"{adapter_id}.json"
+        write_json(path, payload)
+        adapter_artifacts[f"{adapter_id}_adapter_manifest_uri"] = f"gs://{bucket}/{relative_scene_path(path, storage_root)}"
+
+    preview_manifest = {
+        "schema_version": "v1",
+        "lane": "preview_simulation",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "status": "prep_ready" if readiness_payload["status"] == "ready" else "review_required",
+        "scene_memory_manifest_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_manifest.json', storage_root)}",
+        "supported_backends": ["gen3c", "neoverse", "cosmos_transfer"],
+        "note": "Low-volume preview generation only. High-volume synthetic frames and datasets belong in BlueprintValidation.",
+    }
+    write_json(preview_dir / "preview_simulation_manifest.json", preview_manifest)
+
+    return {
+        "scene_memory_manifest_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_manifest.json', storage_root)}",
+        "scene_memory_readiness_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_readiness.json', storage_root)}",
+        "conditioning_bundle_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'conditioning_bundle.json', storage_root)}",
+        "preview_simulation_manifest_uri": f"gs://{bucket}/{relative_scene_path(preview_dir / 'preview_simulation_manifest.json', storage_root)}",
+        **adapter_artifacts,
+    }
 
 
 def _disabled_task_targets(scene_id: str, capture_id: str, reason: str) -> Dict[str, Any]:
@@ -1657,7 +1910,7 @@ def _build_capability_checks(
         {
             "id": "scenario_batches_in_simulation",
             "status": "pass" if metric_ready and len(descriptor.requested_lanes) > 1 else "needs_more_evidence",
-            "detail": "Capture is eligible for geometry-backed simulation batches." if metric_ready and len(descriptor.requested_lanes) > 1 else "Simulation batches require advanced geometry outputs.",
+            "detail": "Capture is eligible for scene-memory derivation and explicit conditioning batches." if metric_ready and len(descriptor.requested_lanes) > 1 else "Scene-memory derivation requires stronger metric or conditioning outputs.",
         },
         {
             "id": "coexistence_fit",
@@ -2283,6 +2536,15 @@ def run_qualification_pipeline(
             qualification_record=qualification_record,
         )
         write_json(pipeline_dir / "pipeline_summary.json", pipeline_summary)
+        scene_memory_artifacts = _write_scene_memory_bundle(
+            storage_root=storage_root,
+            bucket=bucket,
+            pipeline_prefix=pipeline_prefix,
+            pipeline_dir=pipeline_dir,
+            descriptor=descriptor,
+            scorecard=scorecard,
+            qualification_record=qualification_record,
+        )
 
         quality_report = {
             "schema_version": "v1",
@@ -2317,6 +2579,13 @@ def run_qualification_pipeline(
                 "readiness_report": f"gs://{bucket}/{pipeline_prefix}/readiness_report.md",
                 "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
                 "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
+                "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
+                "scene_memory_readiness": scene_memory_artifacts["scene_memory_readiness_uri"],
+                "conditioning_bundle": scene_memory_artifacts["conditioning_bundle_uri"],
+                "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
+                "gen3c_adapter_manifest": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
+                "neoverse_adapter_manifest": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
+                "cosmos_transfer_adapter_manifest": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
             },
         }
         write_json(pipeline_dir / "qualification_quality_report.json", quality_report)
@@ -2344,6 +2613,8 @@ def run_qualification_pipeline(
             "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             "qualification_record": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
             "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
+            "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
+            "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
         }
         write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
@@ -2363,6 +2634,22 @@ def run_qualification_pipeline(
                 "human_actions_required_uri": quality_report["artifacts"]["human_actions_required"],
                 "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
                 "agent_readiness_memo_uri": f"gs://{bucket}/{pipeline_prefix}/agent_readiness_memo.md",
+                "scene_memory_manifest_uri": scene_memory_artifacts["scene_memory_manifest_uri"],
+                "scene_memory_readiness_uri": scene_memory_artifacts["scene_memory_readiness_uri"],
+                "conditioning_bundle_uri": scene_memory_artifacts["conditioning_bundle_uri"],
+                "preview_simulation_manifest_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
+            },
+            derived_assets={
+                "scene_memory": {
+                    "status": "prep_ready",
+                    "manifest_uri": scene_memory_artifacts["scene_memory_manifest_uri"],
+                    "artifact_uri": scene_memory_artifacts["conditioning_bundle_uri"],
+                },
+                "preview_simulation": {
+                    "status": "prep_ready",
+                    "manifest_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
+                    "artifact_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
+                },
             },
         )
 

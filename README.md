@@ -1,13 +1,15 @@
 # BlueprintCapturePipeline
 
-Qualification-first orchestration for converting BlueprintCapture raw uploads or descriptors into qualification artifacts. Metric-ready captures default into geometry-capable qualification, while video-only captures remain supported but are prevented from silently becoming decision-grade.
+Qualification-first orchestration for converting BlueprintCapture raw uploads or descriptors into qualification artifacts. Metric-ready captures now produce a canonical scene-memory bundle for downstream preview simulation and evaluation, while video-only captures remain supported but are prevented from silently becoming decision-grade.
 
 ## Scope
 
-This repo is intentionally thin. It now orchestrates two lanes:
+This repo is intentionally thin. It now orchestrates three lanes:
 
 - Default qualification lane:
   `capture_descriptor.json` -> QA/completeness -> scoping -> risk extraction -> qualification artifacts
+- Canonical scene-memory lane:
+  qualification artifacts + capture evidence -> scene-memory manifest -> backend adapter manifests -> preview simulation prep
 - Explicit advanced geometry lane:
   `capture_descriptor.json` -> NuRec reconstruction -> swap candidate policy -> SAM3D-first asset materialization -> interactive articulation validation/fallback -> simready + USD assembly
 
@@ -28,7 +30,7 @@ Local raw-capture contract for `blueprint-run-e2e`:
   - scaffolding calibration assets
   - splat / 3DGS artifacts
 
-Splat / 3DGS artifacts are supplemental only. They can be attached to agent review and downstream geometry packaging, but they do not bypass intake, QA, or readiness gates.
+Splat / 3DGS artifacts are supplemental only. They can be attached to agent review, scene-memory conditioning, and downstream geometry packaging, but they do not bypass intake, QA, or readiness gates.
 
 It reuses existing jobs and helper logic from:
 
@@ -130,6 +132,14 @@ Written under:
   - `agent_readiness_memo.md` (when `blueprint-agent-review` or `blueprint-run-e2e` is used)
   - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
   - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
+- Scene-memory artifacts:
+  - `scene_memory/scene_memory_manifest.json`
+  - `scene_memory/scene_memory_readiness.json`
+  - `scene_memory/conditioning_bundle.json`
+  - `scene_memory/adapter_manifests/gen3c.json`
+  - `scene_memory/adapter_manifests/neoverse.json`
+  - `scene_memory/adapter_manifests/cosmos_transfer.json`
+  - `preview_simulation/preview_simulation_manifest.json`
 - Advanced geometry artifacts when explicitly requested:
   - `nurec_job_spec.json`
   - `nurec_outputs.json`

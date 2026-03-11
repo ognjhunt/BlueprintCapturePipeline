@@ -36,6 +36,8 @@ from .qualification import (
     _effective_task_metadata,
     _render_readiness_report,
 )
+from .evaluation_prep_stage import run_evaluation_prep_stage
+from .simready_stage import run_simready_stage
 from .task_targets import write_task_targets
 from .webapp_sync import (
     derive_webapp_opportunity_state,
@@ -57,6 +59,9 @@ class InteriorGSAdaptationResult:
     provider: Optional[str]
     final_bundle_path: Optional[str]
     final_memo_path: Optional[str]
+    evaluation_prep_manifest_path: Optional[str]
+    simready_manifest_path: Optional[str]
+    simready_scene_path: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,9 @@ class InteriorGSTaskRunResult:
     capture_id: str
     final_bundle_path: Optional[str]
     final_memo_path: Optional[str]
+    evaluation_prep_manifest_path: Optional[str]
+    simready_manifest_path: Optional[str]
+    simready_scene_path: Optional[str]
 
 
 def _read_json_any(path: Path) -> Any:
@@ -655,7 +663,11 @@ def adapt_interiorgs_scene(
     output_root: Path,
     bucket: str = _DEFAULT_BUCKET,
     run_phase2: bool = False,
+    run_evaluation_prep: bool = False,
+    run_simready: bool = False,
     provider: str = "openai",
+    evaluation_prep_provider: str = "manual",
+    simready_provider: str = "manual",
     openai_phase2_config: Optional[OpenAIPhase2Config] = None,
 ) -> InteriorGSAdaptationResult:
     source_dir = source_dir.resolve()
@@ -1121,6 +1133,9 @@ def adapt_interiorgs_scene(
 
     final_bundle_path: Optional[str] = None
     final_memo_path: Optional[str] = None
+    evaluation_prep_manifest_path: Optional[str] = None
+    simready_manifest_path: Optional[str] = None
+    simready_scene_path: Optional[str] = None
     if run_phase2:
         review = run_agent_review(
             capture_root=capture_root,
@@ -1129,6 +1144,19 @@ def adapt_interiorgs_scene(
         )
         final_bundle_path = str(review.get("final_bundle_path") or "")
         final_memo_path = str(review.get("final_memo_path") or "")
+    if run_evaluation_prep:
+        evaluation_prep_result = run_evaluation_prep_stage(
+            capture_root=capture_root,
+            provider_name=evaluation_prep_provider,
+        )
+        evaluation_prep_manifest_path = str(evaluation_prep_result.get("manifest_path") or "")
+    if run_simready:
+        simready_result = run_simready_stage(
+            capture_root=capture_root,
+            provider_name=simready_provider,
+        )
+        simready_manifest_path = str(simready_result.get("manifest_path") or "")
+        simready_scene_path = str(simready_result.get("scene_path") or "")
 
     return InteriorGSAdaptationResult(
         source_dir=source_dir,
@@ -1138,6 +1166,9 @@ def adapt_interiorgs_scene(
         provider=provider if run_phase2 else None,
         final_bundle_path=final_bundle_path,
         final_memo_path=final_memo_path,
+        evaluation_prep_manifest_path=evaluation_prep_manifest_path,
+        simready_manifest_path=simready_manifest_path,
+        simready_scene_path=simready_scene_path,
     )
 
 
@@ -1147,7 +1178,11 @@ def adapt_many(
     output_root: Path,
     bucket: str = _DEFAULT_BUCKET,
     run_phase2: bool = False,
+    run_evaluation_prep: bool = False,
+    run_simready: bool = False,
     provider: str = "openai",
+    evaluation_prep_provider: str = "manual",
+    simready_provider: str = "manual",
     openai_phase2_config: Optional[OpenAIPhase2Config] = None,
 ) -> List[InteriorGSAdaptationResult]:
     results: List[InteriorGSAdaptationResult] = []
@@ -1158,7 +1193,11 @@ def adapt_many(
                 output_root=output_root,
                 bucket=bucket,
                 run_phase2=run_phase2,
+                run_evaluation_prep=run_evaluation_prep,
+                run_simready=run_simready,
                 provider=provider,
+                evaluation_prep_provider=evaluation_prep_provider,
+                simready_provider=simready_provider,
                 openai_phase2_config=openai_phase2_config,
             )
         )
@@ -1171,7 +1210,11 @@ def adapt_interiorgs_task_runs(
     output_root: Path,
     bucket: str = _DEFAULT_BUCKET,
     run_phase2: bool = False,
+    run_evaluation_prep: bool = False,
+    run_simready: bool = False,
     provider: str = "openai",
+    evaluation_prep_provider: str = "manual",
+    simready_provider: str = "manual",
     openai_phase2_config: Optional[OpenAIPhase2Config] = None,
 ) -> List[InteriorGSTaskRunResult]:
     source_dir = source_dir.resolve()
@@ -1273,7 +1316,11 @@ def adapt_interiorgs_task_runs(
             output_root=output_root,
             bucket=bucket,
             run_phase2=run_phase2,
+            run_evaluation_prep=run_evaluation_prep,
+            run_simready=run_simready,
             provider=provider,
+            evaluation_prep_provider=evaluation_prep_provider,
+            simready_provider=simready_provider,
             openai_phase2_config=openai_phase2_config,
         )
         results.append(
@@ -1284,6 +1331,9 @@ def adapt_interiorgs_task_runs(
                 capture_id=adapted.capture_id,
                 final_bundle_path=adapted.final_bundle_path,
                 final_memo_path=adapted.final_memo_path,
+                evaluation_prep_manifest_path=adapted.evaluation_prep_manifest_path,
+                simready_manifest_path=adapted.simready_manifest_path,
+                simready_scene_path=adapted.simready_scene_path,
             )
         )
 
@@ -1299,6 +1349,9 @@ def adapt_interiorgs_task_runs(
                 "capture_id": item.capture_id,
                 "final_bundle_path": item.final_bundle_path,
                 "final_memo_path": item.final_memo_path,
+                "evaluation_prep_manifest_path": item.evaluation_prep_manifest_path,
+                "simready_manifest_path": item.simready_manifest_path,
+                "simready_scene_path": item.simready_scene_path,
             }
         )
     write_json(
@@ -1313,8 +1366,8 @@ def adapt_interiorgs_task_runs(
         },
     )
     _write_task_run_comparison_report(scene_capture_root=scene_capture_root)
-    dashboard_path = write_scene_dashboard_summary(scene_capture_root=scene_capture_root, bucket=bucket)
-    deployment_path = write_scene_deployment_summary(scene_capture_root=scene_capture_root, bucket=bucket)
+    write_scene_dashboard_summary(scene_capture_root=scene_capture_root, bucket=bucket)
+    write_scene_deployment_summary(scene_capture_root=scene_capture_root, bucket=bucket)
     opportunity_handoff = _read_json_any(pipeline_dir / "opportunity_handoff.json")
     completeness_status = _read_json_any(pipeline_dir / "capture_qa_scorecard.json").get("completeness_status")
     qualification_state = derive_webapp_qualification_state(
@@ -1408,8 +1461,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--output-root", default=str(_DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--bucket", default=_DEFAULT_BUCKET)
     parser.add_argument("--run-phase2", action="store_true")
+    parser.add_argument("--run-evaluation-prep", action="store_true")
+    parser.add_argument("--run-simready", action="store_true")
     parser.add_argument("--task-runs", action="store_true")
     parser.add_argument("--provider", default="openai", choices=("openai", "claude"))
+    parser.add_argument("--evaluation-prep-provider", default="manual")
+    parser.add_argument("--simready-provider", default="manual")
     parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))
     parser.add_argument("--openai-phase2-model")
     parser.add_argument("--openai-phase2-codex-bin")
@@ -1422,7 +1479,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_root=Path(args.output_root).resolve(),
         bucket=args.bucket,
         run_phase2=bool(args.run_phase2),
+        run_evaluation_prep=bool(args.run_evaluation_prep),
+        run_simready=bool(args.run_simready),
         provider=args.provider,
+        evaluation_prep_provider=args.evaluation_prep_provider,
+        simready_provider=args.simready_provider,
         openai_phase2_config=_openai_phase2_config_from_args(args),
     )
     for result in results:
@@ -1432,13 +1493,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[interiorgs-adapter] final_bundle={result.final_bundle_path}")
         if result.final_memo_path:
             print(f"[interiorgs-adapter] final_memo={result.final_memo_path}")
+        if result.evaluation_prep_manifest_path:
+            print(f"[interiorgs-adapter] evaluation_prep={result.evaluation_prep_manifest_path}")
+        if result.simready_scene_path:
+            print(f"[interiorgs-adapter] simready_scene={result.simready_scene_path}")
         if args.task_runs:
             task_results = adapt_interiorgs_task_runs(
                 source_dir=result.source_dir,
                 output_root=Path(args.output_root).resolve(),
                 bucket=args.bucket,
                 run_phase2=bool(args.run_phase2),
+                run_evaluation_prep=bool(args.run_evaluation_prep),
+                run_simready=bool(args.run_simready),
                 provider=args.provider,
+                evaluation_prep_provider=args.evaluation_prep_provider,
+                simready_provider=args.simready_provider,
                 openai_phase2_config=_openai_phase2_config_from_args(args),
             )
             print(f"[interiorgs-adapter] task_runs={len(task_results)}")

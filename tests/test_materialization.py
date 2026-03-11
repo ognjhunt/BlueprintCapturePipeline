@@ -74,7 +74,9 @@ def test_materialize_capture_bundle_for_metric_iphone(tmp_path: Path) -> None:
     )
 
     assert result["descriptor"]["capture_modality"] == "iphone_arkit_lidar"
-    assert result["descriptor"]["requested_lanes"] == ["qualification", "advanced_geometry"]
+    assert result["descriptor"]["requested_lanes"] == ["qualification", "scene_memory", "advanced_geometry"]
+    assert result["descriptor"]["quality"]["world_model_candidate"] is True
+    assert result["qa_report"]["scene_memory_readiness"]["recommended_lane"] == "scene_memory"
     assert result["descriptor"]["task_hypothesis_uri"].endswith("/raw/task_hypothesis.json")
     assert result["descriptor"]["metadata"]["task_hypothesis"]["workflow_name"] == "Tote handoff"
     assert result["qa_report"]["status"] == "passed"
@@ -161,5 +163,5 @@ def test_materialize_capture_bundle_for_validated_glasses_scaffolding(tmp_path: 
     )
 
     assert result["descriptor"]["evidence_tier"] == "glasses_with_validated_scaffolding"
-    assert result["descriptor"]["requested_lanes"] == ["qualification", "advanced_geometry"]
+    assert result["descriptor"]["requested_lanes"] == ["qualification", "scene_memory", "advanced_geometry"]
     assert result["qa_report"]["status"] == "passed"

@@ -16,6 +16,12 @@ This repo is one part of a three-repo system.
 
 This platform is qualification-first.
 
+Canonical scene doctrine:
+
+- qualification artifacts are authoritative
+- capture-backed scene memory is the canonical downstream substrate
+- world-model outputs are derived artifacts, not site truth
+
 The default output should be a qualification record plus routing object, not a scene package by default.
 
 ## What This Repo Owns
@@ -66,7 +72,7 @@ The correct product stack is:
 
 1. primary product: site qualification / readiness pack
 2. secondary product: qualified opportunity exchange for robot teams
-3. third product: deeper evaluation / geometry / simulation package
+3. third product: scene memory / preview simulation / evaluation package
 4. fourth product: training data / managed tuning / licensing
 
 This repo sits in the middle and owns the transition from evidence to decision.
@@ -76,6 +82,7 @@ This repo should treat the default output as:
 - a reusable qualification record
 - a routing object
 - a human-review-aware handoff
+- a scene-memory bundle only as a derived downstream substrate
 
 This repo should not assume that every capture should become:
 
@@ -155,3 +162,4 @@ When making changes here, optimize for:
 4. clean handoff records for the webapp and later technical teams
 
 Do not let geometry, scenes, validation, or marketplace assumptions replace qualification as the center of gravity.
+Do not let generative simulation replace grounded qualification evidence; world-model outputs are advisory unless separately validated.

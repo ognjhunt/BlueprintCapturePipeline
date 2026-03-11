@@ -224,7 +224,12 @@ def test_interiorgs_adapter_creates_task_runs_manifest(tmp_path: Path) -> None:
     )
 
     scene_result = adapt_interiorgs_scene(source_dir=source_dir, output_root=tmp_path / "out")
-    task_results = adapt_interiorgs_task_runs(source_dir=source_dir, output_root=tmp_path / "out")
+    task_results = adapt_interiorgs_task_runs(
+        source_dir=source_dir,
+        output_root=tmp_path / "out",
+        run_evaluation_prep=True,
+        run_simready=True,
+    )
 
     manifest_path = scene_result.capture_root / "pipeline" / "task_run_manifest.json"
     report_path = scene_result.capture_root / "pipeline" / "task_run_comparison_report.md"
@@ -235,6 +240,9 @@ def test_interiorgs_adapter_creates_task_runs_manifest(tmp_path: Path) -> None:
     assert len(manifest["groups"]["pick"]) == 1
     assert len(manifest["groups"]["open_close"]) == 1
     assert len(manifest["groups"]["navigate"]) == 1
+    assert Path(manifest["groups"]["pick"][0]["evaluation_prep_manifest_path"]).is_file()
+    assert Path(manifest["groups"]["pick"][0]["simready_scene_path"]).is_file()
+    assert Path(manifest["groups"]["open_close"][0]["simready_manifest_path"]).is_file()
     assert report_path.is_file()
     assert dashboard_path.is_file()
     assert deployment_summary_path.is_file()
@@ -245,3 +253,10 @@ def test_interiorgs_adapter_creates_task_runs_manifest(tmp_path: Path) -> None:
     )
     blocker_text = " ".join(item["detail"] for item in readiness.get("blockers", []))
     assert "0.0 m" not in blocker_text
+    simready_assets = json.loads(
+        (open_close_capture_root / "pipeline" / "simready" / "simready_assets.json").read_text(encoding="utf-8")
+    )
+    assert any(
+        item["object_id"] == "102" and item["articulation_required"] is True
+        for item in simready_assets["assets"]
+    )

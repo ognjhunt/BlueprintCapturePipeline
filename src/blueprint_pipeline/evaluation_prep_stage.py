@@ -1,0 +1,536 @@
+"""Scene-aware downstream evaluation prep artifacts for qualified captures."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+
+from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, utc_now_iso, write_json
+from .local_capture import resolve_local_capture_context
+from .object_geometry_stage import run_object_geometry_stage
+
+
+def _read_optional_json_any(path: Path) -> Any:
+    if not path.is_file():
+        return None
+    return read_json_any(path)
+
+
+def _string_list(*values: Any) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for value in values:
+        if isinstance(value, str):
+            items = [value]
+        elif isinstance(value, (list, tuple, set)):
+            items = [str(item) for item in value]
+        elif value is None:
+            items = []
+        else:
+            items = [str(value)]
+        for item in items:
+            text = item.strip()
+            if text and text not in seen:
+                seen.add(text)
+                out.append(text)
+    return out
+
+
+def _relative_to(base_dir: Path, target: Path) -> str:
+    return os.path.relpath(target.resolve(), start=base_dir.resolve()).replace("\\", "/")
+
+
+def _copy_json(path: Path, payload: Mapping[str, Any]) -> None:
+    write_json(path, payload)
+
+
+def _task_category(task_text: str) -> str:
+    lowered = task_text.strip().lower()
+    if "open and close" in lowered or lowered.startswith("open "):
+        return "open_close"
+    if "navigate to" in lowered or lowered.startswith("navigate "):
+        return "navigate"
+    if "pick up" in lowered or "place" in lowered:
+        return "pick"
+    return "generic"
+
+
+def _default_task_id(scope_record: Mapping[str, Any], handoff: Mapping[str, Any], capture_id: str) -> str:
+    scoped = handoff.get("scoped_task_definition") if isinstance(handoff.get("scoped_task_definition"), Mapping) else {}
+    task_id = str(scoped.get("task_id") or "").strip()
+    if task_id:
+        return task_id
+    tasks = scope_record.get("tasks") if isinstance(scope_record.get("tasks"), list) else []
+    if tasks and isinstance(tasks[0], Mapping):
+        task_id = str(tasks[0].get("task_id") or "").strip()
+        if task_id:
+            return task_id
+    return capture_id
+
+
+def _default_task_text(scope_record: Mapping[str, Any], handoff: Mapping[str, Any], capture_id: str) -> str:
+    scoped = handoff.get("scoped_task_definition") if isinstance(handoff.get("scoped_task_definition"), Mapping) else {}
+    task_text = str(scoped.get("scoped_task_statement") or "").strip()
+    if task_text:
+        return task_text
+    task_text = str(scope_record.get("task_statement") or "").strip()
+    if task_text:
+        return task_text
+    return capture_id
+
+
+def _load_task_run_entries(capture_root: Path) -> List[Dict[str, Any]]:
+    pipeline_dir = capture_root / "pipeline"
+    manifest = _read_optional_json_any(pipeline_dir / "task_run_manifest.json")
+    if not isinstance(manifest, Mapping):
+        return []
+    groups = manifest.get("groups") if isinstance(manifest.get("groups"), Mapping) else {}
+    entries: List[Dict[str, Any]] = []
+    for category, items in groups.items():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            task_capture_root = Path(str(item.get("capture_root") or "")).resolve()
+            task_scope = _read_optional_json_any(task_capture_root / "pipeline" / "task_scope_record.json")
+            task_scope = dict(task_scope) if isinstance(task_scope, Mapping) else {}
+            entries.append(
+                {
+                    "task_id": _default_task_id(task_scope, {}, str(item.get("capture_id") or "")),
+                    "task_text": str(item.get("task_text") or ""),
+                    "task_category": str(category),
+                    "capture_root": str(task_capture_root),
+                    "capture_id": str(item.get("capture_id") or ""),
+                    "target_object_ids": _string_list(task_scope.get("target_object_ids")),
+                    "articulation_required_ids": _string_list(task_scope.get("articulation_required_ids")),
+                }
+            )
+    return entries
+
+
+def _build_default_task_run_manifest(
+    *,
+    capture_root: Path,
+    handoff: Mapping[str, Any],
+    scope_record: Mapping[str, Any],
+) -> Dict[str, Any]:
+    task_text = _default_task_text(scope_record, handoff, capture_root.name)
+    return {
+        "schema_version": "v1",
+        "scene_id": capture_root.parts[-3],
+        "base_capture_id": capture_root.name,
+        "generated_at": utc_now_iso(),
+        "source_dir": str(capture_root),
+        "groups": {
+            _task_category(task_text): [
+                {
+                    "task_text": task_text,
+                    "capture_root": str(capture_root),
+                    "capture_id": capture_root.name,
+                    "final_bundle_path": str(capture_root / "pipeline" / "agent_review_bundle.json"),
+                    "final_memo_path": str(capture_root / "pipeline" / "agent_readiness_memo.md"),
+                }
+            ]
+        },
+    }
+
+
+def _build_task_anchor_manifest(
+    *,
+    capture_root: Path,
+    handoff: Mapping[str, Any],
+    scope_record: Mapping[str, Any],
+    task_run_entries: Sequence[Mapping[str, Any]],
+    object_geometry_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    geometry_objects = object_geometry_manifest.get("objects") if isinstance(object_geometry_manifest.get("objects"), list) else []
+    geometry_by_id = {
+        str(item.get("object_id") or ""): item
+        for item in geometry_objects
+        if isinstance(item, Mapping) and str(item.get("object_id") or "")
+    }
+
+    def _zone_center(ids: Sequence[str]) -> List[float]:
+        centers: List[List[float]] = []
+        for object_id in ids:
+            geometry = geometry_by_id.get(str(object_id))
+            bbox = geometry.get("placement_bbox") if isinstance(geometry, Mapping) and isinstance(geometry.get("placement_bbox"), Mapping) else {}
+            center = bbox.get("center") if isinstance(bbox.get("center"), list) else None
+            if isinstance(center, list) and len(center) >= 3:
+                centers.append([float(center[0]), float(center[1]), float(center[2])])
+        if not centers:
+            task_zone = scope_record.get("task_zone") if isinstance(scope_record.get("task_zone"), Mapping) else {}
+            center = task_zone.get("center") if isinstance(task_zone.get("center"), list) else None
+            if isinstance(center, list) and len(center) >= 3:
+                return [float(center[0]), float(center[1]), float(center[2])]
+            return [0.0, 0.0, 0.0]
+        return [
+            round(sum(center[idx] for center in centers) / float(len(centers)), 6)
+            for idx in range(3)
+        ]
+
+    tasks: List[Dict[str, Any]] = []
+    if task_run_entries:
+        for item in task_run_entries:
+            target_ids = _string_list(item.get("target_object_ids"))
+            articulation_ids = _string_list(item.get("articulation_required_ids"))
+            goal = _zone_center(target_ids or articulation_ids)
+            tasks.append(
+                {
+                    "task_id": str(item.get("task_id") or item.get("capture_id") or ""),
+                    "task_text": str(item.get("task_text") or ""),
+                    "task_category": str(item.get("task_category") or "generic"),
+                    "capture_root": str(item.get("capture_root") or ""),
+                    "capture_id": str(item.get("capture_id") or ""),
+                    "target_object_ids": target_ids,
+                    "articulation_required_ids": articulation_ids,
+                    "scene_relative_transforms": {
+                        object_id: (
+                            dict(geometry_by_id[object_id].get("placement_bbox") or {})
+                            if object_id in geometry_by_id
+                            else {}
+                        )
+                        for object_id in list(target_ids) + list(articulation_ids)
+                    },
+                    "task_zone": {"center": goal},
+                    "start_zone": [round(goal[0] - 1.0, 6), round(goal[1], 6), round(goal[2], 6)],
+                    "goal_zone": goal,
+                }
+            )
+    else:
+        target_ids = _string_list(scope_record.get("target_object_ids"))
+        articulation_ids = _string_list(scope_record.get("articulation_required_ids"))
+        task_text = _default_task_text(scope_record, handoff, capture_root.name)
+        goal = _zone_center(target_ids or articulation_ids)
+        tasks.append(
+            {
+                "task_id": _default_task_id(scope_record, handoff, capture_root.name),
+                "task_text": task_text,
+                "task_category": _task_category(task_text),
+                "capture_root": str(capture_root),
+                "capture_id": capture_root.name,
+                "target_object_ids": target_ids,
+                "articulation_required_ids": articulation_ids,
+                "scene_relative_transforms": {
+                    object_id: (
+                        dict(geometry_by_id[object_id].get("placement_bbox") or {})
+                        if object_id in geometry_by_id
+                        else {}
+                    )
+                    for object_id in list(target_ids) + list(articulation_ids)
+                },
+                "task_zone": dict(scope_record.get("task_zone") or {}) if isinstance(scope_record.get("task_zone"), Mapping) else {"center": goal},
+                "start_zone": [round(goal[0] - 1.0, 6), round(goal[1], 6), round(goal[2], 6)],
+                "goal_zone": goal,
+            }
+        )
+
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "scene_id": capture_root.parts[-3],
+        "capture_id": capture_root.name,
+        "tasks": tasks,
+    }
+
+
+def _build_geometry_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -> Dict[str, Any]:
+    advanced_dir = pipeline_dir / "advanced_geometry"
+    files = {
+        "bundle_path": advanced_dir,
+        "ply_path": advanced_dir / "3dgs_compressed.ply",
+        "labels_path": advanced_dir / "labels.json",
+        "structure_path": advanced_dir / "structure.json",
+        "task_hints_path": advanced_dir / "task_targets.synthetic.json",
+        "holi_spatial_grounding_path": advanced_dir / "holi_spatial_grounding.json",
+    }
+    entries: Dict[str, str] = {}
+    available = 0
+    for key, path in files.items():
+        if key == "bundle_path":
+            if path.is_dir():
+                entries[key] = _relative_to(eval_dir, path)
+                available += 1
+            continue
+        if path.is_file():
+            entries[key] = _relative_to(eval_dir, path)
+            available += 1
+    status = "complete" if {"ply_path", "labels_path", "structure_path", "task_hints_path"}.issubset(entries) else "partial" if available > 0 else "missing"
+    missing = [key for key in ("ply_path", "labels_path", "structure_path", "task_hints_path") if key not in entries]
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "status": status,
+        "missing_required_fields": missing,
+        "available_fields": sorted(entries.keys()),
+        **entries,
+    }
+
+
+def _normalize_rich_handoff(
+    *,
+    handoff: Mapping[str, Any],
+    scope_record: Mapping[str, Any],
+    qualification_record: Mapping[str, Any],
+    capture_root: Path,
+    geometry_bundle_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    payload = dict(handoff)
+    qualification_state = str(payload.get("qualification_state") or payload.get("readiness_state") or qualification_record.get("readiness_state") or "not_ready_yet")
+    eligibility = bool(
+        payload.get("downstream_evaluation_eligibility")
+        if payload.get("downstream_evaluation_eligibility") is not None
+        else payload.get("match_ready")
+    )
+    scoped = payload.get("scoped_task_definition") if isinstance(payload.get("scoped_task_definition"), Mapping) else {}
+    if not scoped:
+        task_text = _default_task_text(scope_record, payload, capture_root.name)
+        scoped = {
+            "task_id": _default_task_id(scope_record, payload, capture_root.name),
+            "scoped_task_statement": task_text,
+            "success_criteria": _string_list(scope_record.get("success_criteria")) or ["Complete the scoped task safely"],
+            "in_scope_zone": dict(scope_record.get("task_zone") or {}) if isinstance(scope_record.get("task_zone"), Mapping) else capture_root.parts[-3],
+        }
+    site_constraints = payload.get("site_constraints") if isinstance(payload.get("site_constraints"), Mapping) else {}
+    if not site_constraints:
+        site_constraints = {
+            "operating_constraints": ["Not provided in intake metadata"],
+            "privacy_security_constraints": ["Not provided in intake metadata"],
+            "known_blockers": _string_list(scope_record.get("blockers")) or ["No known blockers supplied"],
+        }
+    payload.update(
+        {
+            "schema_version": "v1",
+            "site_submission_id": str(payload.get("site_submission_id") or capture_root.name),
+            "opportunity_id": str(payload.get("opportunity_id") or capture_root.parts[-3]),
+            "qualification_state": qualification_state,
+            "downstream_evaluation_eligibility": eligibility,
+            "operator_approved_summary": str(payload.get("operator_approved_summary") or payload.get("summary") or f"Qualified opportunity for {capture_root.parts[-3]}").strip(),
+            "scoped_task_definition": dict(scoped),
+            "site_constraints": dict(site_constraints),
+        }
+    )
+    normalized_geometry: Dict[str, Any] = {}
+    for key in ("bundle_path", "ply_path", "labels_path", "structure_path", "task_hints_path", "holi_spatial_grounding_path"):
+        text = str(geometry_bundle_manifest.get(key) or "").strip()
+        if text:
+            normalized_geometry[key] = text
+    if normalized_geometry:
+        payload["geometry_package"] = normalized_geometry
+    return payload
+
+
+def _build_review_queue(
+    *,
+    object_geometry_manifest: Mapping[str, Any],
+    task_anchor_manifest: Mapping[str, Any],
+    simready_validation: Optional[Mapping[str, Any]],
+    geometry_bundle_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    items: List[Dict[str, Any]] = []
+    geometry_objects = object_geometry_manifest.get("objects") if isinstance(object_geometry_manifest.get("objects"), list) else []
+    primary_ids: set[str] = set()
+    for task in task_anchor_manifest.get("tasks", []):
+        if isinstance(task, Mapping):
+            primary_ids.update(_string_list(task.get("target_object_ids")))
+    for obj in geometry_objects:
+        if not isinstance(obj, Mapping):
+            continue
+        object_id = str(obj.get("object_id") or "")
+        if not object_id:
+            continue
+        selected_views = obj.get("selected_views") if isinstance(obj.get("selected_views"), list) else []
+        collision_hulls = obj.get("collision_hulls") if isinstance(obj.get("collision_hulls"), list) else []
+        support_surfaces = obj.get("support_surfaces") if isinstance(obj.get("support_surfaces"), list) else []
+        if object_id in primary_ids and not selected_views:
+            items.append({"severity": "high", "subject_id": object_id, "kind": "missing_selected_views", "detail": "Primary target has no selected views for downstream rendering or review."})
+        if object_id in primary_ids and not support_surfaces:
+            items.append({"severity": "medium", "subject_id": object_id, "kind": "missing_support_surfaces", "detail": "Primary target has no support surfaces; scene builder may need manual support metadata."})
+        if not collision_hulls:
+            items.append({"severity": "medium" if object_id in primary_ids else "low", "subject_id": object_id, "kind": "missing_collision_hulls", "detail": "Object geometry has no collision hulls; downstream will rely on coarse collision fallback."})
+    if geometry_bundle_manifest.get("status") != "complete":
+        items.append({"severity": "medium", "subject_id": "geometry_bundle", "kind": "incomplete_geometry_bundle", "detail": "Geometry bundle is partial; downstream bootstrap may rely on degraded metadata."})
+    if isinstance(simready_validation, Mapping) and str(simready_validation.get("overall_status") or "") == "degraded":
+        items.append({"severity": "low", "subject_id": "simready", "kind": "degraded_simready_prep", "detail": "Best-effort simready prep is degraded; use as advisory only."})
+    return {"schema_version": "v1", "generated_at": utc_now_iso(), "items": items}
+
+
+def run_evaluation_prep_stage(
+    *,
+    capture_root: str | Path,
+    provider_name: str = "manual",
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    pipeline_dir = context.pipeline_root
+    eval_dir = pipeline_dir / "evaluation_prep"
+    ensure_dir(eval_dir)
+
+    handoff = optional_read_json(pipeline_dir / "opportunity_handoff.json")
+    if handoff is None:
+        raise PipelineError(f"Missing opportunity_handoff.json at {pipeline_dir}")
+    qualification_record = optional_read_json(pipeline_dir / "qualification_record.json") or {}
+    scope_record = optional_read_json(pipeline_dir / "task_scope_record.json") or {}
+
+    object_geometry_result = run_object_geometry_stage(capture_root=context.capture_root, provider_name=provider_name)
+    object_geometry_source_path = Path(str(object_geometry_result.get("manifest_path") or ""))
+    object_geometry_manifest = read_json_any(object_geometry_source_path)
+    object_geometry_target_path = eval_dir / "object_geometry_manifest.json"
+    _copy_json(object_geometry_target_path, object_geometry_manifest)
+
+    geometry_bundle_manifest = _build_geometry_bundle_manifest(pipeline_dir=pipeline_dir, eval_dir=eval_dir)
+    geometry_bundle_manifest_path = eval_dir / "geometry_bundle_manifest.json"
+    _copy_json(geometry_bundle_manifest_path, geometry_bundle_manifest)
+
+    normalized_handoff = _normalize_rich_handoff(
+        handoff=handoff,
+        scope_record=scope_record,
+        qualification_record=qualification_record,
+        capture_root=context.capture_root,
+        geometry_bundle_manifest=geometry_bundle_manifest,
+    )
+    rich_handoff_path = eval_dir / "qualified_opportunity_handoff.json"
+    _copy_json(rich_handoff_path, normalized_handoff)
+
+    existing_task_run_manifest = _read_optional_json_any(pipeline_dir / "task_run_manifest.json")
+    if isinstance(existing_task_run_manifest, Mapping):
+        task_run_manifest = dict(existing_task_run_manifest)
+        task_run_entries = _load_task_run_entries(context.capture_root)
+    else:
+        task_run_manifest = _build_default_task_run_manifest(
+            capture_root=context.capture_root,
+            handoff=normalized_handoff,
+            scope_record=scope_record,
+        )
+        task_run_entries = []
+    task_run_manifest_path = eval_dir / "task_run_manifest.json"
+    _copy_json(task_run_manifest_path, task_run_manifest)
+
+    task_anchor_manifest = _build_task_anchor_manifest(
+        capture_root=context.capture_root,
+        handoff=normalized_handoff,
+        scope_record=scope_record,
+        task_run_entries=task_run_entries,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+    )
+    task_anchor_manifest_path = eval_dir / "task_anchor_manifest.json"
+    _copy_json(task_anchor_manifest_path, task_anchor_manifest)
+
+    simready_prep_manifest_path = None
+    simready_scene_manifest = _read_optional_json_any(pipeline_dir / "simready" / "simready_scene_manifest.json")
+    simready_validation = _read_optional_json_any(pipeline_dir / "simready" / "simready_validation.json")
+    if isinstance(simready_scene_manifest, Mapping):
+        simready_prep_manifest = {
+            "schema_version": "v1",
+            "generated_at": utc_now_iso(),
+            "scene_manifest_path": _relative_to(eval_dir, pipeline_dir / "simready" / "simready_scene_manifest.json"),
+            "validation_path": _relative_to(eval_dir, pipeline_dir / "simready" / "simready_validation.json") if (pipeline_dir / "simready" / "simready_validation.json").is_file() else "",
+            "status": str((simready_validation or {}).get("overall_status") or "unknown"),
+        }
+        simready_prep_manifest_path = eval_dir / "simready_prep_manifest.json"
+        _copy_json(simready_prep_manifest_path, simready_prep_manifest)
+
+    review_queue = _build_review_queue(
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+        task_anchor_manifest=task_anchor_manifest,
+        simready_validation=simready_validation if isinstance(simready_validation, Mapping) else None,
+        geometry_bundle_manifest=geometry_bundle_manifest,
+    )
+    review_queue_path = eval_dir / "review_queue.json"
+    _copy_json(review_queue_path, review_queue)
+
+    geometry_objects = object_geometry_manifest.get("objects") if isinstance(object_geometry_manifest, Mapping) and isinstance(object_geometry_manifest.get("objects"), list) else []
+    object_count = len([item for item in geometry_objects if isinstance(item, Mapping)])
+    mesh_count = sum(1 for item in geometry_objects if isinstance(item, Mapping) and Path(str(item.get("mesh_glb_path") or "")).is_file())
+    mask_count = sum(1 for item in geometry_objects if isinstance(item, Mapping) and any(isinstance(mask, Mapping) and str(mask.get("mask_path") or "") for mask in item.get("visual_replacement_masks", [])))
+    articulated_count = sum(1 for item in geometry_objects if isinstance(item, Mapping) and str(item.get("task_role") or "") == "required_fixture")
+    downstream_risks = [str(item.get("kind") or "") for item in review_queue.get("items", []) if isinstance(item, Mapping)]
+    summary = {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "task_count": len(task_anchor_manifest.get("tasks", [])) if isinstance(task_anchor_manifest.get("tasks"), list) else 0,
+        "object_count": object_count,
+        "geometry_coverage_ratio": round(mesh_count / float(object_count or 1), 4),
+        "view_mask_coverage_ratio": round(mask_count / float(object_count or 1), 4),
+        "articulation_count": articulated_count,
+        "known_downstream_risks": downstream_risks,
+    }
+    summary_path = eval_dir / "evaluation_prep_summary.json"
+    _copy_json(summary_path, summary)
+
+    qualification_state = str(normalized_handoff.get("qualification_state") or "not_ready_yet")
+    eligibility = bool(normalized_handoff.get("downstream_evaluation_eligibility"))
+    degradation_reasons: List[str] = []
+    if qualification_state != "ready":
+        degradation_reasons.append(f"qualification_state:{qualification_state}")
+    if not eligibility:
+        degradation_reasons.append("downstream_evaluation_eligibility:false")
+    if geometry_bundle_manifest.get("status") != "complete":
+        degradation_reasons.append(f"geometry_bundle:{geometry_bundle_manifest.get('status')}")
+    if object_count == 0:
+        degradation_reasons.append("object_geometry:missing")
+    status = "ready_for_validation"
+    if qualification_state != "ready" or not eligibility:
+        status = "not_ready_for_validation"
+    elif degradation_reasons:
+        status = "degraded_but_usable"
+
+    task_ids = [str(task.get("task_id") or "") for task in task_anchor_manifest.get("tasks", []) if isinstance(task, Mapping)]
+    task_categories = sorted({str(task.get("task_category") or "generic") for task in task_anchor_manifest.get("tasks", []) if isinstance(task, Mapping)})
+    manifest = {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "site_submission_id": str(normalized_handoff.get("site_submission_id") or ""),
+        "opportunity_id": str(normalized_handoff.get("opportunity_id") or ""),
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "qualification_state": qualification_state,
+        "downstream_evaluation_eligibility": eligibility,
+        "readiness_state": str(normalized_handoff.get("readiness_state") or qualification_state),
+        "task_ids": task_ids,
+        "task_categories": task_categories,
+        "source_handoff_path": _relative_to(eval_dir, pipeline_dir / "opportunity_handoff.json"),
+        "status": status,
+        "degradation_reasons": degradation_reasons,
+        "artifacts": {
+            "qualified_opportunity_handoff": _relative_to(eval_dir, rich_handoff_path),
+            "geometry_bundle_manifest": _relative_to(eval_dir, geometry_bundle_manifest_path),
+            "task_run_manifest": _relative_to(eval_dir, task_run_manifest_path),
+            "task_anchor_manifest": _relative_to(eval_dir, task_anchor_manifest_path),
+            "object_geometry_manifest": _relative_to(eval_dir, object_geometry_target_path),
+            "evaluation_prep_summary": _relative_to(eval_dir, summary_path),
+            "review_queue": _relative_to(eval_dir, review_queue_path),
+            **({"simready_prep_manifest": _relative_to(eval_dir, simready_prep_manifest_path)} if simready_prep_manifest_path is not None else {}),
+        },
+    }
+    manifest_path = eval_dir / "evaluation_prep_manifest.json"
+    _copy_json(manifest_path, manifest)
+    return {
+        "schema_version": "v1",
+        "capture_root": str(context.capture_root),
+        "manifest_path": str(manifest_path),
+        "status": status,
+    }
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Build downstream evaluation prep artifacts for a qualified capture")
+    parser.add_argument("--capture-root", required=True, help="Local capture root path")
+    parser.add_argument("--provider", default="manual", help="Provider adapter name for object geometry stage")
+    args = parser.parse_args(argv)
+
+    try:
+        result = run_evaluation_prep_stage(capture_root=args.capture_root, provider_name=args.provider)
+    except Exception as exc:
+        print(f"[evaluation-prep] FAILED: {exc}")
+        return 1
+
+    print(f"[evaluation-prep] manifest={result['manifest_path']}")
+    print(f"[evaluation-prep] status={result['status']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

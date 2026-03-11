@@ -53,6 +53,9 @@ blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"
 blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"
 blueprint-adapt-interiorgs = "blueprint_pipeline.interiorgs_phase2_adapter:main"
 blueprint-interiorgs-phase2-summary = "blueprint_pipeline.interiorgs_phase2_summary:main"
+blueprint-build-object-geometry = "blueprint_pipeline.object_geometry_stage:main"
+blueprint-build-evaluation-prep = "blueprint_pipeline.evaluation_prep_stage:main"
+blueprint-build-simready = "blueprint_pipeline.simready_stage:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

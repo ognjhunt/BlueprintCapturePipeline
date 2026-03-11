@@ -247,6 +247,38 @@ def test_run_end_to_end_writes_final_bundle_and_memo(tmp_path: Path) -> None:
     assert Path(bundle["artifacts"]["human_actions_required"]).is_file()
 
 
+def test_run_end_to_end_optionally_builds_simready_workcell(tmp_path: Path) -> None:
+    capture_root = _build_raw_capture(tmp_path, scene_id="scene_simready", capture_id="cap_simready")
+
+    result = run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        run_simready=True,
+    )
+
+    assert result["simready"] is not None
+    assert Path(result["simready"]["scene_path"]).is_file()
+    assert Path(result["simready"]["manifest_path"]).is_file()
+    manifest = json.loads(Path(result["simready"]["manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["runtime"] == "isaac_sim"
+
+
+def test_run_end_to_end_optionally_builds_evaluation_prep(tmp_path: Path) -> None:
+    capture_root = _build_raw_capture(tmp_path, scene_id="scene_evalprep", capture_id="cap_evalprep")
+
+    result = run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        run_evaluation_prep=True,
+    )
+
+    assert result["evaluation_prep"] is not None
+    manifest_path = Path(result["evaluation_prep"]["manifest_path"])
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["artifacts"]["qualified_opportunity_handoff"] == "qualified_opportunity_handoff.json"
+
+
 def test_video_only_capture_generates_recapture_plan_and_human_actions(tmp_path: Path) -> None:
     capture_root = _build_raw_capture(
         tmp_path,

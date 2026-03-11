@@ -1140,6 +1140,13 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
         "task_targets.json",
         "pipeline_summary.json",
         "qualification_quality_report.json",
+        "scene_memory/scene_memory_manifest.json",
+        "scene_memory/scene_memory_readiness.json",
+        "scene_memory/conditioning_bundle.json",
+        "scene_memory/adapter_manifests/gen3c.json",
+        "scene_memory/adapter_manifests/neoverse.json",
+        "scene_memory/adapter_manifests/cosmos_transfer.json",
+        "preview_simulation/preview_simulation_manifest.json",
         ".qualification_pipeline_complete",
         "swap_quality_report.json",
         ".swap_pipeline_complete",
@@ -1153,6 +1160,7 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
     handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
     quality_report = json.loads((pipeline_dir / "qualification_quality_report.json").read_text(encoding="utf-8"))
+    scene_memory_manifest = json.loads((pipeline_dir / "scene_memory/scene_memory_manifest.json").read_text(encoding="utf-8"))
     task_hypothesis_report = json.loads((pipeline_dir / "task_hypothesis_report.json").read_text(encoding="utf-8"))
     validated_handoff = _validate_handoff_contract(handoff)
 
@@ -1166,6 +1174,8 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     assert validated_handoff["opportunity_id"] == "scene_demo:capture_demo"
     assert quality_report["lane"] == "qualification"
     assert "task_hypothesis_report" in quality_report["artifacts"]
+    assert "scene_memory_manifest" in quality_report["artifacts"]
+    assert scene_memory_manifest["lane"] == "scene_memory"
     assert task_hypothesis_report["task_hypothesis_status"] == "accepted"
     assert "evidence_bundle" in handoff
 
@@ -1358,7 +1368,7 @@ def test_capture_pipeline_advanced_lane_preserves_existing_flow(tmp_path: Path) 
     )
 
     assert result["status"] == "completed"
-    assert result["lanes"] == ["advanced_geometry"]
+    assert result["lanes"] == ["scene_memory", "advanced_geometry"]
     assert len(runner.simready_calls) == 1
 
     pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
@@ -1484,7 +1494,7 @@ def test_combined_lane_run_backfills_geometry_package_into_handoff(tmp_path: Pat
     )
 
     assert result["status"] == "completed"
-    assert result["lanes"] == ["qualification", "advanced_geometry"]
+    assert result["lanes"] == ["qualification", "scene_memory", "advanced_geometry"]
 
     pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
     handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))

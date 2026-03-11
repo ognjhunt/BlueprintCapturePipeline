@@ -53,6 +53,7 @@ def sync_webapp_pipeline_attachment(
     qualification_state: object,
     opportunity_state: object,
     artifacts: Mapping[str, Any],
+    derived_assets: Optional[Mapping[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
     sync_token = _string_env("PIPELINE_SYNC_TOKEN")
@@ -69,6 +70,11 @@ def sync_webapp_pipeline_attachment(
         "qualification_state": str(qualification_state or "").strip(),
         "opportunity_state": str(opportunity_state or "").strip(),
         "artifacts": {str(key): value for key, value in artifacts.items() if value},
+        "derived_assets": (
+            {str(key): value for key, value in derived_assets.items() if value}
+            if isinstance(derived_assets, Mapping)
+            else {}
+        ),
     }
     request = urllib_request.Request(
         sync_url,

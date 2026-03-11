@@ -42,6 +42,8 @@ Common optional fields:
 - `uncertainty_priors`
 - `manipulation_candidates`
 - `articulation_hints`
+- `scene_memory_capture`
+- `capture_rights`
 
 Supported aliases:
 
@@ -62,6 +64,12 @@ Advanced geometry lane:
 - QA report must exist and have `status = passed`
 - raw manifest must exist at `<raw_prefix_uri>/manifest.json`
 - object index must resolve from `manifest.object_point_cloud_index`
+
+Scene-memory lane:
+
+- qualification remains authoritative
+- scene-memory outputs are derived artifacts only
+- rights for derived-scene generation must be present or default-allow
 
 ## 4) Pipeline Outputs
 
@@ -84,6 +92,16 @@ Default qualification artifacts:
 - `swap_quality_report.json` (compatibility alias, lane=`qualification`)
 - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
 - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
+
+Scene-memory artifacts:
+
+- `scene_memory/scene_memory_manifest.json` (v1)
+- `scene_memory/scene_memory_readiness.json` (v1)
+- `scene_memory/conditioning_bundle.json` (v1)
+- `scene_memory/adapter_manifests/gen3c.json` (v1)
+- `scene_memory/adapter_manifests/neoverse.json` (v1)
+- `scene_memory/adapter_manifests/cosmos_transfer.json` (v1)
+- `preview_simulation/preview_simulation_manifest.json` (v1)
 
 Advanced geometry artifacts when explicitly requested:
 
