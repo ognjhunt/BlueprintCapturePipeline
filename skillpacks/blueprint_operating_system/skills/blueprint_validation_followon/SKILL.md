@@ -11,6 +11,7 @@ Required behavior:
 - Treat `BlueprintValidation` as a post-qualification lane.
 - Require a qualified opportunity handoff before recommending deeper evaluation by default.
 - Keep downstream evaluation coupled to scoped task, constraints, and evidence links.
+- Treat world-model adaptation and RL post-training as valid downstream paths, while keeping stricter validation gates for high-stakes claims.
 
 Do not:
 - Treat validation as the default first pass for new sites.
