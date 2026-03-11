@@ -478,6 +478,30 @@ def attach_handoff_package_paths(
         payload["scene_memory_package"] = {
             "bundle_path": _relative_path_from(handoff_dir, scene_memory_manifest.parent),
             "scene_memory_manifest_path": _relative_path_from(handoff_dir, scene_memory_manifest),
+            "scene_memory_readiness_path": _relative_path_from(
+                handoff_dir,
+                scene_memory_manifest.parent / "scene_memory_readiness.json",
+            ),
+            "conditioning_bundle_path": _relative_path_from(
+                handoff_dir,
+                scene_memory_manifest.parent / "conditioning_bundle.json",
+            ),
+            "preview_simulation_manifest_path": _relative_path_from(
+                handoff_dir,
+                pipeline_dir / "preview_simulation" / "preview_simulation_manifest.json",
+            ),
+            "gen3c_adapter_manifest_path": _relative_path_from(
+                handoff_dir,
+                scene_memory_manifest.parent / "adapter_manifests" / "gen3c.json",
+            ),
+            "neoverse_adapter_manifest_path": _relative_path_from(
+                handoff_dir,
+                scene_memory_manifest.parent / "adapter_manifests" / "neoverse.json",
+            ),
+            "cosmos_transfer_adapter_manifest_path": _relative_path_from(
+                handoff_dir,
+                scene_memory_manifest.parent / "adapter_manifests" / "cosmos_transfer.json",
+            ),
         }
     else:
         payload.pop("scene_memory_package", None)
@@ -538,13 +562,17 @@ def _build_scene_memory_readiness(
     capture_summary = _scene_memory_capture_summary(descriptor)
     completeness_status = str(scorecard.get("completeness_status") or "unknown")
     metric_ready = bool(qualification_record.get("metric_ready"))
+    readiness_state = str(qualification_record.get("readiness_state") or "not_ready_yet")
     rights = _capture_rights(descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {})
     status = (
         "ready"
-        if capture_summary["world_model_candidate"]
-        and completeness_status == "sufficient"
-        and bool(descriptor.raw_video_uri)
-        and rights["derived_scene_generation_allowed"]
+        if (
+            readiness_state == "ready"
+            and capture_summary["world_model_candidate"]
+            and completeness_status == "sufficient"
+            and bool(descriptor.raw_video_uri)
+            and rights["derived_scene_generation_allowed"]
+        )
         else "needs_more_evidence"
     )
     return {
@@ -560,7 +588,7 @@ def _build_scene_memory_readiness(
         "rights": rights,
         "capture_summary": capture_summary,
         "qualification_alignment": {
-            "readiness_state": str(qualification_record.get("readiness_state") or "not_ready_yet"),
+            "readiness_state": readiness_state,
             "metric_ready": metric_ready,
             "completeness_status": completeness_status,
         },
@@ -593,6 +621,25 @@ def _build_scene_memory_readiness(
     }
 
 
+def _scene_memory_derived_assets(
+    scene_memory_artifacts: Mapping[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    scene_memory_status = str(scene_memory_artifacts.get("scene_memory_status") or "needs_more_evidence")
+    preview_status = str(scene_memory_artifacts.get("preview_simulation_status") or "review_required")
+    return {
+        "scene_memory": {
+            "status": scene_memory_status,
+            "manifest_uri": scene_memory_artifacts.get("scene_memory_manifest_uri"),
+            "artifact_uri": scene_memory_artifacts.get("conditioning_bundle_uri"),
+        },
+        "preview_simulation": {
+            "status": preview_status,
+            "manifest_uri": scene_memory_artifacts.get("preview_simulation_manifest_uri"),
+            "artifact_uri": scene_memory_artifacts.get("preview_simulation_manifest_uri"),
+        },
+    }
+
+
 def _write_scene_memory_bundle(
     *,
     storage_root: Path,
@@ -602,7 +649,7 @@ def _write_scene_memory_bundle(
     descriptor: CaptureDescriptor,
     scorecard: Mapping[str, Any],
     qualification_record: Mapping[str, Any],
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     scene_memory_dir = pipeline_dir / "scene_memory"
     adapter_dir = scene_memory_dir / "adapter_manifests"
     preview_dir = pipeline_dir / "preview_simulation"
@@ -731,6 +778,8 @@ def _write_scene_memory_bundle(
         "scene_memory_readiness_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_readiness.json', storage_root)}",
         "conditioning_bundle_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'conditioning_bundle.json', storage_root)}",
         "preview_simulation_manifest_uri": f"gs://{bucket}/{relative_scene_path(preview_dir / 'preview_simulation_manifest.json', storage_root)}",
+        "scene_memory_status": readiness_payload["status"],
+        "preview_simulation_status": preview_manifest["status"],
         **adapter_artifacts,
     }
 
@@ -1345,6 +1394,8 @@ def _build_opportunity_handoff(
     recommended_lane = (
         "advanced_geometry"
         if bool(qualification_record.get("advanced_geometry_recommended"))
+        else "scene_memory"
+        if completeness_status == "sufficient"
         else "qualification"
     )
     site_submission_id = str(metadata.get("site_submission_id") or "").strip() or (
@@ -2545,6 +2596,12 @@ def run_qualification_pipeline(
             scorecard=scorecard,
             qualification_record=qualification_record,
         )
+        opportunity_handoff = attach_handoff_package_paths(
+            opportunity_handoff,
+            pipeline_dir=pipeline_dir,
+            metadata=descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {},
+        )
+        write_json(pipeline_dir / "opportunity_handoff.json", opportunity_handoff)
 
         quality_report = {
             "schema_version": "v1",
@@ -2638,19 +2695,11 @@ def run_qualification_pipeline(
                 "scene_memory_readiness_uri": scene_memory_artifacts["scene_memory_readiness_uri"],
                 "conditioning_bundle_uri": scene_memory_artifacts["conditioning_bundle_uri"],
                 "preview_simulation_manifest_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
+                "gen3c_adapter_manifest_uri": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
+                "neoverse_adapter_manifest_uri": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
+                "cosmos_transfer_adapter_manifest_uri": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
             },
-            derived_assets={
-                "scene_memory": {
-                    "status": "prep_ready",
-                    "manifest_uri": scene_memory_artifacts["scene_memory_manifest_uri"],
-                    "artifact_uri": scene_memory_artifacts["conditioning_bundle_uri"],
-                },
-                "preview_simulation": {
-                    "status": "prep_ready",
-                    "manifest_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
-                    "artifact_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
-                },
-            },
+            derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
         )
 
         return {

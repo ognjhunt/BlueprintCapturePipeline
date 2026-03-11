@@ -17,6 +17,7 @@ from .capture_bridge import CaptureDescriptor
 from .common import ensure_dir, to_capture_prefix, to_pipeline_prefix, utc_now_iso, write_json, write_text
 from .interiorgs_phase2_summary import write_scene_dashboard_summary, write_scene_deployment_summary
 from .qualification import (
+    _scene_memory_derived_assets,
     _build_blocker_register,
     _build_capability_checks,
     _build_capture_package_manifest,
@@ -35,6 +36,8 @@ from .qualification import (
     _build_task_scope_record,
     _effective_task_metadata,
     _render_readiness_report,
+    _write_scene_memory_bundle,
+    attach_handoff_package_paths,
 )
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .simready_stage import run_simready_stage
@@ -779,7 +782,7 @@ def adapt_interiorgs_scene(
             "hidden_zone_bound": 0.15,
             "validated_metric_bundle": True,
         },
-        "requested_lanes": ["qualification", "advanced_geometry"],
+        "requested_lanes": ["qualification", "scene_memory", "advanced_geometry"],
         "swap_focus": [environment_hint] if environment_hint != "default" else [],
         "manipulation_candidates": list(synthetic_targets.get("manipulation_candidates", [])),
         "articulation_hints": list(synthetic_targets.get("articulation_hints", [])),
@@ -1067,6 +1070,21 @@ def adapt_interiorgs_scene(
         qualification_record=qualification_record,
     )
     write_json(pipeline_dir / "pipeline_summary.json", pipeline_summary)
+    scene_memory_artifacts = _write_scene_memory_bundle(
+        storage_root=output_root,
+        bucket=bucket,
+        pipeline_prefix=pipeline_prefix,
+        pipeline_dir=pipeline_dir,
+        descriptor=descriptor,
+        scorecard=scorecard,
+        qualification_record=qualification_record,
+    )
+    opportunity_handoff = attach_handoff_package_paths(
+        opportunity_handoff,
+        pipeline_dir=pipeline_dir,
+        metadata=effective_metadata,
+    )
+    write_json(pipeline_dir / "opportunity_handoff.json", opportunity_handoff)
     quality_report = {
         "schema_version": "v1",
         "lane": "qualification",
@@ -1099,6 +1117,13 @@ def adapt_interiorgs_scene(
             "readiness_report": f"gs://{bucket}/{pipeline_prefix}/readiness_report.md",
             "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
             "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
+            "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
+            "scene_memory_readiness": scene_memory_artifacts["scene_memory_readiness_uri"],
+            "conditioning_bundle": scene_memory_artifacts["conditioning_bundle_uri"],
+            "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
+            "gen3c_adapter_manifest": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
+            "neoverse_adapter_manifest": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
+            "cosmos_transfer_adapter_manifest": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
         },
     }
     write_json(pipeline_dir / "qualification_quality_report.json", quality_report)
@@ -1114,6 +1139,8 @@ def adapt_interiorgs_scene(
         "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
         "qualification_record": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
         "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
+        "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
+        "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
     }
     write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
     write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
@@ -1375,6 +1402,23 @@ def adapt_interiorgs_task_runs(
         completeness_status=completeness_status,
     )
     opportunity_state = derive_webapp_opportunity_state(qualification_state=qualification_state)
+    pipeline_dir = scene_capture_root / "pipeline"
+    scene_memory_manifest_uri = f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/scene_memory/scene_memory_manifest.json"
+    scene_memory_readiness_uri = f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/scene_memory/scene_memory_readiness.json"
+    conditioning_bundle_uri = f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/scene_memory/conditioning_bundle.json"
+    preview_simulation_manifest_uri = f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/preview_simulation/preview_simulation_manifest.json"
+    scene_memory_artifacts = {
+        "scene_memory_manifest_uri": scene_memory_manifest_uri,
+        "scene_memory_readiness_uri": scene_memory_readiness_uri,
+        "conditioning_bundle_uri": conditioning_bundle_uri,
+        "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
+        "scene_memory_status": (
+            str((_read_json_any(pipeline_dir / "scene_memory" / "scene_memory_readiness.json") or {}).get("status") or "needs_more_evidence")
+        ),
+        "preview_simulation_status": (
+            str((_read_json_any(pipeline_dir / "preview_simulation" / "preview_simulation_manifest.json") or {}).get("status") or "review_required")
+        ),
+    }
     sync_webapp_pipeline_attachment(
         site_submission_id=opportunity_handoff.get("site_submission_id"),
         request_id=opportunity_handoff.get("site_submission_id"),
@@ -1393,7 +1437,15 @@ def adapt_interiorgs_task_runs(
             "agent_readiness_memo_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/agent_readiness_memo.md",
             "dashboard_summary_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/dashboard_summary.json",
             "scene_deployment_summary_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/scene_deployment_summary.md",
+            "scene_memory_manifest_uri": scene_memory_manifest_uri,
+            "scene_memory_readiness_uri": scene_memory_readiness_uri,
+            "conditioning_bundle_uri": conditioning_bundle_uri,
+            "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
+            "gen3c_adapter_manifest_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/scene_memory/adapter_manifests/gen3c.json",
+            "neoverse_adapter_manifest_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/scene_memory/adapter_manifests/neoverse.json",
+            "cosmos_transfer_adapter_manifest_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/scene_memory/adapter_manifests/cosmos_transfer.json",
         },
+        derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
     )
     return results
 

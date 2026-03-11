@@ -104,4 +104,4 @@ def test_capture_descriptor_normalizes_requested_lanes() -> None:
 
     descriptor = CaptureDescriptor.from_dict(payload)
 
-    assert descriptor.requested_lanes == ["qualification", "advanced_geometry"]
+    assert descriptor.requested_lanes == ["qualification", "scene_memory", "advanced_geometry"]

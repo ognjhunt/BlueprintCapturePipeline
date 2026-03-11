@@ -2,6 +2,8 @@
 
 This document defines the descriptor + orchestration contract consumed by `BlueprintCapturePipeline`.
 
+Qualification artifacts are authoritative. Scene-memory artifacts are the canonical downstream substrate. World-model outputs, preview-prep manifests, and advanced-geometry bundles are derived artifacts only and may not override readiness or blocker truth.
+
 ## 1) Input Trigger
 
 Object finalize trigger:
@@ -58,9 +60,11 @@ Qualification lane:
 - descriptor must parse successfully
 - QA report, raw manifest, and object index are inspected when present
 - missing or failed evidence produces qualification outputs with `need_more_evidence` instead of forcing geometry generation
+- default modern flow is `qualification -> scene_memory`
 
 Advanced geometry lane:
 
+- explicit opt-in or escalation only
 - QA report must exist and have `status = passed`
 - raw manifest must exist at `<raw_prefix_uri>/manifest.json`
 - object index must resolve from `manifest.object_point_cloud_index`
@@ -70,6 +74,7 @@ Scene-memory lane:
 - qualification remains authoritative
 - scene-memory outputs are derived artifacts only
 - rights for derived-scene generation must be present or default-allow
+- downstream adapter intent is expressed through manifest-level targets such as `GEN3C` and `NeoVerse`
 
 ## 4) Pipeline Outputs
 
@@ -93,7 +98,7 @@ Default qualification artifacts:
 - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
 - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
 
-Scene-memory artifacts:
+Scene-memory and preview-prep artifacts:
 
 - `scene_memory/scene_memory_manifest.json` (v1)
 - `scene_memory/scene_memory_readiness.json` (v1)
@@ -123,3 +128,4 @@ Advanced geometry artifacts when explicitly requested:
 - `scenes/<scene_id>/seg/inventory.json`
 
 These are authored only by the explicit advanced geometry lane for direct compatibility with BlueprintPipeline interactive/simready/usd-assembly jobs.
+They are compatibility outputs, not the repo's default downstream product.

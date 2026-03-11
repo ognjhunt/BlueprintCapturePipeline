@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 import pytest
 
+import blueprint_pipeline.qualification as qualification_module
 import blueprint_pipeline.swap_orchestrator as swap_orchestrator_module
 from blueprint_pipeline.blueprintpipeline_runner import CommandResult
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
@@ -1172,10 +1173,19 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     )
     assert validated_handoff["site_submission_id"] == "scene_demo:capture_demo"
     assert validated_handoff["opportunity_id"] == "scene_demo:capture_demo"
+    assert handoff["recommended_lane"] == "scene_memory"
+    assert handoff["scene_memory_package"]["scene_memory_manifest_path"] == "scene_memory/scene_memory_manifest.json"
+    assert handoff["scene_memory_package"]["scene_memory_readiness_path"] == "scene_memory/scene_memory_readiness.json"
+    assert handoff["scene_memory_package"]["conditioning_bundle_path"] == "scene_memory/conditioning_bundle.json"
+    assert handoff["scene_memory_package"]["preview_simulation_manifest_path"] == "preview_simulation/preview_simulation_manifest.json"
+    assert handoff["scene_memory_package"]["gen3c_adapter_manifest_path"] == "scene_memory/adapter_manifests/gen3c.json"
+    assert handoff["scene_memory_package"]["neoverse_adapter_manifest_path"] == "scene_memory/adapter_manifests/neoverse.json"
     assert quality_report["lane"] == "qualification"
     assert "task_hypothesis_report" in quality_report["artifacts"]
     assert "scene_memory_manifest" in quality_report["artifacts"]
     assert scene_memory_manifest["lane"] == "scene_memory"
+    scene_memory_readiness = json.loads((pipeline_dir / "scene_memory/scene_memory_readiness.json").read_text(encoding="utf-8"))
+    assert scene_memory_readiness["status"] == ("ready" if qualification["readiness_state"] == "ready" else "needs_more_evidence")
     assert task_hypothesis_report["task_hypothesis_status"] == "accepted"
     assert "evidence_bundle" in handoff
 
@@ -1213,6 +1223,40 @@ def test_qualification_completeness_failure_produces_need_more_evidence(tmp_path
     assert validated_handoff["qualification_state"] == "not_ready_yet"
     assert validated_handoff["downstream_evaluation_eligibility"] is False
     assert handoff["match_ready"] is False
+    assert handoff["recommended_lane"] == "qualification"
+
+
+def test_webapp_sync_derived_assets_follow_scene_memory_truth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    qa_path = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/qa_report.json"
+    qa_payload = json.loads(qa_path.read_text(encoding="utf-8"))
+    qa_payload["status"] = "failed"
+    qa_path.write_text(json.dumps(qa_payload, indent=2), encoding="utf-8")
+
+    captured: Dict[str, Any] = {}
+
+    def _fake_sync(**kwargs: Any) -> Dict[str, Any]:
+        captured.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(qualification_module, "sync_webapp_pipeline_attachment", _fake_sync)
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=True,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+    )
+
+    assert captured["artifacts"]["gen3c_adapter_manifest_uri"].endswith("/scene_memory/adapter_manifests/gen3c.json")
+    assert captured["artifacts"]["neoverse_adapter_manifest_uri"].endswith("/scene_memory/adapter_manifests/neoverse.json")
+    assert captured["derived_assets"]["scene_memory"]["status"] == "needs_more_evidence"
+    assert captured["derived_assets"]["preview_simulation"]["status"] == "review_required"
 
 
 def test_qualification_video_only_capture_never_returns_ready(tmp_path: Path) -> None:

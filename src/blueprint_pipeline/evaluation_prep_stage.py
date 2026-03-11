@@ -270,6 +270,52 @@ def _build_geometry_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -> Di
     }
 
 
+def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -> Dict[str, Any]:
+    scene_memory_dir = pipeline_dir / "scene_memory"
+    adapter_dir = scene_memory_dir / "adapter_manifests"
+    preview_dir = pipeline_dir / "preview_simulation"
+    files = {
+        "bundle_path": scene_memory_dir,
+        "scene_memory_manifest_path": scene_memory_dir / "scene_memory_manifest.json",
+        "scene_memory_readiness_path": scene_memory_dir / "scene_memory_readiness.json",
+        "conditioning_bundle_path": scene_memory_dir / "conditioning_bundle.json",
+        "preview_simulation_manifest_path": preview_dir / "preview_simulation_manifest.json",
+        "gen3c_adapter_manifest_path": adapter_dir / "gen3c.json",
+        "neoverse_adapter_manifest_path": adapter_dir / "neoverse.json",
+        "cosmos_transfer_adapter_manifest_path": adapter_dir / "cosmos_transfer.json",
+    }
+    entries: Dict[str, str] = {}
+    available = 0
+    for key, path in files.items():
+        if key == "bundle_path":
+            if path.is_dir():
+                entries[key] = _relative_to(eval_dir, path)
+                available += 1
+            continue
+        if path.is_file():
+            entries[key] = _relative_to(eval_dir, path)
+            available += 1
+    required = {
+        "scene_memory_manifest_path",
+        "scene_memory_readiness_path",
+        "conditioning_bundle_path",
+        "preview_simulation_manifest_path",
+        "gen3c_adapter_manifest_path",
+        "neoverse_adapter_manifest_path",
+        "cosmos_transfer_adapter_manifest_path",
+    }
+    status = "complete" if required.issubset(entries) else "partial" if available > 0 else "missing"
+    missing = [key for key in sorted(required) if key not in entries]
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "status": status,
+        "missing_required_fields": missing,
+        "available_fields": sorted(entries.keys()),
+        **entries,
+    }
+
+
 def _normalize_rich_handoff(
     *,
     handoff: Mapping[str, Any],
@@ -277,6 +323,7 @@ def _normalize_rich_handoff(
     qualification_record: Mapping[str, Any],
     capture_root: Path,
     geometry_bundle_manifest: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
 ) -> Dict[str, Any]:
     payload = dict(handoff)
     qualification_state = str(payload.get("qualification_state") or payload.get("readiness_state") or qualification_record.get("readiness_state") or "not_ready_yet")
@@ -320,6 +367,22 @@ def _normalize_rich_handoff(
             normalized_geometry[key] = text
     if normalized_geometry:
         payload["geometry_package"] = normalized_geometry
+    normalized_scene_memory: Dict[str, Any] = {}
+    for key in (
+        "bundle_path",
+        "scene_memory_manifest_path",
+        "scene_memory_readiness_path",
+        "conditioning_bundle_path",
+        "preview_simulation_manifest_path",
+        "gen3c_adapter_manifest_path",
+        "neoverse_adapter_manifest_path",
+        "cosmos_transfer_adapter_manifest_path",
+    ):
+        text = str(scene_memory_bundle_manifest.get(key) or "").strip()
+        if text:
+            normalized_scene_memory[key] = text
+    if normalized_scene_memory:
+        payload["scene_memory_package"] = normalized_scene_memory
     return payload
 
 
@@ -329,6 +392,7 @@ def _build_review_queue(
     task_anchor_manifest: Mapping[str, Any],
     simready_validation: Optional[Mapping[str, Any]],
     geometry_bundle_manifest: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
 ) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     geometry_objects = object_geometry_manifest.get("objects") if isinstance(object_geometry_manifest.get("objects"), list) else []
@@ -352,7 +416,20 @@ def _build_review_queue(
         if not collision_hulls:
             items.append({"severity": "medium" if object_id in primary_ids else "low", "subject_id": object_id, "kind": "missing_collision_hulls", "detail": "Object geometry has no collision hulls; downstream will rely on coarse collision fallback."})
     if geometry_bundle_manifest.get("status") != "complete":
-        items.append({"severity": "medium", "subject_id": "geometry_bundle", "kind": "incomplete_geometry_bundle", "detail": "Geometry bundle is partial; downstream bootstrap may rely on degraded metadata."})
+        items.append(
+            {
+                "severity": "low" if scene_memory_bundle_manifest.get("status") == "complete" else "medium",
+                "subject_id": "geometry_bundle",
+                "kind": "incomplete_geometry_bundle",
+                "detail": (
+                    "Geometry bundle is partial; downstream can continue on canonical scene-memory artifacts."
+                    if scene_memory_bundle_manifest.get("status") == "complete"
+                    else "Geometry bundle is partial; downstream bootstrap may rely on degraded metadata."
+                ),
+            }
+        )
+    if scene_memory_bundle_manifest.get("status") != "complete":
+        items.append({"severity": "medium", "subject_id": "scene_memory_bundle", "kind": "incomplete_scene_memory_bundle", "detail": "Canonical scene-memory handoff is partial; downstream adapters may require manual repair."})
     if isinstance(simready_validation, Mapping) and str(simready_validation.get("overall_status") or "") == "degraded":
         items.append({"severity": "low", "subject_id": "simready", "kind": "degraded_simready_prep", "detail": "Best-effort simready prep is degraded; use as advisory only."})
     return {"schema_version": "v1", "generated_at": utc_now_iso(), "items": items}
@@ -383,6 +460,12 @@ def run_evaluation_prep_stage(
     geometry_bundle_manifest = _build_geometry_bundle_manifest(pipeline_dir=pipeline_dir, eval_dir=eval_dir)
     geometry_bundle_manifest_path = eval_dir / "geometry_bundle_manifest.json"
     _copy_json(geometry_bundle_manifest_path, geometry_bundle_manifest)
+    scene_memory_bundle_manifest = _build_scene_memory_bundle_manifest(
+        pipeline_dir=pipeline_dir,
+        eval_dir=eval_dir,
+    )
+    scene_memory_bundle_manifest_path = eval_dir / "scene_memory_bundle_manifest.json"
+    _copy_json(scene_memory_bundle_manifest_path, scene_memory_bundle_manifest)
 
     normalized_handoff = _normalize_rich_handoff(
         handoff=handoff,
@@ -390,6 +473,7 @@ def run_evaluation_prep_stage(
         qualification_record=qualification_record,
         capture_root=context.capture_root,
         geometry_bundle_manifest=geometry_bundle_manifest,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
     )
     rich_handoff_path = eval_dir / "qualified_opportunity_handoff.json"
     _copy_json(rich_handoff_path, normalized_handoff)
@@ -437,6 +521,7 @@ def run_evaluation_prep_stage(
         task_anchor_manifest=task_anchor_manifest,
         simready_validation=simready_validation if isinstance(simready_validation, Mapping) else None,
         geometry_bundle_manifest=geometry_bundle_manifest,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
     )
     review_queue_path = eval_dir / "review_queue.json"
     _copy_json(review_queue_path, review_queue)
@@ -467,7 +552,12 @@ def run_evaluation_prep_stage(
         degradation_reasons.append(f"qualification_state:{qualification_state}")
     if not eligibility:
         degradation_reasons.append("downstream_evaluation_eligibility:false")
-    if geometry_bundle_manifest.get("status") != "complete":
+    if scene_memory_bundle_manifest.get("status") != "complete":
+        degradation_reasons.append(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
+    if (
+        scene_memory_bundle_manifest.get("status") != "complete"
+        and geometry_bundle_manifest.get("status") != "complete"
+    ):
         degradation_reasons.append(f"geometry_bundle:{geometry_bundle_manifest.get('status')}")
     if object_count == 0:
         degradation_reasons.append("object_geometry:missing")
@@ -496,6 +586,7 @@ def run_evaluation_prep_stage(
         "degradation_reasons": degradation_reasons,
         "artifacts": {
             "qualified_opportunity_handoff": _relative_to(eval_dir, rich_handoff_path),
+            "scene_memory_bundle_manifest": _relative_to(eval_dir, scene_memory_bundle_manifest_path),
             "geometry_bundle_manifest": _relative_to(eval_dir, geometry_bundle_manifest_path),
             "task_run_manifest": _relative_to(eval_dir, task_run_manifest_path),
             "task_anchor_manifest": _relative_to(eval_dir, task_anchor_manifest_path),

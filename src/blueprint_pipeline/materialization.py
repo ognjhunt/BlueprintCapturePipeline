@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from .capture_bridge import _normalize_requested_lanes
 from .common import (
     ensure_dir,
     join_gs_uri,
@@ -61,8 +62,24 @@ def _dict_float(value: Any) -> Dict[str, float]:
 
 def _scene_memory_requested_lanes(evidence_tier: str) -> List[str]:
     if evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"}:
-        return ["qualification", "scene_memory", "advanced_geometry"]
+        return ["qualification", "scene_memory"]
     return ["qualification"]
+
+
+def _requested_lanes_override(
+    manifest: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> List[str]:
+    for raw in (
+        context.get("requestedLanes"),
+        context.get("requested_lanes"),
+        manifest.get("requested_lanes"),
+        manifest.get("requestedLanes"),
+    ):
+        normalized = _normalize_requested_lanes(raw)
+        if normalized != ["qualification"] or raw is not None:
+            return normalized
+    return []
 
 
 def _raw_video_candidates(raw_root: Path) -> List[str]:
@@ -345,7 +362,10 @@ def build_capture_bundle_records(
         "calibration_assets": calibration_assets,
         "scaffolding_validation": scaffolding_validation,
         "uncertainty_priors": uncertainty_priors,
-        "requested_lanes": _scene_memory_requested_lanes(evidence_tier),
+        "requested_lanes": (
+            _requested_lanes_override(manifest, context)
+            or _scene_memory_requested_lanes(evidence_tier)
+        ),
         "quality": {
             "pose_match_rate": try_parse_float(manifest.get("pose_match_rate"), 0.95 if modality == "iphone_arkit_lidar" else 0.35),
             "has_metric_geometry": evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"},

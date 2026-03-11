@@ -35,13 +35,13 @@ def test_resolve_requested_lanes_defaults_to_qualification(tmp_path: Path) -> No
 def test_resolve_requested_lanes_uses_descriptor_request(tmp_path: Path) -> None:
     descriptor_uri = _write_descriptor(tmp_path, requested_lanes=["qualification", "advanced_geometry"])
     lanes = resolve_requested_lanes(descriptor_gcs_uri=descriptor_uri, gcs_root=tmp_path)
-    assert lanes == ["qualification", "advanced_geometry"]
+    assert lanes == ["qualification", "scene_memory", "advanced_geometry"]
 
 
 def test_resolve_requested_lanes_descriptor_can_select_advanced_geometry_only(tmp_path: Path) -> None:
     descriptor_uri = _write_descriptor(tmp_path, requested_lanes=["advanced_geometry"])
     lanes = resolve_requested_lanes(descriptor_gcs_uri=descriptor_uri, gcs_root=tmp_path)
-    assert lanes == ["advanced_geometry"]
+    assert lanes == ["scene_memory", "advanced_geometry"]
 
 
 def test_resolve_requested_lanes_cli_override_wins(tmp_path: Path, monkeypatch) -> None:
@@ -52,11 +52,11 @@ def test_resolve_requested_lanes_cli_override_wins(tmp_path: Path, monkeypatch) 
         gcs_root=tmp_path,
         lane="advanced_geometry",
     )
-    assert lanes == ["advanced_geometry"]
+    assert lanes == ["scene_memory", "advanced_geometry"]
 
 
 def test_resolve_requested_lanes_env_override_wins_over_descriptor(tmp_path: Path, monkeypatch) -> None:
     descriptor_uri = _write_descriptor(tmp_path, requested_lanes=["qualification"])
     monkeypatch.setenv("PIPELINE_LANE", "advanced_geometry")
     lanes = resolve_requested_lanes(descriptor_gcs_uri=descriptor_uri, gcs_root=tmp_path)
-    assert lanes == ["advanced_geometry"]
+    assert lanes == ["scene_memory", "advanced_geometry"]

@@ -150,7 +150,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--lane",
         default=None,
-        help="qualification, advanced_geometry, or all",
+        help="qualification, scene_memory, advanced_geometry, or all",
     )
     args = parser.parse_args(argv)
 

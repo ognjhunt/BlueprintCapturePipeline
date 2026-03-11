@@ -74,7 +74,7 @@ def test_materialize_capture_bundle_for_metric_iphone(tmp_path: Path) -> None:
     )
 
     assert result["descriptor"]["capture_modality"] == "iphone_arkit_lidar"
-    assert result["descriptor"]["requested_lanes"] == ["qualification", "scene_memory", "advanced_geometry"]
+    assert result["descriptor"]["requested_lanes"] == ["qualification", "scene_memory"]
     assert result["descriptor"]["quality"]["world_model_candidate"] is True
     assert result["qa_report"]["scene_memory_readiness"]["recommended_lane"] == "scene_memory"
     assert result["descriptor"]["task_hypothesis_uri"].endswith("/raw/task_hypothesis.json")
@@ -163,5 +163,41 @@ def test_materialize_capture_bundle_for_validated_glasses_scaffolding(tmp_path: 
     )
 
     assert result["descriptor"]["evidence_tier"] == "glasses_with_validated_scaffolding"
-    assert result["descriptor"]["requested_lanes"] == ["qualification", "scene_memory", "advanced_geometry"]
+    assert result["descriptor"]["requested_lanes"] == ["qualification", "scene_memory"]
     assert result["qa_report"]["status"] == "passed"
+
+
+def test_materialize_capture_bundle_preserves_explicit_advanced_geometry_request(tmp_path: Path) -> None:
+    raw_root = tmp_path / "bucket/scenes/scene_d/captures/cap_d/raw"
+    _write_json(
+        raw_root / "manifest.json",
+        {
+            "scene_id": "scene_d",
+            "capture_source": "iphone",
+            "capture_tier_hint": "tier1_iphone",
+            "video_uri": "gs://bucket/scenes/scene_d/captures/cap_d/raw/walkthrough.mov",
+            "has_lidar": True,
+            "pose_match_rate": 0.96,
+            "object_point_cloud_index": "arkit/objects/index.json",
+            "requested_lanes": ["advanced_geometry"],
+        },
+    )
+    _write_json(
+        raw_root / "intake_packet.json",
+        {
+            "workflowName": "Fixture inspection",
+            "taskSteps": ["entry", "workcell"],
+            "zone": "cell_4",
+            "owner": "ops_manager",
+        },
+    )
+    (raw_root / "walkthrough.mov").write_bytes(b"mov")
+
+    result = materialize_capture_bundle(
+        bucket="bucket",
+        scene_id="scene_d",
+        capture_id="cap_d",
+        gcs_root=tmp_path,
+    )
+
+    assert result["descriptor"]["requested_lanes"] == ["scene_memory", "advanced_geometry"]

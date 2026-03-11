@@ -60,6 +60,16 @@ def _build_capture(tmp_path: Path) -> Path:
                 "privacy_security_constraints": ["no PII"],
                 "known_blockers": ["none"],
             },
+            "scene_memory_package": {
+                "bundle_path": "scene_memory",
+                "scene_memory_manifest_path": "scene_memory/scene_memory_manifest.json",
+                "scene_memory_readiness_path": "scene_memory/scene_memory_readiness.json",
+                "conditioning_bundle_path": "scene_memory/conditioning_bundle.json",
+                "preview_simulation_manifest_path": "preview_simulation/preview_simulation_manifest.json",
+                "gen3c_adapter_manifest_path": "scene_memory/adapter_manifests/gen3c.json",
+                "neoverse_adapter_manifest_path": "scene_memory/adapter_manifests/neoverse.json",
+                "cosmos_transfer_adapter_manifest_path": "scene_memory/adapter_manifests/cosmos_transfer.json",
+            },
         },
     )
     _write_json(
@@ -81,6 +91,19 @@ def _build_capture(tmp_path: Path) -> Path:
     for name in ("3dgs_compressed.ply", "labels.json", "structure.json", "task_targets.synthetic.json"):
         (advanced_dir / name).write_text("{}" if name.endswith(".json") else "ply\n", encoding="utf-8")
     _write_json(advanced_dir / "advanced_geometry_bundle.json", {"schema_version": "v1"})
+    scene_memory_dir = pipeline_root / "scene_memory"
+    adapter_dir = scene_memory_dir / "adapter_manifests"
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(scene_memory_dir / "scene_memory_manifest.json", {"schema_version": "v1"})
+    _write_json(scene_memory_dir / "scene_memory_readiness.json", {"schema_version": "v1", "status": "ready"})
+    _write_json(scene_memory_dir / "conditioning_bundle.json", {"schema_version": "v1"})
+    _write_json(adapter_dir / "gen3c.json", {"schema_version": "v1"})
+    _write_json(adapter_dir / "neoverse.json", {"schema_version": "v1"})
+    _write_json(adapter_dir / "cosmos_transfer.json", {"schema_version": "v1"})
+    _write_json(
+        pipeline_root / "preview_simulation" / "preview_simulation_manifest.json",
+        {"schema_version": "v1", "status": "prep_ready"},
+    )
     return capture_root
 
 
@@ -97,8 +120,27 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path) -> None:
 
     assert manifest["status"] == "ready_for_validation"
     assert manifest["artifacts"]["qualified_opportunity_handoff"] == "qualified_opportunity_handoff.json"
+    assert manifest["artifacts"]["scene_memory_bundle_manifest"] == "scene_memory_bundle_manifest.json"
     assert rich_handoff["qualification_state"] == "ready"
     assert rich_handoff["downstream_evaluation_eligibility"] is True
+    assert rich_handoff["scene_memory_package"]["scene_memory_manifest_path"] == "../scene_memory/scene_memory_manifest.json"
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
     assert summary["task_count"] == 1
     assert summary["object_count"] == 1
+
+
+def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_path: Path) -> None:
+    capture_root = _build_capture(tmp_path)
+    advanced_dir = capture_root / "pipeline" / "advanced_geometry"
+    for path in advanced_dir.iterdir():
+        path.unlink()
+    advanced_dir.rmdir()
+
+    result = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    review_queue = json.loads((capture_root / "pipeline" / "evaluation_prep" / "review_queue.json").read_text(encoding="utf-8"))
+
+    assert manifest["status"] == "ready_for_validation"
+    assert "geometry_bundle:missing" not in manifest["degradation_reasons"]
+    assert any(item["kind"] == "incomplete_geometry_bundle" and item["severity"] == "low" for item in review_queue["items"])

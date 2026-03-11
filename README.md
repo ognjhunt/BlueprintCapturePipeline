@@ -1,6 +1,6 @@
 # BlueprintCapturePipeline
 
-Qualification-first orchestration for converting BlueprintCapture raw uploads or descriptors into qualification artifacts. Metric-ready captures now produce a canonical scene-memory bundle for downstream preview simulation and evaluation, while video-only captures remain supported but are prevented from silently becoming decision-grade.
+Qualification-first orchestration for converting BlueprintCapture raw uploads or descriptors into authoritative qualification artifacts. Metric-ready captures now flow by default into canonical scene-memory and preview-prep artifacts for downstream adapters, while video-only captures remain supported but are prevented from silently becoming decision-grade.
 
 ## Scope
 
@@ -8,10 +8,14 @@ This repo is intentionally thin. It now orchestrates three lanes:
 
 - Default qualification lane:
   `capture_descriptor.json` -> QA/completeness -> scoping -> risk extraction -> qualification artifacts
-- Canonical scene-memory lane:
+- Default modern downstream lane:
   qualification artifacts + capture evidence -> scene-memory manifest -> backend adapter manifests -> preview simulation prep
 - Explicit advanced geometry lane:
   `capture_descriptor.json` -> NuRec reconstruction -> swap candidate policy -> SAM3D-first asset materialization -> interactive articulation validation/fallback -> simready + USD assembly
+
+Qualification artifacts remain authoritative. Scene memory is the canonical downstream substrate. World-model outputs, preview simulation prep, and any advanced geometry exports are derived artifacts only.
+
+This repo emits qualification, scene-memory, and preview-prep handoff artifacts. It does not own the high-volume synthetic-data factory role; bounded preview generation and downstream adapters belong here, while large-scale synthetic generation belongs in downstream systems.
 
 Raw-upload materialization path:
 
@@ -30,7 +34,7 @@ Local raw-capture contract for `blueprint-run-e2e`:
   - scaffolding calibration assets
   - splat / 3DGS artifacts
 
-Splat / 3DGS artifacts are supplemental only. They can be attached to agent review, scene-memory conditioning, and downstream geometry packaging, but they do not bypass intake, QA, or readiness gates.
+Splat / 3DGS artifacts are supplemental only. They can be attached to agent review, scene-memory conditioning, and advanced-geometry compatibility packaging, but they do not bypass intake, QA, or readiness gates.
 
 It reuses existing jobs and helper logic from:
 
@@ -132,7 +136,7 @@ Written under:
   - `agent_readiness_memo.md` (when `blueprint-agent-review` or `blueprint-run-e2e` is used)
   - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
   - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
-- Scene-memory artifacts:
+- Scene-memory and preview-prep artifacts:
   - `scene_memory/scene_memory_manifest.json`
   - `scene_memory/scene_memory_readiness.json`
   - `scene_memory/conditioning_bundle.json`
@@ -141,6 +145,7 @@ Written under:
   - `scene_memory/adapter_manifests/cosmos_transfer.json`
   - `preview_simulation/preview_simulation_manifest.json`
 - Advanced geometry artifacts when explicitly requested:
+  These are compatibility outputs for downstream geometry-oriented flows. They are not the default end product.
   - `nurec_job_spec.json`
   - `nurec_outputs.json`
   - `swap_candidates.json`
@@ -177,7 +182,7 @@ NuRec artifact roles under `.../pipeline/nurec/`:
 
 ## Environment
 
-- `PIPELINE_LANE` (optional; `qualification`, `advanced_geometry`, or `all`; default resolves from descriptor `requested_lanes` and falls back to `qualification`)
+- `PIPELINE_LANE` (optional; `qualification`, `scene_memory`, `advanced_geometry`, or `all`; default resolves from descriptor `requested_lanes` and falls back to `qualification`)
 - `GCS_ROOT` (default: `/mnt/gcs`)
 - `BLUEPRINTPIPELINE_ROOT` (default: `/Users/nijelhunt_1/workspace/BlueprintPipeline`)
 - `BLUEPRINTPIPELINE_COMMIT_HASH` (optional pin)
@@ -357,9 +362,11 @@ For production runtimes, pre-bake 3DGRUT build dependencies into the image (tiny
   - optional `nurec/inpainted_visual_mesh.glb` (when cleaning succeeds)
   - `nurec_outputs.artifacts.inpainted_visual_mesh_glb` is injected when available
 
-## Omniverse Preview (Recommended)
+## Omniverse Preview (Advanced Geometry Compatibility)
 
-Primary visual asset routing is now configured by `NUREC_VISUAL_PRIMARY`:
+These helpers are optional compatibility tooling for the explicit advanced-geometry lane. The default modern handoff from this repo is scene-memory plus preview-prep artifacts, not USD-first viewer export.
+
+Primary visual asset routing is configured by `NUREC_VISUAL_PRIMARY` when advanced geometry is present:
 - `usdz` (default): prefer `export_last.usdz` for photoreal neural rendering in Omniverse/Isaac Sim.
 - `mesh`: prefer `visual_mesh.glb` for broad app compatibility.
 - `auto`: prefer textured mesh only when available, otherwise USDZ.
@@ -382,7 +389,7 @@ bash scripts/preview_omniverse_webrtc.sh /Users/nijelhunt_1/Downloads/pipeline_o
 ```
 
 `preview_omniverse_webrtc.sh` outputs:
-1. resolved primary visual asset (USDZ preferred),
+1. resolved advanced-geometry visual asset,
 2. local staging + HTTP hosting command,
 3. optional `scp` upload command,
 4. the endpoint + client launch line.

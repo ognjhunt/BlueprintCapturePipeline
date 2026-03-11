@@ -99,15 +99,23 @@ def test_interiorgs_adapter_builds_reviewable_capture(tmp_path: Path) -> None:
 
     pipeline_dir = result.capture_root / "pipeline"
     assert (result.capture_root / "capture_descriptor.json").is_file()
+    descriptor = json.loads((result.capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
     assert (pipeline_dir / "scene_graph.json").is_file()
     assert (pipeline_dir / "route_graph.json").is_file()
     assert (pipeline_dir / "readiness_decision.json").is_file()
+    assert (pipeline_dir / "scene_memory/scene_memory_manifest.json").is_file()
+    assert (pipeline_dir / "scene_memory/scene_memory_readiness.json").is_file()
+    assert (pipeline_dir / "scene_memory/conditioning_bundle.json").is_file()
+    assert (pipeline_dir / "preview_simulation/preview_simulation_manifest.json").is_file()
+    assert descriptor["requested_lanes"] == ["qualification", "scene_memory", "advanced_geometry"]
     geometry = json.loads((pipeline_dir / "geometry_evidence.json").read_text(encoding="utf-8"))
     assert geometry["object_count"] == 2
     assert geometry["measured_route_width_m"] == 2.0
     assert geometry["adapter_route_width_source"] == "room_profile_lower_quartile"
     task_targets = json.loads((pipeline_dir / "task_targets.json").read_text(encoding="utf-8"))
     assert task_targets["target_object_ids"] == ["70"]
+    handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
+    assert handoff["scene_memory_package"]["scene_memory_manifest_path"] == "scene_memory/scene_memory_manifest.json"
 
     review = run_agent_review(capture_root=result.capture_root, provider_name="openai")
     assert Path(review["final_bundle_path"]).is_file()
