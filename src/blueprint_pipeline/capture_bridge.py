@@ -252,6 +252,7 @@ class CaptureDescriptor:
     evidence_tier: str = "pre_screen_video"
     scaffolding_used: List[str] = field(default_factory=list)
     intake_packet_uri: Optional[str] = None
+    task_hypothesis_uri: Optional[str] = None
     coverage_plan: List[str] = field(default_factory=list)
     calibration_assets: List[str] = field(default_factory=list)
     scaffolding_validation: Dict[str, Any] = field(default_factory=dict)
@@ -355,6 +356,10 @@ class CaptureDescriptor:
                 _optional_str(data.get("intake_packet_uri"))
                 or _optional_str(capture_bundle.get("intake_packet_uri"))
             ),
+            task_hypothesis_uri=(
+                _optional_str(data.get("task_hypothesis_uri"))
+                or _optional_str(capture_bundle.get("task_hypothesis_uri"))
+            ),
             coverage_plan=_normalize_string_list(
                 data.get("coverage_plan") or capture_bundle.get("coverage_plan")
             ),
@@ -415,6 +420,7 @@ class CaptureDescriptor:
             "capture_modality": self.capture_modality,
             "evidence_tier": self.evidence_tier,
             "intake_packet_uri": self.intake_packet_uri,
+            "task_hypothesis_uri": self.task_hypothesis_uri,
         }
         for key, value in optional.items():
             if value is not None:

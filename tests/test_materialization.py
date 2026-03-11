@@ -46,6 +46,21 @@ def test_materialize_capture_bundle_for_metric_iphone(tmp_path: Path) -> None:
             "uncertaintyPriors": {"occlusion_risk": 0.2},
         },
     )
+    _write_json(
+        raw_root / "task_hypothesis.json",
+        {
+            "schema_version": "v1",
+            "workflow_name": "Tote handoff",
+            "task_steps": ["Inbound", "Staging", "Outbound"],
+            "zone": "dock_lane_a",
+            "confidence": 0.91,
+            "source": "ai_inferred",
+            "model": "gemini-3-flash-preview",
+            "fps": 3,
+            "warnings": [],
+            "status": "accepted",
+        },
+    )
     (raw_root / "walkthrough.mov").write_bytes(b"mov")
     (raw_root / "arkit").mkdir(parents=True, exist_ok=True)
     (raw_root / "arkit/poses.jsonl").write_text("{}", encoding="utf-8")
@@ -60,6 +75,8 @@ def test_materialize_capture_bundle_for_metric_iphone(tmp_path: Path) -> None:
 
     assert result["descriptor"]["capture_modality"] == "iphone_arkit_lidar"
     assert result["descriptor"]["requested_lanes"] == ["qualification", "advanced_geometry"]
+    assert result["descriptor"]["task_hypothesis_uri"].endswith("/raw/task_hypothesis.json")
+    assert result["descriptor"]["metadata"]["task_hypothesis"]["workflow_name"] == "Tote handoff"
     assert result["qa_report"]["status"] == "passed"
 
 

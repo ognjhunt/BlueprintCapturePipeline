@@ -128,6 +128,19 @@ def _write_scene_descriptor(
     return descriptor_uri
 
 
+def _write_task_hypothesis(
+    root: Path,
+    *,
+    payload: Mapping[str, Any],
+    scene_id: str = "scene_demo",
+    capture_id: str = "capture_demo",
+) -> None:
+    _write_json(
+        root / "bucket/scenes" / scene_id / "captures" / capture_id / "raw/task_hypothesis.json",
+        payload,
+    )
+
+
 class _StubNurecClient:
     def __init__(self, root: Path, bucket: str, pipeline_prefix: str) -> None:
         self.root = root
@@ -1110,6 +1123,8 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
         "site_intake.json",
         "capture_package_manifest.json",
         "capture_qa_scorecard.json",
+        "task_hypothesis_report.json",
+        "normalized_task_hypothesis.json",
         "task_scope_record.json",
         "qualification_record.json",
         "qualification_brief.json",
@@ -1138,6 +1153,7 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
     handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
     quality_report = json.loads((pipeline_dir / "qualification_quality_report.json").read_text(encoding="utf-8"))
+    task_hypothesis_report = json.loads((pipeline_dir / "task_hypothesis_report.json").read_text(encoding="utf-8"))
     validated_handoff = _validate_handoff_contract(handoff)
 
     assert scorecard["completeness_status"] == "sufficient"
@@ -1149,6 +1165,8 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     assert validated_handoff["site_submission_id"] == "scene_demo:capture_demo"
     assert validated_handoff["opportunity_id"] == "scene_demo:capture_demo"
     assert quality_report["lane"] == "qualification"
+    assert "task_hypothesis_report" in quality_report["artifacts"]
+    assert task_hypothesis_report["task_hypothesis_status"] == "accepted"
     assert "evidence_bundle" in handoff
 
 
@@ -1222,6 +1240,97 @@ def test_qualification_video_only_capture_never_returns_ready(tmp_path: Path) ->
     qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
     assert qualification["readiness_state"] != "ready"
     assert any(item["id"] == "non_metric_capture" for item in qualification["risks"])
+
+
+def test_qualification_low_confidence_task_hypothesis_requires_confirmation(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    _write_task_hypothesis(
+        tmp_path,
+        payload={
+            "schema_version": "v1",
+            "workflow_name": "Pick and place",
+            "task_steps": ["Pick item", "Place item"],
+            "zone": "",
+            "confidence": 0.62,
+            "source": "ai_inferred",
+            "model": "gemini-3-flash-preview",
+            "fps": 3,
+            "warnings": ["Task remains generic."],
+            "status": "needs_confirmation",
+        },
+    )
+    descriptor_path = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/capture_descriptor.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["task_hypothesis_uri"] = "gs://bucket/scenes/scene_demo/captures/capture_demo/raw/task_hypothesis.json"
+    descriptor_path.write_text(json.dumps(descriptor, indent=2), encoding="utf-8")
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=True,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+    )
+
+    assert result["status"] == "completed"
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    report = json.loads((pipeline_dir / "task_hypothesis_report.json").read_text(encoding="utf-8"))
+    scorecard = json.loads((pipeline_dir / "capture_qa_scorecard.json").read_text(encoding="utf-8"))
+    qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
+
+    assert report["task_hypothesis_status"] == "needs_confirmation"
+    assert scorecard["completeness_status"] == "need_more_evidence"
+    assert qualification["readiness_state"] == "not_ready_yet"
+    assert any(item["id"] == "task_hypothesis_needs_confirmation" for item in qualification["risks"])
+
+
+def test_qualification_contradicted_task_hypothesis_marks_high_risk(tmp_path: Path) -> None:
+    descriptor_uri = _write_scene_descriptor(tmp_path)
+    _write_task_hypothesis(
+        tmp_path,
+        payload={
+            "schema_version": "v1",
+            "workflow_name": "Laundry folding",
+            "task_steps": ["Open dryer", "Move clothes to hamper"],
+            "zone": "laundry_room",
+            "confidence": 0.89,
+            "source": "ai_inferred",
+            "model": "gemini-3-flash-preview",
+            "fps": 3,
+            "warnings": [],
+            "status": "accepted",
+        },
+    )
+    descriptor_path = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/capture_descriptor.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["task_hypothesis_uri"] = "gs://bucket/scenes/scene_demo/captures/capture_demo/raw/task_hypothesis.json"
+    descriptor["environment_type_hint"] = "warehouse"
+    descriptor_path.write_text(json.dumps(descriptor, indent=2), encoding="utf-8")
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=OrchestratorConfig(
+            gcs_root=tmp_path,
+            blueprintpipeline_root=Path("/unused"),
+            expected_blueprintpipeline_commit="",
+            fail_on_commit_mismatch=False,
+            runtime_preflight_enabled=True,
+            advanced_quality_config=AdvancedQualityGateConfig(enabled=False),
+        ),
+    )
+
+    assert result["status"] == "completed"
+    pipeline_dir = tmp_path / "bucket/scenes/scene_demo/captures/capture_demo/pipeline"
+    report = json.loads((pipeline_dir / "task_hypothesis_report.json").read_text(encoding="utf-8"))
+    qualification = json.loads((pipeline_dir / "qualification_record.json").read_text(encoding="utf-8"))
+
+    assert report["task_hypothesis_status"] == "contradicted"
+    assert any(item["id"] == "task_hypothesis_contradicted" for item in qualification["risks"])
+    assert qualification["readiness_state"] == "not_ready_yet"
 
 
 def test_capture_pipeline_advanced_lane_preserves_existing_flow(tmp_path: Path) -> None:

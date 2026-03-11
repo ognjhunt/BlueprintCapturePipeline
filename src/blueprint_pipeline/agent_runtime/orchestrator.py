@@ -603,6 +603,8 @@ def run_agent_review(
         "readiness_decision": str(artifacts.pipeline_dir / "readiness_decision.json"),
         "readiness_report": str(artifacts.pipeline_dir / "readiness_report.md"),
         "human_actions_required": str(artifacts.pipeline_dir / "human_actions_required.json"),
+        "task_hypothesis_report": str(artifacts.pipeline_dir / "task_hypothesis_report.json"),
+        "normalized_task_hypothesis": str(artifacts.pipeline_dir / "normalized_task_hypothesis.json"),
         "blocker_register": str(artifacts.pipeline_dir / "blocker_register.json"),
         "agent_blocker_register": str(artifacts.pipeline_dir / "agent_blocker_register.json"),
         "standards_notes": str(artifacts.pipeline_dir / "standards_notes.json"),

@@ -182,10 +182,12 @@ def build_capture_bundle_records(
 
     manifest_path = raw_root / "manifest.json"
     intake_path = raw_root / "intake_packet.json"
+    task_hypothesis_path = raw_root / "task_hypothesis.json"
     context_path = raw_root / "capture_context.json"
 
     manifest = _read_optional_json(manifest_path)
     intake = _read_optional_json(intake_path)
+    task_hypothesis = _read_optional_json(task_hypothesis_path)
     context = _read_optional_json(context_path)
 
     source = _capture_source(manifest, context)
@@ -228,6 +230,7 @@ def build_capture_bundle_records(
     video_candidates = _raw_video_candidates(raw_root)
     raw_video_uri = join_gs_uri(raw_prefix_uri, video_candidates[0]) if video_candidates else str(manifest.get("video_uri") or "").strip() or None
     intake_packet_uri = join_gs_uri(raw_prefix_uri, "intake_packet.json") if intake_path.is_file() else None
+    task_hypothesis_uri = join_gs_uri(raw_prefix_uri, "task_hypothesis.json") if task_hypothesis_path.is_file() else None
     intake_complete = _has_minimum_intake(intake)
     validated_scale_raw = context.get("validatedScaleMeters") or manifest.get("validated_scale_m")
     validated_scale_m = None
@@ -290,6 +293,7 @@ def build_capture_bundle_records(
         "calibration_assets": calibration_assets,
         "uncertainty_priors": uncertainty_priors,
         "scaffolding_validation": scaffolding_validation,
+        "task_hypothesis": task_hypothesis if task_hypothesis else None,
     }
 
     descriptor = {
@@ -312,6 +316,7 @@ def build_capture_bundle_records(
         "intended_space_type": str(manifest.get("intended_space_type") or "default"),
         "scaffolding_used": scaffolding_used,
         "intake_packet_uri": intake_packet_uri,
+        "task_hypothesis_uri": task_hypothesis_uri,
         "coverage_plan": coverage_plan,
         "calibration_assets": calibration_assets,
         "scaffolding_validation": scaffolding_validation,

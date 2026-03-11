@@ -85,14 +85,312 @@ def _string_list(value: Any) -> List[str]:
     return [str(item).strip() for item in values if str(item).strip()]
 
 
-def _has_structured_intake(descriptor: CaptureDescriptor) -> bool:
-    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+def _has_structured_intake_from_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    intake_packet_uri: Optional[str] = None,
+) -> bool:
     task_statement = str(metadata.get("task_statement") or "").strip()
     workflow_context = str(metadata.get("workflow_context") or "").strip()
     task_zone = metadata.get("task_zone") if isinstance(metadata.get("task_zone"), Mapping) else {}
     zone_label = str(task_zone.get("label") or "").strip()
     success_criteria = _string_list(metadata.get("success_criteria"))
-    return bool((task_statement or workflow_context) and (zone_label or descriptor.intake_packet_uri) and success_criteria)
+    return bool((task_statement or workflow_context) and (zone_label or intake_packet_uri) and success_criteria)
+
+
+def _has_structured_intake(descriptor: CaptureDescriptor) -> bool:
+    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    return _has_structured_intake_from_metadata(
+        metadata,
+        intake_packet_uri=descriptor.intake_packet_uri,
+    )
+
+
+_GENERIC_TASK_PHRASES = {
+    "pick and place",
+    "pick-and-place",
+    "pick place",
+    "walkthrough",
+    "walk through",
+    "scan",
+    "mapping",
+    "inspection",
+}
+
+_TASK_OBJECT_KEYWORDS = {
+    "tote": ("tote", "bin", "box", "container", "crate"),
+    "shelf": ("shelf", "rack", "cabinet"),
+    "drawer": ("drawer",),
+    "door": ("door", "gate"),
+    "pallet": ("pallet",),
+    "panel": ("panel", "breaker", "switch", "valve"),
+    "laundry": ("washer", "dryer", "hamper"),
+    "bedroom": ("bed", "dresser", "closet"),
+    "kitchen": ("fridge", "refrigerator", "microwave", "oven", "dishwasher", "sink"),
+}
+
+_INDUSTRIAL_ENVIRONMENTS = {"warehouse", "industrial_unknown", "manufacturing", "fulfillment", "brownfield_site"}
+_RESIDENTIAL_ENVIRONMENTS = {"default", "bedroom", "kitchen"}
+
+
+def _try_read_optional_json_uri(uri: Optional[str], storage_root: Path) -> Optional[Dict[str, Any]]:
+    if not uri:
+        return None
+    try:
+        path = resolve_gs_uri_to_path(uri, storage_root)
+    except Exception:
+        return None
+    return _try_read_json(path)
+
+
+def _task_hypothesis_string(raw: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = raw.get(key)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _task_hypothesis_list(raw: Mapping[str, Any], *keys: str) -> List[str]:
+    for key in keys:
+        value = raw.get(key)
+        items = _string_list(value)
+        if items:
+            return items
+    return []
+
+
+def _normalize_task_hypothesis_source(raw: Mapping[str, Any], descriptor: CaptureDescriptor) -> str:
+    source = _task_hypothesis_string(raw, "source")
+    if source:
+        return source
+    intake_source = (
+        descriptor.metadata.get("intake_source")
+        if isinstance(descriptor.metadata, Mapping)
+        else None
+    )
+    source = str(intake_source or "").strip()
+    if source:
+        return source
+    return "authoritative_intake" if descriptor.intake_packet_uri else "unknown"
+
+
+def _build_task_hypothesis_seed(
+    *,
+    descriptor: CaptureDescriptor,
+    raw_task_hypothesis: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    raw = dict(raw_task_hypothesis) if isinstance(raw_task_hypothesis, Mapping) else {}
+    has_raw_hypothesis = bool(raw)
+
+    workflow_name = _task_hypothesis_string(raw, "workflow_name", "workflowName")
+    if not workflow_name and not has_raw_hypothesis:
+        workflow_name = str(metadata.get("task_statement") or metadata.get("workflow_context") or "").strip()
+
+    task_steps = _task_hypothesis_list(raw, "task_steps", "taskSteps")
+    if not task_steps and not has_raw_hypothesis:
+        task_steps = _string_list(metadata.get("workflow_decomposition")) or _string_list(metadata.get("workflow_context"))
+
+    zone = _task_hypothesis_string(raw, "zone")
+    if not zone and not has_raw_hypothesis:
+        task_zone = metadata.get("task_zone") if isinstance(metadata.get("task_zone"), Mapping) else {}
+        zone = str(task_zone.get("label") or "").strip()
+
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "workflow_name": workflow_name,
+        "task_steps": task_steps,
+        "target_kpi": _task_hypothesis_string(raw, "target_kpi", "targetKPI") or (
+            _string_list(metadata.get("success_criteria"))[:1][0]
+            if (not has_raw_hypothesis and _string_list(metadata.get("success_criteria")))
+            else ""
+        ),
+        "zone": zone,
+        "owner": _task_hypothesis_string(raw, "owner") or (str(metadata.get("owner") or "").strip() if not has_raw_hypothesis else ""),
+        "confidence": _safe_float(raw.get("confidence"), 1.0 if descriptor.intake_packet_uri else 0.0),
+        "source": _normalize_task_hypothesis_source(raw, descriptor),
+        "model": _task_hypothesis_string(raw, "model"),
+        "fps": int(_safe_float(raw.get("fps"), 0.0)) if raw.get("fps") is not None else None,
+        "warnings": _task_hypothesis_list(raw, "warnings"),
+        "status": _task_hypothesis_string(raw, "status") or "accepted",
+    }
+
+
+def _task_hypothesis_object_matches(text: str, object_labels: List[str]) -> List[str]:
+    lowered = text.lower()
+    matches: List[str] = []
+    for semantic_key, keywords in _TASK_OBJECT_KEYWORDS.items():
+        if any(keyword in lowered for keyword in keywords):
+            if any(keyword in label for label in object_labels for keyword in keywords):
+                matches.append(semantic_key)
+    return matches
+
+
+def _task_hypothesis_is_generic(workflow_name: str, task_steps: List[str]) -> bool:
+    lowered = " ".join([workflow_name, *task_steps]).strip().lower()
+    return any(phrase in lowered for phrase in _GENERIC_TASK_PHRASES)
+
+
+def _task_hypothesis_environment_contradictions(
+    *,
+    text: str,
+    environment_hint: str,
+) -> List[str]:
+    contradictions: List[str] = []
+    lowered = text.lower()
+    if environment_hint in _INDUSTRIAL_ENVIRONMENTS and any(keyword in lowered for keyword in ("bedroom", "closet", "laundry", "washer", "dryer")):
+        contradictions.append("The inferred task sounds residential while the capture is tagged as industrial.")
+    if environment_hint in _RESIDENTIAL_ENVIRONMENTS and any(keyword in lowered for keyword in ("pallet", "forklift", "dock", "tote", "aisle")):
+        contradictions.append("The inferred task sounds industrial while the capture is tagged as residential or generic.")
+    return contradictions
+
+
+def _build_task_hypothesis_report(
+    *,
+    descriptor: CaptureDescriptor,
+    raw_task_hypothesis: Optional[Mapping[str, Any]],
+    object_index_entries: List[Mapping[str, Any]],
+    task_targets_payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    hypothesis = _build_task_hypothesis_seed(
+        descriptor=descriptor,
+        raw_task_hypothesis=raw_task_hypothesis,
+    )
+    workflow_name = str(hypothesis.get("workflow_name") or "").strip()
+    task_steps = _string_list(hypothesis.get("task_steps"))
+    target_kpi = str(hypothesis.get("target_kpi") or "").strip()
+    zone = str(hypothesis.get("zone") or "").strip()
+    owner = str(hypothesis.get("owner") or "").strip()
+    source = str(hypothesis.get("source") or "unknown")
+    confidence = _safe_float(hypothesis.get("confidence"), 0.0)
+    warnings = _string_list(hypothesis.get("warnings"))
+
+    object_labels = [
+        str(entry.get("label") or entry.get("name") or "").strip().lower()
+        for entry in object_index_entries
+        if isinstance(entry, Mapping) and str(entry.get("label") or entry.get("name") or "").strip()
+    ]
+    grounded_matches = _task_hypothesis_object_matches(
+        " ".join([workflow_name, *task_steps]),
+        object_labels,
+    )
+    target_ids = _string_list(task_targets_payload.get("target_object_ids"))
+    has_object_grounding = bool(grounded_matches or target_ids)
+    contradictions: List[str] = []
+    if source == "ai_inferred":
+        contradictions = _task_hypothesis_environment_contradictions(
+            text=" ".join([workflow_name, *task_steps]),
+            environment_hint=descriptor.environment_type_hint or "default",
+        )
+    if source == "ai_inferred" and str(hypothesis.get("status") or "").strip() == "rejected":
+        contradictions.append("The app-side AI task hypothesis was rejected before qualification.")
+    generic_task = _task_hypothesis_is_generic(workflow_name, task_steps)
+    if generic_task and not has_object_grounding:
+        warnings.append("Task remains generic without grounded objects or a specific task zone.")
+    if not zone:
+        warnings.append("No task zone was grounded from the current evidence.")
+
+    if contradictions:
+        status = "contradicted"
+    elif source == "ai_inferred":
+        if confidence >= 0.8 and not generic_task and (has_object_grounding or zone):
+            status = "accepted"
+        elif confidence >= 0.6 and (has_object_grounding or zone):
+            status = "accepted_with_warnings"
+        else:
+            status = "needs_confirmation"
+    else:
+        status = "accepted_with_warnings" if warnings else "accepted"
+
+    normalized = {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "task_hypothesis_status": status,
+        "workflow_name": workflow_name,
+        "task_steps": task_steps,
+        "target_kpi": target_kpi or None,
+        "zone": zone or None,
+        "owner": owner or None,
+        "confidence": round(confidence, 4),
+        "source": source,
+        "model": hypothesis.get("model"),
+        "fps": hypothesis.get("fps"),
+        "warnings": warnings,
+        "contradictions": contradictions,
+        "generic_task": generic_task,
+        "grounded_object_labels": grounded_matches,
+        "grounded_target_ids": target_ids,
+    }
+    return {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "task_hypothesis_status": status,
+        "source": source,
+        "confidence": round(confidence, 4),
+        "raw_task_hypothesis": hypothesis,
+        "normalized_task_hypothesis": normalized,
+        "warnings": warnings,
+        "contradictions": contradictions,
+        "evidence_summary": {
+            "object_index_count": len(object_index_entries),
+            "grounded_object_labels": grounded_matches,
+            "grounded_target_ids": target_ids,
+            "environment_hint": descriptor.environment_type_hint or "default",
+        },
+    }
+
+
+def _effective_task_metadata(
+    descriptor: CaptureDescriptor,
+    *,
+    task_hypothesis_report: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    base = dict(descriptor.metadata) if isinstance(descriptor.metadata, Mapping) else {}
+    report = task_hypothesis_report if isinstance(task_hypothesis_report, Mapping) else {}
+    normalized = report.get("normalized_task_hypothesis") if isinstance(report.get("normalized_task_hypothesis"), Mapping) else {}
+    status = str(report.get("task_hypothesis_status") or "").strip()
+    if status not in {"accepted", "accepted_with_warnings"}:
+        base["task_hypothesis_status"] = status or None
+        if normalized:
+            base["task_hypothesis_confidence"] = normalized.get("confidence")
+            base["task_hypothesis_source"] = normalized.get("source")
+        return base
+
+    workflow_name = str(normalized.get("workflow_name") or "").strip()
+    task_steps = _string_list(normalized.get("task_steps"))
+    target_kpi = str(normalized.get("target_kpi") or "").strip()
+    zone = str(normalized.get("zone") or "").strip()
+    owner = str(normalized.get("owner") or "").strip()
+    warnings = _string_list(normalized.get("warnings"))
+
+    if workflow_name:
+        base["task_statement"] = workflow_name
+    if task_steps:
+        base["workflow_context"] = " | ".join(task_steps)
+        base["workflow_decomposition"] = task_steps
+    if target_kpi:
+        base["success_criteria"] = [target_kpi]
+    elif not _string_list(base.get("success_criteria")) and workflow_name:
+        base["success_criteria"] = [f"Confirm whether '{workflow_name}' is ready for downstream review."]
+    if zone:
+        base["task_zone"] = {"label": zone}
+    if owner:
+        base["owner"] = owner
+    base["task_hypothesis_status"] = status
+    base["task_hypothesis_confidence"] = normalized.get("confidence")
+    base["task_hypothesis_source"] = normalized.get("source")
+    if warnings:
+        base["task_hypothesis_warnings"] = warnings
+    return base
+
 
 
 def _modality_supports_metric_automation(descriptor: CaptureDescriptor) -> bool:
@@ -248,6 +546,7 @@ def _build_capture_package_manifest(
     qa_report_uri: str,
     manifest_uri: Optional[str],
     object_index_uri: Optional[str],
+    task_hypothesis_uri: Optional[str],
     storage_root: Path,
     object_index_entries: List[Mapping[str, Any]],
 ) -> Dict[str, Any]:
@@ -286,6 +585,11 @@ def _build_capture_package_manifest(
             "uri": descriptor.arkit_intrinsics_uri,
             "exists": _safe_path_exists(descriptor.arkit_intrinsics_uri, storage_root),
         },
+        {
+            "name": "task_hypothesis",
+            "uri": task_hypothesis_uri,
+            "exists": _safe_path_exists(task_hypothesis_uri, storage_root),
+        },
     ]
     return {
         "schema_version": "v1",
@@ -299,6 +603,7 @@ def _build_capture_package_manifest(
         "raw_prefix_uri": descriptor.raw_prefix_uri,
         "raw_manifest_uri": manifest_uri,
         "object_index_uri": object_index_uri,
+        "task_hypothesis_uri": task_hypothesis_uri,
         "evidence_items": evidence_items,
         "counts": {
             "object_index_count": len(object_index_entries),
@@ -315,11 +620,18 @@ def _build_completeness_scorecard(
     manifest: Optional[IOSManifest],
     object_index_uri: Optional[str],
     object_index_entries: List[Mapping[str, Any]],
+    metadata_override: Optional[Mapping[str, Any]] = None,
+    task_hypothesis_report: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     qa_status = str(qa_report.get("status") or "missing").strip().lower()
-    structured_intake = _has_structured_intake(descriptor)
+    metadata = metadata_override if isinstance(metadata_override, Mapping) else descriptor.metadata
+    structured_intake = _has_structured_intake_from_metadata(
+        metadata if isinstance(metadata, Mapping) else {},
+        intake_packet_uri=descriptor.intake_packet_uri,
+    )
     metric_ready = _modality_supports_metric_automation(descriptor)
     calibration_sufficient = descriptor.capture_modality != "glasses_plus_scaffolding" or bool(descriptor.calibration_assets)
+    task_hypothesis_status = str(task_hypothesis_report.get("task_hypothesis_status") or "").strip() if isinstance(task_hypothesis_report, Mapping) else ""
     checks = [
         QualificationGate(
             "qa_report_present",
@@ -361,6 +673,13 @@ def _build_completeness_scorecard(
             else "missing workflow, zone, or success criteria",
         ),
         QualificationGate(
+            "task_hypothesis_verified",
+            task_hypothesis_status in {"", "accepted", "accepted_with_warnings"},
+            "task hypothesis accepted"
+            if task_hypothesis_status in {"", "accepted", "accepted_with_warnings"}
+            else f"task hypothesis status is {task_hypothesis_status}",
+        ),
+        QualificationGate(
             "metric_capture_supported",
             metric_ready,
             "capture modality supports geometry-backed automation"
@@ -388,6 +707,7 @@ def _build_completeness_scorecard(
         "qa_status": qa_status,
         "capture_modality": descriptor.capture_modality,
         "completeness_status": completeness_status,
+        "task_hypothesis_status": task_hypothesis_status or None,
         "score": score,
         "checks": [check.to_dict() for check in checks],
         "follow_ups": follow_ups,
@@ -399,6 +719,7 @@ def _build_task_scope_record(
     descriptor: CaptureDescriptor,
     task_targets_payload: Mapping[str, Any],
     completeness_status: str,
+    metadata_override: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     target_object_ids = [
         str(value)
@@ -415,7 +736,9 @@ def _build_task_scope_record(
         for item in task_targets_payload.get("tasks", [])
         if isinstance(item, Mapping)
     ]
-    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    metadata = metadata_override if isinstance(metadata_override, Mapping) else (
+        descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    )
     assumptions = [
         str(item).strip()
         for item in metadata.get("assumptions", [])
@@ -465,6 +788,8 @@ def _build_task_scope_record(
         "assumptions": assumptions,
         "blockers": blockers,
         "success_criteria": success_criteria,
+        "task_hypothesis_status": metadata.get("task_hypothesis_status"),
+        "task_hypothesis_confidence": metadata.get("task_hypothesis_confidence"),
     }
 
 
@@ -485,6 +810,7 @@ def _build_qualification_record(
     target_object_ids = scope_record.get("target_object_ids", [])
     articulation_required_ids = scope_record.get("articulation_required_ids", [])
     scope_status = str(scope_record.get("scope_status") or "needs_clarification")
+    task_hypothesis_status = str(scope_record.get("task_hypothesis_status") or "").strip()
     metric_ready = _modality_supports_metric_automation(descriptor)
     route_widths = []
     target_distances = []
@@ -580,6 +906,24 @@ def _build_qualification_record(
                 "detail": "Task scope remains ambiguous from the available capture evidence.",
             }
         )
+    if task_hypothesis_status == "needs_confirmation":
+        risks.append(
+            {
+                "id": "task_hypothesis_needs_confirmation",
+                "severity": "medium",
+                "category": "scoping",
+                "detail": "AI task hypothesis needs confirmation before the workflow can be trusted.",
+            }
+        )
+    if task_hypothesis_status == "contradicted":
+        risks.append(
+            {
+                "id": "task_hypothesis_contradicted",
+                "severity": "high",
+                "category": "scoping",
+                "detail": "AI task hypothesis contradicts the current capture evidence.",
+            }
+        )
     if articulation_required_ids:
         risks.append(
             {
@@ -645,6 +989,12 @@ def _build_qualification_record(
     confidence = round(sum(rubric_scores) / float(len(rubric_scores) or 1), 4)
     if scope_status == "scoped":
         confidence = round(min(1.0, confidence + 0.05), 4)
+    if task_hypothesis_status == "accepted_with_warnings":
+        confidence = round(max(0.0, confidence - 0.08), 4)
+    elif task_hypothesis_status == "needs_confirmation":
+        confidence = round(max(0.0, confidence - 0.12), 4)
+    elif task_hypothesis_status == "contradicted":
+        confidence = round(max(0.0, confidence - 0.2), 4)
 
     if completeness_status != "sufficient":
         readiness_state = "not_ready_yet"
@@ -725,8 +1075,11 @@ def _build_opportunity_handoff(
     brief: Mapping[str, Any],
     config: Any,
     pipeline_dir: Path,
+    metadata_override: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    metadata = metadata_override if isinstance(metadata_override, Mapping) else (
+        descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    )
     readiness_state = str(qualification_record.get("readiness_state") or "not_ready_yet")
     completeness_status = str(scorecard.get("completeness_status") or "need_more_evidence")
     confidence = float(qualification_record.get("confidence") or 0.0)
@@ -815,6 +1168,8 @@ def _build_opportunity_handoff(
         "confidence": confidence,
         "risks": qualification_record.get("risks", []),
         "qualification_focus": "neutral_site_readiness",
+        "task_hypothesis_status": metadata.get("task_hypothesis_status"),
+        "task_hypothesis_confidence": metadata.get("task_hypothesis_confidence"),
     }
     if target_robot_team or metadata.get("robot_platform") or getattr(config, "robot_type", None):
         robot_platform = (
@@ -867,6 +1222,8 @@ def _build_pipeline_summary(
             "task_scope_record_uri": f"gs://{bucket}/{pipeline_prefix}/task_scope_record.json",
             "qualification_record_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
             "qualification_brief_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_brief.json",
+            "task_hypothesis_report_uri": f"gs://{bucket}/{pipeline_prefix}/task_hypothesis_report.json",
+            "normalized_task_hypothesis_uri": f"gs://{bucket}/{pipeline_prefix}/normalized_task_hypothesis.json",
             "opportunity_handoff_uri": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
             "runtime_preflight_report_uri": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
             "human_actions_required_uri": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
@@ -878,6 +1235,8 @@ def _build_pipeline_summary(
             "site_intake": _local_file_pointer(pipeline_dir / "site_intake.json"),
             "capture_package_manifest": _local_file_pointer(pipeline_dir / "capture_package_manifest.json"),
             "capture_qa_scorecard": _local_file_pointer(pipeline_dir / "capture_qa_scorecard.json"),
+            "task_hypothesis_report": _local_file_pointer(pipeline_dir / "task_hypothesis_report.json"),
+            "normalized_task_hypothesis": _local_file_pointer(pipeline_dir / "normalized_task_hypothesis.json"),
             "task_scope_record": _local_file_pointer(pipeline_dir / "task_scope_record.json"),
             "qualification_record": _local_file_pointer(pipeline_dir / "qualification_record.json"),
             "qualification_brief": _local_file_pointer(pipeline_dir / "qualification_brief.json"),
@@ -1416,6 +1775,7 @@ def _render_readiness_report(
     readiness_decision: Mapping[str, Any],
     blocker_register: Mapping[str, Any],
     human_actions_required: Optional[Mapping[str, Any]] = None,
+    task_hypothesis_report: Optional[Mapping[str, Any]] = None,
 ) -> str:
     lines = [
         f"# Readiness Report: {descriptor.scene_id}/{descriptor.capture_id}",
@@ -1425,6 +1785,7 @@ def _render_readiness_report(
         f"- Capture modality: `{descriptor.capture_modality}`",
         f"- Evidence tier: `{descriptor.evidence_tier}`",
         f"- Human review required: `{bool(readiness_decision.get('human_review_required'))}`",
+        f"- Task hypothesis status: `{str(task_hypothesis_report.get('task_hypothesis_status') or 'not_available') if isinstance(task_hypothesis_report, Mapping) else 'not_available'}`",
         "",
         "## Review Scope",
     ]
@@ -1599,6 +1960,7 @@ def run_qualification_pipeline(
         object_index_uri: Optional[str] = None
         object_index_path: Optional[Path] = None
         object_index_entries: List[Mapping[str, Any]] = []
+        raw_task_hypothesis: Optional[Dict[str, Any]] = None
 
         try:
             manifest = load_raw_manifest(descriptor.raw_prefix_uri, gcs_root=storage_root)
@@ -1612,6 +1974,11 @@ def run_qualification_pipeline(
             manifest = None
             object_index_uri = None
             object_index_entries = []
+
+        raw_task_hypothesis = _try_read_optional_json_uri(
+            descriptor.task_hypothesis_uri,
+            storage_root,
+        )
 
         stage = "runtime_preflight"
         if getattr(config, "runtime_preflight_enabled", True):
@@ -1639,54 +2006,6 @@ def run_qualification_pipeline(
             )
         )
 
-        stage = "intake"
-        metadata_mapping = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
-        site_intake = {
-            "schema_version": "v1",
-            "lane": "qualification",
-            "scene_id": descriptor.scene_id,
-            "capture_id": descriptor.capture_id,
-            "generated_at": utc_now_iso(),
-            "descriptor": descriptor.to_dict(),
-            "descriptor_uri": descriptor_gcs_uri,
-            "qa_report_uri": qa_report_uri,
-            "site_identity": {
-                "scene_id": descriptor.scene_id,
-                "capture_id": descriptor.capture_id,
-                "environment_type_hint": descriptor.environment_type_hint or "unknown",
-                "capture_modality": descriptor.capture_modality,
-            },
-            "task_context": {
-                "buyer_type": metadata_mapping.get("buyer_type"),
-                "task_statement": metadata_mapping.get("task_statement"),
-                "workflow_context": metadata_mapping.get("workflow_context"),
-                "operating_hours": metadata_mapping.get("operating_hours"),
-                "workflow_decomposition": _string_list(metadata_mapping.get("workflow_decomposition"))
-                or _string_list(metadata_mapping.get("workflow_context")),
-                "task_zone": metadata_mapping.get("task_zone") if isinstance(metadata_mapping.get("task_zone"), Mapping) else {},
-                "success_criteria": _string_list(metadata_mapping.get("success_criteria")),
-                "owner": metadata_mapping.get("owner"),
-                "adjacent_systems": _string_list(metadata_mapping.get("adjacent_systems")),
-                "non_routine_modes": _string_list(metadata_mapping.get("non_routine_modes")),
-                "people_traffic_notes": _string_list(metadata_mapping.get("people_traffic_notes")),
-            },
-            "constraints": {
-                "privacy_restrictions": metadata_mapping.get("privacy_restrictions"),
-                "security_restrictions": metadata_mapping.get("security_restrictions"),
-                "known_blockers": metadata_mapping.get("known_blockers") if isinstance(metadata_mapping, Mapping) else [],
-                "safety_concerns": metadata_mapping.get("safety_concerns") if isinstance(metadata_mapping, Mapping) else [],
-                "capture_restrictions": _string_list(metadata_mapping.get("capture_restrictions")),
-            },
-            "capture_plan": {
-                "scaffolding_used": list(descriptor.scaffolding_used),
-                "coverage_plan": list(descriptor.coverage_plan),
-                "calibration_assets": list(descriptor.calibration_assets),
-                "uncertainty_priors": dict(descriptor.uncertainty_priors),
-            },
-        }
-        write_json(pipeline_dir / "site_intake.json", site_intake)
-        gates.append(QualificationGate("intake_gate", True, "descriptor parsed and intake record written"))
-
         stage = "capture_package_manifest"
         capture_package_manifest = _build_capture_package_manifest(
             descriptor=descriptor,
@@ -1694,6 +2013,7 @@ def run_qualification_pipeline(
             qa_report_uri=qa_report_uri,
             manifest_uri=manifest_uri,
             object_index_uri=object_index_uri,
+            task_hypothesis_uri=descriptor.task_hypothesis_uri,
             storage_root=storage_root,
             object_index_entries=object_index_entries,
         )
@@ -1719,6 +2039,87 @@ def run_qualification_pipeline(
         task_targets_with_index["object_index_entries"] = [dict(item) for item in object_index_entries]
         write_task_targets(pipeline_dir / "task_targets.json", task_targets_with_index)
 
+        stage = "task_hypothesis_verification"
+        task_hypothesis_report = _build_task_hypothesis_report(
+            descriptor=descriptor,
+            raw_task_hypothesis=raw_task_hypothesis,
+            object_index_entries=object_index_entries,
+            task_targets_payload=task_targets_payload,
+        )
+        normalized_task_hypothesis = (
+            dict(task_hypothesis_report.get("normalized_task_hypothesis"))
+            if isinstance(task_hypothesis_report.get("normalized_task_hypothesis"), Mapping)
+            else {}
+        )
+        effective_metadata = _effective_task_metadata(
+            descriptor,
+            task_hypothesis_report=task_hypothesis_report,
+        )
+        write_json(pipeline_dir / "task_hypothesis_report.json", task_hypothesis_report)
+        write_json(pipeline_dir / "normalized_task_hypothesis.json", normalized_task_hypothesis)
+        gates.append(
+            QualificationGate(
+                "task_hypothesis_gate",
+                str(task_hypothesis_report.get("task_hypothesis_status") or "accepted")
+                in {"accepted", "accepted_with_warnings"},
+                f"task_hypothesis_status={task_hypothesis_report.get('task_hypothesis_status')}",
+            )
+        )
+
+        stage = "intake"
+        site_intake = {
+            "schema_version": "v1",
+            "lane": "qualification",
+            "scene_id": descriptor.scene_id,
+            "capture_id": descriptor.capture_id,
+            "generated_at": utc_now_iso(),
+            "descriptor": descriptor.to_dict(),
+            "descriptor_uri": descriptor_gcs_uri,
+            "qa_report_uri": qa_report_uri,
+            "task_hypothesis_report_uri": f"gs://{bucket}/{pipeline_prefix}/task_hypothesis_report.json",
+            "normalized_task_hypothesis_uri": f"gs://{bucket}/{pipeline_prefix}/normalized_task_hypothesis.json",
+            "site_identity": {
+                "scene_id": descriptor.scene_id,
+                "capture_id": descriptor.capture_id,
+                "environment_type_hint": descriptor.environment_type_hint or "unknown",
+                "capture_modality": descriptor.capture_modality,
+            },
+            "task_context": {
+                "buyer_type": effective_metadata.get("buyer_type"),
+                "task_statement": effective_metadata.get("task_statement"),
+                "workflow_context": effective_metadata.get("workflow_context"),
+                "operating_hours": effective_metadata.get("operating_hours"),
+                "workflow_decomposition": _string_list(effective_metadata.get("workflow_decomposition"))
+                or _string_list(effective_metadata.get("workflow_context")),
+                "task_zone": effective_metadata.get("task_zone") if isinstance(effective_metadata.get("task_zone"), Mapping) else {},
+                "success_criteria": _string_list(effective_metadata.get("success_criteria")),
+                "owner": effective_metadata.get("owner"),
+                "adjacent_systems": _string_list(effective_metadata.get("adjacent_systems")),
+                "non_routine_modes": _string_list(effective_metadata.get("non_routine_modes")),
+                "people_traffic_notes": _string_list(effective_metadata.get("people_traffic_notes")),
+                "task_hypothesis_status": effective_metadata.get("task_hypothesis_status"),
+                "task_hypothesis_confidence": effective_metadata.get("task_hypothesis_confidence"),
+                "task_hypothesis_source": effective_metadata.get("task_hypothesis_source"),
+                "task_hypothesis_warnings": _string_list(effective_metadata.get("task_hypothesis_warnings")),
+            },
+            "constraints": {
+                "privacy_restrictions": effective_metadata.get("privacy_restrictions"),
+                "security_restrictions": effective_metadata.get("security_restrictions"),
+                "known_blockers": effective_metadata.get("known_blockers") if isinstance(effective_metadata, Mapping) else [],
+                "safety_concerns": effective_metadata.get("safety_concerns") if isinstance(effective_metadata, Mapping) else [],
+                "capture_restrictions": _string_list(effective_metadata.get("capture_restrictions")),
+            },
+            "capture_plan": {
+                "scaffolding_used": list(descriptor.scaffolding_used),
+                "coverage_plan": list(descriptor.coverage_plan),
+                "calibration_assets": list(descriptor.calibration_assets),
+                "uncertainty_priors": dict(descriptor.uncertainty_priors),
+            },
+            "task_hypothesis": dict(raw_task_hypothesis) if isinstance(raw_task_hypothesis, Mapping) else {},
+        }
+        write_json(pipeline_dir / "site_intake.json", site_intake)
+        gates.append(QualificationGate("intake_gate", True, "descriptor parsed and intake record written"))
+
         stage = "completeness"
         scorecard = _build_completeness_scorecard(
             descriptor=descriptor,
@@ -1726,6 +2127,8 @@ def run_qualification_pipeline(
             manifest=manifest,
             object_index_uri=object_index_uri,
             object_index_entries=object_index_entries,
+            metadata_override=effective_metadata,
+            task_hypothesis_report=task_hypothesis_report,
         )
         write_json(pipeline_dir / "capture_qa_scorecard.json", scorecard)
         gates.append(
@@ -1741,6 +2144,7 @@ def run_qualification_pipeline(
             descriptor=descriptor,
             task_targets_payload=task_targets_payload,
             completeness_status=str(scorecard.get("completeness_status") or "need_more_evidence"),
+            metadata_override=effective_metadata,
         )
         write_json(pipeline_dir / "task_scope_record.json", scope_record)
         gates.append(
@@ -1814,6 +2218,7 @@ def run_qualification_pipeline(
             brief=qualification_brief,
             config=config,
             pipeline_dir=pipeline_dir,
+            metadata_override=effective_metadata,
         )
         opportunity_handoff["evidence_bundle"] = {
             "scene_graph_uri": f"gs://{bucket}/{pipeline_prefix}/scene_graph.json",
@@ -1822,6 +2227,8 @@ def run_qualification_pipeline(
             "capability_checks_uri": f"gs://{bucket}/{pipeline_prefix}/capability_checks.json",
             "blocker_register_uri": f"gs://{bucket}/{pipeline_prefix}/blocker_register.json",
             "readiness_decision_uri": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
+            "task_hypothesis_report_uri": f"gs://{bucket}/{pipeline_prefix}/task_hypothesis_report.json",
+            "normalized_task_hypothesis_uri": f"gs://{bucket}/{pipeline_prefix}/normalized_task_hypothesis.json",
         }
         opportunity_handoff["readiness_state"] = readiness_decision.get("status")
         opportunity_handoff["qualification_state"] = readiness_decision.get("status")
@@ -1846,6 +2253,7 @@ def run_qualification_pipeline(
                 readiness_decision=readiness_decision,
                 blocker_register=blocker_register,
                 human_actions_required=human_actions_required,
+                task_hypothesis_report=task_hypothesis_report,
             ),
         )
         write_json(pipeline_dir / "opportunity_handoff.json", opportunity_handoff)
@@ -1889,6 +2297,8 @@ def run_qualification_pipeline(
                 "site_intake": f"gs://{bucket}/{pipeline_prefix}/site_intake.json",
                 "capture_package_manifest": f"gs://{bucket}/{pipeline_prefix}/capture_package_manifest.json",
                 "capture_qa_scorecard": f"gs://{bucket}/{pipeline_prefix}/capture_qa_scorecard.json",
+                "task_hypothesis_report": f"gs://{bucket}/{pipeline_prefix}/task_hypothesis_report.json",
+                "normalized_task_hypothesis": f"gs://{bucket}/{pipeline_prefix}/normalized_task_hypothesis.json",
                 "task_scope_record": f"gs://{bucket}/{pipeline_prefix}/task_scope_record.json",
                 "qualification_record": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
                 "qualification_brief": f"gs://{bucket}/{pipeline_prefix}/qualification_brief.json",

@@ -31,6 +31,8 @@ class PipelineReviewArtifacts:
     readiness_report: str
     opportunity_handoff: Dict[str, Any]
     human_actions_required: Dict[str, Any]
+    task_hypothesis_report: Dict[str, Any]
+    normalized_task_hypothesis: Dict[str, Any]
     supplemental_geometry: List[Dict[str, Any]]
 
     @property
@@ -119,6 +121,14 @@ def load_pipeline_review_artifacts(capture_root: str | Path) -> PipelineReviewAr
         human_actions_required=_read_required_json(
             context.pipeline_root / "human_actions_required.json",
             "human_actions_required",
+        ),
+        task_hypothesis_report=_read_required_json(
+            context.pipeline_root / "task_hypothesis_report.json",
+            "task_hypothesis_report",
+        ),
+        normalized_task_hypothesis=_read_required_json(
+            context.pipeline_root / "normalized_task_hypothesis.json",
+            "normalized_task_hypothesis",
         ),
         supplemental_geometry=_supplemental_geometry(context),
     )
