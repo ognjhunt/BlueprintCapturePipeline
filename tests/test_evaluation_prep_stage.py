@@ -116,15 +116,20 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     rich_handoff = json.loads((capture_root / "pipeline" / "evaluation_prep" / "qualified_opportunity_handoff.json").read_text(encoding="utf-8"))
     anchors = json.loads((capture_root / "pipeline" / "evaluation_prep" / "task_anchor_manifest.json").read_text(encoding="utf-8"))
+    hosted_runtime = json.loads((capture_root / "pipeline" / "evaluation_prep" / "hosted_session_runtime_manifest.json").read_text(encoding="utf-8"))
     summary = json.loads((capture_root / "pipeline" / "evaluation_prep" / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
 
     assert manifest["status"] == "ready_for_validation"
     assert manifest["artifacts"]["qualified_opportunity_handoff"] == "qualified_opportunity_handoff.json"
     assert manifest["artifacts"]["scene_memory_bundle_manifest"] == "scene_memory_bundle_manifest.json"
+    assert manifest["artifacts"]["hosted_session_runtime_manifest"] == "hosted_session_runtime_manifest.json"
     assert rich_handoff["qualification_state"] == "ready"
     assert rich_handoff["downstream_evaluation_eligibility"] is True
     assert rich_handoff["scene_memory_package"]["scene_memory_manifest_path"] == "../scene_memory/scene_memory_manifest.json"
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
+    assert hosted_runtime["launchable"] is True
+    assert hosted_runtime["default_backend"] == "neoverse"
+    assert "task-1" in hosted_runtime["task_ids"]
     assert summary["task_count"] == 1
     assert summary["object_count"] == 1
 
@@ -140,7 +145,9 @@ def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_
 
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     review_queue = json.loads((capture_root / "pipeline" / "evaluation_prep" / "review_queue.json").read_text(encoding="utf-8"))
+    hosted_runtime = json.loads((capture_root / "pipeline" / "evaluation_prep" / "hosted_session_runtime_manifest.json").read_text(encoding="utf-8"))
 
     assert manifest["status"] == "ready_for_validation"
     assert "geometry_bundle:missing" not in manifest["degradation_reasons"]
     assert any(item["kind"] == "incomplete_geometry_bundle" and item["severity"] == "low" for item in review_queue["items"])
+    assert hosted_runtime["launchable"] is True

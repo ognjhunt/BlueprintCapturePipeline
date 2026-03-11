@@ -435,6 +435,136 @@ def _build_review_queue(
     return {"schema_version": "v1", "generated_at": utc_now_iso(), "items": items}
 
 
+def _gs_uri(context, relative_path: str) -> str:
+    return f"gs://{context.bucket}/{context.capture_prefix}/pipeline/{relative_path}"
+
+
+def _build_hosted_session_runtime_manifest(
+    *,
+    context,
+    normalized_handoff: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
+    task_anchor_manifest: Mapping[str, Any],
+    task_run_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    adapter_key_map = {
+        "neoverse": "neoverse_adapter_manifest_path",
+        "gen3c": "gen3c_adapter_manifest_path",
+        "cosmos_transfer": "cosmos_transfer_adapter_manifest_path",
+    }
+    available_backends = [
+        backend
+        for backend, key in adapter_key_map.items()
+        if str(scene_memory_bundle_manifest.get(key) or "").strip()
+    ]
+    preferred_order = ["neoverse", "gen3c", "cosmos_transfer"]
+    default_backend = next((backend for backend in preferred_order if backend in available_backends), None)
+
+    tasks = (
+        task_anchor_manifest.get("tasks")
+        if isinstance(task_anchor_manifest.get("tasks"), list)
+        else []
+    )
+    task_ids = [
+        str(task.get("task_id") or "")
+        for task in tasks
+        if isinstance(task, Mapping) and str(task.get("task_id") or "").strip()
+    ]
+    task_texts = [
+        str(task.get("task_text") or "")
+        for task in tasks
+        if isinstance(task, Mapping) and str(task.get("task_text") or "").strip()
+    ]
+    start_states = []
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            continue
+        task_text = str(task.get("task_text") or task.get("task_id") or "").strip()
+        if task_text and task_text not in start_states:
+            start_states.append(task_text)
+    if not start_states:
+        start_states = [
+            str(text).strip()
+            for text in (
+                task_run_manifest.get("start_states")
+                if isinstance(task_run_manifest, Mapping)
+                else []
+            )
+            or []
+            if str(text).strip()
+        ]
+    if not start_states:
+        start_states = ["default_start_state"]
+
+    scenario_variants = ["default", "counterfactual_lighting", "counterfactual_clutter"]
+    if str(scene_memory_bundle_manifest.get("preview_simulation_manifest_path") or "").strip():
+        scenario_variants.insert(0, "preview_simulation_default")
+
+    launch_blockers: List[str] = []
+    if str(normalized_handoff.get("qualification_state") or "").strip().lower() != "ready":
+        launch_blockers.append(
+            f"qualification_state:{normalized_handoff.get('qualification_state')}"
+        )
+    if not bool(normalized_handoff.get("downstream_evaluation_eligibility")):
+        launch_blockers.append("downstream_evaluation_eligibility:false")
+    if scene_memory_bundle_manifest.get("status") != "complete":
+        launch_blockers.append(
+            f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}"
+        )
+    if not task_ids:
+        launch_blockers.append("missing_task_anchor_manifest")
+    if not available_backends:
+        launch_blockers.append("runtime_manifest_only")
+
+    return {
+        "schema_version": "v1",
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "site_submission_id": str(
+            normalized_handoff.get("site_submission_id") or context.capture_id
+        ),
+        "pipeline_prefix": f"{context.capture_prefix}/pipeline",
+        "scene_memory_manifest_uri": _gs_uri(
+            context, "scene_memory/scene_memory_manifest.json"
+        ),
+        "conditioning_bundle_uri": _gs_uri(
+            context, "scene_memory/conditioning_bundle.json"
+        ),
+        "preview_simulation_manifest_uri": (
+            _gs_uri(context, "preview_simulation/preview_simulation_manifest.json")
+            if str(scene_memory_bundle_manifest.get("preview_simulation_manifest_path") or "").strip()
+            else None
+        ),
+        "task_anchor_manifest_uri": _gs_uri(
+            context, "evaluation_prep/task_anchor_manifest.json"
+        ),
+        "task_run_manifest_uri": _gs_uri(
+            context, "evaluation_prep/task_run_manifest.json"
+        ),
+        "available_backends": available_backends,
+        "default_backend": default_backend,
+        "task_ids": task_ids,
+        "task_texts": task_texts,
+        "start_states": start_states,
+        "scenario_variants": scenario_variants,
+        "export_defaults": [
+            "rollout_video",
+            "action_trace",
+            "score",
+            "summary_metrics",
+        ],
+        "launchable": len(launch_blockers) == 0,
+        "launch_blockers": launch_blockers,
+        "adapter_manifest_uris": {
+            backend: _gs_uri(
+                context, f"scene_memory/adapter_manifests/{backend}.json"
+            )
+            for backend in available_backends
+        },
+        "generated_at": utc_now_iso(),
+    }
+
+
 def run_evaluation_prep_stage(
     *,
     capture_root: str | Path,
@@ -501,6 +631,16 @@ def run_evaluation_prep_stage(
     )
     task_anchor_manifest_path = eval_dir / "task_anchor_manifest.json"
     _copy_json(task_anchor_manifest_path, task_anchor_manifest)
+
+    hosted_session_runtime_manifest = _build_hosted_session_runtime_manifest(
+        context=context,
+        normalized_handoff=normalized_handoff,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        task_anchor_manifest=task_anchor_manifest,
+        task_run_manifest=task_run_manifest,
+    )
+    hosted_session_runtime_manifest_path = eval_dir / "hosted_session_runtime_manifest.json"
+    _copy_json(hosted_session_runtime_manifest_path, hosted_session_runtime_manifest)
 
     simready_prep_manifest_path = None
     simready_scene_manifest = _read_optional_json_any(pipeline_dir / "simready" / "simready_scene_manifest.json")
@@ -590,6 +730,9 @@ def run_evaluation_prep_stage(
             "geometry_bundle_manifest": _relative_to(eval_dir, geometry_bundle_manifest_path),
             "task_run_manifest": _relative_to(eval_dir, task_run_manifest_path),
             "task_anchor_manifest": _relative_to(eval_dir, task_anchor_manifest_path),
+            "hosted_session_runtime_manifest": _relative_to(
+                eval_dir, hosted_session_runtime_manifest_path
+            ),
             "object_geometry_manifest": _relative_to(eval_dir, object_geometry_target_path),
             "evaluation_prep_summary": _relative_to(eval_dir, summary_path),
             "review_queue": _relative_to(eval_dir, review_queue_path),
