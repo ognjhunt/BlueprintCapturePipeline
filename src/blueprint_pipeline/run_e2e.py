@@ -6,6 +6,7 @@ import argparse
 from typing import List, Optional
 
 from .agent_runtime.orchestrator import run_agent_review
+from .agent_runtime.openai_phase2 import OpenAIPhase2Config
 from .capture_orchestrator import run_capture_pipeline
 from .common import PipelineError
 from .local_capture import resolve_local_capture_context
@@ -18,6 +19,7 @@ def run_end_to_end(
     *,
     capture_root: str,
     provider: str,
+    openai_phase2_config: Optional[OpenAIPhase2Config] = None,
 ) -> dict:
     context = resolve_local_capture_context(capture_root)
     preflight = build_capture_preflight_report(context.capture_root)
@@ -47,6 +49,7 @@ def run_end_to_end(
         capture_root=context.capture_root,
         provider_name=provider,
         mode="qualification",
+        openai_phase2_config=openai_phase2_config,
     )
     return {
         "schema_version": "v1",
@@ -64,10 +67,38 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run a local capture end to end")
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
     parser.add_argument("--provider", required=True, choices=("claude", "openai"))
+    parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))
+    parser.add_argument("--openai-phase2-model")
+    parser.add_argument("--openai-phase2-codex-bin")
+    parser.add_argument("--openai-phase2-timeout-seconds", type=int)
+    parser.add_argument("--openai-phase2-reasoning-effort")
     args = parser.parse_args(argv)
 
+    openai_phase2_config = None
+    if any(
+        [
+            args.openai_phase2_mode,
+            args.openai_phase2_model,
+            args.openai_phase2_codex_bin,
+            args.openai_phase2_timeout_seconds,
+            args.openai_phase2_reasoning_effort,
+        ]
+    ):
+        env_default = OpenAIPhase2Config.from_env()
+        openai_phase2_config = OpenAIPhase2Config(
+            mode=args.openai_phase2_mode or env_default.mode,
+            model=args.openai_phase2_model or env_default.model,
+            codex_bin=args.openai_phase2_codex_bin or env_default.codex_bin,
+            timeout_seconds=int(args.openai_phase2_timeout_seconds or env_default.timeout_seconds),
+            reasoning_effort=args.openai_phase2_reasoning_effort or env_default.reasoning_effort,
+        )
+
     try:
-        result = run_end_to_end(capture_root=args.capture_root, provider=args.provider)
+        result = run_end_to_end(
+            capture_root=args.capture_root,
+            provider=args.provider,
+            openai_phase2_config=openai_phase2_config,
+        )
     except Exception as exc:
         print(f"[run-e2e] FAILED: {exc}")
         return 1

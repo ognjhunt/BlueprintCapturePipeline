@@ -50,6 +50,8 @@ blueprint-preflight-capture = "blueprint_pipeline.preflight_capture:main"
 blueprint-agent-review = "blueprint_pipeline.agent_review_cli:main"
 blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"
 blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"
+blueprint-adapt-interiorgs = "blueprint_pipeline.interiorgs_phase2_adapter:main"
+blueprint-interiorgs-phase2-summary = "blueprint_pipeline.interiorgs_phase2_summary:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

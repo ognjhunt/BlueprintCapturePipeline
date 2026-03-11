@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline.agent_runtime.orchestrator import run_agent_review
+from blueprint_pipeline.agent_runtime.openai_phase2 import OpenAIPhase2Config
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
 from blueprint_pipeline.materialization import materialize_capture_bundle
 from blueprint_pipeline.run_e2e import run_end_to_end
@@ -13,6 +14,12 @@ from blueprint_pipeline.swap_orchestrator import OrchestratorConfig
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
 
 
 def _raw_capture_root(tmp_path: Path, scene_id: str = "scene_agent", capture_id: str = "cap_agent") -> Path:
@@ -132,6 +139,84 @@ def test_agent_review_allows_provider_override_for_openai(tmp_path: Path) -> Non
     assert bundle["provider"] == "openai"
     assert any(step["skill_name"] == "oem_handoff_writer" and step["source"] == "provider_override" for step in bundle["steps"])
     assert oem["summary"] == "mock"
+
+
+def test_agent_review_uses_codex_phase2_runner_when_enabled(tmp_path: Path) -> None:
+    capture_root = _build_raw_capture(tmp_path, scene_id="scene_codex", capture_id="cap_codex")
+    _run_qualification_for_raw_capture(capture_root)
+    fake_codex = tmp_path / "bin/fake-codex"
+    _write_executable(
+        fake_codex,
+        """#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+
+args = sys.argv[1:]
+output_path = pathlib.Path(args[args.index("--output-last-message") + 1])
+prompt = sys.stdin.read()
+if "Skill: oem_handoff_writer" in prompt:
+    payload = {
+        "schema_version": "v1",
+        "scene_id": "scene_codex",
+        "capture_id": "cap_codex",
+        "recommended_lane": "qualification",
+        "target_robot_team": {},
+        "summary": "Codex override summary"
+    }
+else:
+    payload = {
+        "schema_version": "v1",
+        "scene_id": "scene_codex",
+        "capture_id": "cap_codex",
+        "entries": []
+    }
+output_path.write_text(json.dumps(payload), encoding="utf-8")
+""",
+    )
+
+    payload = run_agent_review(
+        capture_root=capture_root,
+        provider_name="openai",
+        openai_phase2_config=OpenAIPhase2Config(
+            mode="codex_cli",
+            model="gpt-5.1",
+            codex_bin=str(fake_codex),
+            timeout_seconds=30,
+        ),
+    )
+
+    bundle = json.loads(Path(payload["final_bundle_path"]).read_text(encoding="utf-8"))
+    oem = json.loads((capture_root / "pipeline/oem_handoff_summary.json").read_text(encoding="utf-8"))
+    assert any(step["skill_name"] == "oem_handoff_writer" and step["source"] == "provider_override" for step in bundle["steps"])
+    assert bundle["runtime"]["openai_phase2_transport"] == "codex_exec"
+    assert oem["summary"] == "Codex override summary"
+
+
+def test_agent_review_falls_back_when_codex_phase2_runner_fails(tmp_path: Path) -> None:
+    capture_root = _build_raw_capture(tmp_path, scene_id="scene_fallback", capture_id="cap_fallback")
+    _run_qualification_for_raw_capture(capture_root)
+    fake_codex = tmp_path / "bin/failing-codex"
+    _write_executable(
+        fake_codex,
+        """#!/usr/bin/env bash
+exit 2
+""",
+    )
+
+    payload = run_agent_review(
+        capture_root=capture_root,
+        provider_name="openai",
+        openai_phase2_config=OpenAIPhase2Config(
+            mode="codex_cli",
+            model="gpt-5.1",
+            codex_bin=str(fake_codex),
+            timeout_seconds=30,
+        ),
+    )
+
+    bundle = json.loads(Path(payload["final_bundle_path"]).read_text(encoding="utf-8"))
+    assert any(step["skill_name"] == "oem_handoff_writer" and step["source"] == "local_deterministic" for step in bundle["steps"])
 
 
 def test_run_end_to_end_writes_final_bundle_and_memo(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 from ..common import ensure_dir, parse_bool, write_json, write_text
 from .artifacts import PipelineReviewArtifacts, load_pipeline_review_artifacts
 from .contracts import AgentReviewBundle, ReviewOutputFile, ReviewStepResult
+from .openai_phase2 import OpenAIPhase2Config, build_openai_skill_runner
 from .providers import ClaudeAgentProvider, OpenAIAgentProvider
 from .skill_sync import sync_skill_pack
 
@@ -400,12 +401,17 @@ def _provider_from_name(
     *,
     repo_root: Path,
     skill_runner=None,
+    openai_phase2_config: Optional[OpenAIPhase2Config] = None,
 ):
     normalized = provider.strip().lower()
     if normalized == "claude":
         return ClaudeAgentProvider(skill_runner=skill_runner, repo_root=repo_root)
     if normalized == "openai":
-        return OpenAIAgentProvider(skill_runner=skill_runner, repo_root=repo_root)
+        resolved_runner = skill_runner or build_openai_skill_runner(
+            repo_root=repo_root,
+            config=openai_phase2_config,
+        )
+        return OpenAIAgentProvider(skill_runner=resolved_runner, repo_root=repo_root)
     raise ValueError(f"Unsupported agent provider: {provider}")
 
 
@@ -425,6 +431,7 @@ def run_agent_review(
     provider_name: str,
     mode: str = "qualification",
     skill_runner=None,
+    openai_phase2_config: Optional[OpenAIPhase2Config] = None,
 ) -> Dict[str, Any]:
     if mode != "qualification":
         raise ValueError(f"Unsupported agent review mode: {mode}")
@@ -433,7 +440,12 @@ def run_agent_review(
     sync_skill_pack(repo_root)
     artifacts = load_pipeline_review_artifacts(capture_root)
     ensure_dir(artifacts.pipeline_dir)
-    provider = _provider_from_name(provider_name, repo_root=repo_root, skill_runner=skill_runner)
+    provider = _provider_from_name(
+        provider_name,
+        repo_root=repo_root,
+        skill_runner=skill_runner,
+        openai_phase2_config=openai_phase2_config,
+    )
 
     outputs: List[ReviewOutputFile] = []
     steps: List[ReviewStepResult] = []

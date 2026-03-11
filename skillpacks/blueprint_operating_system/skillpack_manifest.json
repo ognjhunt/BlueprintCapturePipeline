@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "name": "blueprint_operating_system",
+  "source_root": "skillpacks/blueprint_operating_system/skills",
+  "skills": [
+    "blueprint_overview",
+    "blueprint_capture",
+    "blueprint_pipeline_qualification",
+    "blueprint_webapp_operations",
+    "blueprint_validation_followon"
+  ]
+}
