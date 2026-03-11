@@ -543,6 +543,11 @@ def _build_hosted_session_runtime_manifest(
         ),
         "available_backends": available_backends,
         "default_backend": default_backend,
+        "customer_facing_runtime": (
+            "Hosted site runtime"
+            if default_backend
+            else "Qualified site package"
+        ),
         "task_ids": task_ids,
         "task_texts": task_texts,
         "start_states": start_states,
@@ -562,6 +567,347 @@ def _build_hosted_session_runtime_manifest(
             for backend in available_backends
         },
         "generated_at": utc_now_iso(),
+    }
+
+
+def _build_site_normalization_package(
+    *,
+    context,
+    normalized_handoff: Mapping[str, Any],
+    qualification_record: Mapping[str, Any],
+    scope_record: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
+    geometry_bundle_manifest: Mapping[str, Any],
+    object_geometry_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    geometry_objects = (
+        object_geometry_manifest.get("objects")
+        if isinstance(object_geometry_manifest.get("objects"), list)
+        else []
+    )
+    measurements = (
+        qualification_record.get("measurements")
+        if isinstance(qualification_record.get("measurements"), Mapping)
+        else {}
+    )
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "site_submission_id": str(normalized_handoff.get("site_submission_id") or context.capture_id),
+        "opportunity_id": str(normalized_handoff.get("opportunity_id") or context.scene_id),
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "qualification_state": str(normalized_handoff.get("qualification_state") or "not_ready_yet"),
+        "downstream_evaluation_eligibility": bool(
+            normalized_handoff.get("downstream_evaluation_eligibility")
+        ),
+        "summary": str(
+            normalized_handoff.get("operator_approved_summary")
+            or qualification_record.get("summary")
+            or f"Qualified site package for {context.scene_id}"
+        ).strip(),
+        "scoped_task_definition": dict(
+            normalized_handoff.get("scoped_task_definition")
+            if isinstance(normalized_handoff.get("scoped_task_definition"), Mapping)
+            else {}
+        ),
+        "site_constraints": dict(
+            normalized_handoff.get("site_constraints")
+            if isinstance(normalized_handoff.get("site_constraints"), Mapping)
+            else {}
+        ),
+        "measurements": dict(measurements) if isinstance(measurements, Mapping) else {},
+        "scene_memory_bundle_status": str(scene_memory_bundle_manifest.get("status") or "missing"),
+        "geometry_bundle_status": str(geometry_bundle_manifest.get("status") or "missing"),
+        "object_count": len([item for item in geometry_objects if isinstance(item, Mapping)]),
+        "rights_and_compliance": {
+            "consent_scope": _string_list(
+                normalized_handoff.get("capture_rights_scope"),
+                normalized_handoff.get("site_constraints", {}).get("privacy_security_constraints")
+                if isinstance(normalized_handoff.get("site_constraints"), Mapping)
+                else [],
+            ),
+            "export_entitlements": _string_list(
+                normalized_handoff.get("allowed_exports"),
+                "scene_memory" if scene_memory_bundle_manifest.get("status") == "complete" else "",
+                "geometry_bundle" if geometry_bundle_manifest.get("status") != "missing" else "",
+            ),
+            "customer_specific_sharing": _string_list(
+                normalized_handoff.get("customer_specific_sharing")
+            ),
+            "audit_trail_uri": None,
+            "retention_policy": str(normalized_handoff.get("retention_policy") or "").strip() or None,
+        },
+        "authoritative_sources": {
+            "qualification_record_path": "qualification_record.json",
+            "task_scope_record_path": "task_scope_record.json",
+            "scene_memory_manifest_path": scene_memory_bundle_manifest.get("scene_memory_manifest_path"),
+            "geometry_bundle_path": geometry_bundle_manifest.get("bundle_path"),
+        },
+    }
+
+
+def _build_benchmark_suite_manifest(
+    *,
+    normalized_handoff: Mapping[str, Any],
+    qualification_record: Mapping[str, Any],
+    task_anchor_manifest: Mapping[str, Any],
+    task_run_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    tasks = (
+        task_anchor_manifest.get("tasks")
+        if isinstance(task_anchor_manifest.get("tasks"), list)
+        else []
+    )
+    success_criteria = []
+    scoped = (
+        normalized_handoff.get("scoped_task_definition")
+        if isinstance(normalized_handoff.get("scoped_task_definition"), Mapping)
+        else {}
+    )
+    if isinstance(scoped, Mapping):
+        success_criteria = _string_list(scoped.get("success_criteria"))
+    risks = (
+        qualification_record.get("risks")
+        if isinstance(qualification_record.get("risks"), list)
+        else []
+    )
+    edge_case_hints = [
+        str(item.get("detail") or "").strip()
+        for item in risks
+        if isinstance(item, Mapping) and str(item.get("detail") or "").strip()
+    ]
+    benchmark_tasks: List[Dict[str, Any]] = []
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            continue
+        benchmark_tasks.append(
+            {
+                "task_id": str(task.get("task_id") or ""),
+                "task_text": str(task.get("task_text") or ""),
+                "task_category": str(task.get("task_category") or "generic"),
+                "start_state_candidates": _string_list(
+                    task.get("task_text"),
+                    task.get("task_id"),
+                ),
+                "pass_criteria": success_criteria or ["Complete the scoped task safely."],
+                "edge_case_hints": edge_case_hints[:5],
+                "target_object_ids": _string_list(task.get("target_object_ids")),
+                "articulation_required_ids": _string_list(task.get("articulation_required_ids")),
+            }
+        )
+    task_categories = sorted(
+        {
+            str(task.get("task_category") or "generic")
+            for task in benchmark_tasks
+            if isinstance(task, Mapping)
+        }
+    )
+    default_start_states = _string_list(
+        task_run_manifest.get("start_states") if isinstance(task_run_manifest, Mapping) else [],
+        [
+            item.get("task_text")
+            for item in benchmark_tasks
+            if isinstance(item, Mapping) and str(item.get("task_text") or "").strip()
+        ],
+    )
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "status": "ready" if benchmark_tasks else "missing",
+        "task_count": len(benchmark_tasks),
+        "task_categories": task_categories,
+        "default_start_states": default_start_states,
+        "tasks": benchmark_tasks,
+    }
+
+
+def _build_compatibility_matrix(
+    *,
+    qualification_record: Mapping[str, Any],
+    task_anchor_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    measurements = (
+        qualification_record.get("measurements")
+        if isinstance(qualification_record.get("measurements"), Mapping)
+        else {}
+    )
+    minimum_route_width = float(measurements.get("minimum_route_width_m") or 0.0)
+    maximum_reach = float(measurements.get("maximum_target_reach_m") or 0.0)
+    reference_capability_envelope = {
+        "embodiment_type": "vendor_neutral",
+        "minimum_path_width_m": minimum_route_width or 0.95,
+        "maximum_reach_m": maximum_reach or 1.1,
+        "maximum_payload_kg": None,
+        "sensor_requirements": ["rgb"],
+        "controller_interface_assumptions": ["checkpoint + bounded rollout interface"],
+        "safety_envelope": ["respect restricted zones", "bounded task scope"],
+        "facility_constraints": _string_list(
+            qualification_record.get("blockers"),
+        ),
+    }
+    robot_classes = [
+        {
+            "robot_class": "humanoid",
+            "fit": "fit" if minimum_route_width >= 1.05 or minimum_route_width == 0.0 else "conditional",
+            "reason": "Humanoid class benefits from wider route clearance and bounded handoff zones.",
+        },
+        {
+            "robot_class": "mobile_manipulator",
+            "fit": "fit" if minimum_route_width >= 0.95 or minimum_route_width == 0.0 else "conditional",
+            "reason": "Mobile manipulator class is the default neutral target for this site package.",
+        },
+        {
+            "robot_class": "fixed_arm",
+            "fit": "fit" if maximum_reach <= 1.1 or maximum_reach == 0.0 else "conditional",
+            "reason": "Fixed-arm evaluation depends on reach to target objects and workcell access.",
+        },
+        {
+            "robot_class": "cart_tug",
+            "fit": "fit" if minimum_route_width >= 1.15 or minimum_route_width == 0.0 else "not_recommended",
+            "reason": "Cart tug class benefits from wider path widths and simpler route geometry.",
+        },
+    ]
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "status": "ready",
+        "reference_capability_envelope": reference_capability_envelope,
+        "task_count": len(
+            task_anchor_manifest.get("tasks")
+            if isinstance(task_anchor_manifest.get("tasks"), list)
+            else []
+        ),
+        "robot_classes": robot_classes,
+    }
+
+
+def _find_previous_site_normalization_path(*, capture_root: Path, current_capture_id: str) -> Optional[Path]:
+    captures_root = capture_root.parent
+    candidates: List[Path] = []
+    for sibling in captures_root.glob("*/pipeline/evaluation_prep/site_normalization_package.json"):
+        if sibling.parts[-4] == current_capture_id:
+            continue
+        candidates.append(sibling)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _build_recapture_diff(
+    *,
+    capture_root: Path,
+    current_capture_id: str,
+    site_normalization_package: Mapping[str, Any],
+    benchmark_suite_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    previous_path = _find_previous_site_normalization_path(
+        capture_root=capture_root,
+        current_capture_id=current_capture_id,
+    )
+    if previous_path is None:
+        return {
+            "schema_version": "v1",
+            "generated_at": utc_now_iso(),
+            "status": "no_prior_baseline",
+            "recapture_required": False,
+            "changed_fields": [],
+            "previous_capture_id": None,
+        }
+
+    previous = read_json_any(previous_path)
+    scoped = (
+        site_normalization_package.get("scoped_task_definition")
+        if isinstance(site_normalization_package.get("scoped_task_definition"), Mapping)
+        else {}
+    )
+    previous_scoped = (
+        previous.get("scoped_task_definition")
+        if isinstance(previous, Mapping) and isinstance(previous.get("scoped_task_definition"), Mapping)
+        else {}
+    )
+    changed_fields: List[str] = []
+    comparisons = {
+        "qualification_state": (
+            site_normalization_package.get("qualification_state"),
+            previous.get("qualification_state") if isinstance(previous, Mapping) else None,
+        ),
+        "task_statement": (
+            scoped.get("scoped_task_statement") if isinstance(scoped, Mapping) else None,
+            previous_scoped.get("scoped_task_statement") if isinstance(previous_scoped, Mapping) else None,
+        ),
+        "known_blockers": (
+            site_normalization_package.get("site_constraints"),
+            previous.get("site_constraints") if isinstance(previous, Mapping) else None,
+        ),
+        "minimum_route_width_m": (
+            site_normalization_package.get("measurements"),
+            previous.get("measurements") if isinstance(previous, Mapping) else None,
+        ),
+    }
+    for field_name, (current_value, previous_value) in comparisons.items():
+        if current_value != previous_value:
+            changed_fields.append(field_name)
+
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "status": "changed" if changed_fields else "unchanged",
+        "recapture_required": bool(changed_fields),
+        "changed_fields": changed_fields,
+        "benchmark_task_count": benchmark_suite_manifest.get("task_count"),
+        "previous_capture_id": (
+            str(previous.get("capture_id") or "").strip()
+            if isinstance(previous, Mapping)
+            else None
+        ),
+    }
+
+
+def _build_launchable_export_bundle(
+    *,
+    scene_memory_bundle_manifest: Mapping[str, Any],
+    geometry_bundle_manifest: Mapping[str, Any],
+    hosted_session_runtime_manifest: Mapping[str, Any],
+    simready_prep_manifest_path: Optional[Path],
+) -> Dict[str, Any]:
+    default_backend = str(hosted_session_runtime_manifest.get("default_backend") or "").strip()
+    public_runtime_label = str(
+        hosted_session_runtime_manifest.get("customer_facing_runtime") or "Hosted site runtime"
+    ).strip()
+    bundles = {
+        "world_model_runtime": {
+            "launchable": bool(hosted_session_runtime_manifest.get("launchable")),
+            "required_artifacts": [
+                "scene_memory_manifest",
+                "conditioning_bundle",
+                "task_anchor_manifest",
+                "task_run_manifest",
+            ],
+            "backend": default_backend or None,
+        },
+        "isaac_sim": {
+            "launchable": simready_prep_manifest_path is not None,
+            "required_artifacts": ["simready_scene_manifest", "validation_manifest"],
+            "backend": "isaac_sim",
+        },
+        "mujoco_robosuite": {
+            "launchable": str(geometry_bundle_manifest.get("status") or "") in {"complete", "partial"},
+            "required_artifacts": ["geometry_bundle", "task_hints"],
+            "backend": "mujoco_robosuite",
+        },
+    }
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "status": "ready" if any(item["launchable"] for item in bundles.values()) else "partial",
+        "public_runtime_label": public_runtime_label,
+        "default_backend": default_backend or None,
+        "scenario_variants": hosted_session_runtime_manifest.get("scenario_variants", []),
+        "bundles": bundles,
+        "scene_memory_bundle_status": scene_memory_bundle_manifest.get("status"),
+        "geometry_bundle_status": geometry_bundle_manifest.get("status"),
     }
 
 
@@ -642,6 +988,34 @@ def run_evaluation_prep_stage(
     hosted_session_runtime_manifest_path = eval_dir / "hosted_session_runtime_manifest.json"
     _copy_json(hosted_session_runtime_manifest_path, hosted_session_runtime_manifest)
 
+    site_normalization_package = _build_site_normalization_package(
+        context=context,
+        normalized_handoff=normalized_handoff,
+        qualification_record=qualification_record,
+        scope_record=scope_record,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        geometry_bundle_manifest=geometry_bundle_manifest,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+    )
+    site_normalization_package_path = eval_dir / "site_normalization_package.json"
+    _copy_json(site_normalization_package_path, site_normalization_package)
+
+    benchmark_suite_manifest = _build_benchmark_suite_manifest(
+        normalized_handoff=normalized_handoff,
+        qualification_record=qualification_record,
+        task_anchor_manifest=task_anchor_manifest,
+        task_run_manifest=task_run_manifest,
+    )
+    benchmark_suite_manifest_path = eval_dir / "benchmark_suite_manifest.json"
+    _copy_json(benchmark_suite_manifest_path, benchmark_suite_manifest)
+
+    compatibility_matrix = _build_compatibility_matrix(
+        qualification_record=qualification_record,
+        task_anchor_manifest=task_anchor_manifest,
+    )
+    compatibility_matrix_path = eval_dir / "compatibility_matrix.json"
+    _copy_json(compatibility_matrix_path, compatibility_matrix)
+
     simready_prep_manifest_path = None
     simready_scene_manifest = _read_optional_json_any(pipeline_dir / "simready" / "simready_scene_manifest.json")
     simready_validation = _read_optional_json_any(pipeline_dir / "simready" / "simready_validation.json")
@@ -655,6 +1029,24 @@ def run_evaluation_prep_stage(
         }
         simready_prep_manifest_path = eval_dir / "simready_prep_manifest.json"
         _copy_json(simready_prep_manifest_path, simready_prep_manifest)
+
+    recapture_diff = _build_recapture_diff(
+        capture_root=context.capture_root,
+        current_capture_id=context.capture_id,
+        site_normalization_package=site_normalization_package,
+        benchmark_suite_manifest=benchmark_suite_manifest,
+    )
+    recapture_diff_path = eval_dir / "recapture_diff.json"
+    _copy_json(recapture_diff_path, recapture_diff)
+
+    launchable_export_bundle = _build_launchable_export_bundle(
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        geometry_bundle_manifest=geometry_bundle_manifest,
+        hosted_session_runtime_manifest=hosted_session_runtime_manifest,
+        simready_prep_manifest_path=simready_prep_manifest_path,
+    )
+    launchable_export_bundle_path = eval_dir / "launchable_export_bundle.json"
+    _copy_json(launchable_export_bundle_path, launchable_export_bundle)
 
     review_queue = _build_review_queue(
         object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
@@ -681,6 +1073,10 @@ def run_evaluation_prep_stage(
         "view_mask_coverage_ratio": round(mask_count / float(object_count or 1), 4),
         "articulation_count": articulated_count,
         "known_downstream_risks": downstream_risks,
+        "benchmark_suite_status": benchmark_suite_manifest.get("status"),
+        "compatibility_matrix_status": compatibility_matrix.get("status"),
+        "recapture_diff_status": recapture_diff.get("status"),
+        "export_bundle_status": launchable_export_bundle.get("status"),
     }
     summary_path = eval_dir / "evaluation_prep_summary.json"
     _copy_json(summary_path, summary)
@@ -733,6 +1129,11 @@ def run_evaluation_prep_stage(
             "hosted_session_runtime_manifest": _relative_to(
                 eval_dir, hosted_session_runtime_manifest_path
             ),
+            "site_normalization_package": _relative_to(eval_dir, site_normalization_package_path),
+            "benchmark_suite_manifest": _relative_to(eval_dir, benchmark_suite_manifest_path),
+            "compatibility_matrix": _relative_to(eval_dir, compatibility_matrix_path),
+            "recapture_diff": _relative_to(eval_dir, recapture_diff_path),
+            "launchable_export_bundle": _relative_to(eval_dir, launchable_export_bundle_path),
             "object_geometry_manifest": _relative_to(eval_dir, object_geometry_target_path),
             "evaluation_prep_summary": _relative_to(eval_dir, summary_path),
             "review_queue": _relative_to(eval_dir, review_queue_path),

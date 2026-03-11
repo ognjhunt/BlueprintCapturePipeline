@@ -144,6 +144,16 @@ Written under:
   - `scene_memory/adapter_manifests/neoverse.json`
   - `scene_memory/adapter_manifests/cosmos_transfer.json`
   - `preview_simulation/preview_simulation_manifest.json`
+  - `evaluation_prep/qualified_opportunity_handoff.json`
+  - `evaluation_prep/task_run_manifest.json`
+  - `evaluation_prep/task_anchor_manifest.json`
+  - `evaluation_prep/hosted_session_runtime_manifest.json`
+  - `evaluation_prep/site_normalization_package.json`
+  - `evaluation_prep/benchmark_suite_manifest.json`
+  - `evaluation_prep/compatibility_matrix.json`
+  - `evaluation_prep/recapture_diff.json`
+  - `evaluation_prep/launchable_export_bundle.json`
+  - `evaluation_prep/evaluation_prep_manifest.json`
 - Advanced geometry artifacts when explicitly requested:
   These are compatibility outputs for downstream geometry-oriented flows. They are not the default end product.
   - `nurec_job_spec.json`
