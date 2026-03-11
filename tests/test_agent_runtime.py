@@ -107,7 +107,7 @@ def _run_qualification_for_raw_capture(capture_root: Path) -> None:
     )
 
 
-def test_agent_review_allows_provider_override_for_claude(tmp_path: Path) -> None:
+def test_agent_review_keeps_standards_deterministic_even_when_provider_offers_override(tmp_path: Path) -> None:
     capture_root = _build_raw_capture(tmp_path)
     _run_qualification_for_raw_capture(capture_root)
 
@@ -120,8 +120,8 @@ def test_agent_review_allows_provider_override_for_claude(tmp_path: Path) -> Non
     bundle = json.loads(Path(payload["final_bundle_path"]).read_text(encoding="utf-8"))
     standards = json.loads((capture_root / "pipeline/standards_notes.json").read_text(encoding="utf-8"))
     assert bundle["provider"] == "claude"
-    assert any(step["skill_name"] == "standards_retriever" and step["source"] == "provider_override" for step in bundle["steps"])
-    assert standards["entries"] == [{"title": "Override"}]
+    assert any(step["skill_name"] == "standards_retriever" and step["source"] == "local_deterministic" for step in bundle["steps"])
+    assert standards["entries"] != [{"title": "Override"}]
 
 
 def test_agent_review_allows_provider_override_for_openai(tmp_path: Path) -> None:
@@ -139,6 +139,22 @@ def test_agent_review_allows_provider_override_for_openai(tmp_path: Path) -> Non
     assert bundle["provider"] == "openai"
     assert any(step["skill_name"] == "oem_handoff_writer" and step["source"] == "provider_override" for step in bundle["steps"])
     assert oem["summary"] == "mock"
+
+
+def test_agent_review_allows_provider_override_for_recapture_plan(tmp_path: Path) -> None:
+    capture_root = _build_raw_capture(tmp_path, scene_id="scene_recap", capture_id="cap_recap", source="glasses", modality="glasses_video_only", has_lidar=False)
+    _run_qualification_for_raw_capture(capture_root)
+
+    payload = run_agent_review(
+        capture_root=capture_root,
+        provider_name="openai",
+        skill_runner=lambda skill_name, payload: {"required": True, "steps": [{"order": 1, "detail": "custom"}]} if skill_name == "recapture_planner" else None,
+    )
+
+    bundle = json.loads(Path(payload["final_bundle_path"]).read_text(encoding="utf-8"))
+    recapture = json.loads((capture_root / "pipeline/recapture_plan.json").read_text(encoding="utf-8"))
+    assert any(step["skill_name"] == "recapture_planner" and step["source"] == "provider_override" for step in bundle["steps"])
+    assert recapture["steps"] == [{"order": 1, "detail": "custom"}]
 
 
 def test_agent_review_uses_codex_phase2_runner_when_enabled(tmp_path: Path) -> None:

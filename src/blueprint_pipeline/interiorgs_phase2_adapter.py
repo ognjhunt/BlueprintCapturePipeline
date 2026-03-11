@@ -15,6 +15,7 @@ from .agent_runtime.openai_phase2 import OpenAIPhase2Config
 from .agent_runtime.orchestrator import run_agent_review
 from .capture_bridge import CaptureDescriptor
 from .common import ensure_dir, to_capture_prefix, to_pipeline_prefix, utc_now_iso, write_json, write_text
+from .interiorgs_phase2_summary import write_scene_dashboard_summary, write_scene_deployment_summary
 from .qualification import (
     _build_blocker_register,
     _build_capability_checks,
@@ -36,6 +37,11 @@ from .qualification import (
     _render_readiness_report,
 )
 from .task_targets import write_task_targets
+from .webapp_sync import (
+    derive_webapp_opportunity_state,
+    derive_webapp_qualification_state,
+    sync_webapp_pipeline_attachment,
+)
 
 
 _DEFAULT_BUCKET = "localbucket"
@@ -1307,6 +1313,35 @@ def adapt_interiorgs_task_runs(
         },
     )
     _write_task_run_comparison_report(scene_capture_root=scene_capture_root)
+    dashboard_path = write_scene_dashboard_summary(scene_capture_root=scene_capture_root, bucket=bucket)
+    deployment_path = write_scene_deployment_summary(scene_capture_root=scene_capture_root, bucket=bucket)
+    opportunity_handoff = _read_json_any(pipeline_dir / "opportunity_handoff.json")
+    completeness_status = _read_json_any(pipeline_dir / "capture_qa_scorecard.json").get("completeness_status")
+    qualification_state = derive_webapp_qualification_state(
+        readiness_state=opportunity_handoff.get("qualification_state"),
+        completeness_status=completeness_status,
+    )
+    opportunity_state = derive_webapp_opportunity_state(qualification_state=qualification_state)
+    sync_webapp_pipeline_attachment(
+        site_submission_id=opportunity_handoff.get("site_submission_id"),
+        request_id=opportunity_handoff.get("site_submission_id"),
+        scene_id=scene_id,
+        capture_id=base_capture_id,
+        pipeline_prefix=to_pipeline_prefix(scene_id, base_capture_id),
+        qualification_state=qualification_state,
+        opportunity_state=opportunity_state,
+        artifacts={
+            "readiness_decision_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/readiness_decision.json",
+            "readiness_report_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/readiness_report.md",
+            "qualification_quality_report_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/qualification_quality_report.json",
+            "opportunity_handoff_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/opportunity_handoff.json",
+            "human_actions_required_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/human_actions_required.json",
+            "agent_review_bundle_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/agent_review_bundle.json",
+            "agent_readiness_memo_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/agent_readiness_memo.md",
+            "dashboard_summary_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/dashboard_summary.json",
+            "scene_deployment_summary_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/scene_deployment_summary.md",
+        },
+    )
     return results
 
 

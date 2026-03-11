@@ -23,6 +23,15 @@ _DEFAULT_HUMAN_ACTIONS = [
     "Choose the OEM, integrator, or target robot platform for downstream evaluation.",
 ]
 
+_LLM_OVERRIDE_SKILLS = {
+    "humanoid_site_readiness_reviewer",
+    "humanoid_workcell_risk_reviewer",
+    "humanoid_route_access_reviewer",
+    "oem_handoff_writer",
+    "recapture_planner",
+    "readiness_report_writer",
+}
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
@@ -451,7 +460,7 @@ def run_agent_review(
     steps: List[ReviewStepResult] = []
 
     def run_step(skill_name: str, filename: str, local_builder, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        override = provider.invoke_skill(skill_name, payload)
+        override = provider.invoke_skill(skill_name, payload) if skill_name in _LLM_OVERRIDE_SKILLS else None
         if override is None:
             result = local_builder()
             source = "local_deterministic"

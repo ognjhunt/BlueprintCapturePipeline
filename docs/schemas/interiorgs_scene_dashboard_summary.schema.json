@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprintcapturepipeline.local/schemas/interiorgs_scene_dashboard_summary.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scene",
+    "whole_home",
+    "categories",
+    "theme_counts",
+    "action_counts",
+    "deployment_summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "v1"
+    },
+    "scene": {
+      "type": "string",
+      "minLength": 1
+    },
+    "whole_home": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture_id", "status", "confidence", "memo_path", "memo_uri"],
+      "properties": {
+        "capture_id": {"type": "string"},
+        "status": {"type": "string"},
+        "confidence": {"type": ["number", "null"]},
+        "memo_path": {"type": "string"},
+        "memo_uri": {"type": "string"}
+      }
+    },
+    "categories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pick", "open_close", "navigate"],
+      "properties": {
+        "pick": {"$ref": "#/$defs/categorySummary"},
+        "open_close": {"$ref": "#/$defs/categorySummary"},
+        "navigate": {"$ref": "#/$defs/categorySummary"}
+      }
+    },
+    "theme_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "action_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "deployment_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_tasks",
+        "ready_now",
+        "needs_redesign",
+        "outside_robot_envelope"
+      ],
+      "properties": {
+        "total_tasks": {"type": "integer", "minimum": 0},
+        "ready_now": {"type": "integer", "minimum": 0},
+        "needs_redesign": {"type": "integer", "minimum": 0},
+        "outside_robot_envelope": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "statusCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "risky", "not_ready_yet"],
+      "properties": {
+        "ready": {"type": "integer", "minimum": 0},
+        "risky": {"type": "integer", "minimum": 0},
+        "not_ready_yet": {"type": "integer", "minimum": 0}
+      }
+    },
+    "taskEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_text",
+        "capture_id",
+        "status",
+        "next_action",
+        "themes",
+        "memo_path",
+        "memo_uri"
+      ],
+      "properties": {
+        "task_text": {"type": "string"},
+        "capture_id": {"type": "string"},
+        "status": {"type": "string"},
+        "next_action": {
+          "enum": [
+            "advance to human signoff",
+            "recapture",
+            "redesign",
+            "defer"
+          ]
+        },
+        "themes": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "memo_path": {"type": "string"},
+        "memo_uri": {"type": "string"}
+      }
+    },
+    "categorySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["counts", "tasks"],
+      "properties": {
+        "counts": {"$ref": "#/$defs/statusCounts"},
+        "tasks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/taskEntry"}
+        }
+      }
+    }
+  }
+}

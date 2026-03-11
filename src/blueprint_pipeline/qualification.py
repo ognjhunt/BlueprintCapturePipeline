@@ -26,6 +26,11 @@ from .common import (
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
 from .task_targets import infer_task_targets, write_task_targets
+from .webapp_sync import (
+    derive_webapp_opportunity_state,
+    derive_webapp_qualification_state,
+    sync_webapp_pipeline_attachment,
+)
 
 
 @dataclass
@@ -2317,13 +2322,24 @@ def run_qualification_pipeline(
         write_json(pipeline_dir / "qualification_quality_report.json", quality_report)
         write_json(pipeline_dir / "swap_quality_report.json", quality_report)
 
+        qualification_state = derive_webapp_qualification_state(
+            readiness_state=qualification_record.get("readiness_state"),
+            completeness_status=scorecard.get("completeness_status"),
+        )
+        opportunity_state = derive_webapp_opportunity_state(
+            qualification_state=qualification_state,
+        )
+
         completion_payload = {
             "schema_version": "v1",
             "lane": "qualification",
             "scene_id": descriptor.scene_id,
             "capture_id": descriptor.capture_id,
+            "site_submission_id": opportunity_handoff.get("site_submission_id"),
             "status": "completed",
             "completed_at": utc_now_iso(),
+            "qualification_state": qualification_state,
+            "opportunity_state": opportunity_state,
             "quality_report": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
             "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             "qualification_record": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
@@ -2331,6 +2347,24 @@ def run_qualification_pipeline(
         }
         write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
+        sync_webapp_pipeline_attachment(
+            site_submission_id=opportunity_handoff.get("site_submission_id"),
+            request_id=opportunity_handoff.get("site_submission_id"),
+            scene_id=descriptor.scene_id,
+            capture_id=descriptor.capture_id,
+            pipeline_prefix=pipeline_prefix,
+            qualification_state=qualification_state,
+            opportunity_state=opportunity_state,
+            artifacts={
+                "readiness_decision_uri": quality_report["artifacts"]["readiness_decision"],
+                "readiness_report_uri": quality_report["artifacts"]["readiness_report"],
+                "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
+                "opportunity_handoff_uri": quality_report["artifacts"]["opportunity_handoff"],
+                "human_actions_required_uri": quality_report["artifacts"]["human_actions_required"],
+                "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
+                "agent_readiness_memo_uri": f"gs://{bucket}/{pipeline_prefix}/agent_readiness_memo.md",
+            },
+        )
 
         return {
             "status": "completed",

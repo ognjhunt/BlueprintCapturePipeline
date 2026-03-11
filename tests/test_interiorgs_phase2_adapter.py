@@ -228,12 +228,16 @@ def test_interiorgs_adapter_creates_task_runs_manifest(tmp_path: Path) -> None:
 
     manifest_path = scene_result.capture_root / "pipeline" / "task_run_manifest.json"
     report_path = scene_result.capture_root / "pipeline" / "task_run_comparison_report.md"
+    dashboard_path = scene_result.capture_root / "pipeline" / "dashboard_summary.json"
+    deployment_summary_path = scene_result.capture_root / "pipeline" / "scene_deployment_summary.md"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert len(task_results) == 3
     assert len(manifest["groups"]["pick"]) == 1
     assert len(manifest["groups"]["open_close"]) == 1
     assert len(manifest["groups"]["navigate"]) == 1
     assert report_path.is_file()
+    assert dashboard_path.is_file()
+    assert deployment_summary_path.is_file()
 
     open_close_capture_root = Path(manifest["groups"]["open_close"][0]["capture_root"])
     readiness = json.loads(

@@ -40,6 +40,7 @@ cloud = [
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+    "jsonschema>=4.23.0",
     "ruff>=0.6.0",
 ]
 

@@ -123,6 +123,28 @@ Biggest missing system boundary:
 
 Agents should treat that bridge as a top-tier integration concern.
 
+## Phase 2 Decision Boundary
+
+Phase 2 should stay deterministic for the decision core:
+
+- scoring
+- gates
+- blocker classification
+- capability-envelope checks
+- readiness state
+- dashboard action buckets and rollout counts
+
+LLM synthesis is allowed only for narrative or recommendation artifacts:
+
+- memos
+- reviewer summaries
+- OEM-facing summaries
+- recapture recommendations
+
+That means agents should not let a model override blocker truth, readiness state, or the
+scene dashboard contract. The scene-local `pipeline/dashboard_summary.json` is the stable
+frontend-facing contract for Phase 2 scene rollups.
+
 ## Practical Rule For Agents In This Repo
 
 When making changes here, optimize for:
