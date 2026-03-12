@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .common import PipelineError, ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
+from .world_model_policy import WorldModelPolicy, build_output_linkage, build_provenance_record
 
 try:
     import numpy as np
@@ -698,6 +699,7 @@ def run_object_geometry_stage(
 ) -> Dict[str, Any]:
     if np is None:
         raise PipelineError("numpy is required for object geometry processing")
+    policy = WorldModelPolicy.from_env()
     context = resolve_local_capture_context(capture_root)
     task_scope = read_json_any(context.pipeline_root / "task_scope_record.json") if (context.pipeline_root / "task_scope_record.json").is_file() else {}
     task_targets = read_json_any(context.pipeline_root / "task_targets.json") if (context.pipeline_root / "task_targets.json").is_file() else {}
@@ -804,6 +806,25 @@ def run_object_geometry_stage(
             "selected_views": selected_views,
             "visual_replacement_masks": mask_entries,
             "ai_hints": ai_hints,
+            "provenance": build_provenance_record(
+                grounding_level="reconstructed" if mesh_source == "source_mesh" else "inferred",
+                evidence_sources=[
+                    mesh_path,
+                    *[str(item.get("image_path") or "") for item in selected_views if isinstance(item, Mapping)],
+                ],
+                observation_coverage={
+                    "selected_view_count": len(selected_views),
+                    "collision_hull_count": len(hull_entries),
+                    "support_surface_count": len(support_surfaces),
+                },
+                confidence=0.9 if mesh_source == "source_mesh" else 0.7,
+                canonical_truth=True,
+                presentation_only=False,
+                extra={
+                    "source_mode": view_payload["source_mode"],
+                    "provider_name": provider_name,
+                },
+            ),
         }
         write_json(object_dir / "support_surfaces.json", {"surfaces": support_surfaces, "method": support_method})
         write_json(object_dir / "ai_hints.json", ai_hints)
@@ -837,6 +858,21 @@ def run_object_geometry_stage(
             "provider_name": provider_name,
             "scene_id": context.scene_id,
             "capture_id": context.capture_id,
+            "world_model_policy": policy.to_dict(),
+            "canonical_output": build_output_linkage(
+                policy=policy,
+                canonical_artifact_uri=str(manifest_path.resolve()),
+                presentation_artifact_uri=None,
+                authoritative_record=True,
+            ),
+            "provenance": build_provenance_record(
+                grounding_level="reconstructed" if geometry_objects else "inferred",
+                evidence_sources=[str(index_path)],
+                observation_coverage={"object_count": len(geometry_objects)},
+                confidence=1.0 if geometry_objects else 0.0,
+                canonical_truth=True,
+                presentation_only=False,
+            ),
             "objects": geometry_objects,
         },
     )

@@ -95,6 +95,8 @@ Default site-world artifacts:
 - `scene_memory/adapter_manifests/neoverse.json` (v1)
 - `scene_memory/adapter_manifests/cosmos_transfer.json` (v1)
 - `preview_simulation/preview_simulation_manifest.json` (v1)
+- `presentation_world/presentation_world_manifest.json` (v1)
+- `presentation_world/runtime_demo_manifest.json` (v1)
 - `evaluation_prep/scene_memory_bundle_manifest.json` (v1)
 - `evaluation_prep/site_world_spec.json` (v1)
 - `evaluation_prep/site_world_registration.json` (v1)

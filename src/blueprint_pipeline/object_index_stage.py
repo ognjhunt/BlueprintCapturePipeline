@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import importlib.util
 import json
 import math
 import os
@@ -20,6 +21,7 @@ from .capture_bridge import CaptureDescriptor
 from .common import PipelineError, join_gs_uri, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest
 from .local_capture import resolve_local_capture_context
+from .world_model_policy import WorldModelPolicy, build_output_linkage, build_provenance_record
 
 
 _DEFAULT_KEYFRAME_COUNT = 12
@@ -503,6 +505,54 @@ def _command_from_env(name: str) -> str:
     return ""
 
 
+def _module_available(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
+def _backend_preflight_status(*, backend_name: str, command_template: str) -> Dict[str, Any]:
+    if not command_template:
+        return {"configured": False, "status": "missing", "reason": "command_not_configured"}
+    try:
+        rendered = (
+            command_template.replace("{INPUT_JSON}", "/tmp/input.json")
+            .replace("{OUTPUT_JSON}", "/tmp/output.json")
+            .replace("{OUTPUT_DIR}", "/tmp")
+        )
+        command = shlex.split(rendered)
+    except ValueError as exc:
+        return {"configured": True, "status": "invalid", "reason": f"invalid_command_template:{exc}"}
+    executable = command[0] if command else ""
+    executable_path = shutil.which(executable) or executable
+    status = "ready" if executable else "invalid"
+    reason = ""
+    if not executable:
+        reason = "empty_command"
+    elif executable_path and str(executable_path).startswith("/"):
+        if not Path(str(executable_path)).exists():
+            status = "missing"
+            reason = f"missing_executable:{executable_path}"
+    return {
+        "configured": True,
+        "status": status,
+        "reason": reason,
+        "command": command,
+    }
+
+
+def _payload_detection_count(payload: Any) -> int:
+    if isinstance(payload, Mapping):
+        for key in ("detections", "items", "objects"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return len(value)
+    if isinstance(payload, list):
+        return len(payload)
+    return 0
+
+
 def _run_backend_command(
     *,
     backend_name: str,
@@ -577,8 +627,14 @@ def _run_backend_command(
             )
             if derived_reason:
                 report["reason"] = derived_reason
+        if report["status"] == "ok" and _payload_detection_count(payload) == 0:
+            report["status"] = "empty"
+            report.setdefault("reason", "no_detections")
     elif isinstance(payload, list):
         report["payload"] = {"detections": payload}
+        if report["status"] == "ok" and not payload:
+            report["status"] = "empty"
+            report.setdefault("reason", "no_detections")
     return report
 
 
@@ -974,12 +1030,26 @@ def _build_objects(
                     "area": round(mean_area, 4),
                 },
                 "merged_object_ids": [],
-                "provenance": {
-                    "stage": "object_index_stage",
-                    "sources": sorted({str(item.get("source") or "unknown") for item in cluster}),
-                    "capture_id": descriptor.capture_id,
-                    "privacy_penalty_applied": privacy_penalty > 0.0,
-                },
+                "provenance": build_provenance_record(
+                    grounding_level="observed",
+                    evidence_sources=[
+                        *crop_paths,
+                        *[str(keyframes_by_index.get(frame_index).image_path) for frame_index in evidence_frames if keyframes_by_index.get(frame_index) is not None],
+                    ],
+                    observation_coverage={
+                        "n_total_detections": len(cluster),
+                        "n_frame_detections": len(set(evidence_frames)),
+                    },
+                    confidence=round(max(0.0, (sum(scores) / float(len(scores) or 1)) - privacy_penalty), 4),
+                    canonical_truth=True,
+                    presentation_only=False,
+                    extra={
+                        "stage": "object_index_stage",
+                        "sources": sorted({str(item.get("source") or "unknown") for item in cluster}),
+                        "capture_id": descriptor.capture_id,
+                        "privacy_penalty_applied": privacy_penalty > 0.0,
+                    },
+                ),
             }
         )
     return objects
@@ -1129,6 +1199,7 @@ def _grounding_payload_from_objects(objects: Sequence[Mapping[str, Any]], descri
                 "confidence": _safe_float(obj.get("mean_confidence"), 0.0),
                 "boundingBox": dict(obj.get("boundingBox") or {}),
                 "source": "object_index_stage",
+                "provenance": dict(obj.get("provenance") or {}) if isinstance(obj.get("provenance"), Mapping) else {},
             }
         )
         relevance = obj.get("task_relevance") if isinstance(obj.get("task_relevance"), Mapping) else {}
@@ -1239,6 +1310,7 @@ def run_object_index_stage(
     capture_root: str | Path,
     force_rebuild: bool = False,
 ) -> Dict[str, Any]:
+    policy = WorldModelPolicy.from_env()
     context = resolve_local_capture_context(capture_root)
     manifest = load_raw_manifest(context.raw_prefix_uri, gcs_root=context.storage_root)
     descriptor = CaptureDescriptor.from_file(context.descriptor_path)
@@ -1306,22 +1378,38 @@ def run_object_index_stage(
         "descriptor": descriptor.to_dict(),
     }
 
+    backend_commands = {
+        "yolo_world": _command_from_env("OBJECT_INDEX_YOLO_WORLD_COMMAND"),
+        "grounding_dino": _command_from_env("OBJECT_INDEX_GROUNDING_DINO_COMMAND"),
+        "sam3": _command_from_env("OBJECT_INDEX_SAM3_COMMAND"),
+    }
+    runtime_preflight = {
+        "dependencies": {
+            "torch": {"available": _module_available("torch")},
+            "ultralytics": {"available": _module_available("ultralytics")},
+        },
+        "backends": {
+            name: _backend_preflight_status(backend_name=name, command_template=command_template)
+            for name, command_template in backend_commands.items()
+        },
+    }
+
     backend_reports = [
         _run_backend_command(
             backend_name="yolo_world",
-            command_template=_command_from_env("OBJECT_INDEX_YOLO_WORLD_COMMAND"),
+            command_template=backend_commands["yolo_world"],
             input_payload=input_payload,
             output_dir=artifact_root,
         ),
         _run_backend_command(
             backend_name="grounding_dino",
-            command_template=_command_from_env("OBJECT_INDEX_GROUNDING_DINO_COMMAND"),
+            command_template=backend_commands["grounding_dino"],
             input_payload=input_payload,
             output_dir=artifact_root,
         ),
         _run_backend_command(
             backend_name="sam3",
-            command_template=_command_from_env("OBJECT_INDEX_SAM3_COMMAND"),
+            command_template=backend_commands["sam3"],
             input_payload=input_payload,
             output_dir=artifact_root,
         ),
@@ -1330,24 +1418,33 @@ def run_object_index_stage(
 
     existing_objects: List[Dict[str, Any]] = []
     detections: List[Dict[str, Any]] = []
+    detections_per_backend: Dict[str, int] = {}
+    detections_per_keyframe: Dict[str, int] = {}
     manipulation_candidates: List[Dict[str, Any]] = []
     articulation_candidates: List[Dict[str, Any]] = []
     task_candidates: List[Dict[str, Any]] = []
     for report in backend_reports:
         payload = report.get("payload")
+        backend_name = str(report.get("backend") or "unknown")
+        detections_per_backend[backend_name] = 0
         if not isinstance(payload, Mapping):
             continue
         existing_objects.extend(_normalize_existing_objects(payload))
         parsed_detections, manip, artic, tasks = _normalize_detection_payload(
-            backend_name=str(report.get("backend") or "unknown"),
+            backend_name=backend_name,
             payload=payload,
             keyframes_by_index=keyframes_by_index,
         )
+        detections_per_backend[backend_name] = len(parsed_detections)
+        for item in parsed_detections:
+            frame_index = str(_safe_int(item.get("frame_index"), -1))
+            detections_per_keyframe[frame_index] = detections_per_keyframe.get(frame_index, 0) + 1
         detections.extend(parsed_detections)
         manipulation_candidates.extend(manip)
         articulation_candidates.extend(artic)
         task_candidates.extend(tasks)
 
+    merged_clusters: List[Sequence[Mapping[str, Any]]] = []
     if existing_objects:
         objects = existing_objects
     else:
@@ -1376,6 +1473,7 @@ def run_object_index_stage(
                 "backend": str(report.get("backend") or ""),
                 "status": str(report.get("status") or "unknown"),
                 "reason": str(report.get("reason") or ""),
+                "detection_count": detections_per_backend.get(str(report.get("backend") or ""), 0),
             }
             for report in backend_reports
         ],
@@ -1408,8 +1506,52 @@ def run_object_index_stage(
         if isinstance(llm_target_resolution.get("tasks"), list) and llm_target_resolution.get("tasks"):
             grounding_payload["tasks"] = [dict(item) for item in llm_target_resolution.get("tasks", []) if isinstance(item, Mapping)]
 
+    object_index_uri = join_gs_uri(context.raw_prefix_uri, "object_index.json")
     object_index_path = context.raw_root / "object_index.json"
-    write_json(object_index_path, {"objects": objects})
+    write_json(
+        object_index_path,
+        {
+            "objects": objects,
+            "world_model_policy": policy.to_dict(),
+            "canonical_output": build_output_linkage(
+                policy=policy,
+                canonical_artifact_uri=object_index_uri,
+                presentation_artifact_uri=None,
+                authoritative_record=True,
+            ),
+            "provenance": build_provenance_record(
+                grounding_level="observed" if objects else "inferred",
+                evidence_sources=[str(item.get("image_path") or "") for item in keyframe_payload],
+                observation_coverage={
+                    "keyframe_count": len(keyframes),
+                    "detection_count": len(detections),
+                    "object_count": len(objects),
+                },
+                confidence=1.0 if objects else 0.0,
+                canonical_truth=True,
+                presentation_only=False,
+            ),
+        },
+    )
+
+    filtered_detection_count = max(0, len(detections) - len(objects))
+    clustered_object_count = len(existing_objects) if existing_objects else len(merged_clusters)
+    empty_index_cause = None
+    provider_reasons = [str(report.get("reason") or "") for report in backend_reports]
+    if not objects:
+        if any(
+            "missing" in reason or "ModuleNotFoundError" in reason
+            for reason in provider_reasons
+            if reason
+        ):
+            empty_index_cause = "runtime_missing"
+        elif any(str(report.get("status") or "") == "skipped" for report in backend_reports):
+            empty_index_cause = "backend_skipped"
+        elif len(detections) == 0:
+            empty_index_cause = "zero_detections"
+        else:
+            empty_index_cause = "all_filtered"
+
     report_path = context.raw_root / "object_index_build_report.json"
     write_json(
         report_path,
@@ -1423,6 +1565,13 @@ def run_object_index_stage(
             "prompt_bank": prompt_bank,
             "keyframe_count": len(keyframes),
             "object_count": len(objects),
+            "detections_per_backend": detections_per_backend,
+            "detections_per_keyframe": detections_per_keyframe,
+            "filtered_detection_count": filtered_detection_count,
+            "clustered_object_count": clustered_object_count,
+            "empty_index_cause": empty_index_cause,
+            "runtime_preflight": runtime_preflight,
+            "world_model_policy": policy.to_dict(),
             "backend_summary": backend_summary,
             "llm_enrichment": {
                 "prompt_bank_expander": prompt_expansion,
@@ -1433,7 +1582,6 @@ def run_object_index_stage(
         },
     )
     write_json(context.raw_root / "object_grounding_hints.json", grounding_payload)
-    object_index_uri = join_gs_uri(context.raw_prefix_uri, "object_index.json")
     _write_descriptor_updates(context.descriptor_path, descriptor, object_index_uri)
     _write_manifest_updates(context.raw_root / "manifest.json")
     return {

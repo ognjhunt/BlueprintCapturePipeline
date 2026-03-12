@@ -236,6 +236,8 @@ Written under:
   - `scene_memory/adapter_manifests/neoverse.json`
   - `scene_memory/adapter_manifests/cosmos_transfer.json`
   - `preview_simulation/preview_simulation_manifest.json`
+  - `presentation_world/presentation_world_manifest.json`
+  - `presentation_world/runtime_demo_manifest.json`
   - `evaluation_prep/qualified_opportunity_handoff.json`
   - `evaluation_prep/task_run_manifest.json`
   - `evaluation_prep/task_anchor_manifest.json`
@@ -310,6 +312,12 @@ NuRec artifact roles under `.../pipeline/nurec/`:
 - `RUNTIME_PREFLIGHT_ENABLED` (`true` by default)
 - `PIPELINE_COMPLETION_MODE` (`best_effort` default, `full_required` for strict non-stub completion)
 - `PIPELINE_STANDALONE_MODE` (`true` by default; must be `false` in `full_required`)
+- `WORLD_MODEL_OUTPUT_POLICY` (`grounding_first` default; `grounding_first`, `balanced`, or `demo_first`)
+- `WORLD_MODEL_EMIT_PRESENTATION` (`true` default; emit presentation/demo manifests alongside canonical outputs)
+- `WORLD_MODEL_ALLOW_GENERATIVE_COMPLETION` (`limited` default; `off`, `limited`, or `aggressive`)
+- `WORLD_MODEL_PROVENANCE_REQUIRED` (`true` default)
+- `WORLD_MODEL_CANONICAL_INCOMPLETE_OK` (`true` default)
+- `WORLD_MODEL_VALIDATION_PROFILE` (`prototype` default; `prototype`, `grounded`, or `validated`)
 
 NuRec worker dispatch:
 

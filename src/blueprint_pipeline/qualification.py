@@ -34,6 +34,11 @@ from .webapp_sync import (
     derive_webapp_qualification_state,
     sync_webapp_pipeline_attachment,
 )
+from .world_model_policy import (
+    WorldModelPolicy,
+    build_output_linkage,
+    build_provenance_record,
+)
 
 
 @dataclass
@@ -505,6 +510,26 @@ def attach_handoff_package_paths(
                 handoff_dir,
                 scene_memory_manifest.parent / "adapter_manifests" / "cosmos_transfer.json",
             ),
+            **(
+                {
+                    "presentation_world_manifest_path": _relative_path_from(
+                        handoff_dir,
+                        pipeline_dir / "presentation_world" / "presentation_world_manifest.json",
+                    )
+                }
+                if (pipeline_dir / "presentation_world" / "presentation_world_manifest.json").is_file()
+                else {}
+            ),
+            **(
+                {
+                    "runtime_demo_manifest_path": _relative_path_from(
+                        handoff_dir,
+                        pipeline_dir / "presentation_world" / "runtime_demo_manifest.json",
+                    )
+                }
+                if (pipeline_dir / "presentation_world" / "runtime_demo_manifest.json").is_file()
+                else {}
+            ),
         }
     else:
         payload.pop("scene_memory_package", None)
@@ -629,7 +654,7 @@ def _scene_memory_derived_assets(
 ) -> Dict[str, Dict[str, Any]]:
     scene_memory_status = str(scene_memory_artifacts.get("scene_memory_status") or "needs_more_evidence")
     preview_status = str(scene_memory_artifacts.get("preview_simulation_status") or "review_required")
-    return {
+    assets = {
         "scene_memory": {
             "status": scene_memory_status,
             "manifest_uri": scene_memory_artifacts.get("scene_memory_manifest_uri"),
@@ -641,6 +666,13 @@ def _scene_memory_derived_assets(
             "artifact_uri": scene_memory_artifacts.get("preview_simulation_manifest_uri"),
         },
     }
+    if scene_memory_artifacts.get("presentation_world_manifest_uri"):
+        assets["presentation_world"] = {
+            "status": "available",
+            "manifest_uri": scene_memory_artifacts.get("presentation_world_manifest_uri"),
+            "artifact_uri": scene_memory_artifacts.get("runtime_demo_manifest_uri"),
+        }
+    return assets
 
 
 def _write_scene_memory_bundle(
@@ -653,12 +685,22 @@ def _write_scene_memory_bundle(
     scorecard: Mapping[str, Any],
     qualification_record: Mapping[str, Any],
 ) -> Dict[str, Any]:
+    policy = WorldModelPolicy.from_env()
     scene_memory_dir = pipeline_dir / "scene_memory"
     adapter_dir = scene_memory_dir / "adapter_manifests"
     preview_dir = pipeline_dir / "preview_simulation"
+    presentation_dir = pipeline_dir / "presentation_world"
     ensure_dir(scene_memory_dir)
     ensure_dir(adapter_dir)
     ensure_dir(preview_dir)
+    ensure_dir(presentation_dir)
+
+    scene_memory_manifest_uri = f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_manifest.json', storage_root)}"
+    scene_memory_readiness_uri = f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_readiness.json', storage_root)}"
+    conditioning_bundle_uri = f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'conditioning_bundle.json', storage_root)}"
+    preview_simulation_manifest_uri = f"gs://{bucket}/{relative_scene_path(preview_dir / 'preview_simulation_manifest.json', storage_root)}"
+    presentation_world_manifest_uri = f"gs://{bucket}/{relative_scene_path(presentation_dir / 'presentation_world_manifest.json', storage_root)}"
+    runtime_demo_manifest_uri = f"gs://{bucket}/{relative_scene_path(presentation_dir / 'runtime_demo_manifest.json', storage_root)}"
 
     readiness_payload = _build_scene_memory_readiness(
         descriptor=descriptor,
@@ -707,6 +749,30 @@ def _write_scene_memory_bundle(
             "authoritative_record": "qualification_record.json",
             "generated_outputs_cannot_override_readiness": True,
         },
+        "world_model_policy": policy.to_dict(),
+        "canonical_output": build_output_linkage(
+            policy=policy,
+            canonical_artifact_uri=conditioning_bundle_uri,
+            presentation_artifact_uri=runtime_demo_manifest_uri if policy.emit_presentation else None,
+            authoritative_record=True,
+        ),
+        "provenance": build_provenance_record(
+            grounding_level="observed",
+            evidence_sources=[
+                descriptor.raw_video_uri,
+                descriptor.frames_index_uri,
+                descriptor.arkit_poses_uri,
+                descriptor.arkit_intrinsics_uri,
+                descriptor.arkit_depth_prefix_uri,
+            ],
+            observation_coverage={
+                "capture_modality": descriptor.capture_modality,
+                "has_explicit_conditioning": bool(explicit_conditioning),
+            },
+            confidence=qualification_record.get("confidence"),
+            canonical_truth=True,
+            presentation_only=False,
+        ),
     }
     write_json(scene_memory_dir / "conditioning_bundle.json", conditioning_bundle)
 
@@ -716,8 +782,8 @@ def _write_scene_memory_bundle(
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
-        "scene_memory_readiness_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_readiness.json', storage_root)}",
-        "conditioning_bundle_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'conditioning_bundle.json', storage_root)}",
+        "scene_memory_readiness_uri": scene_memory_readiness_uri,
+        "conditioning_bundle_uri": conditioning_bundle_uri,
         "authoritative_artifacts": {
             "qualification_record_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
             "qualification_brief_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_brief.json",
@@ -725,6 +791,25 @@ def _write_scene_memory_bundle(
             "human_actions_required_uri": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
         },
         "rights": readiness_payload["rights"],
+        "world_model_policy": policy.to_dict(),
+        "canonical_output": build_output_linkage(
+            policy=policy,
+            canonical_artifact_uri=scene_memory_manifest_uri,
+            presentation_artifact_uri=presentation_world_manifest_uri if policy.emit_presentation else None,
+            authoritative_record=True,
+        ),
+        "provenance": build_provenance_record(
+            grounding_level="observed",
+            evidence_sources=[
+                conditioning_bundle_uri,
+                f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
+                f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
+            ],
+            observation_coverage={"scene_memory_status": readiness_payload["status"]},
+            confidence=qualification_record.get("confidence"),
+            canonical_truth=True,
+            presentation_only=False,
+        ),
     }
     write_json(scene_memory_dir / "scene_memory_manifest.json", scene_memory_manifest)
 
@@ -802,6 +887,18 @@ def _write_scene_memory_bundle(
             "normalized_output_contract": spec["normalized_output_contract"],
             "status": spec["status"],
             "derived_only": True,
+            "output_policy": policy.to_dict(),
+            "grounding_requirements": {
+                "preserve_capture_backed_truth": True,
+                "provenance_required": policy.provenance_required,
+                "canonical_incomplete_ok": policy.canonical_incomplete_ok,
+            },
+            "presentation_allowed": True,
+            "canonical_write_allowed": False,
+            "authoritative_record": False,
+            "canonical_artifact_uri": scene_memory_manifest_uri,
+            "presentation_artifact_uri": presentation_world_manifest_uri if policy.emit_presentation else None,
+            "derivation_mode": policy.output_policy,
         }
         path = adapter_dir / f"{adapter_id}.json"
         write_json(path, payload)
@@ -814,17 +911,65 @@ def _write_scene_memory_bundle(
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
         "status": "prep_ready" if readiness_payload["status"] == "ready" else "review_required",
-        "scene_memory_manifest_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_manifest.json', storage_root)}",
+        "scene_memory_manifest_uri": scene_memory_manifest_uri,
         "supported_backends": ["gen3c", "neoverse", "cosmos_transfer"],
         "note": "Low-volume preview generation only. High-volume synthetic frames and datasets belong in BlueprintValidation.",
+        "world_model_policy": policy.to_dict(),
+        "canonical_artifact_uri": scene_memory_manifest_uri,
+        "presentation_artifact_uri": preview_simulation_manifest_uri,
+        "derivation_mode": policy.allow_generative_completion,
+        "authoritative_record": False,
     }
     write_json(preview_dir / "preview_simulation_manifest.json", preview_manifest)
 
+    presentation_manifest = {
+        "schema_version": "v1",
+        "lane": "presentation_world",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "status": "available" if policy.emit_presentation else "disabled",
+        "canonical_artifact_uri": scene_memory_manifest_uri,
+        "presentation_artifact_uri": presentation_world_manifest_uri,
+        "runtime_demo_manifest_uri": runtime_demo_manifest_uri if policy.emit_presentation else None,
+        "preview_simulation_manifest_uri": preview_simulation_manifest_uri if policy.emit_presentation else None,
+        "derivation_mode": policy.allow_generative_completion,
+        "authoritative_record": False,
+        "world_model_policy": policy.to_dict(),
+        "provenance": build_provenance_record(
+            grounding_level="generated" if policy.emit_presentation else "reconstructed",
+            evidence_sources=[scene_memory_manifest_uri, conditioning_bundle_uri],
+            observation_coverage={"presentation_enabled": policy.emit_presentation},
+            confidence=qualification_record.get("confidence"),
+            canonical_truth=False,
+            presentation_only=True,
+        ),
+    }
+    write_json(presentation_dir / "presentation_world_manifest.json", presentation_manifest)
+
+    runtime_demo_manifest = {
+        "schema_version": "v1",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "status": "demo_ready" if policy.emit_presentation else "disabled",
+        "canonical_artifact_uri": scene_memory_manifest_uri,
+        "presentation_artifact_uri": runtime_demo_manifest_uri,
+        "presentation_manifest_uri": presentation_world_manifest_uri,
+        "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
+        "derivation_mode": policy.allow_generative_completion,
+        "authoritative_record": False,
+        "world_model_policy": policy.to_dict(),
+    }
+    write_json(presentation_dir / "runtime_demo_manifest.json", runtime_demo_manifest)
+
     return {
-        "scene_memory_manifest_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_manifest.json', storage_root)}",
-        "scene_memory_readiness_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_readiness.json', storage_root)}",
-        "conditioning_bundle_uri": f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'conditioning_bundle.json', storage_root)}",
-        "preview_simulation_manifest_uri": f"gs://{bucket}/{relative_scene_path(preview_dir / 'preview_simulation_manifest.json', storage_root)}",
+        "scene_memory_manifest_uri": scene_memory_manifest_uri,
+        "scene_memory_readiness_uri": scene_memory_readiness_uri,
+        "conditioning_bundle_uri": conditioning_bundle_uri,
+        "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
+        "presentation_world_manifest_uri": presentation_world_manifest_uri,
+        "runtime_demo_manifest_uri": runtime_demo_manifest_uri,
         "scene_memory_status": readiness_payload["status"],
         "preview_simulation_status": preview_manifest["status"],
         **adapter_artifacts,
@@ -2798,6 +2943,8 @@ def run_qualification_pipeline(
                 "scene_memory_readiness": scene_memory_artifacts["scene_memory_readiness_uri"],
                 "conditioning_bundle": scene_memory_artifacts["conditioning_bundle_uri"],
                 "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
+                "presentation_world_manifest": scene_memory_artifacts["presentation_world_manifest_uri"],
+                "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
                 "gen3c_adapter_manifest": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
                 "neoverse_adapter_manifest": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
                 "cosmos_transfer_adapter_manifest": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
@@ -2830,6 +2977,8 @@ def run_qualification_pipeline(
             "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
             "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
             "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
+            "presentation_world_manifest": scene_memory_artifacts["presentation_world_manifest_uri"],
+            "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
         }
         write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
@@ -2853,6 +3002,8 @@ def run_qualification_pipeline(
                 "scene_memory_readiness_uri": scene_memory_artifacts["scene_memory_readiness_uri"],
                 "conditioning_bundle_uri": scene_memory_artifacts["conditioning_bundle_uri"],
                 "preview_simulation_manifest_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
+                "presentation_world_manifest_uri": scene_memory_artifacts["presentation_world_manifest_uri"],
+                "runtime_demo_manifest_uri": scene_memory_artifacts["runtime_demo_manifest_uri"],
                 "gen3c_adapter_manifest_uri": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
                 "neoverse_adapter_manifest_uri": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
                 "cosmos_transfer_adapter_manifest_uri": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],

@@ -157,7 +157,33 @@ def _build_capture(tmp_path: Path) -> Path:
     )
     _write_json(
         pipeline_root / "preview_simulation" / "preview_simulation_manifest.json",
-        {"schema_version": "v1", "status": "prep_ready"},
+        {
+            "schema_version": "v1",
+            "status": "prep_ready",
+            "canonical_artifact_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/pipeline/scene_memory/scene_memory_manifest.json",
+            "presentation_artifact_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/pipeline/preview_simulation/preview_simulation_manifest.json",
+            "authoritative_record": False,
+        },
+    )
+    _write_json(
+        pipeline_root / "presentation_world" / "presentation_world_manifest.json",
+        {
+            "schema_version": "v1",
+            "status": "available",
+            "canonical_artifact_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/pipeline/scene_memory/scene_memory_manifest.json",
+            "presentation_artifact_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/pipeline/presentation_world/presentation_world_manifest.json",
+            "authoritative_record": False,
+        },
+    )
+    _write_json(
+        pipeline_root / "presentation_world" / "runtime_demo_manifest.json",
+        {
+            "schema_version": "v1",
+            "status": "demo_ready",
+            "canonical_artifact_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/pipeline/scene_memory/scene_memory_manifest.json",
+            "presentation_artifact_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/pipeline/presentation_world/runtime_demo_manifest.json",
+            "authoritative_record": False,
+        },
     )
     return capture_root
 
@@ -240,26 +266,40 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path, monkeypa
     site_world_registration = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_registration.json").read_text(encoding="utf-8"))
     site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
     summary = json.loads((capture_root / "pipeline" / "evaluation_prep" / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
+    scene_memory_bundle = json.loads((capture_root / "pipeline" / "evaluation_prep" / "scene_memory_bundle_manifest.json").read_text(encoding="utf-8"))
 
     assert manifest["status"] == "ready_for_validation"
+    assert manifest["world_model_classification"] == "validated_site_world"
+    assert manifest["canonical_output"]["authoritative_record"] is True
+    assert manifest["presentation_output"]["authoritative_record"] is False
     assert manifest["artifacts"]["qualified_opportunity_handoff"] == "qualified_opportunity_handoff.json"
     assert manifest["artifacts"]["scene_memory_bundle_manifest"] == "scene_memory_bundle_manifest.json"
     assert manifest["artifacts"]["site_world_spec"] == "site_world_spec.json"
     assert manifest["artifacts"]["site_world_registration"] == "site_world_registration.json"
     assert manifest["artifacts"]["site_world_health"] == "site_world_health.json"
+    assert manifest["artifacts"]["presentation_world_manifest"] == "../presentation_world/presentation_world_manifest.json"
+    assert manifest["artifacts"]["runtime_demo_manifest"] == "../presentation_world/runtime_demo_manifest.json"
+    assert scene_memory_bundle["presentation_world_manifest_path"] == "../presentation_world/presentation_world_manifest.json"
+    assert scene_memory_bundle["runtime_demo_manifest_path"] == "../presentation_world/runtime_demo_manifest.json"
     assert rich_handoff["qualification_state"] == "ready"
     assert rich_handoff["downstream_evaluation_eligibility"] is True
     assert rich_handoff["scene_memory_package"]["scene_memory_manifest_path"] == "../scene_memory/scene_memory_manifest.json"
+    assert rich_handoff["scene_memory_package"]["presentation_world_manifest_path"] == "../presentation_world/presentation_world_manifest.json"
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
     assert site_world_spec["runtime_eligibility"]["launchable"] is True
+    assert site_world_spec["canonical_output"]["authoritative_record"] is True
+    assert site_world_spec["presentation_output"]["authoritative_record"] is False
     assert site_world_spec["task_catalog"][0]["task_id"] == "task-1"
     assert site_world_registration["status"] == "ready"
+    assert site_world_registration["world_model_classification"] == "validated_site_world"
     assert site_world_registration["runtime_base_url"] == "http://runtime.local"
     assert site_world_registration["runtime_capabilities"]["supports_camera_views"] is True
     assert site_world_health["launchable"] is True
+    assert site_world_health["world_model_classification"] == "validated_site_world"
     assert summary["task_count"] == 1
     assert summary["object_count"] == 1
     assert summary["site_world_status"] == "healthy"
+    assert summary["world_model_classification"] == "validated_site_world"
 
 
 def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_path: Path, monkeypatch) -> None:
@@ -300,3 +340,20 @@ def test_evaluation_prep_stage_degrades_when_object_index_is_missing(tmp_path: P
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
     assert site_world_health["launchable"] is False
     assert "object_index_path_missing" in site_world_health["warnings"]
+
+
+def test_evaluation_prep_stage_marks_empty_object_index_as_prototype(tmp_path: Path) -> None:
+    capture_root = _build_capture(tmp_path)
+    _write_json(capture_root / "raw" / "object_index.json", {"objects": []})
+
+    result = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    object_geometry = json.loads((capture_root / "pipeline" / "evaluation_prep" / "object_geometry_manifest.json").read_text(encoding="utf-8"))
+    site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
+
+    assert manifest["world_model_classification"] == "prototype_demo"
+    assert object_geometry["status"] == "empty_object_index"
+    assert object_geometry["object_index_present"] is True
+    assert object_geometry["object_index_entry_count"] == 0
+    assert site_world_health["world_model_classification"] == "prototype_demo"

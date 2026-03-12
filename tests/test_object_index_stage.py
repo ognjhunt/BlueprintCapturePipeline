@@ -214,6 +214,11 @@ def test_object_index_stage_builds_canonical_index_with_external_backends(
 
     assert result["object_count"] == 2
     assert report["backend_summary"]["object_count"] == 2
+    assert report["runtime_preflight"]["backends"]["yolo_world"]["configured"] is True
+    assert report["detections_per_backend"]["yolo_world"] == 2
+    assert report["detections_per_backend"]["grounding_dino"] == 1
+    assert report["clustered_object_count"] == 2
+    assert report["empty_index_cause"] is None
     assert descriptor["object_index_uri"].endswith("/raw/object_index.json")
     assert raw_manifest["object_index_uri"] == "object_index.json"
     labels = {item["label"] for item in manifest["objects"]}
@@ -223,7 +228,10 @@ def test_object_index_stage_builds_canonical_index_with_external_backends(
     assert drawer["boundingBox"]["center"][0] > 0.0
     assert drawer["articulation_hints"]["interactive"] is True
     assert drawer["task_relevance"]["score"] >= 0.45
+    assert drawer["provenance"]["grounding_level"] == "observed"
+    assert drawer["provenance"]["canonical_truth"] is True
     assert hints["grounded_objects"]
+    assert hints["grounded_objects"][0]["provenance"]["grounding_level"] == "observed"
     assert hints["manipulation_candidates"]
     assert hints["articulation_hints"]
     assert hints["tasks"][0]["task_id"] == "open_close_primary"

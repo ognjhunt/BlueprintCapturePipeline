@@ -13,6 +13,11 @@ from .common import PipelineError, ensure_dir, optional_read_json, read_json_any
 from .local_capture import resolve_local_capture_context
 from .object_geometry_stage import run_object_geometry_stage
 from .site_world_runtime_service_client import SiteWorldRuntimeServiceClient, SiteWorldRuntimeServiceConfig
+from .world_model_policy import (
+    WorldModelPolicy,
+    build_output_linkage,
+    build_provenance_record,
+)
 
 
 def _read_optional_json_any(path: Path) -> Any:
@@ -479,6 +484,7 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
     scene_memory_dir = pipeline_dir / "scene_memory"
     adapter_dir = scene_memory_dir / "adapter_manifests"
     preview_dir = pipeline_dir / "preview_simulation"
+    presentation_dir = pipeline_dir / "presentation_world"
     files = {
         "bundle_path": scene_memory_dir,
         "scene_memory_manifest_path": scene_memory_dir / "scene_memory_manifest.json",
@@ -488,6 +494,8 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
         "gen3c_adapter_manifest_path": adapter_dir / "gen3c.json",
         "neoverse_adapter_manifest_path": adapter_dir / "neoverse.json",
         "cosmos_transfer_adapter_manifest_path": adapter_dir / "cosmos_transfer.json",
+        "presentation_world_manifest_path": presentation_dir / "presentation_world_manifest.json",
+        "runtime_demo_manifest_path": presentation_dir / "runtime_demo_manifest.json",
     }
     entries: Dict[str, str] = {}
     available = 0
@@ -582,6 +590,8 @@ def _normalize_rich_handoff(
         "gen3c_adapter_manifest_path",
         "neoverse_adapter_manifest_path",
         "cosmos_transfer_adapter_manifest_path",
+        "presentation_world_manifest_path",
+        "runtime_demo_manifest_path",
     ):
         text = str(scene_memory_bundle_manifest.get(key) or "").strip()
         if text:
@@ -682,6 +692,10 @@ def _site_world_id(scene_id: str, capture_id: str) -> str:
     return f"siteworld-{sha256(f'{scene_id}::{capture_id}'.encode('utf-8')).hexdigest()[:12]}"
 
 
+def _policy() -> WorldModelPolicy:
+    return WorldModelPolicy.from_env()
+
+
 def _descriptor_scene_memory_capture(descriptor: Mapping[str, Any]) -> Dict[str, Any]:
     scene_memory_capture = descriptor.get("scene_memory_capture")
     if isinstance(scene_memory_capture, Mapping):
@@ -690,6 +704,32 @@ def _descriptor_scene_memory_capture(descriptor: Mapping[str, Any]) -> Dict[str,
     if isinstance(metadata, Mapping) and isinstance(metadata.get("scene_memory_capture"), Mapping):
         return dict(metadata.get("scene_memory_capture"))
     return {}
+
+
+def _gate(prefixes: Sequence[str], items: Sequence[str]) -> bool:
+    normalized = [str(item or "").strip() for item in items if str(item or "").strip()]
+    return not any(any(item.startswith(prefix) for prefix in prefixes) for item in normalized)
+
+
+def _object_geometry_has_provenance(object_geometry_manifest: Mapping[str, Any]) -> bool:
+    objects = (
+        object_geometry_manifest.get("objects")
+        if isinstance(object_geometry_manifest.get("objects"), list)
+        else []
+    )
+    if not objects:
+        return False
+    for item in objects:
+        if not isinstance(item, Mapping):
+            continue
+        provenance = item.get("provenance")
+        if (
+            isinstance(provenance, Mapping)
+            and str(provenance.get("grounding_level") or "").strip()
+            and provenance.get("canonical_truth") is True
+        ):
+            return True
+    return False
 
 
 def _site_world_runtime_eligibility(
@@ -751,6 +791,7 @@ def _build_site_world_spec(
     task_anchor_manifest: Mapping[str, Any],
     task_run_manifest: Mapping[str, Any],
 ) -> Dict[str, Any]:
+    policy = _policy()
     descriptor = _read_optional_json_any(context.descriptor_path)
     descriptor_map = dict(descriptor) if isinstance(descriptor, Mapping) else {}
     conditioning_bundle_path = _real_path_from_eval_dir(
@@ -778,6 +819,14 @@ def _build_site_world_spec(
                 "task_category": str(task.get("task_category") or "generic"),
                 "target_object_ids": _string_list(task.get("target_object_ids")),
                 "articulation_required_ids": _string_list(task.get("articulation_required_ids")),
+                "provenance": build_provenance_record(
+                    grounding_level="reconstructed" if _string_list(task.get("target_object_ids")) else "inferred",
+                    evidence_sources=[_gs_uri(context, "evaluation_prep/task_anchor_manifest.json")],
+                    observation_coverage={"target_object_count": len(_string_list(task.get("target_object_ids")))},
+                    confidence=1.0 if _string_list(task.get("target_object_ids")) else 0.5,
+                    canonical_truth=True,
+                    presentation_only=False,
+                ),
             }
         )
     geometry_bundle = scene_memory_bundle_manifest.get("bundle_path")
@@ -845,6 +894,35 @@ def _build_site_world_spec(
             "blockers": runtime_eligibility["blockers"],
             "warnings": runtime_eligibility["warnings"],
         },
+        "world_model_policy": policy.to_dict(),
+        "canonical_output": build_output_linkage(
+            policy=policy,
+            canonical_artifact_uri=_gs_uri(context, "evaluation_prep/site_world_spec.json"),
+            presentation_artifact_uri=_gs_uri(context, "presentation_world/presentation_world_manifest.json") if policy.emit_presentation else None,
+            authoritative_record=True,
+        ),
+        "presentation_output": build_output_linkage(
+            policy=policy,
+            canonical_artifact_uri=_gs_uri(context, "evaluation_prep/site_world_spec.json"),
+            presentation_artifact_uri=_gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+            authoritative_record=False,
+            derivation_mode=policy.allow_generative_completion,
+        ),
+        "provenance": build_provenance_record(
+            grounding_level="reconstructed" if runtime_eligibility["launchable"] else "observed",
+            evidence_sources=[
+                _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
+                _gs_uri(context, "scene_memory/conditioning_bundle.json"),
+                _gs_uri(context, "evaluation_prep/object_geometry_manifest.json"),
+            ],
+            observation_coverage={
+                "task_count": len(normalized_tasks),
+                "runtime_launchable": runtime_eligibility["launchable"],
+            },
+            confidence=1.0 if runtime_eligibility["launchable"] else 0.75,
+            canonical_truth=True,
+            presentation_only=False,
+        ),
         "generated_at": utc_now_iso(),
     }
     return spec
@@ -855,6 +933,7 @@ def _build_site_world_runtime_records(
     context,
     spec: Mapping[str, Any],
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    policy = _policy()
     site_world_id = str(spec.get("site_world_id") or _site_world_id(context.scene_id, context.capture_id))
     eligibility = dict(spec.get("runtime_eligibility") or {})
     service_url = (os.getenv("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip().rstrip("/")
@@ -878,6 +957,11 @@ def _build_site_world_runtime_records(
                 "supports_camera_views": False,
                 "supports_stream": False,
             },
+            "world_model_policy": policy.to_dict(),
+            "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
+            "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+            "derivation_mode": policy.output_policy,
+            "authoritative_record": True,
             "generated_at": utc_now_iso(),
         }
         health = {
@@ -889,6 +973,11 @@ def _build_site_world_runtime_records(
             "status": "blocked",
             "blockers": list(eligibility.get("blockers") or []),
             "warnings": list(eligibility.get("warnings") or []),
+            "world_model_policy": policy.to_dict(),
+            "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_health.json"),
+            "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+            "derivation_mode": policy.output_policy,
+            "authoritative_record": True,
             "last_heartbeat_at": utc_now_iso(),
         }
         return registration, health
@@ -913,6 +1002,11 @@ def _build_site_world_runtime_records(
                 "supports_camera_views": False,
                 "supports_stream": False,
             },
+            "world_model_policy": policy.to_dict(),
+            "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
+            "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+            "derivation_mode": policy.output_policy,
+            "authoritative_record": True,
             "generated_at": utc_now_iso(),
         }
         health = {
@@ -924,6 +1018,11 @@ def _build_site_world_runtime_records(
             "status": "blocked",
             "blockers": ["missing_runtime_service_url"],
             "warnings": list(eligibility.get("warnings") or []),
+            "world_model_policy": policy.to_dict(),
+            "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_health.json"),
+            "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+            "derivation_mode": policy.output_policy,
+            "authoritative_record": True,
             "last_heartbeat_at": utc_now_iso(),
         }
         return registration, health
@@ -958,6 +1057,16 @@ def _build_site_world_runtime_records(
         if key in build_payload
     }
     health = dict(build_payload.get("health") or client.get_site_world_health(str(registration.get("site_world_id") or site_world_id)))
+    registration.setdefault("world_model_policy", policy.to_dict())
+    registration.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_registration.json"))
+    registration.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
+    registration.setdefault("derivation_mode", policy.output_policy)
+    registration.setdefault("authoritative_record", True)
+    health.setdefault("world_model_policy", policy.to_dict())
+    health.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_health.json"))
+    health.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
+    health.setdefault("derivation_mode", policy.output_policy)
+    health.setdefault("authoritative_record", True)
     if registration.get("status") == "ready":
         task_catalog = list(spec.get("task_catalog") or [])
         scenario_catalog = list(spec.get("scenario_catalog") or [])
@@ -995,6 +1104,7 @@ def _build_hosted_session_runtime_manifest(
     task_anchor_manifest: Mapping[str, Any],
     task_run_manifest: Mapping[str, Any],
 ) -> Dict[str, Any]:
+    policy = _policy()
     eval_dir = context.capture_root / "pipeline" / "evaluation_prep"
     adapter_key_map = {
         "neoverse": "neoverse_adapter_manifest_path",
@@ -1197,6 +1307,11 @@ def _build_hosted_session_runtime_manifest(
             }
             for backend in available_backends
         },
+        "world_model_policy": policy.to_dict(),
+        "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_spec.json"),
+        "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+        "derivation_mode": policy.allow_generative_completion,
+        "authoritative_record": False,
         "generated_at": utc_now_iso(),
     }
 
@@ -1551,11 +1666,111 @@ def _build_launchable_export_bundle(
     }
 
 
+def _world_model_validation_summary(
+    *,
+    policy: WorldModelPolicy,
+    site_world_health: Mapping[str, Any],
+    launchable_export_bundle: Mapping[str, Any],
+    object_geometry_manifest: Mapping[str, Any],
+    geometry_bundle_manifest: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
+    task_anchor_manifest: Mapping[str, Any],
+    review_queue: Mapping[str, Any],
+) -> Dict[str, Any]:
+    objects = (
+        object_geometry_manifest.get("objects")
+        if isinstance(object_geometry_manifest.get("objects"), list)
+        else []
+    )
+    object_count = len([item for item in objects if isinstance(item, Mapping)])
+    object_index_nonempty = object_count > 0
+    conditioning_blockers = [
+        str(item)
+        for item in site_world_health.get("blockers", [])
+        if str(item).startswith("missing_spatial_conditioning:")
+        or str(item).startswith("missing_local_conditioning:")
+    ]
+    runtime_demo_ready = bool(site_world_health.get("launchable")) or bool(
+        ((launchable_export_bundle.get("bundles") or {}).get("world_model_runtime") or {}).get("launchable")
+    )
+    grounding_quality_ready = (
+        object_index_nonempty
+        and not conditioning_blockers
+        and _object_geometry_has_provenance(object_geometry_manifest)
+        and str(scene_memory_bundle_manifest.get("status") or "") == "complete"
+    )
+    geometry_quality_ready = (
+        object_index_nonempty
+        and str(geometry_bundle_manifest.get("status") or "") in {"complete", "partial"}
+    )
+    task_ids = {
+        target_id
+        for task in task_anchor_manifest.get("tasks", [])
+        if isinstance(task, Mapping)
+        for target_id in _string_list(task.get("target_object_ids"))
+    }
+    geometry_ids = {
+        str(item.get("object_id") or "")
+        for item in objects
+        if isinstance(item, Mapping) and str(item.get("object_id") or "").strip()
+    }
+    task_representation_ready = not task_ids or task_ids.issubset(geometry_ids)
+    unresolved_high_risks = [
+        item
+        for item in review_queue.get("items", [])
+        if isinstance(item, Mapping) and str(item.get("severity") or "").lower() == "high"
+    ]
+
+    validation_gates = {
+        "runtime_demo_ready": {
+            "passed": runtime_demo_ready,
+            "detail": "Runnable/demo runtime or runtime-adjacent package is available.",
+        },
+        "grounding_quality_ready": {
+            "passed": grounding_quality_ready,
+            "detail": "Canonical package has non-empty grounded object geometry and no unresolved conditioning blockers.",
+        },
+        "geometry_quality_ready": {
+            "passed": geometry_quality_ready,
+            "detail": "Geometry package is available at partial-or-better quality.",
+        },
+        "task_representation_ready": {
+            "passed": task_representation_ready,
+            "detail": "Task anchors resolve against canonical geometry objects.",
+        },
+    }
+
+    if (
+        validation_gates["runtime_demo_ready"]["passed"]
+        and validation_gates["grounding_quality_ready"]["passed"]
+        and validation_gates["geometry_quality_ready"]["passed"]
+        and validation_gates["task_representation_ready"]["passed"]
+        and not unresolved_high_risks
+        and bool(site_world_health.get("launchable"))
+    ):
+        classification = "validated_site_world"
+    elif (
+        validation_gates["runtime_demo_ready"]["passed"]
+        and validation_gates["grounding_quality_ready"]["passed"]
+    ):
+        classification = "grounded_world_model"
+    else:
+        classification = "prototype_demo"
+
+    return {
+        "world_model_classification": classification,
+        "validation_gates": validation_gates,
+        "unresolved_high_risk_count": len(unresolved_high_risks),
+        "policy": policy.to_dict(),
+    }
+
+
 def run_evaluation_prep_stage(
     *,
     capture_root: str | Path,
     provider_name: str = "manual",
 ) -> Dict[str, Any]:
+    policy = _policy()
     context = resolve_local_capture_context(capture_root)
     pipeline_dir = context.pipeline_root
     eval_dir = pipeline_dir / "evaluation_prep"
@@ -1713,6 +1928,26 @@ def run_evaluation_prep_stage(
     review_queue_path = eval_dir / "review_queue.json"
     _copy_json(review_queue_path, review_queue)
 
+    validation_summary = _world_model_validation_summary(
+        policy=policy,
+        site_world_health=site_world_health,
+        launchable_export_bundle=launchable_export_bundle,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+        geometry_bundle_manifest=geometry_bundle_manifest,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        task_anchor_manifest=task_anchor_manifest,
+        review_queue=review_queue,
+    )
+    site_world_registration["world_model_classification"] = validation_summary["world_model_classification"]
+    site_world_registration["validation_gates"] = validation_summary["validation_gates"]
+    site_world_health["world_model_classification"] = validation_summary["world_model_classification"]
+    site_world_health["validation_gates"] = validation_summary["validation_gates"]
+    _copy_json(site_world_registration_path, site_world_registration)
+    _copy_json(site_world_health_path, site_world_health)
+    launchable_export_bundle["world_model_classification"] = validation_summary["world_model_classification"]
+    launchable_export_bundle["validation_gates"] = validation_summary["validation_gates"]
+    _copy_json(launchable_export_bundle_path, launchable_export_bundle)
+
     geometry_objects = object_geometry_manifest.get("objects") if isinstance(object_geometry_manifest, Mapping) and isinstance(object_geometry_manifest.get("objects"), list) else []
     object_count = len([item for item in geometry_objects if isinstance(item, Mapping)])
     mesh_count = sum(1 for item in geometry_objects if isinstance(item, Mapping) and Path(str(item.get("mesh_glb_path") or "")).is_file())
@@ -1733,6 +1968,8 @@ def run_evaluation_prep_stage(
         "recapture_diff_status": recapture_diff.get("status"),
         "export_bundle_status": launchable_export_bundle.get("status"),
         "site_world_status": site_world_health.get("status"),
+        "world_model_classification": validation_summary["world_model_classification"],
+        "validation_gates": validation_summary["validation_gates"],
     }
     summary_path = eval_dir / "evaluation_prep_summary.json"
     _copy_json(summary_path, summary)
@@ -1782,6 +2019,22 @@ def run_evaluation_prep_stage(
         "qualification_state": qualification_state,
         "downstream_evaluation_eligibility": eligibility,
         "readiness_state": str(normalized_handoff.get("readiness_state") or qualification_state),
+        "world_model_classification": validation_summary["world_model_classification"],
+        "validation_gates": validation_summary["validation_gates"],
+        "world_model_policy": policy.to_dict(),
+        "canonical_output": build_output_linkage(
+            policy=policy,
+            canonical_artifact_uri=_gs_uri(context, "evaluation_prep/evaluation_prep_manifest.json"),
+            presentation_artifact_uri=_gs_uri(context, "presentation_world/presentation_world_manifest.json") if policy.emit_presentation else None,
+            authoritative_record=True,
+        ),
+        "presentation_output": build_output_linkage(
+            policy=policy,
+            canonical_artifact_uri=_gs_uri(context, "evaluation_prep/evaluation_prep_manifest.json"),
+            presentation_artifact_uri=_gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+            authoritative_record=False,
+            derivation_mode=policy.allow_generative_completion,
+        ),
         "task_ids": task_ids,
         "task_categories": task_categories,
         "source_handoff_path": _relative_to(eval_dir, pipeline_dir / "opportunity_handoff.json"),
@@ -1804,6 +2057,16 @@ def run_evaluation_prep_stage(
             "object_geometry_manifest": _relative_to(eval_dir, object_geometry_target_path),
             "evaluation_prep_summary": _relative_to(eval_dir, summary_path),
             "review_queue": _relative_to(eval_dir, review_queue_path),
+            **(
+                {"presentation_world_manifest": _relative_to(eval_dir, pipeline_dir / "presentation_world" / "presentation_world_manifest.json")}
+                if (pipeline_dir / "presentation_world" / "presentation_world_manifest.json").is_file()
+                else {}
+            ),
+            **(
+                {"runtime_demo_manifest": _relative_to(eval_dir, pipeline_dir / "presentation_world" / "runtime_demo_manifest.json")}
+                if (pipeline_dir / "presentation_world" / "runtime_demo_manifest.json").is_file()
+                else {}
+            ),
             **({"simready_prep_manifest": _relative_to(eval_dir, simready_prep_manifest_path)} if simready_prep_manifest_path is not None else {}),
         },
     }
