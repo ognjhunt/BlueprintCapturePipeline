@@ -77,6 +77,20 @@ RECONSTRUCTION_BACKEND="${RECONSTRUCTION_BACKEND:-nurec_3dgrut}"
 RECONSTRUCTION_COMPARE_BACKENDS="${RECONSTRUCTION_COMPARE_BACKENDS:-}"
 RECONSTRUCTION_COMPARE_WINNER="${RECONSTRUCTION_COMPARE_WINNER:-auto}"
 RECONSTRUCTION_COMPARE_REPORT="${RECONSTRUCTION_COMPARE_REPORT:-${WORKSPACE}/full_pipeline/reconstruction_compare_report.json}"
+WORLD_MODEL_SERVICE_URL="${WORLD_MODEL_SERVICE_URL:-}"
+WORLD_MODEL_SERVICE_API_KEY="${WORLD_MODEL_SERVICE_API_KEY:-}"
+WORLD_MODEL_SERVICE_TIMEOUT_SECONDS="${WORLD_MODEL_SERVICE_TIMEOUT_SECONDS:-14400}"
+WORLD_MODEL_SERVICE_POLL_SECONDS="${WORLD_MODEL_SERVICE_POLL_SECONDS:-20}"
+NEOVERSE_SERVICE_URL="${NEOVERSE_SERVICE_URL:-}"
+NEOVERSE_SERVICE_API_KEY="${NEOVERSE_SERVICE_API_KEY:-}"
+GEN3C_SERVICE_URL="${GEN3C_SERVICE_URL:-}"
+GEN3C_SERVICE_API_KEY="${GEN3C_SERVICE_API_KEY:-}"
+RECONSTRUCTION_ARKIT_POSES_PATH="${RECONSTRUCTION_ARKIT_POSES_PATH:-}"
+RECONSTRUCTION_ARKIT_INTRINSICS_PATH="${RECONSTRUCTION_ARKIT_INTRINSICS_PATH:-}"
+RECONSTRUCTION_ARKIT_DEPTH_DIR="${RECONSTRUCTION_ARKIT_DEPTH_DIR:-}"
+RECONSTRUCTION_ARKIT_CONFIDENCE_DIR="${RECONSTRUCTION_ARKIT_CONFIDENCE_DIR:-}"
+RECONSTRUCTION_SCENE_MEMORY_BUNDLE_PATH="${RECONSTRUCTION_SCENE_MEMORY_BUNDLE_PATH:-}"
+RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH="${RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH:-}"
 RUN_STARTED_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RUN_STARTED_AT_EPOCH="$(date +%s)"
 RUN_FAILURES=()
@@ -181,6 +195,12 @@ write_run_summary() {
   export SKIP_NUREC SKIP_FIXER SKIP_DENSE FIXER_MODE
   export RECONSTRUCTION_BACKEND RECONSTRUCTION_COMPARE_BACKENDS RECONSTRUCTION_COMPARE_WINNER
   export RECONSTRUCTION_COMPARE_REPORT
+  export WORLD_MODEL_SERVICE_URL WORLD_MODEL_SERVICE_API_KEY
+  export WORLD_MODEL_SERVICE_TIMEOUT_SECONDS WORLD_MODEL_SERVICE_POLL_SECONDS
+  export NEOVERSE_SERVICE_URL NEOVERSE_SERVICE_API_KEY GEN3C_SERVICE_URL GEN3C_SERVICE_API_KEY
+  export RECONSTRUCTION_ARKIT_POSES_PATH RECONSTRUCTION_ARKIT_INTRINSICS_PATH
+  export RECONSTRUCTION_ARKIT_DEPTH_DIR RECONSTRUCTION_ARKIT_CONFIDENCE_DIR
+  export RECONSTRUCTION_SCENE_MEMORY_BUNDLE_PATH RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH
   export POST_STAGE4_REFINE POST_STAGE4_REFINE_MODEL
   export GENERATION_PROVIDER_CHAIN SCENE_CLEANING_MODE
   export SAM3_MASK_EXPORT_SPACE INPAINT360GS_RESOLUTION PIPELINE_MODE
@@ -343,6 +363,8 @@ PY
 
 run_guardrail_checks() {
   local errors=()
+  local backend_service_url=""
+  local backend_service_key=""
 
   if ! command -v python3 >/dev/null 2>&1; then
     errors+=("python3 is required but not found in PATH")
@@ -367,8 +389,27 @@ run_guardrail_checks() {
           errors+=("SCENE_CLEANING_MODE=force is unsupported with loger backend")
         fi
         ;;
+      neoverse)
+        backend_service_url="${NEOVERSE_SERVICE_URL:-${WORLD_MODEL_SERVICE_URL:-}}"
+        backend_service_key="${NEOVERSE_SERVICE_API_KEY:-${WORLD_MODEL_SERVICE_API_KEY:-}}"
+        if [ -z "${backend_service_url}" ] || [ -z "${backend_service_key}" ]; then
+          errors+=("NeoVerse backend requested but NEOVERSE_SERVICE_URL / NEOVERSE_SERVICE_API_KEY (or WORLD_MODEL_SERVICE_URL / WORLD_MODEL_SERVICE_API_KEY) are unset")
+        fi
+        ;;
+      gen3c)
+        backend_service_url="${GEN3C_SERVICE_URL:-${WORLD_MODEL_SERVICE_URL:-}}"
+        backend_service_key="${GEN3C_SERVICE_API_KEY:-${WORLD_MODEL_SERVICE_API_KEY:-}}"
+        if [ -z "${backend_service_url}" ] || [ -z "${backend_service_key}" ]; then
+          errors+=("GEN3C backend requested but GEN3C_SERVICE_URL / GEN3C_SERVICE_API_KEY (or WORLD_MODEL_SERVICE_URL / WORLD_MODEL_SERVICE_API_KEY) are unset")
+        fi
+        if { [ -n "${RECONSTRUCTION_ARKIT_POSES_PATH}" ] && [ -n "${RECONSTRUCTION_ARKIT_INTRINSICS_PATH}" ] && [ -n "${RECONSTRUCTION_ARKIT_DEPTH_DIR}" ]; } || [ -n "${RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH}" ]; then
+          :
+        else
+          errors+=("GEN3C backend requested but explicit conditioning is missing (set RECONSTRUCTION_ARKIT_POSES_PATH + RECONSTRUCTION_ARKIT_INTRINSICS_PATH + RECONSTRUCTION_ARKIT_DEPTH_DIR, or RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH)")
+        fi
+        ;;
       *)
-        errors+=("unsupported reconstruction backend: ${RECONSTRUCTION_BACKEND} (expected nurec_3dgrut, tttLRM, or loger)")
+        errors+=("unsupported reconstruction backend: ${RECONSTRUCTION_BACKEND} (expected nurec_3dgrut, tttLRM, loger, neoverse, or gen3c)")
         ;;
     esac
 
@@ -394,8 +435,23 @@ run_guardrail_checks() {
             errors+=("SCENE_CLEANING_MODE=force is unsupported when loger is included in reconstruction compare backends")
           fi
           ;;
+        neoverse)
+          if [ -z "${NEOVERSE_SERVICE_URL:-${WORLD_MODEL_SERVICE_URL:-}}" ] || [ -z "${NEOVERSE_SERVICE_API_KEY:-${WORLD_MODEL_SERVICE_API_KEY:-}}" ]; then
+            errors+=("NeoVerse included in --reconstruction-compare-backends but service URL/key are unset")
+          fi
+          ;;
+        gen3c)
+          if [ -z "${GEN3C_SERVICE_URL:-${WORLD_MODEL_SERVICE_URL:-}}" ] || [ -z "${GEN3C_SERVICE_API_KEY:-${WORLD_MODEL_SERVICE_API_KEY:-}}" ]; then
+            errors+=("GEN3C included in --reconstruction-compare-backends but service URL/key are unset")
+          fi
+          if { [ -n "${RECONSTRUCTION_ARKIT_POSES_PATH}" ] && [ -n "${RECONSTRUCTION_ARKIT_INTRINSICS_PATH}" ] && [ -n "${RECONSTRUCTION_ARKIT_DEPTH_DIR}" ]; } || [ -n "${RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH}" ]; then
+            :
+          else
+            errors+=("GEN3C included in --reconstruction-compare-backends but explicit conditioning is missing")
+          fi
+          ;;
         *)
-          errors+=("unsupported reconstruction compare backend: ${compare_backend} (expected nurec_3dgrut, tttLRM, or loger)")
+          errors+=("unsupported reconstruction compare backend: ${compare_backend} (expected nurec_3dgrut, tttLRM, loger, neoverse, or gen3c)")
           ;;
       esac
     done
@@ -403,10 +459,10 @@ run_guardrail_checks() {
     if [ "${RECONSTRUCTION_COMPARE_WINNER,,}" != "auto" ]; then
       local compare_winner="${RECONSTRUCTION_COMPARE_WINNER,,}"
       case "$compare_winner" in
-        nurec_3dgrut|nurec|nurec3d|3dgrut|ttt_lrm|tttlrm|ttt|loger)
+        nurec_3dgrut|nurec|nurec3d|3dgrut|ttt_lrm|tttlrm|ttt|loger|neoverse|gen3c)
           ;;
         *)
-          errors+=("unsupported reconstruction compare winner: ${RECONSTRUCTION_COMPARE_WINNER} (expected nurec_3dgrut, tttLRM, loger, or auto)")
+          errors+=("unsupported reconstruction compare winner: ${RECONSTRUCTION_COMPARE_WINNER} (expected nurec_3dgrut, tttLRM, loger, neoverse, gen3c, or auto)")
           ;;
       esac
     fi
@@ -579,8 +635,8 @@ Options:
   --skip-scene-cleaning        Backward-compatible alias for --scene-cleaning-mode off
   --skip-nurec            Skip NuRec shim (use existing outputs in --nurec-output-dir)
   --nurec-output-dir DIR  NuRec output directory (default: auto from workspace)
-  --reconstruction-backend BACKEND  Reconstruction backend: nurec_3dgrut (default), tttLRM, loger
-  --reconstruction-compare-backends CSV  Comma-separated compare backends (e.g. tttLRM, loger)
+  --reconstruction-backend BACKEND  Reconstruction backend: nurec_3dgrut (default), tttLRM, loger, neoverse, gen3c
+  --reconstruction-compare-backends CSV  Comma-separated compare backends (e.g. tttLRM, loger, neoverse)
   --reconstruction-compare-winner NAME|auto  Winner policy (auto or backend name)
   --reconstruction-compare-report FILE  Path for backend compare report JSON
   --crop-cleanup PROV     Crop cleanup: skip, together_qwen_image_edit, qwen_image_edit, nano_banana, gpt_image (default: skip)
@@ -814,19 +870,20 @@ if [ "$SKIP_NUREC" = "false" ]; then
   JOB_SPEC="${PIPELINE_DIR}/job_spec.json"
   mkdir -p "$PIPELINE_DIR"
 
-  cat > "$JOB_SPEC" <<SPEC
-{
-  "schema_version": "v1",
-  "scene_id": "${SCENE_ID}",
-  "capture_id": "${CAPTURE_ID}",
-  "capture": {
-    "raw_prefix_uri": "${INPUT_VIDEO}"
-  },
-  "outputs": {
-    "nurec_prefix": "${NUREC_OUTPUT_DIR}"
-  }
-}
-SPEC
+  python3 "${APP_DIR}/scripts/write_reconstruction_job_spec.py" \
+    --output-path "$JOB_SPEC" \
+    --scene-id "$SCENE_ID" \
+    --capture-id "$CAPTURE_ID" \
+    --requested-backend "$RECONSTRUCTION_BACKEND" \
+    --input-video "$INPUT_VIDEO" \
+    --output-dir "$NUREC_OUTPUT_DIR" \
+    --compare-report-path "$RECONSTRUCTION_COMPARE_REPORT" \
+    --arkit-poses-path "${RECONSTRUCTION_ARKIT_POSES_PATH}" \
+    --arkit-intrinsics-path "${RECONSTRUCTION_ARKIT_INTRINSICS_PATH}" \
+    --arkit-depth-dir "${RECONSTRUCTION_ARKIT_DEPTH_DIR}" \
+    --arkit-confidence-dir "${RECONSTRUCTION_ARKIT_CONFIDENCE_DIR}" \
+    --scene-memory-conditioning-bundle-path "${RECONSTRUCTION_SCENE_MEMORY_BUNDLE_PATH}" \
+    --advanced-geometry-bundle-path "${RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH}"
 
   NUREC_RESUME_ARGS=()
   if [ "$NUREC_RESUME" = "true" ]; then
@@ -871,6 +928,12 @@ SPEC
   export COLMAP_MIN_REGISTERED_RATIO COLMAP_RETRY_MIN_REGISTERED_RATIO
   export VISUAL_MESH_TEXTURE_SIZE VISUAL_MESH_TEXTURE_MAX_ATLASES
   export SAM3_PREFLIGHT_STRICT SAM3_TRACKING_MODE
+  export WORLD_MODEL_SERVICE_URL WORLD_MODEL_SERVICE_API_KEY
+  export WORLD_MODEL_SERVICE_TIMEOUT_SECONDS WORLD_MODEL_SERVICE_POLL_SECONDS
+  export NEOVERSE_SERVICE_URL NEOVERSE_SERVICE_API_KEY GEN3C_SERVICE_URL GEN3C_SERVICE_API_KEY
+  export RECONSTRUCTION_ARKIT_POSES_PATH RECONSTRUCTION_ARKIT_INTRINSICS_PATH
+  export RECONSTRUCTION_ARKIT_DEPTH_DIR RECONSTRUCTION_ARKIT_CONFIDENCE_DIR
+  export RECONSTRUCTION_SCENE_MEMORY_BUNDLE_PATH RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH
   export POST_STAGE4_REFINE POST_STAGE4_REFINE_MODEL
   export POST_STAGE4_MAX_PSEUDOVIEWS POST_STAGE4_DISTILL_ITERS POST_STAGE4_TIME_BUDGET_MIN
   export VOID_FILL_ROUNDS VOID_FILL_TARGET_HOLE_RATIO VOID_FILL_DISTILL_ITERS

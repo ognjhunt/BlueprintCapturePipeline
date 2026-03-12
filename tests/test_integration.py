@@ -1162,6 +1162,9 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     handoff = json.loads((pipeline_dir / "opportunity_handoff.json").read_text(encoding="utf-8"))
     quality_report = json.loads((pipeline_dir / "qualification_quality_report.json").read_text(encoding="utf-8"))
     scene_memory_manifest = json.loads((pipeline_dir / "scene_memory/scene_memory_manifest.json").read_text(encoding="utf-8"))
+    neoverse_adapter = json.loads((pipeline_dir / "scene_memory/adapter_manifests/neoverse.json").read_text(encoding="utf-8"))
+    gen3c_adapter = json.loads((pipeline_dir / "scene_memory/adapter_manifests/gen3c.json").read_text(encoding="utf-8"))
+    cosmos_adapter = json.loads((pipeline_dir / "scene_memory/adapter_manifests/cosmos_transfer.json").read_text(encoding="utf-8"))
     task_hypothesis_report = json.loads((pipeline_dir / "task_hypothesis_report.json").read_text(encoding="utf-8"))
     validated_handoff = _validate_handoff_contract(handoff)
 
@@ -1184,6 +1187,11 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     assert "task_hypothesis_report" in quality_report["artifacts"]
     assert "scene_memory_manifest" in quality_report["artifacts"]
     assert scene_memory_manifest["lane"] == "scene_memory"
+    assert neoverse_adapter["status"] == "available_stage1_remote"
+    assert neoverse_adapter["execution_mode"] == "remote_service"
+    assert neoverse_adapter["reconstruction_backend_name"] == "neoverse"
+    assert gen3c_adapter["status"] == "available_stage1_remote"
+    assert cosmos_adapter["status"] == "planned_phase3"
     scene_memory_readiness = json.loads((pipeline_dir / "scene_memory/scene_memory_readiness.json").read_text(encoding="utf-8"))
     assert scene_memory_readiness["status"] == ("ready" if qualification["readiness_state"] == "ready" else "needs_more_evidence")
     assert task_hypothesis_report["task_hypothesis_status"] == "accepted"

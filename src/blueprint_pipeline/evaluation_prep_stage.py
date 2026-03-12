@@ -46,6 +46,22 @@ def _copy_json(path: Path, payload: Mapping[str, Any]) -> None:
     write_json(path, payload)
 
 
+def _adapter_manifest_details(scene_memory_bundle_manifest: Mapping[str, Any], *, eval_dir: Path) -> Dict[str, Dict[str, Any]]:
+    key_map = {
+        "neoverse": "neoverse_adapter_manifest_path",
+        "gen3c": "gen3c_adapter_manifest_path",
+        "cosmos_transfer": "cosmos_transfer_adapter_manifest_path",
+    }
+    details: Dict[str, Dict[str, Any]] = {}
+    for backend, key in key_map.items():
+        rel_path = str(scene_memory_bundle_manifest.get(key) or "").strip()
+        if not rel_path:
+            continue
+        payload = optional_read_json(eval_dir / rel_path)
+        details[backend] = dict(payload) if isinstance(payload, Mapping) else {}
+    return details
+
+
 def _task_category(task_text: str) -> str:
     lowered = task_text.strip().lower()
     if "open and close" in lowered or lowered.startswith("open "):
@@ -447,18 +463,25 @@ def _build_hosted_session_runtime_manifest(
     task_anchor_manifest: Mapping[str, Any],
     task_run_manifest: Mapping[str, Any],
 ) -> Dict[str, Any]:
+    eval_dir = context.capture_root / "pipeline" / "evaluation_prep"
     adapter_key_map = {
         "neoverse": "neoverse_adapter_manifest_path",
         "gen3c": "gen3c_adapter_manifest_path",
         "cosmos_transfer": "cosmos_transfer_adapter_manifest_path",
     }
+    adapter_details = _adapter_manifest_details(scene_memory_bundle_manifest, eval_dir=eval_dir)
     available_backends = [
         backend
         for backend, key in adapter_key_map.items()
         if str(scene_memory_bundle_manifest.get(key) or "").strip()
     ]
+    launchable_backends = [
+        backend
+        for backend in available_backends
+        if str(adapter_details.get(backend, {}).get("status") or "").strip() == "available_stage1_remote"
+    ]
     preferred_order = ["neoverse", "gen3c", "cosmos_transfer"]
-    default_backend = next((backend for backend in preferred_order if backend in available_backends), None)
+    default_backend = next((backend for backend in preferred_order if backend in launchable_backends), None)
 
     tasks = (
         task_anchor_manifest.get("tasks")
@@ -515,6 +538,8 @@ def _build_hosted_session_runtime_manifest(
         launch_blockers.append("missing_task_anchor_manifest")
     if not available_backends:
         launch_blockers.append("runtime_manifest_only")
+    if available_backends and not launchable_backends:
+        launch_blockers.append("no_launchable_stage1_backend")
 
     return {
         "schema_version": "v1",
@@ -542,6 +567,7 @@ def _build_hosted_session_runtime_manifest(
             context, "evaluation_prep/task_run_manifest.json"
         ),
         "available_backends": available_backends,
+        "launchable_backends": launchable_backends,
         "default_backend": default_backend,
         "customer_facing_runtime": (
             "Hosted site runtime"
@@ -564,6 +590,15 @@ def _build_hosted_session_runtime_manifest(
             backend: _gs_uri(
                 context, f"scene_memory/adapter_manifests/{backend}.json"
             )
+            for backend in available_backends
+        },
+        "backend_launch_requirements": {
+            backend: {
+                "status": adapter_details.get(backend, {}).get("status"),
+                "execution_mode": adapter_details.get(backend, {}).get("execution_mode"),
+                "required_conditioning": adapter_details.get(backend, {}).get("required_conditioning", []),
+                "service_contract_version": adapter_details.get(backend, {}).get("service_contract_version"),
+            }
             for backend in available_backends
         },
         "generated_at": utc_now_iso(),

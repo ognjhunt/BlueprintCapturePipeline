@@ -165,6 +165,105 @@ def test_runtime_preflight_fails_when_ttt_lrm_unconfigured(
     assert "provider_ttt_lrm" in failed_names
 
 
+def test_runtime_preflight_requires_neoverse_service_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("RECONSTRUCTION_BACKEND", "neoverse")
+    monkeypatch.delenv("NEOVERSE_SERVICE_URL", raising=False)
+    monkeypatch.delenv("NEOVERSE_SERVICE_API_KEY", raising=False)
+    monkeypatch.delenv("WORLD_MODEL_SERVICE_URL", raising=False)
+    monkeypatch.delenv("WORLD_MODEL_SERVICE_API_KEY", raising=False)
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="sam3d",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+    )
+    failed_names = {item.name for item in checks if not item.passed}
+    assert "reconstruction_neoverse_service" in failed_names
+
+
+def test_runtime_preflight_requires_gen3c_service_and_conditioning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("RECONSTRUCTION_BACKEND", "gen3c")
+    monkeypatch.setenv("GEN3C_SERVICE_URL", "https://gen3c.example.internal")
+    monkeypatch.setenv("GEN3C_SERVICE_API_KEY", "secret")
+    monkeypatch.delenv("RECONSTRUCTION_ARKIT_POSES_PATH", raising=False)
+    monkeypatch.delenv("RECONSTRUCTION_ARKIT_INTRINSICS_PATH", raising=False)
+    monkeypatch.delenv("RECONSTRUCTION_ARKIT_DEPTH_DIR", raising=False)
+    monkeypatch.delenv("RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH", raising=False)
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="sam3d",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+    )
+    failed_names = {item.name for item in checks if not item.passed}
+    assert "reconstruction_gen3c_conditioning" in failed_names
+
+
+def test_runtime_preflight_accepts_gen3c_with_service_and_conditioning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bp_root = tmp_path / "BlueprintPipeline"
+    _make_blueprintpipeline_stub(bp_root)
+    gcs_root = tmp_path / "gcs"
+    gcs_root.mkdir(parents=True, exist_ok=True)
+    poses = tmp_path / "poses.jsonl"
+    intrinsics = tmp_path / "intrinsics.json"
+    depth_dir = tmp_path / "depth"
+    poses.write_text("{}\n", encoding="utf-8")
+    intrinsics.write_text("{}", encoding="utf-8")
+    depth_dir.mkdir()
+
+    monkeypatch.setenv("RECONSTRUCTION_BACKEND", "gen3c")
+    monkeypatch.setenv("GEN3C_SERVICE_URL", "https://gen3c.example.internal")
+    monkeypatch.setenv("GEN3C_SERVICE_API_KEY", "secret")
+    monkeypatch.setenv("RECONSTRUCTION_ARKIT_POSES_PATH", str(poses))
+    monkeypatch.setenv("RECONSTRUCTION_ARKIT_INTRINSICS_PATH", str(intrinsics))
+    monkeypatch.setenv("RECONSTRUCTION_ARKIT_DEPTH_DIR", str(depth_dir))
+    monkeypatch.setenv("TEXT_SAM3D_API_HOST", "https://sam3d.example.internal")
+    monkeypatch.setenv("TEXT_SAM3D_API_KEY", "sam3d-key")
+    monkeypatch.setenv("PARTICULATE_MODE", "skip")
+    monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
+    monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
+    monkeypatch.setenv("RUNTIME_PREFLIGHT_ENABLED", "true")
+
+    checks = validate_runtime_preflight(
+        gcs_root=gcs_root,
+        blueprintpipeline_root=bp_root,
+        generation_provider_chain="sam3d",
+        swap_policy_path="",
+        nurec_worker_mode="local_worker",
+        nurec_worker_command="",
+        advanced_quality_gates_enabled=False,
+    )
+    failed_names = {item.name for item in checks if not item.passed}
+    assert "reconstruction_gen3c_service" not in failed_names
+    assert "reconstruction_gen3c_conditioning" not in failed_names
+
+
 def test_runtime_preflight_standalone_mode_skips_blueprintpipeline_requirements(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

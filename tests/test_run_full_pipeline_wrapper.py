@@ -191,12 +191,29 @@ def test_wrapper_runs_guardrail_checks_before_expensive_stages() -> None:
     assert "full_required with ttt_lrm provider requires STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND" in text
     assert "loger backend requested but LOGER_CMD_TEMPLATE / LOGER_EXECUTABLE are both unset" in text
     assert "SCENE_CLEANING_MODE=force is unsupported with loger backend" in text
+    assert "NeoVerse backend requested but NEOVERSE_SERVICE_URL / NEOVERSE_SERVICE_API_KEY" in text
+    assert "GEN3C backend requested but explicit conditioning is missing" in text
 
 
 def test_wrapper_advertises_loger_backend_support() -> None:
     text = _script_text()
-    assert "Reconstruction backend: nurec_3dgrut (default), tttLRM, loger" in text
-    assert "expected nurec_3dgrut, tttLRM, or loger" in text
-    assert "expected nurec_3dgrut, tttLRM, loger, or auto" in text
+    assert "Reconstruction backend: nurec_3dgrut (default), tttLRM, loger, neoverse, gen3c" in text
+    assert "expected nurec_3dgrut, tttLRM, loger, neoverse, or gen3c" in text
+    assert "expected nurec_3dgrut, tttLRM, loger, neoverse, gen3c, or auto" in text
     assert "NUREC_VISUAL_PRIMARY defaulted to mesh for loger backend compatibility" in text
     assert "loger_backend_report.json" in text
+
+
+def test_wrapper_uses_python_helper_for_reconstruction_job_spec() -> None:
+    text = _script_text()
+    assert 'python3 "${APP_DIR}/scripts/write_reconstruction_job_spec.py"' in text
+    assert '--requested-backend "$RECONSTRUCTION_BACKEND"' in text
+    assert '--compare-report-path "$RECONSTRUCTION_COMPARE_REPORT"' in text
+
+
+def test_wrapper_exports_world_model_service_env() -> None:
+    text = _script_text()
+    assert 'WORLD_MODEL_SERVICE_URL="${WORLD_MODEL_SERVICE_URL:-}"' in text
+    assert 'NEOVERSE_SERVICE_URL="${NEOVERSE_SERVICE_URL:-}"' in text
+    assert 'GEN3C_SERVICE_URL="${GEN3C_SERVICE_URL:-}"' in text
+    assert 'RECONSTRUCTION_ARKIT_POSES_PATH="${RECONSTRUCTION_ARKIT_POSES_PATH:-}"' in text

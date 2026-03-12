@@ -284,12 +284,19 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `PIPELINE_MODE` (`full` default; `photorealistic_scene` for baseline-clear 3DGRUT-first output, `photoreal_hallucination` for clarity-first high-capacity baseline + forced synthetic repair)
 - `SCENE_CLEANING_MODE` (`off` default; `auto` best-effort candidate-scoped cleaning, `force` hard-fails when prerequisites/cleaning fail)
 - `SAM3_MASK_EXPORT_SPACE` (`undistorted` default when cleaning is enabled; `raw` or `undistorted`)
-- `RECONSTRUCTION_BACKEND` (`nurec_3dgrut` default, `ttt_lrm` experimental)
+- `RECONSTRUCTION_BACKEND` (`nurec_3dgrut` default; supports `ttt_lrm`, `loger`, `neoverse`, `gen3c`)
 - `RECONSTRUCTION_COMPARE_BACKENDS` (optional comma-separated candidate backends for A/B)
 - `RECONSTRUCTION_COMPARE_WINNER` (`auto` or backend name; selects winner output when comparing)
 - `RECONSTRUCTION_COMPARE_REPORT` (path to backend comparison JSON report)
 - `TTT_LRM_CMD_TEMPLATE` (command template for experimental tttLRM; placeholders: `INPUT_VIDEO`, `OUTPUT_DIR`, `SCENE_ID`, `CAPTURE_ID`, `JOB_SPEC_PATH`)
 - `TTT_LRM_EXECUTABLE` (fallback executable for tttLRM; receives `--input-video` and `--output-dir`)
+- `WORLD_MODEL_SERVICE_URL` / `WORLD_MODEL_SERVICE_API_KEY` (shared fallback for remote Stage 1 world-model backends)
+- `WORLD_MODEL_SERVICE_TIMEOUT_SECONDS` / `WORLD_MODEL_SERVICE_POLL_SECONDS` (remote NeoVerse / GEN3C orchestration tuning)
+- `NEOVERSE_SERVICE_URL` / `NEOVERSE_SERVICE_API_KEY` (optional overrides for NeoVerse Stage 1 remote execution)
+- `GEN3C_SERVICE_URL` / `GEN3C_SERVICE_API_KEY` (optional overrides for GEN3C Stage 1 remote execution)
+- `RECONSTRUCTION_ARKIT_POSES_PATH`, `RECONSTRUCTION_ARKIT_INTRINSICS_PATH`, `RECONSTRUCTION_ARKIT_DEPTH_DIR` (required for `gen3c` unless advanced geometry is supplied)
+- `RECONSTRUCTION_ARKIT_CONFIDENCE_DIR` (optional extra conditioning metadata)
+- `RECONSTRUCTION_SCENE_MEMORY_BUNDLE_PATH` / `RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH` (optional canonical bundle inputs for remote backends)
 - `INPAINT360GS_DIR` (default: `/opt/Inpaint360GS`)
 - `INPAINT360GS_PYTHON` (default: `python3.10`)
 - `INPAINT360GS_RESOLUTION` (`2` default; `1`=full, `2`=half, `4`=quarter)
@@ -324,11 +331,16 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 `scripts/run_full_pipeline.sh` behavior note:
 - In `best_effort` completion mode, if swap-orchestrator dependencies are missing (BlueprintPipeline runtime or required provider credentials), Phase 3 is skipped or soft-failed and the script still completes with NuRec outputs for visual QA (`orchestrator_run_report.json` records the fallback state).
 - Stage 1 now routes reconstruction through `scripts/reconstruction_backend_router.py`.
-- Use `--reconstruction-backend nurec_3dgrut|ttt_lrm`, plus optional:
-  - `--reconstruction-compare-backends nurec_3dgrut,ttt_lrm`
-  - `--reconstruction-compare-winner auto|ttt_lrm|nurec_3dgrut`
+- Use `--reconstruction-backend nurec_3dgrut|ttt_lrm|loger|neoverse|gen3c`, plus optional:
+  - `--reconstruction-compare-backends nurec_3dgrut,neoverse`
+  - `--reconstruction-compare-winner auto|ttt_lrm|nurec_3dgrut|neoverse|gen3c`
   - `--reconstruction-compare-report /tmp/compare_report.json`
+- The wrapper now writes the canonical Stage 1 job spec through `scripts/write_reconstruction_job_spec.py`; remote backends consume that spec unchanged.
+- `neoverse` is the preferred first remote Stage 1 world-model backend. It can operate from video-only input and should be rolled out behind compare mode first.
+- `gen3c` is the stricter second backend. It requires ARKit poses + intrinsics + depth, or an advanced geometry bundle that the remote service accepts as equivalent.
 - Winner metadata is written to `reconstruction_backend_meta.json` and comparison details to the configured report path.
+- Cosmos remains Stage 5 `Fixer` infrastructure in this phase. It is not the Stage 1 world-model backend path here.
+- The old execution gap was broader than the router alone: Stage 1 shell guardrails, runtime preflight, remote service runners, backend normalization adapters, and docs/tests now all participate in backend support.
 
 ### Run Operations Toolkit
 

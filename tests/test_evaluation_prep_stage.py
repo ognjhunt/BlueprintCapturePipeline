@@ -97,9 +97,36 @@ def _build_capture(tmp_path: Path) -> Path:
     _write_json(scene_memory_dir / "scene_memory_manifest.json", {"schema_version": "v1"})
     _write_json(scene_memory_dir / "scene_memory_readiness.json", {"schema_version": "v1", "status": "ready"})
     _write_json(scene_memory_dir / "conditioning_bundle.json", {"schema_version": "v1"})
-    _write_json(adapter_dir / "gen3c.json", {"schema_version": "v1"})
-    _write_json(adapter_dir / "neoverse.json", {"schema_version": "v1"})
-    _write_json(adapter_dir / "cosmos_transfer.json", {"schema_version": "v1"})
+    _write_json(
+        adapter_dir / "gen3c.json",
+        {
+            "schema_version": "v1",
+            "status": "available_stage1_remote",
+            "execution_mode": "remote_service",
+            "required_conditioning": ["camera_poses", "intrinsics", "depth_or_explicit_geometry"],
+            "service_contract_version": "stage1_world_model_remote_v1",
+        },
+    )
+    _write_json(
+        adapter_dir / "neoverse.json",
+        {
+            "schema_version": "v1",
+            "status": "available_stage1_remote",
+            "execution_mode": "remote_service",
+            "required_conditioning": ["rgb_video"],
+            "service_contract_version": "stage1_world_model_remote_v1",
+        },
+    )
+    _write_json(
+        adapter_dir / "cosmos_transfer.json",
+        {
+            "schema_version": "v1",
+            "status": "planned_phase3",
+            "execution_mode": "planned_phase3",
+            "required_conditioning": ["depth", "segmentation", "edge"],
+            "service_contract_version": "reserved_phase3",
+        },
+    )
     _write_json(
         pipeline_root / "preview_simulation" / "preview_simulation_manifest.json",
         {"schema_version": "v1", "status": "prep_ready"},
@@ -129,6 +156,8 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path) -> None:
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
     assert hosted_runtime["launchable"] is True
     assert hosted_runtime["default_backend"] == "neoverse"
+    assert hosted_runtime["launchable_backends"] == ["neoverse", "gen3c"]
+    assert hosted_runtime["backend_launch_requirements"]["cosmos_transfer"]["status"] == "planned_phase3"
     assert "task-1" in hosted_runtime["task_ids"]
     assert summary["task_count"] == 1
     assert summary["object_count"] == 1

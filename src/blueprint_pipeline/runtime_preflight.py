@@ -134,6 +134,42 @@ def _validate_provider_env(provider_chain: list[str]) -> list[PreflightCheck]:
     return checks
 
 
+def _validate_reconstruction_backend_env() -> list[PreflightCheck]:
+    checks: list[PreflightCheck] = []
+    backend = _normalize_provider(_env_any("RECONSTRUCTION_BACKEND", "WORLD_MODEL_BACKEND") or "nurec_3dgrut")
+
+    if backend in {"neoverse", "gen3c"}:
+        service_url = _env_any(f"{backend.upper()}_SERVICE_URL", "WORLD_MODEL_SERVICE_URL")
+        service_key = _env_any(f"{backend.upper()}_SERVICE_API_KEY", "WORLD_MODEL_SERVICE_API_KEY")
+        checks.append(
+            PreflightCheck(
+                f"reconstruction_{backend}_service",
+                bool(service_url and service_key),
+                f"{backend} service url+key present"
+                if service_url and service_key
+                else f"missing {backend} service configuration — set {backend.upper()}_SERVICE_URL + {backend.upper()}_SERVICE_API_KEY or WORLD_MODEL_SERVICE_URL + WORLD_MODEL_SERVICE_API_KEY",
+            )
+        )
+
+    if backend == "gen3c":
+        poses = _env_any("RECONSTRUCTION_ARKIT_POSES_PATH")
+        intrinsics = _env_any("RECONSTRUCTION_ARKIT_INTRINSICS_PATH")
+        depth = _env_any("RECONSTRUCTION_ARKIT_DEPTH_DIR")
+        geometry = _env_any("RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH")
+        explicit_conditioning = bool(geometry) or bool(poses and intrinsics and depth)
+        checks.append(
+            PreflightCheck(
+                "reconstruction_gen3c_conditioning",
+                explicit_conditioning,
+                "GEN3C conditioning present"
+                if explicit_conditioning
+                else "missing GEN3C conditioning — set RECONSTRUCTION_ARKIT_POSES_PATH + RECONSTRUCTION_ARKIT_INTRINSICS_PATH + RECONSTRUCTION_ARKIT_DEPTH_DIR, or RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH",
+            )
+        )
+
+    return checks
+
+
 def _validate_interactive_backend_env() -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
     particulate_mode = (os.getenv("PARTICULATE_MODE") or "remote").strip().lower()
@@ -489,6 +525,7 @@ def validate_runtime_preflight(
         )
     )
     checks.extend(_validate_provider_env(_parse_provider_chain(generation_provider_chain)))
+    checks.extend(_validate_reconstruction_backend_env())
     checks.extend(_validate_swap_policy_path(swap_policy_path))
     checks.extend(_validate_interactive_backend_env())
     checks.extend(_validate_nurec_worker(nurec_worker_mode, nurec_worker_command))

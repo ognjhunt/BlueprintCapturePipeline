@@ -6,6 +6,9 @@ Routes reconstruction jobs to one of the supported backends.
 Current supported backends:
 - nurec_3dgrut (default; existing local shim)
 - ttt_lrm (experimental integration for the tttLRM code path)
+- loger (command-template integration)
+- neoverse (remote Stage 1 service)
+- gen3c (remote Stage 1 service)
 
 The output directory contract remains NuRec-like:
 - export_last.usdz
@@ -32,10 +35,14 @@ from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NUREC_SHIM = REPO_ROOT / "scripts" / "nurec_shim.py"
+NEOVERSE_RUNNER = REPO_ROOT / "scripts" / "run_neoverse_service.py"
+GEN3C_RUNNER = REPO_ROOT / "scripts" / "run_gen3c_service.py"
 
 BACKEND_NUREC_3DGRUT = "nurec_3dgrut"
 BACKEND_TTT_LRM = "ttt_lrm"
 BACKEND_LOGER = "loger"
+BACKEND_NEOVERSE = "neoverse"
+BACKEND_GEN3C = "gen3c"
 REQUIRED_RECONTRACT_ARTIFACTS = (
     "export_last.usdz",
     "nvblox_mesh.ply",
@@ -67,6 +74,12 @@ def _normalize_backend_name(raw: str) -> str:
 
     if value in {"loger", "lo_ger", "lo-ger"}:
         return BACKEND_LOGER
+
+    if value in {"neoverse", "neoverse"}:
+        return BACKEND_NEOVERSE
+
+    if value in {"gen3c", "gen_3c"}:
+        return BACKEND_GEN3C
 
     raise ValueError(f"unsupported reconstruction backend '{raw}'")
 
@@ -490,6 +503,72 @@ def _run_loger(
     return _run_command(cmd, log_path=log_path, env=os.environ)
 
 
+def _run_neoverse(
+    *,
+    job_spec_path: Path,
+    output_dir: Path,
+    scene_id: str,
+    capture_id: str,
+    log_path: Path,
+) -> tuple[int, str, str]:
+    if not NEOVERSE_RUNNER.is_file():
+        return 1, "", f"missing run_neoverse_service.py at {NEOVERSE_RUNNER}"
+    cmd = [
+        sys.executable,
+        str(NEOVERSE_RUNNER),
+        "--job-spec",
+        str(job_spec_path),
+        "--output-dir",
+        str(output_dir),
+        "--scene-id",
+        scene_id,
+        "--capture-id",
+        capture_id,
+    ]
+    return _run_command(cmd, log_path=log_path, env=os.environ)
+
+
+def _run_gen3c(
+    *,
+    job_spec_path: Path,
+    output_dir: Path,
+    scene_id: str,
+    capture_id: str,
+    log_path: Path,
+) -> tuple[int, str, str]:
+    if not GEN3C_RUNNER.is_file():
+        return 1, "", f"missing run_gen3c_service.py at {GEN3C_RUNNER}"
+    cmd = [
+        sys.executable,
+        str(GEN3C_RUNNER),
+        "--job-spec",
+        str(job_spec_path),
+        "--output-dir",
+        str(output_dir),
+        "--scene-id",
+        scene_id,
+        "--capture-id",
+        capture_id,
+    ]
+    return _run_command(cmd, log_path=log_path, env=os.environ)
+
+
+def _normalize_neoverse_output(output_dir: Path) -> list[str]:
+    notes: list[str] = []
+    report_path = output_dir / "neoverse_backend_report.json"
+    if report_path.is_file():
+        notes.append("neoverse_backend_report_present")
+    return notes
+
+
+def _normalize_gen3c_output(output_dir: Path) -> list[str]:
+    notes: list[str] = []
+    report_path = output_dir / "gen3c_backend_report.json"
+    if report_path.is_file():
+        notes.append("gen3c_backend_report_present")
+    return notes
+
+
 def _artifact_contract_checks(output_dir: Path) -> dict[str, Any]:
     checks: dict[str, bool] = {}
     files: dict[str, dict[str, Any]] = {}
@@ -768,6 +847,24 @@ def run_reconstruction(
                 log_path=log_path,
             )
             notes = _normalize_loger_output(candidate_output)
+        elif backend == BACKEND_NEOVERSE:
+            return_code, stdout, stderr = _run_neoverse(
+                job_spec_path=job_spec_path,
+                output_dir=candidate_output,
+                scene_id=scene_id,
+                capture_id=capture_id,
+                log_path=log_path,
+            )
+            notes = _normalize_neoverse_output(candidate_output)
+        elif backend == BACKEND_GEN3C:
+            return_code, stdout, stderr = _run_gen3c(
+                job_spec_path=job_spec_path,
+                output_dir=candidate_output,
+                scene_id=scene_id,
+                capture_id=capture_id,
+                log_path=log_path,
+            )
+            notes = _normalize_gen3c_output(candidate_output)
         else:
             return_code, stdout, stderr = 1, "", f"unsupported backend: {backend}"
             notes = [f"unsupported_backend:{backend}"]
@@ -778,6 +875,10 @@ def run_reconstruction(
             notes = _normalize_ttt_output(candidate_output)
         if return_code == 0 and backend == BACKEND_LOGER:
             notes = _normalize_loger_output(candidate_output)
+        if return_code == 0 and backend == BACKEND_NEOVERSE:
+            notes = _normalize_neoverse_output(candidate_output)
+        if return_code == 0 and backend == BACKEND_GEN3C:
+            notes = _normalize_gen3c_output(candidate_output)
 
         compatibility = _artifact_contract_checks(candidate_output) if return_code == 0 else {}
         metrics = _evaluate_run(
