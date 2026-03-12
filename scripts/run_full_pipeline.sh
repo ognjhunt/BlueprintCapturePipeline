@@ -73,7 +73,7 @@ SCENE_CLEANING_MODE="${SCENE_CLEANING_MODE:-off}"
 SAM3_MASK_EXPORT_SPACE="${SAM3_MASK_EXPORT_SPACE:-undistorted}"
 INPAINT360GS_RESOLUTION="${INPAINT360GS_RESOLUTION:-2}"
 OPEN_OMNIVERSE_PREVIEW="${OPEN_OMNIVERSE_PREVIEW:-false}"
-RECONSTRUCTION_BACKEND="${RECONSTRUCTION_BACKEND:-nurec_3dgrut}"
+RECONSTRUCTION_BACKEND="${RECONSTRUCTION_BACKEND:-neoverse}"
 RECONSTRUCTION_COMPARE_BACKENDS="${RECONSTRUCTION_COMPARE_BACKENDS:-}"
 RECONSTRUCTION_COMPARE_WINNER="${RECONSTRUCTION_COMPARE_WINNER:-auto}"
 RECONSTRUCTION_COMPARE_REPORT="${RECONSTRUCTION_COMPARE_REPORT:-${WORKSPACE}/full_pipeline/reconstruction_compare_report.json}"
@@ -635,7 +635,7 @@ Options:
   --skip-scene-cleaning        Backward-compatible alias for --scene-cleaning-mode off
   --skip-nurec            Skip NuRec shim (use existing outputs in --nurec-output-dir)
   --nurec-output-dir DIR  NuRec output directory (default: auto from workspace)
-  --reconstruction-backend BACKEND  Reconstruction backend: nurec_3dgrut (default), tttLRM, loger, neoverse, gen3c
+  --reconstruction-backend BACKEND  Reconstruction backend: neoverse (default), nurec_3dgrut, tttLRM, loger, gen3c
   --reconstruction-compare-backends CSV  Comma-separated compare backends (e.g. tttLRM, loger, neoverse)
   --reconstruction-compare-winner NAME|auto  Winner policy (auto or backend name)
   --reconstruction-compare-report FILE  Path for backend compare report JSON

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -36,6 +37,12 @@ def _string_list(*values: Any) -> List[str]:
                 seen.add(text)
                 out.append(text)
     return out
+
+
+def _stable_id(prefix: str, value: str, *, fallback: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    token = normalized or fallback
+    return f"{prefix}_{token}"
 
 
 def _relative_to(base_dir: Path, target: Path) -> str:
@@ -95,6 +102,99 @@ def _default_task_text(scope_record: Mapping[str, Any], handoff: Mapping[str, An
     if task_text:
         return task_text
     return capture_id
+
+
+def _default_robot_profiles() -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": "mobile_manipulator_rgb_v1",
+            "display_name": "Mobile manipulator",
+            "embodiment_type": "mobile_manipulator",
+            "action_space": {
+                "name": "ee_delta_pose_gripper",
+                "dim": 7,
+                "labels": [
+                    "base_x",
+                    "base_y",
+                    "base_yaw",
+                    "ee_x",
+                    "ee_y",
+                    "ee_z",
+                    "gripper",
+                ],
+            },
+            "observation_cameras": [
+                {"id": "head_rgb", "role": "head", "required": True, "default_enabled": True},
+                {"id": "wrist_rgb", "role": "wrist", "required": False, "default_enabled": True},
+                {"id": "site_context_rgb", "role": "context", "required": False, "default_enabled": True},
+            ],
+            "base_semantics": "holonomic_mobile_base",
+            "gripper_semantics": "parallel_jaw_gripper",
+            "urdf_uri": None,
+            "usd_uri": None,
+            "allowed_policy_adapters": ["openvla_oft", "pi05", "dreamzero"],
+            "default_policy_adapter": "openvla_oft",
+        },
+        {
+            "id": "humanoid_dual_camera_v1",
+            "display_name": "Humanoid",
+            "embodiment_type": "humanoid",
+            "action_space": {
+                "name": "whole_body_delta_pose_gripper",
+                "dim": 7,
+                "labels": [
+                    "body_x",
+                    "body_y",
+                    "body_yaw",
+                    "hand_x",
+                    "hand_y",
+                    "hand_z",
+                    "gripper",
+                ],
+            },
+            "observation_cameras": [
+                {"id": "head_rgb", "role": "head", "required": True, "default_enabled": True},
+                {"id": "left_wrist_rgb", "role": "wrist_left", "required": False, "default_enabled": True},
+                {"id": "right_wrist_rgb", "role": "wrist_right", "required": False, "default_enabled": True},
+                {"id": "site_context_rgb", "role": "context", "required": False, "default_enabled": True},
+            ],
+            "base_semantics": "bipedal_base",
+            "gripper_semantics": "multi_finger_gripper",
+            "urdf_uri": None,
+            "usd_uri": None,
+            "allowed_policy_adapters": ["openvla_oft", "dreamzero"],
+            "default_policy_adapter": "openvla_oft",
+        },
+        {
+            "id": "fixed_arm_cell_v1",
+            "display_name": "Fixed arm cell",
+            "embodiment_type": "fixed_arm",
+            "action_space": {
+                "name": "joint_delta_gripper",
+                "dim": 7,
+                "labels": [
+                    "joint_1",
+                    "joint_2",
+                    "joint_3",
+                    "joint_4",
+                    "joint_5",
+                    "joint_6",
+                    "gripper",
+                ],
+            },
+            "observation_cameras": [
+                {"id": "cell_rgb", "role": "head", "required": True, "default_enabled": True},
+                {"id": "wrist_rgb", "role": "wrist", "required": False, "default_enabled": True},
+                {"id": "site_context_rgb", "role": "context", "required": False, "default_enabled": False},
+            ],
+            "base_semantics": "fixed_base",
+            "gripper_semantics": "parallel_jaw_gripper",
+            "urdf_uri": None,
+            "usd_uri": None,
+            "allowed_policy_adapters": ["openvla_oft", "pi05"],
+            "default_policy_adapter": "pi05",
+        },
+    ]
 
 
 def _load_task_run_entries(capture_root: Path) -> List[Dict[str, Any]]:
@@ -498,30 +598,90 @@ def _build_hosted_session_runtime_manifest(
         for task in tasks
         if isinstance(task, Mapping) and str(task.get("task_text") or "").strip()
     ]
+    task_catalog: List[Dict[str, Any]] = []
+    start_state_catalog: List[Dict[str, Any]] = []
     start_states = []
     for task in tasks:
         if not isinstance(task, Mapping):
             continue
+        task_id = str(task.get("task_id") or "").strip()
         task_text = str(task.get("task_text") or task.get("task_id") or "").strip()
+        task_catalog.append(
+            {
+                "id": task_id or _stable_id("task", task_text, fallback="default"),
+                "task_id": task_id,
+                "task_text": task_text,
+                "task_category": str(task.get("task_category") or "generic"),
+                "target_object_ids": _string_list(task.get("target_object_ids")),
+                "articulation_required_ids": _string_list(task.get("articulation_required_ids")),
+            }
+        )
         if task_text and task_text not in start_states:
             start_states.append(task_text)
-    if not start_states:
-        start_states = [
-            str(text).strip()
-            for text in (
-                task_run_manifest.get("start_states")
-                if isinstance(task_run_manifest, Mapping)
-                else []
+            start_state_catalog.append(
+                {
+                    "id": _stable_id("start", task_text, fallback=f"task_{len(start_state_catalog)}"),
+                    "name": task_text,
+                    "task_id": task_id or None,
+                    "source": "task_anchor_manifest",
+                }
             )
-            or []
-            if str(text).strip()
-        ]
+    if not start_states:
+        for text in (
+            task_run_manifest.get("start_states")
+            if isinstance(task_run_manifest, Mapping)
+            else []
+        ) or []:
+            name = str(text).strip()
+            if not name or name in start_states:
+                continue
+            start_states.append(name)
+            start_state_catalog.append(
+                {
+                    "id": _stable_id("start", name, fallback=f"state_{len(start_state_catalog)}"),
+                    "name": name,
+                    "task_id": None,
+                    "source": "task_run_manifest",
+                }
+            )
     if not start_states:
         start_states = ["default_start_state"]
+        start_state_catalog = [
+            {
+                "id": "start_default",
+                "name": "default_start_state",
+                "task_id": None,
+                "source": "runtime_default",
+            }
+        ]
 
     scenario_variants = ["default", "counterfactual_lighting", "counterfactual_clutter"]
     if str(scene_memory_bundle_manifest.get("preview_simulation_manifest_path") or "").strip():
         scenario_variants.insert(0, "preview_simulation_default")
+    scenario_catalog = [
+        {
+            "id": _stable_id("scenario", variant, fallback=f"scenario_{index}"),
+            "name": variant,
+            "source": "preview_simulation" if variant == "preview_simulation_default" else "hosted_runtime",
+        }
+        for index, variant in enumerate(scenario_variants)
+    ]
+    robot_profiles = _default_robot_profiles()
+    export_defaults = [
+        "observation_frames",
+        "action_trace",
+        "reward",
+        "summary_metrics",
+        "rollout_video",
+        "rlds_dataset",
+    ]
+    runtime_capabilities = {
+        "supports_step_rollout": True,
+        "supports_batch_rollout": True,
+        "supports_camera_views": True,
+        "supports_rlds_export": True,
+        "supports_preview_render": "gen3c" in available_backends,
+    }
 
     launch_blockers: List[str] = []
     if str(normalized_handoff.get("qualification_state") or "").strip().lower() != "ready":
@@ -576,14 +736,18 @@ def _build_hosted_session_runtime_manifest(
         ),
         "task_ids": task_ids,
         "task_texts": task_texts,
+        "task_catalog": task_catalog,
         "start_states": start_states,
+        "start_state_catalog": start_state_catalog,
         "scenario_variants": scenario_variants,
-        "export_defaults": [
-            "rollout_video",
-            "action_trace",
-            "score",
-            "summary_metrics",
-        ],
+        "scenario_catalog": scenario_catalog,
+        "robot_profiles": robot_profiles,
+        "default_robot_profile_id": robot_profiles[0]["id"],
+        "export_defaults": export_defaults,
+        "runtime_capabilities": runtime_capabilities,
+        "supports_step_rollout": runtime_capabilities["supports_step_rollout"],
+        "supports_batch_rollout": runtime_capabilities["supports_batch_rollout"],
+        "supports_camera_views": runtime_capabilities["supports_camera_views"],
         "launchable": len(launch_blockers) == 0,
         "launch_blockers": launch_blockers,
         "adapter_manifest_uris": {

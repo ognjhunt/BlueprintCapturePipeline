@@ -284,7 +284,7 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `PIPELINE_MODE` (`full` default; `photorealistic_scene` for baseline-clear 3DGRUT-first output, `photoreal_hallucination` for clarity-first high-capacity baseline + forced synthetic repair)
 - `SCENE_CLEANING_MODE` (`off` default; `auto` best-effort candidate-scoped cleaning, `force` hard-fails when prerequisites/cleaning fail)
 - `SAM3_MASK_EXPORT_SPACE` (`undistorted` default when cleaning is enabled; `raw` or `undistorted`)
-- `RECONSTRUCTION_BACKEND` (`nurec_3dgrut` default; supports `ttt_lrm`, `loger`, `neoverse`, `gen3c`)
+- `RECONSTRUCTION_BACKEND` (`neoverse` default; supports `nurec_3dgrut`, `ttt_lrm`, `loger`, `gen3c`)
 - `RECONSTRUCTION_COMPARE_BACKENDS` (optional comma-separated candidate backends for A/B)
 - `RECONSTRUCTION_COMPARE_WINNER` (`auto` or backend name; selects winner output when comparing)
 - `RECONSTRUCTION_COMPARE_REPORT` (path to backend comparison JSON report)
@@ -331,7 +331,7 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 `scripts/run_full_pipeline.sh` behavior note:
 - In `best_effort` completion mode, if swap-orchestrator dependencies are missing (BlueprintPipeline runtime or required provider credentials), Phase 3 is skipped or soft-failed and the script still completes with NuRec outputs for visual QA (`orchestrator_run_report.json` records the fallback state).
 - Stage 1 now routes reconstruction through `scripts/reconstruction_backend_router.py`.
-- Use `--reconstruction-backend nurec_3dgrut|ttt_lrm|loger|neoverse|gen3c`, plus optional:
+- Use `--reconstruction-backend neoverse|nurec_3dgrut|ttt_lrm|loger|gen3c`, plus optional:
   - `--reconstruction-compare-backends nurec_3dgrut,neoverse`
   - `--reconstruction-compare-winner auto|ttt_lrm|nurec_3dgrut|neoverse|gen3c`
   - `--reconstruction-compare-report /tmp/compare_report.json`

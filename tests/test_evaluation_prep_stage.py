@@ -157,6 +157,20 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path) -> None:
     assert hosted_runtime["launchable"] is True
     assert hosted_runtime["default_backend"] == "neoverse"
     assert hosted_runtime["launchable_backends"] == ["neoverse", "gen3c"]
+    assert hosted_runtime["task_catalog"][0]["id"] == "task-1"
+    assert hosted_runtime["start_state_catalog"][0]["id"].startswith("start_")
+    assert hosted_runtime["scenario_catalog"][0]["id"] == "scenario_preview_simulation_default"
+    assert hosted_runtime["default_robot_profile_id"] == "mobile_manipulator_rgb_v1"
+    assert hosted_runtime["robot_profiles"][0]["allowed_policy_adapters"] == ["openvla_oft", "pi05", "dreamzero"]
+    assert hosted_runtime["export_defaults"] == [
+        "observation_frames",
+        "action_trace",
+        "reward",
+        "summary_metrics",
+        "rollout_video",
+        "rlds_dataset",
+    ]
+    assert hosted_runtime["runtime_capabilities"]["supports_camera_views"] is True
     assert hosted_runtime["backend_launch_requirements"]["cosmos_transfer"]["status"] == "planned_phase3"
     assert "task-1" in hosted_runtime["task_ids"]
     assert summary["task_count"] == 1

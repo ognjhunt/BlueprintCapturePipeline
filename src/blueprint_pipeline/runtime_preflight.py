@@ -136,7 +136,7 @@ def _validate_provider_env(provider_chain: list[str]) -> list[PreflightCheck]:
 
 def _validate_reconstruction_backend_env() -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
-    backend = _normalize_provider(_env_any("RECONSTRUCTION_BACKEND", "WORLD_MODEL_BACKEND") or "nurec_3dgrut")
+    backend = _normalize_provider(_env_any("RECONSTRUCTION_BACKEND", "WORLD_MODEL_BACKEND") or "neoverse")
 
     if backend in {"neoverse", "gen3c"}:
         service_url = _env_any(f"{backend.upper()}_SERVICE_URL", "WORLD_MODEL_SERVICE_URL")

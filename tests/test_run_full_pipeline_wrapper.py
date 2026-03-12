@@ -197,7 +197,7 @@ def test_wrapper_runs_guardrail_checks_before_expensive_stages() -> None:
 
 def test_wrapper_advertises_loger_backend_support() -> None:
     text = _script_text()
-    assert "Reconstruction backend: nurec_3dgrut (default), tttLRM, loger, neoverse, gen3c" in text
+    assert "Reconstruction backend: neoverse (default), nurec_3dgrut, tttLRM, loger, gen3c" in text
     assert "expected nurec_3dgrut, tttLRM, loger, neoverse, or gen3c" in text
     assert "expected nurec_3dgrut, tttLRM, loger, neoverse, gen3c, or auto" in text
     assert "NUREC_VISUAL_PRIMARY defaulted to mesh for loger backend compatibility" in text
