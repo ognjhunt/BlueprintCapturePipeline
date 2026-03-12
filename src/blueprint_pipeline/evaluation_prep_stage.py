@@ -62,35 +62,68 @@ def _object_index_candidates(capture_root: Path) -> List[Path]:
     ]
 
 
-def _has_object_index_entries(capture_root: Path) -> bool:
+def _object_index_summary(capture_root: Path) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "present": False,
+        "has_entries": False,
+        "entry_count": 0,
+        "paths": [str(path) for path in _object_index_candidates(capture_root)],
+        "present_paths": [],
+    }
     for path in _object_index_candidates(capture_root):
         if not path.is_file():
             continue
+        summary["present"] = True
+        summary["present_paths"].append(str(path))
         payload = _read_optional_json_any(path)
-        if isinstance(payload, list) and payload:
-            return True
-        if isinstance(payload, Mapping):
+        entries: List[Any] = []
+        if isinstance(payload, list):
+            entries = payload
+        elif isinstance(payload, Mapping):
             for key in ("objects", "items", "summaries"):
                 value = payload.get(key)
-                if isinstance(value, list) and value:
-                    return True
-    return False
+                if isinstance(value, list):
+                    entries = value
+                    break
+        if entries:
+            summary["has_entries"] = True
+        summary["entry_count"] = max(int(summary["entry_count"]), len(entries))
+    return summary
+
+
+def _has_object_index_entries(capture_root: Path) -> bool:
+    return bool(_object_index_summary(capture_root).get("has_entries"))
 
 
 def _build_missing_object_geometry_manifest(*, context, provider_name: str) -> Dict[str, Any]:
+    index_summary = _object_index_summary(context.capture_root)
+    present = bool(index_summary.get("present"))
+    has_entries = bool(index_summary.get("has_entries"))
+    entry_count = int(index_summary.get("entry_count") or 0)
     missing_inputs = [str(path) for path in _object_index_candidates(context.capture_root) if not path.is_file()]
+    if present and not has_entries:
+        status = "empty_object_index"
+        notes = [
+            "Object geometry was skipped because the staged capture bundle has an object index artifact but it contains zero objects."
+        ]
+    else:
+        status = "missing_object_index"
+        notes = [
+            "Object geometry was skipped because no object index was found in the staged capture bundle."
+        ]
     return {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "provider_name": provider_name,
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
-        "status": "missing_object_index",
+        "status": status,
         "provenance": "evaluation_prep_fallback",
         "objects": [],
-        "notes": [
-            "Object geometry was skipped because no object index was found in the staged capture bundle."
-        ],
+        "notes": notes,
+        "object_index_present": present,
+        "object_index_entry_count": entry_count,
+        "present_inputs": index_summary.get("present_paths", []),
         "missing_inputs": missing_inputs,
     }
 
@@ -649,6 +682,16 @@ def _site_world_id(scene_id: str, capture_id: str) -> str:
     return f"siteworld-{sha256(f'{scene_id}::{capture_id}'.encode('utf-8')).hexdigest()[:12]}"
 
 
+def _descriptor_scene_memory_capture(descriptor: Mapping[str, Any]) -> Dict[str, Any]:
+    scene_memory_capture = descriptor.get("scene_memory_capture")
+    if isinstance(scene_memory_capture, Mapping):
+        return dict(scene_memory_capture)
+    metadata = descriptor.get("metadata")
+    if isinstance(metadata, Mapping) and isinstance(metadata.get("scene_memory_capture"), Mapping):
+        return dict(metadata.get("scene_memory_capture"))
+    return {}
+
+
 def _site_world_runtime_eligibility(
     *,
     context,
@@ -669,8 +712,7 @@ def _site_world_runtime_eligibility(
     if capture_source in {"glasses", "glasses_video_only"} or processing_profile == "video_only":
         blockers.append("video_only_capture:not_launchable")
 
-    scene_memory_capture = descriptor.get("scene_memory_capture")
-    scene_memory_map = dict(scene_memory_capture) if isinstance(scene_memory_capture, Mapping) else {}
+    scene_memory_map = _descriptor_scene_memory_capture(descriptor)
     sensor_availability = scene_memory_map.get("sensor_availability")
     sensor_map = dict(sensor_availability) if isinstance(sensor_availability, Mapping) else {}
     if sensor_map.get("arkit_poses") is not True:
@@ -740,6 +782,7 @@ def _build_site_world_spec(
         )
     geometry_bundle = scene_memory_bundle_manifest.get("bundle_path")
     object_geometry_path = eval_dir / "object_geometry_manifest.json"
+    scene_memory_capture = _descriptor_scene_memory_capture(descriptor_map)
     spec = {
         "schema_version": "v1",
         "site_world_id": _site_world_id(context.scene_id, context.capture_id),
@@ -758,7 +801,7 @@ def _build_site_world_spec(
             "arkit_poses_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("poses_uri"),
             "arkit_intrinsics_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("intrinsics_uri"),
             "arkit_depth_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("depth_prefix_uri"),
-            "sensor_availability": ((descriptor_map.get("scene_memory_capture") or {}) if isinstance(descriptor_map.get("scene_memory_capture"), Mapping) else {}).get("sensor_availability", {}),
+            "sensor_availability": scene_memory_capture.get("sensor_availability", {}),
             "local_paths": runtime_eligibility["local_paths"],
         },
         "geometry": {
@@ -1697,23 +1740,30 @@ def run_evaluation_prep_stage(
     qualification_state = str(normalized_handoff.get("qualification_state") or "not_ready_yet")
     eligibility = bool(normalized_handoff.get("downstream_evaluation_eligibility"))
     degradation_reasons: List[str] = []
+    degradation_seen: set[str] = set()
+
+    def _append_degradation(reason: Any) -> None:
+        text = str(reason or "").strip()
+        if text and text not in degradation_seen:
+            degradation_seen.add(text)
+            degradation_reasons.append(text)
+
     if qualification_state != "ready":
-        degradation_reasons.append(f"qualification_state:{qualification_state}")
+        _append_degradation(f"qualification_state:{qualification_state}")
     if not eligibility:
-        degradation_reasons.append("downstream_evaluation_eligibility:false")
+        _append_degradation("downstream_evaluation_eligibility:false")
     if scene_memory_bundle_manifest.get("status") != "complete":
-        degradation_reasons.append(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
+        _append_degradation(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
     if (
         scene_memory_bundle_manifest.get("status") != "complete"
         and geometry_bundle_manifest.get("status") != "complete"
     ):
-        degradation_reasons.append(f"geometry_bundle:{geometry_bundle_manifest.get('status')}")
+        _append_degradation(f"geometry_bundle:{geometry_bundle_manifest.get('status')}")
     if not bool(site_world_health.get("launchable")):
-        degradation_reasons.extend(
-            [str(item) for item in site_world_health.get("blockers", []) if str(item).strip()]
-        )
+        for item in site_world_health.get("blockers", []):
+            _append_degradation(item)
     if object_count == 0:
-        degradation_reasons.append("object_geometry:missing")
+        _append_degradation("object_geometry:missing")
     status = "ready_for_validation"
     if qualification_state != "ready" or not eligibility:
         status = "not_ready_for_validation"

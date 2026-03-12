@@ -13,9 +13,9 @@ from typing import Any, Dict, Mapping, Optional
 
 
 _DEFAULT_TIMEOUT_SECONDS = 120
-_DEFAULT_MODE = "disabled"
+_DEFAULT_MODE = "codex_cli"
 _DEFAULT_CODEX_BIN = "codex"
-_DEFAULT_MODEL = "gpt-5.1"
+_DEFAULT_MODEL = "gpt-5.4"
 _DEFAULT_REASONING_EFFORT = "high"
 
 

@@ -553,8 +553,30 @@ def _run_backend_command(
             payload = json.loads(proc.stdout)
         except Exception:
             payload = {}
+    def _tail_reason(raw: Any) -> str:
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return lines[-1] if lines else ""
+
     if isinstance(payload, Mapping):
         report["payload"] = dict(payload)
+        backend_status = str(payload.get("backend_status") or "").strip().lower()
+        if backend_status in {"ok", "skipped", "failed"}:
+            report["status"] = backend_status
+        backend_reason = str(payload.get("reason") or "").strip()
+        if backend_reason:
+            report["reason"] = backend_reason
+        elif report["status"] == "failed":
+            derived_reason = (
+                _tail_reason(payload.get("stderr_tail"))
+                or _tail_reason(payload.get("stdout_tail"))
+                or _tail_reason(report.get("stderr_tail"))
+                or _tail_reason(report.get("stdout_tail"))
+            )
+            if derived_reason:
+                report["reason"] = derived_reason
     elif isinstance(payload, list):
         report["payload"] = {"detections": payload}
     return report

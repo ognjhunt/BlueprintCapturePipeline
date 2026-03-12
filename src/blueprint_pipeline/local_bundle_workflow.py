@@ -155,7 +155,11 @@ def remaining_runtime_requirements() -> Dict[str, list[str]]:
             "GEN3C_SERVICE_API_KEY",
             "or WORLD_MODEL_SERVICE_URL + WORLD_MODEL_SERVICE_API_KEY",
         ],
-        "agent_review_openai": ["OPENAI_API_KEY"],
+        "agent_review_openai": [
+            "codex CLI installed",
+            "Codex login via local OAuth/session",
+            "optional: OPENAI_PHASE2_MODEL / OPENAI_PHASE2_REASONING_EFFORT overrides",
+        ],
         "agent_review_claude": ["ANTHROPIC_API_KEY"],
     }
 

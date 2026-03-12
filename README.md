@@ -112,10 +112,16 @@ GEN3C remains a remote backend and still accepts:
 - `GEN3C_SERVICE_URL` + `GEN3C_SERVICE_API_KEY`
 - or `WORLD_MODEL_SERVICE_URL` + `WORLD_MODEL_SERVICE_API_KEY`
 
-For full `run_e2e.py` agent review, you also still need an LLM provider credential:
+For full `run_e2e.py` agent review:
 
-- `OPENAI_API_KEY` for `--provider openai`
-- `ANTHROPIC_API_KEY` for `--provider claude`
+- `--provider openai` now defaults to local Codex auth via `codex exec` with `gpt-5.4` and `high` reasoning effort
+- `codex` must be installed and logged in locally for the default OpenAI path
+- optional overrides:
+  - `OPENAI_PHASE2_MODE=codex_cli|disabled`
+  - `OPENAI_PHASE2_MODEL=<model>`
+  - `OPENAI_PHASE2_REASONING_EFFORT=low|medium|high|xhigh`
+  - `OPENAI_PHASE2_CODEX_BIN=<codex path>`
+- `ANTHROPIC_API_KEY` is still required for `--provider claude`
 
 Canonical object-index build path:
 
