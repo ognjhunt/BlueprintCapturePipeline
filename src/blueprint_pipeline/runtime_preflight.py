@@ -138,7 +138,20 @@ def _validate_reconstruction_backend_env() -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
     backend = _normalize_provider(_env_any("RECONSTRUCTION_BACKEND", "WORLD_MODEL_BACKEND") or "neoverse")
 
-    if backend in {"neoverse", "gen3c"}:
+    if backend == "neoverse":
+        command_template = _env_any("NEOVERSE_CMD_TEMPLATE")
+        executable = _env_any("NEOVERSE_EXECUTABLE")
+        checks.append(
+            PreflightCheck(
+                "reconstruction_neoverse_local",
+                bool(command_template or executable),
+                "neoverse local command configured"
+                if command_template or executable
+                else "missing NeoVerse local runtime configuration — set NEOVERSE_CMD_TEMPLATE or NEOVERSE_EXECUTABLE",
+            )
+        )
+
+    if backend == "gen3c":
         service_url = _env_any(f"{backend.upper()}_SERVICE_URL", "WORLD_MODEL_SERVICE_URL")
         service_key = _env_any(f"{backend.upper()}_SERVICE_API_KEY", "WORLD_MODEL_SERVICE_API_KEY")
         checks.append(

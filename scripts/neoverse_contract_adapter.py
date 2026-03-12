@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize NeoVerse service outputs into the Stage 1 contract."""
+"""Normalize NeoVerse outputs into the Stage 1 contract."""
 
 from __future__ import annotations
 

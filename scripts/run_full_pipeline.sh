@@ -81,8 +81,8 @@ WORLD_MODEL_SERVICE_URL="${WORLD_MODEL_SERVICE_URL:-}"
 WORLD_MODEL_SERVICE_API_KEY="${WORLD_MODEL_SERVICE_API_KEY:-}"
 WORLD_MODEL_SERVICE_TIMEOUT_SECONDS="${WORLD_MODEL_SERVICE_TIMEOUT_SECONDS:-14400}"
 WORLD_MODEL_SERVICE_POLL_SECONDS="${WORLD_MODEL_SERVICE_POLL_SECONDS:-20}"
-NEOVERSE_SERVICE_URL="${NEOVERSE_SERVICE_URL:-}"
-NEOVERSE_SERVICE_API_KEY="${NEOVERSE_SERVICE_API_KEY:-}"
+NEOVERSE_CMD_TEMPLATE="${NEOVERSE_CMD_TEMPLATE:-}"
+NEOVERSE_EXECUTABLE="${NEOVERSE_EXECUTABLE:-}"
 GEN3C_SERVICE_URL="${GEN3C_SERVICE_URL:-}"
 GEN3C_SERVICE_API_KEY="${GEN3C_SERVICE_API_KEY:-}"
 RECONSTRUCTION_ARKIT_POSES_PATH="${RECONSTRUCTION_ARKIT_POSES_PATH:-}"
@@ -197,7 +197,7 @@ write_run_summary() {
   export RECONSTRUCTION_COMPARE_REPORT
   export WORLD_MODEL_SERVICE_URL WORLD_MODEL_SERVICE_API_KEY
   export WORLD_MODEL_SERVICE_TIMEOUT_SECONDS WORLD_MODEL_SERVICE_POLL_SECONDS
-  export NEOVERSE_SERVICE_URL NEOVERSE_SERVICE_API_KEY GEN3C_SERVICE_URL GEN3C_SERVICE_API_KEY
+  export NEOVERSE_CMD_TEMPLATE NEOVERSE_EXECUTABLE GEN3C_SERVICE_URL GEN3C_SERVICE_API_KEY
   export RECONSTRUCTION_ARKIT_POSES_PATH RECONSTRUCTION_ARKIT_INTRINSICS_PATH
   export RECONSTRUCTION_ARKIT_DEPTH_DIR RECONSTRUCTION_ARKIT_CONFIDENCE_DIR
   export RECONSTRUCTION_SCENE_MEMORY_BUNDLE_PATH RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH
@@ -390,10 +390,8 @@ run_guardrail_checks() {
         fi
         ;;
       neoverse)
-        backend_service_url="${NEOVERSE_SERVICE_URL:-${WORLD_MODEL_SERVICE_URL:-}}"
-        backend_service_key="${NEOVERSE_SERVICE_API_KEY:-${WORLD_MODEL_SERVICE_API_KEY:-}}"
-        if [ -z "${backend_service_url}" ] || [ -z "${backend_service_key}" ]; then
-          errors+=("NeoVerse backend requested but NEOVERSE_SERVICE_URL / NEOVERSE_SERVICE_API_KEY (or WORLD_MODEL_SERVICE_URL / WORLD_MODEL_SERVICE_API_KEY) are unset")
+        if [ -z "${NEOVERSE_CMD_TEMPLATE:-}" ] && [ -z "${NEOVERSE_EXECUTABLE:-}" ]; then
+          errors+=("NeoVerse backend requested but NEOVERSE_CMD_TEMPLATE / NEOVERSE_EXECUTABLE are both unset")
         fi
         ;;
       gen3c)
@@ -436,8 +434,8 @@ run_guardrail_checks() {
           fi
           ;;
         neoverse)
-          if [ -z "${NEOVERSE_SERVICE_URL:-${WORLD_MODEL_SERVICE_URL:-}}" ] || [ -z "${NEOVERSE_SERVICE_API_KEY:-${WORLD_MODEL_SERVICE_API_KEY:-}}" ]; then
-            errors+=("NeoVerse included in --reconstruction-compare-backends but service URL/key are unset")
+          if [ -z "${NEOVERSE_CMD_TEMPLATE:-}" ] && [ -z "${NEOVERSE_EXECUTABLE:-}" ]; then
+            errors+=("NeoVerse included in --reconstruction-compare-backends but NEOVERSE_CMD_TEMPLATE / NEOVERSE_EXECUTABLE are both unset")
           fi
           ;;
         gen3c)
@@ -635,7 +633,7 @@ Options:
   --skip-scene-cleaning        Backward-compatible alias for --scene-cleaning-mode off
   --skip-nurec            Skip NuRec shim (use existing outputs in --nurec-output-dir)
   --nurec-output-dir DIR  NuRec output directory (default: auto from workspace)
-  --reconstruction-backend BACKEND  Reconstruction backend: neoverse (default), nurec_3dgrut, tttLRM, loger, gen3c
+  --reconstruction-backend BACKEND  Reconstruction backend: neoverse (default local GPU runtime), nurec_3dgrut, tttLRM, loger, gen3c
   --reconstruction-compare-backends CSV  Comma-separated compare backends (e.g. tttLRM, loger, neoverse)
   --reconstruction-compare-winner NAME|auto  Winner policy (auto or backend name)
   --reconstruction-compare-report FILE  Path for backend compare report JSON
@@ -930,7 +928,7 @@ if [ "$SKIP_NUREC" = "false" ]; then
   export SAM3_PREFLIGHT_STRICT SAM3_TRACKING_MODE
   export WORLD_MODEL_SERVICE_URL WORLD_MODEL_SERVICE_API_KEY
   export WORLD_MODEL_SERVICE_TIMEOUT_SECONDS WORLD_MODEL_SERVICE_POLL_SECONDS
-  export NEOVERSE_SERVICE_URL NEOVERSE_SERVICE_API_KEY GEN3C_SERVICE_URL GEN3C_SERVICE_API_KEY
+  export NEOVERSE_CMD_TEMPLATE NEOVERSE_EXECUTABLE GEN3C_SERVICE_URL GEN3C_SERVICE_API_KEY
   export RECONSTRUCTION_ARKIT_POSES_PATH RECONSTRUCTION_ARKIT_INTRINSICS_PATH
   export RECONSTRUCTION_ARKIT_DEPTH_DIR RECONSTRUCTION_ARKIT_CONFIDENCE_DIR
   export RECONSTRUCTION_SCENE_MEMORY_BUNDLE_PATH RECONSTRUCTION_ADVANCED_GEOMETRY_BUNDLE_PATH

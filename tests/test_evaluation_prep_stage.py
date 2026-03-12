@@ -111,10 +111,10 @@ def _build_capture(tmp_path: Path) -> Path:
         adapter_dir / "neoverse.json",
         {
             "schema_version": "v1",
-            "status": "available_stage1_remote",
-            "execution_mode": "remote_service",
+            "status": "available_stage1_local",
+            "execution_mode": "local_gpu_runtime",
             "required_conditioning": ["rgb_video"],
-            "service_contract_version": "stage1_world_model_remote_v1",
+            "service_contract_version": "stage1_world_model_local_v1",
         },
     )
     _write_json(
@@ -193,4 +193,23 @@ def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_
     assert manifest["status"] == "ready_for_validation"
     assert "geometry_bundle:missing" not in manifest["degradation_reasons"]
     assert any(item["kind"] == "incomplete_geometry_bundle" and item["severity"] == "low" for item in review_queue["items"])
+    assert hosted_runtime["launchable"] is True
+
+
+def test_evaluation_prep_stage_degrades_when_object_index_is_missing(tmp_path: Path) -> None:
+    capture_root = _build_capture(tmp_path)
+    (capture_root / "raw" / "object_index.json").unlink()
+
+    result = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    object_geometry = json.loads((capture_root / "pipeline" / "evaluation_prep" / "object_geometry_manifest.json").read_text(encoding="utf-8"))
+    anchors = json.loads((capture_root / "pipeline" / "evaluation_prep" / "task_anchor_manifest.json").read_text(encoding="utf-8"))
+    hosted_runtime = json.loads((capture_root / "pipeline" / "evaluation_prep" / "hosted_session_runtime_manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["status"] == "degraded_but_usable"
+    assert "object_geometry:missing" in manifest["degradation_reasons"]
+    assert object_geometry["status"] == "missing_object_index"
+    assert object_geometry["objects"] == []
+    assert anchors["tasks"][0]["target_object_ids"] == ["1"]
     assert hosted_runtime["launchable"] is True

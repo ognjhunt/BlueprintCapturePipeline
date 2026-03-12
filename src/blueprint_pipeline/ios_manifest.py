@@ -26,6 +26,7 @@ class IOSManifest:
     scale_hint_m_per_unit: float
     intended_space_type: str
     exposure_samples: List[Dict[str, Any]] = field(default_factory=list)
+    object_index_uri: Optional[str] = None
     object_point_cloud_index: Optional[str] = None
     object_point_cloud_count: int = 0
     capture_schema_version: Optional[str] = None
@@ -49,6 +50,11 @@ class IOSManifest:
             exposure_samples=[
                 dict(item) for item in data.get("exposure_samples", []) if isinstance(item, Mapping)
             ],
+            object_index_uri=(
+                str(data.get("object_index_uri")).strip()
+                if data.get("object_index_uri") is not None
+                else None
+            ),
             object_point_cloud_index=(
                 str(data.get("object_point_cloud_index")).strip()
                 if data.get("object_point_cloud_index") is not None
@@ -90,9 +96,13 @@ def resolve_object_index_uri(raw_prefix_uri: str, manifest: IOSManifest | Mappin
     """Resolve manifest ``object_point_cloud_index`` to a fully-qualified URI."""
 
     if isinstance(manifest, IOSManifest):
-        rel = manifest.object_point_cloud_index
+        rel = manifest.object_index_uri or manifest.object_point_cloud_index
     else:
-        rel = str(manifest.get("object_point_cloud_index", "")).strip() or None
+        rel = (
+            str(manifest.get("object_index_uri", "")).strip()
+            or str(manifest.get("object_point_cloud_index", "")).strip()
+            or None
+        )
 
     if not rel:
         return None

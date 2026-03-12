@@ -14,8 +14,6 @@ from urllib import request as urllib_request
 
 def _normalize_backend_name(raw: str) -> str:
     value = (raw or "").strip().lower().replace("-", "_")
-    if value in {"neoverse"}:
-        return "neoverse"
     if value in {"gen3c"}:
         return "gen3c"
     raise ValueError(f"unsupported world-model backend '{raw}'")

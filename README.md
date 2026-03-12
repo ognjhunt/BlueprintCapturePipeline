@@ -20,6 +20,7 @@ This repo emits qualification, scene-memory, and preview-prep handoff artifacts.
 Raw-upload materialization path:
 
 - `raw/capture_upload_complete.json` -> descriptor materialization -> modality-aware `qa_report.json` -> qualification orchestration
+- when `raw/object_index.json` is missing, qualification now attempts to build a canonical object index before scoring completeness
 
 Local raw-capture contract for `blueprint-run-e2e`:
 
@@ -27,12 +28,15 @@ Local raw-capture contract for `blueprint-run-e2e`:
   - `raw/manifest.json`
   - `raw/intake_packet.json`
   - `raw/capture_context.json`
+  - `raw/motion.jsonl`
   - one video file under `raw/` or a `video_uri` in `manifest.json`
   - `raw/capture_upload_complete.json`
 - optional:
   - ARKit pose/intrinsics/depth files
+  - `raw/arkit/frames.jsonl`
   - scaffolding calibration assets
   - splat / 3DGS artifacts
+  - precomputed `raw/object_index.json`
 
 Splat / 3DGS artifacts are supplemental only. They can be attached to agent review, scene-memory conditioning, and advanced-geometry compatibility packaging, but they do not bypass intake, QA, or readiness gates.
 
@@ -58,14 +62,14 @@ blueprint-capture-pipeline --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/
 Local raw-capture preflight:
 
 ```bash
-blueprint-preflight-capture \
+PYTHONPATH=src python3 -m blueprint_pipeline.preflight_capture \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
 ```
 
 Local agent review over qualification artifacts:
 
 ```bash
-blueprint-agent-review \
+PYTHONPATH=src python3 -m blueprint_pipeline.agent_review_cli \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
   --provider claude
 ```
@@ -73,10 +77,110 @@ blueprint-agent-review \
 One-command local report flow:
 
 ```bash
-blueprint-run-e2e \
+PYTHONPATH=src python3 -m blueprint_pipeline.run_e2e \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
   --provider openai
 ```
+
+GPU VM staging path for raw download bundles:
+
+```bash
+python3 scripts/stage_capture_bundle.py \
+  --source-bundle /path/to/raw-download-folder \
+  --storage-root /mnt/blueprint-storage \
+  --bucket local-blueprint \
+  --link \
+  --run-qualification \
+  --run-evaluation-prep
+```
+
+This stages `raw/` under:
+
+```text
+/mnt/blueprint-storage/local-blueprint/scenes/<scene_id>/captures/<capture_id>/raw
+```
+
+and then runs preflight, descriptor materialization, qualification, scene-memory generation, and evaluation-prep. This is the correct path for VM-backed filesystem execution when you have a raw download folder that is not already under the repo's required `scenes/<scene>/captures/<capture>` layout.
+
+Use `scripts/run_full_pipeline.sh` when you intend to run the Stage 1 reconstruction path on the VM. NeoVerse is now a local GPU backend and expects a local launcher:
+
+- `NEOVERSE_CMD_TEMPLATE`
+- or `NEOVERSE_EXECUTABLE`
+
+GEN3C remains a remote backend and still accepts:
+
+- `GEN3C_SERVICE_URL` + `GEN3C_SERVICE_API_KEY`
+- or `WORLD_MODEL_SERVICE_URL` + `WORLD_MODEL_SERVICE_API_KEY`
+
+For full `run_e2e.py` agent review, you also still need an LLM provider credential:
+
+- `OPENAI_API_KEY` for `--provider openai`
+- `ANTHROPIC_API_KEY` for `--provider claude`
+
+Canonical object-index build path:
+
+```bash
+PYTHONPATH=src python3 -m blueprint_pipeline.object_index_stage \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+This writes:
+
+- `raw/object_index.json`
+- `raw/object_index_build_report.json`
+- `raw/object_grounding_hints.json`
+- `raw/object_index_keyframes.json`
+- `raw/object_index_artifacts/keyframes/...`
+- `raw/object_index_artifacts/crops/...`
+
+The stage is Blueprint-owned and world-model-agnostic. It supports external detection/segmentation backends through command hooks:
+
+- `OBJECT_INDEX_YOLO_WORLD_COMMAND`
+- `OBJECT_INDEX_GROUNDING_DINO_COMMAND`
+- `OBJECT_INDEX_SAM3_COMMAND`
+
+Each command receives `{INPUT_JSON}` and `{OUTPUT_JSON}` placeholders.
+
+If those env vars are unset, the stage now falls back to repo-local defaults:
+
+- `scripts/object_index_yolo_world_runner.py`
+- `scripts/object_index_grounding_dino_runner.py`
+- `scripts/object_index_sam3_runner.py`
+
+On a GPU VM, install the ML stack first so those defaults can actually run:
+
+```bash
+sudo bash scripts/install_ml_stack.sh
+```
+
+That installs the local SAM3 runtime and `ultralytics`, which the default YOLO-World / task-conditioned wrappers use.
+
+Optional LLM enrichment can be layered on top of the deterministic object-index and qualification flow for:
+
+- prompt-bank expansion
+- task-relevance ranking
+- vague workflow → likely target resolution
+- articulation prior refinement
+- qualification weakness summaries
+- recapture instructions
+
+Configuration:
+
+- `CAPTURE_ENRICHMENT_LLM_PROVIDER=disabled|openai|claude`
+- `CAPTURE_ENRICHMENT_LLM_MODE=auto|codex_cli|sdk`
+- `CAPTURE_ENRICHMENT_LLM_MODEL=<model>`
+- `CAPTURE_ENRICHMENT_CODEX_BIN=<codex path>` for `codex_cli`
+
+Current behavior:
+
+- `openai + auto` prefers `codex exec`, then falls back to the OpenAI SDK
+- `claude` uses the Anthropic HTTP API
+- when enrichment is disabled or unavailable, the deterministic pipeline still runs normally
+
+Qualification may also emit:
+
+- `pipeline/qualification_weakness_summary.json`
+- `pipeline/recapture_instructions.json`
 
 Advanced geometry orchestrator:
 
@@ -290,9 +394,10 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `RECONSTRUCTION_COMPARE_REPORT` (path to backend comparison JSON report)
 - `TTT_LRM_CMD_TEMPLATE` (command template for experimental tttLRM; placeholders: `INPUT_VIDEO`, `OUTPUT_DIR`, `SCENE_ID`, `CAPTURE_ID`, `JOB_SPEC_PATH`)
 - `TTT_LRM_EXECUTABLE` (fallback executable for tttLRM; receives `--input-video` and `--output-dir`)
-- `WORLD_MODEL_SERVICE_URL` / `WORLD_MODEL_SERVICE_API_KEY` (shared fallback for remote Stage 1 world-model backends)
-- `WORLD_MODEL_SERVICE_TIMEOUT_SECONDS` / `WORLD_MODEL_SERVICE_POLL_SECONDS` (remote NeoVerse / GEN3C orchestration tuning)
-- `NEOVERSE_SERVICE_URL` / `NEOVERSE_SERVICE_API_KEY` (optional overrides for NeoVerse Stage 1 remote execution)
+- `NEOVERSE_CMD_TEMPLATE` (local NeoVerse command template; placeholders: `INPUT_VIDEO`, `OUTPUT_DIR`, `SCENE_ID`, `CAPTURE_ID`, `JOB_SPEC_PATH`, `RESULT_MANIFEST_PATH`)
+- `NEOVERSE_EXECUTABLE` (fallback executable for NeoVerse local runtime; receives `--input-video`, `--output-dir`, `--scene-id`, `--capture-id`, `--job-spec`, `--result-manifest`)
+- `WORLD_MODEL_SERVICE_URL` / `WORLD_MODEL_SERVICE_API_KEY` (shared fallback for remote GEN3C execution)
+- `WORLD_MODEL_SERVICE_TIMEOUT_SECONDS` / `WORLD_MODEL_SERVICE_POLL_SECONDS` (remote GEN3C orchestration tuning)
 - `GEN3C_SERVICE_URL` / `GEN3C_SERVICE_API_KEY` (optional overrides for GEN3C Stage 1 remote execution)
 - `RECONSTRUCTION_ARKIT_POSES_PATH`, `RECONSTRUCTION_ARKIT_INTRINSICS_PATH`, `RECONSTRUCTION_ARKIT_DEPTH_DIR` (required for `gen3c` unless advanced geometry is supplied)
 - `RECONSTRUCTION_ARKIT_CONFIDENCE_DIR` (optional extra conditioning metadata)
@@ -335,12 +440,12 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
   - `--reconstruction-compare-backends nurec_3dgrut,neoverse`
   - `--reconstruction-compare-winner auto|ttt_lrm|nurec_3dgrut|neoverse|gen3c`
   - `--reconstruction-compare-report /tmp/compare_report.json`
-- The wrapper now writes the canonical Stage 1 job spec through `scripts/write_reconstruction_job_spec.py`; remote backends consume that spec unchanged.
-- `neoverse` is the preferred first remote Stage 1 world-model backend. It can operate from video-only input and should be rolled out behind compare mode first.
+- The wrapper now writes the canonical Stage 1 job spec through `scripts/write_reconstruction_job_spec.py`; local and remote backends consume that spec unchanged.
+- `neoverse` is the preferred first local Stage 1 world-model backend. It can operate from video-only input and is intended for direct GPU VM execution.
 - `gen3c` is the stricter second backend. It requires ARKit poses + intrinsics + depth, or an advanced geometry bundle that the remote service accepts as equivalent.
 - Winner metadata is written to `reconstruction_backend_meta.json` and comparison details to the configured report path.
 - Cosmos remains Stage 5 `Fixer` infrastructure in this phase. It is not the Stage 1 world-model backend path here.
-- The old execution gap was broader than the router alone: Stage 1 shell guardrails, runtime preflight, remote service runners, backend normalization adapters, and docs/tests now all participate in backend support.
+- The old execution gap was broader than the router alone: Stage 1 shell guardrails, runtime preflight, backend runner scripts, normalization adapters, and docs/tests now all participate in backend support.
 
 ### Run Operations Toolkit
 

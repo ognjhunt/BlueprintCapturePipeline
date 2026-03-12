@@ -53,6 +53,60 @@ def _copy_json(path: Path, payload: Mapping[str, Any]) -> None:
     write_json(path, payload)
 
 
+def _object_index_candidates(capture_root: Path) -> List[Path]:
+    return [
+        capture_root / "raw" / "object_index.json",
+        capture_root / "raw" / "arkit" / "objects" / "index.json",
+    ]
+
+
+def _has_object_index_entries(capture_root: Path) -> bool:
+    for path in _object_index_candidates(capture_root):
+        if not path.is_file():
+            continue
+        payload = _read_optional_json_any(path)
+        if isinstance(payload, list) and payload:
+            return True
+        if isinstance(payload, Mapping):
+            for key in ("objects", "items", "summaries"):
+                value = payload.get(key)
+                if isinstance(value, list) and value:
+                    return True
+    return False
+
+
+def _build_missing_object_geometry_manifest(*, context, provider_name: str) -> Dict[str, Any]:
+    missing_inputs = [str(path) for path in _object_index_candidates(context.capture_root) if not path.is_file()]
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "provider_name": provider_name,
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "status": "missing_object_index",
+        "provenance": "evaluation_prep_fallback",
+        "objects": [],
+        "notes": [
+            "Object geometry was skipped because no object index was found in the staged capture bundle."
+        ],
+        "missing_inputs": missing_inputs,
+    }
+
+
+def _resolve_object_geometry_manifest(*, context, provider_name: str) -> Dict[str, Any]:
+    if _has_object_index_entries(context.capture_root):
+        object_geometry_result = run_object_geometry_stage(
+            capture_root=context.capture_root,
+            provider_name=provider_name,
+        )
+        object_geometry_source_path = Path(str(object_geometry_result.get("manifest_path") or ""))
+        loaded = read_json_any(object_geometry_source_path)
+        if isinstance(loaded, Mapping):
+            return dict(loaded)
+        raise PipelineError(f"Object geometry manifest is not a JSON object: {object_geometry_source_path}")
+    return _build_missing_object_geometry_manifest(context=context, provider_name=provider_name)
+
+
 def _adapter_manifest_details(scene_memory_bundle_manifest: Mapping[str, Any], *, eval_dir: Path) -> Dict[str, Dict[str, Any]]:
     key_map = {
         "neoverse": "neoverse_adapter_manifest_path",
@@ -578,7 +632,7 @@ def _build_hosted_session_runtime_manifest(
     launchable_backends = [
         backend
         for backend in available_backends
-        if str(adapter_details.get(backend, {}).get("status") or "").strip() == "available_stage1_remote"
+        if str(adapter_details.get(backend, {}).get("status") or "").strip().startswith("available_stage1_")
     ]
     preferred_order = ["neoverse", "gen3c", "cosmos_transfer"]
     default_backend = next((backend for backend in preferred_order if backend in launchable_backends), None)
@@ -1126,11 +1180,15 @@ def run_evaluation_prep_stage(
     qualification_record = optional_read_json(pipeline_dir / "qualification_record.json") or {}
     scope_record = optional_read_json(pipeline_dir / "task_scope_record.json") or {}
 
-    object_geometry_result = run_object_geometry_stage(capture_root=context.capture_root, provider_name=provider_name)
-    object_geometry_source_path = Path(str(object_geometry_result.get("manifest_path") or ""))
-    object_geometry_manifest = read_json_any(object_geometry_source_path)
+    object_geometry_manifest = _resolve_object_geometry_manifest(
+        context=context,
+        provider_name=provider_name,
+    )
     object_geometry_target_path = eval_dir / "object_geometry_manifest.json"
-    _copy_json(object_geometry_target_path, object_geometry_manifest)
+    _copy_json(
+        object_geometry_target_path,
+        object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+    )
 
     geometry_bundle_manifest = _build_geometry_bundle_manifest(pipeline_dir=pipeline_dir, eval_dir=eval_dir)
     geometry_bundle_manifest_path = eval_dir / "geometry_bundle_manifest.json"

@@ -42,6 +42,7 @@ from .interactive_reconciliation import (
 from .ios_manifest import load_object_index, load_raw_manifest, resolve_object_index_uri
 from .manifest_builder import build_scene_artifacts
 from .nurec_worker_client import NurecWorkerClient, NurecWorkerConfig
+from .object_index_stage import ensure_object_index_stage
 from .quality_gates import AdvancedQualityGateConfig, run_advanced_quality_gates
 from .qualification import attach_handoff_package_paths
 from .retrieval_fallback import enforce_hard_fail_if_unresolved, run_retrieval_fallback
@@ -893,9 +894,20 @@ def run_swap_pipeline(
             raise StageError("intake", f"qa_report status must be 'passed', got '{qa_status}'")
 
         manifest = load_raw_manifest(descriptor.raw_prefix_uri, gcs_root=storage_root)
-        object_index_uri = resolve_object_index_uri(descriptor.raw_prefix_uri, manifest)
+        try:
+            stage_result = ensure_object_index_stage(
+                capture_root=descriptor_path.parent,
+                force_rebuild=parse_bool(os.getenv("OBJECT_INDEX_FORCE_REBUILD"), default=False),
+            )
+        except Exception:
+            stage_result = {}
+        object_index_uri = (
+            str(stage_result.get("object_index_uri") or "").strip()
+            or str(descriptor.object_index_uri or "").strip()
+            or resolve_object_index_uri(descriptor.raw_prefix_uri, manifest)
+        )
         if not object_index_uri:
-            raise StageError("intake", "manifest missing object_point_cloud_index")
+            raise StageError("intake", "manifest missing object index")
 
         object_index_entries = load_object_index(object_index_uri, gcs_root=storage_root)
 

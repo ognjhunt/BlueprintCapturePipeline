@@ -65,7 +65,7 @@ def build_job_spec(args: argparse.Namespace) -> dict[str, object]:
 
     return {
         "schema_version": "v1",
-        "contract_version": "stage1_world_model_remote_v1",
+        "contract_version": "stage1_world_model_v1",
         "scene_id": args.scene_id,
         "capture_id": args.capture_id,
         "requested_backend": args.requested_backend,

@@ -37,11 +37,19 @@ def resolve_local_capture_context(path: str | Path) -> LocalCaptureContext:
     candidate = Path(path).resolve()
     parts = candidate.parts
     if "scenes" not in parts:
-        raise PipelineError(f"Path is not inside a scenes/<scene>/captures/<capture> tree: {candidate}")
+        raise PipelineError(
+            "Path is not inside a scenes/<scene>/captures/<capture> tree: "
+            f"{candidate}. Stage raw download folders first, for example with "
+            "`python3 scripts/stage_capture_bundle.py --source-bundle <download-folder> "
+            "--storage-root <storage-root> --bucket <bucket>`, so the capture lives under "
+            "`<storage-root>/<bucket>/scenes/<scene_id>/captures/<capture_id>`."
+        )
     idx = parts.index("scenes")
     if idx < 1 or len(parts) <= idx + 3 or parts[idx + 2] != "captures":
         raise PipelineError(
-            f"Path does not match scenes/<scene_id>/captures/<capture_id>: {candidate}"
+            "Path does not match scenes/<scene_id>/captures/<capture_id>: "
+            f"{candidate}. Expected layout: "
+            "`<storage-root>/<bucket>/scenes/<scene_id>/captures/<capture_id>`."
         )
 
     scene_id = parts[idx + 1]

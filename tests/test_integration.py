@@ -1187,8 +1187,8 @@ def test_qualification_default_lane_writes_canonical_artifacts(tmp_path: Path) -
     assert "task_hypothesis_report" in quality_report["artifacts"]
     assert "scene_memory_manifest" in quality_report["artifacts"]
     assert scene_memory_manifest["lane"] == "scene_memory"
-    assert neoverse_adapter["status"] == "available_stage1_remote"
-    assert neoverse_adapter["execution_mode"] == "remote_service"
+    assert neoverse_adapter["status"] == "available_stage1_local"
+    assert neoverse_adapter["execution_mode"] == "local_gpu_runtime"
     assert neoverse_adapter["reconstruction_backend_name"] == "neoverse"
     assert gen3c_adapter["status"] == "available_stage1_remote"
     assert cosmos_adapter["status"] == "planned_phase3"

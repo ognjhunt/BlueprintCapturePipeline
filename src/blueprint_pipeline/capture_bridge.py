@@ -255,6 +255,9 @@ class CaptureDescriptor:
     arkit_confidence_prefix_uri: Optional[str] = None
     qa_report_uri: Optional[str] = None
     qa_status: Optional[str] = None
+    object_index_uri: Optional[str] = None
+    motion_log_uri: Optional[str] = None
+    arkit_frames_uri: Optional[str] = None
     environment_type_hint: Optional[str] = None
     capture_modality: str = "iphone_arkit_lidar"
     evidence_tier: str = "pre_screen_video"
@@ -356,6 +359,9 @@ class CaptureDescriptor:
             ),
             qa_report_uri=_optional_str(data.get("qa_report_uri")),
             qa_status=_optional_str(data.get("qa_status")),
+            object_index_uri=_optional_str(data.get("object_index_uri")),
+            motion_log_uri=_optional_str(data.get("motion_log_uri")),
+            arkit_frames_uri=_optional_str(data.get("arkit_frames_uri")),
             environment_type_hint=environment_type_hint,
             capture_modality=capture_modality,
             evidence_tier=evidence_tier,
@@ -424,6 +430,9 @@ class CaptureDescriptor:
             "arkit_confidence_prefix_uri": self.arkit_confidence_prefix_uri,
             "qa_report_uri": self.qa_report_uri,
             "qa_status": self.qa_status,
+            "object_index_uri": self.object_index_uri,
+            "motion_log_uri": self.motion_log_uri,
+            "arkit_frames_uri": self.arkit_frames_uri,
             "environment_type_hint": self.environment_type_hint,
             "capture_modality": self.capture_modality,
             "evidence_tier": self.evidence_tier,
@@ -475,6 +484,9 @@ def build_capture_bundle_constraints(
         "uncertainty_priors": dict(descriptor.uncertainty_priors),
         "descriptor_uri": descriptor_uri,
         "qa_report_uri": qa_report_uri or descriptor.qa_report_uri,
+        "object_index_uri": descriptor.object_index_uri,
+        "motion_log_uri": descriptor.motion_log_uri,
+        "arkit_frames_uri": descriptor.arkit_frames_uri,
     }
 
     arkit = {

@@ -7,7 +7,7 @@ Current supported backends:
 - nurec_3dgrut (default; existing local shim)
 - ttt_lrm (experimental integration for the tttLRM code path)
 - loger (command-template integration)
-- neoverse (remote Stage 1 service)
+- neoverse (local GPU runtime)
 - gen3c (remote Stage 1 service)
 
 The output directory contract remains NuRec-like:
@@ -35,7 +35,7 @@ from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NUREC_SHIM = REPO_ROOT / "scripts" / "nurec_shim.py"
-NEOVERSE_RUNNER = REPO_ROOT / "scripts" / "run_neoverse_service.py"
+NEOVERSE_RUNNER = REPO_ROOT / "scripts" / "run_neoverse_local.py"
 GEN3C_RUNNER = REPO_ROOT / "scripts" / "run_gen3c_service.py"
 
 BACKEND_NUREC_3DGRUT = "nurec_3dgrut"
@@ -512,7 +512,7 @@ def _run_neoverse(
     log_path: Path,
 ) -> tuple[int, str, str]:
     if not NEOVERSE_RUNNER.is_file():
-        return 1, "", f"missing run_neoverse_service.py at {NEOVERSE_RUNNER}"
+        return 1, "", f"missing run_neoverse_local.py at {NEOVERSE_RUNNER}"
     cmd = [
         sys.executable,
         str(NEOVERSE_RUNNER),

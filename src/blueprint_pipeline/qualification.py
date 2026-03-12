@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
+from .capture_enrichment_llm import build_capture_enrichment_runner
 from .common import (
     PipelineError,
     StageError,
     ensure_dir,
     has_nonempty_file,
     infer_storage_root_from_scene_path,
+    parse_bool,
     parse_gs_uri,
     read_json,
     relative_scene_path,
@@ -25,6 +27,7 @@ from .common import (
 )
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
+from .object_index_stage import ensure_object_index_stage
 from .task_targets import infer_task_targets, write_task_targets
 from .webapp_sync import (
     derive_webapp_opportunity_state,
@@ -748,9 +751,9 @@ def _write_scene_memory_bundle(
             "family": "NeoVerse",
             "preferred_conditioning": ["rgb_video", "camera_trajectory", "feed_forward_4d_reconstruction"],
             "required_conditioning": ["rgb_video"],
-            "execution_mode": "remote_service",
+            "execution_mode": "local_gpu_runtime",
             "reconstruction_backend_name": "neoverse",
-            "service_contract_version": "stage1_world_model_remote_v1",
+            "service_contract_version": "stage1_world_model_local_v1",
             "normalized_output_contract": [
                 "export_last.usdz",
                 "nvblox_mesh.ply",
@@ -760,7 +763,7 @@ def _write_scene_memory_bundle(
                 "object_point_cloud_index.json",
                 "capture_quality_report.json",
             ],
-            "status": "available_stage1_remote",
+            "status": "available_stage1_local",
         },
         "cosmos_transfer": {
             "family": "Cosmos Transfer",
@@ -2256,6 +2259,53 @@ def _build_human_actions_required(
     }
 
 
+def _llm_weakness_payload(
+    *,
+    descriptor: CaptureDescriptor,
+    scorecard: Mapping[str, Any],
+    scope_record: Mapping[str, Any],
+    readiness_decision: Mapping[str, Any],
+    blocker_register: Mapping[str, Any],
+    human_actions_required: Mapping[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "capture_modality": descriptor.capture_modality,
+        "evidence_tier": descriptor.evidence_tier,
+        "task_statement": descriptor.metadata.get("task_statement"),
+        "workflow_context": descriptor.metadata.get("workflow_context"),
+        "task_zone": descriptor.metadata.get("task_zone"),
+        "completeness_status": scorecard.get("completeness_status"),
+        "scope_status": scope_record.get("scope_status"),
+        "readiness_decision": dict(readiness_decision),
+        "blocker_register": dict(blocker_register),
+        "human_actions_required": dict(human_actions_required),
+    }
+
+
+def _llm_recapture_payload(
+    *,
+    descriptor: CaptureDescriptor,
+    scorecard: Mapping[str, Any],
+    scope_record: Mapping[str, Any],
+    blocker_register: Mapping[str, Any],
+    human_actions_required: Mapping[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "task_statement": descriptor.metadata.get("task_statement"),
+        "workflow_context": descriptor.metadata.get("workflow_context"),
+        "task_zone": descriptor.metadata.get("task_zone"),
+        "capture_modality": descriptor.capture_modality,
+        "scorecard_follow_ups": list(scorecard.get("follow_ups", [])) if isinstance(scorecard.get("follow_ups"), list) else [],
+        "blocker_details": list(human_actions_required.get("blocker_details", [])) if isinstance(human_actions_required.get("blocker_details"), list) else [],
+        "scope_blockers": list(scope_record.get("blockers", [])) if isinstance(scope_record.get("blockers"), list) else [],
+        "blocker_register": dict(blocker_register),
+    }
+
+
 def _write_failure(
     *,
     pipeline_dir: Path,
@@ -2313,13 +2363,27 @@ def run_qualification_pipeline(
         object_index_uri: Optional[str] = None
         object_index_path: Optional[Path] = None
         object_index_entries: List[Mapping[str, Any]] = []
+        grounding_payload: Optional[Dict[str, Any]] = None
         raw_task_hypothesis: Optional[Dict[str, Any]] = None
 
         try:
             manifest = load_raw_manifest(descriptor.raw_prefix_uri, gcs_root=storage_root)
             manifest_uri = f"{descriptor.raw_prefix_uri.rstrip('/')}/manifest.json"
             manifest_path = resolve_gs_uri_to_path(manifest_uri, storage_root)
-            object_index_uri = resolve_object_index_uri(descriptor.raw_prefix_uri, manifest)
+            try:
+                stage_result = ensure_object_index_stage(
+                    capture_root=descriptor_path.parent,
+                    force_rebuild=parse_bool(os.getenv("OBJECT_INDEX_FORCE_REBUILD"), default=False),
+                )
+            except Exception:
+                stage_result = {}
+            if isinstance(stage_result.get("grounding_payload"), Mapping):
+                grounding_payload = dict(stage_result["grounding_payload"])
+            object_index_uri = (
+                str(stage_result.get("object_index_uri") or "").strip()
+                or str(descriptor.object_index_uri or "").strip()
+                or resolve_object_index_uri(descriptor.raw_prefix_uri, manifest)
+            )
             if object_index_uri:
                 object_index_path = resolve_gs_uri_to_path(object_index_uri, storage_root)
                 object_index_entries = load_object_index(object_index_uri, gcs_root=storage_root)
@@ -2327,6 +2391,7 @@ def run_qualification_pipeline(
             manifest = None
             object_index_uri = None
             object_index_entries = []
+            grounding_payload = None
 
         raw_task_hypothesis = _try_read_optional_json_uri(
             descriptor.task_hypothesis_uri,
@@ -2380,6 +2445,7 @@ def run_qualification_pipeline(
                 object_index_entries=object_index_entries,
                 object_index_uri=object_index_uri,
                 storage_root=storage_root,
+                grounding_payload=grounding_payload,
                 max_targets=max(1, int(getattr(config, "task_target_max_objects", 24) or 24)),
             )
         else:
@@ -2562,6 +2628,40 @@ def run_qualification_pipeline(
             blocker_register=blocker_register,
             geometry_evidence=geometry_evidence,
         )
+        enrichment_runner = build_capture_enrichment_runner(repo_root=Path(__file__).resolve().parents[2])
+        weakness_summary = (
+            enrichment_runner(
+                "qualification_weakness_summarizer",
+                _llm_weakness_payload(
+                    descriptor=descriptor,
+                    scorecard=scorecard,
+                    scope_record=scope_record,
+                    readiness_decision=readiness_decision,
+                    blocker_register=blocker_register,
+                    human_actions_required=human_actions_required,
+                ),
+            )
+            if enrichment_runner is not None
+            else None
+        )
+        recapture_instructions = (
+            enrichment_runner(
+                "recapture_instruction_writer",
+                _llm_recapture_payload(
+                    descriptor=descriptor,
+                    scorecard=scorecard,
+                    scope_record=scope_record,
+                    blocker_register=blocker_register,
+                    human_actions_required=human_actions_required,
+                ),
+            )
+            if enrichment_runner is not None
+            else None
+        )
+        if isinstance(recapture_instructions, Mapping):
+            human_actions_required["llm_recapture_instructions"] = list(
+                recapture_instructions.get("instructions", [])
+            ) if isinstance(recapture_instructions.get("instructions"), list) else []
         qualification_record["readiness_state"] = readiness_decision.get("status")
         opportunity_handoff = _build_opportunity_handoff(
             descriptor=descriptor,
@@ -2599,6 +2699,10 @@ def run_qualification_pipeline(
         write_json(pipeline_dir / "blocker_register.json", blocker_register)
         write_json(pipeline_dir / "readiness_decision.json", readiness_decision)
         write_json(pipeline_dir / "human_actions_required.json", human_actions_required)
+        if isinstance(weakness_summary, Mapping):
+            write_json(pipeline_dir / "qualification_weakness_summary.json", dict(weakness_summary))
+        if isinstance(recapture_instructions, Mapping):
+            write_json(pipeline_dir / "recapture_instructions.json", dict(recapture_instructions))
         write_text(
             pipeline_dir / "readiness_report.md",
             _render_readiness_report(
@@ -2677,6 +2781,16 @@ def run_qualification_pipeline(
                 "blocker_register": f"gs://{bucket}/{pipeline_prefix}/blocker_register.json",
                 "readiness_decision": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
                 "human_actions_required": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
+                **(
+                    {"qualification_weakness_summary": f"gs://{bucket}/{pipeline_prefix}/qualification_weakness_summary.json"}
+                    if isinstance(weakness_summary, Mapping)
+                    else {}
+                ),
+                **(
+                    {"recapture_instructions": f"gs://{bucket}/{pipeline_prefix}/recapture_instructions.json"}
+                    if isinstance(recapture_instructions, Mapping)
+                    else {}
+                ),
                 "readiness_report": f"gs://{bucket}/{pipeline_prefix}/readiness_report.md",
                 "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
                 "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",

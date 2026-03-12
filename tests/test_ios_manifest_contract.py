@@ -10,6 +10,7 @@ def test_ios_manifest_from_dict_preserves_bridge_fields() -> None:
         {
             "scene_id": "scene_001",
             "video_uri": "walkthrough.mov",
+            "object_index_uri": "object_index.json",
             "capture_schema_version": "2.0.0",
             "capture_source": "iphone",
             "capture_tier_hint": "tier1_iphone",
@@ -17,6 +18,7 @@ def test_ios_manifest_from_dict_preserves_bridge_fields() -> None:
         }
     )
 
+    assert manifest.object_index_uri == "object_index.json"
     assert manifest.capture_schema_version == "2.0.0"
     assert manifest.capture_source == "iphone"
     assert manifest.capture_tier_hint == "tier1_iphone"
@@ -24,12 +26,12 @@ def test_ios_manifest_from_dict_preserves_bridge_fields() -> None:
 
 
 def test_resolve_object_index_uri_joins_relative_path() -> None:
-    manifest = IOSManifest.from_dict({"object_point_cloud_index": "arkit/objects/index.json"})
+    manifest = IOSManifest.from_dict({"object_index_uri": "object_index.json"})
     uri = resolve_object_index_uri(
         "gs://bucket/scenes/scene_001/iphone/capture_001/raw",
         manifest,
     )
-    assert uri == "gs://bucket/scenes/scene_001/iphone/capture_001/raw/arkit/objects/index.json"
+    assert uri == "gs://bucket/scenes/scene_001/iphone/capture_001/raw/object_index.json"
 
 
 def test_load_object_index_supports_list_and_objects_payload(tmp_path: Path) -> None:

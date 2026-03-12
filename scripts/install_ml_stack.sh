@@ -132,6 +132,7 @@ python3 -m pip install --no-cache-dir \
   "torch==${TORCH_VERSION}" \
   "torchvision==${TORCHVISION_VERSION}"
 python3 -m pip install --no-cache-dir "huggingface_hub[cli]"
+python3 -m pip install --no-cache-dir ultralytics
 
 if [ -f /app/pyproject.toml ]; then
   log "Installing BlueprintCapturePipeline package..."

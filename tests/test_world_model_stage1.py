@@ -147,6 +147,42 @@ def test_run_gen3c_service_fails_before_remote_submit_when_conditioning_missing(
         )
 
 
+def test_run_neoverse_local_requires_local_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_script_module("run_neoverse_local.py")
+    input_video = tmp_path / "capture.mov"
+    input_video.write_bytes(b"mov")
+    job_spec_path = tmp_path / "job_spec.json"
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    job_spec_path.write_text(
+        json.dumps(
+            {
+                "scene_id": "scene_a",
+                "capture_id": "capture_a",
+                "requested_backend": "neoverse",
+                "capture": {"raw_video_path": str(input_video)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("NEOVERSE_CMD_TEMPLATE", raising=False)
+    monkeypatch.delenv("NEOVERSE_EXECUTABLE", raising=False)
+
+    with pytest.raises(SystemExit, match="NeoVerse local runtime is not configured"):
+        module.main(
+            [
+                "--job-spec",
+                str(job_spec_path),
+                "--output-dir",
+                str(output_dir),
+                "--scene-id",
+                "scene_a",
+                "--capture-id",
+                "capture_a",
+            ]
+        )
+
+
 def test_gen3c_contract_adapter_fails_when_required_artifacts_missing(tmp_path: Path) -> None:
     module = _load_script_module("gen3c_contract_adapter.py")
     backend_report = tmp_path / "gen3c_backend_report.json"

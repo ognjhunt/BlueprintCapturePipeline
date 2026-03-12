@@ -224,16 +224,25 @@ def build_capture_bundle_records(
     arkit_root = raw_root / "arkit"
     arkit_poses_uri = None
     arkit_intrinsics_uri = None
+    arkit_frames_uri = None
     arkit_depth_prefix_uri = None
     arkit_confidence_prefix_uri = None
+    object_index_uri = None
+    motion_log_uri = None
     if (arkit_root / "poses.jsonl").is_file():
         arkit_poses_uri = join_gs_uri(raw_prefix_uri, "arkit/poses.jsonl")
     if (arkit_root / "intrinsics.json").is_file():
         arkit_intrinsics_uri = join_gs_uri(raw_prefix_uri, "arkit/intrinsics.json")
+    if (arkit_root / "frames.jsonl").is_file():
+        arkit_frames_uri = join_gs_uri(raw_prefix_uri, "arkit/frames.jsonl")
     if (arkit_root / "depth").is_dir():
         arkit_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/depth")
     if (arkit_root / "confidence").is_dir():
         arkit_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/confidence")
+    if (raw_root / "object_index.json").is_file():
+        object_index_uri = join_gs_uri(raw_prefix_uri, "object_index.json")
+    if (raw_root / "motion.jsonl").is_file():
+        motion_log_uri = join_gs_uri(raw_prefix_uri, "motion.jsonl")
 
     frames_index_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/frames/index.jsonl"
     frames_dir = capture_root / "frames"
@@ -350,8 +359,11 @@ def build_capture_bundle_records(
         "raw_video_uri": raw_video_uri,
         "arkit_poses_uri": arkit_poses_uri,
         "arkit_intrinsics_uri": arkit_intrinsics_uri,
+        "arkit_frames_uri": arkit_frames_uri,
         "arkit_depth_prefix_uri": arkit_depth_prefix_uri,
         "arkit_confidence_prefix_uri": arkit_confidence_prefix_uri,
+        "object_index_uri": object_index_uri,
+        "motion_log_uri": motion_log_uri,
         "qa_report_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/qa_report.json",
         "qa_status": None,
         "intended_space_type": str(manifest.get("intended_space_type") or "default"),
