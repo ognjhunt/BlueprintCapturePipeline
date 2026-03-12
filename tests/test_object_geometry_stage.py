@@ -92,3 +92,6 @@ def test_object_geometry_stage_extracts_mesh_hulls_and_ai_hints(tmp_path: Path) 
     assert obj["visual_replacement_masks"]
     assert obj["ai_hints"]["source"] == "ai_runner"
     assert obj["ai_hints"]["shape_label"] == "sectional_cluster"
+    assert obj["task_critical"] is True
+    assert obj["grounding_level"] == "reconstructed"
+    assert obj["canonical_truth"] is True

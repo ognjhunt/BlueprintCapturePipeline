@@ -28,6 +28,7 @@ from .common import (
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
 from .object_index_stage import ensure_object_index_stage
+from .runtime_layer_grounding import with_grounding_fields
 from .task_targets import infer_task_targets, write_task_targets
 from .webapp_sync import (
     derive_webapp_opportunity_state,
@@ -722,7 +723,24 @@ def _write_scene_memory_bundle(
         if path.is_file():
             explicit_conditioning[name] = f"gs://{bucket}/{relative_scene_path(path, storage_root)}"
 
-    conditioning_bundle = {
+    conditioning_provenance = build_provenance_record(
+        grounding_level="observed",
+        evidence_sources=[
+            descriptor.raw_video_uri,
+            descriptor.frames_index_uri,
+            descriptor.arkit_poses_uri,
+            descriptor.arkit_intrinsics_uri,
+            descriptor.arkit_depth_prefix_uri,
+        ],
+        observation_coverage={
+            "capture_modality": descriptor.capture_modality,
+            "has_explicit_conditioning": bool(explicit_conditioning),
+        },
+        confidence=qualification_record.get("confidence"),
+        canonical_truth=True,
+        presentation_only=False,
+    )
+    conditioning_bundle = with_grounding_fields({
         "schema_version": "v1",
         "lane": "scene_memory",
         "scene_id": descriptor.scene_id,
@@ -756,27 +774,24 @@ def _write_scene_memory_bundle(
             presentation_artifact_uri=runtime_demo_manifest_uri if policy.emit_presentation else None,
             authoritative_record=True,
         ),
-        "provenance": build_provenance_record(
-            grounding_level="observed",
-            evidence_sources=[
-                descriptor.raw_video_uri,
-                descriptor.frames_index_uri,
-                descriptor.arkit_poses_uri,
-                descriptor.arkit_intrinsics_uri,
-                descriptor.arkit_depth_prefix_uri,
-            ],
-            observation_coverage={
-                "capture_modality": descriptor.capture_modality,
-                "has_explicit_conditioning": bool(explicit_conditioning),
-            },
-            confidence=qualification_record.get("confidence"),
-            canonical_truth=True,
-            presentation_only=False,
-        ),
-    }
+        "canonical_package_version": None,
+        "provenance": conditioning_provenance,
+    }, provenance=conditioning_provenance)
     write_json(scene_memory_dir / "conditioning_bundle.json", conditioning_bundle)
 
-    scene_memory_manifest = {
+    scene_memory_provenance = build_provenance_record(
+        grounding_level="observed",
+        evidence_sources=[
+            conditioning_bundle_uri,
+            f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
+            f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
+        ],
+        observation_coverage={"scene_memory_status": readiness_payload["status"]},
+        confidence=qualification_record.get("confidence"),
+        canonical_truth=True,
+        presentation_only=False,
+    )
+    scene_memory_manifest = with_grounding_fields({
         "schema_version": "v1",
         "lane": "scene_memory",
         "scene_id": descriptor.scene_id,
@@ -798,19 +813,9 @@ def _write_scene_memory_bundle(
             presentation_artifact_uri=presentation_world_manifest_uri if policy.emit_presentation else None,
             authoritative_record=True,
         ),
-        "provenance": build_provenance_record(
-            grounding_level="observed",
-            evidence_sources=[
-                conditioning_bundle_uri,
-                f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
-                f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
-            ],
-            observation_coverage={"scene_memory_status": readiness_payload["status"]},
-            confidence=qualification_record.get("confidence"),
-            canonical_truth=True,
-            presentation_only=False,
-        ),
-    }
+        "canonical_package_version": None,
+        "provenance": scene_memory_provenance,
+    }, provenance=scene_memory_provenance)
     write_json(scene_memory_dir / "scene_memory_manifest.json", scene_memory_manifest)
 
     adapter_specs = {
@@ -922,7 +927,15 @@ def _write_scene_memory_bundle(
     }
     write_json(preview_dir / "preview_simulation_manifest.json", preview_manifest)
 
-    presentation_manifest = {
+    presentation_provenance = build_provenance_record(
+        grounding_level="generated" if policy.emit_presentation else "reconstructed",
+        evidence_sources=[scene_memory_manifest_uri, conditioning_bundle_uri],
+        observation_coverage={"presentation_enabled": policy.emit_presentation},
+        confidence=qualification_record.get("confidence"),
+        canonical_truth=False,
+        presentation_only=True,
+    )
+    presentation_manifest = with_grounding_fields({
         "schema_version": "v1",
         "lane": "presentation_world",
         "scene_id": descriptor.scene_id,
@@ -936,18 +949,20 @@ def _write_scene_memory_bundle(
         "derivation_mode": policy.allow_generative_completion,
         "authoritative_record": False,
         "world_model_policy": policy.to_dict(),
-        "provenance": build_provenance_record(
-            grounding_level="generated" if policy.emit_presentation else "reconstructed",
-            evidence_sources=[scene_memory_manifest_uri, conditioning_bundle_uri],
-            observation_coverage={"presentation_enabled": policy.emit_presentation},
-            confidence=qualification_record.get("confidence"),
-            canonical_truth=False,
-            presentation_only=True,
-        ),
-    }
+        "canonical_package_version": None,
+        "provenance": presentation_provenance,
+    }, provenance=presentation_provenance)
     write_json(presentation_dir / "presentation_world_manifest.json", presentation_manifest)
 
-    runtime_demo_manifest = {
+    runtime_demo_provenance = build_provenance_record(
+        grounding_level="generated" if policy.emit_presentation else "reconstructed",
+        evidence_sources=[scene_memory_manifest_uri, presentation_world_manifest_uri],
+        observation_coverage={"presentation_enabled": policy.emit_presentation},
+        confidence=qualification_record.get("confidence"),
+        canonical_truth=False,
+        presentation_only=True,
+    )
+    runtime_demo_manifest = with_grounding_fields({
         "schema_version": "v1",
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
@@ -960,7 +975,9 @@ def _write_scene_memory_bundle(
         "derivation_mode": policy.allow_generative_completion,
         "authoritative_record": False,
         "world_model_policy": policy.to_dict(),
-    }
+        "canonical_package_version": None,
+        "provenance": runtime_demo_provenance,
+    }, provenance=runtime_demo_provenance)
     write_json(presentation_dir / "runtime_demo_manifest.json", runtime_demo_manifest)
 
     return {

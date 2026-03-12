@@ -12,6 +12,14 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
 from .object_geometry_stage import run_object_geometry_stage
+from .runtime_layer_grounding import (
+    build_canonical_render_policy,
+    build_presentation_variance_policy,
+    build_protected_regions_manifest,
+    compute_canonical_package_version,
+    task_critical_object_ids,
+    with_grounding_fields,
+)
 from .site_world_runtime_service_client import SiteWorldRuntimeServiceClient, SiteWorldRuntimeServiceConfig
 from .world_model_policy import (
     WorldModelPolicy,
@@ -388,8 +396,20 @@ def _build_task_anchor_manifest(
             target_ids = _string_list(item.get("target_object_ids"))
             articulation_ids = _string_list(item.get("articulation_required_ids"))
             goal = _zone_center(target_ids or articulation_ids)
+            provenance = build_provenance_record(
+                grounding_level="reconstructed" if target_ids else "inferred",
+                evidence_sources=[str(item.get("capture_root") or ""), str(capture_root / "pipeline" / "task_scope_record.json")],
+                observation_coverage={
+                    "target_object_count": len(target_ids),
+                    "articulation_required_count": len(articulation_ids),
+                },
+                confidence=1.0 if target_ids else 0.5,
+                canonical_truth=True,
+                presentation_only=False,
+            )
             tasks.append(
-                {
+                with_grounding_fields(
+                    {
                     "task_id": str(item.get("task_id") or item.get("capture_id") or ""),
                     "task_text": str(item.get("task_text") or ""),
                     "task_category": str(item.get("task_category") or "generic"),
@@ -397,6 +417,7 @@ def _build_task_anchor_manifest(
                     "capture_id": str(item.get("capture_id") or ""),
                     "target_object_ids": target_ids,
                     "articulation_required_ids": articulation_ids,
+                    "task_critical": bool(target_ids or articulation_ids),
                     "scene_relative_transforms": {
                         object_id: (
                             dict(geometry_by_id[object_id].get("placement_bbox") or {})
@@ -408,15 +429,30 @@ def _build_task_anchor_manifest(
                     "task_zone": {"center": goal},
                     "start_zone": [round(goal[0] - 1.0, 6), round(goal[1], 6), round(goal[2], 6)],
                     "goal_zone": goal,
-                }
+                    "provenance": provenance,
+                    },
+                    provenance=provenance,
+                )
             )
     else:
         target_ids = _string_list(scope_record.get("target_object_ids"))
         articulation_ids = _string_list(scope_record.get("articulation_required_ids"))
         task_text = _default_task_text(scope_record, handoff, capture_root.name)
         goal = _zone_center(target_ids or articulation_ids)
+        provenance = build_provenance_record(
+            grounding_level="reconstructed" if target_ids else "inferred",
+            evidence_sources=[str(capture_root / "pipeline" / "task_scope_record.json")],
+            observation_coverage={
+                "target_object_count": len(target_ids),
+                "articulation_required_count": len(articulation_ids),
+            },
+            confidence=1.0 if target_ids else 0.5,
+            canonical_truth=True,
+            presentation_only=False,
+        )
         tasks.append(
-            {
+            with_grounding_fields(
+                {
                 "task_id": _default_task_id(scope_record, handoff, capture_root.name),
                 "task_text": task_text,
                 "task_category": _task_category(task_text),
@@ -424,6 +460,7 @@ def _build_task_anchor_manifest(
                 "capture_id": capture_root.name,
                 "target_object_ids": target_ids,
                 "articulation_required_ids": articulation_ids,
+                "task_critical": bool(target_ids or articulation_ids),
                 "scene_relative_transforms": {
                     object_id: (
                         dict(geometry_by_id[object_id].get("placement_bbox") or {})
@@ -435,16 +472,28 @@ def _build_task_anchor_manifest(
                 "task_zone": dict(scope_record.get("task_zone") or {}) if isinstance(scope_record.get("task_zone"), Mapping) else {"center": goal},
                 "start_zone": [round(goal[0] - 1.0, 6), round(goal[1], 6), round(goal[2], 6)],
                 "goal_zone": goal,
-            }
+                "provenance": provenance,
+                },
+                provenance=provenance,
+            )
         )
 
-    return {
+    manifest_provenance = build_provenance_record(
+        grounding_level="reconstructed" if tasks else "inferred",
+        evidence_sources=[str(capture_root / "pipeline" / "task_scope_record.json")],
+        observation_coverage={"task_count": len(tasks)},
+        confidence=1.0 if tasks else 0.0,
+        canonical_truth=True,
+        presentation_only=False,
+    )
+    return with_grounding_fields({
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "scene_id": capture_root.parts[-3],
         "capture_id": capture_root.name,
         "tasks": tasks,
-    }
+        "provenance": manifest_provenance,
+    }, provenance=manifest_provenance)
 
 
 def _build_geometry_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -> Dict[str, Any]:
@@ -496,6 +545,10 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
         "cosmos_transfer_adapter_manifest_path": adapter_dir / "cosmos_transfer.json",
         "presentation_world_manifest_path": presentation_dir / "presentation_world_manifest.json",
         "runtime_demo_manifest_path": presentation_dir / "runtime_demo_manifest.json",
+        "protected_regions_manifest_path": eval_dir / "protected_regions_manifest.json",
+        "canonical_render_policy_path": eval_dir / "canonical_render_policy.json",
+        "presentation_variance_policy_path": eval_dir / "presentation_variance_policy.json",
+        "site_world_spec_path": eval_dir / "site_world_spec.json",
     }
     entries: Dict[str, str] = {}
     available = 0
@@ -516,6 +569,10 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
         "gen3c_adapter_manifest_path",
         "neoverse_adapter_manifest_path",
         "cosmos_transfer_adapter_manifest_path",
+        "protected_regions_manifest_path",
+        "canonical_render_policy_path",
+        "presentation_variance_policy_path",
+        "site_world_spec_path",
     }
     status = "complete" if required.issubset(entries) else "partial" if available > 0 else "missing"
     missing = [key for key in sorted(required) if key not in entries]
@@ -592,6 +649,10 @@ def _normalize_rich_handoff(
         "cosmos_transfer_adapter_manifest_path",
         "presentation_world_manifest_path",
         "runtime_demo_manifest_path",
+        "protected_regions_manifest_path",
+        "canonical_render_policy_path",
+        "presentation_variance_policy_path",
+        "site_world_spec_path",
     ):
         text = str(scene_memory_bundle_manifest.get(key) or "").strip()
         if text:
@@ -680,6 +741,9 @@ def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]
         "arkit_intrinsics_path": str(context.raw_root / "arkit" / "intrinsics.json"),
         "arkit_depth_path": str(context.raw_root / "arkit" / "depth"),
         "object_index_path": str(context.raw_root / "object_index.json"),
+        "scene_memory_manifest_path": str(context.pipeline_root / "scene_memory" / "scene_memory_manifest.json"),
+        "conditioning_bundle_path": str(context.pipeline_root / "scene_memory" / "conditioning_bundle.json"),
+        "object_geometry_manifest_path": str(context.pipeline_root / "evaluation_prep" / "object_geometry_manifest.json"),
     }
     geometry = conditioning_bundle.get("explicit_conditioning")
     geometry_map = dict(geometry) if isinstance(geometry, Mapping) else {}
@@ -694,6 +758,20 @@ def _site_world_id(scene_id: str, capture_id: str) -> str:
 
 def _policy() -> WorldModelPolicy:
     return WorldModelPolicy.from_env()
+
+
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    payload = _read_optional_json_any(path)
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _task_critical_ids_from_manifest(task_anchor_manifest: Mapping[str, Any]) -> set[str]:
+    tasks = (
+        task_anchor_manifest.get("tasks")
+        if isinstance(task_anchor_manifest.get("tasks"), list)
+        else []
+    )
+    return task_critical_object_ids([task for task in tasks if isinstance(task, Mapping)])
 
 
 def _descriptor_scene_memory_capture(descriptor: Mapping[str, Any]) -> Dict[str, Any]:
@@ -738,6 +816,8 @@ def _site_world_runtime_eligibility(
     normalized_handoff: Mapping[str, Any],
     descriptor: Mapping[str, Any],
     conditioning_bundle: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
+    required_runtime_artifact_paths: Sequence[Path] = (),
 ) -> Dict[str, Any]:
     blockers: List[str] = []
     warnings: List[str] = []
@@ -773,6 +853,11 @@ def _site_world_runtime_eligibility(
     object_index_path = Path(local_paths["object_index_path"])
     if not object_index_path.is_file():
         warnings.append("object_index_path_missing")
+    if scene_memory_bundle_manifest.get("status") != "complete":
+        blockers.append(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
+    for artifact_path in required_runtime_artifact_paths:
+        if not artifact_path.is_file():
+            blockers.append(f"missing_runtime_artifact:{artifact_path.name}")
     return {
         "launchable": len(blockers) == 0,
         "blockers": blockers,
@@ -790,6 +875,10 @@ def _build_site_world_spec(
     object_geometry_manifest: Mapping[str, Any],
     task_anchor_manifest: Mapping[str, Any],
     task_run_manifest: Mapping[str, Any],
+    protected_regions_manifest: Mapping[str, Any],
+    canonical_render_policy: Mapping[str, Any],
+    presentation_variance_policy: Mapping[str, Any],
+    canonical_package_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     policy = _policy()
     descriptor = _read_optional_json_any(context.descriptor_path)
@@ -804,40 +893,70 @@ def _build_site_world_spec(
         normalized_handoff=normalized_handoff,
         descriptor=descriptor_map,
         conditioning_bundle=conditioning_map,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        required_runtime_artifact_paths=[
+            eval_dir / "protected_regions_manifest.json",
+            eval_dir / "canonical_render_policy.json",
+            eval_dir / "presentation_variance_policy.json",
+        ],
     )
+    critical_ids = _task_critical_ids_from_manifest(task_anchor_manifest)
     normalized_tasks = []
     for task in task_anchor_manifest.get("tasks", []) if isinstance(task_anchor_manifest.get("tasks"), list) else []:
         if not isinstance(task, Mapping):
             continue
         task_id = str(task.get("task_id") or task.get("id") or "").strip()
         task_text = str(task.get("task_text") or task.get("name") or task_id or "task").strip()
+        task_provenance = build_provenance_record(
+            grounding_level="reconstructed" if _string_list(task.get("target_object_ids")) else "inferred",
+            evidence_sources=[_gs_uri(context, "evaluation_prep/task_anchor_manifest.json")],
+            observation_coverage={"target_object_count": len(_string_list(task.get("target_object_ids")))},
+            confidence=1.0 if _string_list(task.get("target_object_ids")) else 0.5,
+            canonical_truth=True,
+            presentation_only=False,
+        )
         normalized_tasks.append(
-            {
+            with_grounding_fields(
+                {
                 "id": task_id or _stable_id("task", task_text, fallback="task_default"),
                 "task_id": task_id,
                 "task_text": task_text,
                 "task_category": str(task.get("task_category") or "generic"),
                 "target_object_ids": _string_list(task.get("target_object_ids")),
                 "articulation_required_ids": _string_list(task.get("articulation_required_ids")),
-                "provenance": build_provenance_record(
-                    grounding_level="reconstructed" if _string_list(task.get("target_object_ids")) else "inferred",
-                    evidence_sources=[_gs_uri(context, "evaluation_prep/task_anchor_manifest.json")],
-                    observation_coverage={"target_object_count": len(_string_list(task.get("target_object_ids")))},
-                    confidence=1.0 if _string_list(task.get("target_object_ids")) else 0.5,
-                    canonical_truth=True,
-                    presentation_only=False,
-                ),
-            }
+                "task_critical": bool(_string_list(task.get("target_object_ids"), task.get("articulation_required_ids"))),
+                "provenance": task_provenance,
+                },
+                provenance=task_provenance,
+            )
         )
     geometry_bundle = scene_memory_bundle_manifest.get("bundle_path")
     object_geometry_path = eval_dir / "object_geometry_manifest.json"
     scene_memory_capture = _descriptor_scene_memory_capture(descriptor_map)
-    spec = {
+    spec_provenance = build_provenance_record(
+        grounding_level="reconstructed" if runtime_eligibility["launchable"] else "observed",
+        evidence_sources=[
+            _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
+            _gs_uri(context, "scene_memory/conditioning_bundle.json"),
+            _gs_uri(context, "evaluation_prep/object_geometry_manifest.json"),
+        ],
+        observation_coverage={
+            "task_count": len(normalized_tasks),
+            "runtime_launchable": runtime_eligibility["launchable"],
+            "task_critical_object_count": len(critical_ids),
+        },
+        confidence=1.0 if runtime_eligibility["launchable"] else 0.75,
+        canonical_truth=True,
+        presentation_only=False,
+    )
+    spec = with_grounding_fields({
         "schema_version": "v1",
         "site_world_id": _site_world_id(context.scene_id, context.capture_id),
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
         "site_submission_id": str(normalized_handoff.get("site_submission_id") or context.capture_id),
+        "canonical_package_uri": _gs_uri(context, "evaluation_prep/site_world_spec.json"),
+        "canonical_package_version": canonical_package_version,
         "qualification_state": normalized_handoff.get("qualification_state"),
         "downstream_evaluation_eligibility": bool(normalized_handoff.get("downstream_evaluation_eligibility")),
         "capture_source": descriptor_map.get("capture_source") or descriptor_map.get("capture_modality"),
@@ -845,6 +964,8 @@ def _build_site_world_spec(
         "conditioning": {
             "scene_memory_manifest_uri": _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
             "conditioning_bundle_uri": _gs_uri(context, "scene_memory/conditioning_bundle.json"),
+            "scene_memory_manifest_path": str((context.pipeline_root / "scene_memory" / "scene_memory_manifest.json").resolve()),
+            "conditioning_bundle_path": str((context.pipeline_root / "scene_memory" / "conditioning_bundle.json").resolve()),
             "raw_video_uri": conditioning_map.get("raw_video_uri"),
             "keyframe_uri": conditioning_map.get("keyframe_uri"),
             "arkit_poses_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("poses_uri"),
@@ -862,6 +983,25 @@ def _build_site_world_spec(
             "visual_mesh_path": str((context.pipeline_root / "nurec" / "visual_mesh.glb").resolve()),
             "advanced_geometry_bundle_path": str((context.pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json").resolve()),
         },
+        "runtime_layer_policy": {
+            "protected_regions_manifest_uri": _gs_uri(context, "evaluation_prep/protected_regions_manifest.json"),
+            "canonical_render_policy_uri": _gs_uri(context, "evaluation_prep/canonical_render_policy.json"),
+            "presentation_variance_policy_uri": _gs_uri(context, "evaluation_prep/presentation_variance_policy.json"),
+            "protected_regions_manifest_path": str((eval_dir / "protected_regions_manifest.json").resolve()),
+            "canonical_render_policy_path": str((eval_dir / "canonical_render_policy.json").resolve()),
+            "presentation_variance_policy_path": str((eval_dir / "presentation_variance_policy.json").resolve()),
+            "protected_region_locking": True,
+            "runtime_layer_compositing": True,
+            "debug_render_outputs": [
+                "canonical_only.png",
+                "locked_mask.png",
+                "editable_mask.png",
+                "final_composite.png",
+            ],
+            "canonical_render_policy": dict(canonical_render_policy),
+            "presentation_variance_policy": dict(presentation_variance_policy),
+        },
+        "task_anchor_manifest_path": str((eval_dir / "task_anchor_manifest.json").resolve()),
         "task_catalog": normalized_tasks,
         "scenario_catalog": [
             {
@@ -908,23 +1048,9 @@ def _build_site_world_spec(
             authoritative_record=False,
             derivation_mode=policy.allow_generative_completion,
         ),
-        "provenance": build_provenance_record(
-            grounding_level="reconstructed" if runtime_eligibility["launchable"] else "observed",
-            evidence_sources=[
-                _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
-                _gs_uri(context, "scene_memory/conditioning_bundle.json"),
-                _gs_uri(context, "evaluation_prep/object_geometry_manifest.json"),
-            ],
-            observation_coverage={
-                "task_count": len(normalized_tasks),
-                "runtime_launchable": runtime_eligibility["launchable"],
-            },
-            confidence=1.0 if runtime_eligibility["launchable"] else 0.75,
-            canonical_truth=True,
-            presentation_only=False,
-        ),
+        "provenance": spec_provenance,
         "generated_at": utc_now_iso(),
-    }
+    }, provenance=spec_provenance)
     return spec
 
 
@@ -956,6 +1082,9 @@ def _build_site_world_runtime_records(
                 "supports_batch_rollout": False,
                 "supports_camera_views": False,
                 "supports_stream": False,
+                "protected_region_locking": True,
+                "runtime_layer_compositing": True,
+                "debug_render_outputs": True,
             },
             "world_model_policy": policy.to_dict(),
             "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
@@ -1001,6 +1130,9 @@ def _build_site_world_runtime_records(
                 "supports_batch_rollout": False,
                 "supports_camera_views": False,
                 "supports_stream": False,
+                "protected_region_locking": True,
+                "runtime_layer_compositing": True,
+                "debug_render_outputs": True,
             },
             "world_model_policy": policy.to_dict(),
             "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
@@ -1058,11 +1190,18 @@ def _build_site_world_runtime_records(
     }
     health = dict(build_payload.get("health") or client.get_site_world_health(str(registration.get("site_world_id") or site_world_id)))
     registration.setdefault("world_model_policy", policy.to_dict())
+    registration.setdefault("canonical_package_version", spec.get("canonical_package_version"))
     registration.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_registration.json"))
     registration.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
     registration.setdefault("derivation_mode", policy.output_policy)
     registration.setdefault("authoritative_record", True)
+    runtime_caps = dict(registration.get("runtime_capabilities") or {})
+    runtime_caps.setdefault("protected_region_locking", True)
+    runtime_caps.setdefault("runtime_layer_compositing", True)
+    runtime_caps.setdefault("debug_render_outputs", True)
+    registration["runtime_capabilities"] = runtime_caps
     health.setdefault("world_model_policy", policy.to_dict())
+    health.setdefault("canonical_package_version", spec.get("canonical_package_version"))
     health.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_health.json"))
     health.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
     health.setdefault("derivation_mode", policy.output_policy)
@@ -1103,6 +1242,7 @@ def _build_hosted_session_runtime_manifest(
     scene_memory_bundle_manifest: Mapping[str, Any],
     task_anchor_manifest: Mapping[str, Any],
     task_run_manifest: Mapping[str, Any],
+    canonical_package_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     policy = _policy()
     eval_dir = context.capture_root / "pipeline" / "evaluation_prep"
@@ -1156,6 +1296,9 @@ def _build_hosted_session_runtime_manifest(
                 "task_category": str(task.get("task_category") or "generic"),
                 "target_object_ids": _string_list(task.get("target_object_ids")),
                 "articulation_required_ids": _string_list(task.get("articulation_required_ids")),
+                "task_critical": bool(
+                    _string_list(task.get("target_object_ids"), task.get("articulation_required_ids"))
+                ),
             }
         )
         if task_text and task_text not in start_states:
@@ -1223,6 +1366,9 @@ def _build_hosted_session_runtime_manifest(
         "supports_camera_views": True,
         "supports_rlds_export": True,
         "supports_preview_render": "gen3c" in available_backends,
+        "protected_region_locking": True,
+        "runtime_layer_compositing": True,
+        "debug_render_outputs": True,
     }
 
     launch_blockers: List[str] = []
@@ -1262,11 +1408,22 @@ def _build_hosted_session_runtime_manifest(
             if str(scene_memory_bundle_manifest.get("preview_simulation_manifest_path") or "").strip()
             else None
         ),
+        "canonical_package_uri": _gs_uri(context, "evaluation_prep/site_world_spec.json"),
+        "canonical_package_version": canonical_package_version,
         "task_anchor_manifest_uri": _gs_uri(
             context, "evaluation_prep/task_anchor_manifest.json"
         ),
         "task_run_manifest_uri": _gs_uri(
             context, "evaluation_prep/task_run_manifest.json"
+        ),
+        "protected_regions_manifest_uri": _gs_uri(
+            context, "evaluation_prep/protected_regions_manifest.json"
+        ),
+        "canonical_render_policy_uri": _gs_uri(
+            context, "evaluation_prep/canonical_render_policy.json"
+        ),
+        "presentation_variance_policy_uri": _gs_uri(
+            context, "evaluation_prep/presentation_variance_policy.json"
         ),
         "available_backends": available_backends,
         "launchable_backends": launchable_backends,
@@ -1837,6 +1994,23 @@ def run_evaluation_prep_stage(
     task_anchor_manifest_path = eval_dir / "task_anchor_manifest.json"
     _copy_json(task_anchor_manifest_path, task_anchor_manifest)
 
+    protected_regions_manifest = build_protected_regions_manifest(
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+        task_anchor_manifest=task_anchor_manifest,
+    )
+    protected_regions_manifest_path = eval_dir / "protected_regions_manifest.json"
+    _copy_json(protected_regions_manifest_path, protected_regions_manifest)
+
+    canonical_render_policy = build_canonical_render_policy()
+    canonical_render_policy_path = eval_dir / "canonical_render_policy.json"
+    _copy_json(canonical_render_policy_path, canonical_render_policy)
+
+    presentation_variance_policy = build_presentation_variance_policy()
+    presentation_variance_policy_path = eval_dir / "presentation_variance_policy.json"
+    _copy_json(presentation_variance_policy_path, presentation_variance_policy)
+
     site_world_spec = _build_site_world_spec(
         context=context,
         eval_dir=eval_dir,
@@ -1845,13 +2019,118 @@ def run_evaluation_prep_stage(
         object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
         task_anchor_manifest=task_anchor_manifest,
         task_run_manifest=task_run_manifest,
+        protected_regions_manifest=protected_regions_manifest,
+        canonical_render_policy=canonical_render_policy,
+        presentation_variance_policy=presentation_variance_policy,
+        canonical_package_version=None,
     )
+    scene_memory_manifest_path = pipeline_dir / "scene_memory" / "scene_memory_manifest.json"
+    conditioning_bundle_path = pipeline_dir / "scene_memory" / "conditioning_bundle.json"
+    scene_memory_manifest = _read_json_object(scene_memory_manifest_path)
+    conditioning_bundle = _read_json_object(conditioning_bundle_path)
+    canonical_package_version = compute_canonical_package_version(
+        scene_memory_manifest=scene_memory_manifest,
+        conditioning_bundle=conditioning_bundle,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+        task_anchor_manifest=task_anchor_manifest,
+        site_world_spec=site_world_spec,
+        protected_regions_manifest=protected_regions_manifest,
+        canonical_render_policy=canonical_render_policy,
+        presentation_variance_policy=presentation_variance_policy,
+    )
+    site_world_spec["canonical_package_version"] = canonical_package_version
     site_world_spec_path = eval_dir / "site_world_spec.json"
     _copy_json(site_world_spec_path, site_world_spec)
+
+    presentation_world_manifest_path = pipeline_dir / "presentation_world" / "presentation_world_manifest.json"
+    runtime_demo_manifest_path = pipeline_dir / "presentation_world" / "runtime_demo_manifest.json"
+    for path in (
+        scene_memory_manifest_path,
+        conditioning_bundle_path,
+        presentation_world_manifest_path,
+        runtime_demo_manifest_path,
+    ):
+        payload = _read_json_object(path)
+        if payload:
+            payload["canonical_package_version"] = canonical_package_version
+            write_json(path, payload)
+
+    scene_memory_bundle_manifest = _build_scene_memory_bundle_manifest(
+        pipeline_dir=pipeline_dir,
+        eval_dir=eval_dir,
+    )
+    normalized_handoff = _normalize_rich_handoff(
+        handoff=handoff,
+        scope_record=scope_record,
+        qualification_record=qualification_record,
+        capture_root=context.capture_root,
+        geometry_bundle_manifest=geometry_bundle_manifest,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+    )
+    site_world_spec = _build_site_world_spec(
+        context=context,
+        eval_dir=eval_dir,
+        normalized_handoff=normalized_handoff,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+        task_anchor_manifest=task_anchor_manifest,
+        task_run_manifest=task_run_manifest,
+        protected_regions_manifest=protected_regions_manifest,
+        canonical_render_policy=canonical_render_policy,
+        presentation_variance_policy=presentation_variance_policy,
+        canonical_package_version=None,
+    )
+    canonical_package_version = compute_canonical_package_version(
+        scene_memory_manifest=_read_json_object(scene_memory_manifest_path),
+        conditioning_bundle=_read_json_object(conditioning_bundle_path),
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
+        task_anchor_manifest=task_anchor_manifest,
+        site_world_spec=site_world_spec,
+        protected_regions_manifest=protected_regions_manifest,
+        canonical_render_policy=canonical_render_policy,
+        presentation_variance_policy=presentation_variance_policy,
+    )
+    site_world_spec["canonical_package_version"] = canonical_package_version
+    _copy_json(site_world_spec_path, site_world_spec)
+    scene_memory_bundle_manifest["canonical_package_version"] = canonical_package_version
+    _copy_json(scene_memory_bundle_manifest_path, scene_memory_bundle_manifest)
+    for path in (
+        scene_memory_manifest_path,
+        conditioning_bundle_path,
+        presentation_world_manifest_path,
+        runtime_demo_manifest_path,
+    ):
+        payload = _read_json_object(path)
+        if payload:
+            payload["canonical_package_version"] = canonical_package_version
+            write_json(path, payload)
+    normalized_handoff = _normalize_rich_handoff(
+        handoff=handoff,
+        scope_record=scope_record,
+        qualification_record=qualification_record,
+        capture_root=context.capture_root,
+        geometry_bundle_manifest=geometry_bundle_manifest,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+    )
+    _copy_json(rich_handoff_path, normalized_handoff)
+
+    hosted_session_runtime_manifest = _build_hosted_session_runtime_manifest(
+        context=context,
+        normalized_handoff=normalized_handoff,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        task_anchor_manifest=task_anchor_manifest,
+        task_run_manifest=task_run_manifest,
+        canonical_package_version=canonical_package_version,
+    )
+    hosted_session_runtime_manifest_path = eval_dir / "hosted_session_runtime_manifest.json"
+    _copy_json(hosted_session_runtime_manifest_path, hosted_session_runtime_manifest)
+
     site_world_registration, site_world_health = _build_site_world_runtime_records(
         context=context,
         spec=site_world_spec,
     )
+    site_world_registration.setdefault("canonical_package_version", canonical_package_version)
+    site_world_health.setdefault("canonical_package_version", canonical_package_version)
     site_world_registration_path = eval_dir / "site_world_registration.json"
     _copy_json(site_world_registration_path, site_world_registration)
     site_world_health_path = eval_dir / "site_world_health.json"
@@ -1970,6 +2249,7 @@ def run_evaluation_prep_stage(
         "site_world_status": site_world_health.get("status"),
         "world_model_classification": validation_summary["world_model_classification"],
         "validation_gates": validation_summary["validation_gates"],
+        "canonical_package_version": canonical_package_version,
     }
     summary_path = eval_dir / "evaluation_prep_summary.json"
     _copy_json(summary_path, summary)
@@ -2021,6 +2301,7 @@ def run_evaluation_prep_stage(
         "readiness_state": str(normalized_handoff.get("readiness_state") or qualification_state),
         "world_model_classification": validation_summary["world_model_classification"],
         "validation_gates": validation_summary["validation_gates"],
+        "canonical_package_version": canonical_package_version,
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,
@@ -2046,9 +2327,13 @@ def run_evaluation_prep_stage(
             "geometry_bundle_manifest": _relative_to(eval_dir, geometry_bundle_manifest_path),
             "task_run_manifest": _relative_to(eval_dir, task_run_manifest_path),
             "task_anchor_manifest": _relative_to(eval_dir, task_anchor_manifest_path),
+            "protected_regions_manifest": _relative_to(eval_dir, protected_regions_manifest_path),
+            "canonical_render_policy": _relative_to(eval_dir, canonical_render_policy_path),
+            "presentation_variance_policy": _relative_to(eval_dir, presentation_variance_policy_path),
             "site_world_spec": _relative_to(eval_dir, site_world_spec_path),
             "site_world_registration": _relative_to(eval_dir, site_world_registration_path),
             "site_world_health": _relative_to(eval_dir, site_world_health_path),
+            "hosted_session_runtime_manifest": _relative_to(eval_dir, hosted_session_runtime_manifest_path),
             "site_normalization_package": _relative_to(eval_dir, site_normalization_package_path),
             "benchmark_suite_manifest": _relative_to(eval_dir, benchmark_suite_manifest_path),
             "compatibility_matrix": _relative_to(eval_dir, compatibility_matrix_path),

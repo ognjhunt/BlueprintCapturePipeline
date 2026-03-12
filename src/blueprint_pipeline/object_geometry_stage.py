@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .common import PipelineError, ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
+from .runtime_layer_grounding import with_grounding_fields
 from .world_model_policy import WorldModelPolicy, build_output_linkage, build_provenance_record
 
 try:
@@ -782,7 +783,27 @@ def run_object_geometry_stage(
                 ai_hints.update({str(key): value for key, value in custom_hints.items()})
                 ai_hints["source"] = "ai_runner"
 
-        geometry_record = {
+        provenance = build_provenance_record(
+            grounding_level="reconstructed" if mesh_source == "source_mesh" else "inferred",
+            evidence_sources=[
+                mesh_path,
+                *[str(item.get("image_path") or "") for item in selected_views if isinstance(item, Mapping)],
+            ],
+            observation_coverage={
+                "selected_view_count": len(selected_views),
+                "collision_hull_count": len(hull_entries),
+                "support_surface_count": len(support_surfaces),
+            },
+            confidence=0.9 if mesh_source == "source_mesh" else 0.7,
+            canonical_truth=True,
+            presentation_only=False,
+            extra={
+                "source_mode": view_payload["source_mode"],
+                "provider_name": provider_name,
+            },
+        )
+        geometry_record = with_grounding_fields(
+            {
             "object_id": object_id,
             "label": str(entry.get("label") or "object"),
             "task_role": (
@@ -806,26 +827,11 @@ def run_object_geometry_stage(
             "selected_views": selected_views,
             "visual_replacement_masks": mask_entries,
             "ai_hints": ai_hints,
-            "provenance": build_provenance_record(
-                grounding_level="reconstructed" if mesh_source == "source_mesh" else "inferred",
-                evidence_sources=[
-                    mesh_path,
-                    *[str(item.get("image_path") or "") for item in selected_views if isinstance(item, Mapping)],
-                ],
-                observation_coverage={
-                    "selected_view_count": len(selected_views),
-                    "collision_hull_count": len(hull_entries),
-                    "support_surface_count": len(support_surfaces),
-                },
-                confidence=0.9 if mesh_source == "source_mesh" else 0.7,
-                canonical_truth=True,
-                presentation_only=False,
-                extra={
-                    "source_mode": view_payload["source_mode"],
-                    "provider_name": provider_name,
-                },
-            ),
-        }
+            "task_critical": object_id in primary_ids or object_id in articulation_ids,
+            "provenance": provenance,
+            },
+            provenance=provenance,
+        )
         write_json(object_dir / "support_surfaces.json", {"surfaces": support_surfaces, "method": support_method})
         write_json(object_dir / "ai_hints.json", ai_hints)
         geometry_objects.append(geometry_record)
@@ -850,9 +856,18 @@ def run_object_geometry_stage(
         item["support_object_id"] = _support_link_for_target(target=item, other_objects=geometry_objects)
 
     manifest_path = output_root / "object_geometry_manifest.json"
+    manifest_provenance = build_provenance_record(
+        grounding_level="reconstructed" if geometry_objects else "inferred",
+        evidence_sources=[str(index_path)],
+        observation_coverage={"object_count": len(geometry_objects)},
+        confidence=1.0 if geometry_objects else 0.0,
+        canonical_truth=True,
+        presentation_only=False,
+    )
     write_json(
         manifest_path,
-        {
+        with_grounding_fields(
+            {
             "schema_version": "v1",
             "generated_at": utc_now_iso(),
             "provider_name": provider_name,
@@ -865,16 +880,11 @@ def run_object_geometry_stage(
                 presentation_artifact_uri=None,
                 authoritative_record=True,
             ),
-            "provenance": build_provenance_record(
-                grounding_level="reconstructed" if geometry_objects else "inferred",
-                evidence_sources=[str(index_path)],
-                observation_coverage={"object_count": len(geometry_objects)},
-                confidence=1.0 if geometry_objects else 0.0,
-                canonical_truth=True,
-                presentation_only=False,
-            ),
+            "provenance": manifest_provenance,
             "objects": geometry_objects,
-        },
+            },
+            provenance=manifest_provenance,
+        ),
     )
     result = ObjectGeometryStageResult(
         capture_root=context.capture_root,

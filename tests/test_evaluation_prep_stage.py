@@ -267,6 +267,8 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path, monkeypa
     site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
     summary = json.loads((capture_root / "pipeline" / "evaluation_prep" / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
     scene_memory_bundle = json.loads((capture_root / "pipeline" / "evaluation_prep" / "scene_memory_bundle_manifest.json").read_text(encoding="utf-8"))
+    protected_regions = json.loads((capture_root / "pipeline" / "evaluation_prep" / "protected_regions_manifest.json").read_text(encoding="utf-8"))
+    hosted_session_runtime = json.loads((capture_root / "pipeline" / "evaluation_prep" / "hosted_session_runtime_manifest.json").read_text(encoding="utf-8"))
 
     assert manifest["status"] == "ready_for_validation"
     assert manifest["world_model_classification"] == "validated_site_world"
@@ -277,19 +279,36 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path, monkeypa
     assert manifest["artifacts"]["site_world_spec"] == "site_world_spec.json"
     assert manifest["artifacts"]["site_world_registration"] == "site_world_registration.json"
     assert manifest["artifacts"]["site_world_health"] == "site_world_health.json"
+    assert manifest["artifacts"]["protected_regions_manifest"] == "protected_regions_manifest.json"
+    assert manifest["artifacts"]["canonical_render_policy"] == "canonical_render_policy.json"
+    assert manifest["artifacts"]["presentation_variance_policy"] == "presentation_variance_policy.json"
+    assert manifest["artifacts"]["hosted_session_runtime_manifest"] == "hosted_session_runtime_manifest.json"
     assert manifest["artifacts"]["presentation_world_manifest"] == "../presentation_world/presentation_world_manifest.json"
     assert manifest["artifacts"]["runtime_demo_manifest"] == "../presentation_world/runtime_demo_manifest.json"
     assert scene_memory_bundle["presentation_world_manifest_path"] == "../presentation_world/presentation_world_manifest.json"
     assert scene_memory_bundle["runtime_demo_manifest_path"] == "../presentation_world/runtime_demo_manifest.json"
+    assert scene_memory_bundle["protected_regions_manifest_path"] == "protected_regions_manifest.json"
+    assert scene_memory_bundle["canonical_render_policy_path"] == "canonical_render_policy.json"
+    assert scene_memory_bundle["presentation_variance_policy_path"] == "presentation_variance_policy.json"
+    assert scene_memory_bundle["site_world_spec_path"] == "site_world_spec.json"
     assert rich_handoff["qualification_state"] == "ready"
     assert rich_handoff["downstream_evaluation_eligibility"] is True
     assert rich_handoff["scene_memory_package"]["scene_memory_manifest_path"] == "../scene_memory/scene_memory_manifest.json"
     assert rich_handoff["scene_memory_package"]["presentation_world_manifest_path"] == "../presentation_world/presentation_world_manifest.json"
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
+    assert anchors["tasks"][0]["task_critical"] is True
     assert site_world_spec["runtime_eligibility"]["launchable"] is True
     assert site_world_spec["canonical_output"]["authoritative_record"] is True
     assert site_world_spec["presentation_output"]["authoritative_record"] is False
     assert site_world_spec["task_catalog"][0]["task_id"] == "task-1"
+    assert site_world_spec["task_catalog"][0]["task_critical"] is True
+    assert site_world_spec["runtime_layer_policy"]["protected_region_locking"] is True
+    assert site_world_spec["canonical_package_version"]
+    assert scene_memory_bundle["canonical_package_version"] == site_world_spec["canonical_package_version"]
+    assert hosted_session_runtime["canonical_package_version"] == site_world_spec["canonical_package_version"]
+    assert hosted_session_runtime["runtime_capabilities"]["protected_region_locking"] is True
+    assert protected_regions["regions"][0]["classification"] == "locked"
+    assert protected_regions["regions"][0]["task_critical"] is True
     assert site_world_registration["status"] == "ready"
     assert site_world_registration["world_model_classification"] == "validated_site_world"
     assert site_world_registration["runtime_base_url"] == "http://runtime.local"
@@ -300,6 +319,7 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path, monkeypa
     assert summary["object_count"] == 1
     assert summary["site_world_status"] == "healthy"
     assert summary["world_model_classification"] == "validated_site_world"
+    assert summary["canonical_package_version"] == site_world_spec["canonical_package_version"]
 
 
 def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_path: Path, monkeypatch) -> None:
