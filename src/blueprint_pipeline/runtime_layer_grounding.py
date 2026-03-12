@@ -137,6 +137,7 @@ def build_protected_regions_manifest(
         if isinstance(object_geometry_manifest.get("objects"), list)
         else []
     )
+    object_geometry_status = str(object_geometry_manifest.get("status") or "").strip().lower()
     regions = []
     for item in objects:
         if not isinstance(item, Mapping):
@@ -200,10 +201,21 @@ def build_protected_regions_manifest(
                 **fields,
             }
         )
+    grounding_status = "grounded"
+    ungrounded_reason: Optional[str] = None
+    if object_geometry_status in {"empty_object_index", "missing_object_index"}:
+        grounding_status = "ungrounded"
+        ungrounded_reason = object_geometry_status
+    elif not regions:
+        grounding_status = "ungrounded"
+        ungrounded_reason = "no_grounded_regions"
     return {
         "schema_version": "v1",
         "scene_id": scene_id,
         "capture_id": capture_id,
+        "grounding_status": grounding_status,
+        "ungrounded_reason": ungrounded_reason,
+        "region_count": len(regions),
         "thresholds": {
             "protected_observed": PROTECTED_OBSERVED_THRESHOLD,
             "protected_reconstructed": PROTECTED_RECONSTRUCTED_THRESHOLD,
@@ -211,6 +223,8 @@ def build_protected_regions_manifest(
             "task_critical_override": TASK_CRITICAL_OVERRIDE_THRESHOLD,
             "task_critical_dilation_px": TASK_CRITICAL_DILATION_PX,
             "unknown_is_editable": True,
+            "ungrounded_default_mode": "canonical_only",
+            "unsafe_editable_override_flag": "unsafe_allow_blocked_site_world",
         },
         "regions": regions,
     }
@@ -295,4 +309,3 @@ def compute_canonical_package_version(
     ):
         digest.update(normalized_json_bytes(payload))
     return digest.hexdigest()
-

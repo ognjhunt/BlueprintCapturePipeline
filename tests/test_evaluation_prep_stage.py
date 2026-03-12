@@ -370,10 +370,17 @@ def test_evaluation_prep_stage_marks_empty_object_index_as_prototype(tmp_path: P
 
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     object_geometry = json.loads((capture_root / "pipeline" / "evaluation_prep" / "object_geometry_manifest.json").read_text(encoding="utf-8"))
+    protected_regions = json.loads((capture_root / "pipeline" / "evaluation_prep" / "protected_regions_manifest.json").read_text(encoding="utf-8"))
+    site_world_spec = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_spec.json").read_text(encoding="utf-8"))
     site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
 
     assert manifest["world_model_classification"] == "prototype_demo"
     assert object_geometry["status"] == "empty_object_index"
     assert object_geometry["object_index_present"] is True
     assert object_geometry["object_index_entry_count"] == 0
+    assert protected_regions["grounding_status"] == "ungrounded"
+    assert protected_regions["ungrounded_reason"] == "empty_object_index"
+    assert protected_regions["regions"] == []
+    assert site_world_spec["grounding_status"] == "ungrounded"
+    assert site_world_spec["runtime_layer_policy"]["grounding_status"] == "ungrounded"
     assert site_world_health["world_model_classification"] == "prototype_demo"

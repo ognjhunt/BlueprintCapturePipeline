@@ -983,6 +983,8 @@ def _build_site_world_spec(
             "visual_mesh_path": str((context.pipeline_root / "nurec" / "visual_mesh.glb").resolve()),
             "advanced_geometry_bundle_path": str((context.pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json").resolve()),
         },
+        "grounding_status": str(protected_regions_manifest.get("grounding_status") or "grounded"),
+        "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
         "runtime_layer_policy": {
             "protected_regions_manifest_uri": _gs_uri(context, "evaluation_prep/protected_regions_manifest.json"),
             "canonical_render_policy_uri": _gs_uri(context, "evaluation_prep/canonical_render_policy.json"),
@@ -990,6 +992,9 @@ def _build_site_world_spec(
             "protected_regions_manifest_path": str((eval_dir / "protected_regions_manifest.json").resolve()),
             "canonical_render_policy_path": str((eval_dir / "canonical_render_policy.json").resolve()),
             "presentation_variance_policy_path": str((eval_dir / "presentation_variance_policy.json").resolve()),
+            "grounding_status": str(protected_regions_manifest.get("grounding_status") or "grounded"),
+            "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
+            "region_count": int(protected_regions_manifest.get("region_count") or 0),
             "protected_region_locking": True,
             "runtime_layer_compositing": True,
             "debug_render_outputs": [
