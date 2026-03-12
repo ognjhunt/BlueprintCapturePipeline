@@ -165,10 +165,9 @@ def test_run_neoverse_local_requires_local_command(tmp_path: Path, monkeypatch: 
         ),
         encoding="utf-8",
     )
-    monkeypatch.delenv("NEOVERSE_CMD_TEMPLATE", raising=False)
-    monkeypatch.delenv("NEOVERSE_EXECUTABLE", raising=False)
+    monkeypatch.delenv("NEOVERSE_RUNTIME_SERVICE_URL", raising=False)
 
-    with pytest.raises(SystemExit, match="NeoVerse local runtime is not configured"):
+    with pytest.raises(SystemExit, match="NeoVerse is no longer launched through the Stage 1 artifact contract"):
         module.main(
             [
                 "--job-spec",

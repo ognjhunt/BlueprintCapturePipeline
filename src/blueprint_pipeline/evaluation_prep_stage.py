@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import os
 import re
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
 from .object_geometry_stage import run_object_geometry_stage
+from .site_world_runtime_service_client import SiteWorldRuntimeServiceClient, SiteWorldRuntimeServiceConfig
 
 
 def _read_optional_json_any(path: Path) -> Any:
@@ -609,6 +611,339 @@ def _gs_uri(context, relative_path: str) -> str:
     return f"gs://{context.bucket}/{context.capture_prefix}/pipeline/{relative_path}"
 
 
+def _real_path_from_eval_dir(eval_dir: Path, relative_path: str) -> Optional[Path]:
+    text = str(relative_path or "").strip()
+    if not text:
+        return None
+    candidate = (eval_dir / text).resolve()
+    return candidate if candidate.exists() else None
+
+
+def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]) -> Dict[str, str]:
+    raw_video_path = context.raw_root / "walkthrough.mov"
+    keyframe_candidates = [
+        context.capture_root / "frames" / "keyframe.jpg",
+        context.capture_root / "frames" / "keyframe.jpeg",
+        context.capture_root / "frames" / "keyframe.png",
+        context.raw_root / "keyframe.jpg",
+        context.raw_root / "keyframe.jpeg",
+        context.raw_root / "keyframe.png",
+    ]
+    keyframe_path = next((path for path in keyframe_candidates if path.is_file()), None)
+    local_paths: Dict[str, str] = {
+        "raw_video_path": str(raw_video_path) if raw_video_path.is_file() else "",
+        "keyframe_path": str(keyframe_path) if keyframe_path is not None else "",
+        "arkit_poses_path": str(context.raw_root / "arkit" / "poses.jsonl"),
+        "arkit_intrinsics_path": str(context.raw_root / "arkit" / "intrinsics.json"),
+        "arkit_depth_path": str(context.raw_root / "arkit" / "depth"),
+        "object_index_path": str(context.raw_root / "object_index.json"),
+    }
+    geometry = conditioning_bundle.get("explicit_conditioning")
+    geometry_map = dict(geometry) if isinstance(geometry, Mapping) else {}
+    if geometry_map.get("occupancy_uri"):
+        local_paths["occupancy_path"] = str(context.pipeline_root / "nurec" / "occupancy.bin")
+    return local_paths
+
+
+def _site_world_id(scene_id: str, capture_id: str) -> str:
+    return f"siteworld-{sha256(f'{scene_id}::{capture_id}'.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _site_world_runtime_eligibility(
+    *,
+    context,
+    normalized_handoff: Mapping[str, Any],
+    descriptor: Mapping[str, Any],
+    conditioning_bundle: Mapping[str, Any],
+) -> Dict[str, Any]:
+    blockers: List[str] = []
+    warnings: List[str] = []
+    qualification_state = str(normalized_handoff.get("qualification_state") or "").strip().lower()
+    if qualification_state != "ready":
+        blockers.append(f"qualification_state:{qualification_state or 'missing'}")
+    if not bool(normalized_handoff.get("downstream_evaluation_eligibility")):
+        blockers.append("downstream_evaluation_eligibility:false")
+
+    capture_source = str(descriptor.get("capture_source") or descriptor.get("capture_modality") or "").strip().lower()
+    processing_profile = str(descriptor.get("processing_profile") or "").strip().lower()
+    if capture_source in {"glasses", "glasses_video_only"} or processing_profile == "video_only":
+        blockers.append("video_only_capture:not_launchable")
+
+    scene_memory_capture = descriptor.get("scene_memory_capture")
+    scene_memory_map = dict(scene_memory_capture) if isinstance(scene_memory_capture, Mapping) else {}
+    sensor_availability = scene_memory_map.get("sensor_availability")
+    sensor_map = dict(sensor_availability) if isinstance(sensor_availability, Mapping) else {}
+    if sensor_map.get("arkit_poses") is not True:
+        blockers.append("missing_spatial_conditioning:arkit_poses")
+    if sensor_map.get("arkit_intrinsics") is not True:
+        blockers.append("missing_spatial_conditioning:arkit_intrinsics")
+
+    local_paths = _conditioning_local_paths(context=context, conditioning_bundle=conditioning_bundle)
+    required_local_paths = {
+        "raw_video_path": Path(local_paths["raw_video_path"]) if local_paths.get("raw_video_path") else None,
+        "arkit_poses_path": Path(local_paths["arkit_poses_path"]),
+        "arkit_intrinsics_path": Path(local_paths["arkit_intrinsics_path"]),
+    }
+    for label, path in required_local_paths.items():
+        if path is None or not path.exists():
+            blockers.append(f"missing_local_conditioning:{label}")
+
+    object_index_path = Path(local_paths["object_index_path"])
+    if not object_index_path.is_file():
+        warnings.append("object_index_path_missing")
+    return {
+        "launchable": len(blockers) == 0,
+        "blockers": blockers,
+        "warnings": warnings,
+        "local_paths": local_paths,
+    }
+
+
+def _build_site_world_spec(
+    *,
+    context,
+    eval_dir: Path,
+    normalized_handoff: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
+    object_geometry_manifest: Mapping[str, Any],
+    task_anchor_manifest: Mapping[str, Any],
+    task_run_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    descriptor = _read_optional_json_any(context.descriptor_path)
+    descriptor_map = dict(descriptor) if isinstance(descriptor, Mapping) else {}
+    conditioning_bundle_path = _real_path_from_eval_dir(
+        eval_dir, str(scene_memory_bundle_manifest.get("conditioning_bundle_path") or "")
+    )
+    conditioning_bundle = _read_optional_json_any(conditioning_bundle_path) if conditioning_bundle_path else {}
+    conditioning_map = dict(conditioning_bundle) if isinstance(conditioning_bundle, Mapping) else {}
+    runtime_eligibility = _site_world_runtime_eligibility(
+        context=context,
+        normalized_handoff=normalized_handoff,
+        descriptor=descriptor_map,
+        conditioning_bundle=conditioning_map,
+    )
+    normalized_tasks = []
+    for task in task_anchor_manifest.get("tasks", []) if isinstance(task_anchor_manifest.get("tasks"), list) else []:
+        if not isinstance(task, Mapping):
+            continue
+        task_id = str(task.get("task_id") or task.get("id") or "").strip()
+        task_text = str(task.get("task_text") or task.get("name") or task_id or "task").strip()
+        normalized_tasks.append(
+            {
+                "id": task_id or _stable_id("task", task_text, fallback="task_default"),
+                "task_id": task_id,
+                "task_text": task_text,
+                "task_category": str(task.get("task_category") or "generic"),
+                "target_object_ids": _string_list(task.get("target_object_ids")),
+                "articulation_required_ids": _string_list(task.get("articulation_required_ids")),
+            }
+        )
+    geometry_bundle = scene_memory_bundle_manifest.get("bundle_path")
+    object_geometry_path = eval_dir / "object_geometry_manifest.json"
+    spec = {
+        "schema_version": "v1",
+        "site_world_id": _site_world_id(context.scene_id, context.capture_id),
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "site_submission_id": str(normalized_handoff.get("site_submission_id") or context.capture_id),
+        "qualification_state": normalized_handoff.get("qualification_state"),
+        "downstream_evaluation_eligibility": bool(normalized_handoff.get("downstream_evaluation_eligibility")),
+        "capture_source": descriptor_map.get("capture_source") or descriptor_map.get("capture_modality"),
+        "processing_profile": descriptor_map.get("processing_profile"),
+        "conditioning": {
+            "scene_memory_manifest_uri": _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
+            "conditioning_bundle_uri": _gs_uri(context, "scene_memory/conditioning_bundle.json"),
+            "raw_video_uri": conditioning_map.get("raw_video_uri"),
+            "keyframe_uri": conditioning_map.get("keyframe_uri"),
+            "arkit_poses_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("poses_uri"),
+            "arkit_intrinsics_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("intrinsics_uri"),
+            "arkit_depth_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("depth_prefix_uri"),
+            "sensor_availability": ((descriptor_map.get("scene_memory_capture") or {}) if isinstance(descriptor_map.get("scene_memory_capture"), Mapping) else {}).get("sensor_availability", {}),
+            "local_paths": runtime_eligibility["local_paths"],
+        },
+        "geometry": {
+            "scene_memory_bundle_path": str(_real_path_from_eval_dir(eval_dir, str(geometry_bundle or "")) or ""),
+            "object_geometry_manifest_path": str(object_geometry_path.resolve()),
+            "object_index_path": runtime_eligibility["local_paths"].get("object_index_path"),
+            "occupancy_path": str((context.pipeline_root / "nurec" / "occupancy.bin").resolve()),
+            "collision_mesh_path": str((context.pipeline_root / "nurec" / "nvblox_mesh.ply").resolve()),
+            "visual_mesh_path": str((context.pipeline_root / "nurec" / "visual_mesh.glb").resolve()),
+            "advanced_geometry_bundle_path": str((context.pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json").resolve()),
+        },
+        "task_catalog": normalized_tasks,
+        "scenario_catalog": [
+            {
+                "id": _stable_id("scenario", text, fallback=f"scenario_{index}"),
+                "name": text,
+                "source": "site_world_runtime",
+            }
+            for index, text in enumerate(_string_list("default", "counterfactual_lighting", "counterfactual_clutter"))
+        ],
+        "start_state_catalog": list(
+            task_run_manifest.get("start_state_catalog")
+            or [
+                {
+                    "id": _stable_id("start", text, fallback=f"state_{index}"),
+                    "name": text,
+                    "task_id": None,
+                    "source": "task_run_manifest",
+                }
+                for index, text in enumerate(_string_list(task_run_manifest.get("start_states")) or ["default_start_state"])
+            ]
+        ),
+        "robot_profiles": _default_robot_profiles(),
+        "qualification_references": {
+            "qualified_opportunity_handoff_uri": _gs_uri(context, "evaluation_prep/qualified_opportunity_handoff.json"),
+            "qualification_record_uri": _gs_uri(context, "qualification_record.json"),
+            "task_scope_record_uri": _gs_uri(context, "task_scope_record.json"),
+        },
+        "runtime_eligibility": {
+            "launchable": runtime_eligibility["launchable"],
+            "blockers": runtime_eligibility["blockers"],
+            "warnings": runtime_eligibility["warnings"],
+        },
+        "generated_at": utc_now_iso(),
+    }
+    return spec
+
+
+def _build_site_world_runtime_records(
+    *,
+    context,
+    spec: Mapping[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    site_world_id = str(spec.get("site_world_id") or _site_world_id(context.scene_id, context.capture_id))
+    eligibility = dict(spec.get("runtime_eligibility") or {})
+    service_url = (os.getenv("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip().rstrip("/")
+    if not eligibility.get("launchable"):
+        registration = {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "build_id": None,
+            "scene_id": context.scene_id,
+            "capture_id": context.capture_id,
+            "status": "blocked",
+            "runtime_base_url": service_url or None,
+            "websocket_base_url": service_url.replace("http://", "ws://").replace("https://", "wss://") if service_url else None,
+            "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
+            "supported_cameras": [],
+            "scenario_catalog": list(spec.get("scenario_catalog") or []),
+            "start_state_catalog": list(spec.get("start_state_catalog") or []),
+            "runtime_capabilities": {
+                "supports_step_rollout": False,
+                "supports_batch_rollout": False,
+                "supports_camera_views": False,
+                "supports_stream": False,
+            },
+            "generated_at": utc_now_iso(),
+        }
+        health = {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "build_id": None,
+            "healthy": False,
+            "launchable": False,
+            "status": "blocked",
+            "blockers": list(eligibility.get("blockers") or []),
+            "warnings": list(eligibility.get("warnings") or []),
+            "last_heartbeat_at": utc_now_iso(),
+        }
+        return registration, health
+
+    if not service_url:
+        registration = {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "build_id": None,
+            "scene_id": context.scene_id,
+            "capture_id": context.capture_id,
+            "status": "blocked",
+            "runtime_base_url": None,
+            "websocket_base_url": None,
+            "vm_instance_id": None,
+            "supported_cameras": [],
+            "scenario_catalog": list(spec.get("scenario_catalog") or []),
+            "start_state_catalog": list(spec.get("start_state_catalog") or []),
+            "runtime_capabilities": {
+                "supports_step_rollout": False,
+                "supports_batch_rollout": False,
+                "supports_camera_views": False,
+                "supports_stream": False,
+            },
+            "generated_at": utc_now_iso(),
+        }
+        health = {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "build_id": None,
+            "healthy": False,
+            "launchable": False,
+            "status": "blocked",
+            "blockers": ["missing_runtime_service_url"],
+            "warnings": list(eligibility.get("warnings") or []),
+            "last_heartbeat_at": utc_now_iso(),
+        }
+        return registration, health
+
+    client = SiteWorldRuntimeServiceClient(SiteWorldRuntimeServiceConfig.from_env())
+    build_payload = dict(client.build_site_world(spec))
+    registration = {
+        key: build_payload.get(key)
+        for key in (
+            "schema_version",
+            "site_world_id",
+            "build_id",
+            "scene_id",
+            "capture_id",
+            "site_submission_id",
+            "status",
+            "runtime_base_url",
+            "websocket_base_url",
+            "vm_instance_id",
+            "cache_path",
+            "conditioning_source_path",
+            "seed_frame_path",
+            "supported_cameras",
+            "scenario_catalog",
+            "start_state_catalog",
+            "task_catalog",
+            "robot_profiles",
+            "runtime_capabilities",
+            "health_uri",
+            "generated_at",
+        )
+        if key in build_payload
+    }
+    health = dict(build_payload.get("health") or client.get_site_world_health(str(registration.get("site_world_id") or site_world_id)))
+    if registration.get("status") == "ready":
+        task_catalog = list(spec.get("task_catalog") or [])
+        scenario_catalog = list(spec.get("scenario_catalog") or [])
+        start_state_catalog = list(spec.get("start_state_catalog") or [])
+        robot_profiles = list(spec.get("robot_profiles") or [])
+        if task_catalog and scenario_catalog and start_state_catalog and robot_profiles:
+            try:
+                session = client.create_session(
+                    str(registration["site_world_id"]),
+                    robot_profile_id=str((robot_profiles[0] or {}).get("id") or "mobile_manipulator_rgb_v1"),
+                    task_id=str((task_catalog[0] or {}).get("id") or (task_catalog[0] or {}).get("task_id") or ""),
+                    scenario_id=str((scenario_catalog[0] or {}).get("id") or ""),
+                    start_state_id=str((start_state_catalog[0] or {}).get("id") or ""),
+                    notes="pipeline_runtime_smoke",
+                )
+                client.reset_session(str(session.get("session_id") or ""))
+                health = dict(client.get_site_world_health(str(registration["site_world_id"])))
+            except Exception as exc:
+                health = {
+                    **health,
+                    "healthy": False,
+                    "launchable": False,
+                    "status": "degraded",
+                    "blockers": list(health.get("blockers") or []) + [f"runtime_smoke_failed:{exc}"],
+                    "last_heartbeat_at": utc_now_iso(),
+                }
+    return registration, health
+
+
 def _build_hosted_session_runtime_manifest(
     *,
     context,
@@ -1122,23 +1457,26 @@ def _build_launchable_export_bundle(
     *,
     scene_memory_bundle_manifest: Mapping[str, Any],
     geometry_bundle_manifest: Mapping[str, Any],
-    hosted_session_runtime_manifest: Mapping[str, Any],
+    site_world_registration: Mapping[str, Any],
+    site_world_health: Mapping[str, Any],
     simready_prep_manifest_path: Optional[Path],
 ) -> Dict[str, Any]:
-    default_backend = str(hosted_session_runtime_manifest.get("default_backend") or "").strip()
-    public_runtime_label = str(
-        hosted_session_runtime_manifest.get("customer_facing_runtime") or "Hosted site runtime"
-    ).strip()
+    runtime_capabilities = (
+        site_world_registration.get("runtime_capabilities")
+        if isinstance(site_world_registration.get("runtime_capabilities"), Mapping)
+        else {}
+    )
     bundles = {
         "world_model_runtime": {
-            "launchable": bool(hosted_session_runtime_manifest.get("launchable")),
+            "launchable": bool(site_world_health.get("launchable")),
             "required_artifacts": [
                 "scene_memory_manifest",
                 "conditioning_bundle",
-                "task_anchor_manifest",
-                "task_run_manifest",
+                "site_world_spec",
+                "site_world_registration",
+                "site_world_health",
             ],
-            "backend": default_backend or None,
+            "backend": "neoverse",
         },
         "isaac_sim": {
             "launchable": simready_prep_manifest_path is not None,
@@ -1155,9 +1493,15 @@ def _build_launchable_export_bundle(
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "status": "ready" if any(item["launchable"] for item in bundles.values()) else "partial",
-        "public_runtime_label": public_runtime_label,
-        "default_backend": default_backend or None,
-        "scenario_variants": hosted_session_runtime_manifest.get("scenario_variants", []),
+        "public_runtime_label": "NeoVerse site world runtime",
+        "default_backend": "neoverse",
+        "scenario_variants": [
+            str(item.get("name") or "")
+            for item in site_world_registration.get("scenario_catalog", [])
+            if isinstance(item, Mapping)
+        ],
+        "runtime_capabilities": dict(runtime_capabilities) if isinstance(runtime_capabilities, Mapping) else {},
+        "site_world_status": site_world_health.get("status"),
         "bundles": bundles,
         "scene_memory_bundle_status": scene_memory_bundle_manifest.get("status"),
         "geometry_bundle_status": geometry_bundle_manifest.get("status"),
@@ -1235,15 +1579,25 @@ def run_evaluation_prep_stage(
     task_anchor_manifest_path = eval_dir / "task_anchor_manifest.json"
     _copy_json(task_anchor_manifest_path, task_anchor_manifest)
 
-    hosted_session_runtime_manifest = _build_hosted_session_runtime_manifest(
+    site_world_spec = _build_site_world_spec(
         context=context,
+        eval_dir=eval_dir,
         normalized_handoff=normalized_handoff,
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
         task_anchor_manifest=task_anchor_manifest,
         task_run_manifest=task_run_manifest,
     )
-    hosted_session_runtime_manifest_path = eval_dir / "hosted_session_runtime_manifest.json"
-    _copy_json(hosted_session_runtime_manifest_path, hosted_session_runtime_manifest)
+    site_world_spec_path = eval_dir / "site_world_spec.json"
+    _copy_json(site_world_spec_path, site_world_spec)
+    site_world_registration, site_world_health = _build_site_world_runtime_records(
+        context=context,
+        spec=site_world_spec,
+    )
+    site_world_registration_path = eval_dir / "site_world_registration.json"
+    _copy_json(site_world_registration_path, site_world_registration)
+    site_world_health_path = eval_dir / "site_world_health.json"
+    _copy_json(site_world_health_path, site_world_health)
 
     site_normalization_package = _build_site_normalization_package(
         context=context,
@@ -1299,7 +1653,8 @@ def run_evaluation_prep_stage(
     launchable_export_bundle = _build_launchable_export_bundle(
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
         geometry_bundle_manifest=geometry_bundle_manifest,
-        hosted_session_runtime_manifest=hosted_session_runtime_manifest,
+        site_world_registration=site_world_registration,
+        site_world_health=site_world_health,
         simready_prep_manifest_path=simready_prep_manifest_path,
     )
     launchable_export_bundle_path = eval_dir / "launchable_export_bundle.json"
@@ -1334,6 +1689,7 @@ def run_evaluation_prep_stage(
         "compatibility_matrix_status": compatibility_matrix.get("status"),
         "recapture_diff_status": recapture_diff.get("status"),
         "export_bundle_status": launchable_export_bundle.get("status"),
+        "site_world_status": site_world_health.get("status"),
     }
     summary_path = eval_dir / "evaluation_prep_summary.json"
     _copy_json(summary_path, summary)
@@ -1352,6 +1708,10 @@ def run_evaluation_prep_stage(
         and geometry_bundle_manifest.get("status") != "complete"
     ):
         degradation_reasons.append(f"geometry_bundle:{geometry_bundle_manifest.get('status')}")
+    if not bool(site_world_health.get("launchable")):
+        degradation_reasons.extend(
+            [str(item) for item in site_world_health.get("blockers", []) if str(item).strip()]
+        )
     if object_count == 0:
         degradation_reasons.append("object_geometry:missing")
     status = "ready_for_validation"
@@ -1383,9 +1743,9 @@ def run_evaluation_prep_stage(
             "geometry_bundle_manifest": _relative_to(eval_dir, geometry_bundle_manifest_path),
             "task_run_manifest": _relative_to(eval_dir, task_run_manifest_path),
             "task_anchor_manifest": _relative_to(eval_dir, task_anchor_manifest_path),
-            "hosted_session_runtime_manifest": _relative_to(
-                eval_dir, hosted_session_runtime_manifest_path
-            ),
+            "site_world_spec": _relative_to(eval_dir, site_world_spec_path),
+            "site_world_registration": _relative_to(eval_dir, site_world_registration_path),
+            "site_world_health": _relative_to(eval_dir, site_world_health_path),
             "site_normalization_package": _relative_to(eval_dir, site_normalization_package_path),
             "benchmark_suite_manifest": _relative_to(eval_dir, benchmark_suite_manifest_path),
             "compatibility_matrix": _relative_to(eval_dir, compatibility_matrix_path),

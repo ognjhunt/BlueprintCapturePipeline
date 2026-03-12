@@ -511,21 +511,13 @@ def _run_neoverse(
     capture_id: str,
     log_path: Path,
 ) -> tuple[int, str, str]:
-    if not NEOVERSE_RUNNER.is_file():
-        return 1, "", f"missing run_neoverse_local.py at {NEOVERSE_RUNNER}"
-    cmd = [
-        sys.executable,
-        str(NEOVERSE_RUNNER),
-        "--job-spec",
-        str(job_spec_path),
-        "--output-dir",
-        str(output_dir),
-        "--scene-id",
-        scene_id,
-        "--capture-id",
-        capture_id,
-    ]
-    return _run_command(cmd, log_path=log_path, env=os.environ)
+    del job_spec_path, output_dir, scene_id, capture_id, log_path
+    return (
+        1,
+        "",
+        "neoverse backend has been removed from the Stage 1 artifact router; "
+        "build a runtime-first site world via evaluation_prep/site_world_spec.json and the NeoVerse runtime service",
+    )
 
 
 def _run_gen3c(

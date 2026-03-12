@@ -15,11 +15,29 @@ def _build_capture(tmp_path: Path) -> Path:
     capture_root = tmp_path / "bucket" / "scenes" / "scene_eval" / "captures" / "cap_eval"
     pipeline_root = capture_root / "pipeline"
     raw_root = capture_root / "raw"
+    (raw_root / "walkthrough.mov").parent.mkdir(parents=True, exist_ok=True)
+    (raw_root / "walkthrough.mov").write_bytes(b"mov")
+    (raw_root / "arkit").mkdir(parents=True, exist_ok=True)
+    (raw_root / "arkit" / "poses.jsonl").write_text("{}\n", encoding="utf-8")
+    (raw_root / "arkit" / "intrinsics.json").write_text("{}", encoding="utf-8")
     _write_json(
         capture_root / "capture_descriptor.json",
         {
             "scene_id": "scene_eval",
             "capture_id": "cap_eval",
+            "capture_source": "iphone",
+            "processing_profile": "pose_assisted",
+            "scene_memory_capture": {
+                "world_model_candidate": True,
+                "sensor_availability": {
+                    "arkit_poses": True,
+                    "arkit_intrinsics": True,
+                    "arkit_depth": False,
+                    "arkit_confidence": False,
+                    "arkit_meshes": False,
+                    "motion": True,
+                },
+            },
             "metadata": {"task_statement": "Open and close the fridge door"},
         },
     )
@@ -96,7 +114,17 @@ def _build_capture(tmp_path: Path) -> Path:
     adapter_dir.mkdir(parents=True, exist_ok=True)
     _write_json(scene_memory_dir / "scene_memory_manifest.json", {"schema_version": "v1"})
     _write_json(scene_memory_dir / "scene_memory_readiness.json", {"schema_version": "v1", "status": "ready"})
-    _write_json(scene_memory_dir / "conditioning_bundle.json", {"schema_version": "v1"})
+    _write_json(
+        scene_memory_dir / "conditioning_bundle.json",
+        {
+            "schema_version": "v1",
+            "raw_video_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/raw/walkthrough.mov",
+            "arkit": {
+                "poses_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/raw/arkit/poses.jsonl",
+                "intrinsics_uri": "gs://bucket/scenes/scene_eval/captures/cap_eval/raw/arkit/intrinsics.json",
+            },
+        },
+    )
     _write_json(
         adapter_dir / "gen3c.json",
         {
@@ -134,8 +162,73 @@ def _build_capture(tmp_path: Path) -> Path:
     return capture_root
 
 
-def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path) -> None:
+def _configure_runtime_client(monkeypatch) -> None:
+    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.local")
+
+    class _FakeClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def build_site_world(self, spec):
+            return {
+                "schema_version": "v1",
+                "site_world_id": spec["site_world_id"],
+                "build_id": "build-1",
+                "scene_id": spec["scene_id"],
+                "capture_id": spec["capture_id"],
+                "status": "ready",
+                "runtime_base_url": "http://runtime.local",
+                "websocket_base_url": "ws://runtime.local",
+                "vm_instance_id": "vast-123",
+                "supported_cameras": ["head_rgb", "wrist_rgb"],
+                "scenario_catalog": spec["scenario_catalog"],
+                "start_state_catalog": spec["start_state_catalog"],
+                "task_catalog": spec["task_catalog"],
+                "robot_profiles": spec["robot_profiles"],
+                "runtime_capabilities": {
+                    "supports_step_rollout": True,
+                    "supports_batch_rollout": True,
+                    "supports_camera_views": True,
+                    "supports_stream": True,
+                },
+                "health": {
+                    "schema_version": "v1",
+                    "site_world_id": spec["site_world_id"],
+                    "build_id": "build-1",
+                    "healthy": True,
+                    "launchable": True,
+                    "status": "healthy",
+                    "blockers": [],
+                    "warnings": [],
+                    "last_heartbeat_at": "2026-03-12T00:00:00Z",
+                },
+            }
+
+        def get_site_world_health(self, _site_world_id):
+            return {
+                "schema_version": "v1",
+                "site_world_id": "siteworld",
+                "build_id": "build-1",
+                "healthy": True,
+                "launchable": True,
+                "status": "healthy",
+                "blockers": [],
+                "warnings": [],
+                "last_heartbeat_at": "2026-03-12T00:00:00Z",
+            }
+
+        def create_session(self, *_args, **_kwargs):
+            return {"session_id": "runtime-session-1", "build_id": "build-1"}
+
+        def reset_session(self, *_args, **_kwargs):
+            return {"episode": {"episodeId": "runtime-session-1"}}
+
+    monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _FakeClient)
+
+
+def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path, monkeypatch) -> None:
     capture_root = _build_capture(tmp_path)
+    _configure_runtime_client(monkeypatch)
 
     result = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
@@ -143,42 +236,35 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     rich_handoff = json.loads((capture_root / "pipeline" / "evaluation_prep" / "qualified_opportunity_handoff.json").read_text(encoding="utf-8"))
     anchors = json.loads((capture_root / "pipeline" / "evaluation_prep" / "task_anchor_manifest.json").read_text(encoding="utf-8"))
-    hosted_runtime = json.loads((capture_root / "pipeline" / "evaluation_prep" / "hosted_session_runtime_manifest.json").read_text(encoding="utf-8"))
+    site_world_spec = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_spec.json").read_text(encoding="utf-8"))
+    site_world_registration = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_registration.json").read_text(encoding="utf-8"))
+    site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
     summary = json.loads((capture_root / "pipeline" / "evaluation_prep" / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
 
     assert manifest["status"] == "ready_for_validation"
     assert manifest["artifacts"]["qualified_opportunity_handoff"] == "qualified_opportunity_handoff.json"
     assert manifest["artifacts"]["scene_memory_bundle_manifest"] == "scene_memory_bundle_manifest.json"
-    assert manifest["artifacts"]["hosted_session_runtime_manifest"] == "hosted_session_runtime_manifest.json"
+    assert manifest["artifacts"]["site_world_spec"] == "site_world_spec.json"
+    assert manifest["artifacts"]["site_world_registration"] == "site_world_registration.json"
+    assert manifest["artifacts"]["site_world_health"] == "site_world_health.json"
     assert rich_handoff["qualification_state"] == "ready"
     assert rich_handoff["downstream_evaluation_eligibility"] is True
     assert rich_handoff["scene_memory_package"]["scene_memory_manifest_path"] == "../scene_memory/scene_memory_manifest.json"
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
-    assert hosted_runtime["launchable"] is True
-    assert hosted_runtime["default_backend"] == "neoverse"
-    assert hosted_runtime["launchable_backends"] == ["neoverse", "gen3c"]
-    assert hosted_runtime["task_catalog"][0]["id"] == "task-1"
-    assert hosted_runtime["start_state_catalog"][0]["id"].startswith("start_")
-    assert hosted_runtime["scenario_catalog"][0]["id"] == "scenario_preview_simulation_default"
-    assert hosted_runtime["default_robot_profile_id"] == "mobile_manipulator_rgb_v1"
-    assert hosted_runtime["robot_profiles"][0]["allowed_policy_adapters"] == ["openvla_oft", "pi05", "dreamzero"]
-    assert hosted_runtime["export_defaults"] == [
-        "observation_frames",
-        "action_trace",
-        "reward",
-        "summary_metrics",
-        "rollout_video",
-        "rlds_dataset",
-    ]
-    assert hosted_runtime["runtime_capabilities"]["supports_camera_views"] is True
-    assert hosted_runtime["backend_launch_requirements"]["cosmos_transfer"]["status"] == "planned_phase3"
-    assert "task-1" in hosted_runtime["task_ids"]
+    assert site_world_spec["runtime_eligibility"]["launchable"] is True
+    assert site_world_spec["task_catalog"][0]["task_id"] == "task-1"
+    assert site_world_registration["status"] == "ready"
+    assert site_world_registration["runtime_base_url"] == "http://runtime.local"
+    assert site_world_registration["runtime_capabilities"]["supports_camera_views"] is True
+    assert site_world_health["launchable"] is True
     assert summary["task_count"] == 1
     assert summary["object_count"] == 1
+    assert summary["site_world_status"] == "healthy"
 
 
-def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_path: Path) -> None:
+def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_path: Path, monkeypatch) -> None:
     capture_root = _build_capture(tmp_path)
+    _configure_runtime_client(monkeypatch)
     advanced_dir = capture_root / "pipeline" / "advanced_geometry"
     for path in advanced_dir.iterdir():
         path.unlink()
@@ -188,12 +274,12 @@ def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_
 
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     review_queue = json.loads((capture_root / "pipeline" / "evaluation_prep" / "review_queue.json").read_text(encoding="utf-8"))
-    hosted_runtime = json.loads((capture_root / "pipeline" / "evaluation_prep" / "hosted_session_runtime_manifest.json").read_text(encoding="utf-8"))
+    site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
 
     assert manifest["status"] == "ready_for_validation"
     assert "geometry_bundle:missing" not in manifest["degradation_reasons"]
     assert any(item["kind"] == "incomplete_geometry_bundle" and item["severity"] == "low" for item in review_queue["items"])
-    assert hosted_runtime["launchable"] is True
+    assert site_world_health["launchable"] is True
 
 
 def test_evaluation_prep_stage_degrades_when_object_index_is_missing(tmp_path: Path) -> None:
@@ -205,11 +291,12 @@ def test_evaluation_prep_stage_degrades_when_object_index_is_missing(tmp_path: P
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     object_geometry = json.loads((capture_root / "pipeline" / "evaluation_prep" / "object_geometry_manifest.json").read_text(encoding="utf-8"))
     anchors = json.loads((capture_root / "pipeline" / "evaluation_prep" / "task_anchor_manifest.json").read_text(encoding="utf-8"))
-    hosted_runtime = json.loads((capture_root / "pipeline" / "evaluation_prep" / "hosted_session_runtime_manifest.json").read_text(encoding="utf-8"))
+    site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
 
     assert manifest["status"] == "degraded_but_usable"
     assert "object_geometry:missing" in manifest["degradation_reasons"]
     assert object_geometry["status"] == "missing_object_index"
     assert object_geometry["objects"] == []
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
-    assert hosted_runtime["launchable"] is True
+    assert site_world_health["launchable"] is False
+    assert "object_index_path_missing" in site_world_health["warnings"]

@@ -48,9 +48,8 @@ def _make_blueprintpipeline_stub(root: Path, *, include_downstream: bool = False
         )
 
 
-def _set_default_neoverse_local_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NEOVERSE_EXECUTABLE", "/opt/neoverse/bin/neoverse_local")
-    monkeypatch.delenv("NEOVERSE_CMD_TEMPLATE", raising=False)
+def _set_default_neoverse_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.local")
 
 
 def test_runtime_preflight_passes_with_configured_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,7 +60,7 @@ def test_runtime_preflight_passes_with_configured_env(tmp_path: Path, monkeypatc
 
     monkeypatch.setenv("TEXT_SAM3D_API_HOST", "https://sam3d.example.internal")
     monkeypatch.setenv("TEXT_SAM3D_API_KEY", "sam3d-key")
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -88,7 +87,7 @@ def test_runtime_preflight_fails_when_provider_missing(tmp_path: Path, monkeypat
 
     monkeypatch.delenv("TEXT_SAM3D_API_HOST", raising=False)
     monkeypatch.delenv("TEXT_SAM3D_API_KEY", raising=False)
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -120,7 +119,7 @@ def test_runtime_preflight_accepts_ttt_lrm_with_command_template(
     gcs_root.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("STAGE_D_TTTLRM_IMAGE_TO_3D_COMMAND", "ttt_lrm_cli --input {REFERENCE_IMAGE} --out {OUTPUT_GLB}")
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -155,7 +154,7 @@ def test_runtime_preflight_fails_when_ttt_lrm_unconfigured(
     monkeypatch.delenv("TEXT_TTTLRM_API_KEY", raising=False)
     monkeypatch.delenv("TEXT_TTT_LRM_API_HOST", raising=False)
     monkeypatch.delenv("TEXT_TTT_LRM_API_KEY", raising=False)
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -174,15 +173,14 @@ def test_runtime_preflight_fails_when_ttt_lrm_unconfigured(
     assert "provider_ttt_lrm" in failed_names
 
 
-def test_runtime_preflight_requires_neoverse_local_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_preflight_requires_neoverse_runtime_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bp_root = tmp_path / "BlueprintPipeline"
     _make_blueprintpipeline_stub(bp_root)
     gcs_root = tmp_path / "gcs"
     gcs_root.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("RECONSTRUCTION_BACKEND", "neoverse")
-    monkeypatch.delenv("NEOVERSE_CMD_TEMPLATE", raising=False)
-    monkeypatch.delenv("NEOVERSE_EXECUTABLE", raising=False)
+    monkeypatch.delenv("NEOVERSE_RUNTIME_SERVICE_URL", raising=False)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -198,7 +196,7 @@ def test_runtime_preflight_requires_neoverse_local_config(tmp_path: Path, monkey
         advanced_quality_gates_enabled=False,
     )
     failed_names = {item.name for item in checks if not item.passed}
-    assert "reconstruction_neoverse_local" in failed_names
+    assert "reconstruction_neoverse_runtime_service" in failed_names
 
 
 def test_runtime_preflight_requires_gen3c_service_and_conditioning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,7 +277,7 @@ def test_runtime_preflight_standalone_mode_skips_blueprintpipeline_requirements(
     gcs_root.mkdir(parents=True, exist_ok=True)
     missing_bp_root = tmp_path / "does_not_exist"
 
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -311,7 +309,7 @@ def test_runtime_preflight_flags_unsafe_heuristic_explicit_override(
 
     monkeypatch.setenv("TEXT_SAM3D_API_HOST", "https://sam3d.example.internal")
     monkeypatch.setenv("TEXT_SAM3D_API_KEY", "sam3d-key")
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -338,7 +336,7 @@ def test_runtime_preflight_rejects_standalone_in_full_required_mode(
     gcs_root.mkdir(parents=True, exist_ok=True)
     missing_bp_root = tmp_path / "does_not_exist"
 
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -368,7 +366,7 @@ def test_runtime_preflight_full_required_requires_downstream_scripts(
     gcs_root = tmp_path / "gcs"
     gcs_root.mkdir(parents=True, exist_ok=True)
 
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -400,7 +398,7 @@ def test_runtime_preflight_full_required_requires_gemini_key(
     gcs_root = tmp_path / "gcs"
     gcs_root.mkdir(parents=True, exist_ok=True)
 
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")
@@ -431,7 +429,7 @@ def test_runtime_preflight_best_effort_does_not_require_downstream_scripts_or_ge
     gcs_root = tmp_path / "gcs"
     gcs_root.mkdir(parents=True, exist_ok=True)
 
-    _set_default_neoverse_local_env(monkeypatch)
+    _set_default_neoverse_runtime_env(monkeypatch)
     monkeypatch.setenv("PARTICULATE_MODE", "skip")
     monkeypatch.setenv("ARTICULATION_BACKEND", "auto")
     monkeypatch.setenv("NUREC_SKIP_PIPELINE_COMMAND", "true")

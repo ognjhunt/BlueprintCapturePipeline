@@ -120,4 +120,6 @@ def test_run_local_bundle_workflow_writes_qualification_and_evaluation_prep_with
     assert object_geometry["status"] == "missing_object_index"
     assert object_geometry["objects"] == []
     assert eval_manifest["artifacts"]["task_anchor_manifest"] == "task_anchor_manifest.json"
-    assert eval_manifest["artifacts"]["hosted_session_runtime_manifest"] == "hosted_session_runtime_manifest.json"
+    assert eval_manifest["artifacts"]["site_world_spec"] == "site_world_spec.json"
+    assert eval_manifest["artifacts"]["site_world_registration"] == "site_world_registration.json"
+    assert eval_manifest["artifacts"]["site_world_health"] == "site_world_health.json"
