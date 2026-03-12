@@ -1,26 +1,26 @@
 # BlueprintCapturePipeline
 
-Qualification-first orchestration for converting BlueprintCapture raw uploads or descriptors into authoritative qualification artifacts. Metric-ready captures now flow by default into canonical scene-memory and preview-prep artifacts for downstream adapters, while video-only captures remain supported but are prevented from silently becoming decision-grade.
+Site-world-first orchestration for converting BlueprintCapture raw uploads or descriptors into canonical scene-memory, evaluation-prep, and runtime-ready site-world artifacts. Legacy qualification and readiness outputs still exist for compatibility, but they are no longer the product center for this repo.
 
 ## Scope
 
-This repo is intentionally thin. It now orchestrates three lanes:
+This repo is intentionally thin. It orchestrates three lanes:
 
-- Default qualification lane:
-  `capture_descriptor.json` -> QA/completeness -> scoping -> risk extraction -> qualification artifacts
-- Default modern downstream lane:
-  qualification artifacts + capture evidence -> scene-memory manifest -> backend adapter manifests -> preview simulation prep
+- Default site-world lane:
+  `capture_descriptor.json` -> QA/completeness -> object index + scoping -> scene-memory manifest -> adapter manifests -> evaluation prep -> site-world runtime handoff
+- Legacy compatibility lane:
+  `capture_descriptor.json` -> QA/completeness -> qualification/readiness artifacts for consumers that still depend on them
 - Explicit advanced geometry lane:
   `capture_descriptor.json` -> NuRec reconstruction -> swap candidate policy -> SAM3D-first asset materialization -> interactive articulation validation/fallback -> simready + USD assembly
 
-Qualification artifacts remain authoritative. Scene memory is the canonical downstream substrate. World-model outputs, preview simulation prep, and any advanced geometry exports are derived artifacts only.
+Scene memory, evaluation prep, and site-world runtime records are the canonical outputs. Legacy qualification/readiness artifacts remain emitted only so older consumers can still route, review, and reconcile captures during the transition.
 
-This repo emits qualification, scene-memory, and preview-prep handoff artifacts. It does not own the high-volume synthetic-data factory role; bounded preview generation and downstream adapters belong here, while large-scale synthetic generation belongs in downstream systems.
+This repo emits scene-memory, evaluation-prep, and site-world runtime handoff artifacts. It does not own large-scale synthetic-data generation; bounded preview generation and backend adapter packaging belong here, while high-volume synthetic factories belong in downstream systems.
 
 Raw-upload materialization path:
 
-- `raw/capture_upload_complete.json` -> descriptor materialization -> modality-aware `qa_report.json` -> qualification orchestration
-- when `raw/object_index.json` is missing, qualification now attempts to build a canonical object index before scoring completeness
+- `raw/capture_upload_complete.json` -> descriptor materialization -> modality-aware `qa_report.json` -> site-world orchestration
+- when `raw/object_index.json` is missing, the pipeline now attempts to build a canonical object index before downstream scene-memory and runtime packaging
 
 Local raw-capture contract for `blueprint-run-e2e`:
 
@@ -38,7 +38,7 @@ Local raw-capture contract for `blueprint-run-e2e`:
   - splat / 3DGS artifacts
   - precomputed `raw/object_index.json`
 
-Splat / 3DGS artifacts are supplemental only. They can be attached to agent review, scene-memory conditioning, and advanced-geometry compatibility packaging, but they do not bypass intake, QA, or readiness gates.
+Splat / 3DGS artifacts are supplemental only. They can be attached to scene-memory conditioning and advanced-geometry compatibility packaging, but they do not bypass intake, QA, or grounding checks.
 
 It reuses existing jobs and helper logic from:
 
@@ -66,7 +66,7 @@ PYTHONPATH=src python3 -m blueprint_pipeline.preflight_capture \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
 ```
 
-Local agent review over qualification artifacts:
+Local agent review over legacy compatibility artifacts:
 
 ```bash
 PYTHONPATH=src python3 -m blueprint_pipeline.agent_review_cli \
@@ -74,7 +74,7 @@ PYTHONPATH=src python3 -m blueprint_pipeline.agent_review_cli \
   --provider claude
 ```
 
-One-command local report flow:
+One-command local report and site-world flow:
 
 ```bash
 PYTHONPATH=src python3 -m blueprint_pipeline.run_e2e \
@@ -100,7 +100,7 @@ This stages `raw/` under:
 /mnt/blueprint-storage/local-blueprint/scenes/<scene_id>/captures/<capture_id>/raw
 ```
 
-and then runs preflight, descriptor materialization, qualification, scene-memory generation, and evaluation-prep. This is the correct path for VM-backed filesystem execution when you have a raw download folder that is not already under the repo's required `scenes/<scene>/captures/<capture>` layout.
+and then runs preflight, descriptor materialization, scene-memory generation, legacy compatibility outputs, and evaluation-prep. This is the correct path for VM-backed filesystem execution when you have a raw download folder that is not already under the repo's required `scenes/<scene>/captures/<capture>` layout.
 
 Use `scripts/run_full_pipeline.sh` when you intend to run the Stage 1 reconstruction path on the VM. NeoVerse is now a local GPU backend and expects a local launcher:
 
@@ -155,13 +155,13 @@ sudo bash scripts/install_ml_stack.sh
 
 That installs the local SAM3 runtime and `ultralytics`, which the default YOLO-World / task-conditioned wrappers use.
 
-Optional LLM enrichment can be layered on top of the deterministic object-index and qualification flow for:
+Optional LLM enrichment can be layered on top of the deterministic object-index and site-world flow for:
 
 - prompt-bank expansion
 - task-relevance ranking
 - vague workflow → likely target resolution
 - articulation prior refinement
-- qualification weakness summaries
+- compatibility weakness summaries
 - recapture instructions
 
 Configuration:
@@ -179,7 +179,7 @@ Current behavior:
 
 Qualification may also emit:
 
-- `pipeline/qualification_weakness_summary.json`
+- `pipeline/qualification_weakness_summary.json` (legacy compatibility)
 - `pipeline/recapture_instructions.json`
 
 Advanced geometry orchestrator:
@@ -222,25 +222,7 @@ Written under:
 
 `scenes/<scene_id>/captures/<capture_id>/pipeline/`
 
-- Default qualification artifacts:
-  - `site_intake.json`
-  - `capture_package_manifest.json`
-  - `capture_qa_scorecard.json`
-  - `task_scope_record.json`
-  - `qualification_record.json`
-  - `qualification_brief.json`
-  - `opportunity_handoff.json`
-  - `task_targets.json`
-  - `runtime_preflight_report.json`
-  - `qualification_quality_report.json`
-  - `human_actions_required.json`
-  - `swap_quality_report.json` (compatibility alias)
-  - `pipeline_summary.json`
-  - `agent_review_bundle.json` (when `blueprint-agent-review` or `blueprint-run-e2e` is used)
-  - `agent_readiness_memo.md` (when `blueprint-agent-review` or `blueprint-run-e2e` is used)
-  - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
-  - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
-- Scene-memory and preview-prep artifacts:
+- Default site-world artifacts:
   - `scene_memory/scene_memory_manifest.json`
   - `scene_memory/scene_memory_readiness.json`
   - `scene_memory/conditioning_bundle.json`
@@ -258,6 +240,24 @@ Written under:
   - `evaluation_prep/recapture_diff.json`
   - `evaluation_prep/launchable_export_bundle.json`
   - `evaluation_prep/evaluation_prep_manifest.json`
+- Legacy compatibility artifacts:
+  - `site_intake.json`
+  - `capture_package_manifest.json`
+  - `capture_qa_scorecard.json`
+  - `task_scope_record.json`
+  - `qualification_record.json`
+  - `qualification_brief.json`
+  - `opportunity_handoff.json`
+  - `task_targets.json`
+  - `runtime_preflight_report.json`
+  - `qualification_quality_report.json`
+  - `human_actions_required.json`
+  - `swap_quality_report.json` (compatibility alias)
+  - `pipeline_summary.json`
+  - `agent_review_bundle.json` (when `blueprint-agent-review` or `blueprint-run-e2e` is used)
+  - `agent_readiness_memo.md` (when `blueprint-agent-review` or `blueprint-run-e2e` is used)
+  - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
+  - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
 - Advanced geometry artifacts when explicitly requested:
   These are compatibility outputs for downstream geometry-oriented flows. They are not the default end product.
   - `nurec_job_spec.json`
@@ -296,7 +296,7 @@ NuRec artifact roles under `.../pipeline/nurec/`:
 
 ## Environment
 
-- `PIPELINE_LANE` (optional; `qualification`, `scene_memory`, `advanced_geometry`, or `all`; default resolves from descriptor `requested_lanes` and falls back to `qualification`)
+- `PIPELINE_LANE` (optional; `qualification`, `scene_memory`, `advanced_geometry`, or `all`; default resolves from descriptor `requested_lanes` and currently falls back to `qualification` for backward compatibility)
 - `GCS_ROOT` (default: `/mnt/gcs`)
 - `BLUEPRINTPIPELINE_ROOT` (default: `/Users/nijelhunt_1/workspace/BlueprintPipeline`)
 - `BLUEPRINTPIPELINE_COMMIT_HASH` (optional pin)

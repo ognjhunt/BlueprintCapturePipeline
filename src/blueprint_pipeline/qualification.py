@@ -1,4 +1,4 @@
-"""Qualification-first orchestration helpers and artifact builders."""
+"""Legacy compatibility artifact builders layered on the site-world pipeline."""
 
 from __future__ import annotations
 

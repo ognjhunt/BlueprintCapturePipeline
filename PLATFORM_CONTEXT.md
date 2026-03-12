@@ -6,55 +6,57 @@
 ### System Framing
 
 - `BlueprintCapture` captures raw evidence packages.
-- `BlueprintCapturePipeline` converts evidence plus intake into qualification artifacts, readiness decisions, and handoffs.
-- `Blueprint-WebApp` is the operating and commercial system around qualification records and derived downstream lanes.
-- `BlueprintValidation` performs post-qualification scene derivation, robot evaluation, adaptation, and tuning work.
+- `BlueprintCapturePipeline` converts evidence plus intake into canonical scene memory, evaluation-prep bundles, and runtime-ready site-world records.
+- `Blueprint-WebApp` is the operating and commercial system around site-world records, runtime status, and derived workflow packages.
+- `BlueprintValidation` consumes site-world packages for robot evaluation, adaptation, and tuning work.
 
-This platform is qualification-first.
+This platform is site-world-first.
 
 ### Truth Hierarchy
 
-- qualification records, readiness decisions, and supporting evidence links are authoritative
-- capture-backed scene memory is the preferred downstream substrate when deeper technical work is justified
-- preview simulations, world-model outputs, and world-model-trained policies are derived downstream assets; they do not rewrite qualification truth
+- capture-backed scene memory, evaluation-prep manifests, and site-world runtime eligibility are authoritative
+- legacy qualification/readiness artifacts are compatibility overlays and must not override site-world grounding
+- preview simulations, advanced-geometry bundles, and trained policies are derived downstream assets; they do not rewrite capture-backed site-world truth
 
 ### Product Stack
 
-1. primary product: site qualification / readiness pack
-2. secondary product: qualified opportunity exchange for robot teams
-3. third product: scene memory / preview simulation / robot eval package
-4. fourth product: world-model-based adaptation, managed tuning, training data, licensing
+1. primary product: site-specific world model and runtime-ready package
+2. secondary product: scene memory / preview simulation / robot eval package
+3. third product: world-model-based adaptation, managed tuning, training data, licensing
+4. fourth product: legacy reporting and handoff overlays for systems that still expect them
 
 ### Downstream Training Rule
 
 - world-model RL and world-model-based post-training are first-class downstream paths for site adaptation, checkpoint ranking, synthetic rollout generation, and bounded robot-team evaluation
-- those paths sit behind qualification and do not by themselves replace stricter validation for contact-critical, safety-critical, or contractual deployment claims
+- those paths sit behind the capture-backed site world and do not by themselves replace stricter validation for contact-critical, safety-critical, or contractual deployment claims
 - Isaac-backed, physics-backed, or otherwise stricter validation remains the higher-trust lane when reproducibility, contact fidelity, or formal signoff matters
 
 ### Data Rule
 
 - passive site capture and walkthrough evidence are valuable context for scene memory, preview simulation, and downstream conditioning
 - strong robot adaptation gains usually require action-conditioned robot interaction data such as play, teleop logs, or task rollouts; site video alone is usually not enough for reliable policy training from scratch
-- derived assets may inform routing and downstream work, but they must not mutate qualification state or source-of-truth readiness records
+- derived assets may inform routing and downstream work, but they must not mutate capture-backed site-world truth
 <!-- SHARED_PLATFORM_CONTEXT_END -->
 
-This repo is the qualification engine.
+This repo is the site-world assembly engine.
 
-The default output should be a qualification record plus routing object, not a scene package by default.
+The default output should be a capture-backed site-world package, not a qualification packet.
 
 ## What This Repo Owns
 
-`BlueprintCapturePipeline` is the qualification engine.
+`BlueprintCapturePipeline` is the site-world assembly engine.
 
 Its main job is to turn raw capture evidence plus structured intake into:
 
-- qualification artifacts
-- readiness decisions
-- blocker and evidence-gap outputs
-- opportunity handoffs
+- scene-memory bundles
+- evaluation-prep manifests
+- runtime-eligibility and launch records
+- backend adapter manifests
 - optional advanced-geometry follow-ons
 
-This repo is where the site moves from “we captured something” to “we have a structured decision object.”
+Legacy qualification, readiness, and handoff artifacts still exist for compatibility, but they are not the center of gravity.
+
+This repo is where the site moves from “we captured something” to “we have a launchable site-world package.”
 
 ## Upstream And Downstream Boundaries
 
@@ -78,37 +80,37 @@ raw/
 
 This repo produces records that should be routed into `Blueprint-WebApp`, including:
 
-- qualification state
-- readiness report
-- opportunity handoff
-- human actions required
-- later geometry/evaluation artifacts when justified
+- scene-memory manifests
+- evaluation-prep bundles
+- site-world runtime status
+- backend adapter manifests
+- compatibility summaries when older consumers still require them
 
 ## Product Context
 
 The correct product stack is:
 
-1. primary product: site qualification / readiness pack
-2. secondary product: qualified opportunity exchange for robot teams
-3. third product: scene memory / preview simulation / evaluation package
-4. fourth product: world-model-based adaptation / managed tuning / training data / licensing
+1. primary product: site-specific world model and runtime-ready package
+2. secondary product: scene memory / preview simulation / evaluation package
+3. third product: world-model-based adaptation / managed tuning / training data / licensing
+4. fourth product: compatibility overlays for reporting and routing systems
 
-This repo sits in the middle and owns the transition from evidence to decision.
+This repo sits in the middle and owns the transition from evidence to site-world package.
 
 This repo should treat the default output as:
 
-- a reusable qualification record
-- a routing object
-- a human-review-aware handoff
-- a scene-memory bundle only as a derived downstream substrate
+- a reusable scene-memory bundle
+- a runtime-ready site-world spec
+- adapter manifests for downstream runtimes
+- compatibility overlays only when a consumer still requires them
 
 This repo should not assume that every capture should become:
 
-- a marketplace scene
-- a sim package
+- a CRM record
+- a qualification packet
 - a tuning engagement
 
-Those are later-stage follow-on lanes, not the default result.
+Those are consumers or follow-on lanes, not the default result.
 
 ## Role In The Business
 
@@ -116,11 +118,11 @@ This repo is the middle of the system.
 
 It exists to answer:
 
-- is the site/task scoped well enough?
-- is the evidence good enough?
-- what blockers are visible?
-- is the site ready, risky, or not ready yet?
-- should this move into deeper evaluation?
+- can we ground a usable site-specific world model from this capture?
+- is the evidence sufficient for scene memory and runtime launchability?
+- what holes, blockers, or hidden zones still limit the site world?
+- which downstream runtimes or evaluation paths can consume it?
+- what follow-on capture or validation is still required?
 
 ## System Lifecycle
 
@@ -129,16 +131,16 @@ The intended end-to-end lifecycle is:
 1. `Blueprint-WebApp` creates `site_submission_id` and intake.
 2. `BlueprintCapture` attaches that context to the evidence package.
 3. This repo produces:
-   - qualification artifacts
-   - readiness decision
-   - opportunity handoff
-   - human actions required
-   - later geometry/evaluation artifacts when justified
+   - scene-memory artifacts
+   - evaluation-prep manifests
+   - site-world runtime records
+   - backend adapter manifests
+   - later geometry artifacts when justified
 4. `Blueprint-WebApp` ingests those outputs and updates:
-   - `qualification_state`
-   - `opportunity_state`
-   - report / handoff references
-5. Only qualified records move into exchange and later paid lanes.
+   - site-world status
+   - runtime status
+   - artifact and handoff references
+5. Downstream evaluation and adaptation consume the site-world package.
 
 Biggest missing system boundary:
 
@@ -150,23 +152,22 @@ Agents should treat that bridge as a top-tier integration concern.
 
 ## Phase 2 Decision Boundary
 
-Phase 2 should stay deterministic for the decision core:
+Phase 2 should stay deterministic for the site-world grounding core:
 
-- scoring
-- gates
-- blocker classification
-- capability-envelope checks
-- readiness state
+- object indexing
+- scene-memory packaging
+- adapter manifest generation
+- runtime eligibility checks
 - dashboard action buckets and rollout counts
 
 LLM synthesis is allowed only for narrative or recommendation artifacts:
 
 - memos
 - reviewer summaries
-- OEM-facing summaries
+- operator-facing summaries
 - recapture recommendations
 
-That means agents should not let a model override blocker truth, readiness state, or the
+That means agents should not let a model override site-world grounding, runtime eligibility, or the
 scene dashboard contract. The scene-local `pipeline/dashboard_summary.json` is the stable
 frontend-facing contract for Phase 2 scene rollups.
 
@@ -174,10 +175,10 @@ frontend-facing contract for Phase 2 scene rollups.
 
 When making changes here, optimize for:
 
-1. grounded qualification outputs
+1. grounded site-world outputs
 2. fail-closed behavior
 3. explicit human-review boundaries
 4. clean handoff records for the webapp and later technical teams
 
-Do not let geometry, scenes, validation, or marketplace assumptions replace qualification as the center of gravity.
-Do not let generative simulation replace grounded qualification evidence; world-model outputs are advisory unless separately validated.
+Do not let CRM, legacy reporting, or marketplace assumptions replace the site-specific world model as the center of gravity.
+Do not let generative simulation replace grounded capture evidence; runtime claims are advisory unless separately validated.

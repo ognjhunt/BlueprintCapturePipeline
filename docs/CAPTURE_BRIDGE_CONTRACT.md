@@ -1,8 +1,8 @@
-# Capture Bridge Contract (Qualification-First)
+# Capture Bridge Contract (Site-World-First)
 
 This document defines the descriptor + orchestration contract consumed by `BlueprintCapturePipeline`.
 
-Qualification artifacts are authoritative. Scene-memory artifacts are the canonical downstream substrate. World-model outputs, preview-prep manifests, and advanced-geometry bundles are derived artifacts only and may not override readiness or blocker truth.
+Scene-memory artifacts, evaluation-prep manifests, and site-world runtime records are the canonical outputs. Legacy qualification/readiness artifacts remain available only for compatibility and may not override capture-backed site-world truth.
 
 ## 1) Input Trigger
 
@@ -55,12 +55,17 @@ Supported aliases:
 
 ## 3) Intake Requirements
 
-Qualification lane:
+Site-world lane:
 
 - descriptor must parse successfully
 - QA report, raw manifest, and object index are inspected when present
-- missing or failed evidence produces qualification outputs with `need_more_evidence` instead of forcing geometry generation
-- default modern flow is `qualification -> scene_memory`
+- missing or failed evidence produces degraded site-world outputs with `need_more_evidence` instead of forcing geometry generation
+- default modern flow is `scene_memory -> evaluation_prep -> site_world_runtime`
+
+Legacy compatibility lane:
+
+- emits qualification/readiness artifacts for older consumers that still expect them
+- must not become the source of truth for site-world assembly
 
 Advanced geometry lane:
 
@@ -71,8 +76,7 @@ Advanced geometry lane:
 
 Scene-memory lane:
 
-- qualification remains authoritative
-- scene-memory outputs are derived artifacts only
+- scene-memory outputs are part of the primary product surface
 - rights for derived-scene generation must be present or default-allow
 - downstream adapter intent is expressed through manifest-level targets such as `GEN3C` and `NeoVerse`
 
@@ -82,7 +86,22 @@ All orchestration artifacts are emitted under:
 
 `scenes/<scene_id>/captures/<capture_id>/pipeline/`
 
-Default qualification artifacts:
+Default site-world artifacts:
+
+- `scene_memory/scene_memory_manifest.json` (v1)
+- `scene_memory/scene_memory_readiness.json` (v1)
+- `scene_memory/conditioning_bundle.json` (v1)
+- `scene_memory/adapter_manifests/gen3c.json` (v1)
+- `scene_memory/adapter_manifests/neoverse.json` (v1)
+- `scene_memory/adapter_manifests/cosmos_transfer.json` (v1)
+- `preview_simulation/preview_simulation_manifest.json` (v1)
+- `evaluation_prep/scene_memory_bundle_manifest.json` (v1)
+- `evaluation_prep/site_world_spec.json` (v1)
+- `evaluation_prep/site_world_registration.json` (v1)
+- `evaluation_prep/site_world_health.json` (v1)
+- `evaluation_prep/evaluation_prep_manifest.json` (v1)
+
+Legacy compatibility artifacts:
 
 - `site_intake.json` (v1)
 - `capture_package_manifest.json` (v1)
@@ -97,16 +116,6 @@ Default qualification artifacts:
 - `swap_quality_report.json` (compatibility alias, lane=`qualification`)
 - `.qualification_pipeline_complete` or `.qualification_pipeline_failed.json`
 - `.swap_pipeline_complete` or `.swap_pipeline_failed.json` (compatibility aliases)
-
-Scene-memory and preview-prep artifacts:
-
-- `scene_memory/scene_memory_manifest.json` (v1)
-- `scene_memory/scene_memory_readiness.json` (v1)
-- `scene_memory/conditioning_bundle.json` (v1)
-- `scene_memory/adapter_manifests/gen3c.json` (v1)
-- `scene_memory/adapter_manifests/neoverse.json` (v1)
-- `scene_memory/adapter_manifests/cosmos_transfer.json` (v1)
-- `preview_simulation/preview_simulation_manifest.json` (v1)
 
 Advanced geometry artifacts when explicitly requested:
 
@@ -128,4 +137,4 @@ Advanced geometry artifacts when explicitly requested:
 - `scenes/<scene_id>/seg/inventory.json`
 
 These are authored only by the explicit advanced geometry lane for direct compatibility with BlueprintPipeline interactive/simready/usd-assembly jobs.
-They are compatibility outputs, not the repo's default downstream product.
+They are compatibility outputs, not the repo's default product surface.

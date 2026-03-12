@@ -1,4 +1,4 @@
-"""Capture descriptor contracts for qualification-first orchestration."""
+"""Capture descriptor contracts for site-world orchestration with legacy compatibility lanes."""
 
 from __future__ import annotations
 
