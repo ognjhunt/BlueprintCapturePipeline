@@ -172,6 +172,135 @@ def _candidate_object_index_paths(capture_root: Path) -> List[Path]:
     ]
 
 
+def _optional_json(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    payload = read_json_any(path)
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _object_index_summary(capture_root: Path) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "present": False,
+        "has_entries": False,
+        "entry_count": 0,
+        "paths": [str(path) for path in _candidate_object_index_paths(capture_root)],
+        "present_paths": [],
+        "empty_index_cause": None,
+    }
+    for path in _candidate_object_index_paths(capture_root):
+        if not path.is_file():
+            continue
+        summary["present"] = True
+        summary["present_paths"].append(str(path))
+        payload = read_json_any(path)
+        entries: List[Any] = []
+        if isinstance(payload, list):
+            entries = payload
+        elif isinstance(payload, Mapping):
+            for key in ("objects", "items", "summaries"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    entries = value
+                    break
+        if entries:
+            summary["has_entries"] = True
+        summary["entry_count"] = max(int(summary["entry_count"]), len(entries))
+
+    build_report = _optional_json(capture_root / "raw" / "object_index_build_report.json")
+    empty_index_cause = str(build_report.get("empty_index_cause") or "").strip() or None
+    if empty_index_cause:
+        summary["empty_index_cause"] = empty_index_cause
+    return summary
+
+
+def build_missing_object_geometry_manifest(
+    *,
+    capture_root: str | Path,
+    provider_name: str,
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    index_summary = _object_index_summary(context.capture_root)
+    present = bool(index_summary.get("present"))
+    has_entries = bool(index_summary.get("has_entries"))
+    entry_count = int(index_summary.get("entry_count") or 0)
+    empty_index_cause = str(index_summary.get("empty_index_cause") or "").strip() or None
+    missing_inputs = [str(path) for path in _candidate_object_index_paths(context.capture_root) if not path.is_file()]
+    if present and not has_entries:
+        status = "empty_object_index"
+        notes = [
+            "Object geometry was skipped because the staged capture bundle has an object index artifact but it contains zero objects."
+        ]
+    else:
+        status = "missing_object_index"
+        notes = [
+            "Object geometry was skipped because no object index was found in the staged capture bundle."
+        ]
+    manifest_provenance = build_provenance_record(
+        grounding_level="inferred",
+        evidence_sources=index_summary.get("present_paths", []),
+        observation_coverage={
+            "object_index_present": present,
+            "object_index_entry_count": entry_count,
+        },
+        confidence=0.0,
+        canonical_truth=True,
+        presentation_only=False,
+        extra={"provider_name": provider_name},
+    )
+    return with_grounding_fields(
+        {
+            "schema_version": "v1",
+            "generated_at": utc_now_iso(),
+            "provider_name": provider_name,
+            "scene_id": context.scene_id,
+            "capture_id": context.capture_id,
+            "status": status,
+            "empty_index_cause": empty_index_cause,
+            "world_model_policy": WorldModelPolicy.from_env().to_dict(),
+            "canonical_output": build_output_linkage(
+                policy=WorldModelPolicy.from_env(),
+                canonical_artifact_uri=str((context.pipeline_root / "evaluation_prep" / "object_geometry_manifest.json").resolve()),
+                presentation_artifact_uri=None,
+                authoritative_record=True,
+            ),
+            "objects": [],
+            "notes": notes,
+            "object_index_present": present,
+            "object_index_entry_count": entry_count,
+            "present_inputs": index_summary.get("present_paths", []),
+            "missing_inputs": missing_inputs,
+            "provenance": manifest_provenance,
+        },
+        provenance=manifest_provenance,
+    )
+
+
+def resolve_object_geometry_manifest(
+    *,
+    capture_root: str | Path,
+    provider_name: str = "manual",
+    ai_hint_runner: Optional[AIHintRunner] = None,
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    object_entries, _ = _load_object_entries(context.capture_root)
+    if not object_entries:
+        return build_missing_object_geometry_manifest(
+            capture_root=context.capture_root,
+            provider_name=provider_name,
+        )
+    result = run_object_geometry_stage(
+        capture_root=context.capture_root,
+        provider_name=provider_name,
+        ai_hint_runner=ai_hint_runner,
+    )
+    manifest_path = Path(str(result.get("manifest_path") or ""))
+    payload = read_json_any(manifest_path)
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    raise PipelineError(f"Object geometry manifest is not a JSON object: {manifest_path}")
+
+
 def _load_object_entries(capture_root: Path) -> Tuple[List[Dict[str, Any]], Path]:
     for index_path in _candidate_object_index_paths(capture_root):
         if not index_path.is_file():

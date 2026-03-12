@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-from blueprint_pipeline.object_geometry_stage import run_object_geometry_stage
+from blueprint_pipeline.object_geometry_stage import resolve_object_geometry_manifest, run_object_geometry_stage
 
 pytestmark = pytest.mark.skipif(importlib.util.find_spec("trimesh") is None, reason="trimesh not installed")
 if importlib.util.find_spec("trimesh") is not None:  # pragma: no branch
@@ -95,3 +95,36 @@ def test_object_geometry_stage_extracts_mesh_hulls_and_ai_hints(tmp_path: Path) 
     assert obj["task_critical"] is True
     assert obj["grounding_level"] == "reconstructed"
     assert obj["canonical_truth"] is True
+
+
+def test_object_geometry_manifest_falls_back_when_index_missing(tmp_path: Path) -> None:
+    capture_root = _build_capture(tmp_path)
+    (capture_root / "raw" / "arkit" / "objects" / "index.json").unlink()
+
+    manifest = resolve_object_geometry_manifest(
+        capture_root=capture_root,
+        provider_name="manual",
+    )
+
+    assert manifest["status"] == "missing_object_index"
+    assert manifest["objects"] == []
+    assert manifest["object_index_present"] is False
+    assert manifest["object_index_entry_count"] == 0
+    assert manifest["empty_index_cause"] is None
+
+
+def test_object_geometry_manifest_falls_back_when_index_empty(tmp_path: Path) -> None:
+    capture_root = _build_capture(tmp_path)
+    _write_json(capture_root / "raw" / "object_index_build_report.json", {"empty_index_cause": "zero_detections"})
+    _write_json(capture_root / "raw" / "arkit" / "objects" / "index.json", {"objects": []})
+
+    manifest = resolve_object_geometry_manifest(
+        capture_root=capture_root,
+        provider_name="manual",
+    )
+
+    assert manifest["status"] == "empty_object_index"
+    assert manifest["objects"] == []
+    assert manifest["object_index_present"] is True
+    assert manifest["object_index_entry_count"] == 0
+    assert manifest["empty_index_cause"] == "zero_detections"

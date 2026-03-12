@@ -138,6 +138,7 @@ def build_protected_regions_manifest(
         else []
     )
     object_geometry_status = str(object_geometry_manifest.get("status") or "").strip().lower()
+    empty_index_cause = str(object_geometry_manifest.get("empty_index_cause") or "").strip() or None
     regions = []
     for item in objects:
         if not isinstance(item, Mapping):
@@ -215,6 +216,7 @@ def build_protected_regions_manifest(
         "capture_id": capture_id,
         "grounding_status": grounding_status,
         "ungrounded_reason": ungrounded_reason,
+        "empty_index_cause": empty_index_cause,
         "region_count": len(regions),
         "thresholds": {
             "protected_observed": PROTECTED_OBSERVED_THRESHOLD,

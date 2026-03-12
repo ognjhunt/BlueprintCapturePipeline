@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
-from .object_geometry_stage import run_object_geometry_stage
+from .object_geometry_stage import resolve_object_geometry_manifest
 from .runtime_layer_grounding import (
     build_canonical_render_policy,
     build_presentation_variance_policy,
@@ -68,91 +68,11 @@ def _copy_json(path: Path, payload: Mapping[str, Any]) -> None:
     write_json(path, payload)
 
 
-def _object_index_candidates(capture_root: Path) -> List[Path]:
-    return [
-        capture_root / "raw" / "object_index.json",
-        capture_root / "raw" / "arkit" / "objects" / "index.json",
-    ]
-
-
-def _object_index_summary(capture_root: Path) -> Dict[str, Any]:
-    summary: Dict[str, Any] = {
-        "present": False,
-        "has_entries": False,
-        "entry_count": 0,
-        "paths": [str(path) for path in _object_index_candidates(capture_root)],
-        "present_paths": [],
-    }
-    for path in _object_index_candidates(capture_root):
-        if not path.is_file():
-            continue
-        summary["present"] = True
-        summary["present_paths"].append(str(path))
-        payload = _read_optional_json_any(path)
-        entries: List[Any] = []
-        if isinstance(payload, list):
-            entries = payload
-        elif isinstance(payload, Mapping):
-            for key in ("objects", "items", "summaries"):
-                value = payload.get(key)
-                if isinstance(value, list):
-                    entries = value
-                    break
-        if entries:
-            summary["has_entries"] = True
-        summary["entry_count"] = max(int(summary["entry_count"]), len(entries))
-    return summary
-
-
-def _has_object_index_entries(capture_root: Path) -> bool:
-    return bool(_object_index_summary(capture_root).get("has_entries"))
-
-
-def _build_missing_object_geometry_manifest(*, context, provider_name: str) -> Dict[str, Any]:
-    index_summary = _object_index_summary(context.capture_root)
-    present = bool(index_summary.get("present"))
-    has_entries = bool(index_summary.get("has_entries"))
-    entry_count = int(index_summary.get("entry_count") or 0)
-    missing_inputs = [str(path) for path in _object_index_candidates(context.capture_root) if not path.is_file()]
-    if present and not has_entries:
-        status = "empty_object_index"
-        notes = [
-            "Object geometry was skipped because the staged capture bundle has an object index artifact but it contains zero objects."
-        ]
-    else:
-        status = "missing_object_index"
-        notes = [
-            "Object geometry was skipped because no object index was found in the staged capture bundle."
-        ]
-    return {
-        "schema_version": "v1",
-        "generated_at": utc_now_iso(),
-        "provider_name": provider_name,
-        "scene_id": context.scene_id,
-        "capture_id": context.capture_id,
-        "status": status,
-        "provenance": "evaluation_prep_fallback",
-        "objects": [],
-        "notes": notes,
-        "object_index_present": present,
-        "object_index_entry_count": entry_count,
-        "present_inputs": index_summary.get("present_paths", []),
-        "missing_inputs": missing_inputs,
-    }
-
-
 def _resolve_object_geometry_manifest(*, context, provider_name: str) -> Dict[str, Any]:
-    if _has_object_index_entries(context.capture_root):
-        object_geometry_result = run_object_geometry_stage(
-            capture_root=context.capture_root,
-            provider_name=provider_name,
-        )
-        object_geometry_source_path = Path(str(object_geometry_result.get("manifest_path") or ""))
-        loaded = read_json_any(object_geometry_source_path)
-        if isinstance(loaded, Mapping):
-            return dict(loaded)
-        raise PipelineError(f"Object geometry manifest is not a JSON object: {object_geometry_source_path}")
-    return _build_missing_object_geometry_manifest(context=context, provider_name=provider_name)
+    return resolve_object_geometry_manifest(
+        capture_root=context.capture_root,
+        provider_name=provider_name,
+    )
 
 
 def _adapter_manifest_details(scene_memory_bundle_manifest: Mapping[str, Any], *, eval_dir: Path) -> Dict[str, Dict[str, Any]]:
@@ -752,6 +672,77 @@ def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]
     return local_paths
 
 
+def _runtime_capabilities_payload(
+    *,
+    launchable: bool,
+    base: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    keys = [
+        "supports_step_rollout",
+        "supports_batch_rollout",
+        "supports_camera_views",
+        "supports_stream",
+        "supports_rlds_export",
+        "supports_preview_render",
+        "protected_region_locking",
+        "runtime_layer_compositing",
+        "debug_render_outputs",
+    ]
+    payload: Dict[str, Any] = {}
+    raw = dict(base) if isinstance(base, Mapping) else {}
+    for key in keys:
+        payload[key] = bool(raw.get(key)) if launchable else False
+    return payload
+
+
+def _canonical_site_world_runtime_status(
+    *,
+    qualification_state: object,
+    downstream_evaluation_eligibility: bool,
+    scene_memory_bundle_manifest: Mapping[str, Any],
+    protected_regions_manifest: Mapping[str, Any],
+    required_runtime_artifact_paths: Sequence[Path],
+    runtime_service_url: str,
+) -> Dict[str, Any]:
+    blockers: List[str] = []
+    warnings: List[str] = []
+    normalized_qualification_state = str(qualification_state or "").strip().lower()
+    grounding_status = str(protected_regions_manifest.get("grounding_status") or "grounded").strip().lower() or "grounded"
+    ungrounded_reason = str(protected_regions_manifest.get("ungrounded_reason") or "").strip() or None
+    empty_index_cause = str(protected_regions_manifest.get("empty_index_cause") or "").strip() or None
+
+    if normalized_qualification_state != "ready":
+        blockers.append(f"qualification_state:{normalized_qualification_state or 'missing'}")
+    if not downstream_evaluation_eligibility:
+        blockers.append("downstream_evaluation_eligibility:false")
+    if str(scene_memory_bundle_manifest.get("status") or "").strip() != "complete":
+        blockers.append(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
+    if grounding_status != "grounded":
+        blockers.append(f"grounding_status:{grounding_status}")
+        if ungrounded_reason:
+            blockers.append(f"ungrounded_reason:{ungrounded_reason}")
+    if not runtime_service_url:
+        blockers.append("missing_runtime_service_url")
+    for artifact_path in required_runtime_artifact_paths:
+        if not artifact_path.is_file():
+            blockers.append(f"missing_runtime_artifact:{artifact_path.name}")
+    if empty_index_cause:
+        warnings.append(f"empty_index_cause:{empty_index_cause}")
+
+    return {
+        "status": "ready" if not blockers else "blocked",
+        "launchable": len(blockers) == 0,
+        "blockers": blockers,
+        "warnings": warnings,
+        "runtime_base_url": runtime_service_url or None,
+        "websocket_base_url": runtime_service_url.replace("http://", "ws://").replace("https://", "wss://") if runtime_service_url else None,
+        "grounding_status": grounding_status,
+        "ungrounded_reason": ungrounded_reason,
+        "empty_index_cause": empty_index_cause,
+        "scene_memory_bundle_status": str(scene_memory_bundle_manifest.get("status") or "missing"),
+    }
+
+
 def _site_world_id(scene_id: str, capture_id: str) -> str:
     return f"siteworld-{sha256(f'{scene_id}::{capture_id}'.encode('utf-8')).hexdigest()[:12]}"
 
@@ -810,62 +801,6 @@ def _object_geometry_has_provenance(object_geometry_manifest: Mapping[str, Any])
     return False
 
 
-def _site_world_runtime_eligibility(
-    *,
-    context,
-    normalized_handoff: Mapping[str, Any],
-    descriptor: Mapping[str, Any],
-    conditioning_bundle: Mapping[str, Any],
-    scene_memory_bundle_manifest: Mapping[str, Any],
-    required_runtime_artifact_paths: Sequence[Path] = (),
-) -> Dict[str, Any]:
-    blockers: List[str] = []
-    warnings: List[str] = []
-    qualification_state = str(normalized_handoff.get("qualification_state") or "").strip().lower()
-    if qualification_state != "ready":
-        blockers.append(f"qualification_state:{qualification_state or 'missing'}")
-    if not bool(normalized_handoff.get("downstream_evaluation_eligibility")):
-        blockers.append("downstream_evaluation_eligibility:false")
-
-    capture_source = str(descriptor.get("capture_source") or descriptor.get("capture_modality") or "").strip().lower()
-    processing_profile = str(descriptor.get("processing_profile") or "").strip().lower()
-    if capture_source in {"glasses", "glasses_video_only"} or processing_profile == "video_only":
-        blockers.append("video_only_capture:not_launchable")
-
-    scene_memory_map = _descriptor_scene_memory_capture(descriptor)
-    sensor_availability = scene_memory_map.get("sensor_availability")
-    sensor_map = dict(sensor_availability) if isinstance(sensor_availability, Mapping) else {}
-    if sensor_map.get("arkit_poses") is not True:
-        blockers.append("missing_spatial_conditioning:arkit_poses")
-    if sensor_map.get("arkit_intrinsics") is not True:
-        blockers.append("missing_spatial_conditioning:arkit_intrinsics")
-
-    local_paths = _conditioning_local_paths(context=context, conditioning_bundle=conditioning_bundle)
-    required_local_paths = {
-        "raw_video_path": Path(local_paths["raw_video_path"]) if local_paths.get("raw_video_path") else None,
-        "arkit_poses_path": Path(local_paths["arkit_poses_path"]),
-        "arkit_intrinsics_path": Path(local_paths["arkit_intrinsics_path"]),
-    }
-    for label, path in required_local_paths.items():
-        if path is None or not path.exists():
-            blockers.append(f"missing_local_conditioning:{label}")
-
-    object_index_path = Path(local_paths["object_index_path"])
-    if not object_index_path.is_file():
-        warnings.append("object_index_path_missing")
-    if scene_memory_bundle_manifest.get("status") != "complete":
-        blockers.append(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
-    for artifact_path in required_runtime_artifact_paths:
-        if not artifact_path.is_file():
-            blockers.append(f"missing_runtime_artifact:{artifact_path.name}")
-    return {
-        "launchable": len(blockers) == 0,
-        "blockers": blockers,
-        "warnings": warnings,
-        "local_paths": local_paths,
-    }
-
-
 def _build_site_world_spec(
     *,
     context,
@@ -878,6 +813,7 @@ def _build_site_world_spec(
     protected_regions_manifest: Mapping[str, Any],
     canonical_render_policy: Mapping[str, Any],
     presentation_variance_policy: Mapping[str, Any],
+    canonical_runtime_status: Mapping[str, Any],
     canonical_package_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     policy = _policy()
@@ -888,18 +824,7 @@ def _build_site_world_spec(
     )
     conditioning_bundle = _read_optional_json_any(conditioning_bundle_path) if conditioning_bundle_path else {}
     conditioning_map = dict(conditioning_bundle) if isinstance(conditioning_bundle, Mapping) else {}
-    runtime_eligibility = _site_world_runtime_eligibility(
-        context=context,
-        normalized_handoff=normalized_handoff,
-        descriptor=descriptor_map,
-        conditioning_bundle=conditioning_map,
-        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
-        required_runtime_artifact_paths=[
-            eval_dir / "protected_regions_manifest.json",
-            eval_dir / "canonical_render_policy.json",
-            eval_dir / "presentation_variance_policy.json",
-        ],
-    )
+    local_paths = _conditioning_local_paths(context=context, conditioning_bundle=conditioning_map)
     critical_ids = _task_critical_ids_from_manifest(task_anchor_manifest)
     normalized_tasks = []
     for task in task_anchor_manifest.get("tasks", []) if isinstance(task_anchor_manifest.get("tasks"), list) else []:
@@ -934,7 +859,7 @@ def _build_site_world_spec(
     object_geometry_path = eval_dir / "object_geometry_manifest.json"
     scene_memory_capture = _descriptor_scene_memory_capture(descriptor_map)
     spec_provenance = build_provenance_record(
-        grounding_level="reconstructed" if runtime_eligibility["launchable"] else "observed",
+        grounding_level="reconstructed" if bool(canonical_runtime_status.get("launchable")) else "observed",
         evidence_sources=[
             _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
             _gs_uri(context, "scene_memory/conditioning_bundle.json"),
@@ -942,10 +867,10 @@ def _build_site_world_spec(
         ],
         observation_coverage={
             "task_count": len(normalized_tasks),
-            "runtime_launchable": runtime_eligibility["launchable"],
+            "runtime_launchable": bool(canonical_runtime_status.get("launchable")),
             "task_critical_object_count": len(critical_ids),
         },
-        confidence=1.0 if runtime_eligibility["launchable"] else 0.75,
+        confidence=1.0 if bool(canonical_runtime_status.get("launchable")) else 0.75,
         canonical_truth=True,
         presentation_only=False,
     )
@@ -972,12 +897,12 @@ def _build_site_world_spec(
             "arkit_intrinsics_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("intrinsics_uri"),
             "arkit_depth_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("depth_prefix_uri"),
             "sensor_availability": scene_memory_capture.get("sensor_availability", {}),
-            "local_paths": runtime_eligibility["local_paths"],
+            "local_paths": local_paths,
         },
         "geometry": {
             "scene_memory_bundle_path": str(_real_path_from_eval_dir(eval_dir, str(geometry_bundle or "")) or ""),
             "object_geometry_manifest_path": str(object_geometry_path.resolve()),
-            "object_index_path": runtime_eligibility["local_paths"].get("object_index_path"),
+            "object_index_path": local_paths.get("object_index_path"),
             "occupancy_path": str((context.pipeline_root / "nurec" / "occupancy.bin").resolve()),
             "collision_mesh_path": str((context.pipeline_root / "nurec" / "nvblox_mesh.ply").resolve()),
             "visual_mesh_path": str((context.pipeline_root / "nurec" / "visual_mesh.glb").resolve()),
@@ -985,6 +910,7 @@ def _build_site_world_spec(
         },
         "grounding_status": str(protected_regions_manifest.get("grounding_status") or "grounded"),
         "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
+        "empty_index_cause": protected_regions_manifest.get("empty_index_cause"),
         "runtime_layer_policy": {
             "protected_regions_manifest_uri": _gs_uri(context, "evaluation_prep/protected_regions_manifest.json"),
             "canonical_render_policy_uri": _gs_uri(context, "evaluation_prep/canonical_render_policy.json"),
@@ -994,6 +920,7 @@ def _build_site_world_spec(
             "presentation_variance_policy_path": str((eval_dir / "presentation_variance_policy.json").resolve()),
             "grounding_status": str(protected_regions_manifest.get("grounding_status") or "grounded"),
             "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
+            "empty_index_cause": protected_regions_manifest.get("empty_index_cause"),
             "region_count": int(protected_regions_manifest.get("region_count") or 0),
             "protected_region_locking": True,
             "runtime_layer_compositing": True,
@@ -1035,9 +962,15 @@ def _build_site_world_spec(
             "task_scope_record_uri": _gs_uri(context, "task_scope_record.json"),
         },
         "runtime_eligibility": {
-            "launchable": runtime_eligibility["launchable"],
-            "blockers": runtime_eligibility["blockers"],
-            "warnings": runtime_eligibility["warnings"],
+            "status": canonical_runtime_status.get("status"),
+            "launchable": bool(canonical_runtime_status.get("launchable")),
+            "blockers": list(canonical_runtime_status.get("blockers") or []),
+            "warnings": list(canonical_runtime_status.get("warnings") or []),
+            "runtime_base_url": canonical_runtime_status.get("runtime_base_url"),
+            "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
+            "grounding_status": canonical_runtime_status.get("grounding_status"),
+            "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
+            "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
         },
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
@@ -1063,35 +996,41 @@ def _build_site_world_runtime_records(
     *,
     context,
     spec: Mapping[str, Any],
+    canonical_runtime_status: Mapping[str, Any],
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     policy = _policy()
     site_world_id = str(spec.get("site_world_id") or _site_world_id(context.scene_id, context.capture_id))
-    eligibility = dict(spec.get("runtime_eligibility") or {})
-    service_url = (os.getenv("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip().rstrip("/")
-    if not eligibility.get("launchable"):
+    service_url = str(canonical_runtime_status.get("runtime_base_url") or "").strip()
+    task_catalog = list(spec.get("task_catalog") or [])
+    scenario_catalog = list(spec.get("scenario_catalog") or [])
+    start_state_catalog = list(spec.get("start_state_catalog") or [])
+    robot_profiles = list(spec.get("robot_profiles") or [])
+    blocked_runtime_capabilities = _runtime_capabilities_payload(launchable=False)
+    if not bool(canonical_runtime_status.get("launchable")):
         registration = {
             "schema_version": "v1",
             "site_world_id": site_world_id,
             "build_id": None,
             "scene_id": context.scene_id,
             "capture_id": context.capture_id,
+            "site_submission_id": spec.get("site_submission_id"),
             "status": "blocked",
             "runtime_base_url": service_url or None,
-            "websocket_base_url": service_url.replace("http://", "ws://").replace("https://", "wss://") if service_url else None,
+            "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
             "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
             "supported_cameras": [],
-            "scenario_catalog": list(spec.get("scenario_catalog") or []),
-            "start_state_catalog": list(spec.get("start_state_catalog") or []),
-            "runtime_capabilities": {
-                "supports_step_rollout": False,
-                "supports_batch_rollout": False,
-                "supports_camera_views": False,
-                "supports_stream": False,
-                "protected_region_locking": True,
-                "runtime_layer_compositing": True,
-                "debug_render_outputs": True,
-            },
+            "scenario_catalog": scenario_catalog,
+            "start_state_catalog": start_state_catalog,
+            "task_catalog": task_catalog,
+            "robot_profiles": robot_profiles,
+            "runtime_capabilities": blocked_runtime_capabilities,
+            "blockers": list(canonical_runtime_status.get("blockers") or []),
+            "warnings": list(canonical_runtime_status.get("warnings") or []),
             "world_model_policy": policy.to_dict(),
+            "grounding_status": canonical_runtime_status.get("grounding_status"),
+            "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
+            "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+            "canonical_package_version": spec.get("canonical_package_version"),
             "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
             "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
             "derivation_mode": policy.output_policy,
@@ -1099,63 +1038,31 @@ def _build_site_world_runtime_records(
             "generated_at": utc_now_iso(),
         }
         health = {
-            "schema_version": "v1",
-            "site_world_id": site_world_id,
-            "build_id": None,
-            "healthy": False,
-            "launchable": False,
-            "status": "blocked",
-            "blockers": list(eligibility.get("blockers") or []),
-            "warnings": list(eligibility.get("warnings") or []),
-            "world_model_policy": policy.to_dict(),
-            "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_health.json"),
-            "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
-            "derivation_mode": policy.output_policy,
-            "authoritative_record": True,
-            "last_heartbeat_at": utc_now_iso(),
-        }
-        return registration, health
-
-    if not service_url:
-        registration = {
             "schema_version": "v1",
             "site_world_id": site_world_id,
             "build_id": None,
             "scene_id": context.scene_id,
             "capture_id": context.capture_id,
-            "status": "blocked",
-            "runtime_base_url": None,
-            "websocket_base_url": None,
-            "vm_instance_id": None,
-            "supported_cameras": [],
-            "scenario_catalog": list(spec.get("scenario_catalog") or []),
-            "start_state_catalog": list(spec.get("start_state_catalog") or []),
-            "runtime_capabilities": {
-                "supports_step_rollout": False,
-                "supports_batch_rollout": False,
-                "supports_camera_views": False,
-                "supports_stream": False,
-                "protected_region_locking": True,
-                "runtime_layer_compositing": True,
-                "debug_render_outputs": True,
-            },
-            "world_model_policy": policy.to_dict(),
-            "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
-            "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
-            "derivation_mode": policy.output_policy,
-            "authoritative_record": True,
-            "generated_at": utc_now_iso(),
-        }
-        health = {
-            "schema_version": "v1",
-            "site_world_id": site_world_id,
-            "build_id": None,
+            "site_submission_id": spec.get("site_submission_id"),
             "healthy": False,
             "launchable": False,
             "status": "blocked",
-            "blockers": ["missing_runtime_service_url"],
-            "warnings": list(eligibility.get("warnings") or []),
+            "runtime_base_url": service_url or None,
+            "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
+            "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
+            "supported_cameras": [],
+            "scenario_catalog": scenario_catalog,
+            "start_state_catalog": start_state_catalog,
+            "task_catalog": task_catalog,
+            "robot_profiles": robot_profiles,
+            "runtime_capabilities": blocked_runtime_capabilities,
+            "blockers": list(canonical_runtime_status.get("blockers") or []),
+            "warnings": list(canonical_runtime_status.get("warnings") or []),
             "world_model_policy": policy.to_dict(),
+            "grounding_status": canonical_runtime_status.get("grounding_status"),
+            "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
+            "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+            "canonical_package_version": spec.get("canonical_package_version"),
             "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_health.json"),
             "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
             "derivation_mode": policy.output_policy,
@@ -1194,28 +1101,58 @@ def _build_site_world_runtime_records(
         if key in build_payload
     }
     health = dict(build_payload.get("health") or client.get_site_world_health(str(registration.get("site_world_id") or site_world_id)))
+    registration.setdefault("site_submission_id", spec.get("site_submission_id"))
     registration.setdefault("world_model_policy", policy.to_dict())
     registration.setdefault("canonical_package_version", spec.get("canonical_package_version"))
+    registration.setdefault("blockers", list(canonical_runtime_status.get("blockers") or []))
+    registration.setdefault("warnings", list(canonical_runtime_status.get("warnings") or []))
+    registration.setdefault("task_catalog", task_catalog)
+    registration.setdefault("scenario_catalog", scenario_catalog)
+    registration.setdefault("start_state_catalog", start_state_catalog)
+    registration.setdefault("robot_profiles", robot_profiles)
+    registration.setdefault("supported_cameras", [])
+    registration.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
+    registration.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
+    registration.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
     registration.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_registration.json"))
     registration.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
     registration.setdefault("derivation_mode", policy.output_policy)
     registration.setdefault("authoritative_record", True)
-    runtime_caps = dict(registration.get("runtime_capabilities") or {})
-    runtime_caps.setdefault("protected_region_locking", True)
-    runtime_caps.setdefault("runtime_layer_compositing", True)
-    runtime_caps.setdefault("debug_render_outputs", True)
-    registration["runtime_capabilities"] = runtime_caps
+    registration["runtime_capabilities"] = _runtime_capabilities_payload(
+        launchable=True,
+        base=registration.get("runtime_capabilities") if isinstance(registration.get("runtime_capabilities"), Mapping) else {},
+    )
+    health.setdefault("scene_id", context.scene_id)
+    health.setdefault("capture_id", context.capture_id)
+    health.setdefault("site_submission_id", spec.get("site_submission_id"))
     health.setdefault("world_model_policy", policy.to_dict())
     health.setdefault("canonical_package_version", spec.get("canonical_package_version"))
+    health.setdefault("blockers", list(canonical_runtime_status.get("blockers") or []))
+    health.setdefault("warnings", list(canonical_runtime_status.get("warnings") or []))
+    health.setdefault("task_catalog", task_catalog)
+    health.setdefault("scenario_catalog", scenario_catalog)
+    health.setdefault("start_state_catalog", start_state_catalog)
+    health.setdefault("robot_profiles", robot_profiles)
+    health.setdefault("supported_cameras", registration.get("supported_cameras") or [])
+    health.setdefault("runtime_base_url", registration.get("runtime_base_url"))
+    health.setdefault("websocket_base_url", registration.get("websocket_base_url"))
+    health.setdefault("vm_instance_id", registration.get("vm_instance_id"))
+    health.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
+    health.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
+    health.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
     health.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_health.json"))
     health.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
     health.setdefault("derivation_mode", policy.output_policy)
     health.setdefault("authoritative_record", True)
+    health["runtime_capabilities"] = _runtime_capabilities_payload(
+        launchable=bool(health.get("launchable", True)),
+        base=health.get("runtime_capabilities")
+        if isinstance(health.get("runtime_capabilities"), Mapping)
+        else registration.get("runtime_capabilities")
+        if isinstance(registration.get("runtime_capabilities"), Mapping)
+        else {},
+    )
     if registration.get("status") == "ready":
-        task_catalog = list(spec.get("task_catalog") or [])
-        scenario_catalog = list(spec.get("scenario_catalog") or [])
-        start_state_catalog = list(spec.get("start_state_catalog") or [])
-        robot_profiles = list(spec.get("robot_profiles") or [])
         if task_catalog and scenario_catalog and start_state_catalog and robot_profiles:
             try:
                 session = client.create_session(
@@ -1237,6 +1174,47 @@ def _build_site_world_runtime_records(
                     "blockers": list(health.get("blockers") or []) + [f"runtime_smoke_failed:{exc}"],
                     "last_heartbeat_at": utc_now_iso(),
                 }
+                health["runtime_capabilities"] = _runtime_capabilities_payload(launchable=False, base=health.get("runtime_capabilities"))
+    registration.setdefault("blockers", list(canonical_runtime_status.get("blockers") or []))
+    registration.setdefault("warnings", list(canonical_runtime_status.get("warnings") or []))
+    registration.setdefault("task_catalog", task_catalog)
+    registration.setdefault("scenario_catalog", scenario_catalog)
+    registration.setdefault("start_state_catalog", start_state_catalog)
+    registration.setdefault("robot_profiles", robot_profiles)
+    registration.setdefault("supported_cameras", [])
+    registration.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
+    registration.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
+    registration.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
+    health.setdefault("scene_id", context.scene_id)
+    health.setdefault("capture_id", context.capture_id)
+    health.setdefault("site_submission_id", spec.get("site_submission_id"))
+    health.setdefault("blockers", list(canonical_runtime_status.get("blockers") or []))
+    health.setdefault("warnings", list(canonical_runtime_status.get("warnings") or []))
+    health.setdefault("task_catalog", task_catalog)
+    health.setdefault("scenario_catalog", scenario_catalog)
+    health.setdefault("start_state_catalog", start_state_catalog)
+    health.setdefault("robot_profiles", robot_profiles)
+    health.setdefault("supported_cameras", registration.get("supported_cameras") or [])
+    health.setdefault("runtime_base_url", registration.get("runtime_base_url"))
+    health.setdefault("websocket_base_url", registration.get("websocket_base_url"))
+    health.setdefault("vm_instance_id", registration.get("vm_instance_id"))
+    health.setdefault("world_model_policy", policy.to_dict())
+    health.setdefault("canonical_package_version", spec.get("canonical_package_version"))
+    health.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
+    health.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
+    health.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
+    health.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_health.json"))
+    health.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
+    health.setdefault("derivation_mode", policy.output_policy)
+    health.setdefault("authoritative_record", True)
+    health["runtime_capabilities"] = _runtime_capabilities_payload(
+        launchable=bool(health.get("launchable", False)),
+        base=health.get("runtime_capabilities")
+        if isinstance(health.get("runtime_capabilities"), Mapping)
+        else registration.get("runtime_capabilities")
+        if isinstance(registration.get("runtime_capabilities"), Mapping)
+        else {},
+    )
     return registration, health
 
 
@@ -1247,6 +1225,7 @@ def _build_hosted_session_runtime_manifest(
     scene_memory_bundle_manifest: Mapping[str, Any],
     task_anchor_manifest: Mapping[str, Any],
     task_run_manifest: Mapping[str, Any],
+    canonical_runtime_status: Mapping[str, Any],
     canonical_package_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     policy = _policy()
@@ -1365,34 +1344,27 @@ def _build_hosted_session_runtime_manifest(
         "rollout_video",
         "rlds_dataset",
     ]
-    runtime_capabilities = {
-        "supports_step_rollout": True,
-        "supports_batch_rollout": True,
-        "supports_camera_views": True,
-        "supports_rlds_export": True,
-        "supports_preview_render": "gen3c" in available_backends,
-        "protected_region_locking": True,
-        "runtime_layer_compositing": True,
-        "debug_render_outputs": True,
-    }
+    runtime_capabilities = _runtime_capabilities_payload(
+        launchable=True,
+        base={
+            "supports_step_rollout": True,
+            "supports_batch_rollout": True,
+            "supports_camera_views": True,
+            "supports_rlds_export": True,
+            "supports_preview_render": "gen3c" in available_backends,
+            "protected_region_locking": True,
+            "runtime_layer_compositing": True,
+            "debug_render_outputs": True,
+        },
+    )
 
-    launch_blockers: List[str] = []
-    if str(normalized_handoff.get("qualification_state") or "").strip().lower() != "ready":
-        launch_blockers.append(
-            f"qualification_state:{normalized_handoff.get('qualification_state')}"
-        )
-    if not bool(normalized_handoff.get("downstream_evaluation_eligibility")):
-        launch_blockers.append("downstream_evaluation_eligibility:false")
-    if scene_memory_bundle_manifest.get("status") != "complete":
-        launch_blockers.append(
-            f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}"
-        )
+    blockers: List[str] = list(canonical_runtime_status.get("blockers") or [])
     if not task_ids:
-        launch_blockers.append("missing_task_anchor_manifest")
+        blockers.append("missing_task_anchor_manifest")
     if not available_backends:
-        launch_blockers.append("runtime_manifest_only")
+        blockers.append("runtime_manifest_only")
     if available_backends and not launchable_backends:
-        launch_blockers.append("no_launchable_stage1_backend")
+        blockers.append("no_launchable_stage1_backend")
 
     return {
         "schema_version": "v1",
@@ -1435,7 +1407,7 @@ def _build_hosted_session_runtime_manifest(
         "default_backend": default_backend,
         "customer_facing_runtime": (
             "Hosted site runtime"
-            if default_backend
+            if default_backend and not blockers
             else "Qualified site package"
         ),
         "task_ids": task_ids,
@@ -1452,8 +1424,12 @@ def _build_hosted_session_runtime_manifest(
         "supports_step_rollout": runtime_capabilities["supports_step_rollout"],
         "supports_batch_rollout": runtime_capabilities["supports_batch_rollout"],
         "supports_camera_views": runtime_capabilities["supports_camera_views"],
-        "launchable": len(launch_blockers) == 0,
-        "launch_blockers": launch_blockers,
+        "grounding_status": canonical_runtime_status.get("grounding_status"),
+        "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
+        "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+        "launchable": len(blockers) == 0,
+        "blockers": blockers,
+        "launch_blockers": list(blockers),
         "adapter_manifest_uris": {
             backend: _gs_uri(
                 context, f"scene_memory/adapter_manifests/{backend}.json"
@@ -2016,6 +1992,20 @@ def run_evaluation_prep_stage(
     presentation_variance_policy_path = eval_dir / "presentation_variance_policy.json"
     _copy_json(presentation_variance_policy_path, presentation_variance_policy)
 
+    runtime_service_url = (os.getenv("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip().rstrip("/")
+    canonical_runtime_status = _canonical_site_world_runtime_status(
+        qualification_state=normalized_handoff.get("qualification_state"),
+        downstream_evaluation_eligibility=bool(normalized_handoff.get("downstream_evaluation_eligibility")),
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        protected_regions_manifest=protected_regions_manifest,
+        required_runtime_artifact_paths=[
+            protected_regions_manifest_path,
+            canonical_render_policy_path,
+            presentation_variance_policy_path,
+        ],
+        runtime_service_url=runtime_service_url,
+    )
+
     site_world_spec = _build_site_world_spec(
         context=context,
         eval_dir=eval_dir,
@@ -2027,6 +2017,7 @@ def run_evaluation_prep_stage(
         protected_regions_manifest=protected_regions_manifest,
         canonical_render_policy=canonical_render_policy,
         presentation_variance_policy=presentation_variance_policy,
+        canonical_runtime_status=canonical_runtime_status,
         canonical_package_version=None,
     )
     scene_memory_manifest_path = pipeline_dir / "scene_memory" / "scene_memory_manifest.json"
@@ -2072,6 +2063,18 @@ def run_evaluation_prep_stage(
         geometry_bundle_manifest=geometry_bundle_manifest,
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
     )
+    canonical_runtime_status = _canonical_site_world_runtime_status(
+        qualification_state=normalized_handoff.get("qualification_state"),
+        downstream_evaluation_eligibility=bool(normalized_handoff.get("downstream_evaluation_eligibility")),
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        protected_regions_manifest=protected_regions_manifest,
+        required_runtime_artifact_paths=[
+            protected_regions_manifest_path,
+            canonical_render_policy_path,
+            presentation_variance_policy_path,
+        ],
+        runtime_service_url=runtime_service_url,
+    )
     site_world_spec = _build_site_world_spec(
         context=context,
         eval_dir=eval_dir,
@@ -2083,6 +2086,7 @@ def run_evaluation_prep_stage(
         protected_regions_manifest=protected_regions_manifest,
         canonical_render_policy=canonical_render_policy,
         presentation_variance_policy=presentation_variance_policy,
+        canonical_runtime_status=canonical_runtime_status,
         canonical_package_version=None,
     )
     canonical_package_version = compute_canonical_package_version(
@@ -2125,6 +2129,7 @@ def run_evaluation_prep_stage(
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
         task_anchor_manifest=task_anchor_manifest,
         task_run_manifest=task_run_manifest,
+        canonical_runtime_status=canonical_runtime_status,
         canonical_package_version=canonical_package_version,
     )
     hosted_session_runtime_manifest_path = eval_dir / "hosted_session_runtime_manifest.json"
@@ -2133,6 +2138,7 @@ def run_evaluation_prep_stage(
     site_world_registration, site_world_health = _build_site_world_runtime_records(
         context=context,
         spec=site_world_spec,
+        canonical_runtime_status=canonical_runtime_status,
     )
     site_world_registration.setdefault("canonical_package_version", canonical_package_version)
     site_world_health.setdefault("canonical_package_version", canonical_package_version)
@@ -2286,6 +2292,9 @@ def run_evaluation_prep_stage(
             _append_degradation(item)
     if object_count == 0:
         _append_degradation("object_geometry:missing")
+    empty_index_cause = str(object_geometry_manifest.get("empty_index_cause") or "").strip() if isinstance(object_geometry_manifest, Mapping) else ""
+    if empty_index_cause:
+        _append_degradation(f"empty_index_cause:{empty_index_cause}")
     status = "ready_for_validation"
     if qualification_state != "ready" or not eligibility:
         status = "not_ready_for_validation"
@@ -2307,6 +2316,11 @@ def run_evaluation_prep_stage(
         "world_model_classification": validation_summary["world_model_classification"],
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
+        "grounding_status": protected_regions_manifest.get("grounding_status"),
+        "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
+        "empty_index_cause": object_geometry_manifest.get("empty_index_cause")
+        if isinstance(object_geometry_manifest, Mapping)
+        else None,
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,

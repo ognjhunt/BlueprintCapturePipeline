@@ -252,6 +252,70 @@ def _configure_runtime_client(monkeypatch) -> None:
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _FakeClient)
 
 
+def _configure_runtime_client_with_smoke_failure(monkeypatch) -> None:
+    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.local")
+
+    class _FakeClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def build_site_world(self, spec):
+            return {
+                "schema_version": "v1",
+                "site_world_id": spec["site_world_id"],
+                "build_id": "build-1",
+                "scene_id": spec["scene_id"],
+                "capture_id": spec["capture_id"],
+                "status": "ready",
+                "runtime_base_url": "http://runtime.local",
+                "websocket_base_url": "ws://runtime.local",
+                "vm_instance_id": "vast-123",
+                "supported_cameras": ["head_rgb", "wrist_rgb"],
+                "scenario_catalog": spec["scenario_catalog"],
+                "start_state_catalog": spec["start_state_catalog"],
+                "task_catalog": spec["task_catalog"],
+                "robot_profiles": spec["robot_profiles"],
+                "runtime_capabilities": {
+                    "supports_step_rollout": True,
+                    "supports_batch_rollout": True,
+                    "supports_camera_views": True,
+                    "supports_stream": True,
+                },
+                "health": {
+                    "schema_version": "v1",
+                    "site_world_id": spec["site_world_id"],
+                    "build_id": "build-1",
+                    "healthy": True,
+                    "launchable": True,
+                    "status": "healthy",
+                    "blockers": [],
+                    "warnings": [],
+                    "last_heartbeat_at": "2026-03-12T00:00:00Z",
+                },
+            }
+
+        def get_site_world_health(self, _site_world_id):
+            return {
+                "schema_version": "v1",
+                "site_world_id": "siteworld",
+                "build_id": "build-1",
+                "healthy": True,
+                "launchable": True,
+                "status": "healthy",
+                "blockers": [],
+                "warnings": [],
+                "last_heartbeat_at": "2026-03-12T00:00:00Z",
+            }
+
+        def create_session(self, *_args, **_kwargs):
+            raise RuntimeError("smoke failed")
+
+        def reset_session(self, *_args, **_kwargs):
+            return {"episode": {"episodeId": "runtime-session-1"}}
+
+    monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _FakeClient)
+
+
 def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path, monkeypatch) -> None:
     capture_root = _build_capture(tmp_path)
     _configure_runtime_client(monkeypatch)
@@ -307,12 +371,18 @@ def test_evaluation_prep_stage_writes_required_contract(tmp_path: Path, monkeypa
     assert scene_memory_bundle["canonical_package_version"] == site_world_spec["canonical_package_version"]
     assert hosted_session_runtime["canonical_package_version"] == site_world_spec["canonical_package_version"]
     assert hosted_session_runtime["runtime_capabilities"]["protected_region_locking"] is True
+    assert hosted_session_runtime["blockers"] == []
+    assert hosted_session_runtime["launch_blockers"] == []
     assert protected_regions["regions"][0]["classification"] == "locked"
     assert protected_regions["regions"][0]["task_critical"] is True
     assert site_world_registration["status"] == "ready"
     assert site_world_registration["world_model_classification"] == "validated_site_world"
     assert site_world_registration["runtime_base_url"] == "http://runtime.local"
     assert site_world_registration["runtime_capabilities"]["supports_camera_views"] is True
+    assert site_world_registration["blockers"] == []
+    assert site_world_registration["task_catalog"][0]["task_id"] == "task-1"
+    assert site_world_health["runtime_capabilities"]["supports_camera_views"] is True
+    assert site_world_health["task_catalog"][0]["task_id"] == "task-1"
     assert site_world_health["launchable"] is True
     assert site_world_health["world_model_classification"] == "validated_site_world"
     assert summary["task_count"] == 1
@@ -342,9 +412,10 @@ def test_evaluation_prep_stage_accepts_scene_memory_without_geometry_bundle(tmp_
     assert site_world_health["launchable"] is True
 
 
-def test_evaluation_prep_stage_degrades_when_object_index_is_missing(tmp_path: Path) -> None:
+def test_evaluation_prep_stage_degrades_when_object_index_is_missing(tmp_path: Path, monkeypatch) -> None:
     capture_root = _build_capture(tmp_path)
     (capture_root / "raw" / "object_index.json").unlink()
+    monkeypatch.delenv("NEOVERSE_RUNTIME_SERVICE_URL", raising=False)
 
     result = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
@@ -359,11 +430,15 @@ def test_evaluation_prep_stage_degrades_when_object_index_is_missing(tmp_path: P
     assert object_geometry["objects"] == []
     assert anchors["tasks"][0]["target_object_ids"] == ["1"]
     assert site_world_health["launchable"] is False
-    assert "object_index_path_missing" in site_world_health["warnings"]
+    assert "grounding_status:ungrounded" in site_world_health["blockers"]
+    assert "ungrounded_reason:missing_object_index" in site_world_health["blockers"]
+    assert "missing_runtime_service_url" in site_world_health["blockers"]
+    assert manifest["empty_index_cause"] is None
 
 
 def test_evaluation_prep_stage_marks_empty_object_index_as_prototype(tmp_path: Path) -> None:
     capture_root = _build_capture(tmp_path)
+    _write_json(capture_root / "raw" / "object_index_build_report.json", {"empty_index_cause": "zero_detections"})
     _write_json(capture_root / "raw" / "object_index.json", {"objects": []})
 
     result = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
@@ -378,9 +453,66 @@ def test_evaluation_prep_stage_marks_empty_object_index_as_prototype(tmp_path: P
     assert object_geometry["status"] == "empty_object_index"
     assert object_geometry["object_index_present"] is True
     assert object_geometry["object_index_entry_count"] == 0
+    assert object_geometry["empty_index_cause"] == "zero_detections"
     assert protected_regions["grounding_status"] == "ungrounded"
     assert protected_regions["ungrounded_reason"] == "empty_object_index"
+    assert protected_regions["empty_index_cause"] == "zero_detections"
     assert protected_regions["regions"] == []
     assert site_world_spec["grounding_status"] == "ungrounded"
     assert site_world_spec["runtime_layer_policy"]["grounding_status"] == "ungrounded"
+    assert site_world_spec["empty_index_cause"] == "zero_detections"
+    assert manifest["empty_index_cause"] == "zero_detections"
+    assert "empty_index_cause:zero_detections" in manifest["degradation_reasons"]
     assert site_world_health["world_model_classification"] == "prototype_demo"
+    assert site_world_health["empty_index_cause"] == "zero_detections"
+
+
+def test_evaluation_prep_stage_blocks_runtime_without_service_url_but_keeps_registration_complete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _build_capture(tmp_path)
+    monkeypatch.delenv("NEOVERSE_RUNTIME_SERVICE_URL", raising=False)
+
+    run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    site_world_registration = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_registration.json").read_text(encoding="utf-8"))
+    site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
+    hosted_session_runtime = json.loads((capture_root / "pipeline" / "evaluation_prep" / "hosted_session_runtime_manifest.json").read_text(encoding="utf-8"))
+
+    assert site_world_registration["status"] == "blocked"
+    assert site_world_registration["runtime_capabilities"]["supports_step_rollout"] is False
+    assert site_world_registration["task_catalog"][0]["task_id"] == "task-1"
+    assert site_world_registration["scenario_catalog"]
+    assert site_world_registration["start_state_catalog"]
+    assert site_world_registration["robot_profiles"]
+    assert "missing_runtime_service_url" in site_world_registration["blockers"]
+    assert site_world_health["status"] == "blocked"
+    assert site_world_health["runtime_capabilities"]["supports_step_rollout"] is False
+    assert site_world_health["task_catalog"][0]["task_id"] == "task-1"
+    assert "missing_runtime_service_url" in site_world_health["blockers"]
+    assert hosted_session_runtime["launchable"] is False
+    assert hosted_session_runtime["customer_facing_runtime"] == "Qualified site package"
+    assert "missing_runtime_service_url" in hosted_session_runtime["blockers"]
+    assert hosted_session_runtime["blockers"] == hosted_session_runtime["launch_blockers"]
+
+
+def test_evaluation_prep_stage_runtime_smoke_failure_only_degrades_health(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _build_capture(tmp_path)
+    _configure_runtime_client_with_smoke_failure(monkeypatch)
+
+    run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    site_world_registration = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_registration.json").read_text(encoding="utf-8"))
+    site_world_health = json.loads((capture_root / "pipeline" / "evaluation_prep" / "site_world_health.json").read_text(encoding="utf-8"))
+
+    assert site_world_registration["status"] == "ready"
+    assert site_world_registration["task_catalog"][0]["task_id"] == "task-1"
+    assert site_world_registration["robot_profiles"]
+    assert site_world_health["status"] == "degraded"
+    assert site_world_health["launchable"] is False
+    assert site_world_health["task_catalog"][0]["task_id"] == "task-1"
+    assert any(str(item).startswith("runtime_smoke_failed:") for item in site_world_health["blockers"])
