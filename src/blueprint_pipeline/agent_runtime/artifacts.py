@@ -52,12 +52,9 @@ def _read_required_json(path: Path, label: str) -> Dict[str, Any]:
 
 def _supplemental_geometry(context: LocalCaptureContext) -> List[Dict[str, Any]]:
     candidates = [
-        ("advanced_geometry_bundle", context.pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json"),
-        ("compressed_splat", context.pipeline_root / "advanced_geometry" / "3dgs_compressed.ply"),
-        ("nurec_refined_ply", context.pipeline_root / "nurec" / "export_last_refined.ply"),
-        ("nurec_base_ply", context.pipeline_root / "nurec" / "export_last.ply"),
         ("raw_splat", context.raw_root / "splat.ply"),
         ("raw_gaussian_splat", context.raw_root / "gaussian_splat.ply"),
+        ("raw_compressed_splat", context.raw_root / "3dgs_compressed.ply"),
     ]
     out = []
     for role, path in candidates:

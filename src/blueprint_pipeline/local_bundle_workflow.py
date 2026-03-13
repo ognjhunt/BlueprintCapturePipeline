@@ -15,7 +15,7 @@ from .evaluation_prep_stage import run_evaluation_prep_stage
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .preflight_capture import build_capture_preflight_report
-from .swap_orchestrator import OrchestratorConfig
+from .capture_orchestrator import PipelineConfig
 
 
 @dataclass(frozen=True)
@@ -146,15 +146,7 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
 
 def remaining_runtime_requirements() -> Dict[str, list[str]]:
     return {
-        "neoverse_local_stage1": [
-            "NEOVERSE_CMD_TEMPLATE",
-            "or NEOVERSE_EXECUTABLE",
-        ],
-        "gen3c_remote_stage1": [
-            "GEN3C_SERVICE_URL",
-            "GEN3C_SERVICE_API_KEY",
-            "or WORLD_MODEL_SERVICE_URL + WORLD_MODEL_SERVICE_API_KEY",
-        ],
+        "neoverse_runtime": ["NEOVERSE_RUNTIME_SERVICE_URL"],
         "agent_review_openai": [
             "codex CLI installed",
             "Codex login via local OAuth/session",
@@ -207,10 +199,8 @@ def run_local_bundle_workflow(
         qualification_result = run_capture_pipeline(
             descriptor_gcs_uri=context.descriptor_uri,
             lane="qualification",
-            config=OrchestratorConfig(
+            config=PipelineConfig(
                 gcs_root=context.storage_root,
-                fail_on_commit_mismatch=False,
-                expected_blueprintpipeline_commit="",
             ),
         )
         if run_evaluation_prep:

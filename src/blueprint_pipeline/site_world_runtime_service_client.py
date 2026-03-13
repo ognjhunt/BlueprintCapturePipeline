@@ -1,9 +1,10 @@
-"""Client for the persistent NeoVerse site-world runtime service."""
+"""Client for optional downstream NeoVerse site-world package registration."""
 
 from __future__ import annotations
 
 import json
 import os
+import warnings
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib import error as urllib_error
@@ -88,6 +89,13 @@ class SiteWorldRuntimeServiceClient:
         )
 
     def build_site_world(self, spec: Mapping[str, Any]) -> Mapping[str, Any]:
+        warnings.warn(
+            "build_site_world(spec) is deprecated. "
+            "Use register_site_world_package(spec=..., registration=..., health=...) "
+            "to submit a prebuilt canonical package.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._request_json(method="POST", path="/v1/site-worlds", payload=spec)
 
     def get_site_world(self, site_world_id: str) -> Mapping[str, Any]:

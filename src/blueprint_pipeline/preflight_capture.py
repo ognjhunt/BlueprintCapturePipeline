@@ -40,9 +40,6 @@ def _splat_candidates(context: LocalCaptureContext) -> List[str]:
         context.raw_root / "3dgs_compressed.ply",
         context.raw_root / "gaussian_splat.ply",
         context.raw_root / "splat.ply",
-        context.pipeline_root / "advanced_geometry" / "3dgs_compressed.ply",
-        context.pipeline_root / "nurec" / "export_last_refined.ply",
-        context.pipeline_root / "nurec" / "export_last.ply",
     ]
     return [str(path) for path in candidates if path.is_file()]
 

@@ -1,4 +1,8 @@
-"""Compatibility wrappers for shared runtime-layer grounding contracts."""
+"""Thin wrappers for shared BlueprintContracts runtime-layer contracts.
+
+This module intentionally does not own contract behavior; BlueprintContracts is
+the source of truth for portable runtime-layer and canonical-package semantics.
+"""
 
 from __future__ import annotations
 

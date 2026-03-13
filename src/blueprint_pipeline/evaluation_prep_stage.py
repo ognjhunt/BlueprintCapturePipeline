@@ -756,6 +756,54 @@ def _read_json_object(path: Path) -> Dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+_CANONICAL_HASH_VOLATILE_KEYS = {
+    "canonical_package_version",
+    "generated_at",
+    "last_heartbeat_at",
+    "runtime_registration_attempt",
+    "runtime_registration_attempted",
+    "runtime_registration_status",
+}
+
+
+def _canonical_hash_payload(payload: Any) -> Any:
+    # Pipeline strips transport/runtime timestamps before delegating hashing to
+    # BlueprintContracts so repeated package builds remain deterministic.
+    if isinstance(payload, Mapping):
+        return {
+            str(key): _canonical_hash_payload(value)
+            for key, value in payload.items()
+            if str(key) not in _CANONICAL_HASH_VOLATILE_KEYS
+        }
+    if isinstance(payload, list):
+        return [_canonical_hash_payload(item) for item in payload]
+    return payload
+
+
+def _runtime_registration_attempt(
+    *,
+    attempted: bool,
+    status: str,
+    reason: Optional[str],
+    spec: Mapping[str, Any],
+    registration: Mapping[str, Any],
+    health: Mapping[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "mode": "optional_downstream_package_registration",
+        "attempted": attempted,
+        "status": status,
+        "reason": reason,
+        "submitted_package": {
+            "site_world_id": registration.get("site_world_id"),
+            "canonical_package_version": spec.get("canonical_package_version"),
+            "spec_uri": spec.get("canonical_package_uri"),
+            "registration_uri": registration.get("canonical_artifact_uri"),
+            "health_uri": health.get("canonical_artifact_uri"),
+        },
+    }
+
+
 def _task_critical_ids_from_manifest(task_anchor_manifest: Mapping[str, Any]) -> set[str]:
     tasks = (
         task_anchor_manifest.get("tasks")
@@ -1069,6 +1117,20 @@ def _build_site_world_runtime_records(
             "authoritative_record": True,
             "last_heartbeat_at": utc_now_iso(),
         }
+        registration_attempt = _runtime_registration_attempt(
+            attempted=False,
+            status="skipped",
+            reason="runtime_registration_blocked",
+            spec=spec,
+            registration=registration,
+            health=health,
+        )
+        registration["runtime_registration_attempted"] = False
+        registration["runtime_registration_status"] = "skipped"
+        registration["runtime_registration_attempt"] = registration_attempt
+        health["runtime_registration_attempted"] = False
+        health["runtime_registration_status"] = "skipped"
+        health["runtime_registration_attempt"] = dict(registration_attempt)
         return registration, health
 
     registration = {
@@ -1133,17 +1195,73 @@ def _build_site_world_runtime_records(
         "authoritative_record": True,
         "last_heartbeat_at": utc_now_iso(),
     }
+    registration_attempt = _runtime_registration_attempt(
+        attempted=True,
+        status="submitted",
+        reason=None,
+        spec=spec,
+        registration=registration,
+        health=health,
+    )
+    registration["runtime_registration_attempted"] = True
+    registration["runtime_registration_status"] = "submitted"
+    registration["runtime_registration_attempt"] = registration_attempt
+    health["runtime_registration_attempted"] = True
+    health["runtime_registration_status"] = "submitted"
+    health["runtime_registration_attempt"] = dict(registration_attempt)
+    prebuilt_package_payload = {
+        "spec": dict(spec),
+        "registration": dict(registration),
+        "health": dict(health),
+    }
 
     client = SiteWorldRuntimeServiceClient(SiteWorldRuntimeServiceConfig.from_env())
-    build_payload = dict(
-        client.register_site_world_package(
+    try:
+        registration_response_payload = dict(
+            client.register_site_world_package(
+                spec=prebuilt_package_payload["spec"],
+                registration=prebuilt_package_payload["registration"],
+                health=prebuilt_package_payload["health"],
+            )
+        )
+    except Exception as exc:
+        failure_blocker = f"runtime_registration_failed:{exc}"
+        registration["status"] = "blocked"
+        registration["runtime_capabilities"] = _runtime_capabilities_payload(launchable=False)
+        registration["blockers"] = list(
+            dict.fromkeys([*list(canonical_runtime_status.get("blockers") or []), failure_blocker])
+        )
+        registration["warnings"] = list(canonical_runtime_status.get("warnings") or [])
+        registration["runtime_registration_attempted"] = True
+        registration["runtime_registration_status"] = "failed"
+        registration["runtime_registration_attempt"] = _runtime_registration_attempt(
+            attempted=True,
+            status="failed",
+            reason=str(exc),
             spec=spec,
             registration=registration,
             health=health,
         )
-    )
+        health = {
+            **health,
+            "healthy": False,
+            "launchable": False,
+            "status": "degraded",
+            "blockers": list(dict.fromkeys([*list(canonical_runtime_status.get("blockers") or []), failure_blocker])),
+            "warnings": list(canonical_runtime_status.get("warnings") or []),
+            "last_heartbeat_at": utc_now_iso(),
+            "runtime_registration_attempted": True,
+            "runtime_registration_status": "failed",
+            "runtime_registration_attempt": dict(registration["runtime_registration_attempt"]),
+        }
+        health["runtime_capabilities"] = _runtime_capabilities_payload(
+            launchable=False,
+            base=health.get("runtime_capabilities"),
+        )
+        return registration, health
+
     runtime_registration = {
-        key: build_payload.get(key)
+        key: registration_response_payload.get(key)
         for key in (
             "schema_version",
             "site_world_id",
@@ -1177,11 +1295,11 @@ def _build_site_world_runtime_records(
             "derivation_mode",
             "authoritative_record",
         )
-        if key in build_payload and build_payload.get(key) is not None
+        if key in registration_response_payload and registration_response_payload.get(key) is not None
     }
     registration.update(runtime_registration)
     health = dict(
-        build_payload.get("health")
+        registration_response_payload.get("health")
         or client.get_site_world_health(str(registration.get("site_world_id") or site_world_id))
     )
     registration["blockers"] = list(
@@ -1237,6 +1355,19 @@ def _build_site_world_runtime_records(
     registration.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
     registration.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
     registration.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
+    registration.setdefault("runtime_registration_attempted", True)
+    registration.setdefault("runtime_registration_status", "submitted")
+    registration.setdefault(
+        "runtime_registration_attempt",
+        _runtime_registration_attempt(
+            attempted=True,
+            status=str(registration.get("runtime_registration_status") or "submitted"),
+            reason=None,
+            spec=spec,
+            registration=registration,
+            health=health,
+        ),
+    )
     health.setdefault("scene_id", context.scene_id)
     health.setdefault("capture_id", context.capture_id)
     health.setdefault("site_submission_id", spec.get("site_submission_id"))
@@ -1259,6 +1390,15 @@ def _build_site_world_runtime_records(
     health.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
     health.setdefault("derivation_mode", policy.output_policy)
     health.setdefault("authoritative_record", True)
+    health.setdefault("runtime_registration_attempted", registration.get("runtime_registration_attempted", True))
+    health.setdefault(
+        "runtime_registration_status",
+        str(registration.get("runtime_registration_status") or "submitted"),
+    )
+    health.setdefault(
+        "runtime_registration_attempt",
+        dict(registration.get("runtime_registration_attempt") or {}),
+    )
     health["runtime_capabilities"] = _runtime_capabilities_payload(
         launchable=bool(health.get("launchable", False)),
         base=health.get("runtime_capabilities")
@@ -2077,14 +2217,16 @@ def run_evaluation_prep_stage(
     scene_memory_manifest = _read_json_object(scene_memory_manifest_path)
     conditioning_bundle = _read_json_object(conditioning_bundle_path)
     canonical_package_version = compute_canonical_package_version(
-        scene_memory_manifest=scene_memory_manifest,
-        conditioning_bundle=conditioning_bundle,
-        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
-        task_anchor_manifest=task_anchor_manifest,
-        site_world_spec=site_world_spec,
-        protected_regions_manifest=protected_regions_manifest,
-        canonical_render_policy=canonical_render_policy,
-        presentation_variance_policy=presentation_variance_policy,
+        scene_memory_manifest=_canonical_hash_payload(scene_memory_manifest),
+        conditioning_bundle=_canonical_hash_payload(conditioning_bundle),
+        object_geometry_manifest=_canonical_hash_payload(
+            object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {}
+        ),
+        task_anchor_manifest=_canonical_hash_payload(task_anchor_manifest),
+        site_world_spec=_canonical_hash_payload(site_world_spec),
+        protected_regions_manifest=_canonical_hash_payload(protected_regions_manifest),
+        canonical_render_policy=_canonical_hash_payload(canonical_render_policy),
+        presentation_variance_policy=_canonical_hash_payload(presentation_variance_policy),
     )
     site_world_spec["canonical_package_version"] = canonical_package_version
     site_world_spec_path = eval_dir / "site_world_spec.json"
@@ -2142,14 +2284,16 @@ def run_evaluation_prep_stage(
         canonical_package_version=None,
     )
     canonical_package_version = compute_canonical_package_version(
-        scene_memory_manifest=_read_json_object(scene_memory_manifest_path),
-        conditioning_bundle=_read_json_object(conditioning_bundle_path),
-        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
-        task_anchor_manifest=task_anchor_manifest,
-        site_world_spec=site_world_spec,
-        protected_regions_manifest=protected_regions_manifest,
-        canonical_render_policy=canonical_render_policy,
-        presentation_variance_policy=presentation_variance_policy,
+        scene_memory_manifest=_canonical_hash_payload(_read_json_object(scene_memory_manifest_path)),
+        conditioning_bundle=_canonical_hash_payload(_read_json_object(conditioning_bundle_path)),
+        object_geometry_manifest=_canonical_hash_payload(
+            object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {}
+        ),
+        task_anchor_manifest=_canonical_hash_payload(task_anchor_manifest),
+        site_world_spec=_canonical_hash_payload(site_world_spec),
+        protected_regions_manifest=_canonical_hash_payload(protected_regions_manifest),
+        canonical_render_policy=_canonical_hash_payload(canonical_render_policy),
+        presentation_variance_policy=_canonical_hash_payload(presentation_variance_policy),
     )
     site_world_spec["canonical_package_version"] = canonical_package_version
     _copy_json(site_world_spec_path, site_world_spec)
@@ -2347,14 +2491,23 @@ def run_evaluation_prep_stage(
     empty_index_cause = str(object_geometry_manifest.get("empty_index_cause") or "").strip() if isinstance(object_geometry_manifest, Mapping) else ""
     if empty_index_cause:
         _append_degradation(f"empty_index_cause:{empty_index_cause}")
-    status = "ready_for_validation"
+    # Legacy status values are kept for compatibility with existing consumers.
+    legacy_status = "ready_for_validation"
     if qualification_state != "ready" or not eligibility:
-        status = "not_ready_for_validation"
+        legacy_status = "not_ready_for_validation"
     elif degradation_reasons:
-        status = "degraded_but_usable"
+        legacy_status = "degraded_but_usable"
+    canonical_package_status = (
+        "registration_blocked"
+        if not bool(canonical_runtime_status.get("launchable"))
+        else "degraded_but_usable"
+        if degradation_reasons
+        else "ready_for_runtime_registration"
+    )
 
     task_ids = [str(task.get("task_id") or "") for task in task_anchor_manifest.get("tasks", []) if isinstance(task, Mapping)]
     task_categories = sorted({str(task.get("task_category") or "generic") for task in task_anchor_manifest.get("tasks", []) if isinstance(task, Mapping)})
+    runtime_registration_attempt = dict(site_world_registration.get("runtime_registration_attempt") or {})
     manifest = {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
@@ -2365,6 +2518,7 @@ def run_evaluation_prep_stage(
         "qualification_state": qualification_state,
         "downstream_evaluation_eligibility": eligibility,
         "readiness_state": str(normalized_handoff.get("readiness_state") or qualification_state),
+        "canonical_package_status": canonical_package_status,
         "world_model_classification": validation_summary["world_model_classification"],
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
@@ -2390,8 +2544,11 @@ def run_evaluation_prep_stage(
         "task_ids": task_ids,
         "task_categories": task_categories,
         "source_handoff_path": _relative_to(eval_dir, pipeline_dir / "opportunity_handoff.json"),
-        "status": status,
+        "status": legacy_status,
         "degradation_reasons": degradation_reasons,
+        "runtime_registration_attempted": bool(site_world_registration.get("runtime_registration_attempted")),
+        "runtime_registration_status": str(site_world_registration.get("runtime_registration_status") or "unknown"),
+        "runtime_registration_attempt": runtime_registration_attempt,
         "artifacts": {
             "qualified_opportunity_handoff": _relative_to(eval_dir, rich_handoff_path),
             "scene_memory_bundle_manifest": _relative_to(eval_dir, scene_memory_bundle_manifest_path),
@@ -2432,7 +2589,8 @@ def run_evaluation_prep_stage(
         "schema_version": "v1",
         "capture_root": str(context.capture_root),
         "manifest_path": str(manifest_path),
-        "status": status,
+        "status": legacy_status,
+        "canonical_package_status": canonical_package_status,
     }
 
 

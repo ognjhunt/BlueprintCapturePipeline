@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
 from .common import PipelineError, parse_gs_uri, resolve_gs_uri_to_path
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .qualification import run_qualification_pipeline
-from .swap_orchestrator import OrchestratorConfig, run_swap_pipeline
 
-_SUPPORTED_LANES = {"qualification", "scene_memory", "advanced_geometry", "evaluation_prep", "all"}
+_SUPPORTED_LANES = {"qualification", "scene_memory", "evaluation_prep", "all"}
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    gcs_root: Path = Path(os.getenv("GCS_ROOT", "/mnt/gcs"))
 
 
 def _normalize_lane_value(raw: Optional[str]) -> Optional[str]:
@@ -34,18 +40,16 @@ def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
         if lane is None:
             continue
         if lane == "all":
-            for expanded in ("qualification", "scene_memory", "advanced_geometry", "evaluation_prep"):
+            for expanded in ("qualification", "scene_memory", "evaluation_prep"):
                 if expanded not in normalized:
                     normalized.append(expanded)
             continue
-        if lane == "advanced_geometry" and "scene_memory" not in normalized:
-            normalized.append("scene_memory")
         if lane == "evaluation_prep" and "qualification" not in normalized:
             normalized.append("qualification")
         if lane not in normalized:
             normalized.append(lane)
     ordered: List[str] = []
-    for lane in ("qualification", "scene_memory", "advanced_geometry", "evaluation_prep"):
+    for lane in ("qualification", "scene_memory", "evaluation_prep"):
         if lane in normalized and lane not in ordered:
             ordered.append(lane)
     return ordered
@@ -96,11 +100,9 @@ def run_capture_pipeline(
     descriptor_gcs_uri: str,
     lane: Optional[str] = None,
     requested_lanes: Optional[List[str]] = None,
-    config: Optional[OrchestratorConfig] = None,
-    nurec_client: Any = None,
-    blueprint_runner: Any = None,
+    config: Optional[PipelineConfig] = None,
 ) -> Dict[str, Any]:
-    cfg = config or OrchestratorConfig()
+    cfg = config or PipelineConfig()
     lanes = resolve_requested_lanes(
         descriptor_gcs_uri=descriptor_gcs_uri,
         gcs_root=cfg.gcs_root,
@@ -110,7 +112,6 @@ def run_capture_pipeline(
 
     results: List[Dict[str, Any]] = []
     qualification_result: Optional[Dict[str, Any]] = None
-    advanced_geometry_result: Optional[Dict[str, Any]] = None
     for selected_lane in lanes:
         if selected_lane in {"qualification", "scene_memory"}:
             if qualification_result is None:
@@ -132,15 +133,6 @@ def run_capture_pipeline(
                     }
                 )
             continue
-        if selected_lane == "advanced_geometry":
-            advanced_geometry_result = run_swap_pipeline(
-                descriptor_gcs_uri=descriptor_gcs_uri,
-                config=cfg,
-                nurec_client=nurec_client,
-                blueprint_runner=blueprint_runner,
-            )
-            results.append(advanced_geometry_result)
-            continue
         if selected_lane == "evaluation_prep":
             if qualification_result is None:
                 qualification_result = run_qualification_pipeline(
@@ -159,9 +151,6 @@ def run_capture_pipeline(
                 "pipeline_prefix": qualification_result.get("pipeline_prefix"),
                 "source": "evaluation_prep_artifacts",
                 "manifest_path": evaluation_prep_result.get("manifest_path"),
-                "advanced_geometry_source": advanced_geometry_result.get("pipeline_prefix")
-                if isinstance(advanced_geometry_result, Mapping)
-                else None,
             }
             results.append(lane_result)
             continue
@@ -187,7 +176,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--lane",
         default=None,
-        help="qualification, scene_memory, advanced_geometry, evaluation_prep, or all",
+        help="qualification, scene_memory, evaluation_prep, or all",
     )
     args = parser.parse_args(argv)
 

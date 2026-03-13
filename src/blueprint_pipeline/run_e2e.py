@@ -7,14 +7,12 @@ from typing import List, Optional
 
 from .agent_runtime.orchestrator import run_agent_review
 from .agent_runtime.openai_phase2 import OpenAIPhase2Config
-from .capture_orchestrator import run_capture_pipeline
+from .capture_orchestrator import PipelineConfig, run_capture_pipeline
 from .common import PipelineError
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .preflight_capture import build_capture_preflight_report
-from .simready_stage import run_simready_stage
-from .swap_orchestrator import OrchestratorConfig
 
 
 def run_end_to_end(
@@ -24,8 +22,6 @@ def run_end_to_end(
     openai_phase2_config: Optional[OpenAIPhase2Config] = None,
     run_evaluation_prep: bool = False,
     evaluation_prep_provider: str = "manual",
-    run_simready: bool = False,
-    simready_provider: str = "manual",
 ) -> dict:
     context = resolve_local_capture_context(capture_root)
     preflight = build_capture_preflight_report(context.capture_root)
@@ -49,7 +45,7 @@ def run_end_to_end(
     pipeline = run_capture_pipeline(
         descriptor_gcs_uri=context.descriptor_uri,
         lane="qualification",
-        config=OrchestratorConfig(gcs_root=context.storage_root),
+        config=PipelineConfig(gcs_root=context.storage_root),
     )
     review = run_agent_review(
         capture_root=context.capture_root,
@@ -65,14 +61,6 @@ def run_end_to_end(
         if run_evaluation_prep
         else None
     )
-    simready_result = (
-        run_simready_stage(
-            capture_root=context.capture_root,
-            provider_name=simready_provider,
-        )
-        if run_simready
-        else None
-    )
     return {
         "schema_version": "v1",
         "capture_root": str(context.capture_root),
@@ -83,7 +71,6 @@ def run_end_to_end(
         "final_memo_path": review.get("final_memo_path"),
         "final_bundle_path": review.get("final_bundle_path"),
         "evaluation_prep": evaluation_prep_result,
-        "simready": simready_result,
     }
 
 
@@ -98,8 +85,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--openai-phase2-reasoning-effort")
     parser.add_argument("--run-evaluation-prep", action="store_true")
     parser.add_argument("--evaluation-prep-provider", default="manual")
-    parser.add_argument("--run-simready", action="store_true")
-    parser.add_argument("--simready-provider", default="manual")
     args = parser.parse_args(argv)
 
     openai_phase2_config = None
@@ -128,8 +113,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             openai_phase2_config=openai_phase2_config,
             run_evaluation_prep=bool(args.run_evaluation_prep),
             evaluation_prep_provider=args.evaluation_prep_provider,
-            run_simready=bool(args.run_simready),
-            simready_provider=args.simready_provider,
         )
     except Exception as exc:
         print(f"[run-e2e] FAILED: {exc}")
@@ -141,8 +124,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"[run-e2e] final_bundle={result['final_bundle_path']}")
     if result.get("evaluation_prep"):
         print(f"[run-e2e] evaluation_prep={result['evaluation_prep']['manifest_path']}")
-    if result.get("simready"):
-        print(f"[run-e2e] simready_scene={result['simready']['scene_path']}")
     return 0
 
 

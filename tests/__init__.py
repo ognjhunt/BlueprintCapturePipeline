@@ -1,1 +1,0 @@
-"""Blueprint Capture Pipeline Tests."""

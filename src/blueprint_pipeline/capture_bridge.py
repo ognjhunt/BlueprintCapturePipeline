@@ -1,4 +1,4 @@
-"""Capture descriptor contracts for site-world orchestration with legacy compatibility lanes."""
+"""Capture descriptor contracts for site-world orchestration."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _ALLOWED_SWAP_FOCUS = {
     "brownfield_site",
 }
 _ALLOWED_ENVIRONMENT_HINTS = set(_ALLOWED_SWAP_FOCUS)
-_ALLOWED_REQUESTED_LANES = {"qualification", "scene_memory", "advanced_geometry", "evaluation_prep"}
+_ALLOWED_REQUESTED_LANES = {"qualification", "scene_memory", "evaluation_prep"}
 _ALLOWED_CAPTURE_MODALITIES = {
     "iphone_arkit_lidar",
     "glasses_video_only",
@@ -118,22 +118,18 @@ def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
         if not lowered:
             continue
         if lowered == "all":
-            for lane in ("qualification", "scene_memory", "advanced_geometry"):
+            for lane in ("qualification", "scene_memory", "evaluation_prep"):
                 if lane not in normalized:
                     normalized.append(lane)
             continue
         if lowered in _ALLOWED_REQUESTED_LANES and lowered not in normalized:
             normalized.append(lowered)
-            if lowered == "advanced_geometry" and "scene_memory" not in normalized:
-                normalized.append("scene_memory")
             if lowered == "evaluation_prep" and "qualification" not in normalized:
                 normalized.append("qualification")
-    if "advanced_geometry" in normalized and "scene_memory" not in normalized:
-        normalized.append("scene_memory")
     if "evaluation_prep" in normalized and "qualification" not in normalized:
         normalized.append("qualification")
     ordered: List[str] = []
-    for lane in ("qualification", "scene_memory", "advanced_geometry", "evaluation_prep"):
+    for lane in ("qualification", "scene_memory", "evaluation_prep"):
         if lane in normalized and lane not in ordered:
             ordered.append(lane)
     return ordered or ["qualification"]
