@@ -44,6 +44,20 @@ It reuses existing jobs and helper logic from:
 
 - `/Users/nijelhunt_1/workspace/BlueprintPipeline`
 
+## Local Setup
+
+Use the pinned local interpreter and the CPU-safe default dependency set:
+
+```bash
+uv sync --extra dev
+```
+
+Optional geometry/simulation dependencies are now explicit extras:
+
+```bash
+uv sync --extra dev --extra geometry --extra sim
+```
+
 ## Entry Points
 
 Default lane orchestrator:
@@ -633,5 +647,11 @@ Worker entrypoints in `functions/storage_trigger.py`:
 ## Tests
 
 ```bash
-pytest -q
+uv run pytest -q
+```
+
+For local geometry or simulation work, install the optional extras first:
+
+```bash
+uv sync --extra dev --extra geometry --extra sim
 ```

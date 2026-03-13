@@ -43,6 +43,41 @@ def derive_webapp_opportunity_state(*, qualification_state: object) -> str:
     return "not_applicable"
 
 
+def build_webapp_pipeline_attachment_payload(
+    *,
+    site_submission_id: object,
+    request_id: object = None,
+    scene_id: object,
+    capture_id: object,
+    pipeline_prefix: object,
+    qualification_state: object,
+    opportunity_state: object,
+    artifacts: Mapping[str, Any],
+    derived_assets: Optional[Mapping[str, Any]] = None,
+    authoritative_state_update: bool = False,
+) -> Dict[str, Any]:
+    payload = {
+        "schema_version": "v1",
+        "site_submission_id": str(site_submission_id or "").strip(),
+        "request_id": str(request_id or "").strip(),
+        "scene_id": str(scene_id or "").strip(),
+        "capture_id": str(capture_id or "").strip(),
+        "pipeline_prefix": str(pipeline_prefix or "").strip(),
+        "qualification_state": str(qualification_state or "").strip(),
+        "opportunity_state": str(opportunity_state or "").strip(),
+        "authoritative_state_update": bool(authoritative_state_update),
+        "artifacts": {str(key): value for key, value in artifacts.items() if value},
+        "derived_assets": (
+            {str(key): value for key, value in derived_assets.items() if value}
+            if isinstance(derived_assets, Mapping)
+            else {}
+        ),
+    }
+    if not payload["site_submission_id"] and not payload["request_id"]:
+        raise ValueError("site_submission_id or request_id is required")
+    return payload
+
+
 def sync_webapp_pipeline_attachment(
     *,
     site_submission_id: object,
@@ -54,28 +89,25 @@ def sync_webapp_pipeline_attachment(
     opportunity_state: object,
     artifacts: Mapping[str, Any],
     derived_assets: Optional[Mapping[str, Any]] = None,
+    authoritative_state_update: bool = False,
 ) -> Optional[Dict[str, Any]]:
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
     sync_token = _string_env("PIPELINE_SYNC_TOKEN")
     if not sync_url or not sync_token:
         return None
 
-    payload = {
-        "schema_version": "v1",
-        "site_submission_id": str(site_submission_id or "").strip(),
-        "request_id": str(request_id or "").strip(),
-        "scene_id": str(scene_id or "").strip(),
-        "capture_id": str(capture_id or "").strip(),
-        "pipeline_prefix": str(pipeline_prefix or "").strip(),
-        "qualification_state": str(qualification_state or "").strip(),
-        "opportunity_state": str(opportunity_state or "").strip(),
-        "artifacts": {str(key): value for key, value in artifacts.items() if value},
-        "derived_assets": (
-            {str(key): value for key, value in derived_assets.items() if value}
-            if isinstance(derived_assets, Mapping)
-            else {}
-        ),
-    }
+    payload = build_webapp_pipeline_attachment_payload(
+        site_submission_id=site_submission_id,
+        request_id=request_id,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        pipeline_prefix=pipeline_prefix,
+        qualification_state=qualification_state,
+        opportunity_state=opportunity_state,
+        artifacts=artifacts,
+        derived_assets=derived_assets,
+        authoritative_state_update=authoritative_state_update,
+    )
     request = urllib_request.Request(
         sync_url,
         data=json.dumps(payload).encode("utf-8"),

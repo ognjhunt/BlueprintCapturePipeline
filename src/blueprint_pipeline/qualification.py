@@ -3007,6 +3007,7 @@ def run_qualification_pipeline(
             pipeline_prefix=pipeline_prefix,
             qualification_state=qualification_state,
             opportunity_state=opportunity_state,
+            authoritative_state_update=True,
             artifacts={
                 "readiness_decision_uri": quality_report["artifacts"]["readiness_decision"],
                 "readiness_report_uri": quality_report["artifacts"]["readiness_report"],

@@ -1427,6 +1427,7 @@ def adapt_interiorgs_task_runs(
         pipeline_prefix=to_pipeline_prefix(scene_id, base_capture_id),
         qualification_state=qualification_state,
         opportunity_state=opportunity_state,
+        authoritative_state_update=True,
         artifacts={
             "readiness_decision_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/readiness_decision.json",
             "readiness_report_uri": f"gs://{bucket}/{to_pipeline_prefix(scene_id, base_capture_id)}/readiness_report.md",

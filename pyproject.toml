@@ -28,14 +28,18 @@ dependencies = [
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
     "trimesh>=4.4.0",
-    "open3d>=0.18.0",
-    "pybullet>=3.2.6",
     "google-cloud-storage>=2.10.0",
 ]
 
 [project.optional-dependencies]
 cloud = [
     "google-cloud-storage>=2.10.0",
+]
+geometry = [
+    "open3d>=0.18.0",
+]
+sim = [
+    "pybullet>=3.2.6",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -83,5 +87,7 @@ addopts = [
     "--strict-markers",
 ]
 markers = [
+    "gpu: marks tests requiring GPU",
     "integration: marks integration tests",
+    "slow: marks slow tests",
 ]
