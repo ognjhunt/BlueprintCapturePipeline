@@ -11,14 +11,11 @@ import pytest
 # Add source directory to path for imports
 SRC_DIR = Path(__file__).parent.parent / "src"
 FUNCTIONS_DIR = Path(__file__).parent.parent / "functions"
-CONTRACTS_SRC_DIR = Path(__file__).parent.parent.parent / "BlueprintContracts" / "src"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 if str(FUNCTIONS_DIR) not in sys.path:
     sys.path.insert(0, str(FUNCTIONS_DIR))
-if CONTRACTS_SRC_DIR.is_dir() and str(CONTRACTS_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(CONTRACTS_SRC_DIR))
 
 
 def pytest_addoption(parser):

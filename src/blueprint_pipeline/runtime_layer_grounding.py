@@ -2,13 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-_CONTRACTS_SRC = Path(__file__).resolve().parents[3] / "BlueprintContracts" / "src"
-if str(_CONTRACTS_SRC) not in sys.path and _CONTRACTS_SRC.is_dir():
-    sys.path.insert(0, str(_CONTRACTS_SRC))
-
 from blueprint_contracts.runtime_layer_contract import (
     DEGRADED_EDITABLE_RATIO_THRESHOLD,
     EDITABLE_LOW_CONFIDENCE_THRESHOLD,

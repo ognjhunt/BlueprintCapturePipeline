@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "blueprint-contracts @ file:///Users/nijelhunt_1/workspace/BlueprintContracts",
+    "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@2933580",
     "pyyaml>=6.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
