@@ -71,9 +71,16 @@ def _run_sam3(payload: Mapping[str, Any]) -> Dict[str, Any]:
         if not output_path.is_file():
             report["objects"] = []
             return report
-        payload = json.loads(output_path.read_text(encoding="utf-8"))
-        objects = payload.get("objects") if isinstance(payload, Mapping) and isinstance(payload.get("objects"), list) else []
-        report["objects"] = [dict(item) for item in objects if isinstance(item, Mapping)]
+        raw_payload = json.loads(output_path.read_text(encoding="utf-8"))
+        payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
+        report["backend_status"] = str(payload.get("backend_status") or report["backend_status"])
+        report["reason"] = str(payload.get("reason") or "").strip()
+        if isinstance(payload.get("detections"), list):
+            report["detections"] = [dict(item) for item in payload.get("detections", []) if isinstance(item, Mapping)]
+        if isinstance(payload.get("objects"), list):
+            report["objects"] = [dict(item) for item in payload.get("objects", []) if isinstance(item, Mapping)]
+        if isinstance(payload.get("metadata"), Mapping):
+            report["metadata"] = dict(payload.get("metadata") or {})
         return report
 
 

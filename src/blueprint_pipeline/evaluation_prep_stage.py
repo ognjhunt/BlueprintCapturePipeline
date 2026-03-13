@@ -700,6 +700,7 @@ def _canonical_site_world_runtime_status(
     qualification_state: object,
     downstream_evaluation_eligibility: bool,
     scene_memory_bundle_manifest: Mapping[str, Any],
+    object_geometry_manifest: Mapping[str, Any],
     protected_regions_manifest: Mapping[str, Any],
     required_runtime_artifact_paths: Sequence[Path],
     runtime_service_url: str,
@@ -710,6 +711,7 @@ def _canonical_site_world_runtime_status(
     grounding_status = str(protected_regions_manifest.get("grounding_status") or "grounded").strip().lower() or "grounded"
     ungrounded_reason = str(protected_regions_manifest.get("ungrounded_reason") or "").strip() or None
     empty_index_cause = str(protected_regions_manifest.get("empty_index_cause") or "").strip() or None
+    object_index_backend_blockers = _string_list(object_geometry_manifest.get("object_index_backend_blockers"))
 
     if normalized_qualification_state != "ready":
         blockers.append(f"qualification_state:{normalized_qualification_state or 'missing'}")
@@ -726,6 +728,9 @@ def _canonical_site_world_runtime_status(
     for artifact_path in required_runtime_artifact_paths:
         if not artifact_path.is_file():
             blockers.append(f"missing_runtime_artifact:{artifact_path.name}")
+    for blocker in object_index_backend_blockers:
+        if blocker not in blockers:
+            blockers.append(blocker)
     if empty_index_cause:
         warnings.append(f"empty_index_cause:{empty_index_cause}")
 
@@ -739,6 +744,7 @@ def _canonical_site_world_runtime_status(
         "grounding_status": grounding_status,
         "ungrounded_reason": ungrounded_reason,
         "empty_index_cause": empty_index_cause,
+        "object_index_backend_blockers": object_index_backend_blockers,
         "scene_memory_bundle_status": str(scene_memory_bundle_manifest.get("status") or "missing"),
     }
 
@@ -959,6 +965,7 @@ def _build_site_world_spec(
         "grounding_status": str(protected_regions_manifest.get("grounding_status") or "grounded"),
         "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
         "empty_index_cause": protected_regions_manifest.get("empty_index_cause"),
+        "object_index_backend_blockers": _string_list(object_geometry_manifest.get("object_index_backend_blockers")),
         "runtime_layer_policy": {
             "protected_regions_manifest_uri": _gs_uri(context, "evaluation_prep/protected_regions_manifest.json"),
             "canonical_render_policy_uri": _gs_uri(context, "evaluation_prep/canonical_render_policy.json"),
@@ -969,6 +976,7 @@ def _build_site_world_spec(
             "grounding_status": str(protected_regions_manifest.get("grounding_status") or "grounded"),
             "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
             "empty_index_cause": protected_regions_manifest.get("empty_index_cause"),
+            "object_index_backend_blockers": _string_list(object_geometry_manifest.get("object_index_backend_blockers")),
             "region_count": int(protected_regions_manifest.get("region_count") or 0),
             "protected_region_locking": True,
             "runtime_layer_compositing": True,
@@ -1019,6 +1027,7 @@ def _build_site_world_spec(
             "grounding_status": canonical_runtime_status.get("grounding_status"),
             "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
             "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+            "object_index_backend_blockers": list(canonical_runtime_status.get("object_index_backend_blockers") or []),
         },
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
@@ -1078,6 +1087,7 @@ def _build_site_world_runtime_records(
             "grounding_status": canonical_runtime_status.get("grounding_status"),
             "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
             "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+            "object_index_backend_blockers": list(canonical_runtime_status.get("object_index_backend_blockers") or []),
             "canonical_package_version": spec.get("canonical_package_version"),
             "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
             "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
@@ -1110,6 +1120,7 @@ def _build_site_world_runtime_records(
             "grounding_status": canonical_runtime_status.get("grounding_status"),
             "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
             "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+            "object_index_backend_blockers": list(canonical_runtime_status.get("object_index_backend_blockers") or []),
             "canonical_package_version": spec.get("canonical_package_version"),
             "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_health.json"),
             "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
@@ -1156,6 +1167,7 @@ def _build_site_world_runtime_records(
         "grounding_status": canonical_runtime_status.get("grounding_status"),
         "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
         "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+        "object_index_backend_blockers": list(canonical_runtime_status.get("object_index_backend_blockers") or []),
         "canonical_package_version": spec.get("canonical_package_version"),
         "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
         "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
@@ -1188,6 +1200,7 @@ def _build_site_world_runtime_records(
         "grounding_status": canonical_runtime_status.get("grounding_status"),
         "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
         "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+        "object_index_backend_blockers": list(canonical_runtime_status.get("object_index_backend_blockers") or []),
         "canonical_package_version": spec.get("canonical_package_version"),
         "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_health.json"),
         "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
@@ -1289,6 +1302,7 @@ def _build_site_world_runtime_records(
             "grounding_status",
             "ungrounded_reason",
             "empty_index_cause",
+            "object_index_backend_blockers",
             "canonical_package_version",
             "canonical_artifact_uri",
             "presentation_artifact_uri",
@@ -1355,6 +1369,7 @@ def _build_site_world_runtime_records(
     registration.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
     registration.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
     registration.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
+    registration.setdefault("object_index_backend_blockers", list(canonical_runtime_status.get("object_index_backend_blockers") or []))
     registration.setdefault("runtime_registration_attempted", True)
     registration.setdefault("runtime_registration_status", "submitted")
     registration.setdefault(
@@ -1386,6 +1401,7 @@ def _build_site_world_runtime_records(
     health.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
     health.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
     health.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
+    health.setdefault("object_index_backend_blockers", list(canonical_runtime_status.get("object_index_backend_blockers") or []))
     health.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_health.json"))
     health.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
     health.setdefault("derivation_mode", policy.output_policy)
@@ -1619,6 +1635,7 @@ def _build_hosted_session_runtime_manifest(
         "grounding_status": canonical_runtime_status.get("grounding_status"),
         "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
         "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+        "object_index_backend_blockers": list(canonical_runtime_status.get("object_index_backend_blockers") or []),
         "launchable": len(blockers) == 0,
         "blockers": blockers,
         "launch_blockers": list(blockers),
@@ -2189,6 +2206,7 @@ def run_evaluation_prep_stage(
         qualification_state=normalized_handoff.get("qualification_state"),
         downstream_evaluation_eligibility=bool(normalized_handoff.get("downstream_evaluation_eligibility")),
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
         protected_regions_manifest=protected_regions_manifest,
         required_runtime_artifact_paths=[
             protected_regions_manifest_path,
@@ -2261,6 +2279,7 @@ def run_evaluation_prep_stage(
         qualification_state=normalized_handoff.get("qualification_state"),
         downstream_evaluation_eligibility=bool(normalized_handoff.get("downstream_evaluation_eligibility")),
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
         protected_regions_manifest=protected_regions_manifest,
         required_runtime_artifact_paths=[
             protected_regions_manifest_path,
@@ -2491,6 +2510,9 @@ def run_evaluation_prep_stage(
     empty_index_cause = str(object_geometry_manifest.get("empty_index_cause") or "").strip() if isinstance(object_geometry_manifest, Mapping) else ""
     if empty_index_cause:
         _append_degradation(f"empty_index_cause:{empty_index_cause}")
+    if isinstance(object_geometry_manifest, Mapping):
+        for blocker in _string_list(object_geometry_manifest.get("object_index_backend_blockers")):
+            _append_degradation(blocker)
     # Legacy status values are kept for compatibility with existing consumers.
     legacy_status = "ready_for_validation"
     if qualification_state != "ready" or not eligibility:
@@ -2527,6 +2549,11 @@ def run_evaluation_prep_stage(
         "empty_index_cause": object_geometry_manifest.get("empty_index_cause")
         if isinstance(object_geometry_manifest, Mapping)
         else None,
+        "object_index_backend_blockers": (
+            _string_list(object_geometry_manifest.get("object_index_backend_blockers"))
+            if isinstance(object_geometry_manifest, Mapping)
+            else []
+        ),
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,

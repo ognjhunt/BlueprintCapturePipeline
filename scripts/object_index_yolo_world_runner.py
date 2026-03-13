@@ -46,11 +46,19 @@ def _run_yolo_world(payload: Mapping[str, Any]) -> Dict[str, Any]:
 
     model_name = str(payload.get("yolo_world_model") or "yolov8s-worldv2.pt")
     conf = float(payload.get("yolo_world_conf") or 0.15)
-    model = YOLOWorld(model_name)
-    model.set_classes(prompts)
+    try:
+        model = YOLOWorld(model_name)
+        model.set_classes(prompts)
+    except Exception as exc:
+        return {"detections": [], "backend_status": "failed", "reason": f"model_init_failed:{exc}"}
 
     sources = [str(item.get("image_path") or "") for item in keyframes if str(item.get("image_path") or "").strip()]
-    results = model.predict(source=sources, conf=conf, verbose=False)
+    if not sources:
+        return {"detections": [], "backend_status": "skipped", "reason": "missing_keyframe_sources"}
+    try:
+        results = model.predict(source=sources, conf=conf, verbose=False)
+    except Exception as exc:
+        return {"detections": [], "backend_status": "failed", "reason": f"predict_failed:{exc}"}
     detections: List[Dict[str, Any]] = []
     for keyframe, result in zip(keyframes, results):
         names = result.names if isinstance(getattr(result, "names", None), Mapping) else {}
@@ -71,7 +79,7 @@ def _run_yolo_world(payload: Mapping[str, Any]) -> Dict[str, Any]:
                     "source_prompt": label,
                 }
             )
-    return {"detections": detections, "backend_status": "ok"}
+    return {"detections": detections, "backend_status": "ok", "model_name": model_name}
 
 
 def main(argv: List[str] | None = None) -> int:

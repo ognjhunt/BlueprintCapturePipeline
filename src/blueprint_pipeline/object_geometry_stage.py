@@ -187,6 +187,7 @@ def _object_index_summary(capture_root: Path) -> Dict[str, Any]:
         "paths": [str(path) for path in _candidate_object_index_paths(capture_root)],
         "present_paths": [],
         "empty_index_cause": None,
+        "runtime_blockers": [],
     }
     for path in _candidate_object_index_paths(capture_root):
         if not path.is_file():
@@ -211,6 +212,30 @@ def _object_index_summary(capture_root: Path) -> Dict[str, Any]:
     empty_index_cause = str(build_report.get("empty_index_cause") or "").strip() or None
     if empty_index_cause:
         summary["empty_index_cause"] = empty_index_cause
+    runtime_preflight = build_report.get("runtime_preflight") if isinstance(build_report.get("runtime_preflight"), Mapping) else {}
+    preflight_backends = runtime_preflight.get("backends") if isinstance(runtime_preflight.get("backends"), Mapping) else {}
+    backend_summary = build_report.get("backend_summary") if isinstance(build_report.get("backend_summary"), Mapping) else {}
+    providers = backend_summary.get("providers") if isinstance(backend_summary.get("providers"), list) else []
+    runtime_blockers: List[str] = []
+    for provider in providers:
+        if not isinstance(provider, Mapping):
+            continue
+        backend = str(provider.get("backend") or "").strip()
+        reason = str(provider.get("reason") or "").strip()
+        if not backend or not reason:
+            continue
+        support_level = "required"
+        preflight_entry = preflight_backends.get(backend)
+        if isinstance(preflight_entry, Mapping):
+            support_level = str(preflight_entry.get("support_level") or "required").strip().lower() or "required"
+        if support_level == "optional":
+            continue
+        if any(
+            token in reason.lower()
+            for token in ("missing", "not_installed", "weights_missing", "failed_to_launch", "ultralytics_missing")
+        ):
+            runtime_blockers.append(f"object_index_backend:{backend}:{reason}")
+    summary["runtime_blockers"] = runtime_blockers
     return summary
 
 
@@ -225,6 +250,7 @@ def build_missing_object_geometry_manifest(
     has_entries = bool(index_summary.get("has_entries"))
     entry_count = int(index_summary.get("entry_count") or 0)
     empty_index_cause = str(index_summary.get("empty_index_cause") or "").strip() or None
+    runtime_blockers = [str(item) for item in index_summary.get("runtime_blockers", []) if str(item).strip()]
     missing_inputs = [str(path) for path in _candidate_object_index_paths(context.capture_root) if not path.is_file()]
     if present and not has_entries:
         status = "empty_object_index"
@@ -242,6 +268,7 @@ def build_missing_object_geometry_manifest(
         observation_coverage={
             "object_index_present": present,
             "object_index_entry_count": entry_count,
+            "runtime_blocker_count": len(runtime_blockers),
         },
         confidence=0.0,
         canonical_truth=True,
@@ -257,6 +284,7 @@ def build_missing_object_geometry_manifest(
             "capture_id": context.capture_id,
             "status": status,
             "empty_index_cause": empty_index_cause,
+            "object_index_backend_blockers": runtime_blockers,
             "world_model_policy": WorldModelPolicy.from_env().to_dict(),
             "canonical_output": build_output_linkage(
                 policy=WorldModelPolicy.from_env(),
@@ -834,6 +862,7 @@ def run_object_geometry_stage(
     task_scope = read_json_any(context.pipeline_root / "task_scope_record.json") if (context.pipeline_root / "task_scope_record.json").is_file() else {}
     task_targets = read_json_any(context.pipeline_root / "task_targets.json") if (context.pipeline_root / "task_targets.json").is_file() else {}
     object_entries, index_path = _load_object_entries(context.capture_root)
+    index_summary = _object_index_summary(context.capture_root)
     if not object_entries:
         raise PipelineError(f"Object geometry stage requires an object index under {context.raw_root}")
 
@@ -988,7 +1017,10 @@ def run_object_geometry_stage(
     manifest_provenance = build_provenance_record(
         grounding_level="reconstructed" if geometry_objects else "inferred",
         evidence_sources=[str(index_path)],
-        observation_coverage={"object_count": len(geometry_objects)},
+        observation_coverage={
+            "object_count": len(geometry_objects),
+            "runtime_blocker_count": len([str(item) for item in index_summary.get("runtime_blockers", []) if str(item).strip()]),
+        },
         confidence=1.0 if geometry_objects else 0.0,
         canonical_truth=True,
         presentation_only=False,
@@ -1002,6 +1034,10 @@ def run_object_geometry_stage(
             "provider_name": provider_name,
             "scene_id": context.scene_id,
             "capture_id": context.capture_id,
+            "empty_index_cause": index_summary.get("empty_index_cause"),
+            "object_index_backend_blockers": [
+                str(item) for item in index_summary.get("runtime_blockers", []) if str(item).strip()
+            ],
             "world_model_policy": policy.to_dict(),
             "canonical_output": build_output_linkage(
                 policy=policy,

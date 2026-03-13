@@ -35,6 +35,11 @@ dependencies = [
 cloud = [
     "google-cloud-storage>=2.10.0",
 ]
+runtime = [
+    "opencv-python-headless>=4.10.0",
+    "trimesh>=4.4.0",
+    "ultralytics>=8.3.0",
+]
 llm = [
     "google-genai>=1.0.0",
     "openai>=1.0.0",

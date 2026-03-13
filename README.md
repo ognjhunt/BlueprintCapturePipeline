@@ -24,16 +24,43 @@ Retained public artifacts:
 - `evaluation_prep/site_world_health.json`
 - `evaluation_prep/evaluation_prep_manifest.json`
 
-## Local Setup
+## Local Development
 
 ```bash
 uv sync --extra dev
 ```
 
+This is a repository development setup only. It is not the supported single-VM GPU runtime bootstrap path.
+
 Optional LLM support for the qualification agent:
 
 ```bash
 uv sync --extra dev --extra llm
+```
+
+## Supported GPU VM Path
+
+The supported runtime path is documented in [docs/GPU_VM_RUNBOOK.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/GPU_VM_RUNBOOK.md).
+
+The short version is:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+./scripts/install_ml_stack.sh
+python3 scripts/setup_environment.py --check
+```
+
+Then stage and run:
+
+```bash
+python3 scripts/stage_capture_bundle.py \
+  --source-bundle /data/raw_bundle \
+  --storage-root /data/blueprint-storage \
+  --bucket local-blueprint \
+  --copy \
+  --run-qualification \
+  --run-evaluation-prep
 ```
 
 ## Entry Points
@@ -66,7 +93,7 @@ blueprint-agent-review \
   --provider openai
 ```
 
-One-command local flow:
+Optional agent-review wrapper:
 
 ```bash
 blueprint-run-e2e \

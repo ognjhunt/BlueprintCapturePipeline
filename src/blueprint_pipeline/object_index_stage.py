@@ -14,11 +14,11 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .capture_enrichment_llm import build_capture_enrichment_runner
 from .capture_bridge import CaptureDescriptor
-from .common import PipelineError, join_gs_uri, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
+from .common import join_gs_uri, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest
 from .local_capture import resolve_local_capture_context
 from .world_model_policy import WorldModelPolicy, build_output_linkage, build_provenance_record
@@ -512,9 +512,42 @@ def _module_available(name: str) -> bool:
         return False
 
 
+def _default_sam3_weights_path() -> Path:
+    return Path(os.getenv("SAM3_WEIGHTS_PATH") or "/opt/sam3_weights/sam3.pt")
+
+
+def _backend_runtime_requirements(backend_name: str) -> Dict[str, Any]:
+    support_level = "required"
+    required_modules: List[str]
+    required_paths: List[str] = []
+    if backend_name in {"yolo_world", "grounding_dino"}:
+        required_modules = ["torch", "ultralytics"]
+    elif backend_name == "sam3":
+        support_level = "optional"
+        required_modules = ["torch", "sam3"]
+        required_paths = [str(_default_sam3_weights_path())]
+    else:
+        required_modules = []
+    missing_modules = [name for name in required_modules if not _module_available(name)]
+    missing_paths = [path for path in required_paths if not Path(path).is_file()]
+    return {
+        "support_level": support_level,
+        "required_modules": required_modules,
+        "missing_modules": missing_modules,
+        "required_paths": required_paths,
+        "missing_paths": missing_paths,
+    }
+
+
 def _backend_preflight_status(*, backend_name: str, command_template: str) -> Dict[str, Any]:
+    requirements = _backend_runtime_requirements(backend_name)
     if not command_template:
-        return {"configured": False, "status": "missing", "reason": "command_not_configured"}
+        return {
+            "configured": False,
+            "status": "missing",
+            "reason": "command_not_configured",
+            **requirements,
+        }
     try:
         rendered = (
             command_template.replace("{INPUT_JSON}", "/tmp/input.json")
@@ -523,7 +556,12 @@ def _backend_preflight_status(*, backend_name: str, command_template: str) -> Di
         )
         command = shlex.split(rendered)
     except ValueError as exc:
-        return {"configured": True, "status": "invalid", "reason": f"invalid_command_template:{exc}"}
+        return {
+            "configured": True,
+            "status": "invalid",
+            "reason": f"invalid_command_template:{exc}",
+            **requirements,
+        }
     executable = command[0] if command else ""
     executable_path = shutil.which(executable) or executable
     status = "ready" if executable else "invalid"
@@ -534,11 +572,24 @@ def _backend_preflight_status(*, backend_name: str, command_template: str) -> Di
         if not Path(str(executable_path)).exists():
             status = "missing"
             reason = f"missing_executable:{executable_path}"
+    if not reason and requirements["missing_modules"]:
+        if requirements["support_level"] == "optional":
+            status = "optional_unavailable"
+        else:
+            status = "runtime_missing"
+        reason = "missing_modules:" + ",".join(requirements["missing_modules"])
+    if not reason and requirements["missing_paths"]:
+        if requirements["support_level"] == "optional":
+            status = "optional_unavailable"
+        else:
+            status = "runtime_missing"
+        reason = "missing_paths:" + ",".join(requirements["missing_paths"])
     return {
         "configured": True,
         "status": status,
         "reason": reason,
         "command": command,
+        **requirements,
     }
 
 
@@ -582,7 +633,15 @@ def _run_backend_command(
     if not command:
         return {"status": "failed", "backend": backend_name, "reason": "empty_command"}
 
-    proc = subprocess.run(command, check=False, text=True, capture_output=True)
+    try:
+        proc = subprocess.run(command, check=False, text=True, capture_output=True)
+    except OSError as exc:
+        return {
+            "status": "failed",
+            "backend": backend_name,
+            "reason": f"failed_to_launch:{exc}",
+            "command": command,
+        }
     report: Dict[str, Any] = {
         "status": "ok" if proc.returncode == 0 else "failed",
         "backend": backend_name,
@@ -636,6 +695,24 @@ def _run_backend_command(
             report["status"] = "empty"
             report.setdefault("reason", "no_detections")
     return report
+
+
+def _backend_reason_indicates_runtime_missing(reason: str) -> bool:
+    lowered = str(reason or "").strip().lower()
+    if not lowered:
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "missing",
+            "not_installed",
+            "unavailable",
+            "weights_missing",
+            "failed_to_launch",
+            "ultralytics_missing",
+            "torch_not_installed",
+        )
+    )
 
 
 def _bbox_xyxy(entry: Mapping[str, Any], width: int, height: int) -> Optional[List[float]]:
@@ -1387,6 +1464,7 @@ def run_object_index_stage(
         "dependencies": {
             "torch": {"available": _module_available("torch")},
             "ultralytics": {"available": _module_available("ultralytics")},
+            "sam3": {"available": _module_available("sam3")},
         },
         "backends": {
             name: _backend_preflight_status(backend_name=name, command_template=command_template)
@@ -1539,11 +1617,7 @@ def run_object_index_stage(
     empty_index_cause = None
     provider_reasons = [str(report.get("reason") or "") for report in backend_reports]
     if not objects:
-        if any(
-            "missing" in reason or "ModuleNotFoundError" in reason
-            for reason in provider_reasons
-            if reason
-        ):
+        if any(_backend_reason_indicates_runtime_missing(reason) for reason in provider_reasons if reason):
             empty_index_cause = "runtime_missing"
         elif any(str(report.get("status") or "") == "skipped" for report in backend_reports):
             empty_index_cause = "backend_skipped"

@@ -45,11 +45,19 @@ def _run_with_ultralytics(payload: Mapping[str, Any], prompts: List[str], keyfra
 
     model_name = str(payload.get("grounding_dino_fallback_model") or "yolov8s-worldv2.pt")
     conf = float(payload.get("grounding_dino_conf") or 0.2)
-    model = YOLOWorld(model_name)
-    model.set_classes(prompts)
+    try:
+        model = YOLOWorld(model_name)
+        model.set_classes(prompts)
+    except Exception as exc:
+        return {"detections": [], "backend_status": "failed", "reason": f"fallback_model_init_failed:{exc}"}
 
     sources = [str(item.get("image_path") or "") for item in keyframes if str(item.get("image_path") or "").strip()]
-    results = model.predict(source=sources, conf=conf, verbose=False)
+    if not sources:
+        return {"detections": [], "backend_status": "skipped", "reason": "missing_keyframe_sources"}
+    try:
+        results = model.predict(source=sources, conf=conf, verbose=False)
+    except Exception as exc:
+        return {"detections": [], "backend_status": "failed", "reason": f"fallback_predict_failed:{exc}"}
     detections: List[Dict[str, Any]] = []
     for keyframe, result in zip(keyframes, results):
         names = result.names if isinstance(getattr(result, "names", None), Mapping) else {}
@@ -70,7 +78,12 @@ def _run_with_ultralytics(payload: Mapping[str, Any], prompts: List[str], keyfra
                     "source_prompt": label,
                 }
             )
-    return {"detections": detections, "backend_status": "ok", "backend_mode": "yolo_world_fallback"}
+    return {
+        "detections": detections,
+        "backend_status": "ok",
+        "backend_mode": "yolo_world_fallback",
+        "model_name": model_name,
+    }
 
 
 def _run_grounding(payload: Mapping[str, Any]) -> Dict[str, Any]:

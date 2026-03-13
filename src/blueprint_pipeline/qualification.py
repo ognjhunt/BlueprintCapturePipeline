@@ -157,6 +157,36 @@ def _try_read_optional_json_uri(uri: Optional[str], storage_root: Path) -> Optio
     return _try_read_json(path)
 
 
+def _object_index_runtime_blockers(capture_root: Path) -> List[str]:
+    build_report = _try_read_json(capture_root / "raw" / "object_index_build_report.json") or {}
+    runtime_preflight = build_report.get("runtime_preflight") if isinstance(build_report.get("runtime_preflight"), Mapping) else {}
+    preflight_backends = runtime_preflight.get("backends") if isinstance(runtime_preflight.get("backends"), Mapping) else {}
+    backend_summary = build_report.get("backend_summary") if isinstance(build_report.get("backend_summary"), Mapping) else {}
+    providers = backend_summary.get("providers") if isinstance(backend_summary.get("providers"), list) else []
+    blockers: List[str] = []
+    for provider in providers:
+        if not isinstance(provider, Mapping):
+            continue
+        backend = str(provider.get("backend") or "").strip()
+        reason = str(provider.get("reason") or "").strip()
+        if not backend or not reason:
+            continue
+        support_level = "required"
+        preflight_entry = preflight_backends.get(backend)
+        if isinstance(preflight_entry, Mapping):
+            support_level = str(preflight_entry.get("support_level") or "required").strip().lower() or "required"
+        if support_level == "optional":
+            continue
+        if any(
+            token in reason.lower()
+            for token in ("missing", "not_installed", "weights_missing", "failed_to_launch", "ultralytics_missing")
+        ):
+            blocker = f"object_index_backend:{backend}:{reason}"
+            if blocker not in blockers:
+                blockers.append(blocker)
+    return blockers
+
+
 def _task_hypothesis_string(raw: Mapping[str, Any], *keys: str) -> str:
     for key in keys:
         value = raw.get(key)
@@ -1236,6 +1266,7 @@ def _build_task_scope_record(
     task_targets_payload: Mapping[str, Any],
     completeness_status: str,
     metadata_override: Optional[Mapping[str, Any]] = None,
+    object_index_runtime_blockers: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     target_object_ids = [
         str(value)
@@ -1269,6 +1300,9 @@ def _build_task_scope_record(
         blockers.append("Task zone is not yet well scoped from the available evidence.")
     if completeness_status != "sufficient":
         blockers.append("Additional evidence is required before scope can be locked.")
+    for blocker in object_index_runtime_blockers or []:
+        if blocker not in blockers:
+            blockers.append(blocker)
     success_criteria = [
         str(item).strip()
         for item in metadata.get("success_criteria", [])
@@ -1320,6 +1354,7 @@ def _build_qualification_record(
     scorecard: Mapping[str, Any],
     scope_record: Mapping[str, Any],
     object_index_entries: List[Mapping[str, Any]],
+    object_index_runtime_blockers: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     completeness_status = str(scorecard.get("completeness_status") or "need_more_evidence")
     qa_status = str(scorecard.get("qa_status") or "missing")
@@ -1492,6 +1527,15 @@ def _build_qualification_record(
                 "severity": "medium",
                 "category": "access",
                 "detail": "Privacy restrictions may hide decision-critical areas.",
+            }
+        )
+    if object_index_runtime_blockers:
+        risks.append(
+            {
+                "id": "object_index_runtime_missing",
+                "severity": "high",
+                "category": "runtime",
+                "detail": "; ".join(object_index_runtime_blockers),
             }
         )
 
@@ -2527,6 +2571,7 @@ def run_qualification_pipeline(
         object_index_entries: List[Mapping[str, Any]] = []
         grounding_payload: Optional[Dict[str, Any]] = None
         raw_task_hypothesis: Optional[Dict[str, Any]] = None
+        object_index_runtime_blockers: List[str] = []
 
         try:
             manifest = load_raw_manifest(descriptor.raw_prefix_uri, gcs_root=storage_root)
@@ -2549,11 +2594,13 @@ def run_qualification_pipeline(
             if object_index_uri:
                 object_index_path = resolve_gs_uri_to_path(object_index_uri, storage_root)
                 object_index_entries = load_object_index(object_index_uri, gcs_root=storage_root)
+            object_index_runtime_blockers = _object_index_runtime_blockers(descriptor_path.parent)
         except Exception:
             manifest = None
             object_index_uri = None
             object_index_entries = []
             grounding_payload = None
+            object_index_runtime_blockers = _object_index_runtime_blockers(descriptor_path.parent)
 
         raw_task_hypothesis = _try_read_optional_json_uri(
             descriptor.task_hypothesis_uri,
@@ -2726,6 +2773,7 @@ def run_qualification_pipeline(
             task_targets_payload=task_targets_payload,
             completeness_status=str(scorecard.get("completeness_status") or "need_more_evidence"),
             metadata_override=effective_metadata,
+            object_index_runtime_blockers=object_index_runtime_blockers,
         )
         write_json(pipeline_dir / "task_scope_record.json", scope_record)
         gates.append(
@@ -2742,6 +2790,7 @@ def run_qualification_pipeline(
             scorecard=scorecard,
             scope_record=scope_record,
             object_index_entries=object_index_entries,
+            object_index_runtime_blockers=object_index_runtime_blockers,
         )
         qualification_brief = _build_qualification_brief(
             descriptor=descriptor,
