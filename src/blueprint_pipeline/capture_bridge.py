@@ -118,7 +118,7 @@ def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
         if not lowered:
             continue
         if lowered == "all":
-            for lane in ("qualification", "scene_memory", "advanced_geometry", "evaluation_prep"):
+            for lane in ("qualification", "scene_memory", "advanced_geometry"):
                 if lane not in normalized:
                     normalized.append(lane)
             continue
