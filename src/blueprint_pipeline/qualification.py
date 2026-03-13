@@ -1093,6 +1093,34 @@ def _build_runtime_preflight_report(
     }
 
 
+def _build_presentation_demo_preflight_report() -> Dict[str, Any]:
+    ui_payload = _presentation_demo_ui_payload()
+    ui_base_url = str(ui_payload.get("ui_base_url") or "").strip()
+    public_ui_base_url = str(ui_payload.get("public_ui_base_url") or "").strip()
+    checks = [
+        QualificationGate(
+            "ui_base_url",
+            bool(ui_base_url),
+            ui_base_url or "missing BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL",
+        ),
+        QualificationGate(
+            "public_ui_base_url",
+            bool(public_ui_base_url),
+            public_ui_base_url or "missing BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL",
+        ),
+    ]
+    status = "passed" if any(check.passed for check in checks) else "failed"
+    return {
+        "schema_version": "v1",
+        "lane": "qualification",
+        "status": status,
+        "generated_at": utc_now_iso(),
+        "ui_base_url": ui_base_url or None,
+        "public_ui_base_url": public_ui_base_url or None,
+        "checks": [check.to_dict() for check in checks],
+    }
+
+
 def _build_capture_package_manifest(
     *,
     descriptor: CaptureDescriptor,
@@ -1796,11 +1824,13 @@ def _build_pipeline_summary(
             "normalized_task_hypothesis_uri": f"gs://{bucket}/{pipeline_prefix}/normalized_task_hypothesis.json",
             "opportunity_handoff_uri": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
             "runtime_preflight_report_uri": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
+            "presentation_demo_preflight_report_uri": f"gs://{bucket}/{pipeline_prefix}/presentation_demo_preflight_report.json",
             "human_actions_required_uri": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
             "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
         },
         "source_files": {
             "runtime_preflight_report": _local_file_pointer(pipeline_dir / "runtime_preflight_report.json"),
+            "presentation_demo_preflight_report": _local_file_pointer(pipeline_dir / "presentation_demo_preflight_report.json"),
             "task_targets": _local_file_pointer(pipeline_dir / "task_targets.json"),
             "site_intake": _local_file_pointer(pipeline_dir / "site_intake.json"),
             "capture_package_manifest": _local_file_pointer(pipeline_dir / "capture_package_manifest.json"),
@@ -2641,6 +2671,10 @@ def run_qualification_pipeline(
             )
         )
 
+        stage = "presentation_demo_preflight"
+        presentation_demo_preflight_report = _build_presentation_demo_preflight_report()
+        write_json(pipeline_dir / "presentation_demo_preflight_report.json", presentation_demo_preflight_report)
+
         stage = "capture_package_manifest"
         capture_package_manifest = _build_capture_package_manifest(
             descriptor=descriptor,
@@ -2985,6 +3019,7 @@ def run_qualification_pipeline(
                 "qa_report_uri": qa_report_uri,
                 "task_targets": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
                 "runtime_preflight_report": f"gs://{bucket}/{pipeline_prefix}/runtime_preflight_report.json",
+                "presentation_demo_preflight_report": f"gs://{bucket}/{pipeline_prefix}/presentation_demo_preflight_report.json",
                 "site_intake": f"gs://{bucket}/{pipeline_prefix}/site_intake.json",
                 "capture_package_manifest": f"gs://{bucket}/{pipeline_prefix}/capture_package_manifest.json",
                 "capture_qa_scorecard": f"gs://{bucket}/{pipeline_prefix}/capture_qa_scorecard.json",

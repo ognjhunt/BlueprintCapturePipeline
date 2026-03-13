@@ -28,6 +28,7 @@ Retained output families:
 - `scene_memory/adapter_manifests/cosmos_transfer.json`
 - `presentation_world/presentation_world_manifest.json`
 - `presentation_world/runtime_demo_manifest.json`
+- `presentation_demo_preflight_report.json`
 - `evaluation_prep/scene_memory_bundle_manifest.json`
 - `evaluation_prep/site_world_spec.json`
 - `evaluation_prep/site_world_registration.json`
@@ -42,6 +43,15 @@ Qualification analysis remains available and may emit:
 - `agent_review_bundle.json`
 
 These qualification artifacts support review and agent analysis. The canonical downstream runtime boundary remains the built site-world package plus presentation-world artifacts.
+
+## Presentation Demo Contract
+
+`runtime_demo_manifest.json` is only stage-6 ready when it includes a truthful demo UI endpoint:
+
+- `ui_base_url`
+- or `public_ui_base_url`
+
+Without one of those fields, the manifest remains a valid artifact record, but WebApp presentation-demo launch should be treated as blocked rather than launchable.
 
 ## Default Flow
 

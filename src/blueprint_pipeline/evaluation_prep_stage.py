@@ -1986,6 +1986,7 @@ def _build_launchable_export_bundle(
     geometry_bundle_manifest: Mapping[str, Any],
     site_world_registration: Mapping[str, Any],
     site_world_health: Mapping[str, Any],
+    runtime_demo_manifest: Mapping[str, Any],
     simready_prep_manifest_path: Optional[Path],
 ) -> Dict[str, Any]:
     runtime_capabilities = (
@@ -2015,6 +2016,14 @@ def _build_launchable_export_bundle(
             "required_artifacts": ["geometry_bundle", "task_hints"],
             "backend": "mujoco_robosuite",
         },
+        "presentation_demo_ui": {
+            "launchable": bool(
+                str(runtime_demo_manifest.get("ui_base_url") or "").strip()
+                or str(runtime_demo_manifest.get("public_ui_base_url") or "").strip()
+            ),
+            "required_artifacts": ["runtime_demo_manifest", "ui_base_url"],
+            "backend": "neoverse_gradio",
+        },
     }
     return {
         "schema_version": "v1",
@@ -2040,6 +2049,7 @@ def _world_model_validation_summary(
     policy: WorldModelPolicy,
     site_world_health: Mapping[str, Any],
     launchable_export_bundle: Mapping[str, Any],
+    runtime_demo_manifest: Mapping[str, Any],
     object_geometry_manifest: Mapping[str, Any],
     geometry_bundle_manifest: Mapping[str, Any],
     scene_memory_bundle_manifest: Mapping[str, Any],
@@ -2061,6 +2071,10 @@ def _world_model_validation_summary(
     ]
     runtime_demo_ready = bool(site_world_health.get("launchable")) or bool(
         ((launchable_export_bundle.get("bundles") or {}).get("world_model_runtime") or {}).get("launchable")
+    )
+    presentation_demo_ui_ready = bool(
+        str(runtime_demo_manifest.get("ui_base_url") or "").strip()
+        or str(runtime_demo_manifest.get("public_ui_base_url") or "").strip()
     )
     grounding_quality_ready = (
         object_index_nonempty
@@ -2095,6 +2109,10 @@ def _world_model_validation_summary(
             "passed": runtime_demo_ready,
             "detail": "Runnable/demo runtime or runtime-adjacent package is available.",
         },
+        "presentation_demo_ui_ready": {
+            "passed": presentation_demo_ui_ready,
+            "detail": "Presentation demo manifest includes a truthful embedded UI URL.",
+        },
         "grounding_quality_ready": {
             "passed": grounding_quality_ready,
             "detail": "Canonical package has non-empty grounded object geometry and no unresolved conditioning blockers.",
@@ -2111,6 +2129,7 @@ def _world_model_validation_summary(
 
     if (
         validation_gates["runtime_demo_ready"]["passed"]
+        and validation_gates["presentation_demo_ui_ready"]["passed"]
         and validation_gates["grounding_quality_ready"]["passed"]
         and validation_gates["geometry_quality_ready"]["passed"]
         and validation_gates["task_representation_ready"]["passed"]
@@ -2440,6 +2459,7 @@ def run_evaluation_prep_stage(
         geometry_bundle_manifest=geometry_bundle_manifest,
         site_world_registration=site_world_registration,
         site_world_health=site_world_health,
+        runtime_demo_manifest=_read_json_object(runtime_demo_manifest_path),
         simready_prep_manifest_path=simready_prep_manifest_path,
     )
     launchable_export_bundle_path = eval_dir / "launchable_export_bundle.json"
@@ -2459,6 +2479,7 @@ def run_evaluation_prep_stage(
         policy=policy,
         site_world_health=site_world_health,
         launchable_export_bundle=launchable_export_bundle,
+        runtime_demo_manifest=_read_json_object(runtime_demo_manifest_path),
         object_geometry_manifest=object_geometry_manifest if isinstance(object_geometry_manifest, Mapping) else {},
         geometry_bundle_manifest=geometry_bundle_manifest,
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,

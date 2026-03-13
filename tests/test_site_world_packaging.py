@@ -275,6 +275,10 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert runtime_eligibility["readiness_state"] == "launchable"
     assert spec["canonical_output"]["authoritative_record"] is True
     assert spec["presentation_output"]["authoritative_record"] is False
+    summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
+    launchable_export = json.loads((eval_root / "launchable_export_bundle.json").read_text(encoding="utf-8"))
+    assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is True
+    assert launchable_export["bundles"]["presentation_demo_ui"]["launchable"] is True
 
 
 def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp_path: Path) -> None:
@@ -315,3 +319,5 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     assert runtime_eligibility["readiness_state"] == "blocked"
     assert spec["canonical_output"]["authoritative_record"] is True
     assert spec["presentation_output"]["authoritative_record"] is False
+    summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
+    assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is False

@@ -73,6 +73,8 @@ export WORLD_MODEL_EMIT_PRESENTATION="true"
 export WORLD_MODEL_ALLOW_GENERATIVE_COMPLETION="limited"
 export HF_HOME="/opt/hf"
 export SAM3_WEIGHTS_PATH="/opt/sam3_weights/sam3.pt"
+export BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL=""
+export BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL=""
 ```
 
 ## Stage and run
@@ -108,6 +110,7 @@ Presentation outputs when `WORLD_MODEL_EMIT_PRESENTATION=true`:
 
 - `pipeline/presentation_world/presentation_world_manifest.json`
 - `pipeline/presentation_world/runtime_demo_manifest.json`
+- `pipeline/presentation_demo_preflight_report.json`
 
 Useful diagnostics:
 
@@ -206,6 +209,35 @@ Canonical artifacts stay conservative:
 - missing grounded objects blocks launchability
 - missing evidence is surfaced as blockers or warnings
 - presentation manifests never overwrite canonical truth
+
+## Presentation demo operator steps
+
+Stage 6 requires a truthful presentation demo UI endpoint, not just the manifest files.
+
+Before regenerating `runtime_demo_manifest.json` for a demo-capable run:
+
+```bash
+# 1. Launch the demo UI service on the GPU host
+#    Example: operator-managed NeoVerse Gradio or another truthful demo endpoint
+
+# 2. Verify it really serves HTTP 200
+curl -I "$BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL"
+
+# 3. Export the URL(s) before rerunning qualification/evaluation-prep
+export BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL="https://demo.example/internal"
+export BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL="https://demo.example/public"
+
+# 4. Regenerate the presentation manifest artifacts
+python3 scripts/stage_capture_bundle.py \
+  --source-bundle /data/raw_bundle \
+  --storage-root /data/blueprint-storage \
+  --bucket local-blueprint \
+  --copy \
+  --run-qualification \
+  --run-evaluation-prep
+```
+
+If the URL is missing, `runtime_demo_manifest.json` may still exist, but stage 6 should be treated as blocked until the UI endpoint is real and reachable.
 
 ## Manual GPU smoke check
 
