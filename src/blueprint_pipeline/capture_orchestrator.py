@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -52,6 +53,15 @@ def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
 
 def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> List[str]:
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, gcs_root)
+    try:
+        raw_payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw_payload = {}
+    raw_requested = raw_payload.get("requested_lanes")
+    if isinstance(raw_requested, str):
+        return [raw_requested]
+    if isinstance(raw_requested, (list, tuple, set)):
+        return [str(value) for value in raw_requested]
     descriptor = CaptureDescriptor.from_file(descriptor_path)
     return list(descriptor.requested_lanes)
 
