@@ -195,10 +195,10 @@ def _configure_runtime_client(monkeypatch) -> None:
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
-        def build_site_world(self, spec):
+        def register_site_world_package(self, *, spec, registration, health):
             return {
                 "schema_version": "v1",
-                "site_world_id": spec["site_world_id"],
+                "site_world_id": registration["site_world_id"],
                 "build_id": "build-1",
                 "scene_id": spec["scene_id"],
                 "capture_id": spec["capture_id"],
@@ -207,10 +207,10 @@ def _configure_runtime_client(monkeypatch) -> None:
                 "websocket_base_url": "ws://runtime.local",
                 "vm_instance_id": "vast-123",
                 "supported_cameras": ["head_rgb", "wrist_rgb"],
-                "scenario_catalog": spec["scenario_catalog"],
-                "start_state_catalog": spec["start_state_catalog"],
-                "task_catalog": spec["task_catalog"],
-                "robot_profiles": spec["robot_profiles"],
+                "scenario_catalog": registration["scenario_catalog"],
+                "start_state_catalog": registration["start_state_catalog"],
+                "task_catalog": registration["task_catalog"],
+                "robot_profiles": registration["robot_profiles"],
                 "runtime_capabilities": {
                     "supports_step_rollout": True,
                     "supports_batch_rollout": True,
@@ -218,8 +218,9 @@ def _configure_runtime_client(monkeypatch) -> None:
                     "supports_stream": True,
                 },
                 "health": {
+                    **dict(health),
                     "schema_version": "v1",
-                    "site_world_id": spec["site_world_id"],
+                    "site_world_id": registration["site_world_id"],
                     "build_id": "build-1",
                     "healthy": True,
                     "launchable": True,
@@ -259,10 +260,10 @@ def _configure_runtime_client_with_smoke_failure(monkeypatch) -> None:
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
-        def build_site_world(self, spec):
+        def register_site_world_package(self, *, spec, registration, health):
             return {
                 "schema_version": "v1",
-                "site_world_id": spec["site_world_id"],
+                "site_world_id": registration["site_world_id"],
                 "build_id": "build-1",
                 "scene_id": spec["scene_id"],
                 "capture_id": spec["capture_id"],
@@ -271,10 +272,10 @@ def _configure_runtime_client_with_smoke_failure(monkeypatch) -> None:
                 "websocket_base_url": "ws://runtime.local",
                 "vm_instance_id": "vast-123",
                 "supported_cameras": ["head_rgb", "wrist_rgb"],
-                "scenario_catalog": spec["scenario_catalog"],
-                "start_state_catalog": spec["start_state_catalog"],
-                "task_catalog": spec["task_catalog"],
-                "robot_profiles": spec["robot_profiles"],
+                "scenario_catalog": registration["scenario_catalog"],
+                "start_state_catalog": registration["start_state_catalog"],
+                "task_catalog": registration["task_catalog"],
+                "robot_profiles": registration["robot_profiles"],
                 "runtime_capabilities": {
                     "supports_step_rollout": True,
                     "supports_batch_rollout": True,
@@ -282,8 +283,9 @@ def _configure_runtime_client_with_smoke_failure(monkeypatch) -> None:
                     "supports_stream": True,
                 },
                 "health": {
+                    **dict(health),
                     "schema_version": "v1",
-                    "site_world_id": spec["site_world_id"],
+                    "site_world_id": registration["site_world_id"],
                     "build_id": "build-1",
                     "healthy": True,
                     "launchable": True,

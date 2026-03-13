@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 import pytest
+
+from blueprint_contracts.handoff_contract import validate_qualified_opportunity_handoff
 
 import blueprint_pipeline.qualification as qualification_module
 import blueprint_pipeline.swap_orchestrator as swap_orchestrator_module
@@ -17,23 +18,15 @@ from blueprint_pipeline.quality_gates import AdvancedQualityGateConfig
 from blueprint_pipeline.swap_orchestrator import OrchestratorConfig, run_swap_pipeline
 from functions.storage_trigger import parse_descriptor_path
 
+pytestmark = pytest.mark.integration
+
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(payload), indent=2), encoding="utf-8")
 
 
-def _blueprint_validation_src() -> Path:
-    return Path(__file__).resolve().parents[2] / "BlueprintValidation" / "src"
-
-
 def _validate_handoff_contract(payload: Mapping[str, Any]) -> Dict[str, Any]:
-    validation_src = _blueprint_validation_src()
-    if str(validation_src) not in sys.path:
-        sys.path.insert(0, str(validation_src))
-
-    from blueprint_validation.validation import validate_qualified_opportunity_handoff
-
     return validate_qualified_opportunity_handoff(dict(payload))
 
 

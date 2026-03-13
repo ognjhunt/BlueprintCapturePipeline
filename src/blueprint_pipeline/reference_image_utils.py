@@ -13,6 +13,8 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+from .optional_dependencies import log_missing_optional_dependency
+
 logger = logging.getLogger(__name__)
 
 _TOGETHER_ALLOWED_IMAGE_HOST_SUFFIXES = (
@@ -422,6 +424,15 @@ def _cleanup_with_nano_banana(image_path: Path, output_path: Path) -> Optional[P
 
     try:
         from google import genai  # type: ignore
+    except ImportError:
+        log_missing_optional_dependency(
+            logger,
+            feature="Nano Banana crop cleanup",
+            package="google-genai",
+            extra="llm",
+        )
+        return image_path
+    try:
 
         client = genai.Client(api_key=api_key)
 
@@ -467,6 +478,15 @@ def _cleanup_with_gpt_image(image_path: Path, output_path: Path) -> Optional[Pat
 
     try:
         from openai import OpenAI  # type: ignore
+    except ImportError:
+        log_missing_optional_dependency(
+            logger,
+            feature="GPT Image crop cleanup",
+            package="openai",
+            extra="llm",
+        )
+        return image_path
+    try:
 
         client = OpenAI(api_key=api_key)
 

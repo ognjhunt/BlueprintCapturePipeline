@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .optional_dependencies import log_missing_optional_dependency
+
+logger = logging.getLogger(__name__)
 
 
 _SUPPORTED_ENVIRONMENTS = {
@@ -298,6 +303,14 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
 
     try:
         from google import genai  # type: ignore
+    except ImportError:
+        log_missing_optional_dependency(
+            logger,
+            feature="Gemini scene semantics inference",
+            package="google-genai",
+            extra="llm",
+        )
+        return None
     except Exception:
         return None
 

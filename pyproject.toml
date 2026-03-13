@@ -24,6 +24,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "blueprint-contracts @ file:///Users/nijelhunt_1/workspace/BlueprintContracts",
     "pyyaml>=6.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
@@ -34,6 +35,13 @@ dependencies = [
 [project.optional-dependencies]
 cloud = [
     "google-cloud-storage>=2.10.0",
+]
+llm = [
+    "google-genai>=1.0.0",
+    "openai>=1.0.0",
+]
+validation = [
+    "jsonschema>=4.23.0",
 ]
 geometry = [
     "open3d>=0.18.0",
@@ -80,11 +88,16 @@ line-length = 100
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
 ]
 markers = [
     "gpu: marks tests requiring GPU",

@@ -1,4 +1,7 @@
 """Pytest configuration and shared fixtures for Blueprint Capture Pipeline tests."""
+
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
@@ -8,9 +11,14 @@ import pytest
 # Add source directory to path for imports
 SRC_DIR = Path(__file__).parent.parent / "src"
 FUNCTIONS_DIR = Path(__file__).parent.parent / "functions"
+CONTRACTS_SRC_DIR = Path(__file__).parent.parent.parent / "BlueprintContracts" / "src"
 
-sys.path.insert(0, str(SRC_DIR))
-sys.path.insert(0, str(FUNCTIONS_DIR))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(FUNCTIONS_DIR) not in sys.path:
+    sys.path.insert(0, str(FUNCTIONS_DIR))
+if CONTRACTS_SRC_DIR.is_dir() and str(CONTRACTS_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(CONTRACTS_SRC_DIR))
 
 
 def pytest_addoption(parser):
@@ -32,19 +40,6 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Run GPU-dependent tests",
-    )
-
-
-def pytest_configure(config):
-    """Configure pytest markers."""
-    config.addinivalue_line(
-        "markers", "gpu: mark test as requiring GPU"
-    )
-    config.addinivalue_line(
-        "markers", "integration: mark test as integration test"
-    )
-    config.addinivalue_line(
-        "markers", "slow: mark test as slow"
     )
 
 

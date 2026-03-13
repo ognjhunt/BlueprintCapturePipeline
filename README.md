@@ -52,11 +52,28 @@ Use the pinned local interpreter and the CPU-safe default dependency set:
 uv sync --extra dev
 ```
 
-Optional geometry/simulation dependencies are now explicit extras:
+That default install is intentionally CPU-safe for local development and tests. It does not install the optional OpenAI or Gemini SDKs.
+
+Optional extras:
 
 ```bash
+# OpenAI SDK / Gemini SDK backed features
+uv sync --extra dev --extra llm
+
+# JSON schema validation in a non-dev environment
+uv sync --extra validation
+
+# Geometry or simulation work
 uv sync --extra dev --extra geometry --extra sim
 ```
+
+Compatibility note for older bootstrap flows:
+
+```bash
+pip install -r requirements.txt
+```
+
+`requirements.txt` now delegates to the package metadata in `pyproject.toml`, so `pyproject.toml` is the single source of truth.
 
 ## Entry Points
 
@@ -95,6 +112,12 @@ PYTHONPATH=src python3 -m blueprint_pipeline.run_e2e \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
   --provider openai
 ```
+
+CPU-safe default behavior:
+
+- `--provider openai` uses the local Codex CLI path by default and does not require the OpenAI Python SDK.
+- `codex` must be installed and authenticated locally for that default path.
+- `--provider claude` uses the Anthropic HTTP API and requires `ANTHROPIC_API_KEY`, but no extra Python package.
 
 GPU VM staging path for raw download bundles:
 
@@ -195,6 +218,7 @@ Current behavior:
 
 - `openai + auto` prefers `codex exec`, then falls back to the OpenAI SDK
 - `claude` uses the Anthropic HTTP API
+- OpenAI SDK fallback and Gemini-backed features require `uv sync --extra llm`
 - when enrichment is disabled or unavailable, the deterministic pipeline still runs normally
 
 Qualification may also emit:
@@ -434,7 +458,7 @@ NuRec shim Fixer routing (when using `scripts/nurec_shim.py`):
 - `INPAINT360GS_PYTHON` (default: `python3.10`)
 - `INPAINT360GS_RESOLUTION` (`2` default; `1`=full, `2`=half, `4`=quarter)
 - `SCENE_SEMANTICS_GEMINI_MODEL` (default: `gemini-3.0-pro`)
-- `GOOGLE_GENAI_API_KEY` (optional; when missing, scene semantics falls back to local auto)
+- `GOOGLE_GENAI_API_KEY` (optional; when missing, scene semantics falls back to local auto; install `--extra llm` before enabling Gemini)
 - `SAM3_TRACKING_MODE` (`auto` default in wrapper; resolves to `full_video` or `sampled`)
 - `SAM3_FULL_VIDEO_MAX_FRAMES` (`600` default; `auto` uses sampled tracking above this)
 - `DA3_MODEL_PATH` (default: `/opt/da3/weights/metric_large`, local path preferred)
@@ -560,6 +584,7 @@ export ISAAC_WEBRTC_REMOTE_TARGET="<user>@<server-host>"
 Asset generation/retrieval providers:
 
 - `CROP_CLEANUP_PROVIDER` (`skip` default in `run_full_pipeline.sh`; options: `skip`, `together_qwen_image_edit`, `qwen_image_edit`, `nano_banana`, `gpt_image`)
+- `nano_banana` and `gpt_image` require `uv sync --extra llm` plus their provider API keys
 - `TOGETHER_API_KEY` (required only when `CROP_CLEANUP_PROVIDER=together_qwen_image_edit`)
 - `TOGETHER_QWEN_IMAGE_EDIT_MODEL` (optional override; tries known Together Qwen model IDs by default)
 - `TOGETHER_IMAGE_EDIT_ENDPOINT` (optional override; default `https://api.together.xyz/v1/images/generations`)
@@ -646,12 +671,20 @@ Worker entrypoints in `functions/storage_trigger.py`:
 
 ## Tests
 
+CPU-safe default test selection:
+
+```bash
+uv run pytest -q -m "not integration"
+```
+
+Full local suite, including integration-style tests:
+
 ```bash
 uv run pytest -q
 ```
 
-For local geometry or simulation work, install the optional extras first:
+For local geometry, simulation, or SDK-backed LLM work, install the optional extras first:
 
 ```bash
-uv sync --extra dev --extra geometry --extra sim
+uv sync --extra dev --extra llm --extra geometry --extra sim
 ```

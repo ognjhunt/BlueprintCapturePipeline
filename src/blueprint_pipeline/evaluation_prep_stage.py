@@ -1071,9 +1071,78 @@ def _build_site_world_runtime_records(
         }
         return registration, health
 
-    client = SiteWorldRuntimeServiceClient(SiteWorldRuntimeServiceConfig.from_env())
-    build_payload = dict(client.build_site_world(spec))
     registration = {
+        "schema_version": "v1",
+        "site_world_id": site_world_id,
+        "build_id": None,
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "site_submission_id": spec.get("site_submission_id"),
+        "status": "ready",
+        "runtime_base_url": service_url or None,
+        "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
+        "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
+        "supported_cameras": [],
+        "scenario_catalog": scenario_catalog,
+        "start_state_catalog": start_state_catalog,
+        "task_catalog": task_catalog,
+        "robot_profiles": robot_profiles,
+        "runtime_capabilities": _runtime_capabilities_payload(launchable=True),
+        "blockers": list(canonical_runtime_status.get("blockers") or []),
+        "warnings": list(canonical_runtime_status.get("warnings") or []),
+        "world_model_policy": policy.to_dict(),
+        "grounding_status": canonical_runtime_status.get("grounding_status"),
+        "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
+        "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+        "canonical_package_version": spec.get("canonical_package_version"),
+        "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
+        "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+        "derivation_mode": policy.output_policy,
+        "authoritative_record": True,
+        "generated_at": utc_now_iso(),
+    }
+    health = {
+        "schema_version": "v1",
+        "site_world_id": site_world_id,
+        "build_id": None,
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "site_submission_id": spec.get("site_submission_id"),
+        "healthy": True,
+        "launchable": True,
+        "status": "healthy",
+        "runtime_base_url": service_url or None,
+        "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
+        "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
+        "supported_cameras": [],
+        "scenario_catalog": scenario_catalog,
+        "start_state_catalog": start_state_catalog,
+        "task_catalog": task_catalog,
+        "robot_profiles": robot_profiles,
+        "runtime_capabilities": _runtime_capabilities_payload(launchable=True),
+        "blockers": list(canonical_runtime_status.get("blockers") or []),
+        "warnings": list(canonical_runtime_status.get("warnings") or []),
+        "world_model_policy": policy.to_dict(),
+        "grounding_status": canonical_runtime_status.get("grounding_status"),
+        "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
+        "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
+        "canonical_package_version": spec.get("canonical_package_version"),
+        "canonical_artifact_uri": _gs_uri(context, "evaluation_prep/site_world_health.json"),
+        "presentation_artifact_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+        "derivation_mode": policy.output_policy,
+        "authoritative_record": True,
+        "last_heartbeat_at": utc_now_iso(),
+    }
+
+    client = SiteWorldRuntimeServiceClient(SiteWorldRuntimeServiceConfig.from_env())
+    build_payload = dict(
+        client.register_site_world_package(
+            spec=spec,
+            registration=registration,
+            health=health,
+        )
+    )
+    runtime_registration = {
         key: build_payload.get(key)
         for key in (
             "schema_version",
@@ -1097,60 +1166,43 @@ def _build_site_world_runtime_records(
             "runtime_capabilities",
             "health_uri",
             "generated_at",
+            "blockers",
+            "warnings",
+            "grounding_status",
+            "ungrounded_reason",
+            "empty_index_cause",
+            "canonical_package_version",
+            "canonical_artifact_uri",
+            "presentation_artifact_uri",
+            "derivation_mode",
+            "authoritative_record",
         )
-        if key in build_payload
+        if key in build_payload and build_payload.get(key) is not None
     }
-    health = dict(build_payload.get("health") or client.get_site_world_health(str(registration.get("site_world_id") or site_world_id)))
-    registration.setdefault("site_submission_id", spec.get("site_submission_id"))
-    registration.setdefault("world_model_policy", policy.to_dict())
-    registration.setdefault("canonical_package_version", spec.get("canonical_package_version"))
-    registration.setdefault("blockers", list(canonical_runtime_status.get("blockers") or []))
-    registration.setdefault("warnings", list(canonical_runtime_status.get("warnings") or []))
-    registration.setdefault("task_catalog", task_catalog)
-    registration.setdefault("scenario_catalog", scenario_catalog)
-    registration.setdefault("start_state_catalog", start_state_catalog)
-    registration.setdefault("robot_profiles", robot_profiles)
-    registration.setdefault("supported_cameras", [])
-    registration.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
-    registration.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
-    registration.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
-    registration.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_registration.json"))
-    registration.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
-    registration.setdefault("derivation_mode", policy.output_policy)
-    registration.setdefault("authoritative_record", True)
+    registration.update(runtime_registration)
+    health = dict(
+        build_payload.get("health")
+        or client.get_site_world_health(str(registration.get("site_world_id") or site_world_id))
+    )
+    registration["blockers"] = list(
+        dict.fromkeys(
+            [
+                *list(canonical_runtime_status.get("blockers") or []),
+                *list(registration.get("blockers") or []),
+            ]
+        )
+    )
+    registration["warnings"] = list(
+        dict.fromkeys(
+            [
+                *list(canonical_runtime_status.get("warnings") or []),
+                *list(registration.get("warnings") or []),
+            ]
+        )
+    )
     registration["runtime_capabilities"] = _runtime_capabilities_payload(
         launchable=True,
         base=registration.get("runtime_capabilities") if isinstance(registration.get("runtime_capabilities"), Mapping) else {},
-    )
-    health.setdefault("scene_id", context.scene_id)
-    health.setdefault("capture_id", context.capture_id)
-    health.setdefault("site_submission_id", spec.get("site_submission_id"))
-    health.setdefault("world_model_policy", policy.to_dict())
-    health.setdefault("canonical_package_version", spec.get("canonical_package_version"))
-    health.setdefault("blockers", list(canonical_runtime_status.get("blockers") or []))
-    health.setdefault("warnings", list(canonical_runtime_status.get("warnings") or []))
-    health.setdefault("task_catalog", task_catalog)
-    health.setdefault("scenario_catalog", scenario_catalog)
-    health.setdefault("start_state_catalog", start_state_catalog)
-    health.setdefault("robot_profiles", robot_profiles)
-    health.setdefault("supported_cameras", registration.get("supported_cameras") or [])
-    health.setdefault("runtime_base_url", registration.get("runtime_base_url"))
-    health.setdefault("websocket_base_url", registration.get("websocket_base_url"))
-    health.setdefault("vm_instance_id", registration.get("vm_instance_id"))
-    health.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
-    health.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
-    health.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
-    health.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_health.json"))
-    health.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
-    health.setdefault("derivation_mode", policy.output_policy)
-    health.setdefault("authoritative_record", True)
-    health["runtime_capabilities"] = _runtime_capabilities_payload(
-        launchable=bool(health.get("launchable", True)),
-        base=health.get("runtime_capabilities")
-        if isinstance(health.get("runtime_capabilities"), Mapping)
-        else registration.get("runtime_capabilities")
-        if isinstance(registration.get("runtime_capabilities"), Mapping)
-        else {},
     )
     if registration.get("status") == "ready":
         if task_catalog and scenario_catalog and start_state_catalog and robot_profiles:

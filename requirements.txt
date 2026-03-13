@@ -1,8 +1,4 @@
-pyyaml>=6.0
-numpy>=1.24.0
-trimesh>=4.4.0
-google-cloud-storage>=2.10.0
-google-genai>=1.0.0
-scipy>=1.10.0
-Pillow>=10.0.0
-jsonschema>=4.23.0
+# Canonical dependency metadata lives in pyproject.toml.
+# This compatibility file keeps older `pip install -r requirements.txt` flows
+# on the CPU-safe default package install.
+.

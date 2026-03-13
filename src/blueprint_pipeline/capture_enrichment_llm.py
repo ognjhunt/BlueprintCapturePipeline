@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -12,6 +13,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+
+from .optional_dependencies import log_missing_optional_dependency
+
+logger = logging.getLogger(__name__)
 
 
 SkillRunner = Callable[[str, Mapping[str, Any]], Optional[Mapping[str, Any]]]
@@ -245,6 +250,14 @@ class _OpenAISDKRunner:
             return None
         try:
             from openai import OpenAI  # type: ignore
+        except ImportError:
+            log_missing_optional_dependency(
+                logger,
+                feature="OpenAI SDK capture enrichment",
+                package="openai",
+                extra="llm",
+            )
+            return None
         except Exception:
             return None
         client = OpenAI(api_key=api_key)

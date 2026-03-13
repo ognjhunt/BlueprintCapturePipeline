@@ -70,6 +70,23 @@ class SiteWorldRuntimeServiceClient:
             raise RuntimeError(f"{method} {path} returned non-object JSON")
         return parsed
 
+    def register_site_world_package(
+        self,
+        *,
+        spec: Mapping[str, Any],
+        registration: Mapping[str, Any],
+        health: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return self._request_json(
+            method="POST",
+            path="/v1/site-worlds",
+            payload={
+                "spec": dict(spec),
+                "registration": dict(registration),
+                "health": dict(health),
+            },
+        )
+
     def build_site_world(self, spec: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._request_json(method="POST", path="/v1/site-worlds", payload=spec)
 
