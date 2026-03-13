@@ -99,6 +99,13 @@ def _string_list(value: Any) -> List[str]:
     return [str(item).strip() for item in values if str(item).strip()]
 
 
+def _presentation_demo_ui_payload() -> Dict[str, Optional[str]]:
+    return {
+        "ui_base_url": str(os.getenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL") or "").strip() or None,
+        "public_ui_base_url": str(os.getenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL") or "").strip() or None,
+    }
+
+
 def _has_structured_intake_from_metadata(
     metadata: Mapping[str, Any],
     *,
@@ -1006,6 +1013,7 @@ def _write_scene_memory_bundle(
         "authoritative_record": False,
         "world_model_policy": policy.to_dict(),
         "canonical_package_version": None,
+        **_presentation_demo_ui_payload(),
         "provenance": runtime_demo_provenance,
     }, provenance=runtime_demo_provenance)
     write_json(presentation_dir / "runtime_demo_manifest.json", runtime_demo_manifest)

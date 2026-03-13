@@ -240,6 +240,8 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
 
     run_capture_pipeline(
@@ -261,8 +263,11 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert (eval_root / "site_world_health.json").is_file()
     assert (pipeline_root / "presentation_world" / "presentation_world_manifest.json").is_file()
     assert (pipeline_root / "presentation_world" / "runtime_demo_manifest.json").is_file()
+    runtime_demo_manifest = json.loads((pipeline_root / "presentation_world" / "runtime_demo_manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifacts"]["presentation_world_manifest"] == "../presentation_world/presentation_world_manifest.json"
     assert manifest["artifacts"]["runtime_demo_manifest"] == "../presentation_world/runtime_demo_manifest.json"
+    assert runtime_demo_manifest["ui_base_url"] == "https://demo.example/internal"
+    assert runtime_demo_manifest["public_ui_base_url"] == "https://demo.example/public"
     assert health["launchable"] is True
     assert len(geometry["objects"]) >= 1
     spec = _assert_valid_production_bundle(eval_root)
