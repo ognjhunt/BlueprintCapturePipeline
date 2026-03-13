@@ -43,6 +43,7 @@ Default bootstrap installs the supported runtime path:
 - repo package plus `runtime` dependencies
 - ffmpeg and base system tools
 - YOLO-World runtime dependencies
+- helper scripts already present in this repo, including `scripts/sam3_detect.py`
 
 Optional installs:
 
@@ -52,6 +53,8 @@ Optional installs:
 - `./scripts/install_ml_stack.sh --with-local-qwen`
 
 SAM3 is optional. If it is not installed or `SAM3_WEIGHTS_PATH` does not point to weights, the SAM3 backend is skipped explicitly and the supported object-index path remains YOLO-World plus Grounding-DINO fallback.
+
+`install_colmap_cuda.sh` is not part of this narrowed path and is not required for the supported GPU VM bootstrap.
 
 ## Environment variables
 
@@ -119,11 +122,61 @@ From the BlueprintValidation repo:
 
 ```bash
 cd /Users/nijelhunt_1/workspace/BlueprintValidation
+uv sync --extra vision
 export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
+export NEOVERSE_MODEL_ROOT="/path/to/neoverse/model"
+export NEOVERSE_CHECKPOINT_PATH="/path/to/neoverse/checkpoint.pt"
+export NEOVERSE_RUNNER_COMMAND="/path/to/neoverse-runner"
 
-blueprint-validate --config configs/example_validation.yaml preflight \
+blueprint-neoverse-runtime
+```
+
+Use the production-only validation config in [`BlueprintValidation/configs/example_validation.yaml`](../../BlueprintValidation/configs/example_validation.yaml).
+
+Run production preflight:
+
+```bash
+blueprint-validate --config configs/example_validation.yaml \
+  --required-runtime-kind neoverse_production \
+  preflight \
   --site-world-registration /data/blueprint-storage/local-blueprint/scenes/<scene>/captures/<capture>/pipeline/evaluation_prep/site_world_registration.json
 ```
+
+Minimal session flow against the production runtime:
+
+```bash
+blueprint-validate --config configs/example_validation.yaml \
+  --required-runtime-kind neoverse_production \
+  session create \
+  --session-id validation-session \
+  --session-work-dir data/session-validation \
+  --site-world-registration /data/blueprint-storage/local-blueprint/scenes/<scene>/captures/<capture>/pipeline/evaluation_prep/site_world_registration.json \
+  --robot-profile-id mobile_manipulator_rgb_v1 \
+  --task-id task-1 \
+  --scenario-id scenario-default \
+  --start-state-id start-default
+
+blueprint-validate session reset \
+  --session-id validation-session \
+  --session-work-dir data/session-validation
+
+blueprint-validate session step \
+  --session-work-dir data/session-validation \
+  --episode-id <episode-id> \
+  --action-json '[0,0,0,0,0,0,0]'
+
+blueprint-validate session export \
+  --session-id validation-session \
+  --session-work-dir data/session-validation
+```
+
+Smoke-only runtime branch:
+
+```bash
+blueprint-neoverse-smoke-runtime
+```
+
+This branch is for interface smoke checks only. It must not be treated as production-grade acceptance for the narrowed workflow.
 
 ## Failure diagnosis
 

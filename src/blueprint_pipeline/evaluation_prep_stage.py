@@ -695,6 +695,34 @@ def _runtime_capabilities_payload(
     return payload
 
 
+def _runtime_readiness_state(*, launchable: bool, blockers: Sequence[str]) -> str:
+    if launchable:
+        return "launchable"
+    if blockers:
+        return "blocked"
+    return "incomplete"
+
+
+def _runtime_eligibility_payload(runtime_status: Mapping[str, Any]) -> Dict[str, Any]:
+    blockers = list(runtime_status.get("blockers") or [])
+    launchable = bool(runtime_status.get("launchable"))
+    return {
+        "launchable": launchable,
+        "readiness_state": _runtime_readiness_state(
+            launchable=launchable,
+            blockers=blockers,
+        ),
+        "blockers": blockers,
+        "warnings": list(runtime_status.get("warnings") or []),
+        "runtime_base_url": runtime_status.get("runtime_base_url"),
+        "websocket_base_url": runtime_status.get("websocket_base_url"),
+        "grounding_status": runtime_status.get("grounding_status"),
+        "ungrounded_reason": runtime_status.get("ungrounded_reason"),
+        "empty_index_cause": runtime_status.get("empty_index_cause"),
+        "object_index_backend_blockers": list(runtime_status.get("object_index_backend_blockers") or []),
+    }
+
+
 def _canonical_site_world_runtime_status(
     *,
     qualification_state: object,
@@ -734,9 +762,14 @@ def _canonical_site_world_runtime_status(
     if empty_index_cause:
         warnings.append(f"empty_index_cause:{empty_index_cause}")
 
+    launchable = len(blockers) == 0
     return {
-        "status": "ready" if not blockers else "blocked",
-        "launchable": len(blockers) == 0,
+        "status": "ready" if launchable else "blocked",
+        "launchable": launchable,
+        "readiness_state": _runtime_readiness_state(
+            launchable=launchable,
+            blockers=blockers,
+        ),
         "blockers": blockers,
         "warnings": warnings,
         "runtime_base_url": runtime_service_url or None,
@@ -1017,18 +1050,7 @@ def _build_site_world_spec(
             "qualification_record_uri": _gs_uri(context, "qualification_record.json"),
             "task_scope_record_uri": _gs_uri(context, "task_scope_record.json"),
         },
-        "runtime_eligibility": {
-            "status": canonical_runtime_status.get("status"),
-            "launchable": bool(canonical_runtime_status.get("launchable")),
-            "blockers": list(canonical_runtime_status.get("blockers") or []),
-            "warnings": list(canonical_runtime_status.get("warnings") or []),
-            "runtime_base_url": canonical_runtime_status.get("runtime_base_url"),
-            "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
-            "grounding_status": canonical_runtime_status.get("grounding_status"),
-            "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
-            "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),
-            "object_index_backend_blockers": list(canonical_runtime_status.get("object_index_backend_blockers") or []),
-        },
+        "runtime_eligibility": _runtime_eligibility_payload(canonical_runtime_status),
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,

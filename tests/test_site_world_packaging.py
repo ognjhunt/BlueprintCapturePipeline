@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from blueprint_contracts.site_world_contract import load_site_world_bundle, validate_site_world_bundle
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
 from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
 from blueprint_pipeline.materialization import materialize_capture_bundle
@@ -16,6 +17,7 @@ class _HealthyRuntimeClient:
         site_world_id = str(registration.get("site_world_id") or "siteworld-test")
         return {
             **dict(registration),
+            "schema_version": "v1",
             "status": "ready",
             "site_world_id": site_world_id,
             "runtime_base_url": "http://runtime.test",
@@ -33,6 +35,7 @@ class _HealthyRuntimeClient:
             },
             "health": {
                 **dict(health),
+                "schema_version": "v1",
                 "site_world_id": site_world_id,
                 "healthy": True,
                 "launchable": True,
@@ -44,6 +47,7 @@ class _HealthyRuntimeClient:
 
     def get_site_world_health(self, site_world_id: str):  # type: ignore[no-untyped-def]
         return {
+            "schema_version": "v1",
             "site_world_id": site_world_id,
             "healthy": True,
             "launchable": True,
@@ -217,6 +221,14 @@ def _build_staged_capture(tmp_path: Path) -> tuple[Path, str]:
     return capture_root, str(materialized["descriptor_uri"])
 
 
+def _assert_valid_production_bundle(eval_root: Path) -> dict[str, object]:
+    registration_path = eval_root / "site_world_registration.json"
+    bundle = load_site_world_bundle(registration_path, require_spec=True)
+    errors = validate_site_world_bundle(bundle, production_mode=True)
+    assert errors == []
+    return bundle.spec
+
+
 def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_staged_capture(tmp_path)
     success_backend = tmp_path / "success_backend.py"
@@ -253,6 +265,11 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert manifest["artifacts"]["runtime_demo_manifest"] == "../presentation_world/runtime_demo_manifest.json"
     assert health["launchable"] is True
     assert len(geometry["objects"]) >= 1
+    spec = _assert_valid_production_bundle(eval_root)
+    runtime_eligibility = dict(spec["runtime_eligibility"])
+    assert runtime_eligibility["readiness_state"] == "launchable"
+    assert spec["canonical_output"]["authoritative_record"] is True
+    assert spec["presentation_output"]["authoritative_record"] is False
 
 
 def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp_path: Path) -> None:
@@ -288,3 +305,8 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     assert health["launchable"] is False
     assert "object_index_backend:yolo_world:ultralytics_missing:stubbed-for-test" in health["blockers"]
     assert "object_index_backend:yolo_world:ultralytics_missing:stubbed-for-test" in manifest["degradation_reasons"]
+    spec = _assert_valid_production_bundle(eval_root)
+    runtime_eligibility = dict(spec["runtime_eligibility"])
+    assert runtime_eligibility["readiness_state"] == "blocked"
+    assert spec["canonical_output"]["authoritative_record"] is True
+    assert spec["presentation_output"]["authoritative_record"] is False
