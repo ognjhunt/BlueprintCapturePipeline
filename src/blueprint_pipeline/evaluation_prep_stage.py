@@ -685,6 +685,34 @@ def _canonical_world_model_payload(
 ) -> Dict[str, Any]:
     pipeline_root = context.pipeline_root
     raw_root = context.raw_root
+    authoritative_runtime_render_manifest_path = pipeline_root / "presentation_world" / "authoritative_runtime_render_manifest.json"
+    if authoritative_runtime_render_manifest_path.is_file():
+        manifest = _read_json_object(authoritative_runtime_render_manifest_path)
+        primary_asset_path = str(manifest.get("primary_asset_path") or "").strip()
+        primary_asset_uri = str(manifest.get("primary_asset_uri") or "").strip()
+        supporting_assets = [
+            dict(item)
+            for item in manifest.get("supporting_assets", [])
+            if isinstance(item, Mapping)
+        ]
+        if primary_asset_path or primary_asset_uri:
+            return {
+                "world_model_backend": "neoverse",
+                "primary_runtime_backend": "neoverse",
+                "scene_representation": str(manifest.get("scene_representation") or "neoverse_video_world_model_v1"),
+                "render_source": str(manifest.get("render_source") or "neoverse_full_capture"),
+                "fallback_mode": str(manifest.get("fallback_mode") or "none"),
+                "evidence_mode": "full_capture_persistent_scene",
+                "primary_render_asset_role": "authoritative_runtime_render_asset",
+                "renderer_backend": str(manifest.get("renderer_backend") or "neoverse"),
+                "bundle_type": str(manifest.get("bundle_type") or manifest.get("scene_representation") or "neoverse_video_world_model_v1"),
+                "status": "ready",
+                "primary_asset_path": primary_asset_path,
+                "primary_asset_uri": primary_asset_uri,
+                "primary_asset_source": str(manifest.get("primary_asset_source") or "authoritative_runtime_render"),
+                "orientation": dict(capture_orientation),
+                "supporting_assets": supporting_assets,
+            }
     candidates = [
         ("advanced_geometry_3dgs", pipeline_root / "advanced_geometry" / "3dgs_compressed.ply"),
         ("raw_gaussian_splat", raw_root / "gaussian_splat.ply"),
@@ -1688,16 +1716,16 @@ def _build_site_world_runtime_records(
     registration.setdefault("start_state_catalog", start_state_catalog)
     registration.setdefault("robot_profiles", robot_profiles)
     registration.setdefault("supported_cameras", [])
-    registration.setdefault("primary_runtime_backend", spec.get("primary_runtime_backend"))
-    registration.setdefault("canonical_world_model", dict(spec.get("canonical_world_model") or {}))
-    registration.setdefault("world_model_backend", spec.get("world_model_backend"))
-    registration.setdefault("scene_representation", spec.get("scene_representation"))
-    registration.setdefault("render_source", spec.get("runtime_render_source"))
-    registration.setdefault("fallback_mode", spec.get("fallback_mode"))
-    registration.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
-    registration.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
-    registration.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
-    registration.setdefault("object_index_backend_blockers", list(canonical_runtime_status.get("object_index_backend_blockers") or []))
+    registration["primary_runtime_backend"] = spec.get("primary_runtime_backend")
+    registration["canonical_world_model"] = dict(spec.get("canonical_world_model") or {})
+    registration["world_model_backend"] = spec.get("world_model_backend")
+    registration["scene_representation"] = spec.get("scene_representation")
+    registration["render_source"] = spec.get("runtime_render_source")
+    registration["fallback_mode"] = spec.get("fallback_mode")
+    registration["grounding_status"] = canonical_runtime_status.get("grounding_status")
+    registration["ungrounded_reason"] = canonical_runtime_status.get("ungrounded_reason")
+    registration["empty_index_cause"] = canonical_runtime_status.get("empty_index_cause")
+    registration["object_index_backend_blockers"] = list(canonical_runtime_status.get("object_index_backend_blockers") or [])
     registration.setdefault("runtime_registration_attempted", True)
     registration.setdefault("runtime_registration_status", "submitted")
     registration.setdefault(
@@ -1721,21 +1749,21 @@ def _build_site_world_runtime_records(
     health.setdefault("start_state_catalog", start_state_catalog)
     health.setdefault("robot_profiles", robot_profiles)
     health.setdefault("supported_cameras", registration.get("supported_cameras") or [])
-    health.setdefault("primary_runtime_backend", spec.get("primary_runtime_backend"))
-    health.setdefault("canonical_world_model", dict(spec.get("canonical_world_model") or {}))
-    health.setdefault("world_model_backend", spec.get("world_model_backend"))
-    health.setdefault("scene_representation", spec.get("scene_representation"))
-    health.setdefault("render_source", spec.get("runtime_render_source"))
-    health.setdefault("fallback_mode", spec.get("fallback_mode"))
+    health["primary_runtime_backend"] = spec.get("primary_runtime_backend")
+    health["canonical_world_model"] = dict(spec.get("canonical_world_model") or {})
+    health["world_model_backend"] = spec.get("world_model_backend")
+    health["scene_representation"] = spec.get("scene_representation")
+    health["render_source"] = spec.get("runtime_render_source")
+    health["fallback_mode"] = spec.get("fallback_mode")
     health.setdefault("runtime_base_url", registration.get("runtime_base_url"))
     health.setdefault("websocket_base_url", registration.get("websocket_base_url"))
     health.setdefault("vm_instance_id", registration.get("vm_instance_id"))
     health.setdefault("world_model_policy", policy.to_dict())
     health.setdefault("canonical_package_version", spec.get("canonical_package_version"))
-    health.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
-    health.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
-    health.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
-    health.setdefault("object_index_backend_blockers", list(canonical_runtime_status.get("object_index_backend_blockers") or []))
+    health["grounding_status"] = canonical_runtime_status.get("grounding_status")
+    health["ungrounded_reason"] = canonical_runtime_status.get("ungrounded_reason")
+    health["empty_index_cause"] = canonical_runtime_status.get("empty_index_cause")
+    health["object_index_backend_blockers"] = list(canonical_runtime_status.get("object_index_backend_blockers") or [])
     health.setdefault("canonical_artifact_uri", _gs_uri(context, "evaluation_prep/site_world_health.json"))
     health.setdefault("presentation_artifact_uri", _gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None)
     health.setdefault("derivation_mode", policy.output_policy)

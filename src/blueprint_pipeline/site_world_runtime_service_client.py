@@ -24,7 +24,7 @@ class SiteWorldRuntimeServiceConfig:
 
     @classmethod
     def from_env(cls) -> "SiteWorldRuntimeServiceConfig":
-        timeout_raw = _env("NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS") or "120"
+        timeout_raw = _env("NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS") or "300"
         return cls(
             service_url=_env("NEOVERSE_RUNTIME_SERVICE_URL").rstrip("/"),
             api_key=_env("NEOVERSE_RUNTIME_SERVICE_API_KEY"),
@@ -48,7 +48,12 @@ class SiteWorldRuntimeServiceClient:
         body = None
         headers = {"Accept": "application/json"}
         if payload is not None:
-            body = json.dumps(payload).encode("utf-8")
+            sanitized_payload = {
+                key: value
+                for key, value in payload.items()
+                if value is not None
+            }
+            body = json.dumps(sanitized_payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
