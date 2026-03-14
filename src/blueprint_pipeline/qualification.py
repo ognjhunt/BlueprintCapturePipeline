@@ -200,6 +200,10 @@ def _canonical_world_model_payload(
         "world_model_backend": "neoverse",
         "primary_runtime_backend": "neoverse",
         "scene_representation": "gsplat_scene_v1" if primary_asset is not None else "unavailable",
+        "render_source": "canonical_world_model" if primary_asset is not None else "unavailable",
+        "fallback_mode": "arkit_rgbd_last_resort",
+        "evidence_mode": "full_capture_persistent_scene",
+        "primary_render_asset_role": "authoritative_runtime_render_asset",
         "renderer_backend": "gsplat" if primary_asset is not None else None,
         "bundle_type": "gsplat_scene_v1" if primary_asset is not None else None,
         "status": status,
@@ -1006,6 +1010,22 @@ def _write_scene_memory_bundle(
         canonical_truth=True,
         presentation_only=False,
     )
+    canonical_world_model = _canonical_world_model_payload(
+        pipeline_dir=pipeline_dir,
+        bucket=bucket,
+        storage_root=storage_root,
+        capture_orientation=capture_orientation,
+    )
+    runtime_render_source = (
+        "neoverse_full_capture"
+        if descriptor.raw_video_uri and descriptor.arkit_poses_uri and descriptor.arkit_intrinsics_uri
+        else str(canonical_world_model.get("render_source") or "unavailable")
+    )
+    scene_representation = (
+        "neoverse_video_world_model_v1"
+        if runtime_render_source == "neoverse_full_capture"
+        else str(canonical_world_model.get("scene_representation") or "unavailable")
+    )
     conditioning_bundle = with_grounding_fields({
         "schema_version": "v1",
         "lane": "scene_memory",
@@ -1034,12 +1054,11 @@ def _write_scene_memory_bundle(
             "generated_outputs_cannot_override_readiness": True,
         },
         "capture_orientation": capture_orientation,
-        "canonical_world_model": _canonical_world_model_payload(
-            pipeline_dir=pipeline_dir,
-            bucket=bucket,
-            storage_root=storage_root,
-            capture_orientation=capture_orientation,
-        ),
+        "primary_runtime_backend": "neoverse",
+        "canonical_world_model": canonical_world_model,
+        "runtime_render_source": runtime_render_source,
+        "fallback_mode": "arkit_rgbd_last_resort",
+        "scene_representation": scene_representation,
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,
@@ -1081,12 +1100,10 @@ def _write_scene_memory_bundle(
         "rights": readiness_payload["rights"],
         "capture_orientation": capture_orientation,
         "primary_runtime_backend": "neoverse",
-        "canonical_world_model": _canonical_world_model_payload(
-            pipeline_dir=pipeline_dir,
-            bucket=bucket,
-            storage_root=storage_root,
-            capture_orientation=capture_orientation,
-        ),
+        "canonical_world_model": canonical_world_model,
+        "runtime_render_source": runtime_render_source,
+        "fallback_mode": "arkit_rgbd_last_resort",
+        "scene_representation": scene_representation,
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,
@@ -1362,6 +1379,11 @@ def _write_scene_memory_bundle(
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
         "status": demo_status,
+        "primary_runtime_backend": "neoverse",
+        "canonical_world_model": canonical_world_model,
+        "runtime_render_source": runtime_render_source,
+        "fallback_mode": "arkit_rgbd_last_resort",
+        "scene_representation": scene_representation,
         "canonical_artifact_uri": scene_memory_manifest_uri,
         "presentation_artifact_uri": runtime_demo_manifest_uri,
         "presentation_bundle_uri": presentation_bundle_uri if policy.emit_presentation else None,

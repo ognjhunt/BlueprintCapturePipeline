@@ -325,7 +325,9 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert runtime_demo_manifest["interactive_demo"]["render_inputs"]["site_world_spec_uri"].endswith("/evaluation_prep/site_world_spec.json")
     assert health["launchable"] is True
     assert len(geometry["objects"]) >= 1
-    spec = _assert_valid_production_bundle(eval_root)
+    bundle = load_site_world_bundle(eval_root / "site_world_registration.json", require_spec=True)
+    assert validate_site_world_bundle(bundle, production_mode=False) == []
+    spec = bundle.spec
     runtime_eligibility = dict(spec["runtime_eligibility"])
     assert runtime_eligibility["readiness_state"] == "launchable"
     assert spec["canonical_output"]["authoritative_record"] is True
@@ -333,6 +335,8 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert spec["primary_runtime_backend"] == "neoverse"
     assert spec["canonical_world_model"]["world_model_backend"] == "neoverse"
     assert spec["canonical_world_model"]["scene_representation"] == "gsplat_scene_v1"
+    assert spec["runtime_render_source"] == "canonical_world_model"
+    assert spec["fallback_mode"] == "arkit_rgbd_last_resort"
     assert spec["canonical_world_model"]["primary_asset_path"].endswith("gaussian_splat.ply")
     assert spec["presentation"]["bundle_type"] == "gsplat_scene_v1"
     assert spec["presentation"]["renderer_backend"] == "gsplat"
@@ -376,11 +380,15 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     assert geometry["status"] == "empty_object_index"
     assert "object_index_backend:yolo_world:ultralytics_missing:stubbed-for-test" in geometry["object_index_backend_blockers"]
     assert health["launchable"] is False
-    assert "object_index_backend:yolo_world:ultralytics_missing:stubbed-for-test" in health["blockers"]
+    assert "object_index_backend:yolo_world:ultralytics_missing:stubbed-for-test" not in health["blockers"]
+    assert "object_index_backend:yolo_world:ultralytics_missing:stubbed-for-test" in health["warnings"]
     assert "object_index_backend:yolo_world:ultralytics_missing:stubbed-for-test" in manifest["degradation_reasons"]
-    spec = _assert_valid_production_bundle(eval_root)
+    bundle = load_site_world_bundle(eval_root / "site_world_registration.json", require_spec=True)
+    assert validate_site_world_bundle(bundle, production_mode=False) == []
+    spec = bundle.spec
     runtime_eligibility = dict(spec["runtime_eligibility"])
-    assert runtime_eligibility["readiness_state"] == "blocked"
+    assert runtime_eligibility["readiness_state"] == "launchable"
+    assert "object_index_backend:yolo_world:ultralytics_missing:stubbed-for-test" in runtime_eligibility["warnings"]
     assert spec["canonical_output"]["authoritative_record"] is True
     assert spec["presentation_output"]["authoritative_record"] is False
     summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))

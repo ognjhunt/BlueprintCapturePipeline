@@ -9,7 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, utc_now_iso, write_json
+from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, relative_scene_path, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
 from .object_geometry_stage import resolve_object_geometry_manifest
 from .runtime_layer_grounding import (
@@ -722,6 +722,10 @@ def _canonical_world_model_payload(
         "world_model_backend": "neoverse",
         "primary_runtime_backend": "neoverse",
         "scene_representation": "gsplat_scene_v1" if primary_asset is not None else "unavailable",
+        "render_source": "canonical_world_model" if primary_asset is not None else "unavailable",
+        "fallback_mode": "arkit_rgbd_last_resort",
+        "evidence_mode": "full_capture_persistent_scene",
+        "primary_render_asset_role": "authoritative_runtime_render_asset",
         "renderer_backend": "gsplat" if primary_asset is not None else None,
         "bundle_type": "gsplat_scene_v1" if primary_asset is not None else None,
         "status": "ready" if primary_asset is not None else "missing",
@@ -730,6 +734,41 @@ def _canonical_world_model_payload(
         "primary_asset_source": primary_asset_source,
         "orientation": dict(capture_orientation),
         "supporting_assets": supporting_assets,
+    }
+
+
+def _primary_runtime_render_descriptor(
+    *,
+    conditioning_bundle: Mapping[str, Any],
+    local_paths: Mapping[str, Any],
+    canonical_world_model: Mapping[str, Any],
+) -> Dict[str, str]:
+    canonical_status = str(canonical_world_model.get("status") or "").strip().lower()
+    if canonical_status == "ready":
+        return {
+            "world_model_backend": str(canonical_world_model.get("world_model_backend") or "neoverse"),
+            "scene_representation": str(canonical_world_model.get("scene_representation") or "gsplat_scene_v1"),
+            "runtime_render_source": str(canonical_world_model.get("render_source") or "canonical_world_model"),
+            "fallback_mode": str(canonical_world_model.get("fallback_mode") or "arkit_rgbd_last_resort"),
+        }
+
+    raw_video_ref = str(conditioning_bundle.get("raw_video_uri") or local_paths.get("raw_video_path") or "").strip()
+    arkit = dict(conditioning_bundle.get("arkit") or {}) if isinstance(conditioning_bundle.get("arkit"), Mapping) else {}
+    poses_ref = str(arkit.get("poses_uri") or local_paths.get("arkit_poses_path") or "").strip()
+    intrinsics_ref = str(arkit.get("intrinsics_uri") or local_paths.get("arkit_intrinsics_path") or "").strip()
+    if raw_video_ref and poses_ref and intrinsics_ref:
+        return {
+            "world_model_backend": "neoverse",
+            "scene_representation": "neoverse_video_world_model_v1",
+            "runtime_render_source": "neoverse_full_capture",
+            "fallback_mode": "arkit_rgbd_last_resort",
+        }
+
+    return {
+        "world_model_backend": str(canonical_world_model.get("world_model_backend") or "neoverse"),
+        "scene_representation": str(canonical_world_model.get("scene_representation") or "unavailable"),
+        "runtime_render_source": str(canonical_world_model.get("render_source") or "unavailable"),
+        "fallback_mode": str(canonical_world_model.get("fallback_mode") or "arkit_rgbd_last_resort"),
     }
 
 
@@ -802,24 +841,24 @@ def _canonical_site_world_runtime_status(
     empty_index_cause = str(protected_regions_manifest.get("empty_index_cause") or "").strip() or None
     object_index_backend_blockers = _string_list(object_geometry_manifest.get("object_index_backend_blockers"))
 
-    if normalized_qualification_state != "ready":
-        blockers.append(f"qualification_state:{normalized_qualification_state or 'missing'}")
+    if normalized_qualification_state and normalized_qualification_state != "ready":
+        warnings.append(f"qualification_state:{normalized_qualification_state}")
     if not downstream_evaluation_eligibility:
-        blockers.append("downstream_evaluation_eligibility:false")
+        warnings.append("downstream_evaluation_eligibility:false")
     if str(scene_memory_bundle_manifest.get("status") or "").strip() != "complete":
-        blockers.append(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
+        warnings.append(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
     if grounding_status != "grounded":
-        blockers.append(f"grounding_status:{grounding_status}")
+        warnings.append(f"grounding_status:{grounding_status}")
         if ungrounded_reason:
-            blockers.append(f"ungrounded_reason:{ungrounded_reason}")
+            warnings.append(f"ungrounded_reason:{ungrounded_reason}")
     if not runtime_service_url:
         blockers.append("missing_runtime_service_url")
     for artifact_path in required_runtime_artifact_paths:
         if not artifact_path.is_file():
             blockers.append(f"missing_runtime_artifact:{artifact_path.name}")
     for blocker in object_index_backend_blockers:
-        if blocker not in blockers:
-            blockers.append(blocker)
+        if blocker not in warnings:
+            warnings.append(blocker)
     if empty_index_cause:
         warnings.append(f"empty_index_cause:{empty_index_cause}")
 
@@ -1105,6 +1144,11 @@ def _build_site_world_spec(
         context=context,
         capture_orientation=capture_orientation,
     )
+    runtime_render_descriptor = _primary_runtime_render_descriptor(
+        conditioning_bundle=conditioning_map,
+        local_paths=local_paths,
+        canonical_world_model=canonical_world_model,
+    )
     critical_ids = _task_critical_ids_from_manifest(task_anchor_manifest)
     normalized_tasks = []
     for task in task_anchor_manifest.get("tasks", []) if isinstance(task_anchor_manifest.get("tasks"), list) else []:
@@ -1171,6 +1215,10 @@ def _build_site_world_spec(
         "capture_source": descriptor_map.get("capture_source") or descriptor_map.get("capture_modality"),
         "capture_orientation": capture_orientation,
         "processing_profile": descriptor_map.get("processing_profile"),
+        "runtime_render_source": runtime_render_descriptor["runtime_render_source"],
+        "fallback_mode": runtime_render_descriptor["fallback_mode"],
+        "world_model_backend": runtime_render_descriptor["world_model_backend"],
+        "scene_representation": runtime_render_descriptor["scene_representation"],
         "conditioning": {
             "scene_memory_manifest_uri": _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
             "conditioning_bundle_uri": _gs_uri(context, "scene_memory/conditioning_bundle.json"),
@@ -1418,6 +1466,12 @@ def _build_site_world_runtime_records(
         "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
         "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
         "supported_cameras": [],
+        "primary_runtime_backend": "neoverse",
+        "canonical_world_model": dict(spec.get("canonical_world_model") or {}),
+        "world_model_backend": spec.get("world_model_backend"),
+        "scene_representation": spec.get("scene_representation"),
+        "render_source": spec.get("runtime_render_source"),
+        "fallback_mode": spec.get("fallback_mode"),
         "scenario_catalog": scenario_catalog,
         "start_state_catalog": start_state_catalog,
         "task_catalog": task_catalog,
@@ -1451,6 +1505,12 @@ def _build_site_world_runtime_records(
         "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
         "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
         "supported_cameras": [],
+        "primary_runtime_backend": "neoverse",
+        "canonical_world_model": dict(spec.get("canonical_world_model") or {}),
+        "world_model_backend": spec.get("world_model_backend"),
+        "scene_representation": spec.get("scene_representation"),
+        "render_source": spec.get("runtime_render_source"),
+        "fallback_mode": spec.get("fallback_mode"),
         "scenario_catalog": scenario_catalog,
         "start_state_catalog": start_state_catalog,
         "task_catalog": task_catalog,
@@ -1628,6 +1688,12 @@ def _build_site_world_runtime_records(
     registration.setdefault("start_state_catalog", start_state_catalog)
     registration.setdefault("robot_profiles", robot_profiles)
     registration.setdefault("supported_cameras", [])
+    registration.setdefault("primary_runtime_backend", spec.get("primary_runtime_backend"))
+    registration.setdefault("canonical_world_model", dict(spec.get("canonical_world_model") or {}))
+    registration.setdefault("world_model_backend", spec.get("world_model_backend"))
+    registration.setdefault("scene_representation", spec.get("scene_representation"))
+    registration.setdefault("render_source", spec.get("runtime_render_source"))
+    registration.setdefault("fallback_mode", spec.get("fallback_mode"))
     registration.setdefault("grounding_status", canonical_runtime_status.get("grounding_status"))
     registration.setdefault("ungrounded_reason", canonical_runtime_status.get("ungrounded_reason"))
     registration.setdefault("empty_index_cause", canonical_runtime_status.get("empty_index_cause"))
@@ -1655,6 +1721,12 @@ def _build_site_world_runtime_records(
     health.setdefault("start_state_catalog", start_state_catalog)
     health.setdefault("robot_profiles", robot_profiles)
     health.setdefault("supported_cameras", registration.get("supported_cameras") or [])
+    health.setdefault("primary_runtime_backend", spec.get("primary_runtime_backend"))
+    health.setdefault("canonical_world_model", dict(spec.get("canonical_world_model") or {}))
+    health.setdefault("world_model_backend", spec.get("world_model_backend"))
+    health.setdefault("scene_representation", spec.get("scene_representation"))
+    health.setdefault("render_source", spec.get("runtime_render_source"))
+    health.setdefault("fallback_mode", spec.get("fallback_mode"))
     health.setdefault("runtime_base_url", registration.get("runtime_base_url"))
     health.setdefault("websocket_base_url", registration.get("websocket_base_url"))
     health.setdefault("vm_instance_id", registration.get("vm_instance_id"))
@@ -1710,6 +1782,11 @@ def _build_hosted_session_runtime_manifest(
     canonical_world_model = _canonical_world_model_payload(
         context=context,
         capture_orientation=capture_orientation,
+    )
+    runtime_render_descriptor = _primary_runtime_render_descriptor(
+        conditioning_bundle=conditioning_map,
+        local_paths=_conditioning_local_paths(context=context, conditioning_bundle=conditioning_map),
+        canonical_world_model=canonical_world_model,
     )
     adapter_key_map = {
         "neoverse": "neoverse_adapter_manifest_path",
@@ -1891,6 +1968,10 @@ def _build_hosted_session_runtime_manifest(
         ),
         "primary_runtime_backend": "neoverse",
         "canonical_world_model": canonical_world_model,
+        "world_model_backend": runtime_render_descriptor["world_model_backend"],
+        "scene_representation": runtime_render_descriptor["scene_representation"],
+        "render_source": runtime_render_descriptor["runtime_render_source"],
+        "fallback_mode": runtime_render_descriptor["fallback_mode"],
         "available_backends": available_backends,
         "launchable_backends": launchable_backends,
         "default_backend": default_backend,
