@@ -28,7 +28,7 @@ from .common import (
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
 from .object_index_stage import ensure_object_index_stage
-from .runtime_layer_grounding import with_grounding_fields
+from .runtime_layer_grounding import build_presentation_variance_policy, with_grounding_fields
 from .task_targets import infer_task_targets, write_task_targets
 from .webapp_sync import (
     derive_webapp_opportunity_state,
@@ -38,6 +38,7 @@ from .webapp_sync import (
 from .world_model_policy import (
     WorldModelPolicy,
     build_output_linkage,
+    build_presentation_derivation_policy,
     build_provenance_record,
 )
 
@@ -103,6 +104,179 @@ def _presentation_demo_ui_payload() -> Dict[str, Optional[str]]:
     return {
         "ui_base_url": str(os.getenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL") or "").strip() or None,
         "public_ui_base_url": str(os.getenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL") or "").strip() or None,
+    }
+
+
+def _capture_orientation_payload(descriptor: CaptureDescriptor) -> Dict[str, Any]:
+    raw = (
+        descriptor.capture_orientation
+        if isinstance(descriptor.capture_orientation, Mapping)
+        else {}
+    )
+    payload = dict(raw)
+    encoded_size = payload.get("encoded_size") if isinstance(payload.get("encoded_size"), Mapping) else {}
+    display_size = payload.get("display_size") if isinstance(payload.get("display_size"), Mapping) else {}
+    payload.setdefault("encoded_width", int(encoded_size.get("width") or 0))
+    payload.setdefault("encoded_height", int(encoded_size.get("height") or 0))
+    payload.setdefault("declared_capture_width", int(display_size.get("width") or 0))
+    payload.setdefault("declared_capture_height", int(display_size.get("height") or 0))
+    payload.setdefault("display_rotation_degrees", int(payload.get("rotation_degrees") or 0))
+    payload.setdefault("normalization_applied", bool(payload.get("display_rotation_degrees") or 0))
+    payload.setdefault("display_orientation", "unknown")
+    payload.setdefault("rotation_degrees", 0)
+    payload.setdefault("display_size", {})
+    payload.setdefault("encoded_size", {})
+    payload.setdefault("source", "inferred")
+    payload.setdefault("preserve_original_display_orientation", True)
+    return payload
+
+
+def _artifact_pointer(path: Path, *, bucket: str, storage_root: Path) -> Dict[str, Any]:
+    return {
+        "name": path.name,
+        "path": str(path.resolve()),
+        "uri": f"gs://{bucket}/{relative_scene_path(path, storage_root)}",
+    }
+
+
+def _presentation_primary_asset(
+    *,
+    pipeline_dir: Path,
+    bucket: str,
+    storage_root: Path,
+) -> Optional[Dict[str, Any]]:
+    raw_root = pipeline_dir.parent / "raw"
+    candidates = [
+        ("advanced_geometry_3dgs", pipeline_dir / "advanced_geometry" / "3dgs_compressed.ply"),
+        ("raw_gaussian_splat", raw_root / "gaussian_splat.ply"),
+        ("raw_splat", raw_root / "splat.ply"),
+    ]
+    for source_name, path in candidates:
+        if path.is_file():
+            payload = _artifact_pointer(path, bucket=bucket, storage_root=storage_root)
+            payload["source_name"] = source_name
+            return payload
+    return None
+
+
+def _presentation_supporting_assets(
+    *,
+    pipeline_dir: Path,
+    bucket: str,
+    storage_root: Path,
+) -> List[Dict[str, Any]]:
+    assets: List[Dict[str, Any]] = []
+    for path in (
+        pipeline_dir / "nurec" / "visual_mesh.glb",
+        pipeline_dir / "nurec" / "nvblox_mesh.ply",
+        pipeline_dir / "nurec" / "occupancy.bin",
+        pipeline_dir / "advanced_geometry" / "advanced_geometry_bundle.json",
+        pipeline_dir / "nurec" / "mesh_manifest.json",
+    ):
+        if path.is_file():
+            assets.append(_artifact_pointer(path, bucket=bucket, storage_root=storage_root))
+    return assets
+
+
+def _presentation_bundle_status(
+    *,
+    emit_presentation: bool,
+    primary_asset: Optional[Mapping[str, Any]],
+    render_inputs: Mapping[str, Any],
+) -> str:
+    if not emit_presentation:
+        return "disabled"
+    missing_inputs = _string_list(render_inputs.get("missing_inputs"))
+    if missing_inputs:
+        return "incomplete"
+    return "bundle_ready"
+
+
+def _presentation_quality_summary(
+    *,
+    primary_asset: Optional[Mapping[str, Any]],
+    supporting_assets: List[Mapping[str, Any]],
+    render_inputs: Mapping[str, Any],
+) -> Dict[str, Any]:
+    missing_inputs = _string_list(render_inputs.get("missing_inputs"))
+    return {
+        "primary_asset_present": primary_asset is not None,
+        "supporting_asset_count": len(supporting_assets),
+        "required_input_count": len(_string_list(render_inputs.get("required_inputs"))),
+        "available_input_count": len(_string_list(render_inputs.get("available_inputs"))),
+        "missing_input_count": len(missing_inputs),
+        "missing_inputs": missing_inputs,
+    }
+
+
+def _presentation_camera_behavior(capture_orientation: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "primary_mode": "pose_driven_preview",
+        "supported_modes": [
+            "pose_driven_preview",
+            "canonical_anchor_jump",
+            "bounded_lookaround",
+        ],
+        "viewpoint_frame": "canonical_site_world",
+        "pose_inputs": ["raw_video", "arkit_poses", "arkit_intrinsics"],
+        "allow_pose_extrapolation": False,
+        "preserve_capture_display_orientation": bool(
+            capture_orientation.get("preserve_original_display_orientation", True)
+        ),
+    }
+
+
+def _presentation_render_inputs(
+    *,
+    descriptor: CaptureDescriptor,
+    scene_memory_manifest_uri: str,
+    conditioning_bundle_uri: str,
+    preview_simulation_manifest_uri: str,
+) -> Dict[str, Any]:
+    payload = {
+        "raw_video_uri": descriptor.raw_video_uri,
+        "keyframe_uri": descriptor.keyframe_uri,
+        "arkit_poses_uri": descriptor.arkit_poses_uri,
+        "arkit_intrinsics_uri": descriptor.arkit_intrinsics_uri,
+        "arkit_frames_uri": descriptor.arkit_frames_uri,
+        "arkit_depth_prefix_uri": descriptor.arkit_depth_prefix_uri,
+        "arkit_confidence_prefix_uri": descriptor.arkit_confidence_prefix_uri,
+        "scene_memory_manifest_uri": scene_memory_manifest_uri,
+        "conditioning_bundle_uri": conditioning_bundle_uri,
+        "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
+        "protected_regions_manifest_uri": None,
+        "object_geometry_manifest_uri": None,
+        "site_world_spec_uri": None,
+    }
+    required_inputs = [
+        "raw_video_uri",
+        "scene_memory_manifest_uri",
+        "conditioning_bundle_uri",
+    ]
+    available_inputs = [key for key, value in payload.items() if str(value or "").strip()]
+    missing_inputs = [key for key in required_inputs if key not in available_inputs]
+    payload["required_inputs"] = required_inputs
+    payload["available_inputs"] = available_inputs
+    payload["missing_inputs"] = missing_inputs
+    return payload
+
+
+def _presentation_demo_readiness(
+    *,
+    render_inputs: Mapping[str, Any],
+    ui_payload: Mapping[str, Optional[str]],
+) -> Dict[str, Any]:
+    blockers = [f"missing_render_input:{key}" for key in _string_list(render_inputs.get("missing_inputs"))]
+    if not str(ui_payload.get("ui_base_url") or "").strip() and not str(
+        ui_payload.get("public_ui_base_url") or ""
+    ).strip():
+        blockers.append("missing_demo_ui_base_url")
+    readiness_state = "ready" if not blockers else "blocked"
+    return {
+        "readiness_state": readiness_state,
+        "blockers": blockers,
+        "warnings": [],
+        "ui_configured": readiness_state == "ready" or "missing_demo_ui_base_url" not in blockers,
     }
 
 
@@ -550,6 +724,16 @@ def attach_handoff_package_paths(
             ),
             **(
                 {
+                    "presentation_bundle_path": _relative_path_from(
+                        handoff_dir,
+                        pipeline_dir / "presentation_world" / "presentation_bundle.json",
+                    )
+                }
+                if (pipeline_dir / "presentation_world" / "presentation_bundle.json").is_file()
+                else {}
+            ),
+            **(
+                {
                     "presentation_world_manifest_path": _relative_path_from(
                         handoff_dir,
                         pipeline_dir / "presentation_world" / "presentation_world_manifest.json",
@@ -708,7 +892,7 @@ def _scene_memory_derived_assets(
         assets["presentation_world"] = {
             "status": "available",
             "manifest_uri": scene_memory_artifacts.get("presentation_world_manifest_uri"),
-            "artifact_uri": scene_memory_artifacts.get("runtime_demo_manifest_uri"),
+            "artifact_uri": scene_memory_artifacts.get("presentation_bundle_uri"),
         }
     return assets
 
@@ -737,8 +921,15 @@ def _write_scene_memory_bundle(
     scene_memory_readiness_uri = f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'scene_memory_readiness.json', storage_root)}"
     conditioning_bundle_uri = f"gs://{bucket}/{relative_scene_path(scene_memory_dir / 'conditioning_bundle.json', storage_root)}"
     preview_simulation_manifest_uri = f"gs://{bucket}/{relative_scene_path(preview_dir / 'preview_simulation_manifest.json', storage_root)}"
+    presentation_bundle_uri = f"gs://{bucket}/{relative_scene_path(presentation_dir / 'presentation_bundle.json', storage_root)}"
     presentation_world_manifest_uri = f"gs://{bucket}/{relative_scene_path(presentation_dir / 'presentation_world_manifest.json', storage_root)}"
     runtime_demo_manifest_uri = f"gs://{bucket}/{relative_scene_path(presentation_dir / 'runtime_demo_manifest.json', storage_root)}"
+    capture_orientation = _capture_orientation_payload(descriptor)
+    presentation_variance_policy = build_presentation_variance_policy()
+    derivation_policy = build_presentation_derivation_policy(
+        policy=policy,
+        variance_policy=presentation_variance_policy,
+    )
 
     readiness_payload = _build_scene_memory_readiness(
         descriptor=descriptor,
@@ -804,11 +995,12 @@ def _write_scene_memory_bundle(
             "authoritative_record": "qualification_record.json",
             "generated_outputs_cannot_override_readiness": True,
         },
+        "capture_orientation": capture_orientation,
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,
             canonical_artifact_uri=conditioning_bundle_uri,
-            presentation_artifact_uri=runtime_demo_manifest_uri if policy.emit_presentation else None,
+            presentation_artifact_uri=presentation_bundle_uri if policy.emit_presentation else None,
             authoritative_record=True,
         ),
         "canonical_package_version": None,
@@ -843,11 +1035,12 @@ def _write_scene_memory_bundle(
             "human_actions_required_uri": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
         },
         "rights": readiness_payload["rights"],
+        "capture_orientation": capture_orientation,
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,
             canonical_artifact_uri=scene_memory_manifest_uri,
-            presentation_artifact_uri=presentation_world_manifest_uri if policy.emit_presentation else None,
+            presentation_artifact_uri=presentation_bundle_uri if policy.emit_presentation else None,
             authoritative_record=True,
         ),
         "canonical_package_version": None,
@@ -964,6 +1157,36 @@ def _write_scene_memory_bundle(
     }
     write_json(preview_dir / "preview_simulation_manifest.json", preview_manifest)
 
+    render_inputs = _presentation_render_inputs(
+        descriptor=descriptor,
+        scene_memory_manifest_uri=scene_memory_manifest_uri,
+        conditioning_bundle_uri=conditioning_bundle_uri,
+        preview_simulation_manifest_uri=preview_simulation_manifest_uri,
+    )
+    primary_asset = _presentation_primary_asset(
+        pipeline_dir=pipeline_dir,
+        bucket=bucket,
+        storage_root=storage_root,
+    )
+    supporting_assets = _presentation_supporting_assets(
+        pipeline_dir=pipeline_dir,
+        bucket=bucket,
+        storage_root=storage_root,
+    )
+    bundle_status = _presentation_bundle_status(
+        emit_presentation=policy.emit_presentation,
+        primary_asset=primary_asset,
+        render_inputs=render_inputs,
+    )
+    canonical_source = {
+        "scene_memory_manifest_uri": scene_memory_manifest_uri,
+        "conditioning_bundle_uri": conditioning_bundle_uri,
+        "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
+        "canonical_package_uri": None,
+        "canonical_package_version": None,
+        "authoritative_source": "canonical_site_world",
+    }
+    camera_behavior = _presentation_camera_behavior(capture_orientation)
     presentation_provenance = build_provenance_record(
         grounding_level="generated" if policy.emit_presentation else "reconstructed",
         evidence_sources=[scene_memory_manifest_uri, conditioning_bundle_uri],
@@ -972,28 +1195,111 @@ def _write_scene_memory_bundle(
         canonical_truth=False,
         presentation_only=True,
     )
+    presentation_quality_summary = _presentation_quality_summary(
+        primary_asset=primary_asset,
+        supporting_assets=supporting_assets,
+        render_inputs=render_inputs,
+    )
+    presentation_bundle = with_grounding_fields({
+        "schema_version": "v1",
+        "lane": "presentation_world_bundle",
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "generated_at": utc_now_iso(),
+        "status": bundle_status if policy.emit_presentation else "disabled",
+        "bundle_type": "gsplat_scene_v1",
+        "renderer_backend": "gsplat",
+        "authoritative_record": False,
+        "canonical_artifact_uri": scene_memory_manifest_uri,
+        "presentation_artifact_uri": presentation_bundle_uri,
+        "canonical_source": canonical_source,
+        "derivation_policy": derivation_policy,
+        "capture_orientation": capture_orientation,
+        "orientation": capture_orientation,
+        "camera_behavior": camera_behavior,
+        "render_inputs": render_inputs,
+        "required_dependencies": {
+            "raw_video_uri": descriptor.raw_video_uri,
+            "arkit_poses_uri": descriptor.arkit_poses_uri,
+            "arkit_intrinsics_uri": descriptor.arkit_intrinsics_uri,
+            "arkit_depth_prefix_uri": descriptor.arkit_depth_prefix_uri,
+            "arkit_confidence_prefix_uri": descriptor.arkit_confidence_prefix_uri,
+            "capture_orientation": capture_orientation,
+        },
+        "primary_asset_uri": primary_asset.get("uri") if isinstance(primary_asset, Mapping) else None,
+        "primary_asset_path": primary_asset.get("path") if isinstance(primary_asset, Mapping) else None,
+        "supporting_assets": supporting_assets,
+        "fallback_policy": "canonical_only",
+        "quality_summary": presentation_quality_summary,
+        "runtime_contract": {
+            "runtime_demo_manifest_uri": runtime_demo_manifest_uri if policy.emit_presentation else None,
+            "interactive_demo_type": "canonical_grounded_site_world",
+            "consumer_contract": {
+                "supported_consumers": ["BlueprintValidation", "Blueprint-WebApp"],
+                "launch_readiness_field": "interactive_demo.readiness_state",
+                "legacy_url_fields": ["ui_base_url", "public_ui_base_url"],
+            },
+        },
+        "world_model_policy": policy.to_dict(),
+        "canonical_package_version": None,
+        "canonical_package_uri": None,
+        "provenance": presentation_provenance,
+    }, provenance=presentation_provenance)
+    write_json(presentation_dir / "presentation_bundle.json", presentation_bundle)
+
+    demo_ui_payload = _presentation_demo_ui_payload()
+    interactive_demo = _presentation_demo_readiness(
+        render_inputs=render_inputs,
+        ui_payload=demo_ui_payload,
+    )
+    demo_status = (
+        "demo_ready"
+        if policy.emit_presentation and interactive_demo["readiness_state"] == "ready"
+        else bundle_status
+        if policy.emit_presentation
+        else "disabled"
+    )
     presentation_manifest = with_grounding_fields({
         "schema_version": "v1",
         "lane": "presentation_world",
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
-        "status": "available" if policy.emit_presentation else "disabled",
+        "status": demo_status,
+        "bundle_type": "gsplat_scene_v1",
+        "renderer_backend": "gsplat",
         "canonical_artifact_uri": scene_memory_manifest_uri,
-        "presentation_artifact_uri": presentation_world_manifest_uri,
+        "presentation_artifact_uri": presentation_bundle_uri,
+        "presentation_bundle_uri": presentation_bundle_uri if policy.emit_presentation else None,
         "runtime_demo_manifest_uri": runtime_demo_manifest_uri if policy.emit_presentation else None,
         "preview_simulation_manifest_uri": preview_simulation_manifest_uri if policy.emit_presentation else None,
+        "canonical_source": canonical_source,
+        "derivation_policy": derivation_policy,
+        "capture_orientation": capture_orientation,
+        "orientation": capture_orientation,
+        "orientation_summary": capture_orientation,
+        "primary_asset_uri": primary_asset.get("uri") if isinstance(primary_asset, Mapping) else None,
+        "primary_asset_path": primary_asset.get("path") if isinstance(primary_asset, Mapping) else None,
+        "supporting_assets": supporting_assets,
+        "fallback_policy": "canonical_only",
+        "quality_summary": presentation_quality_summary,
+        "readiness": {
+            "bundle_status": bundle_status if policy.emit_presentation else "disabled",
+            "interactive_demo_readiness": interactive_demo["readiness_state"] if policy.emit_presentation else "disabled",
+            "blockers": list(interactive_demo.get("blockers") or []),
+        },
         "derivation_mode": policy.allow_generative_completion,
         "authoritative_record": False,
         "world_model_policy": policy.to_dict(),
         "canonical_package_version": None,
+        "canonical_package_uri": None,
         "provenance": presentation_provenance,
     }, provenance=presentation_provenance)
     write_json(presentation_dir / "presentation_world_manifest.json", presentation_manifest)
 
     runtime_demo_provenance = build_provenance_record(
         grounding_level="generated" if policy.emit_presentation else "reconstructed",
-        evidence_sources=[scene_memory_manifest_uri, presentation_world_manifest_uri],
+        evidence_sources=[scene_memory_manifest_uri, presentation_bundle_uri],
         observation_coverage={"presentation_enabled": policy.emit_presentation},
         confidence=qualification_record.get("confidence"),
         canonical_truth=False,
@@ -1004,16 +1310,39 @@ def _write_scene_memory_bundle(
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
-        "status": "demo_ready" if policy.emit_presentation else "disabled",
+        "status": demo_status,
         "canonical_artifact_uri": scene_memory_manifest_uri,
         "presentation_artifact_uri": runtime_demo_manifest_uri,
+        "presentation_bundle_uri": presentation_bundle_uri if policy.emit_presentation else None,
+        "presentation_world_manifest_uri": presentation_world_manifest_uri,
         "presentation_manifest_uri": presentation_world_manifest_uri,
         "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
+        "canonical_source": canonical_source,
+        "derivation_policy": derivation_policy,
+        "capture_orientation": capture_orientation,
+        "orientation": capture_orientation,
+        "bundle_type": "gsplat_scene_v1",
+        "renderer_backend": "gsplat",
+        "bundle_status": bundle_status if policy.emit_presentation else "disabled",
+        "fallback_policy": "canonical_only",
+        "interactive_demo": {
+            "readiness_state": interactive_demo["readiness_state"] if policy.emit_presentation else "disabled",
+            "blockers": list(interactive_demo.get("blockers") or []),
+            "warnings": list(interactive_demo.get("warnings") or []),
+            "camera_behavior": camera_behavior,
+            "render_inputs": render_inputs,
+            "consumer_contract": {
+                "site_world_mode": "interactive_presentation_world",
+                "presentation_bundle_uri_field": "presentation_bundle_uri",
+                "legacy_url_fields": ["ui_base_url", "public_ui_base_url"],
+            },
+        },
         "derivation_mode": policy.allow_generative_completion,
         "authoritative_record": False,
         "world_model_policy": policy.to_dict(),
         "canonical_package_version": None,
-        **_presentation_demo_ui_payload(),
+        "canonical_package_uri": None,
+        **demo_ui_payload,
         "provenance": runtime_demo_provenance,
     }, provenance=runtime_demo_provenance)
     write_json(presentation_dir / "runtime_demo_manifest.json", runtime_demo_manifest)
@@ -1023,6 +1352,7 @@ def _write_scene_memory_bundle(
         "scene_memory_readiness_uri": scene_memory_readiness_uri,
         "conditioning_bundle_uri": conditioning_bundle_uri,
         "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
+        "presentation_bundle_uri": presentation_bundle_uri,
         "presentation_world_manifest_uri": presentation_world_manifest_uri,
         "runtime_demo_manifest_uri": runtime_demo_manifest_uri,
         "scene_memory_status": readiness_payload["status"],
@@ -3052,6 +3382,7 @@ def run_qualification_pipeline(
                 "scene_memory_readiness": scene_memory_artifacts["scene_memory_readiness_uri"],
                 "conditioning_bundle": scene_memory_artifacts["conditioning_bundle_uri"],
                 "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
+                "presentation_bundle": scene_memory_artifacts["presentation_bundle_uri"],
                 "presentation_world_manifest": scene_memory_artifacts["presentation_world_manifest_uri"],
                 "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
                 "gen3c_adapter_manifest": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
@@ -3086,6 +3417,7 @@ def run_qualification_pipeline(
             "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
             "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
             "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
+            "presentation_bundle": scene_memory_artifacts["presentation_bundle_uri"],
             "presentation_world_manifest": scene_memory_artifacts["presentation_world_manifest_uri"],
             "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
         }
@@ -3112,6 +3444,7 @@ def run_qualification_pipeline(
                 "scene_memory_readiness_uri": scene_memory_artifacts["scene_memory_readiness_uri"],
                 "conditioning_bundle_uri": scene_memory_artifacts["conditioning_bundle_uri"],
                 "preview_simulation_manifest_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
+                "presentation_bundle_uri": scene_memory_artifacts["presentation_bundle_uri"],
                 "presentation_world_manifest_uri": scene_memory_artifacts["presentation_world_manifest_uri"],
                 "runtime_demo_manifest_uri": scene_memory_artifacts["runtime_demo_manifest_uri"],
                 "gen3c_adapter_manifest_uri": scene_memory_artifacts["gen3c_adapter_manifest_uri"],

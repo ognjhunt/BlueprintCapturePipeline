@@ -2,6 +2,8 @@
 
 `BlueprintCapturePipeline` builds the canonical site-world package and presentation/demo world artifacts from raw Blueprint captures.
 
+Canonical site-world remains the authoritative grounded source of truth. Presentation artifacts are non-authoritative derivatives that stay linked to canonical and preserve original capture display orientation through the pipeline.
+
 ## Scope
 
 Primary product path:
@@ -17,6 +19,7 @@ Primary product path:
 Retained public artifacts:
 
 - `scene_memory/*`
+- `presentation_world/presentation_bundle.json`
 - `presentation_world/presentation_world_manifest.json`
 - `presentation_world/runtime_demo_manifest.json`
 - `evaluation_prep/site_world_spec.json`

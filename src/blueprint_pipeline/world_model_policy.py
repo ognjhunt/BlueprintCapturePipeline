@@ -24,6 +24,21 @@ def _bool_env(name: str, default: bool) -> bool:
     return parse_bool(value, default=default)
 
 
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple, set)):
+        items = [str(item) for item in value]
+    else:
+        items = []
+    out: list[str] = []
+    for item in items:
+        text = item.strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 @dataclass(frozen=True)
 class WorldModelPolicy:
     output_policy: str = "grounding_first"
@@ -72,6 +87,28 @@ def build_output_linkage(
         "derivation_mode": derivation_mode or policy.output_policy,
         "authoritative_record": authoritative_record,
         "output_policy": policy.to_dict(),
+    }
+
+
+def build_presentation_derivation_policy(
+    *,
+    policy: WorldModelPolicy,
+    variance_policy: Optional[Mapping[str, Any]] = None,
+    canonical_authority: str = "site_world_spec",
+) -> Dict[str, Any]:
+    variance = dict(variance_policy or {})
+    return {
+        "presentation_role": "non_authoritative_derivative",
+        "allowed_completion_level": policy.allow_generative_completion,
+        "editable_regions_source": "runtime_layer_policy.protected_regions_manifest",
+        "allowed_editable_region_classes": _string_list(
+            variance.get("allowed_editable_region_classes")
+        ),
+        "forbidden_changes": _string_list(variance.get("forbidden_changes")),
+        "fallback_on_conflict": "canonical_only",
+        "canonical_authority": canonical_authority,
+        "world_model_output_policy": policy.output_policy,
+        "provenance_required": policy.provenance_required,
     }
 
 

@@ -24,6 +24,7 @@ from .site_world_runtime_service_client import SiteWorldRuntimeServiceClient, Si
 from .world_model_policy import (
     WorldModelPolicy,
     build_output_linkage,
+    build_presentation_derivation_policy,
     build_provenance_record,
 )
 
@@ -463,6 +464,7 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
         "gen3c_adapter_manifest_path": adapter_dir / "gen3c.json",
         "neoverse_adapter_manifest_path": adapter_dir / "neoverse.json",
         "cosmos_transfer_adapter_manifest_path": adapter_dir / "cosmos_transfer.json",
+        "presentation_bundle_path": presentation_dir / "presentation_bundle.json",
         "presentation_world_manifest_path": presentation_dir / "presentation_world_manifest.json",
         "runtime_demo_manifest_path": presentation_dir / "runtime_demo_manifest.json",
         "protected_regions_manifest_path": eval_dir / "protected_regions_manifest.json",
@@ -489,6 +491,9 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
         "gen3c_adapter_manifest_path",
         "neoverse_adapter_manifest_path",
         "cosmos_transfer_adapter_manifest_path",
+        "presentation_bundle_path",
+        "presentation_world_manifest_path",
+        "runtime_demo_manifest_path",
         "protected_regions_manifest_path",
         "canonical_render_policy_path",
         "presentation_variance_policy_path",
@@ -567,6 +572,7 @@ def _normalize_rich_handoff(
         "gen3c_adapter_manifest_path",
         "neoverse_adapter_manifest_path",
         "cosmos_transfer_adapter_manifest_path",
+        "presentation_bundle_path",
         "presentation_world_manifest_path",
         "runtime_demo_manifest_path",
         "protected_regions_manifest_path",
@@ -862,6 +868,133 @@ def _descriptor_scene_memory_capture(descriptor: Mapping[str, Any]) -> Dict[str,
     return {}
 
 
+def _descriptor_capture_orientation(
+    descriptor: Mapping[str, Any],
+    conditioning_bundle: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    if isinstance(descriptor.get("capture_orientation"), Mapping):
+        return dict(descriptor.get("capture_orientation") or {})
+    metadata = descriptor.get("metadata")
+    if isinstance(metadata, Mapping) and isinstance(metadata.get("capture_orientation"), Mapping):
+        return dict(metadata.get("capture_orientation") or {})
+    if isinstance(conditioning_bundle, Mapping) and isinstance(
+        conditioning_bundle.get("capture_orientation"), Mapping
+    ):
+        return dict(conditioning_bundle.get("capture_orientation") or {})
+    return {}
+
+
+def _presentation_demo_readiness(runtime_demo_manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    interactive_demo = (
+        runtime_demo_manifest.get("interactive_demo")
+        if isinstance(runtime_demo_manifest.get("interactive_demo"), Mapping)
+        else {}
+    )
+    blockers = _string_list(interactive_demo.get("blockers"))
+    bundle_status = str(
+        runtime_demo_manifest.get("bundle_status")
+        or ((runtime_demo_manifest.get("readiness") or {}).get("bundle_status") if isinstance(runtime_demo_manifest.get("readiness"), Mapping) else "")
+        or runtime_demo_manifest.get("status")
+        or ""
+    ).strip().lower()
+    if bundle_status and bundle_status not in {"bundle_ready", "ready", "demo_ready"}:
+        blockers = list(dict.fromkeys([*blockers, f"presentation_bundle_status:{bundle_status}"]))
+    readiness_state = str(interactive_demo.get("readiness_state") or "").strip().lower()
+    if readiness_state:
+        return {
+            "readiness_state": readiness_state if not blockers else "blocked",
+            "blockers": blockers,
+        }
+    if str(runtime_demo_manifest.get("ui_base_url") or "").strip() or str(
+        runtime_demo_manifest.get("public_ui_base_url") or ""
+    ).strip():
+        return {"readiness_state": "ready", "blockers": blockers}
+    blockers = list(dict.fromkeys([*blockers, "missing_demo_ui_base_url"]))
+    return {"readiness_state": "blocked", "blockers": blockers}
+
+
+def _refresh_presentation_contract_payload(
+    *,
+    payload: Mapping[str, Any],
+    context,
+    canonical_package_version: str,
+    derivation_policy: Mapping[str, Any],
+) -> Dict[str, Any]:
+    updated = dict(payload)
+    canonical_package_uri = _gs_uri(context, "evaluation_prep/site_world_spec.json")
+    updated["canonical_package_version"] = canonical_package_version
+    updated["canonical_package_uri"] = canonical_package_uri
+    if "derivation_policy" not in updated:
+        updated["derivation_policy"] = dict(derivation_policy)
+
+    if isinstance(updated.get("canonical_source"), Mapping):
+        canonical_source = dict(updated.get("canonical_source") or {})
+        canonical_source.update(
+            {
+                "canonical_package_uri": canonical_package_uri,
+                "canonical_package_version": canonical_package_version,
+                "protected_regions_manifest_uri": _gs_uri(
+                    context, "evaluation_prep/protected_regions_manifest.json"
+                ),
+                "object_geometry_manifest_uri": _gs_uri(
+                    context, "evaluation_prep/object_geometry_manifest.json"
+                ),
+                "site_world_spec_uri": canonical_package_uri,
+            }
+        )
+        updated["canonical_source"] = canonical_source
+
+    if isinstance(updated.get("render_inputs"), Mapping):
+        render_inputs = dict(updated.get("render_inputs") or {})
+        render_inputs.update(
+            {
+                "protected_regions_manifest_uri": _gs_uri(
+                    context, "evaluation_prep/protected_regions_manifest.json"
+                ),
+                "object_geometry_manifest_uri": _gs_uri(
+                    context, "evaluation_prep/object_geometry_manifest.json"
+                ),
+                "site_world_spec_uri": canonical_package_uri,
+            }
+        )
+        updated["render_inputs"] = render_inputs
+
+    if isinstance(updated.get("runtime_contract"), Mapping):
+        runtime_contract = dict(updated.get("runtime_contract") or {})
+        runtime_contract.update(
+            {
+                "canonical_package_uri": canonical_package_uri,
+                "canonical_package_version": canonical_package_version,
+            }
+        )
+        updated["runtime_contract"] = runtime_contract
+
+    if isinstance(updated.get("interactive_demo"), Mapping):
+        interactive_demo = dict(updated.get("interactive_demo") or {})
+        if isinstance(interactive_demo.get("render_inputs"), Mapping):
+            render_inputs = dict(interactive_demo.get("render_inputs") or {})
+            render_inputs.update(
+                {
+                    "protected_regions_manifest_uri": _gs_uri(
+                        context, "evaluation_prep/protected_regions_manifest.json"
+                    ),
+                    "object_geometry_manifest_uri": _gs_uri(
+                        context, "evaluation_prep/object_geometry_manifest.json"
+                    ),
+                    "site_world_spec_uri": canonical_package_uri,
+                }
+            )
+            interactive_demo["render_inputs"] = render_inputs
+        updated["interactive_demo"] = interactive_demo
+
+    if isinstance(updated.get("readiness"), Mapping):
+        readiness = dict(updated.get("readiness") or {})
+        readiness.setdefault("bundle_status", str(updated.get("status") or "unknown"))
+        updated["readiness"] = readiness
+
+    return updated
+
+
 def _gate(prefixes: Sequence[str], items: Sequence[str]) -> bool:
     normalized = [str(item or "").strip() for item in items if str(item or "").strip()]
     return not any(any(item.startswith(prefix) for prefix in prefixes) for item in normalized)
@@ -912,6 +1045,7 @@ def _build_site_world_spec(
     conditioning_bundle = _read_optional_json_any(conditioning_bundle_path) if conditioning_bundle_path else {}
     conditioning_map = dict(conditioning_bundle) if isinstance(conditioning_bundle, Mapping) else {}
     local_paths = _conditioning_local_paths(context=context, conditioning_bundle=conditioning_map)
+    capture_orientation = _descriptor_capture_orientation(descriptor_map, conditioning_map)
     critical_ids = _task_critical_ids_from_manifest(task_anchor_manifest)
     normalized_tasks = []
     for task in task_anchor_manifest.get("tasks", []) if isinstance(task_anchor_manifest.get("tasks"), list) else []:
@@ -945,6 +1079,10 @@ def _build_site_world_spec(
     geometry_bundle = scene_memory_bundle_manifest.get("bundle_path")
     object_geometry_path = eval_dir / "object_geometry_manifest.json"
     scene_memory_capture = _descriptor_scene_memory_capture(descriptor_map)
+    presentation_world_manifest_path = context.pipeline_root / "presentation_world" / "presentation_world_manifest.json"
+    runtime_demo_manifest_path = context.pipeline_root / "presentation_world" / "runtime_demo_manifest.json"
+    presentation_world_manifest = _read_json_object(presentation_world_manifest_path)
+    runtime_demo_manifest = _read_json_object(runtime_demo_manifest_path)
     spec_provenance = build_provenance_record(
         grounding_level="reconstructed" if bool(canonical_runtime_status.get("launchable")) else "observed",
         evidence_sources=[
@@ -972,12 +1110,14 @@ def _build_site_world_spec(
         "qualification_state": normalized_handoff.get("qualification_state"),
         "downstream_evaluation_eligibility": bool(normalized_handoff.get("downstream_evaluation_eligibility")),
         "capture_source": descriptor_map.get("capture_source") or descriptor_map.get("capture_modality"),
+        "capture_orientation": capture_orientation,
         "processing_profile": descriptor_map.get("processing_profile"),
         "conditioning": {
             "scene_memory_manifest_uri": _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
             "conditioning_bundle_uri": _gs_uri(context, "scene_memory/conditioning_bundle.json"),
             "scene_memory_manifest_path": str((context.pipeline_root / "scene_memory" / "scene_memory_manifest.json").resolve()),
             "conditioning_bundle_path": str((context.pipeline_root / "scene_memory" / "conditioning_bundle.json").resolve()),
+            "capture_orientation": capture_orientation,
             "raw_video_uri": conditioning_map.get("raw_video_uri"),
             "keyframe_uri": conditioning_map.get("keyframe_uri"),
             "arkit_poses_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("poses_uri"),
@@ -994,6 +1134,45 @@ def _build_site_world_spec(
             "collision_mesh_path": str((context.pipeline_root / "nurec" / "nvblox_mesh.ply").resolve()),
             "visual_mesh_path": str((context.pipeline_root / "nurec" / "visual_mesh.glb").resolve()),
             "advanced_geometry_bundle_path": str((context.pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json").resolve()),
+        },
+        "presentation": {
+            "presentation_world_manifest_uri": _gs_uri(context, "presentation_world/presentation_world_manifest.json"),
+            "presentation_world_manifest_path": str(presentation_world_manifest_path.resolve()),
+            "runtime_demo_manifest_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json"),
+            "runtime_demo_manifest_path": str(runtime_demo_manifest_path.resolve()),
+            "bundle_type": str(
+                presentation_world_manifest.get("bundle_type")
+                or runtime_demo_manifest.get("bundle_type")
+                or "gsplat_scene_v1"
+            ),
+            "renderer_backend": str(
+                presentation_world_manifest.get("renderer_backend")
+                or runtime_demo_manifest.get("renderer_backend")
+                or "gsplat"
+            ),
+            "bundle_status": str(
+                runtime_demo_manifest.get("bundle_status")
+                or ((presentation_world_manifest.get("readiness") or {}).get("bundle_status") if isinstance(presentation_world_manifest.get("readiness"), Mapping) else "")
+                or presentation_world_manifest.get("status")
+                or "missing"
+            ),
+            "primary_asset_path": str(
+                presentation_world_manifest.get("primary_asset_path")
+                or runtime_demo_manifest.get("primary_asset_path")
+                or ""
+            ),
+            "orientation": dict(
+                presentation_world_manifest.get("orientation")
+                if isinstance(presentation_world_manifest.get("orientation"), Mapping)
+                else runtime_demo_manifest.get("orientation")
+                if isinstance(runtime_demo_manifest.get("orientation"), Mapping)
+                else capture_orientation
+            ),
+            "fallback_policy": str(
+                runtime_demo_manifest.get("fallback_policy")
+                or presentation_world_manifest.get("fallback_policy")
+                or "canonical_only"
+            ),
         },
         "grounding_status": str(protected_regions_manifest.get("grounding_status") or "grounded"),
         "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
@@ -1061,7 +1240,7 @@ def _build_site_world_spec(
         "presentation_output": build_output_linkage(
             policy=policy,
             canonical_artifact_uri=_gs_uri(context, "evaluation_prep/site_world_spec.json"),
-            presentation_artifact_uri=_gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+            presentation_artifact_uri=_gs_uri(context, "presentation_world/presentation_bundle.json") if policy.emit_presentation else None,
             authoritative_record=False,
             derivation_mode=policy.allow_generative_completion,
         ),
@@ -1460,6 +1639,13 @@ def _build_hosted_session_runtime_manifest(
 ) -> Dict[str, Any]:
     policy = _policy()
     eval_dir = context.capture_root / "pipeline" / "evaluation_prep"
+    descriptor_map = _read_json_object(context.descriptor_path)
+    conditioning_bundle_path = _real_path_from_eval_dir(
+        eval_dir, str(scene_memory_bundle_manifest.get("conditioning_bundle_path") or "")
+    )
+    conditioning_bundle = _read_optional_json_any(conditioning_bundle_path) if conditioning_bundle_path else {}
+    conditioning_map = dict(conditioning_bundle) if isinstance(conditioning_bundle, Mapping) else {}
+    capture_orientation = _descriptor_capture_orientation(descriptor_map, conditioning_map)
     adapter_key_map = {
         "neoverse": "neoverse_adapter_manifest_path",
         "gen3c": "gen3c_adapter_manifest_path",
@@ -1615,8 +1801,14 @@ def _build_hosted_session_runtime_manifest(
             if str(scene_memory_bundle_manifest.get("preview_simulation_manifest_path") or "").strip()
             else None
         ),
+        "presentation_bundle_uri": (
+            _gs_uri(context, "presentation_world/presentation_bundle.json")
+            if str(scene_memory_bundle_manifest.get("presentation_bundle_path") or "").strip()
+            else None
+        ),
         "canonical_package_uri": _gs_uri(context, "evaluation_prep/site_world_spec.json"),
         "canonical_package_version": canonical_package_version,
+        "capture_orientation": capture_orientation,
         "task_anchor_manifest_uri": _gs_uri(
             context, "evaluation_prep/task_anchor_manifest.json"
         ),
@@ -1994,6 +2186,7 @@ def _build_launchable_export_bundle(
         if isinstance(site_world_registration.get("runtime_capabilities"), Mapping)
         else {}
     )
+    demo_readiness = _presentation_demo_readiness(runtime_demo_manifest)
     bundles = {
         "world_model_runtime": {
             "launchable": bool(site_world_health.get("launchable")),
@@ -2017,12 +2210,10 @@ def _build_launchable_export_bundle(
             "backend": "mujoco_robosuite",
         },
         "presentation_demo_ui": {
-            "launchable": bool(
-                str(runtime_demo_manifest.get("ui_base_url") or "").strip()
-                or str(runtime_demo_manifest.get("public_ui_base_url") or "").strip()
-            ),
-            "required_artifacts": ["runtime_demo_manifest", "ui_base_url"],
+            "launchable": demo_readiness["readiness_state"] == "ready",
+            "required_artifacts": ["presentation_bundle", "runtime_demo_manifest", "interactive_demo.readiness_state"],
             "backend": "neoverse_gradio",
+            "blockers": demo_readiness["blockers"],
         },
     }
     return {
@@ -2072,10 +2263,8 @@ def _world_model_validation_summary(
     runtime_demo_ready = bool(site_world_health.get("launchable")) or bool(
         ((launchable_export_bundle.get("bundles") or {}).get("world_model_runtime") or {}).get("launchable")
     )
-    presentation_demo_ui_ready = bool(
-        str(runtime_demo_manifest.get("ui_base_url") or "").strip()
-        or str(runtime_demo_manifest.get("public_ui_base_url") or "").strip()
-    )
+    demo_readiness = _presentation_demo_readiness(runtime_demo_manifest)
+    presentation_demo_ui_ready = demo_readiness["readiness_state"] == "ready"
     grounding_quality_ready = (
         object_index_nonempty
         and not conditioning_blockers
@@ -2111,7 +2300,11 @@ def _world_model_validation_summary(
         },
         "presentation_demo_ui_ready": {
             "passed": presentation_demo_ui_ready,
-            "detail": "Presentation demo manifest includes a truthful embedded UI URL.",
+            "detail": (
+                "Presentation demo contract is bundle-backed and includes a truthful interactive demo endpoint."
+                if presentation_demo_ui_ready
+                else f"Presentation demo contract is blocked: {', '.join(demo_readiness['blockers']) or 'unknown'}."
+            ),
         },
         "grounding_quality_ready": {
             "passed": grounding_quality_ready,
@@ -2239,6 +2432,10 @@ def run_evaluation_prep_stage(
     _copy_json(canonical_render_policy_path, canonical_render_policy)
 
     presentation_variance_policy = build_presentation_variance_policy()
+    presentation_derivation_policy = build_presentation_derivation_policy(
+        policy=policy,
+        variance_policy=presentation_variance_policy,
+    )
     presentation_variance_policy_path = eval_dir / "presentation_variance_policy.json"
     _copy_json(presentation_variance_policy_path, presentation_variance_policy)
 
@@ -2291,18 +2488,33 @@ def run_evaluation_prep_stage(
     site_world_spec_path = eval_dir / "site_world_spec.json"
     _copy_json(site_world_spec_path, site_world_spec)
 
+    presentation_bundle_path = pipeline_dir / "presentation_world" / "presentation_bundle.json"
     presentation_world_manifest_path = pipeline_dir / "presentation_world" / "presentation_world_manifest.json"
     runtime_demo_manifest_path = pipeline_dir / "presentation_world" / "runtime_demo_manifest.json"
     for path in (
         scene_memory_manifest_path,
         conditioning_bundle_path,
+        presentation_bundle_path,
         presentation_world_manifest_path,
         runtime_demo_manifest_path,
     ):
         payload = _read_json_object(path)
         if payload:
-            payload["canonical_package_version"] = canonical_package_version
-            write_json(path, payload)
+            write_json(
+                path,
+                _refresh_presentation_contract_payload(
+                    payload=payload,
+                    context=context,
+                    canonical_package_version=canonical_package_version,
+                    derivation_policy=presentation_derivation_policy,
+                )
+                if path in {
+                    presentation_bundle_path,
+                    presentation_world_manifest_path,
+                    runtime_demo_manifest_path,
+                }
+                else {**payload, "canonical_package_version": canonical_package_version},
+            )
 
     scene_memory_bundle_manifest = _build_scene_memory_bundle_manifest(
         pipeline_dir=pipeline_dir,
@@ -2362,13 +2574,27 @@ def run_evaluation_prep_stage(
     for path in (
         scene_memory_manifest_path,
         conditioning_bundle_path,
+        presentation_bundle_path,
         presentation_world_manifest_path,
         runtime_demo_manifest_path,
     ):
         payload = _read_json_object(path)
         if payload:
-            payload["canonical_package_version"] = canonical_package_version
-            write_json(path, payload)
+            write_json(
+                path,
+                _refresh_presentation_contract_payload(
+                    payload=payload,
+                    context=context,
+                    canonical_package_version=canonical_package_version,
+                    derivation_policy=presentation_derivation_policy,
+                )
+                if path in {
+                    presentation_bundle_path,
+                    presentation_world_manifest_path,
+                    runtime_demo_manifest_path,
+                }
+                else {**payload, "canonical_package_version": canonical_package_version},
+            )
     normalized_handoff = _normalize_rich_handoff(
         handoff=handoff,
         scope_record=scope_record,
@@ -2519,6 +2745,7 @@ def run_evaluation_prep_stage(
         "world_model_classification": validation_summary["world_model_classification"],
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
+        "capture_orientation": site_world_spec.get("capture_orientation"),
     }
     summary_path = eval_dir / "evaluation_prep_summary.json"
     _copy_json(summary_path, summary)
@@ -2587,6 +2814,7 @@ def run_evaluation_prep_stage(
         "world_model_classification": validation_summary["world_model_classification"],
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
+        "capture_orientation": site_world_spec.get("capture_orientation"),
         "grounding_status": protected_regions_manifest.get("grounding_status"),
         "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
         "empty_index_cause": object_geometry_manifest.get("empty_index_cause")
@@ -2607,7 +2835,7 @@ def run_evaluation_prep_stage(
         "presentation_output": build_output_linkage(
             policy=policy,
             canonical_artifact_uri=_gs_uri(context, "evaluation_prep/evaluation_prep_manifest.json"),
-            presentation_artifact_uri=_gs_uri(context, "presentation_world/runtime_demo_manifest.json") if policy.emit_presentation else None,
+            presentation_artifact_uri=_gs_uri(context, "presentation_world/presentation_bundle.json") if policy.emit_presentation else None,
             authoritative_record=False,
             derivation_mode=policy.allow_generative_completion,
         ),
@@ -2640,6 +2868,11 @@ def run_evaluation_prep_stage(
             "object_geometry_manifest": _relative_to(eval_dir, object_geometry_target_path),
             "evaluation_prep_summary": _relative_to(eval_dir, summary_path),
             "review_queue": _relative_to(eval_dir, review_queue_path),
+            **(
+                {"presentation_bundle": _relative_to(eval_dir, pipeline_dir / "presentation_world" / "presentation_bundle.json")}
+                if (pipeline_dir / "presentation_world" / "presentation_bundle.json").is_file()
+                else {}
+            ),
             **(
                 {"presentation_world_manifest": _relative_to(eval_dir, pipeline_dir / "presentation_world" / "presentation_world_manifest.json")}
                 if (pipeline_dir / "presentation_world" / "presentation_world_manifest.json").is_file()

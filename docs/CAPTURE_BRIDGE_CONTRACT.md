@@ -26,6 +26,7 @@ Retained output families:
 - `scene_memory/adapter_manifests/gen3c.json`
 - `scene_memory/adapter_manifests/neoverse.json`
 - `scene_memory/adapter_manifests/cosmos_transfer.json`
+- `presentation_world/presentation_bundle.json`
 - `presentation_world/presentation_world_manifest.json`
 - `presentation_world/runtime_demo_manifest.json`
 - `presentation_demo_preflight_report.json`
@@ -42,16 +43,30 @@ Qualification analysis remains available and may emit:
 - `task_targets.json`
 - `agent_review_bundle.json`
 
-These qualification artifacts support review and agent analysis. The canonical downstream runtime boundary remains the built site-world package plus presentation-world artifacts.
+These qualification artifacts support review and agent analysis. The canonical downstream runtime boundary remains the built site-world package plus the presentation bundle family.
 
-## Presentation Demo Contract
+## Presentation Bundle Contract
 
-`runtime_demo_manifest.json` is only stage-6 ready when it includes a truthful demo UI endpoint:
+`presentation_bundle.json` is the concrete non-authoritative presentation artifact. It must remain grounded in canonical and scene-memory inputs and carries:
+
+- canonical source linkage
+- derivation and hallucination policy
+- capture orientation
+- camera behavior for interactive pose-driven rendering
+- renderable input references for downstream consumers
+
+`presentation_world_manifest.json` is the family index and `runtime_demo_manifest.json` is the interactive demo contract.
+
+`runtime_demo_manifest.json` is only stage-6 ready when `interactive_demo.readiness_state == "ready"` and it includes a truthful demo UI endpoint:
 
 - `ui_base_url`
 - or `public_ui_base_url`
 
-Without one of those fields, the manifest remains a valid artifact record, but WebApp presentation-demo launch should be treated as blocked rather than launchable.
+Without one of those fields, the manifest remains a valid bundle-backed contract, but WebApp presentation-demo launch should be treated as blocked rather than launchable.
+
+## Orientation Preservation
+
+Capture orientation is preserved from raw capture metadata when available, then from video probe metadata, and finally from encoded dimensions as a last resort. The resolved `capture_orientation` contract is propagated through scene-memory, presentation-world, and evaluation-prep outputs so portrait captures are not silently collapsed into landscape semantics.
 
 ## Default Flow
 
