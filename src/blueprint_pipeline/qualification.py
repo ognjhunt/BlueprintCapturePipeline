@@ -187,9 +187,11 @@ def _presentation_bundle_status(
     if not emit_presentation:
         return "disabled"
     missing_inputs = _string_list(render_inputs.get("missing_inputs"))
-    if missing_inputs:
-        return "incomplete"
-    return "bundle_ready"
+    if primary_asset and not missing_inputs:
+        return "ready"
+    if primary_asset:
+        return "partial"
+    return "missing"
 
 
 def _presentation_quality_summary(
@@ -250,6 +252,9 @@ def _presentation_render_inputs(
     }
     required_inputs = [
         "raw_video_uri",
+        "arkit_poses_uri",
+        "arkit_intrinsics_uri",
+        "arkit_depth_prefix_uri",
         "scene_memory_manifest_uri",
         "conditioning_bundle_uri",
     ]

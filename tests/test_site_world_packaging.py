@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 from blueprint_contracts.site_world_contract import load_site_world_bundle, validate_site_world_bundle
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
 from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
 from blueprint_pipeline.materialization import build_capture_bundle_records, materialize_capture_bundle
+from blueprint_pipeline.qualification import _presentation_bundle_status, _presentation_primary_asset
 
 
 class _HealthyRuntimeClient:
@@ -208,6 +211,12 @@ def _build_staged_capture(
         "captureSource": "iphone",
         "captureModality": "iphone_arkit_lidar",
         "hiddenZoneBound": 0.2,
+        "captureOrientation": {
+            "displayOrientation": "portrait",
+            "displayWidth": 1080,
+            "displayHeight": 1920,
+            "rotationDegrees": 90,
+        },
     }
     if context_overrides:
         context_payload.update(context_overrides)
@@ -220,6 +229,18 @@ def _build_staged_capture(
         encoding="utf-8",
     )
     (raw_root / "walkthrough.mov").write_bytes(b"not-a-real-video")
+    (raw_root / "gaussian_splat.ply").write_text("ply\nformat ascii 1.0\nend_header\n", encoding="utf-8")
+    arkit_root = raw_root / "arkit"
+    (arkit_root / "depth").mkdir(parents=True)
+    (arkit_root / "poses.jsonl").write_text(
+        json.dumps({"frame_id": "000001", "t_device_sec": 0.0, "T_world_camera": np.eye(4).tolist()}) + "\n",
+        encoding="utf-8",
+    )
+    (arkit_root / "intrinsics.json").write_text(
+        json.dumps({"width": 1920, "height": 1080, "fx": 1000.0, "fy": 1000.0, "cx": 960.0, "cy": 540.0}),
+        encoding="utf-8",
+    )
+    (arkit_root / "depth" / "000001.png").write_bytes(b"depth")
 
     materialized = materialize_capture_bundle(
         bucket=bucket,
@@ -283,10 +304,23 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert presentation_bundle["canonical_source"]["scene_memory_manifest_uri"].endswith("/scene_memory/scene_memory_manifest.json")
     assert presentation_bundle["render_inputs"]["scene_memory_manifest_uri"].endswith("/scene_memory/scene_memory_manifest.json")
     assert presentation_bundle["render_inputs"]["conditioning_bundle_uri"].endswith("/scene_memory/conditioning_bundle.json")
-    assert presentation_bundle["status"] == "bundle_ready"
+    assert presentation_bundle["status"] == "ready"
+    assert presentation_bundle["bundle_type"] == "gsplat_scene_v1"
+    assert presentation_bundle["renderer_backend"] == "gsplat"
+    assert presentation_bundle["fallback_policy"] == "canonical_only"
+    assert presentation_bundle["primary_asset_path"].endswith("gaussian_splat.ply")
     assert presentation_world_manifest["presentation_bundle_uri"].endswith("/presentation_world/presentation_bundle.json")
+    assert presentation_world_manifest["bundle_type"] == "gsplat_scene_v1"
+    assert presentation_world_manifest["renderer_backend"] == "gsplat"
+    assert presentation_world_manifest["readiness"]["bundle_status"] == "ready"
+    assert presentation_world_manifest["orientation"]["display_orientation"] == "portrait"
+    assert presentation_world_manifest["orientation"]["display_rotation_degrees"] == 90
     assert runtime_demo_manifest["ui_base_url"] == "https://demo.example/internal"
     assert runtime_demo_manifest["public_ui_base_url"] == "https://demo.example/public"
+    assert runtime_demo_manifest["presentation_world_manifest_uri"].endswith("/presentation_world/presentation_world_manifest.json")
+    assert runtime_demo_manifest["renderer_backend"] == "gsplat"
+    assert runtime_demo_manifest["bundle_status"] == "ready"
+    assert runtime_demo_manifest["fallback_policy"] == "canonical_only"
     assert runtime_demo_manifest["interactive_demo"]["readiness_state"] == "ready"
     assert runtime_demo_manifest["interactive_demo"]["render_inputs"]["site_world_spec_uri"].endswith("/evaluation_prep/site_world_spec.json")
     assert health["launchable"] is True
@@ -296,6 +330,11 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert runtime_eligibility["readiness_state"] == "launchable"
     assert spec["canonical_output"]["authoritative_record"] is True
     assert spec["presentation_output"]["authoritative_record"] is False
+    assert spec["presentation"]["bundle_type"] == "gsplat_scene_v1"
+    assert spec["presentation"]["renderer_backend"] == "gsplat"
+    assert spec["presentation"]["bundle_status"] == "ready"
+    assert spec["presentation"]["primary_asset_path"].endswith("gaussian_splat.ply")
+    assert spec["presentation"]["orientation"]["display_orientation"] == "portrait"
     summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
     launchable_export = json.loads((eval_root / "launchable_export_bundle.json").read_text(encoding="utf-8"))
     assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is True
@@ -343,7 +382,7 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
     runtime_demo_manifest = json.loads((pipeline_root / "presentation_world" / "runtime_demo_manifest.json").read_text(encoding="utf-8"))
     assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is False
-    assert runtime_demo_manifest["status"] == "bundle_ready"
+    assert runtime_demo_manifest["status"] == "ready"
     assert runtime_demo_manifest["interactive_demo"]["readiness_state"] == "blocked"
     assert "missing_demo_ui_base_url" in runtime_demo_manifest["interactive_demo"]["blockers"]
 
@@ -392,6 +431,7 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     assert runtime_demo_manifest["capture_orientation"]["display_orientation"] == "portrait"
     assert eval_manifest["capture_orientation"]["display_orientation"] == "portrait"
     assert site_world_spec["capture_orientation"]["display_orientation"] == "portrait"
+    assert site_world_spec["presentation"]["orientation"]["display_orientation"] == "portrait"
     assert hosted_runtime_manifest["capture_orientation"]["display_orientation"] == "portrait"
 
 
@@ -444,7 +484,11 @@ def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: P
         write_frames_index=False,
     )
     assert explicit["descriptor"]["capture_orientation"]["display_orientation"] == "portrait"
-    assert explicit["descriptor"]["capture_orientation"]["source"].startswith("capture_")
+    assert explicit["descriptor"]["capture_orientation"]["source"] == "capture_context"
+    assert explicit["descriptor"]["capture_orientation"]["display_rotation_degrees"] == 90
+    assert explicit["descriptor"]["capture_orientation"]["normalization_applied"] is True
+    assert explicit["descriptor"]["capture_orientation"]["declared_capture_width"] == 1080
+    assert explicit["descriptor"]["capture_orientation"]["declared_capture_height"] == 1920
 
     _write_inputs(
         {
@@ -470,7 +514,9 @@ def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: P
         write_frames_index=False,
     )
     assert probed["descriptor"]["capture_orientation"]["display_orientation"] == "portrait"
-    assert probed["descriptor"]["capture_orientation"]["source"] in {"ffprobe", "video_metadata"}
+    assert probed["descriptor"]["capture_orientation"]["source"] == "video_metadata"
+    assert probed["descriptor"]["capture_orientation"]["display_rotation_degrees"] == 90
+    assert probed["descriptor"]["capture_orientation"]["normalization_applied"] is True
 
     _write_inputs(
         {
@@ -494,4 +540,38 @@ def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: P
         write_frames_index=False,
     )
     assert fallback["descriptor"]["capture_orientation"]["display_orientation"] == "portrait"
-    assert fallback["descriptor"]["capture_orientation"]["source"] in {"encoded_dimensions", "inferred"}
+    assert fallback["descriptor"]["capture_orientation"]["source"] == "inferred"
+    assert fallback["descriptor"]["capture_orientation"]["display_rotation_degrees"] == 0
+    assert fallback["descriptor"]["capture_orientation"]["normalization_applied"] is False
+
+
+def test_presentation_primary_asset_prefers_advanced_geometry(tmp_path: Path) -> None:
+    capture_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
+    pipeline_dir = capture_root / "pipeline"
+    advanced_dir = pipeline_dir / "advanced_geometry"
+    raw_root = capture_root / "raw"
+    advanced_dir.mkdir(parents=True)
+    raw_root.mkdir(parents=True)
+    (advanced_dir / "3dgs_compressed.ply").write_text("advanced", encoding="utf-8")
+    (raw_root / "gaussian_splat.ply").write_text("gaussian", encoding="utf-8")
+    (raw_root / "splat.ply").write_text("splat", encoding="utf-8")
+
+    primary_asset = _presentation_primary_asset(
+        pipeline_dir=pipeline_dir,
+        bucket="local-blueprint",
+        storage_root=tmp_path,
+    )
+
+    assert primary_asset is not None
+    assert str(primary_asset["path"]).endswith("3dgs_compressed.ply")
+    assert primary_asset["source_name"] == "advanced_geometry_3dgs"
+
+
+def test_presentation_bundle_status_missing_without_primary_asset() -> None:
+    status = _presentation_bundle_status(
+        emit_presentation=True,
+        primary_asset=None,
+        render_inputs={"missing_inputs": []},
+    )
+
+    assert status == "missing"
