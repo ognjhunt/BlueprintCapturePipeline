@@ -678,6 +678,61 @@ def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]
     return local_paths
 
 
+def _canonical_world_model_payload(
+    *,
+    context,
+    capture_orientation: Mapping[str, Any],
+) -> Dict[str, Any]:
+    pipeline_root = context.pipeline_root
+    raw_root = context.raw_root
+    candidates = [
+        ("advanced_geometry_3dgs", pipeline_root / "advanced_geometry" / "3dgs_compressed.ply"),
+        ("raw_gaussian_splat", raw_root / "gaussian_splat.ply"),
+        ("raw_splat", raw_root / "splat.ply"),
+    ]
+    primary_asset = next(((source, path) for source, path in candidates if path.is_file()), None)
+    supporting_assets: List[Dict[str, Any]] = []
+    for path in (
+        pipeline_root / "nurec" / "visual_mesh.glb",
+        pipeline_root / "nurec" / "nvblox_mesh.ply",
+        pipeline_root / "nurec" / "occupancy.bin",
+        pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json",
+        pipeline_root / "nurec" / "mesh_manifest.json",
+    ):
+        if path.is_file():
+            relative = relative_scene_path(path, context.storage_root)
+            suffix = relative.split("/pipeline/", 1)[1] if "/pipeline/" in relative else path.name
+            supporting_assets.append(
+                {
+                    "name": path.name,
+                    "path": str(path.resolve()),
+                    "uri": _gs_uri(context, suffix),
+                }
+            )
+    primary_asset_uri = ""
+    primary_asset_path = ""
+    primary_asset_source = ""
+    if primary_asset is not None:
+        relative = relative_scene_path(primary_asset[1], context.storage_root)
+        suffix = relative.split("/pipeline/", 1)[1] if "/pipeline/" in relative else primary_asset[1].name
+        primary_asset_uri = _gs_uri(context, suffix)
+        primary_asset_path = str(primary_asset[1].resolve())
+        primary_asset_source = primary_asset[0]
+    return {
+        "world_model_backend": "neoverse",
+        "primary_runtime_backend": "neoverse",
+        "scene_representation": "gsplat_scene_v1" if primary_asset is not None else "unavailable",
+        "renderer_backend": "gsplat" if primary_asset is not None else None,
+        "bundle_type": "gsplat_scene_v1" if primary_asset is not None else None,
+        "status": "ready" if primary_asset is not None else "missing",
+        "primary_asset_path": primary_asset_path,
+        "primary_asset_uri": primary_asset_uri,
+        "primary_asset_source": primary_asset_source,
+        "orientation": dict(capture_orientation),
+        "supporting_assets": supporting_assets,
+    }
+
+
 def _runtime_capabilities_payload(
     *,
     launchable: bool,
@@ -1046,6 +1101,10 @@ def _build_site_world_spec(
     conditioning_map = dict(conditioning_bundle) if isinstance(conditioning_bundle, Mapping) else {}
     local_paths = _conditioning_local_paths(context=context, conditioning_bundle=conditioning_map)
     capture_orientation = _descriptor_capture_orientation(descriptor_map, conditioning_map)
+    canonical_world_model = _canonical_world_model_payload(
+        context=context,
+        capture_orientation=capture_orientation,
+    )
     critical_ids = _task_critical_ids_from_manifest(task_anchor_manifest)
     normalized_tasks = []
     for task in task_anchor_manifest.get("tasks", []) if isinstance(task_anchor_manifest.get("tasks"), list) else []:
@@ -1126,6 +1185,8 @@ def _build_site_world_spec(
             "sensor_availability": scene_memory_capture.get("sensor_availability", {}),
             "local_paths": local_paths,
         },
+        "primary_runtime_backend": "neoverse",
+        "canonical_world_model": canonical_world_model,
         "geometry": {
             "scene_memory_bundle_path": str(_real_path_from_eval_dir(eval_dir, str(geometry_bundle or "")) or ""),
             "object_geometry_manifest_path": str(object_geometry_path.resolve()),
@@ -1646,6 +1707,10 @@ def _build_hosted_session_runtime_manifest(
     conditioning_bundle = _read_optional_json_any(conditioning_bundle_path) if conditioning_bundle_path else {}
     conditioning_map = dict(conditioning_bundle) if isinstance(conditioning_bundle, Mapping) else {}
     capture_orientation = _descriptor_capture_orientation(descriptor_map, conditioning_map)
+    canonical_world_model = _canonical_world_model_payload(
+        context=context,
+        capture_orientation=capture_orientation,
+    )
     adapter_key_map = {
         "neoverse": "neoverse_adapter_manifest_path",
         "gen3c": "gen3c_adapter_manifest_path",
@@ -1824,6 +1889,8 @@ def _build_hosted_session_runtime_manifest(
         "presentation_variance_policy_uri": _gs_uri(
             context, "evaluation_prep/presentation_variance_policy.json"
         ),
+        "primary_runtime_backend": "neoverse",
+        "canonical_world_model": canonical_world_model,
         "available_backends": available_backends,
         "launchable_backends": launchable_backends,
         "default_backend": default_backend,

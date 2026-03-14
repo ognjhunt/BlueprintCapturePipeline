@@ -178,6 +178,39 @@ def _presentation_supporting_assets(
     return assets
 
 
+def _canonical_world_model_payload(
+    *,
+    pipeline_dir: Path,
+    bucket: str,
+    storage_root: Path,
+    capture_orientation: Mapping[str, Any],
+) -> Dict[str, Any]:
+    primary_asset = _presentation_primary_asset(
+        pipeline_dir=pipeline_dir,
+        bucket=bucket,
+        storage_root=storage_root,
+    )
+    supporting_assets = _presentation_supporting_assets(
+        pipeline_dir=pipeline_dir,
+        bucket=bucket,
+        storage_root=storage_root,
+    )
+    status = "ready" if primary_asset is not None else "missing"
+    return {
+        "world_model_backend": "neoverse",
+        "primary_runtime_backend": "neoverse",
+        "scene_representation": "gsplat_scene_v1" if primary_asset is not None else "unavailable",
+        "renderer_backend": "gsplat" if primary_asset is not None else None,
+        "bundle_type": "gsplat_scene_v1" if primary_asset is not None else None,
+        "status": status,
+        "primary_asset_path": str(primary_asset.get("path") or "") if primary_asset else "",
+        "primary_asset_uri": str(primary_asset.get("uri") or "") if primary_asset else "",
+        "primary_asset_source": str(primary_asset.get("source_name") or "") if primary_asset else "",
+        "supporting_assets": supporting_assets,
+        "orientation": dict(capture_orientation),
+    }
+
+
 def _presentation_bundle_status(
     *,
     emit_presentation: bool,
@@ -1001,6 +1034,12 @@ def _write_scene_memory_bundle(
             "generated_outputs_cannot_override_readiness": True,
         },
         "capture_orientation": capture_orientation,
+        "canonical_world_model": _canonical_world_model_payload(
+            pipeline_dir=pipeline_dir,
+            bucket=bucket,
+            storage_root=storage_root,
+            capture_orientation=capture_orientation,
+        ),
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,
@@ -1041,6 +1080,13 @@ def _write_scene_memory_bundle(
         },
         "rights": readiness_payload["rights"],
         "capture_orientation": capture_orientation,
+        "primary_runtime_backend": "neoverse",
+        "canonical_world_model": _canonical_world_model_payload(
+            pipeline_dir=pipeline_dir,
+            bucket=bucket,
+            storage_root=storage_root,
+            capture_orientation=capture_orientation,
+        ),
         "world_model_policy": policy.to_dict(),
         "canonical_output": build_output_linkage(
             policy=policy,

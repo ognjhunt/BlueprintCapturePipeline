@@ -330,6 +330,10 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert runtime_eligibility["readiness_state"] == "launchable"
     assert spec["canonical_output"]["authoritative_record"] is True
     assert spec["presentation_output"]["authoritative_record"] is False
+    assert spec["primary_runtime_backend"] == "neoverse"
+    assert spec["canonical_world_model"]["world_model_backend"] == "neoverse"
+    assert spec["canonical_world_model"]["scene_representation"] == "gsplat_scene_v1"
+    assert spec["canonical_world_model"]["primary_asset_path"].endswith("gaussian_splat.ply")
     assert spec["presentation"]["bundle_type"] == "gsplat_scene_v1"
     assert spec["presentation"]["renderer_backend"] == "gsplat"
     assert spec["presentation"]["bundle_status"] == "ready"
@@ -432,6 +436,12 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     assert eval_manifest["capture_orientation"]["display_orientation"] == "portrait"
     assert site_world_spec["capture_orientation"]["display_orientation"] == "portrait"
     assert site_world_spec["presentation"]["orientation"]["display_orientation"] == "portrait"
+    assert site_world_spec["canonical_world_model"]["orientation"]["display_orientation"] == "portrait"
+    assert site_world_spec["canonical_world_model"]["world_model_backend"] == "neoverse"
+    assert scene_memory_manifest["primary_runtime_backend"] == "neoverse"
+    assert scene_memory_manifest["canonical_world_model"]["scene_representation"] == "gsplat_scene_v1"
+    assert hosted_runtime_manifest["primary_runtime_backend"] == "neoverse"
+    assert hosted_runtime_manifest["canonical_world_model"]["primary_asset_path"].endswith("gaussian_splat.ply")
     assert hosted_runtime_manifest["capture_orientation"]["display_orientation"] == "portrait"
 
 
