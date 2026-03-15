@@ -413,8 +413,6 @@ def _resolve_capture_orientation(
 
 
 def _scene_memory_requested_lanes(evidence_tier: str) -> List[str]:
-    if evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"}:
-        return ["qualification", "scene_memory"]
     return ["qualification"]
 
 
@@ -736,6 +734,12 @@ def build_capture_bundle_records(
         "requested_lanes": (
             _requested_lanes_override(manifest, context)
             or _scene_memory_requested_lanes(evidence_tier)
+        ),
+        "requested_outputs": _string_list(
+            manifest.get("requested_outputs")
+            or manifest.get("requestedOutputs")
+            or context.get("requested_outputs")
+            or context.get("requestedOutputs")
         ),
         "quality": {
             "pose_match_rate": try_parse_float(manifest.get("pose_match_rate"), 0.95 if modality == "iphone_arkit_lidar" else 0.35),

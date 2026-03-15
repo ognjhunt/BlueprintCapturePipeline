@@ -1,4 +1,4 @@
-"""Site-world-first capture pipeline package."""
+"""Qualification-first capture pipeline package."""
 
 from .capture_bridge import (
     CaptureDescriptor,

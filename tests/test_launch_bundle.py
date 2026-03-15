@@ -9,18 +9,20 @@ from blueprint_pipeline.launch_bundle import (
 from blueprint_pipeline.provider_preview import run_preview_provider
 
 
-def test_buyer_trust_score_penalizes_missing_rights_and_preview_failure() -> None:
+def test_buyer_trust_score_penalizes_missing_rights_without_preview_failure_penalty() -> None:
     score = build_buyer_trust_score(
         descriptor={"quality": {"pose_match_rate": 0.6}},
         qualification_record={"confidence": 0.7},
         scorecard={"completeness_status": "need_more_evidence"},
         metadata={},
         provider_status="failed",
+        fidelity_review={"status": "succeeded", "scores": {"coverage": 0.9, "world_model_fitness": 0.9}},
     )
 
     assert score["band"] == "low"
     assert score["score"] < 60
     assert score["reasons"]
+    assert "preview provider is unavailable" not in score["reasons"]
 
 
 def test_launch_bundle_uses_provider_status_for_preview_state() -> None:
@@ -32,9 +34,14 @@ def test_launch_bundle_uses_provider_status_for_preview_state() -> None:
         site_intake={"capture_rights": {"consent_status": "documented", "consent_scope": ["sales-floor"]}},
         buyer_trust_score={"score": 88, "band": "high", "reasons": []},
         provider_run={"status": "succeeded"},
+        fidelity_review={"status": "succeeded", "scores": {"coverage": 0.9}},
+        world_model_fit_summary={"status": "good_candidate"},
+        capturer_payout_recommendation={"status": "baseline"},
+        provenance_summary={"status": "grounded"},
     )
 
     assert bundle["preview_status"] == "succeeded"
+    assert bundle["provider_preview_status"]["status"] == "succeeded"
     assert bundle["buyer_trust_score"]["score"] == 88
 
 
@@ -47,9 +54,14 @@ def test_launch_bundle_defaults_preview_status_when_not_requested() -> None:
         site_intake={"capture_rights": {"consent_status": "documented", "consent_scope": ["sales-floor"]}},
         buyer_trust_score={"score": 92, "band": "high", "reasons": []},
         provider_run={},
+        fidelity_review={"status": "succeeded", "scores": {"coverage": 0.9}},
+        world_model_fit_summary={"status": "good_candidate"},
+        capturer_payout_recommendation={"status": "baseline"},
+        provenance_summary={"status": "grounded"},
     )
 
     assert bundle["preview_status"] == "not_requested"
+    assert bundle["provider_preview_status"]["status"] == "not_requested"
     assert bundle["recapture_requirements"]["required"] is False
 
 

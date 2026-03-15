@@ -61,13 +61,19 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
         raw_payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         raw_payload = {}
-    raw_requested = raw_payload.get("requested_lanes")
-    if isinstance(raw_requested, str):
-        return [raw_requested]
-    if isinstance(raw_requested, (list, tuple, set)):
-        return [str(value) for value in raw_requested]
-    descriptor = CaptureDescriptor.from_file(descriptor_path)
-    return list(descriptor.requested_lanes)
+    raw_requested_outputs = raw_payload.get("requested_outputs")
+    if isinstance(raw_requested_outputs, str):
+        requested_outputs = [raw_requested_outputs]
+    elif isinstance(raw_requested_outputs, (list, tuple, set)):
+        requested_outputs = [str(value) for value in raw_requested_outputs]
+    else:
+        requested_outputs = []
+    normalized_outputs = {str(value).strip().lower() for value in requested_outputs if str(value).strip()}
+    if "deeper_evaluation" in normalized_outputs:
+        return ["qualification", "scene_memory", "evaluation_prep"]
+    if normalized_outputs & {"managed_tuning", "data_licensing"}:
+        return ["qualification", "scene_memory"]
+    return ["qualification"]
 
 
 def resolve_requested_lanes(
@@ -89,9 +95,7 @@ def resolve_requested_lanes(
     if normalized_requested:
         return normalized_requested
 
-    descriptor_requested = _normalize_requested_lanes(
-        _load_descriptor_requested_lanes(descriptor_gcs_uri, gcs_root)
-    )
+    descriptor_requested = _normalize_requested_lanes(_load_descriptor_requested_lanes(descriptor_gcs_uri, gcs_root))
     return descriptor_requested or ["qualification"]
 
 
@@ -118,6 +122,7 @@ def run_capture_pipeline(
                 qualification_result = run_qualification_pipeline(
                     descriptor_gcs_uri=descriptor_gcs_uri,
                     config=cfg,
+                    requested_lanes=lanes,
                 )
             if selected_lane == "qualification":
                 results.append(qualification_result)
@@ -138,6 +143,7 @@ def run_capture_pipeline(
                 qualification_result = run_qualification_pipeline(
                     descriptor_gcs_uri=descriptor_gcs_uri,
                     config=cfg,
+                    requested_lanes=lanes,
                 )
             evaluation_prep_result = run_evaluation_prep_stage(
                 capture_root=resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent,

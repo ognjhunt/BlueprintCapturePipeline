@@ -1,4 +1,4 @@
-"""Run local preflight, qualification, and agent review end to end."""
+"""Run local preflight, qualification, and agent review end to end, with downstream evaluation optional."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def run_end_to_end(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run a local capture end to end")
+    parser = argparse.ArgumentParser(description="Run a local capture through qualification-first review")
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
     parser.add_argument("--provider", required=True, choices=("claude", "openai"))
     parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))

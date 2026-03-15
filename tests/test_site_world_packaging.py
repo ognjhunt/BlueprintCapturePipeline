@@ -12,6 +12,43 @@ from blueprint_pipeline.materialization import build_capture_bundle_records, mat
 from blueprint_pipeline.qualification import _presentation_bundle_status, _presentation_primary_asset
 
 
+def _successful_capture_review() -> dict[str, object]:
+    return {
+        "schema_version": "v1",
+        "review_type": "gemini_multimodal_capture_review",
+        "status": "succeeded",
+        "generated_at": "2026-03-15T00:00:00+00:00",
+        "provider_name": "gemini",
+        "provider_model": "gemini-2.5-pro",
+        "review_mode": "video_primary_frames_fallback",
+        "confidence": 0.88,
+        "summary": "Capture supports downstream work.",
+        "scores": {
+            "coverage": 0.88,
+            "visual_clarity": 0.84,
+            "lighting_stability": 0.82,
+            "motion_stability": 0.8,
+            "task_understanding": 0.85,
+            "world_model_fitness": 0.83,
+            "payout_quality": 0.78,
+        },
+        "findings": {
+            "missing_views": [],
+            "blur_observations": [],
+            "lighting_observations": [],
+            "occlusion_observations": [],
+            "task_scope_notes": [],
+            "blocker_summaries": [],
+            "recapture_recommendations": [],
+        },
+        "recommendations": {
+            "world_model_recommendation": "good_candidate",
+            "payout_recommendation": "baseline",
+        },
+        "provenance": {"provider_name": "gemini", "provider_model": "gemini-2.5-pro"},
+    }
+
+
 class _HealthyRuntimeClient:
     def __init__(self, *_args, **_kwargs) -> None:
         pass
@@ -273,10 +310,11 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
-        lane="qualification",
+        lane="scene_memory",
         config=PipelineConfig(gcs_root=tmp_path),
     )
     evaluation = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
@@ -360,10 +398,11 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {missing_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
-        lane="qualification",
+        lane="scene_memory",
         config=PipelineConfig(gcs_root=tmp_path),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
@@ -420,10 +459,11 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
-        lane="qualification",
+        lane="scene_memory",
         config=PipelineConfig(gcs_root=tmp_path),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")

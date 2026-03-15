@@ -1,4 +1,4 @@
-"""Stage raw local bundles into a capture tree and optionally run offline pipeline steps."""
+"""Stage raw local bundles into a capture tree and optionally run qualification-first pipeline steps."""
 
 from __future__ import annotations
 
@@ -153,6 +153,10 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
             f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
             f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane qualification"
         ),
+        "scene_memory": (
+            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
+            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane scene_memory"
+        ),
         "evaluation_prep": (
             f"PYTHONPATH=src python3 -m blueprint_pipeline.evaluation_prep_stage "
             f"--capture-root {resolved_capture} --provider manual"
@@ -166,7 +170,7 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
 
 def remaining_runtime_requirements() -> Dict[str, list[str]]:
     return {
-        "neoverse_runtime": ["NEOVERSE_RUNTIME_SERVICE_URL"],
+        "optional_neoverse_runtime": ["NEOVERSE_RUNTIME_SERVICE_URL"],
         "agent_review_openai": [
             "codex CLI installed",
             "Codex login via local OAuth/session",

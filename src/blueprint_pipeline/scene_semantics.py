@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from .optional_dependencies import log_missing_optional_dependency
 
@@ -490,3 +490,257 @@ def infer_scene_semantics(
 def write_scene_semantics_report(path: Path, report: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+
+def _bounded_score(value: Any, default: float = 0.0) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = default
+    return max(0.0, min(1.0, score))
+
+
+def _string_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple, set)):
+        items = [str(item) for item in value]
+    else:
+        return []
+    out: List[str] = []
+    for item in items:
+        text = item.strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _gemini_capture_review_prompt(
+    *,
+    descriptor: Mapping[str, Any],
+    qa_report: Mapping[str, Any],
+    task_hypothesis_report: Optional[Mapping[str, Any]],
+) -> str:
+    return (
+        "You are reviewing a real-world capture for Blueprint qualification.\n"
+        "Use the visual evidence conservatively. Do not invent measurements or certainty.\n"
+        "Assess whether this capture is good enough to support a downstream world model.\n"
+        "Also assess whether the capture quality supports a stronger capturer payout recommendation.\n\n"
+        "Return only a JSON object with this shape:\n"
+        "{\n"
+        '  "summary": "short string",\n'
+        '  "scores": {\n'
+        '    "coverage": 0.0,\n'
+        '    "visual_clarity": 0.0,\n'
+        '    "lighting_stability": 0.0,\n'
+        '    "motion_stability": 0.0,\n'
+        '    "task_understanding": 0.0,\n'
+        '    "world_model_fitness": 0.0,\n'
+        '    "payout_quality": 0.0\n'
+        "  },\n"
+        '  "missing_views": ["..."],\n'
+        '  "blur_observations": ["..."],\n'
+        '  "lighting_observations": ["..."],\n'
+        '  "occlusion_observations": ["..."],\n'
+        '  "task_scope_notes": ["..."],\n'
+        '  "blocker_summaries": ["..."],\n'
+        '  "recapture_recommendations": ["..."],\n'
+        '  "world_model_recommendation": "good_candidate|review_required|not_recommended",\n'
+        '  "payout_recommendation": "bonus|baseline|discount|review_required",\n'
+        '  "confidence": 0.0\n'
+        "}\n\n"
+        f"Descriptor:\n{json.dumps(dict(descriptor), indent=2, sort_keys=True)}\n\n"
+        f"QA report:\n{json.dumps(dict(qa_report), indent=2, sort_keys=True)}\n\n"
+        f"Task hypothesis:\n{json.dumps(dict(task_hypothesis_report or {}), indent=2, sort_keys=True)}\n"
+    )
+
+
+def _infer_capture_review_with_gemini(
+    *,
+    frames: List[Path],
+    descriptor: Mapping[str, Any],
+    qa_report: Mapping[str, Any],
+    task_hypothesis_report: Optional[Mapping[str, Any]],
+    timeout_sec: int,
+) -> Optional[Dict[str, Any]]:
+    api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key or not frames:
+        return None
+
+    try:
+        from google import genai  # type: ignore
+    except ImportError:
+        log_missing_optional_dependency(
+            logger,
+            feature="Gemini capture fidelity review",
+            package="google-genai",
+            extra="llm",
+        )
+        return None
+    except Exception:
+        return None
+
+    override = (os.getenv("CAPTURE_FIDELITY_GEMINI_MODEL") or os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
+    models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
+    image_parts = _build_image_parts(frames, max_frames=8)
+    prompt = _gemini_capture_review_prompt(
+        descriptor=descriptor,
+        qa_report=qa_report,
+        task_hypothesis_report=task_hypothesis_report,
+    )
+    parts: List[Dict[str, Any]] = [{"text": prompt}] + image_parts
+    client = genai.Client(api_key=api_key)
+
+    for model in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[{"parts": parts}],
+                config={
+                    "temperature": 0.2,
+                    "max_output_tokens": 8192,
+                    "response_mime_type": "application/json",
+                },
+            )
+        except Exception:
+            continue
+
+        raw_text = _extract_response_text(response)
+        if not raw_text:
+            continue
+
+        payload = _extract_json_object(raw_text)
+        if not payload:
+            continue
+        payload["model"] = model
+        payload["raw_text"] = raw_text
+        return payload
+
+    return None
+
+
+def infer_capture_fidelity_review(
+    *,
+    capture_root: Path,
+    raw_video_path: Optional[Path],
+    keyframe_path: Optional[Path],
+    descriptor: Mapping[str, Any],
+    qa_report: Mapping[str, Any],
+    task_hypothesis_report: Optional[Mapping[str, Any]] = None,
+    timeout_sec: int = 45,
+) -> Dict[str, Any]:
+    keyframes: List[Path] = []
+    frames_dir = capture_root / "frames"
+    if keyframe_path is not None and keyframe_path.is_file():
+        keyframes.append(keyframe_path)
+    keyframes.extend(
+        path for path in _sample_frame_paths(frames_dir, 8) if path not in keyframes
+    )
+
+    qa_quality = qa_report.get("quality") if isinstance(qa_report.get("quality"), Mapping) else {}
+    review = _infer_capture_review_with_gemini(
+        frames=keyframes,
+        descriptor=descriptor,
+        qa_report=qa_report,
+        task_hypothesis_report=task_hypothesis_report,
+        timeout_sec=max(5, int(timeout_sec)),
+    )
+
+    if review is None:
+        reasons = []
+        if raw_video_path is None or not raw_video_path.is_file():
+            reasons.append("raw walkthrough video is missing")
+        if not keyframes:
+            reasons.append("no reviewable keyframes are available for Gemini")
+        if not reasons:
+            reasons.append("Gemini review is unavailable or failed")
+        return {
+            "schema_version": "v1",
+            "review_type": "gemini_multimodal_capture_review",
+            "status": "failed",
+            "generated_at": _utc_now_iso(),
+            "provider_name": "gemini",
+            "provider_model": None,
+            "review_mode": "video_primary_frames_fallback",
+            "confidence": 0.0,
+            "summary": "Gemini multimodal review did not complete.",
+            "raw_video_present": bool(raw_video_path and raw_video_path.is_file()),
+            "raw_video_path": str(raw_video_path) if raw_video_path else None,
+            "keyframes_used": [str(path) for path in keyframes],
+            "scores": {
+                "coverage": 0.0,
+                "visual_clarity": 0.0,
+                "lighting_stability": 0.0,
+                "motion_stability": 0.0,
+                "task_understanding": 0.0,
+                "world_model_fitness": 0.0,
+                "payout_quality": 0.0,
+            },
+            "findings": {
+                "missing_views": [],
+                "blur_observations": [],
+                "lighting_observations": [],
+                "occlusion_observations": [],
+                "task_scope_notes": [],
+                "blocker_summaries": reasons,
+                "recapture_recommendations": reasons,
+            },
+            "recommendations": {
+                "world_model_recommendation": "review_required",
+                "payout_recommendation": "review_required",
+            },
+            "provenance": {
+                "provider_name": "gemini",
+                "provider_model": None,
+                "raw_response": None,
+                "input_mode": "video_primary_frames_fallback",
+                "keyframes_used": [str(path) for path in keyframes],
+            },
+        }
+
+    scores_raw = review.get("scores") if isinstance(review.get("scores"), Mapping) else {}
+    findings = {
+        "missing_views": _string_list(review.get("missing_views")),
+        "blur_observations": _string_list(review.get("blur_observations")),
+        "lighting_observations": _string_list(review.get("lighting_observations")),
+        "occlusion_observations": _string_list(review.get("occlusion_observations")),
+        "task_scope_notes": _string_list(review.get("task_scope_notes")),
+        "blocker_summaries": _string_list(review.get("blocker_summaries")),
+        "recapture_recommendations": _string_list(review.get("recapture_recommendations")),
+    }
+    return {
+        "schema_version": "v1",
+        "review_type": "gemini_multimodal_capture_review",
+        "status": "succeeded",
+        "generated_at": _utc_now_iso(),
+        "provider_name": "gemini",
+        "provider_model": str(review.get("model") or "").strip() or None,
+        "review_mode": "video_primary_frames_fallback",
+        "confidence": _bounded_score(review.get("confidence"), default=0.0),
+        "summary": str(review.get("summary") or "Gemini reviewed the capture evidence.").strip(),
+        "raw_video_present": bool(raw_video_path and raw_video_path.is_file()),
+        "raw_video_path": str(raw_video_path) if raw_video_path else None,
+        "keyframes_used": [str(path) for path in keyframes],
+        "scores": {
+            "coverage": _bounded_score(scores_raw.get("coverage"), default=_bounded_score(qa_quality.get("pose_match_rate"), 0.0)),
+            "visual_clarity": _bounded_score(scores_raw.get("visual_clarity"), default=0.7),
+            "lighting_stability": _bounded_score(scores_raw.get("lighting_stability"), default=0.7),
+            "motion_stability": _bounded_score(scores_raw.get("motion_stability"), default=0.7),
+            "task_understanding": _bounded_score(scores_raw.get("task_understanding"), default=0.6),
+            "world_model_fitness": _bounded_score(scores_raw.get("world_model_fitness"), default=0.5),
+            "payout_quality": _bounded_score(scores_raw.get("payout_quality"), default=0.5),
+        },
+        "findings": findings,
+        "recommendations": {
+            "world_model_recommendation": str(review.get("world_model_recommendation") or "review_required").strip() or "review_required",
+            "payout_recommendation": str(review.get("payout_recommendation") or "review_required").strip() or "review_required",
+        },
+        "provenance": {
+            "provider_name": "gemini",
+            "provider_model": str(review.get("model") or "").strip() or None,
+            "raw_response": review.get("raw_text"),
+            "input_mode": "video_primary_frames_fallback",
+            "keyframes_used": [str(path) for path in keyframes],
+            "raw_video_path": str(raw_video_path) if raw_video_path else None,
+        },
+    }

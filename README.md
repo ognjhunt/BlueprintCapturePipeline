@@ -2,24 +2,39 @@
 
 `BlueprintCapturePipeline` is the qualification, provenance, and provider-routing service for raw Blueprint captures.
 
-For alpha, the default output is a qualification bundle with trust, rights/compliance, recapture, and optional provider-preview state. Scene-memory, presentation, and evaluation-prep artifacts remain available as downstream derived lanes.
+For alpha, the default output is a WebApp-facing qualification record built from `BlueprintCapture` evidence, Gemini-backed multimodal fidelity review, deterministic rights/provenance normalization, and optional provider-preview state. Scene-memory, presentation, and evaluation-prep artifacts remain available as explicit downstream derived lanes.
 
 ## Scope
 
 Primary product path:
 
-- raw capture materialization
+- raw capture materialization from `BlueprintCapture`
+- Gemini-backed multimodal capture review
 - qualification analysis and agent review
 - deterministic QA aggregation and trust/provenance assembly
+- world-model fit scoring and capturer payout recommendation
 - optional provider preview routing
 - webapp sync for buyer-review surfaces
 - deterministic object indexing and scene semantics when deeper work is requested
-- scene-memory assembly
-- presentation-world assembly
-- evaluation-prep packaging
+- optional scene-memory assembly
+- optional presentation-world assembly
+- optional evaluation-prep packaging
 - optional runtime registration support for the built site-world package
 
-Retained public artifacts:
+Authoritative alpha artifacts:
+
+- `qualification_summary.json`
+- `capture_quality_summary.json`
+- `rights_and_compliance_summary.json`
+- `buyer_trust_score.json`
+- `world_model_fit_summary.json`
+- `capturer_payout_recommendation.json`
+- `recapture_requirements.json`
+- `provider_preview_status.json`
+- `provenance_summary.json`
+- `gemini_capture_fidelity_review.json`
+
+Optional downstream artifacts:
 
 - `scene_memory/*`
 - `presentation_world/presentation_bundle.json`
@@ -65,8 +80,7 @@ python3 scripts/stage_capture_bundle.py \
   --storage-root /data/blueprint-storage \
   --bucket local-blueprint \
   --copy \
-  --run-qualification \
-  --run-evaluation-prep
+  --run-qualification
 ```
 
 ## Entry Points
@@ -76,7 +90,7 @@ Pipeline lanes:
 ```bash
 blueprint-capture-pipeline \
   --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json \
-  --lane evaluation_prep
+  --lane qualification
 ```
 
 Raw bundle staging:
@@ -87,8 +101,7 @@ python3 scripts/stage_capture_bundle.py \
   --storage-root /mnt/blueprint-storage \
   --bucket local-blueprint \
   --link \
-  --run-qualification \
-  --run-evaluation-prep
+  --run-qualification
 ```
 
 Qualification agent review:
@@ -104,8 +117,15 @@ Optional agent-review wrapper:
 ```bash
 blueprint-run-e2e \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
-  --provider openai \
-  --run-evaluation-prep
+  --provider openai
+```
+
+Optional downstream scene-memory build:
+
+```bash
+blueprint-capture-pipeline \
+  --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json \
+  --lane scene_memory
 ```
 
 Object index build:

@@ -18,7 +18,26 @@ All pipeline artifacts are emitted under:
 
 `scenes/<scene_id>/captures/<capture_id>/pipeline/`
 
-Retained output families:
+Authoritative alpha outputs:
+
+- `qualification_summary.json`
+- `capture_quality_summary.json`
+- `rights_and_compliance_summary.json`
+- `buyer_trust_score.json`
+- `world_model_fit_summary.json`
+- `capturer_payout_recommendation.json`
+- `recapture_requirements.json`
+- `provider_preview_status.json`
+- `provenance_summary.json`
+- `gemini_capture_fidelity_review.json`
+- `opportunity_handoff.json`
+- `task_scope_record.json`
+- `task_targets.json`
+- `agent_review_bundle.json`
+
+These artifacts are the qualification-first record consumed by `Blueprint-WebApp`.
+
+Optional downstream derived output families:
 
 - `scene_memory/scene_memory_manifest.json`
 - `scene_memory/scene_memory_readiness.json`
@@ -36,14 +55,7 @@ Retained output families:
 - `evaluation_prep/site_world_health.json`
 - `evaluation_prep/evaluation_prep_manifest.json`
 
-Qualification analysis remains available and may emit:
-
-- `opportunity_handoff.json`
-- `task_scope_record.json`
-- `task_targets.json`
-- `agent_review_bundle.json`
-
-These qualification artifacts support review and agent analysis. The canonical downstream runtime boundary remains the built site-world package plus the presentation bundle family.
+Downstream artifacts are derived only. They do not define qualification success and they do not rewrite qualification truth.
 
 ## Presentation Bundle Contract
 
@@ -72,7 +84,11 @@ Capture orientation is preserved from raw capture metadata when available, then 
 
 The supported modern flow is:
 
-`raw capture -> qualification analysis -> scene_memory -> presentation_world -> evaluation_prep -> site_world runtime`
+`BlueprintCapture raw bundle -> qualification analysis -> Gemini-backed fidelity review -> trust / provenance / payout recommendation -> WebApp sync`
+
+Optional follow-on lanes:
+
+`qualification -> scene_memory -> presentation_world -> evaluation_prep -> site_world runtime`
 
 ## Shared Contracts
 

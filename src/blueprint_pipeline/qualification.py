@@ -1,4 +1,4 @@
-"""Legacy compatibility artifact builders layered on the site-world pipeline."""
+"""Qualification-first pipeline with optional downstream derived artifacts."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from .launch_bundle import build_buyer_trust_score, build_launch_qualification_b
 from .object_index_stage import ensure_object_index_stage
 from .provider_preview import run_preview_provider
 from .runtime_layer_grounding import build_presentation_variance_policy, with_grounding_fields
+from .scene_semantics import infer_capture_fidelity_review
 from .task_targets import infer_task_targets, write_task_targets
 from .webapp_sync import (
     derive_webapp_opportunity_state,
@@ -812,9 +813,12 @@ def attach_handoff_package_paths(
 def _capture_rights(metadata: Mapping[str, Any]) -> Dict[str, Any]:
     raw = metadata.get("capture_rights") if isinstance(metadata.get("capture_rights"), Mapping) else {}
     return {
-        "derived_scene_generation_allowed": bool(raw.get("derived_scene_generation_allowed", True)),
+        "derived_scene_generation_allowed": bool(raw.get("derived_scene_generation_allowed", False)),
         "data_licensing_allowed": bool(raw.get("data_licensing_allowed", False)),
         "capture_contributor_payout_eligible": bool(raw.get("capture_contributor_payout_eligible", False)),
+        "consent_status": str(raw.get("consent_status") or "unknown"),
+        "permission_document_uri": str(raw.get("permission_document_uri") or "").strip() or None,
+        "consent_scope": _string_list(raw.get("consent_scope")),
     }
 
 
@@ -918,6 +922,8 @@ def _build_scene_memory_readiness(
 def _scene_memory_derived_assets(
     scene_memory_artifacts: Mapping[str, Any],
 ) -> Dict[str, Dict[str, Any]]:
+    if not scene_memory_artifacts.get("scene_memory_manifest_uri"):
+        return {}
     scene_memory_status = str(scene_memory_artifacts.get("scene_memory_status") or "needs_more_evidence")
     preview_status = str(scene_memory_artifacts.get("preview_simulation_status") or "review_required")
     assets = {
@@ -2266,6 +2272,276 @@ def _build_pipeline_summary(
     }
 
 
+def _empty_downstream_artifacts() -> Dict[str, Any]:
+    return {
+        "scene_memory_manifest_uri": None,
+        "scene_memory_readiness_uri": None,
+        "conditioning_bundle_uri": None,
+        "preview_simulation_manifest_uri": None,
+        "presentation_bundle_uri": None,
+        "presentation_world_manifest_uri": None,
+        "runtime_demo_manifest_uri": None,
+        "gen3c_adapter_manifest_uri": None,
+        "neoverse_adapter_manifest_uri": None,
+        "cosmos_transfer_adapter_manifest_uri": None,
+        "scene_memory_status": "not_requested",
+        "preview_simulation_status": "not_requested",
+    }
+
+
+def _requested_downstream_lanes(
+    *,
+    descriptor: CaptureDescriptor,
+    requested_lanes: Optional[List[str]] = None,
+) -> List[str]:
+    lanes: List[str] = []
+    explicit = {str(value or "").strip().lower() for value in (requested_lanes or []) if str(value or "").strip()}
+    requested_outputs = {str(value or "").strip().lower() for value in descriptor.requested_outputs if str(value or "").strip()}
+
+    if "scene_memory" in explicit or "evaluation_prep" in explicit:
+        lanes.append("scene_memory")
+    if requested_outputs.intersection({"managed_tuning", "data_licensing", "deeper_evaluation"}):
+        if "scene_memory" not in lanes:
+            lanes.append("scene_memory")
+    if "evaluation_prep" in explicit or "deeper_evaluation" in requested_outputs:
+        lanes.append("evaluation_prep")
+    return lanes
+
+
+def _present_artifacts(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in payload.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _resolve_optional_uri_to_path(uri: Optional[str], storage_root: Path) -> Optional[Path]:
+    if not uri:
+        return None
+    try:
+        return resolve_gs_uri_to_path(uri, storage_root)
+    except Exception:
+        return None
+
+
+def _build_world_model_fit_summary(
+    *,
+    descriptor: CaptureDescriptor,
+    scorecard: Mapping[str, Any],
+    qualification_record: Mapping[str, Any],
+    capture_fidelity_review: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    rights = _capture_rights(metadata)
+    review_status = str(capture_fidelity_review.get("status") or "failed").strip().lower()
+    review_scores = capture_fidelity_review.get("scores") if isinstance(capture_fidelity_review.get("scores"), Mapping) else {}
+    findings = capture_fidelity_review.get("findings") if isinstance(capture_fidelity_review.get("findings"), Mapping) else {}
+    reasons: List[str] = []
+    fit_status = "review_required"
+
+    if review_status != "succeeded":
+        reasons.append("Gemini multimodal review is required before alpha scoring can complete.")
+        fit_status = "review_required"
+    if not rights["derived_scene_generation_allowed"]:
+        reasons.append("Capture rights do not yet allow derived scene generation.")
+        fit_status = "not_permitted"
+    if str(scorecard.get("completeness_status") or "") != "sufficient":
+        reasons.append("Capture evidence is still incomplete for downstream world-model work.")
+        fit_status = "review_required"
+    if descriptor.evidence_tier == "pre_screen_video":
+        reasons.append("Capture remains pre-screen video only and is not yet world-model ready.")
+        fit_status = "review_required"
+
+    coverage_score = float(review_scores.get("coverage") or 0.0)
+    world_model_fitness = float(review_scores.get("world_model_fitness") or 0.0)
+    if review_status == "succeeded" and rights["derived_scene_generation_allowed"]:
+        if coverage_score >= 0.7 and world_model_fitness >= 0.72 and descriptor.evidence_tier != "pre_screen_video":
+            fit_status = "good_candidate"
+        elif fit_status != "not_permitted":
+            fit_status = "review_required"
+    if coverage_score < 0.7:
+        reasons.append("Gemini review found missing views or weak coverage for scene reconstruction.")
+    if _string_list(findings.get("blur_observations")):
+        reasons.append("Gemini review found blur or motion clarity issues that may limit reconstruction quality.")
+    if _string_list(findings.get("lighting_observations")):
+        reasons.append("Gemini review found lighting instability that may reduce world-model quality.")
+    if _string_list(findings.get("occlusion_observations")):
+        reasons.append("Gemini review found occlusions or hidden zones that need another pass.")
+
+    return {
+        "schema_version": "v1",
+        "status": fit_status,
+        "confidence": capture_fidelity_review.get("confidence"),
+        "world_model_fitness_score": round(world_model_fitness, 4),
+        "coverage_score": round(coverage_score, 4),
+        "readiness_state": qualification_record.get("readiness_state"),
+        "derived_scene_generation_allowed": rights["derived_scene_generation_allowed"],
+        "reasons": reasons,
+        "recommended_next_step": "scene_memory" if fit_status == "good_candidate" else "recapture_or_review",
+    }
+
+
+def _build_capturer_payout_recommendation(
+    *,
+    descriptor: CaptureDescriptor,
+    capture_fidelity_review: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    rights = _capture_rights(metadata)
+    review_status = str(capture_fidelity_review.get("status") or "failed").strip().lower()
+    scores = capture_fidelity_review.get("scores") if isinstance(capture_fidelity_review.get("scores"), Mapping) else {}
+    payout_quality = float(scores.get("payout_quality") or 0.0)
+    confidence = float(capture_fidelity_review.get("confidence") or 0.0)
+    base_payout_cents = int(descriptor.quoted_payout_cents or 4500)
+    reasons: List[str] = []
+    recommendation_status = "review_required"
+    recommended_payout_cents: Optional[int] = None
+
+    if not rights["capture_contributor_payout_eligible"]:
+        reasons.append("Capture is not yet marked payout-eligible in the source rights metadata.")
+    if str(rights.get("consent_status") or "unknown").strip().lower() not in {"documented", "policy_only"}:
+        reasons.append("Consent status is not yet strong enough for an automated payout recommendation.")
+    if review_status != "succeeded":
+        reasons.append("Gemini multimodal quality review is incomplete.")
+
+    if not reasons:
+        multiplier = 0.8 + (payout_quality * 0.4)
+        if confidence < 0.65:
+            multiplier = min(multiplier, 1.0)
+            reasons.append("Low Gemini confidence caps the payout recommendation at the baseline rate.")
+        recommended_payout_cents = int(round(base_payout_cents * multiplier / 100.0) * 100)
+        if multiplier >= 1.08:
+            recommendation_status = "bonus"
+        elif multiplier <= 0.92:
+            recommendation_status = "discount"
+        else:
+            recommendation_status = "baseline"
+
+    return {
+        "schema_version": "v1",
+        "status": recommendation_status,
+        "base_payout_cents": base_payout_cents,
+        "recommended_payout_cents": recommended_payout_cents,
+        "confidence": capture_fidelity_review.get("confidence"),
+        "payout_quality_score": round(payout_quality, 4),
+        "reasons": reasons,
+        "final_authority": "webapp_ops_review",
+    }
+
+
+def _build_provenance_summary(
+    *,
+    descriptor_uri: str,
+    qa_report_uri: str,
+    pipeline_prefix: str,
+    bucket: str,
+    capture_fidelity_review: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    provenance = build_provenance_record(
+        grounding_level="observed",
+        evidence_sources=[
+            descriptor_uri,
+            qa_report_uri,
+            f"gs://{bucket}/{pipeline_prefix}/task_scope_record.json",
+            f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
+        ],
+        observation_coverage={
+            "gemini_review_status": capture_fidelity_review.get("status"),
+            "consent_status": _capture_rights(metadata).get("consent_status"),
+        },
+        confidence=capture_fidelity_review.get("confidence"),
+        canonical_truth=True,
+        presentation_only=False,
+        extra={
+            "provider_name": capture_fidelity_review.get("provider_name"),
+            "provider_model": capture_fidelity_review.get("provider_model"),
+        },
+    )
+    return {
+        "schema_version": "v1",
+        "status": "grounded",
+        "record": provenance,
+    }
+
+
+def _apply_capture_fidelity_to_qualification(
+    *,
+    qualification_record: Mapping[str, Any],
+    capture_fidelity_review: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    payload = dict(qualification_record)
+    risks = [
+        dict(item)
+        for item in qualification_record.get("risks", [])
+        if isinstance(item, Mapping)
+    ]
+    review_status = str(capture_fidelity_review.get("status") or "failed").strip().lower()
+    scores = capture_fidelity_review.get("scores") if isinstance(capture_fidelity_review.get("scores"), Mapping) else {}
+    findings = capture_fidelity_review.get("findings") if isinstance(capture_fidelity_review.get("findings"), Mapping) else {}
+    readiness_state = str(payload.get("readiness_state") or "not_ready_yet")
+    confidence = float(payload.get("confidence") or 0.0)
+
+    if review_status != "succeeded":
+        risks.append(
+            {
+                "id": "gemini_multimodal_review_missing",
+                "severity": "high",
+                "category": "fidelity",
+                "detail": "Gemini multimodal capture review is required before alpha scoring can complete.",
+            }
+        )
+        readiness_state = "not_ready_yet"
+        confidence = min(confidence, 0.45)
+    else:
+        coverage = float(scores.get("coverage") or 0.0)
+        world_model_fitness = float(scores.get("world_model_fitness") or 0.0)
+        task_understanding = float(scores.get("task_understanding") or 0.0)
+        confidence = round(min(confidence, (confidence + float(capture_fidelity_review.get("confidence") or 0.0) + coverage + task_understanding) / 4.0), 4)
+        if coverage < 0.7:
+            risks.append(
+                {
+                    "id": "gemini_missing_views",
+                    "severity": "high",
+                    "category": "coverage",
+                    "detail": "Gemini review found missing or weakly covered views in the capture.",
+                }
+            )
+            readiness_state = "not_ready_yet"
+        elif world_model_fitness < 0.72 and readiness_state == "ready":
+            risks.append(
+                {
+                    "id": "gemini_world_model_review_required",
+                    "severity": "medium",
+                    "category": "fidelity",
+                    "detail": "Gemini review found that world-model suitability still needs review.",
+                }
+            )
+            readiness_state = "risky"
+        if _string_list(findings.get("blur_observations")):
+            risks.append(
+                {
+                    "id": "gemini_blur_or_motion",
+                    "severity": "medium",
+                    "category": "quality",
+                    "detail": "Gemini review found blur or motion stability issues in the walkthrough.",
+                }
+            )
+            if readiness_state == "ready":
+                readiness_state = "risky"
+
+    if not _capture_rights(metadata)["derived_scene_generation_allowed"]:
+        payload["advanced_geometry_recommended"] = False
+
+    payload["risks"] = risks
+    payload["readiness_state"] = readiness_state
+    payload["confidence"] = round(confidence, 4)
+    payload["alpha_scoring_status"] = review_status
+    return payload
+
+
 _GENERIC_CAPABILITY_ENVELOPE = {
     "minimum_path_width_m": 0.95,
     "preferred_path_width_m": 1.15,
@@ -2981,6 +3257,7 @@ def run_qualification_pipeline(
     *,
     descriptor_gcs_uri: str,
     config: Any,
+    requested_lanes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     stage = "intake"
     gates: List[QualificationGate] = []
@@ -2995,12 +3272,17 @@ def run_qualification_pipeline(
         bucket = parsed_uri.bucket
         descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, config.gcs_root)
         storage_root = infer_storage_root_from_scene_path(descriptor_path)
+        capture_root = descriptor_path.parent
         descriptor = CaptureDescriptor.from_file(descriptor_path)
         scene_id = descriptor.scene_id
         capture_id = descriptor.capture_id
         pipeline_prefix = to_pipeline_prefix(scene_id, capture_id)
         pipeline_dir = storage_root / pipeline_prefix
         ensure_dir(pipeline_dir)
+        downstream_requested_lanes = _requested_downstream_lanes(
+            descriptor=descriptor,
+            requested_lanes=requested_lanes,
+        )
 
         qa_report_uri = descriptor.qa_report_uri or _default_qa_report_uri(descriptor_gcs_uri)
         qa_report_path = resolve_gs_uri_to_path(qa_report_uri, storage_root)
@@ -3190,6 +3472,9 @@ def run_qualification_pipeline(
                 "calibration_assets": list(descriptor.calibration_assets),
                 "uncertainty_priors": dict(descriptor.uncertainty_priors),
             },
+            "capture_rights": _capture_rights(
+                effective_metadata if isinstance(effective_metadata, Mapping) else {}
+            ),
             "task_hypothesis": dict(raw_task_hypothesis) if isinstance(raw_task_hypothesis, Mapping) else {},
         }
         write_json(pipeline_dir / "site_intake.json", site_intake)
@@ -3238,6 +3523,29 @@ def run_qualification_pipeline(
             scope_record=scope_record,
             object_index_entries=object_index_entries,
             object_index_runtime_blockers=object_index_runtime_blockers,
+        )
+        stage = "gemini_capture_review"
+        capture_fidelity_review = infer_capture_fidelity_review(
+            capture_root=descriptor_path.parent,
+            raw_video_path=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root),
+            keyframe_path=_resolve_optional_uri_to_path(descriptor.keyframe_uri, storage_root),
+            descriptor=descriptor.to_dict(),
+            qa_report=qa_report,
+            task_hypothesis_report=task_hypothesis_report,
+            timeout_sec=int(getattr(config, "gemini_timeout_seconds", 45) or 45),
+        )
+        write_json(pipeline_dir / "gemini_capture_fidelity_review.json", capture_fidelity_review)
+        gates.append(
+            QualificationGate(
+                "gemini_capture_review_gate",
+                str(capture_fidelity_review.get("status") or "").strip().lower() == "succeeded",
+                f"status={capture_fidelity_review.get('status')}",
+            )
+        )
+        qualification_record = _apply_capture_fidelity_to_qualification(
+            qualification_record=qualification_record,
+            capture_fidelity_review=capture_fidelity_review,
+            metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
         )
         qualification_brief = _build_qualification_brief(
             descriptor=descriptor,
@@ -3321,6 +3629,26 @@ def run_qualification_pipeline(
                 recapture_instructions.get("instructions", [])
             ) if isinstance(recapture_instructions.get("instructions"), list) else []
         qualification_record["readiness_state"] = readiness_decision.get("status")
+        world_model_fit_summary = _build_world_model_fit_summary(
+            descriptor=descriptor,
+            scorecard=scorecard,
+            qualification_record=qualification_record,
+            capture_fidelity_review=capture_fidelity_review,
+            metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
+        )
+        capturer_payout_recommendation = _build_capturer_payout_recommendation(
+            descriptor=descriptor,
+            capture_fidelity_review=capture_fidelity_review,
+            metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
+        )
+        provenance_summary = _build_provenance_summary(
+            descriptor_uri=descriptor_gcs_uri,
+            qa_report_uri=qa_report_uri,
+            pipeline_prefix=pipeline_prefix,
+            bucket=bucket,
+            capture_fidelity_review=capture_fidelity_review,
+            metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
+        )
         opportunity_handoff = _build_opportunity_handoff(
             descriptor=descriptor,
             scorecard=scorecard,
@@ -3357,6 +3685,9 @@ def run_qualification_pipeline(
         write_json(pipeline_dir / "blocker_register.json", blocker_register)
         write_json(pipeline_dir / "readiness_decision.json", readiness_decision)
         write_json(pipeline_dir / "human_actions_required.json", human_actions_required)
+        write_json(pipeline_dir / "world_model_fit_summary.json", world_model_fit_summary)
+        write_json(pipeline_dir / "capturer_payout_recommendation.json", capturer_payout_recommendation)
+        write_json(pipeline_dir / "provenance_summary.json", provenance_summary)
         if isinstance(weakness_summary, Mapping):
             write_json(pipeline_dir / "qualification_weakness_summary.json", dict(weakness_summary))
         if isinstance(recapture_instructions, Mapping):
@@ -3393,14 +3724,18 @@ def run_qualification_pipeline(
             qualification_record=qualification_record,
         )
         write_json(pipeline_dir / "pipeline_summary.json", pipeline_summary)
-        scene_memory_artifacts = _write_scene_memory_bundle(
-            storage_root=storage_root,
-            bucket=bucket,
-            pipeline_prefix=pipeline_prefix,
-            pipeline_dir=pipeline_dir,
-            descriptor=descriptor,
-            scorecard=scorecard,
-            qualification_record=qualification_record,
+        scene_memory_artifacts = (
+            _write_scene_memory_bundle(
+                storage_root=storage_root,
+                bucket=bucket,
+                pipeline_prefix=pipeline_prefix,
+                pipeline_dir=pipeline_dir,
+                descriptor=descriptor,
+                scorecard=scorecard,
+                qualification_record=qualification_record,
+            )
+            if "scene_memory" in downstream_requested_lanes
+            else _empty_downstream_artifacts()
         )
         opportunity_handoff = attach_handoff_package_paths(
             opportunity_handoff,
@@ -3414,12 +3749,12 @@ def run_qualification_pipeline(
             "lane": "qualification",
             "scene_id": descriptor.scene_id,
             "capture_id": descriptor.capture_id,
-            "status": "passed",
+            "status": "passed" if str(capture_fidelity_review.get("status") or "").strip().lower() == "succeeded" else "blocked",
             "generated_at": utc_now_iso(),
             "readiness_state": readiness_decision.get("status"),
             "completeness_status": scorecard.get("completeness_status"),
             "gates": [gate.to_dict() for gate in gates],
-            "artifacts": {
+            "artifacts": _present_artifacts({
                 "descriptor_uri": descriptor_gcs_uri,
                 "qa_report_uri": qa_report_uri,
                 "task_targets": f"gs://{bucket}/{pipeline_prefix}/task_targets.json",
@@ -3440,6 +3775,10 @@ def run_qualification_pipeline(
                 "blocker_register": f"gs://{bucket}/{pipeline_prefix}/blocker_register.json",
                 "readiness_decision": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
                 "human_actions_required": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
+                "gemini_capture_fidelity_review": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
+                "world_model_fit_summary": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
+                "capturer_payout_recommendation": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
+                "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
                 **(
                     {"qualification_weakness_summary": f"gs://{bucket}/{pipeline_prefix}/qualification_weakness_summary.json"}
                     if isinstance(weakness_summary, Mapping)
@@ -3463,7 +3802,7 @@ def run_qualification_pipeline(
                 "gen3c_adapter_manifest": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
                 "neoverse_adapter_manifest": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
                 "cosmos_transfer_adapter_manifest": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
-            },
+            }),
         }
         write_json(pipeline_dir / "qualification_quality_report.json", quality_report)
         write_json(pipeline_dir / "swap_quality_report.json", quality_report)
@@ -3517,6 +3856,7 @@ def run_qualification_pipeline(
             scorecard=scorecard,
             metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
             provider_status=str(provider_run.get("status") or "not_requested"),
+            fidelity_review=capture_fidelity_review,
         )
         launch_bundle = build_launch_qualification_bundle(
             descriptor=descriptor.to_dict(),
@@ -3526,12 +3866,19 @@ def run_qualification_pipeline(
             site_intake=site_intake,
             buyer_trust_score=buyer_trust_score,
             provider_run=provider_run,
+            fidelity_review=capture_fidelity_review,
+            world_model_fit_summary=world_model_fit_summary,
+            capturer_payout_recommendation=capturer_payout_recommendation,
+            provenance_summary=provenance_summary,
         )
         write_json(pipeline_dir / "qualification_summary.json", launch_bundle["qualification_summary"])
         write_json(pipeline_dir / "capture_quality_summary.json", launch_bundle["capture_quality_summary"])
         write_json(pipeline_dir / "rights_and_compliance_summary.json", launch_bundle["rights_and_compliance_summary"])
+        write_json(pipeline_dir / "buyer_trust_score.json", launch_bundle["buyer_trust_score"])
+        write_json(pipeline_dir / "recapture_requirements.json", launch_bundle["recapture_requirements"])
+        write_json(pipeline_dir / "provider_preview_status.json", launch_bundle["provider_preview_status"])
 
-        completion_payload = {
+        completion_payload = _present_artifacts({
             "schema_version": "v1",
             "lane": "qualification",
             "scene_id": descriptor.scene_id,
@@ -3541,10 +3888,15 @@ def run_qualification_pipeline(
             "completed_at": utc_now_iso(),
             "qualification_state": qualification_state,
             "opportunity_state": opportunity_state,
+            "alpha_scoring_status": capture_fidelity_review.get("status"),
             "quality_report": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
             "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             "qualification_record": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
             "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
+            "gemini_capture_fidelity_review": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
+            "world_model_fit_summary": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
+            "capturer_payout_recommendation": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
+            "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
             "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
             "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
             "presentation_bundle": scene_memory_artifacts["presentation_bundle_uri"],
@@ -3552,7 +3904,7 @@ def run_qualification_pipeline(
             "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
             "provider_run_manifest": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
             "preview_manifest": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
-        }
+        })
         write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
         sync_webapp_pipeline_attachment(
@@ -3566,17 +3918,24 @@ def run_qualification_pipeline(
             qualification_state=qualification_state,
             opportunity_state=opportunity_state,
             authoritative_state_update=True,
-            artifacts={
-                "readiness_decision_uri": quality_report["artifacts"]["readiness_decision"],
-                "readiness_report_uri": quality_report["artifacts"]["readiness_report"],
+            artifacts=_present_artifacts({
+                "readiness_decision_uri": quality_report["artifacts"].get("readiness_decision"),
+                "readiness_report_uri": quality_report["artifacts"].get("readiness_report"),
                 "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
                 "qualification_summary_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_summary.json",
                 "capture_quality_summary_uri": f"gs://{bucket}/{pipeline_prefix}/capture_quality_summary.json",
                 "rights_and_compliance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/rights_and_compliance_summary.json",
+                "buyer_trust_score_uri": f"gs://{bucket}/{pipeline_prefix}/buyer_trust_score.json",
+                "world_model_fit_summary_uri": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
+                "capturer_payout_recommendation_uri": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
+                "recapture_requirements_uri": f"gs://{bucket}/{pipeline_prefix}/recapture_requirements.json",
+                "provider_preview_status_uri": f"gs://{bucket}/{pipeline_prefix}/provider_preview_status.json",
+                "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
+                "gemini_capture_fidelity_review_uri": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
                 "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
                 "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
-                "opportunity_handoff_uri": quality_report["artifacts"]["opportunity_handoff"],
-                "human_actions_required_uri": quality_report["artifacts"]["human_actions_required"],
+                "opportunity_handoff_uri": quality_report["artifacts"].get("opportunity_handoff"),
+                "human_actions_required_uri": quality_report["artifacts"].get("human_actions_required"),
                 "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
                 "agent_readiness_memo_uri": f"gs://{bucket}/{pipeline_prefix}/agent_readiness_memo.md",
                 "scene_memory_manifest_uri": scene_memory_artifacts["scene_memory_manifest_uri"],
@@ -3589,18 +3948,24 @@ def run_qualification_pipeline(
                 "gen3c_adapter_manifest_uri": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
                 "neoverse_adapter_manifest_uri": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
                 "cosmos_transfer_adapter_manifest_uri": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
-            },
+            }),
             derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
             deployment_readiness={
                 "qualification_state": qualification_state,
                 "opportunity_state": opportunity_state,
+                "alpha_scoring_status": capture_fidelity_review.get("status"),
                 "buyer_trust_score": buyer_trust_score,
                 "qualification_summary": launch_bundle["qualification_summary"],
                 "capture_quality_summary": launch_bundle["capture_quality_summary"],
                 "rights_and_compliance": launch_bundle["rights_and_compliance_summary"],
                 "missing_evidence": launch_bundle["recapture_requirements"]["missing_evidence"],
+                "recapture_required": launch_bundle["recapture_requirements"]["required"],
+                "recapture_recommendations": launch_bundle["recapture_requirements"].get("recommendations"),
                 "preview_status": launch_bundle["preview_status"],
                 "provider_run": provider_run,
+                "world_model_fit_summary": world_model_fit_summary,
+                "capturer_payout_recommendation": capturer_payout_recommendation,
+                "provenance_summary": provenance_summary,
             },
         )
 

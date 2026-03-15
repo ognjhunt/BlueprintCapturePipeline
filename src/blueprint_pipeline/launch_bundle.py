@@ -20,6 +20,7 @@ def build_buyer_trust_score(
     scorecard: Mapping[str, Any],
     metadata: Mapping[str, Any],
     provider_status: str,
+    fidelity_review: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     score = 100
     reasons: list[str] = []
@@ -49,9 +50,21 @@ def build_buyer_trust_score(
         score -= 5
         reasons.append("no permission document is attached")
 
-    if provider_status == "failed":
-        score -= 5
-        reasons.append("preview provider is unavailable")
+    normalized_review = fidelity_review if isinstance(fidelity_review, Mapping) else {}
+    review_status = str(normalized_review.get("status") or "").strip().lower()
+    review_scores = normalized_review.get("scores") if isinstance(normalized_review.get("scores"), Mapping) else {}
+    coverage_score = float(review_scores.get("coverage") or 0.0)
+    world_model_fitness = float(review_scores.get("world_model_fitness") or 0.0)
+    if review_status != "succeeded":
+        score -= 15
+        reasons.append("multimodal capture review is incomplete")
+    else:
+        if coverage_score < 0.7:
+            score -= 10
+            reasons.append("Gemini review found coverage gaps in the capture")
+        if world_model_fitness < 0.65:
+            score -= 10
+            reasons.append("Gemini review found limited world-model fitness")
 
     score = max(0, min(100, score))
     band = "high" if score >= 80 else "medium" if score >= 60 else "low"
@@ -67,10 +80,26 @@ def build_launch_qualification_bundle(
     site_intake: Mapping[str, Any],
     buyer_trust_score: Mapping[str, Any],
     provider_run: Mapping[str, Any],
+    fidelity_review: Mapping[str, Any] | None = None,
+    world_model_fit_summary: Mapping[str, Any] | None = None,
+    capturer_payout_recommendation: Mapping[str, Any] | None = None,
+    provenance_summary: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     capture_rights = site_intake.get("capture_rights") if isinstance(site_intake.get("capture_rights"), Mapping) else {}
+    if not capture_rights and isinstance(descriptor.get("metadata"), Mapping):
+        raw_rights = descriptor["metadata"].get("capture_rights")
+        if isinstance(raw_rights, Mapping):
+            capture_rights = raw_rights
     task_scope = site_intake.get("task_scope") if isinstance(site_intake.get("task_scope"), Mapping) else {}
+    if not task_scope:
+        task_context = site_intake.get("task_context")
+        task_scope = dict(task_context) if isinstance(task_context, Mapping) else {}
     missing_evidence = _string_list(readiness_decision.get("missing_evidence")) or _string_list(scorecard.get("missing_evidence"))
+    normalized_review = fidelity_review if isinstance(fidelity_review, Mapping) else {}
+    review_scores = normalized_review.get("scores") if isinstance(normalized_review.get("scores"), Mapping) else {}
+    review_findings = normalized_review.get("findings") if isinstance(normalized_review.get("findings"), Mapping) else {}
+    recapture_recommendations = _string_list(review_findings.get("recapture_recommendations"))
+    preview_status = provider_run.get("status") or "not_requested"
 
     return {
         "qualification_summary": {
@@ -78,6 +107,7 @@ def build_launch_qualification_bundle(
             "confidence": qualification_record.get("confidence"),
             "task_statement": task_scope.get("task_statement"),
             "facility_template": task_scope.get("facility_template"),
+            "alpha_scoring_status": normalized_review.get("status") or "missing",
             "risk_count": len(qualification_record.get("risks", []))
             if isinstance(qualification_record.get("risks"), list)
             else 0,
@@ -97,10 +127,27 @@ def build_launch_qualification_bundle(
             "coverage_plan": descriptor.get("coverage_plan"),
             "capture_modality": descriptor.get("capture_modality"),
             "evidence_tier": descriptor.get("evidence_tier"),
+            "gemini_review_status": normalized_review.get("status"),
+            "coverage_score": review_scores.get("coverage"),
+            "visual_clarity_score": review_scores.get("visual_clarity"),
+            "lighting_stability_score": review_scores.get("lighting_stability"),
+            "motion_stability_score": review_scores.get("motion_stability"),
         },
         "recapture_requirements": {
-            "required": bool(missing_evidence),
+            "required": bool(missing_evidence or recapture_recommendations or normalized_review.get("status") != "succeeded"),
             "missing_evidence": missing_evidence,
+            "recommendations": recapture_recommendations,
         },
-        "preview_status": provider_run.get("status") or "not_requested",
+        "preview_status": preview_status,
+        "provider_preview_status": {
+            "status": preview_status,
+            "provider_name": provider_run.get("provider_name"),
+            "provider_model": provider_run.get("provider_model"),
+            "provider_run_id": provider_run.get("provider_run_id"),
+            "failure_reason": provider_run.get("failure_reason"),
+        },
+        "world_model_fit_summary": dict(world_model_fit_summary or {}),
+        "capturer_payout_recommendation": dict(capturer_payout_recommendation or {}),
+        "provenance_summary": dict(provenance_summary or {}),
+        "gemini_fidelity_review": dict(normalized_review or {}),
     }
