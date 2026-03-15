@@ -149,17 +149,11 @@ def _presentation_primary_asset(
     bucket: str,
     storage_root: Path,
 ) -> Optional[Dict[str, Any]]:
-    raw_root = pipeline_dir.parent / "raw"
-    candidates = [
-        ("advanced_geometry_3dgs", pipeline_dir / "advanced_geometry" / "3dgs_compressed.ply"),
-        ("raw_gaussian_splat", raw_root / "gaussian_splat.ply"),
-        ("raw_splat", raw_root / "splat.ply"),
-    ]
-    for source_name, path in candidates:
-        if path.is_file():
-            payload = _artifact_pointer(path, bucket=bucket, storage_root=storage_root)
-            payload["source_name"] = source_name
-            return payload
+    advanced_path = pipeline_dir / "advanced_geometry" / "3dgs_compressed.ply"
+    if advanced_path.is_file():
+        payload = _artifact_pointer(advanced_path, bucket=bucket, storage_root=storage_root)
+        payload["source_name"] = "advanced_geometry_3dgs"
+        return payload
     return None
 
 
@@ -171,11 +165,7 @@ def _presentation_supporting_assets(
 ) -> List[Dict[str, Any]]:
     assets: List[Dict[str, Any]] = []
     for path in (
-        pipeline_dir / "nurec" / "visual_mesh.glb",
-        pipeline_dir / "nurec" / "nvblox_mesh.ply",
-        pipeline_dir / "nurec" / "occupancy.bin",
         pipeline_dir / "advanced_geometry" / "advanced_geometry_bundle.json",
-        pipeline_dir / "nurec" / "mesh_manifest.json",
     ):
         if path.is_file():
             assets.append(_artifact_pointer(path, bucket=bucket, storage_root=storage_root))
@@ -203,13 +193,13 @@ def _canonical_world_model_payload(
     return {
         "world_model_backend": "neoverse",
         "primary_runtime_backend": "neoverse",
-        "scene_representation": "gsplat_scene_v1" if primary_asset is not None else "unavailable",
-        "render_source": "canonical_world_model" if primary_asset is not None else "unavailable",
-        "fallback_mode": "arkit_rgbd_last_resort",
+        "scene_representation": "advanced_geometry_3dgs" if primary_asset is not None else "pending_world_model_service",
+        "render_source": "canonical_world_model" if primary_asset is not None else "pending_world_model_service",
+        "fallback_mode": "none",
         "evidence_mode": "full_capture_persistent_scene",
         "primary_render_asset_role": "authoritative_runtime_render_asset",
-        "renderer_backend": "gsplat" if primary_asset is not None else None,
-        "bundle_type": "gsplat_scene_v1" if primary_asset is not None else None,
+        "renderer_backend": "neoverse" if primary_asset is not None else None,
+        "bundle_type": "neoverse_video_world_model_v1" if primary_asset is not None else None,
         "status": status,
         "primary_asset_path": str(primary_asset.get("path") or "") if primary_asset else "",
         "primary_asset_uri": str(primary_asset.get("uri") or "") if primary_asset else "",

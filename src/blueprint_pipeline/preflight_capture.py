@@ -35,15 +35,6 @@ def _video_candidates(raw_root: Path, manifest: Mapping[str, Any]) -> List[str]:
     return out
 
 
-def _splat_candidates(context: LocalCaptureContext) -> List[str]:
-    candidates = [
-        context.raw_root / "3dgs_compressed.ply",
-        context.raw_root / "gaussian_splat.ply",
-        context.raw_root / "splat.ply",
-    ]
-    return [str(path) for path in candidates if path.is_file()]
-
-
 def build_capture_preflight_report(capture_root: str | Path) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     required_entries = _required_raw_entries(context)
@@ -58,7 +49,6 @@ def build_capture_preflight_report(capture_root: str | Path) -> Dict[str, Any]:
         raw_prefix_uri=context.raw_prefix_uri,
     )
     video_candidates = _video_candidates(context.raw_root, manifest)
-    splat_candidates = _splat_candidates(context)
 
     missing_required = [name for name, path in required_entries.items() if not path.is_file()]
     if not video_candidates:
@@ -85,8 +75,6 @@ def build_capture_preflight_report(capture_root: str | Path) -> Dict[str, Any]:
     notes = []
     if evidence_tier == "pre_screen_video":
         notes.append("This capture can produce a qualification report, but it will not return ready.")
-    if splat_candidates:
-        notes.append("Detected splat/3DGS artifacts will be attached as supplemental evidence only.")
     if intake_missing:
         notes.append("Intake is incomplete and still requires human completion before decision-grade use.")
 
@@ -104,7 +92,6 @@ def build_capture_preflight_report(capture_root: str | Path) -> Dict[str, Any]:
             for name, path in required_entries.items()
         },
         "video_candidates": video_candidates,
-        "splat_candidates": splat_candidates,
         "intake_missing_fields": intake_missing,
         "qa_preview": qa_report,
         "descriptor_preview": descriptor,

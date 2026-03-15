@@ -1,4 +1,4 @@
-"""BlueprintCapture iOS manifest helpers for NuRec swap orchestration."""
+"""BlueprintCapture iOS manifest helpers for capture orchestration."""
 
 from __future__ import annotations
 

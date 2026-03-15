@@ -272,7 +272,6 @@ def _build_staged_capture(
         encoding="utf-8",
     )
     (raw_root / "walkthrough.mov").write_bytes(b"not-a-real-video")
-    (raw_root / "gaussian_splat.ply").write_text("ply\nformat ascii 1.0\nend_header\n", encoding="utf-8")
     arkit_root = raw_root / "arkit"
     (arkit_root / "depth").mkdir(parents=True)
     (arkit_root / "poses.jsonl").write_text(
@@ -348,15 +347,14 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert presentation_bundle["canonical_source"]["scene_memory_manifest_uri"].endswith("/scene_memory/scene_memory_manifest.json")
     assert presentation_bundle["render_inputs"]["scene_memory_manifest_uri"].endswith("/scene_memory/scene_memory_manifest.json")
     assert presentation_bundle["render_inputs"]["conditioning_bundle_uri"].endswith("/scene_memory/conditioning_bundle.json")
-    assert presentation_bundle["status"] == "ready"
-    assert presentation_bundle["bundle_type"] == "gsplat_scene_v1"
-    assert presentation_bundle["renderer_backend"] == "gsplat"
+    assert presentation_bundle["status"] == "missing"
+    assert presentation_bundle["bundle_type"] == ""
+    assert presentation_bundle["renderer_backend"] == "neoverse"
     assert presentation_bundle["fallback_policy"] == "canonical_only"
-    assert presentation_bundle["primary_asset_path"].endswith("gaussian_splat.ply")
     assert presentation_world_manifest["presentation_bundle_uri"].endswith("/presentation_world/presentation_bundle.json")
-    assert presentation_world_manifest["bundle_type"] == "gsplat_scene_v1"
-    assert presentation_world_manifest["renderer_backend"] == "gsplat"
-    assert presentation_world_manifest["readiness"]["bundle_status"] == "ready"
+    assert presentation_world_manifest["bundle_type"] == ""
+    assert presentation_world_manifest["renderer_backend"] == "neoverse"
+    assert presentation_world_manifest["readiness"]["bundle_status"] == "missing"
     assert presentation_world_manifest["orientation"]["display_orientation"] == "portrait"
     assert presentation_world_manifest["orientation"]["display_rotation_degrees"] == 90
     assert runtime_demo_manifest["ui_base_url"] == "https://demo.example/internal"
@@ -378,14 +376,14 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert spec["presentation_output"]["authoritative_record"] is False
     assert spec["primary_runtime_backend"] == "neoverse"
     assert spec["canonical_world_model"]["world_model_backend"] == "neoverse"
-    assert spec["canonical_world_model"]["scene_representation"] == "gsplat_scene_v1"
-    assert spec["runtime_render_source"] == "canonical_world_model"
-    assert spec["fallback_mode"] == "arkit_rgbd_last_resort"
-    assert spec["canonical_world_model"]["primary_asset_path"].endswith("gaussian_splat.ply")
-    assert spec["presentation"]["bundle_type"] == "gsplat_scene_v1"
-    assert spec["presentation"]["renderer_backend"] == "gsplat"
-    assert spec["presentation"]["bundle_status"] == "ready"
-    assert spec["presentation"]["primary_asset_path"].endswith("gaussian_splat.ply")
+    assert spec["canonical_world_model"]["scene_representation"] == "pending_world_model_service"
+    assert spec["runtime_render_source"] == "pending_world_model_service"
+    assert spec["fallback_mode"] == "none"
+    assert spec["canonical_world_model"]["primary_asset_path"] == ""
+    assert spec["presentation"]["bundle_type"] == ""
+    assert spec["presentation"]["renderer_backend"] == "neoverse"
+    assert spec["presentation"]["bundle_status"] == "missing"
+    assert spec["presentation"]["primary_asset_path"] == ""
     assert spec["presentation"]["orientation"]["display_orientation"] == "portrait"
     summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
     launchable_export = json.loads((eval_root / "launchable_export_bundle.json").read_text(encoding="utf-8"))
@@ -493,9 +491,9 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     assert site_world_spec["canonical_world_model"]["orientation"]["display_orientation"] == "portrait"
     assert site_world_spec["canonical_world_model"]["world_model_backend"] == "neoverse"
     assert scene_memory_manifest["primary_runtime_backend"] == "neoverse"
-    assert scene_memory_manifest["canonical_world_model"]["scene_representation"] == "gsplat_scene_v1"
+    assert scene_memory_manifest["canonical_world_model"]["scene_representation"] == "pending_world_model_service"
     assert hosted_runtime_manifest["primary_runtime_backend"] == "neoverse"
-    assert hosted_runtime_manifest["canonical_world_model"]["primary_asset_path"].endswith("gaussian_splat.ply")
+    assert hosted_runtime_manifest["canonical_world_model"]["primary_asset_path"] == ""
     assert hosted_runtime_manifest["capture_orientation"]["display_orientation"] == "portrait"
 
 
@@ -609,16 +607,12 @@ def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: P
     assert fallback["descriptor"]["capture_orientation"]["normalization_applied"] is False
 
 
-def test_presentation_primary_asset_prefers_advanced_geometry(tmp_path: Path) -> None:
+def test_presentation_primary_asset_uses_advanced_geometry(tmp_path: Path) -> None:
     capture_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
     pipeline_dir = capture_root / "pipeline"
     advanced_dir = pipeline_dir / "advanced_geometry"
-    raw_root = capture_root / "raw"
     advanced_dir.mkdir(parents=True)
-    raw_root.mkdir(parents=True)
     (advanced_dir / "3dgs_compressed.ply").write_text("advanced", encoding="utf-8")
-    (raw_root / "gaussian_splat.ply").write_text("gaussian", encoding="utf-8")
-    (raw_root / "splat.ply").write_text("splat", encoding="utf-8")
 
     primary_asset = _presentation_primary_asset(
         pipeline_dir=pipeline_dir,

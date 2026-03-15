@@ -673,10 +673,6 @@ def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]
         "conditioning_bundle_path": str(context.pipeline_root / "scene_memory" / "conditioning_bundle.json"),
         "object_geometry_manifest_path": str(context.pipeline_root / "evaluation_prep" / "object_geometry_manifest.json"),
     }
-    geometry = conditioning_bundle.get("explicit_conditioning")
-    geometry_map = dict(geometry) if isinstance(geometry, Mapping) else {}
-    if geometry_map.get("occupancy_uri"):
-        local_paths["occupancy_path"] = str(context.pipeline_root / "nurec" / "occupancy.bin")
     return local_paths
 
 
@@ -715,53 +711,32 @@ def _canonical_world_model_payload(
                 "orientation": dict(capture_orientation),
                 "supporting_assets": supporting_assets,
             }
-    candidates = [
-        ("advanced_geometry_3dgs", pipeline_root / "advanced_geometry" / "3dgs_compressed.ply"),
-        ("raw_gaussian_splat", raw_root / "gaussian_splat.ply"),
-        ("raw_splat", raw_root / "splat.ply"),
-    ]
-    primary_asset = next(((source, path) for source, path in candidates if path.is_file()), None)
     supporting_assets: List[Dict[str, Any]] = []
-    for path in (
-        pipeline_root / "nurec" / "visual_mesh.glb",
-        pipeline_root / "nurec" / "nvblox_mesh.ply",
-        pipeline_root / "nurec" / "occupancy.bin",
-        pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json",
-        pipeline_root / "nurec" / "mesh_manifest.json",
-    ):
-        if path.is_file():
-            relative = relative_scene_path(path, context.storage_root)
-            suffix = relative.split("/pipeline/", 1)[1] if "/pipeline/" in relative else path.name
-            supporting_assets.append(
-                {
-                    "name": path.name,
-                    "path": str(path.resolve()),
-                    "uri": _gs_uri(context, suffix),
-                }
-            )
-    primary_asset_uri = ""
-    primary_asset_path = ""
-    primary_asset_source = ""
-    if primary_asset is not None:
-        relative = relative_scene_path(primary_asset[1], context.storage_root)
-        suffix = relative.split("/pipeline/", 1)[1] if "/pipeline/" in relative else primary_asset[1].name
-        primary_asset_uri = _gs_uri(context, suffix)
-        primary_asset_path = str(primary_asset[1].resolve())
-        primary_asset_source = primary_asset[0]
+    advanced_bundle = pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json"
+    if advanced_bundle.is_file():
+        relative = relative_scene_path(advanced_bundle, context.storage_root)
+        suffix = relative.split("/pipeline/", 1)[1] if "/pipeline/" in relative else advanced_bundle.name
+        supporting_assets.append(
+            {
+                "name": advanced_bundle.name,
+                "path": str(advanced_bundle.resolve()),
+                "uri": _gs_uri(context, suffix),
+            }
+        )
     return {
         "world_model_backend": "neoverse",
         "primary_runtime_backend": "neoverse",
-        "scene_representation": "gsplat_scene_v1" if primary_asset is not None else "unavailable",
-        "render_source": "canonical_world_model" if primary_asset is not None else "unavailable",
-        "fallback_mode": "arkit_rgbd_last_resort",
+        "scene_representation": "pending_world_model_service",
+        "render_source": "pending_world_model_service",
+        "fallback_mode": "none",
         "evidence_mode": "full_capture_persistent_scene",
         "primary_render_asset_role": "authoritative_runtime_render_asset",
-        "renderer_backend": "gsplat" if primary_asset is not None else None,
-        "bundle_type": "gsplat_scene_v1" if primary_asset is not None else None,
-        "status": "ready" if primary_asset is not None else "missing",
-        "primary_asset_path": primary_asset_path,
-        "primary_asset_uri": primary_asset_uri,
-        "primary_asset_source": primary_asset_source,
+        "renderer_backend": None,
+        "bundle_type": None,
+        "status": "missing",
+        "primary_asset_path": "",
+        "primary_asset_uri": "",
+        "primary_asset_source": "",
         "orientation": dict(capture_orientation),
         "supporting_assets": supporting_assets,
     }
@@ -777,9 +752,9 @@ def _primary_runtime_render_descriptor(
     if canonical_status == "ready":
         return {
             "world_model_backend": str(canonical_world_model.get("world_model_backend") or "neoverse"),
-            "scene_representation": str(canonical_world_model.get("scene_representation") or "gsplat_scene_v1"),
+            "scene_representation": str(canonical_world_model.get("scene_representation") or "neoverse_video_world_model_v1"),
             "runtime_render_source": str(canonical_world_model.get("render_source") or "canonical_world_model"),
-            "fallback_mode": str(canonical_world_model.get("fallback_mode") or "arkit_rgbd_last_resort"),
+            "fallback_mode": str(canonical_world_model.get("fallback_mode") or "none"),
         }
 
     raw_video_ref = str(
@@ -1276,9 +1251,6 @@ def _build_site_world_spec(
             "scene_memory_bundle_path": str(_real_path_from_eval_dir(eval_dir, str(geometry_bundle or "")) or ""),
             "object_geometry_manifest_path": str(object_geometry_path.resolve()),
             "object_index_path": local_paths.get("object_index_path"),
-            "occupancy_path": str((context.pipeline_root / "nurec" / "occupancy.bin").resolve()),
-            "collision_mesh_path": str((context.pipeline_root / "nurec" / "nvblox_mesh.ply").resolve()),
-            "visual_mesh_path": str((context.pipeline_root / "nurec" / "visual_mesh.glb").resolve()),
             "advanced_geometry_bundle_path": str((context.pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json").resolve()),
         },
         "presentation": {
@@ -1289,12 +1261,12 @@ def _build_site_world_spec(
             "bundle_type": str(
                 presentation_world_manifest.get("bundle_type")
                 or runtime_demo_manifest.get("bundle_type")
-                or "gsplat_scene_v1"
+                or ""
             ),
             "renderer_backend": str(
                 presentation_world_manifest.get("renderer_backend")
                 or runtime_demo_manifest.get("renderer_backend")
-                or "gsplat"
+                or "neoverse"
             ),
             "bundle_status": str(
                 runtime_demo_manifest.get("bundle_status")

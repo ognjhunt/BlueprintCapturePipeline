@@ -10,7 +10,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 WITH_SAM3=false
 WITH_DA3=false
-WITH_FIXER=false
 WITH_LOCAL_QWEN=false
 WITH_DEEPPRIVACY2=false
 SKIP_PREWARM=false
@@ -22,8 +21,6 @@ DA3_DIR="${DA3_DIR:-/opt/da3}"
 DA3_WEIGHTS_DIR="${DA3_MODEL_PATH:-/opt/da3/weights/metric_large}"
 DA3_MODEL_ID="${DA3_MODEL_ID:-depth-anything/DA3Metric-Large}"
 DA3_MODEL_NAME="${DA3_MODEL_NAME:-da3metric-large}"
-FIXER_DIR="${FIXER_DIR:-/opt/Fixer}"
-FIXER_WEIGHTS_DIR="${FIXER_WEIGHTS_DIR:-/opt/fixer_weights}"
 QWEN_EDIT_DIR="${QWEN_IMAGE_EDIT_MODEL_PATH:-/opt/qwen-image-edit}"
 DEEPPRIVACY2_DIR="${DEEPPRIVACY2_DIR:-/opt/deepprivacy2}"
 DEEPPRIVACY2_MODEL_PATH="${DEEPPRIVACY2_MODEL_PATH:-/opt/deepprivacy2/weights}"
@@ -61,7 +58,6 @@ Default install:
 Optional installs:
   --with-sam3         Install optional SAM3 runtime from source
   --with-da3          Install optional Depth Anything 3 runtime + weights
-  --with-fixer        Install optional Fixer runtime + weights
   --with-local-qwen   Install optional local Qwen image-edit weights
   --with-deepprivacy2 Install optional DeepPrivacy2 runtime from source
   --skip-prewarm      Skip model cache prewarm checks
@@ -77,10 +73,6 @@ while [ $# -gt 0 ]; do
       ;;
     --with-da3)
       WITH_DA3=true
-      shift
-      ;;
-    --with-fixer)
-      WITH_FIXER=true
       shift
       ;;
     --with-local-qwen)
@@ -190,34 +182,6 @@ install_da3() {
   fi
 }
 
-install_fixer() {
-  log "Installing optional Fixer runtime..."
-  clone_or_update_repo "https://github.com/nv-tlabs/Fixer.git" "${FIXER_DIR}" "main"
-  python3 -m pip install --no-cache-dir --no-deps "cosmos-predict2==1.0.9"
-  python3 -m pip install --no-cache-dir \
-    --extra-index-url "${NVIDIA_PYPI_INDEX}" \
-    "transformer-engine==1.12.0" \
-    "transformer-engine-cu12==1.12.0"
-  python3 -m pip install --no-cache-dir \
-    "accelerate==1.7.0" \
-    clean-fid \
-    datasets \
-    "facexlib==0.3.0" \
-    fire \
-    imageio-ffmpeg \
-    lpips \
-    natsort \
-    numpy \
-    peft \
-    "torchmetrics[image]" \
-    wandb
-  python3 -m pip install --no-cache-dir "git+https://github.com/openai/CLIP.git"
-  mkdir -p "${FIXER_WEIGHTS_DIR}"
-  if [ ! -f "${FIXER_WEIGHTS_DIR}/pretrained/pretrained_fixer.pkl" ]; then
-    HF_HOME="${HF_CACHE_DIR}" huggingface-cli download nvidia/Fixer --local-dir "${FIXER_WEIGHTS_DIR}"
-  fi
-}
-
 install_local_qwen() {
   log "Installing optional Qwen image-edit runtime..."
   python3 -m pip install --no-cache-dir diffusers accelerate sentencepiece protobuf transformers
@@ -283,8 +247,6 @@ export SAM3_DIR=${SAM3_DIR}
 export SAM3_WEIGHTS_PATH=${SAM3_WEIGHTS_PATH}
 export DA3_MODEL_PATH=${DA3_WEIGHTS_DIR}
 export DA3_MODEL_NAME=${DA3_MODEL_NAME}
-export FIXER_DIR=${FIXER_DIR}
-export FIXER_WEIGHTS_DIR=${FIXER_WEIGHTS_DIR}
 export QWEN_IMAGE_EDIT_MODEL_PATH=${QWEN_EDIT_DIR}
 export DEEPPRIVACY2_DIR=${DEEPPRIVACY2_DIR}
 export DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH}
@@ -325,9 +287,6 @@ if [ "${WITH_SAM3}" = true ]; then
 fi
 if [ "${WITH_DA3}" = true ]; then
   install_da3
-fi
-if [ "${WITH_FIXER}" = true ]; then
-  install_fixer
 fi
 if [ "${WITH_LOCAL_QWEN}" = true ]; then
   install_local_qwen

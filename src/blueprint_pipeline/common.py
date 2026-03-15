@@ -1,4 +1,4 @@
-"""Shared filesystem and contract helpers for the NuRec-first swap pipeline."""
+"""Shared filesystem and contract helpers for the capture pipeline."""
 
 from __future__ import annotations
 

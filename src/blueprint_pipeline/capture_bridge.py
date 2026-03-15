@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 
-_ALLOWED_NUREC_MODES = {"mono_pose_assisted", "mono_slam"}
 _ALLOWED_SWAP_FOCUS = {
     "default",
     "bedroom",
@@ -87,20 +86,6 @@ def _normalize_swap_focus(raw_swap_focus: Any) -> List[str]:
         if lowered in _ALLOWED_SWAP_FOCUS and lowered not in normalized:
             normalized.append(lowered)
     return normalized
-
-
-def _resolve_nurec_mode(
-    *,
-    explicit_mode: Optional[str],
-    capture_source: str,
-    quality: Mapping[str, Any],
-) -> str:
-    if explicit_mode in _ALLOWED_NUREC_MODES:
-        return explicit_mode
-    pose_match_rate = float(quality.get("pose_match_rate", 0.0) or 0.0)
-    if capture_source == "iphone" and pose_match_rate >= 0.9:
-        return "mono_pose_assisted"
-    return "mono_slam"
 
 
 def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
@@ -382,7 +367,6 @@ class CaptureDescriptor:
     capture_tier: str
     raw_prefix_uri: str
     frames_index_uri: str
-    nurec_mode: str
     quality: Dict[str, Any] = field(default_factory=dict)
     raw_video_uri: Optional[str] = None
     privacy_processed_video_uri: Optional[str] = None
@@ -485,11 +469,6 @@ class CaptureDescriptor:
             capture_tier=capture_tier,
             raw_prefix_uri=raw_prefix_uri,
             frames_index_uri=frames_index_uri,
-            nurec_mode=_resolve_nurec_mode(
-                explicit_mode=_optional_str(data.get("nurec_mode")),
-                capture_source=capture_source,
-                quality=quality,
-            ),
             quality=dict(quality),
             raw_video_uri=_optional_str(data.get("raw_video_uri")),
             privacy_processed_video_uri=_optional_str(data.get("privacy_processed_video_uri")),
@@ -594,7 +573,6 @@ class CaptureDescriptor:
             "capture_tier": self.capture_tier,
             "raw_prefix_uri": self.raw_prefix_uri,
             "frames_index_uri": self.frames_index_uri,
-            "nurec_mode": self.nurec_mode,
             "quality": dict(self.quality),
             "requested_lanes": list(self.requested_lanes),
             "site_submission_id": self.site_submission_id,
@@ -679,7 +657,6 @@ def build_capture_bundle_constraints(
         "privacy_manifest_uri": descriptor.privacy_manifest_uri,
         "frames_index_uri": descriptor.frames_index_uri,
         "keyframe_uri": descriptor.keyframe_uri,
-        "nurec_mode": descriptor.nurec_mode,
         "requested_lanes": list(descriptor.requested_lanes),
         "site_submission_id": descriptor.site_submission_id,
         "buyer_request_id": descriptor.buyer_request_id,
@@ -789,7 +766,6 @@ def build_scene_manifest_seed(
         "capture_id": descriptor.capture_id,
         "environment": {
             "type_hint": descriptor.environment_type_hint or "unknown",
-            "nurec_mode": descriptor.nurec_mode,
             "requested_lanes": list(descriptor.requested_lanes),
             "swap_focus": list(descriptor.swap_focus),
         },

@@ -136,8 +136,6 @@ def main() -> int:
     parser.add_argument("--tracking-backend", default="image_model")
     parser.add_argument("--output", required=True)
     parser.add_argument("--environment", default="auto")
-    parser.add_argument("--colmap-sparse", default=None)
-    parser.add_argument("--gaussian-ply", default=None)
     parser.add_argument("--n-frames", type=int, default=8)
     parser.add_argument("--min-frame-detections", type=int, default=1)
     parser.add_argument("--no-crops", action="store_true")

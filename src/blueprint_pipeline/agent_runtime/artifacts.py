@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from ..capture_bridge import CaptureDescriptor
 from ..common import PipelineError, optional_read_json, read_json
@@ -33,8 +33,6 @@ class PipelineReviewArtifacts:
     human_actions_required: Dict[str, Any]
     task_hypothesis_report: Dict[str, Any]
     normalized_task_hypothesis: Dict[str, Any]
-    supplemental_geometry: List[Dict[str, Any]]
-
     @property
     def pipeline_dir(self) -> Path:
         return self.context.pipeline_root
@@ -48,19 +46,6 @@ def _read_required_json(path: Path, label: str) -> Dict[str, Any]:
     if not path.is_file():
         raise PipelineError(f"Missing required pipeline artifact: {label} at {path}")
     return read_json(path)
-
-
-def _supplemental_geometry(context: LocalCaptureContext) -> List[Dict[str, Any]]:
-    candidates = [
-        ("raw_splat", context.raw_root / "splat.ply"),
-        ("raw_gaussian_splat", context.raw_root / "gaussian_splat.ply"),
-        ("raw_compressed_splat", context.raw_root / "3dgs_compressed.ply"),
-    ]
-    out = []
-    for role, path in candidates:
-        if path.is_file():
-            out.append({"role": role, "path": str(path)})
-    return out
 
 
 def load_pipeline_review_artifacts(capture_root: str | Path) -> PipelineReviewArtifacts:
@@ -127,5 +112,4 @@ def load_pipeline_review_artifacts(capture_root: str | Path) -> PipelineReviewAr
             context.pipeline_root / "normalized_task_hypothesis.json",
             "normalized_task_hypothesis",
         ),
-        supplemental_geometry=_supplemental_geometry(context),
     )
