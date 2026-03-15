@@ -251,6 +251,8 @@ _DEFAULT_MODEL_CASCADE = [
     "gemini-2.5-flash",
     "gemini-2.5-pro",
 ]
+_DEFAULT_GEMINI_VIDEO_ANALYSIS_FPS = 5.0
+_MAX_GEMINI_VIDEO_ANALYSIS_FPS = 24.0
 
 
 def _build_image_parts(frames: List[Path], max_frames: int = 8) -> List[Dict[str, Any]]:
@@ -268,6 +270,62 @@ def _build_image_parts(frames: List[Path], max_frames: int = 8) -> List[Dict[str
             }
         )
     return parts
+
+
+def _gemini_video_analysis_fps() -> float:
+    raw_value = (
+        os.getenv("GEMINI_VIDEO_ANALYSIS_FPS")
+        or os.getenv("CAPTURE_FIDELITY_GEMINI_VIDEO_FPS")
+        or os.getenv("SCENE_SEMANTICS_GEMINI_VIDEO_FPS")
+        or ""
+    ).strip()
+    try:
+        fps = float(raw_value) if raw_value else _DEFAULT_GEMINI_VIDEO_ANALYSIS_FPS
+    except (TypeError, ValueError):
+        fps = _DEFAULT_GEMINI_VIDEO_ANALYSIS_FPS
+    return max(0.1, min(_MAX_GEMINI_VIDEO_ANALYSIS_FPS, fps))
+
+
+def _upload_gemini_video_file(client: Any, raw_video_path: Path, timeout_sec: int) -> Optional[Any]:
+    try:
+        uploaded = client.files.upload(file=str(raw_video_path))
+    except Exception:
+        return None
+
+    started = time.time()
+    current = uploaded
+    while True:
+        state = getattr(current, "state", None)
+        state_name = str(getattr(state, "name", "") or "").strip().upper()
+        if state_name == "ACTIVE":
+            return current
+        if state_name in {"FAILED", "ERROR"}:
+            return None
+        if time.time() - started >= max(5, int(timeout_sec)):
+            return None
+        time.sleep(2)
+        try:
+            current = client.files.get(name=current.name)
+        except Exception:
+            return None
+
+
+def _build_gemini_video_part(types_module: Any, uploaded_file: Any, fps: float) -> Any:
+    mime_type = str(
+        getattr(uploaded_file, "mime_type", "")
+        or getattr(uploaded_file, "mimeType", "")
+        or "video/quicktime"
+    ).strip() or "video/quicktime"
+    file_uri = str(
+        getattr(uploaded_file, "uri", "")
+        or getattr(uploaded_file, "file_uri", "")
+        or getattr(uploaded_file, "fileUri", "")
+        or ""
+    ).strip()
+    return types_module.Part(
+        fileData=types_module.FileData(fileUri=file_uri, mimeType=mime_type),
+        videoMetadata=types_module.VideoMetadata(fps=fps),
+    )
 
 
 def _extract_json_array(text: str) -> List[Any]:
@@ -383,9 +441,99 @@ def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_Gem
     return None
 
 
+def _infer_with_gemini_video(*, raw_video_path: Path, timeout_sec: int) -> Optional[_GeminiResult]:
+    api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key or not raw_video_path.is_file():
+        return None
+
+    try:
+        from google import genai  # type: ignore
+    except ImportError:
+        log_missing_optional_dependency(
+            logger,
+            feature="Gemini scene semantics inference",
+            package="google-genai",
+            extra="llm",
+        )
+        return None
+    except Exception:
+        return None
+
+    override = (os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
+    models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
+    client = genai.Client(api_key=api_key)
+    uploaded = _upload_gemini_video_file(client, raw_video_path, timeout_sec)
+    if uploaded is None:
+        return None
+
+    fps = _gemini_video_analysis_fps()
+    combined_prompt = (
+        "Analyze this walkthrough video of an indoor scene. Do TWO things:\n\n"
+        "1. CLASSIFY the environment type as one of: industrial_unknown, manufacturing, fulfillment, warehouse, bedroom, kitchen, default.\n"
+        "2. LIST ALL distinct physical objects visible that could be manipulated in a "
+        "robotics simulator (pick up, open, move, interact with). Include furniture with "
+        "movable parts (drawers, doors), containers, items on surfaces, things on the floor, "
+        "hanging items, etc.\n\n"
+        "Use the full video context, not just a single moment.\n\n"
+        "Return a single JSON object with these keys:\n"
+        "- room_type: string (one of: industrial_unknown, manufacturing, fulfillment, warehouse, bedroom, kitchen, default)\n"
+        "- confidence: number 0-1\n"
+        "- rationale: short string explaining classification\n"
+        "- objects: array of objects, each with:\n"
+        "  - object_id: short snake_case identifier (e.g. 'blue_suitcase')\n"
+        "  - category: object category (e.g. 'Furniture', 'Container', 'Clothing')\n"
+        "  - sam_prompt: a 1-4 word phrase a segmentation model can use to find this object "
+        "(e.g. 'blue suitcase', 'wooden dresser')\n\n"
+        "Be thorough — list every distinct manipulatable object you see."
+    )
+
+    for model in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[_build_gemini_video_part(genai.types, uploaded, fps), combined_prompt],
+                config={
+                    "temperature": 0.3,
+                    "max_output_tokens": 8192,
+                    "response_mime_type": "application/json",
+                },
+            )
+        except Exception:
+            continue
+
+        raw_text = _extract_response_text(response)
+        if not raw_text:
+            continue
+
+        payload = _extract_json_object(raw_text)
+        room_type = _normalize_environment(str(payload.get("room_type") or payload.get("environment") or "default"))
+        confidence_raw = payload.get("confidence", 0.0)
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+
+        detected_objects: List[Dict[str, Any]] = []
+        raw_objects = payload.get("objects", [])
+        if isinstance(raw_objects, list):
+            detected_objects = [obj for obj in raw_objects if isinstance(obj, dict)]
+
+        return _GeminiResult(
+            environment=room_type,
+            confidence=confidence,
+            model=model,
+            raw_text=raw_text,
+            detected_objects=detected_objects,
+        )
+
+    return None
+
+
 def infer_scene_semantics(
     *,
     frames_dir: Path,
+    raw_video_path: Optional[Path] = None,
     requested_environment: str,
     timeout_sec: int = 30,
 ) -> Dict[str, Any]:
@@ -417,7 +565,17 @@ def infer_scene_semantics(
             "fallback_reason": "",
         }
 
-    gemini_result = _infer_with_gemini(frames=keyframes, timeout_sec=max(5, int(timeout_sec)))
+    gemini_result = None
+    inference_mode = "video_file_upload"
+    if raw_video_path is not None and raw_video_path.is_file():
+        gemini_result = _infer_with_gemini_video(
+            raw_video_path=raw_video_path,
+            timeout_sec=max(5, int(timeout_sec)),
+        )
+    if gemini_result is None:
+        inference_mode = "frame_fallback"
+        gemini_result = _infer_with_gemini(frames=keyframes, timeout_sec=max(5, int(timeout_sec)))
+
     if gemini_result is not None:
         resolved = _normalize_environment(gemini_result.environment)
 
@@ -454,6 +612,8 @@ def infer_scene_semantics(
             "gemini_model": gemini_result.model,
             "gemini_raw_response": gemini_result.raw_text,
             "gemini_detected_objects": gemini_result.detected_objects,
+            "gemini_inference_mode": inference_mode,
+            "gemini_video_analysis_fps": _gemini_video_analysis_fps() if inference_mode == "video_file_upload" else None,
             "keyframes_used": [str(path) for path in keyframes],
             "fallback_reason": "",
             "explicit_hint": normalized_requested if has_explicit_hint else None,
@@ -541,11 +701,13 @@ def _gemini_capture_review_prompt(
     descriptor: Mapping[str, Any],
     qa_report: Mapping[str, Any],
     task_hypothesis_report: Optional[Mapping[str, Any]],
+    capture_context: Optional[Mapping[str, Any]] = None,
 ) -> str:
     return (
         "You are reviewing a real-world capture for Blueprint qualification.\n"
+        "Use the raw walkthrough video as the primary evidence source and the structured capture context as supporting evidence.\n"
         "Use the visual evidence conservatively. Do not invent measurements or certainty.\n"
-        "Assess whether this capture is good enough to support a downstream world model.\n"
+        "Assess whether this capture is good enough to support a downstream site-specific world model.\n"
         "Also assess whether the capture quality supports a stronger capturer payout recommendation.\n\n"
         "Return only a JSON object with this shape:\n"
         "{\n"
@@ -584,10 +746,12 @@ def _gemini_capture_review_prompt(
         '  "payout_recommendation": "bonus|baseline|discount|review_required",\n'
         '  "confidence": 0.0\n'
         "}\n\n"
-        "Review the actual walkthrough quality from the video. Pay special attention to blur, lighting changes, camera speed, doubling back/rescans, full-scene coverage, task-zone completeness, hidden zones, and whether the depth/spatial evidence is sufficient for a site-specific world model.\n\n"
+        "Review the actual walkthrough quality from the video. Pay special attention to blur, lighting changes, camera speed, doubling back/rescans, whether all of the scene is covered, task-zone completeness, hidden zones, and whether the depth/spatial evidence is sufficient for a site-specific world model.\n"
+        "If quality is poor, recommend recapture and explain why.\n\n"
         f"Descriptor:\n{json.dumps(dict(descriptor), indent=2, sort_keys=True)}\n\n"
         f"QA report:\n{json.dumps(dict(qa_report), indent=2, sort_keys=True)}\n\n"
-        f"Task hypothesis:\n{json.dumps(dict(task_hypothesis_report or {}), indent=2, sort_keys=True)}\n"
+        f"Task hypothesis:\n{json.dumps(dict(task_hypothesis_report or {}), indent=2, sort_keys=True)}\n\n"
+        f"Capture context:\n{json.dumps(dict(capture_context or {}), indent=2, sort_keys=True)}\n"
     )
 
 
@@ -597,6 +761,7 @@ def _infer_capture_review_with_gemini(
     descriptor: Mapping[str, Any],
     qa_report: Mapping[str, Any],
     task_hypothesis_report: Optional[Mapping[str, Any]],
+    capture_context: Optional[Mapping[str, Any]],
     timeout_sec: int,
 ) -> Optional[Dict[str, Any]]:
     api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
@@ -623,6 +788,7 @@ def _infer_capture_review_with_gemini(
         descriptor=descriptor,
         qa_report=qa_report,
         task_hypothesis_report=task_hypothesis_report,
+        capture_context=capture_context,
     )
     parts: List[Dict[str, Any]] = [{"text": prompt}] + image_parts
     client = genai.Client(api_key=api_key)
@@ -661,6 +827,7 @@ def _infer_capture_review_with_gemini_video(
     descriptor: Mapping[str, Any],
     qa_report: Mapping[str, Any],
     task_hypothesis_report: Optional[Mapping[str, Any]],
+    capture_context: Optional[Mapping[str, Any]],
     timeout_sec: int,
 ) -> Optional[Dict[str, Any]]:
     api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
@@ -686,36 +853,19 @@ def _infer_capture_review_with_gemini_video(
         descriptor=descriptor,
         qa_report=qa_report,
         task_hypothesis_report=task_hypothesis_report,
+        capture_context=capture_context,
     )
     client = genai.Client(api_key=api_key)
-
-    try:
-        uploaded = client.files.upload(file=str(raw_video_path))
-    except Exception:
+    current = _upload_gemini_video_file(client, raw_video_path, timeout_sec)
+    if current is None:
         return None
-
-    started = time.time()
-    current = uploaded
-    while True:
-        state = getattr(current, "state", None)
-        state_name = str(getattr(state, "name", "") or "").strip().upper()
-        if state_name == "ACTIVE":
-            break
-        if state_name in {"FAILED", "ERROR"}:
-            return None
-        if time.time() - started >= max(5, int(timeout_sec)):
-            return None
-        time.sleep(2)
-        try:
-            current = client.files.get(name=current.name)
-        except Exception:
-            return None
+    fps = _gemini_video_analysis_fps()
 
     for model in models_to_try:
         try:
             response = client.models.generate_content(
                 model=model,
-                contents=[current, prompt],
+                contents=[_build_gemini_video_part(genai.types, current, fps), prompt],
                 config={
                     "temperature": 0.2,
                     "max_output_tokens": 8192,
@@ -734,6 +884,7 @@ def _infer_capture_review_with_gemini_video(
             continue
         payload["model"] = model
         payload["raw_text"] = raw_text
+        payload["video_analysis_fps"] = fps
         payload["video_file_name"] = getattr(current, "name", None)
         payload["video_file_uri"] = getattr(current, "uri", None)
         return payload
@@ -749,6 +900,7 @@ def infer_capture_fidelity_review(
     descriptor: Mapping[str, Any],
     qa_report: Mapping[str, Any],
     task_hypothesis_report: Optional[Mapping[str, Any]] = None,
+    capture_context: Optional[Mapping[str, Any]] = None,
     timeout_sec: int = 45,
 ) -> Dict[str, Any]:
     keyframes: List[Path] = []
@@ -768,6 +920,7 @@ def infer_capture_fidelity_review(
             descriptor=descriptor,
             qa_report=qa_report,
             task_hypothesis_report=task_hypothesis_report,
+            capture_context=capture_context,
             timeout_sec=max(5, int(timeout_sec)),
         )
     if review is None:
@@ -777,6 +930,7 @@ def infer_capture_fidelity_review(
             descriptor=descriptor,
             qa_report=qa_report,
             task_hypothesis_report=task_hypothesis_report,
+            capture_context=capture_context,
             timeout_sec=max(5, int(timeout_sec)),
         )
 
@@ -846,6 +1000,7 @@ def infer_capture_fidelity_review(
                 "input_mode": review_mode,
                 "keyframes_used": [str(path) for path in keyframes],
                 "raw_video_path": str(raw_video_path) if raw_video_path else None,
+                "video_analysis_fps": _gemini_video_analysis_fps() if review_mode == "video_file_upload" else None,
             },
         }
 
@@ -1007,6 +1162,7 @@ def infer_capture_fidelity_review(
             "input_mode": review_mode,
             "keyframes_used": [str(path) for path in keyframes],
             "raw_video_path": str(raw_video_path) if raw_video_path else None,
+            "video_analysis_fps": review.get("video_analysis_fps"),
             "video_file_name": review.get("video_file_name"),
             "video_file_uri": review.get("video_file_uri"),
         },

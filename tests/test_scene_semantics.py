@@ -4,7 +4,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 from pathlib import Path
 
-from blueprint_pipeline.scene_semantics import infer_capture_fidelity_review
+from blueprint_pipeline.scene_semantics import infer_capture_fidelity_review, infer_scene_semantics
 
 
 def test_capture_fidelity_review_prefers_raw_video(monkeypatch, tmp_path: Path) -> None:
@@ -178,12 +178,18 @@ def test_raw_video_review_polls_uploaded_file_until_active(monkeypatch, tmp_path
 
         def generate_content(self, *, model: str, contents, config):
             self.generated = True
-            assert contents[0].name == "files/123"
+            assert contents[0].fileData.fileUri == "uri://123"
+            assert contents[0].videoMetadata.fps == 5.0
             assert isinstance(contents[1], str)
             return SimpleNamespace(text='{"summary":"ok","confidence":0.8,"scores":{"coverage":0.8},"bonus_signals":{"complete_coverage":{"score":0.8}}}')
 
     fake_client = FakeClient()
-    fake_genai = SimpleNamespace(Client=lambda api_key: fake_client)
+    fake_types = SimpleNamespace(
+        FileData=lambda **kwargs: SimpleNamespace(**kwargs),
+        VideoMetadata=lambda **kwargs: SimpleNamespace(**kwargs),
+        Part=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    fake_genai = SimpleNamespace(Client=lambda api_key: fake_client, types=fake_types)
     fake_google = ModuleType("google")
     fake_google.genai = fake_genai
 
@@ -203,3 +209,82 @@ def test_raw_video_review_polls_uploaded_file_until_active(monkeypatch, tmp_path
     assert fake_client.get_calls == 1
     assert fake_client.generated is True
     assert review["review_mode"] == "video_file_upload"
+    assert review["provenance"]["video_analysis_fps"] == 5.0
+
+
+def test_scene_semantics_prefers_raw_video_at_five_fps(monkeypatch, tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    frames_dir = capture_root / "frames"
+    frames_dir.mkdir(parents=True)
+    raw_video = capture_root / "walkthrough.mov"
+    raw_video.write_bytes(b"video")
+
+    calls: list[str] = []
+
+    def fake_video(**_kwargs):
+        calls.append("video")
+        return SimpleNamespace(
+            environment="warehouse",
+            confidence=0.92,
+            model="gemini-video",
+            raw_text='{"room_type":"warehouse"}',
+            detected_objects=[{"sam_prompt": "blue tote"}],
+        )
+
+    def fake_frames(**_kwargs):
+        calls.append("frames")
+        return None
+
+    monkeypatch.setattr("blueprint_pipeline.scene_semantics._infer_with_gemini_video", fake_video)
+    monkeypatch.setattr("blueprint_pipeline.scene_semantics._infer_with_gemini", fake_frames)
+
+    report = infer_scene_semantics(
+        frames_dir=frames_dir,
+        raw_video_path=raw_video,
+        requested_environment="auto",
+    )
+
+    assert calls == ["video"]
+    assert report["resolved_environment"] == "warehouse"
+    assert report["gemini_inference_mode"] == "video_file_upload"
+    assert report["gemini_video_analysis_fps"] == 5.0
+    assert report["detection_prompts"] == ["blue tote"]
+
+
+def test_scene_semantics_falls_back_to_frames_when_video_fails(monkeypatch, tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    frames_dir = capture_root / "frames"
+    frames_dir.mkdir(parents=True)
+    frame = frames_dir / "000001.jpg"
+    frame.write_bytes(b"frame")
+    raw_video = capture_root / "walkthrough.mov"
+    raw_video.write_bytes(b"video")
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.scene_semantics._infer_with_gemini_video",
+        lambda **_kwargs: calls.append("video") or None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.scene_semantics._infer_with_gemini",
+        lambda **_kwargs: calls.append("frames")
+        or SimpleNamespace(
+            environment="kitchen",
+            confidence=0.7,
+            model="gemini-frames",
+            raw_text='{"room_type":"kitchen"}',
+            detected_objects=[],
+        ),
+    )
+
+    report = infer_scene_semantics(
+        frames_dir=frames_dir,
+        raw_video_path=raw_video,
+        requested_environment="auto",
+    )
+
+    assert calls == ["video", "frames"]
+    assert report["resolved_environment"] == "kitchen"
+    assert report["gemini_inference_mode"] == "frame_fallback"
+    assert report["gemini_video_analysis_fps"] is None
