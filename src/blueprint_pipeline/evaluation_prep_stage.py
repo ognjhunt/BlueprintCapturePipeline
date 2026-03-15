@@ -455,6 +455,7 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
     adapter_dir = scene_memory_dir / "adapter_manifests"
     preview_dir = pipeline_dir / "preview_simulation"
     presentation_dir = pipeline_dir / "presentation_world"
+    geometry_dir = pipeline_dir / "geometry"
     files = {
         "bundle_path": scene_memory_dir,
         "scene_memory_manifest_path": scene_memory_dir / "scene_memory_manifest.json",
@@ -471,6 +472,12 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
         "canonical_render_policy_path": eval_dir / "canonical_render_policy.json",
         "presentation_variance_policy_path": eval_dir / "presentation_variance_policy.json",
         "site_world_spec_path": eval_dir / "site_world_spec.json",
+        "geometry_manifest_path": geometry_dir / "geometry_manifest.json",
+        "geometry_summary_path": geometry_dir / "geometry_summary.json",
+        "geometry_poses_path": geometry_dir / "camera" / "poses.jsonl",
+        "geometry_intrinsics_path": geometry_dir / "camera" / "intrinsics.json",
+        "geometry_depth_manifest_path": geometry_dir / "depth" / "depth_manifest.json",
+        "geometry_confidence_manifest_path": geometry_dir / "confidence" / "confidence_manifest.json",
     }
     entries: Dict[str, str] = {}
     available = 0
@@ -579,6 +586,12 @@ def _normalize_rich_handoff(
         "canonical_render_policy_path",
         "presentation_variance_policy_path",
         "site_world_spec_path",
+        "geometry_manifest_path",
+        "geometry_summary_path",
+        "geometry_poses_path",
+        "geometry_intrinsics_path",
+        "geometry_depth_manifest_path",
+        "geometry_confidence_manifest_path",
     ):
         text = str(scene_memory_bundle_manifest.get(key) or "").strip()
         if text:
@@ -668,6 +681,12 @@ def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]
         "arkit_poses_path": str(context.raw_root / "arkit" / "poses.jsonl"),
         "arkit_intrinsics_path": str(context.raw_root / "arkit" / "intrinsics.json"),
         "arkit_depth_path": str(context.raw_root / "arkit" / "depth"),
+        "geometry_manifest_path": str(context.pipeline_root / "geometry" / "geometry_manifest.json"),
+        "geometry_summary_path": str(context.pipeline_root / "geometry" / "geometry_summary.json"),
+        "geometry_poses_path": str(context.pipeline_root / "geometry" / "camera" / "poses.jsonl"),
+        "geometry_intrinsics_path": str(context.pipeline_root / "geometry" / "camera" / "intrinsics.json"),
+        "geometry_depth_manifest_path": str(context.pipeline_root / "geometry" / "depth" / "depth_manifest.json"),
+        "geometry_confidence_manifest_path": str(context.pipeline_root / "geometry" / "confidence" / "confidence_manifest.json"),
         "object_index_path": str(context.raw_root / "object_index.json"),
         "scene_memory_manifest_path": str(context.pipeline_root / "scene_memory" / "scene_memory_manifest.json"),
         "conditioning_bundle_path": str(context.pipeline_root / "scene_memory" / "conditioning_bundle.json"),
@@ -766,9 +785,32 @@ def _primary_runtime_render_descriptor(
         or ""
     ).strip()
     arkit = dict(conditioning_bundle.get("arkit") or {}) if isinstance(conditioning_bundle.get("arkit"), Mapping) else {}
+    geometry = dict(conditioning_bundle.get("geometry") or {}) if isinstance(conditioning_bundle.get("geometry"), Mapping) else {}
     poses_ref = str(arkit.get("poses_uri") or local_paths.get("arkit_poses_path") or "").strip()
     intrinsics_ref = str(arkit.get("intrinsics_uri") or local_paths.get("arkit_intrinsics_path") or "").strip()
+    depth_ref = str(arkit.get("depth_prefix_uri") or local_paths.get("arkit_depth_path") or "").strip()
     if raw_video_ref and poses_ref and intrinsics_ref:
+        return {
+            "world_model_backend": "neoverse",
+            "scene_representation": "neoverse_video_world_model_v1",
+            "runtime_render_source": "neoverse_full_capture",
+            "fallback_mode": "arkit_rgbd_last_resort",
+        }
+    geometry_poses_ref = str(geometry.get("poses_uri") or local_paths.get("geometry_poses_path") or "").strip()
+    geometry_intrinsics_ref = str(
+        geometry.get("intrinsics_uri") or local_paths.get("geometry_intrinsics_path") or ""
+    ).strip()
+    geometry_depth_ref = str(
+        geometry.get("depth_manifest_uri") or local_paths.get("geometry_depth_manifest_path") or ""
+    ).strip()
+    if raw_video_ref and geometry_poses_ref and geometry_intrinsics_ref and geometry_depth_ref:
+        return {
+            "world_model_backend": "neoverse",
+            "scene_representation": "geometry_conditioned_capture_v1",
+            "runtime_render_source": "geometry_conditioned_capture",
+            "fallback_mode": "geometry_lane_conditioning",
+        }
+    if raw_video_ref and poses_ref and intrinsics_ref and depth_ref:
         return {
             "world_model_backend": "neoverse",
             "scene_representation": "neoverse_video_world_model_v1",
@@ -1242,6 +1284,12 @@ def _build_site_world_spec(
             "arkit_poses_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("poses_uri"),
             "arkit_intrinsics_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("intrinsics_uri"),
             "arkit_depth_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("depth_prefix_uri"),
+            "geometry_manifest_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("manifest_uri"),
+            "geometry_summary_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("summary_uri"),
+            "geometry_poses_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("poses_uri"),
+            "geometry_intrinsics_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("intrinsics_uri"),
+            "geometry_depth_manifest_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("depth_manifest_uri"),
+            "geometry_confidence_manifest_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("confidence_manifest_uri"),
             "sensor_availability": scene_memory_capture.get("sensor_availability", {}),
             "local_paths": local_paths,
         },
@@ -1252,6 +1300,16 @@ def _build_site_world_spec(
             "object_geometry_manifest_path": str(object_geometry_path.resolve()),
             "object_index_path": local_paths.get("object_index_path"),
             "advanced_geometry_bundle_path": str((context.pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json").resolve()),
+            "geometry_manifest_path": local_paths.get("geometry_manifest_path"),
+            "geometry_summary_path": local_paths.get("geometry_summary_path"),
+            "geometry_poses_path": local_paths.get("geometry_poses_path"),
+            "geometry_intrinsics_path": local_paths.get("geometry_intrinsics_path"),
+            "geometry_depth_manifest_path": local_paths.get("geometry_depth_manifest_path"),
+            "geometry_confidence_manifest_path": local_paths.get("geometry_confidence_manifest_path"),
+            "geometry_summary": dict(
+                ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("summary")
+                or {}
+            ),
         },
         "presentation": {
             "presentation_world_manifest_uri": _gs_uri(context, "presentation_world/presentation_world_manifest.json"),
@@ -2356,6 +2414,17 @@ def _build_launchable_export_bundle(
             ],
             "backend": "neoverse",
         },
+        "geometry_conditioning": {
+            "launchable": bool(scene_memory_bundle_manifest.get("geometry_summary_path")),
+            "required_artifacts": [
+                "geometry_manifest",
+                "geometry_summary",
+                "geometry_poses",
+                "geometry_intrinsics",
+                "geometry_depth_manifest",
+            ],
+            "backend": "geometry_lane",
+        },
         "isaac_sim": {
             "launchable": simready_prep_manifest_path is not None,
             "required_artifacts": ["simready_scene_manifest", "validation_manifest"],
@@ -2373,10 +2442,16 @@ def _build_launchable_export_bundle(
             "blockers": demo_readiness["blockers"],
         },
     }
+    full_export_ready = any(
+        item["launchable"]
+        for name, item in bundles.items()
+        if name != "geometry_conditioning"
+    )
+    partial_ready = full_export_ready or bool(bundles["geometry_conditioning"]["launchable"])
     return {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
-        "status": "ready" if any(item["launchable"] for item in bundles.values()) else "partial",
+        "status": "ready" if full_export_ready else "partial" if partial_ready else "partial",
         "public_runtime_label": "NeoVerse site world runtime",
         "default_backend": "neoverse",
         "scenario_variants": [
@@ -2432,6 +2507,7 @@ def _world_model_validation_summary(
         object_index_nonempty
         and str(geometry_bundle_manifest.get("status") or "") in {"complete", "partial"}
     )
+    geometry_conditioning_ready = bool(scene_memory_bundle_manifest.get("geometry_summary_path"))
     task_ids = {
         target_id
         for task in task_anchor_manifest.get("tasks", [])
@@ -2470,6 +2546,12 @@ def _world_model_validation_summary(
         "geometry_quality_ready": {
             "passed": geometry_quality_ready,
             "detail": "Geometry package is available at partial-or-better quality.",
+        },
+        "geometry_conditioning_ready": {
+            "passed": geometry_conditioning_ready,
+            "detail": "Geometry-lane conditioning summary and camera/depth artifacts are available."
+            if geometry_conditioning_ready
+            else "Geometry-lane conditioning is missing or incomplete.",
         },
         "task_representation_ready": {
             "passed": task_representation_ready,
@@ -2899,6 +2981,9 @@ def run_evaluation_prep_stage(
         "recapture_diff_status": recapture_diff.get("status"),
         "export_bundle_status": launchable_export_bundle.get("status"),
         "site_world_status": site_world_health.get("status"),
+        "geometry_conditioning_status": "available"
+        if scene_memory_bundle_manifest.get("geometry_summary_path")
+        else "missing",
         "world_model_classification": validation_summary["world_model_classification"],
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
@@ -2972,6 +3057,9 @@ def run_evaluation_prep_stage(
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
         "capture_orientation": site_world_spec.get("capture_orientation"),
+        "geometry_conditioning_status": "available"
+        if scene_memory_bundle_manifest.get("geometry_summary_path")
+        else "missing",
         "grounding_status": protected_regions_manifest.get("grounding_status"),
         "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
         "empty_index_cause": object_geometry_manifest.get("empty_index_cause")
@@ -3025,6 +3113,16 @@ def run_evaluation_prep_stage(
             "object_geometry_manifest": _relative_to(eval_dir, object_geometry_target_path),
             "evaluation_prep_summary": _relative_to(eval_dir, summary_path),
             "review_queue": _relative_to(eval_dir, review_queue_path),
+            **(
+                {"geometry_manifest": str(scene_memory_bundle_manifest.get("geometry_manifest_path"))}
+                if scene_memory_bundle_manifest.get("geometry_manifest_path")
+                else {}
+            ),
+            **(
+                {"geometry_summary": str(scene_memory_bundle_manifest.get("geometry_summary_path"))}
+                if scene_memory_bundle_manifest.get("geometry_summary_path")
+                else {}
+            ),
             **(
                 {"presentation_bundle": _relative_to(eval_dir, pipeline_dir / "presentation_world" / "presentation_bundle.json")}
                 if (pipeline_dir / "presentation_world" / "presentation_bundle.json").is_file()

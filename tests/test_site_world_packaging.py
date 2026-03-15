@@ -8,6 +8,7 @@ import numpy as np
 from blueprint_contracts.site_world_contract import load_site_world_bundle, validate_site_world_bundle
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
 from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
+from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import build_capture_bundle_records, materialize_capture_bundle
 from blueprint_pipeline.qualification import _presentation_bundle_status, _presentation_primary_asset
 
@@ -208,6 +209,77 @@ Path(sys.argv[2]).write_text(
     path.write_text(body, encoding="utf-8")
 
 
+def _write_geometry_lane(monkeypatch, capture_root: Path) -> None:  # type: ignore[no-untyped-def]
+    def _fake_provider(**kwargs):  # type: ignore[no-untyped-def]
+        geometry_root = Path(kwargs["geometry_root"])
+        frames_dir = geometry_root / "frames" / "images"
+        depth_dir = geometry_root / "depth"
+        confidence_dir = geometry_root / "confidence"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        depth_dir.mkdir(parents=True, exist_ok=True)
+        confidence_dir.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for frame_index in range(2):
+            image_path = frames_dir / f"frame_{frame_index:06d}.npy"
+            np.save(image_path, np.full((12, 18, 3), 80, dtype=np.float32))
+            depth_path = depth_dir / f"depth_{frame_index:06d}.npy"
+            confidence_path = confidence_dir / f"confidence_{frame_index:06d}.npy"
+            np.save(depth_path, np.full((12, 18), 1.5, dtype=np.float32))
+            np.save(confidence_path, np.full((12, 18), 0.8, dtype=np.float32))
+            frames.append(
+                {
+                    "frame_index": frame_index,
+                    "timestamp_seconds": float(frame_index) * 0.4,
+                    "image_path": str(image_path),
+                    "is_keyframe": True,
+                    "blur_score": 0.1,
+                    "overlap_hint": 0.9,
+                    "world_from_camera": [
+                        [1.0, 0.0, 0.0, frame_index * 0.15],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "camera_from_world": [
+                        [1.0, 0.0, 0.0, -(frame_index * 0.15)],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, -1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "pose_confidence": 0.9,
+                    "depth_path": str(depth_path),
+                    "depth_format": "npy",
+                    "confidence_path": str(confidence_path),
+                    "confidence_format": "npy",
+                    "width": 18,
+                    "height": 12,
+                    "min_depth_m": 1.5,
+                    "max_depth_m": 1.5,
+                    "confidence_range": [0.0, 1.0],
+                }
+            )
+        return {
+            "intrinsics": {
+                "camera_model": "pinhole",
+                "image_width": 18,
+                "image_height": 12,
+                "fx": 16.0,
+                "fy": 16.0,
+                "cx": 9.0,
+                "cy": 6.0,
+                "distortion": {"model": "none", "coefficients": []},
+            },
+            "frames": frames,
+            "provider_metrics": {"backend": "test"},
+            "provider_warnings": [],
+            "provider_errors": [],
+            "loop_closure_detected": False,
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_da3_provider", _fake_provider)
+    build_geometry_stage_contract(capture_root)
+
+
 def _build_staged_capture(
     tmp_path: Path,
     *,
@@ -389,6 +461,46 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     launchable_export = json.loads((eval_root / "launchable_export_bundle.json").read_text(encoding="utf-8"))
     assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is True
     assert launchable_export["bundles"]["presentation_demo_ui"]["launchable"] is True
+
+
+def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_staged_capture(tmp_path)
+    success_backend = tmp_path / "success_backend.py"
+    sam3_backend = tmp_path / "sam3_backend.py"
+    _write_backend_script(success_backend, mode="success")
+    _write_backend_script(sam3_backend, mode="sam3-skip")
+    _write_geometry_lane(monkeypatch, capture_root)
+
+    monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
+    monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="scene_memory",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+    run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    pipeline_root = capture_root / "pipeline"
+    scene_memory_manifest = json.loads((pipeline_root / "scene_memory" / "scene_memory_manifest.json").read_text(encoding="utf-8"))
+    conditioning_bundle = json.loads((pipeline_root / "scene_memory" / "conditioning_bundle.json").read_text(encoding="utf-8"))
+    site_world_spec = json.loads((pipeline_root / "evaluation_prep" / "site_world_spec.json").read_text(encoding="utf-8"))
+    eval_manifest = json.loads((pipeline_root / "evaluation_prep" / "evaluation_prep_manifest.json").read_text(encoding="utf-8"))
+    launchable_export = json.loads((pipeline_root / "evaluation_prep" / "launchable_export_bundle.json").read_text(encoding="utf-8"))
+
+    assert scene_memory_manifest["geometry_conditioning"]["summary_uri"].endswith("/geometry/geometry_summary.json")
+    assert conditioning_bundle["geometry"]["poses_uri"].endswith("/geometry/camera/poses.jsonl")
+    assert site_world_spec["conditioning"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
+    assert site_world_spec["geometry"]["geometry_summary_path"].endswith("/pipeline/geometry/geometry_summary.json")
+    assert eval_manifest["artifacts"]["geometry_summary"].startswith("../geometry/")
+    assert launchable_export["bundles"]["geometry_conditioning"]["launchable"] is True
+    assert eval_manifest["validation_gates"]["geometry_conditioning_ready"]["passed"] is True
 
 
 def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp_path: Path) -> None:

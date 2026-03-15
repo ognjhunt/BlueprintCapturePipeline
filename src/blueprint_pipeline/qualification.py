@@ -265,7 +265,9 @@ def _presentation_render_inputs(
     scene_memory_manifest_uri: str,
     conditioning_bundle_uri: str,
     preview_simulation_manifest_uri: str,
+    geometry_conditioning: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    geometry = geometry_conditioning if isinstance(geometry_conditioning, Mapping) else {}
     payload = {
         "raw_video_uri": descriptor.raw_video_uri,
         "keyframe_uri": descriptor.keyframe_uri,
@@ -274,6 +276,12 @@ def _presentation_render_inputs(
         "arkit_frames_uri": descriptor.arkit_frames_uri,
         "arkit_depth_prefix_uri": descriptor.arkit_depth_prefix_uri,
         "arkit_confidence_prefix_uri": descriptor.arkit_confidence_prefix_uri,
+        "geometry_manifest_uri": geometry.get("geometry_manifest_uri"),
+        "geometry_summary_uri": geometry.get("geometry_summary_uri"),
+        "geometry_poses_uri": geometry.get("camera_poses_uri"),
+        "geometry_intrinsics_uri": geometry.get("camera_intrinsics_uri"),
+        "geometry_depth_manifest_uri": geometry.get("depth_manifest_uri"),
+        "geometry_confidence_manifest_uri": geometry.get("confidence_manifest_uri"),
         "scene_memory_manifest_uri": scene_memory_manifest_uri,
         "conditioning_bundle_uri": conditioning_bundle_uri,
         "preview_simulation_manifest_uri": preview_simulation_manifest_uri,
@@ -283,12 +291,15 @@ def _presentation_render_inputs(
     }
     required_inputs = [
         "raw_video_uri",
-        "arkit_poses_uri",
-        "arkit_intrinsics_uri",
-        "arkit_depth_prefix_uri",
         "scene_memory_manifest_uri",
         "conditioning_bundle_uri",
     ]
+    if descriptor.arkit_poses_uri:
+        required_inputs.extend(["arkit_poses_uri", "arkit_intrinsics_uri", "arkit_depth_prefix_uri"])
+    elif geometry.get("camera_poses_uri"):
+        required_inputs.extend(
+            ["geometry_poses_uri", "geometry_intrinsics_uri", "geometry_depth_manifest_uri"]
+        )
     available_inputs = [key for key, value in payload.items() if str(value or "").strip()]
     missing_inputs = [key for key in required_inputs if key not in available_inputs]
     payload["required_inputs"] = required_inputs
@@ -813,7 +824,11 @@ def _capture_rights(metadata: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _scene_memory_capture_summary(descriptor: CaptureDescriptor) -> Dict[str, Any]:
+def _scene_memory_capture_summary(
+    descriptor: CaptureDescriptor,
+    *,
+    geometry_summary: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
     metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
     capture_summary = (
         metadata.get("scene_memory_capture")
@@ -839,6 +854,18 @@ def _scene_memory_capture_summary(descriptor: CaptureDescriptor) -> Dict[str, An
         "world_model_candidate": bool(
             capture_summary.get("world_model_candidate", quality.get("world_model_candidate"))
         ),
+        "geometry_summary": (
+            {
+                "status": str(geometry_summary.get("status") or "missing"),
+                "ready_for_world_model": bool(geometry_summary.get("ready_for_world_model")),
+                "scale_status": str(
+                    ((geometry_summary.get("scale_assessment") or {}) if isinstance(geometry_summary.get("scale_assessment"), Mapping) else {}).get("status")
+                    or "missing"
+                ),
+            }
+            if isinstance(geometry_summary, Mapping)
+            else {}
+        ),
     }
 
 
@@ -847,12 +874,19 @@ def _build_scene_memory_readiness(
     descriptor: CaptureDescriptor,
     scorecard: Mapping[str, Any],
     qualification_record: Mapping[str, Any],
+    geometry_summary: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    capture_summary = _scene_memory_capture_summary(descriptor)
+    capture_summary = _scene_memory_capture_summary(
+        descriptor,
+        geometry_summary=geometry_summary,
+    )
     completeness_status = str(scorecard.get("completeness_status") or "unknown")
     metric_ready = bool(qualification_record.get("metric_ready"))
     readiness_state = str(qualification_record.get("readiness_state") or "not_ready_yet")
     rights = _capture_rights(descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {})
+    geometry_ready = bool(
+        isinstance(geometry_summary, Mapping) and geometry_summary.get("ready_for_world_model")
+    )
     status = (
         "ready"
         if (
@@ -901,9 +935,9 @@ def _build_scene_memory_readiness(
             },
             {
                 "name": "explicit_conditioning_available",
-                "passed": metric_ready or descriptor.arkit_poses_uri is not None,
-                "detail": "explicit conditioning is available from metric geometry or ARKit poses"
-                if (metric_ready or descriptor.arkit_poses_uri is not None)
+                "passed": metric_ready or descriptor.arkit_poses_uri is not None or geometry_ready,
+                "detail": "explicit conditioning is available from metric geometry, ARKit poses, or advisory geometry lane"
+                if (metric_ready or descriptor.arkit_poses_uri is not None or geometry_ready)
                 else "scene memory will rely on monocular-only conditioning",
             },
         ],
@@ -913,27 +947,37 @@ def _build_scene_memory_readiness(
 def _scene_memory_derived_assets(
     scene_memory_artifacts: Mapping[str, Any],
 ) -> Dict[str, Dict[str, Any]]:
-    if not scene_memory_artifacts.get("scene_memory_manifest_uri"):
-        return {}
-    scene_memory_status = str(scene_memory_artifacts.get("scene_memory_status") or "needs_more_evidence")
-    preview_status = str(scene_memory_artifacts.get("preview_simulation_status") or "review_required")
-    assets = {
-        "scene_memory": {
-            "status": scene_memory_status,
-            "manifest_uri": scene_memory_artifacts.get("scene_memory_manifest_uri"),
-            "artifact_uri": scene_memory_artifacts.get("conditioning_bundle_uri"),
-        },
-        "preview_simulation": {
-            "status": preview_status,
-            "manifest_uri": scene_memory_artifacts.get("preview_simulation_manifest_uri"),
-            "artifact_uri": scene_memory_artifacts.get("preview_simulation_manifest_uri"),
-        },
-    }
+    assets: Dict[str, Dict[str, Any]] = {}
+    if scene_memory_artifacts.get("scene_memory_manifest_uri"):
+        scene_memory_status = str(scene_memory_artifacts.get("scene_memory_status") or "needs_more_evidence")
+        preview_status = str(scene_memory_artifacts.get("preview_simulation_status") or "review_required")
+        assets.update(
+            {
+                "scene_memory": {
+                    "status": scene_memory_status,
+                    "manifest_uri": scene_memory_artifacts.get("scene_memory_manifest_uri"),
+                    "artifact_uri": scene_memory_artifacts.get("conditioning_bundle_uri"),
+                },
+                "preview_simulation": {
+                    "status": preview_status,
+                    "manifest_uri": scene_memory_artifacts.get("preview_simulation_manifest_uri"),
+                    "artifact_uri": scene_memory_artifacts.get("preview_simulation_manifest_uri"),
+                },
+            }
+        )
     if scene_memory_artifacts.get("presentation_world_manifest_uri"):
         assets["presentation_world"] = {
             "status": "available",
             "manifest_uri": scene_memory_artifacts.get("presentation_world_manifest_uri"),
             "artifact_uri": scene_memory_artifacts.get("presentation_bundle_uri"),
+        }
+    if scene_memory_artifacts.get("geometry_summary_uri"):
+        assets["geometry_conditioning"] = {
+            "status": "available"
+            if scene_memory_artifacts.get("geometry_summary_uri")
+            else "missing",
+            "manifest_uri": scene_memory_artifacts.get("geometry_manifest_uri"),
+            "artifact_uri": scene_memory_artifacts.get("geometry_summary_uri"),
         }
     return assets
 
@@ -947,8 +991,17 @@ def _write_scene_memory_bundle(
     descriptor: CaptureDescriptor,
     scorecard: Mapping[str, Any],
     qualification_record: Mapping[str, Any],
+    geometry_artifacts: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     policy = WorldModelPolicy.from_env()
+    geometry_conditioning = (
+        dict(geometry_artifacts) if isinstance(geometry_artifacts, Mapping) else {}
+    )
+    geometry_summary = (
+        geometry_conditioning.get("summary")
+        if isinstance(geometry_conditioning.get("summary"), Mapping)
+        else {}
+    )
     scene_memory_dir = pipeline_dir / "scene_memory"
     adapter_dir = scene_memory_dir / "adapter_manifests"
     preview_dir = pipeline_dir / "preview_simulation"
@@ -976,6 +1029,7 @@ def _write_scene_memory_bundle(
         descriptor=descriptor,
         scorecard=scorecard,
         qualification_record=qualification_record,
+        geometry_summary=geometry_summary,
     )
     write_json(scene_memory_dir / "scene_memory_readiness.json", readiness_payload)
 
@@ -991,6 +1045,17 @@ def _write_scene_memory_bundle(
         path = advanced_dir / rel_path
         if path.is_file():
             explicit_conditioning[name] = f"gs://{bucket}/{relative_scene_path(path, storage_root)}"
+    if geometry_conditioning.get("geometry_manifest_uri"):
+        explicit_conditioning.update(
+            {
+                "geometry_manifest_uri": geometry_conditioning.get("geometry_manifest_uri"),
+                "geometry_summary_uri": geometry_conditioning.get("geometry_summary_uri"),
+                "geometry_poses_uri": geometry_conditioning.get("camera_poses_uri"),
+                "geometry_intrinsics_uri": geometry_conditioning.get("camera_intrinsics_uri"),
+                "geometry_depth_manifest_uri": geometry_conditioning.get("depth_manifest_uri"),
+                "geometry_confidence_manifest_uri": geometry_conditioning.get("confidence_manifest_uri"),
+            }
+        )
 
     conditioning_provenance = build_provenance_record(
         grounding_level="observed",
@@ -1000,6 +1065,9 @@ def _write_scene_memory_bundle(
             descriptor.arkit_poses_uri,
             descriptor.arkit_intrinsics_uri,
             descriptor.arkit_depth_prefix_uri,
+            geometry_conditioning.get("geometry_summary_uri"),
+            geometry_conditioning.get("camera_poses_uri"),
+            geometry_conditioning.get("depth_manifest_uri"),
         ],
         observation_coverage={
             "capture_modality": descriptor.capture_modality,
@@ -1040,6 +1108,15 @@ def _write_scene_memory_bundle(
             "depth_prefix_uri": descriptor.arkit_depth_prefix_uri,
             "confidence_prefix_uri": descriptor.arkit_confidence_prefix_uri,
         },
+        "geometry": {
+            "manifest_uri": geometry_conditioning.get("geometry_manifest_uri"),
+            "summary_uri": geometry_conditioning.get("geometry_summary_uri"),
+            "poses_uri": geometry_conditioning.get("camera_poses_uri"),
+            "intrinsics_uri": geometry_conditioning.get("camera_intrinsics_uri"),
+            "depth_manifest_uri": geometry_conditioning.get("depth_manifest_uri"),
+            "confidence_manifest_uri": geometry_conditioning.get("confidence_manifest_uri"),
+            "summary": dict(geometry_summary) if isinstance(geometry_summary, Mapping) else {},
+        },
         "explicit_conditioning": explicit_conditioning,
         "qualification_artifacts": {
             "qualification_record_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
@@ -1053,6 +1130,11 @@ def _write_scene_memory_bundle(
             "generated_outputs_cannot_override_readiness": True,
         },
         "capture_orientation": capture_orientation,
+        "geometry_conditioning": {
+            "manifest_uri": geometry_conditioning.get("geometry_manifest_uri"),
+            "summary_uri": geometry_conditioning.get("geometry_summary_uri"),
+            "summary": dict(geometry_summary) if isinstance(geometry_summary, Mapping) else {},
+        },
         "primary_runtime_backend": "neoverse",
         "canonical_world_model": canonical_world_model,
         "runtime_render_source": runtime_render_source,
@@ -1098,6 +1180,15 @@ def _write_scene_memory_bundle(
         },
         "rights": readiness_payload["rights"],
         "capture_orientation": capture_orientation,
+        "geometry_conditioning": {
+            "manifest_uri": geometry_conditioning.get("geometry_manifest_uri"),
+            "summary_uri": geometry_conditioning.get("geometry_summary_uri"),
+            "poses_uri": geometry_conditioning.get("camera_poses_uri"),
+            "intrinsics_uri": geometry_conditioning.get("camera_intrinsics_uri"),
+            "depth_manifest_uri": geometry_conditioning.get("depth_manifest_uri"),
+            "confidence_manifest_uri": geometry_conditioning.get("confidence_manifest_uri"),
+            "summary": dict(geometry_summary) if isinstance(geometry_summary, Mapping) else {},
+        },
         "primary_runtime_backend": "neoverse",
         "canonical_world_model": canonical_world_model,
         "runtime_render_source": runtime_render_source,
@@ -1229,6 +1320,7 @@ def _write_scene_memory_bundle(
         scene_memory_manifest_uri=scene_memory_manifest_uri,
         conditioning_bundle_uri=conditioning_bundle_uri,
         preview_simulation_manifest_uri=preview_simulation_manifest_uri,
+        geometry_conditioning=geometry_conditioning,
     )
     primary_asset = _presentation_primary_asset(
         pipeline_dir=pipeline_dir,
@@ -1429,6 +1521,12 @@ def _write_scene_memory_bundle(
         "runtime_demo_manifest_uri": runtime_demo_manifest_uri,
         "scene_memory_status": readiness_payload["status"],
         "preview_simulation_status": preview_manifest["status"],
+        "geometry_manifest_uri": geometry_conditioning.get("geometry_manifest_uri"),
+        "geometry_summary_uri": geometry_conditioning.get("geometry_summary_uri"),
+        "geometry_poses_uri": geometry_conditioning.get("camera_poses_uri"),
+        "geometry_intrinsics_uri": geometry_conditioning.get("camera_intrinsics_uri"),
+        "geometry_depth_manifest_uri": geometry_conditioning.get("depth_manifest_uri"),
+        "geometry_confidence_manifest_uri": geometry_conditioning.get("confidence_manifest_uri"),
         **adapter_artifacts,
     }
 
@@ -2280,6 +2378,94 @@ def _empty_downstream_artifacts() -> Dict[str, Any]:
     }
 
 
+def _read_geometry_summary(pipeline_dir: Path) -> Dict[str, Any]:
+    path = pipeline_dir / "geometry" / "geometry_summary.json"
+    payload = _try_read_json(path)
+    return payload if isinstance(payload, Mapping) else {}
+
+
+def _geometry_artifacts(
+    *,
+    pipeline_dir: Path,
+    bucket: str,
+    pipeline_prefix: str,
+) -> Dict[str, Any]:
+    geometry_dir = pipeline_dir / "geometry"
+    summary = _read_geometry_summary(pipeline_dir)
+    summary_uri = (
+        f"gs://{bucket}/{pipeline_prefix}/geometry/geometry_summary.json"
+        if (geometry_dir / "geometry_summary.json").is_file()
+        else None
+    )
+    manifest_uri = (
+        f"gs://{bucket}/{pipeline_prefix}/geometry/geometry_manifest.json"
+        if (geometry_dir / "geometry_manifest.json").is_file()
+        else None
+    )
+    result = {
+        "geometry_manifest_uri": manifest_uri,
+        "geometry_summary_uri": summary_uri,
+        "camera_poses_uri": (
+            f"gs://{bucket}/{pipeline_prefix}/geometry/camera/poses.jsonl"
+            if (geometry_dir / "camera" / "poses.jsonl").is_file()
+            else None
+        ),
+        "camera_intrinsics_uri": (
+            f"gs://{bucket}/{pipeline_prefix}/geometry/camera/intrinsics.json"
+            if (geometry_dir / "camera" / "intrinsics.json").is_file()
+            else None
+        ),
+        "depth_manifest_uri": (
+            f"gs://{bucket}/{pipeline_prefix}/geometry/depth/depth_manifest.json"
+            if (geometry_dir / "depth" / "depth_manifest.json").is_file()
+            else None
+        ),
+        "confidence_manifest_uri": (
+            f"gs://{bucket}/{pipeline_prefix}/geometry/confidence/confidence_manifest.json"
+            if (geometry_dir / "confidence" / "confidence_manifest.json").is_file()
+            else None
+        ),
+        "status": str(summary.get("status") or "missing"),
+        "ready_for_world_model": bool(summary.get("ready_for_world_model")),
+        "scale_status": str(
+            ((summary.get("scale_assessment") or {}) if isinstance(summary.get("scale_assessment"), Mapping) else {}).get("status")
+            or "missing"
+        ),
+        "pose_coverage": float(
+            ((summary.get("deliverables") or {}) if isinstance(summary.get("deliverables"), Mapping) else {}).get("pose_coverage")
+            or 0.0
+        ),
+        "confidence_coverage": float(
+            ((summary.get("deliverables") or {}) if isinstance(summary.get("deliverables"), Mapping) else {}).get("confidence_coverage")
+            or 0.0
+        ),
+        "depth_coverage": float(
+            ((summary.get("deliverables") or {}) if isinstance(summary.get("deliverables"), Mapping) else {}).get("depth_coverage")
+            or 0.0
+        ),
+        "summary": dict(summary) if isinstance(summary, Mapping) else {},
+    }
+    return result
+
+
+def _geometry_advisory_payload(geometry_artifacts: Mapping[str, Any]) -> Dict[str, Any]:
+    summary = geometry_artifacts.get("summary") if isinstance(geometry_artifacts.get("summary"), Mapping) else {}
+    return {
+        "status": str(geometry_artifacts.get("status") or "missing"),
+        "ready_for_world_model": bool(geometry_artifacts.get("ready_for_world_model")),
+        "scale_status": str(geometry_artifacts.get("scale_status") or "missing"),
+        "pose_coverage": float(geometry_artifacts.get("pose_coverage") or 0.0),
+        "confidence_coverage": float(geometry_artifacts.get("confidence_coverage") or 0.0),
+        "depth_coverage": float(geometry_artifacts.get("depth_coverage") or 0.0),
+        "geometry_summary_uri": geometry_artifacts.get("geometry_summary_uri"),
+        "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),
+        "warnings": list(
+            ((summary.get("provider") or {}) if isinstance(summary.get("provider"), Mapping) else {}).get("warnings")
+            or []
+        ),
+    }
+
+
 def _requested_downstream_lanes(
     *,
     descriptor: CaptureDescriptor,
@@ -2324,6 +2510,7 @@ def _build_world_model_fit_summary(
     capture_fidelity_review: Mapping[str, Any],
     privacy_processing: Mapping[str, Any],
     metadata: Mapping[str, Any],
+    geometry_summary: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     rights = _capture_rights(metadata)
     review_status = str(capture_fidelity_review.get("status") or "failed").strip().lower()
@@ -2383,6 +2570,22 @@ def _build_world_model_fit_summary(
     if _string_list(findings.get("occlusion_observations")):
         reasons.append("Gemini review found occlusions or hidden zones that need another pass.")
 
+    geometry = geometry_summary if isinstance(geometry_summary, Mapping) else {}
+    geometry_scale = geometry.get("scale_assessment") if isinstance(geometry.get("scale_assessment"), Mapping) else {}
+    geometry_deliverables = geometry.get("deliverables") if isinstance(geometry.get("deliverables"), Mapping) else {}
+    advisory_geometry = {
+        "status": str(geometry.get("status") or "missing"),
+        "ready_for_world_model": bool(geometry.get("ready_for_world_model")),
+        "scale_status": str(geometry_scale.get("status") or "missing"),
+        "pose_coverage": float(geometry_deliverables.get("pose_coverage") or 0.0),
+        "confidence_coverage": float(geometry_deliverables.get("confidence_coverage") or 0.0),
+        "depth_coverage": float(geometry_deliverables.get("depth_coverage") or 0.0),
+    }
+    if geometry and advisory_geometry["status"] == "completed" and advisory_geometry["ready_for_world_model"]:
+        reasons.append(
+            "Advisory geometry conditioning is available for downstream world-model work."
+        )
+
     return {
         "schema_version": "v1",
         "status": fit_status,
@@ -2394,6 +2597,7 @@ def _build_world_model_fit_summary(
         "privacy_status": privacy_status,
         "privacy_mode": privacy_processing.get("mode"),
         "world_model_video_uri": descriptor.preferred_world_model_video_uri,
+        "advisory_geometry": advisory_geometry,
         "assessment_statuses": {
             key: (value.get("status") if isinstance(value, Mapping) else None)
             for key, value in assessments.items()
@@ -3779,6 +3983,11 @@ def run_qualification_pipeline(
                 recapture_instructions.get("instructions", [])
             ) if isinstance(recapture_instructions.get("instructions"), list) else []
         qualification_record["readiness_state"] = readiness_decision.get("status")
+        geometry_artifacts = _geometry_artifacts(
+            pipeline_dir=pipeline_dir,
+            bucket=bucket,
+            pipeline_prefix=pipeline_prefix,
+        )
         world_model_fit_summary = _build_world_model_fit_summary(
             descriptor=descriptor,
             scorecard=scorecard,
@@ -3786,6 +3995,7 @@ def run_qualification_pipeline(
             capture_fidelity_review=capture_fidelity_review,
             privacy_processing=privacy_processing,
             metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
+            geometry_summary=geometry_artifacts.get("summary") if isinstance(geometry_artifacts.get("summary"), Mapping) else {},
         )
         capturer_payout_recommendation = _build_capturer_payout_recommendation(
             descriptor=descriptor,
@@ -3819,6 +4029,8 @@ def run_qualification_pipeline(
             "readiness_decision_uri": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
             "task_hypothesis_report_uri": f"gs://{bucket}/{pipeline_prefix}/task_hypothesis_report.json",
             "normalized_task_hypothesis_uri": f"gs://{bucket}/{pipeline_prefix}/normalized_task_hypothesis.json",
+            "geometry_summary_uri": geometry_artifacts.get("geometry_summary_uri"),
+            "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),
         }
         opportunity_handoff["readiness_state"] = readiness_decision.get("status")
         opportunity_handoff["qualification_state"] = readiness_decision.get("status")
@@ -3889,6 +4101,7 @@ def run_qualification_pipeline(
                 descriptor=descriptor,
                 scorecard=scorecard,
                 qualification_record=qualification_record,
+                geometry_artifacts=geometry_artifacts,
             )
             if "scene_memory" in downstream_requested_lanes and privacy_world_model_ready
             else _empty_downstream_artifacts()
@@ -3944,6 +4157,8 @@ def run_qualification_pipeline(
                 "world_model_fit_summary": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
                 "capturer_payout_recommendation": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
                 "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
+                "geometry_manifest": geometry_artifacts.get("geometry_manifest_uri"),
+                "geometry_summary": geometry_artifacts.get("geometry_summary_uri"),
                 **(
                     {"qualification_weakness_summary": f"gs://{bucket}/{pipeline_prefix}/qualification_weakness_summary.json"}
                     if isinstance(weakness_summary, Mapping)
@@ -4076,6 +4291,8 @@ def run_qualification_pipeline(
             "world_model_fit_summary": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
             "capturer_payout_recommendation": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
             "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
+            "geometry_manifest": geometry_artifacts.get("geometry_manifest_uri"),
+            "geometry_summary": geometry_artifacts.get("geometry_summary_uri"),
             "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
             "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
             "presentation_bundle": scene_memory_artifacts["presentation_bundle_uri"],
@@ -4120,6 +4337,8 @@ def run_qualification_pipeline(
                 "gemini_capture_fidelity_review_uri": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
                 "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
                 "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
+                "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),
+                "geometry_summary_uri": geometry_artifacts.get("geometry_summary_uri"),
                 **(
                     {
                         "privacy_processed_video_uri": str(privacy_processing.get("privacy_processed_video_uri")),
@@ -4170,6 +4389,7 @@ def run_qualification_pipeline(
                 "world_model_fit_summary": world_model_fit_summary,
                 "capturer_payout_recommendation": capturer_payout_recommendation,
                 "provenance_summary": provenance_summary,
+                "advisory_geometry": _geometry_advisory_payload(geometry_artifacts),
             },
         )
 

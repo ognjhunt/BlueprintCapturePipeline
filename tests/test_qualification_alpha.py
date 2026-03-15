@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, resolve_requested_lanes, run_capture_pipeline
+from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
 
 
@@ -170,6 +173,77 @@ def _successful_privacy_processing() -> dict[str, object]:
     }
 
 
+def _write_geometry_lane(monkeypatch, capture_root: Path) -> None:  # type: ignore[no-untyped-def]
+    def _fake_provider(**kwargs):  # type: ignore[no-untyped-def]
+        geometry_root = Path(kwargs["geometry_root"])
+        frames_dir = geometry_root / "frames" / "images"
+        depth_dir = geometry_root / "depth"
+        confidence_dir = geometry_root / "confidence"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        depth_dir.mkdir(parents=True, exist_ok=True)
+        confidence_dir.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for frame_index in range(2):
+            image_path = frames_dir / f"frame_{frame_index:06d}.npy"
+            np.save(image_path, np.full((16, 24, 3), 60 + frame_index * 10, dtype=np.float32))
+            depth_path = depth_dir / f"depth_{frame_index:06d}.npy"
+            confidence_path = confidence_dir / f"confidence_{frame_index:06d}.npy"
+            np.save(depth_path, np.full((16, 24), 1.2 + frame_index * 0.1, dtype=np.float32))
+            np.save(confidence_path, np.full((16, 24), 0.85, dtype=np.float32))
+            frames.append(
+                {
+                    "frame_index": frame_index,
+                    "timestamp_seconds": float(frame_index),
+                    "image_path": str(image_path),
+                    "is_keyframe": True,
+                    "blur_score": 0.1,
+                    "overlap_hint": 0.9,
+                    "world_from_camera": [
+                        [1.0, 0.0, 0.0, frame_index * 0.2],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "camera_from_world": [
+                        [1.0, 0.0, 0.0, -(frame_index * 0.2)],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, -1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "pose_confidence": 0.92,
+                    "depth_path": str(depth_path),
+                    "depth_format": "npy",
+                    "confidence_path": str(confidence_path),
+                    "confidence_format": "npy",
+                    "width": 24,
+                    "height": 16,
+                    "min_depth_m": 1.2,
+                    "max_depth_m": 1.3,
+                    "confidence_range": [0.0, 1.0],
+                }
+            )
+        return {
+            "intrinsics": {
+                "camera_model": "pinhole",
+                "image_width": 24,
+                "image_height": 16,
+                "fx": 20.0,
+                "fy": 20.0,
+                "cx": 12.0,
+                "cy": 8.0,
+                "distortion": {"model": "none", "coefficients": []},
+            },
+            "frames": frames,
+            "provider_metrics": {"backend": "test"},
+            "provider_warnings": [],
+            "provider_errors": [],
+            "loop_closure_detected": False,
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_da3_provider", _fake_provider)
+    build_geometry_stage_contract(capture_root)
+
+
 def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_staged_capture(tmp_path)
     sync_calls: list[dict[str, object]] = []
@@ -302,6 +376,43 @@ def test_qualification_fail_closed_omits_buyer_safe_media(monkeypatch, tmp_path:
     assert "privacy_processed_video_uri" not in sync_calls[0]["artifacts"]
     assert "world_model_video_uri" not in sync_calls[0]["artifacts"]
     assert sync_calls[0]["deployment_readiness"]["privacy_processing"]["status"] == "failed_closed"
+
+
+def test_qualification_ingests_geometry_summary_as_advisory(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_staged_capture(tmp_path)
+    sync_calls: list[dict[str, object]] = []
+    _write_geometry_lane(monkeypatch, capture_root)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        lambda **_kwargs: _successful_capture_review(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        lambda **kwargs: sync_calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _successful_privacy_processing(),
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="qualification",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    pipeline_root = capture_root / "pipeline"
+    world_model_fit = json.loads((pipeline_root / "world_model_fit_summary.json").read_text(encoding="utf-8"))
+    completion = json.loads((pipeline_root / ".qualification_pipeline_complete").read_text(encoding="utf-8"))
+
+    assert world_model_fit["advisory_geometry"]["status"] == "completed"
+    assert world_model_fit["advisory_geometry"]["ready_for_world_model"] is True
+    assert world_model_fit["advisory_geometry"]["scale_status"] == "metric_trusted"
+    assert completion["geometry_summary"].endswith("/geometry/geometry_summary.json")
+    assert sync_calls
+    assert sync_calls[0]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
+    assert sync_calls[0]["deployment_readiness"]["advisory_geometry"]["status"] == "completed"
 
 
 def test_resolve_requested_lanes_demotes_bridge_default_scene_memory(tmp_path: Path) -> None:
