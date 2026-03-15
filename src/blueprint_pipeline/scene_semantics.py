@@ -538,6 +538,12 @@ def _gemini_capture_review_prompt(
         '    "world_model_fitness": 0.0,\n'
         '    "payout_quality": 0.0\n'
         "  },\n"
+        '  "bonus_signals": {\n'
+        '    "complete_coverage": {"score": 0.0, "reason": "..."},\n'
+        '    "multi_pass": {"score": 0.0, "reason": "..."},\n'
+        '    "lidar_depth": {"score": 0.0, "reason": "..."},\n'
+        '    "steady_walkthrough": {"score": 0.0, "reason": "..."}\n'
+        "  },\n"
         '  "missing_views": ["..."],\n'
         '  "blur_observations": ["..."],\n'
         '  "lighting_observations": ["..."],\n'
@@ -676,6 +682,12 @@ def infer_capture_fidelity_review(
                 "world_model_fitness": 0.0,
                 "payout_quality": 0.0,
             },
+            "bonus_signals": {
+                "complete_coverage": {"score": 0.0, "reason": "Gemini review unavailable."},
+                "multi_pass": {"score": 0.0, "reason": "Gemini review unavailable."},
+                "lidar_depth": {"score": 0.0, "reason": "Gemini review unavailable."},
+                "steady_walkthrough": {"score": 0.0, "reason": "Gemini review unavailable."},
+            },
             "findings": {
                 "missing_views": [],
                 "blur_observations": [],
@@ -699,6 +711,7 @@ def infer_capture_fidelity_review(
         }
 
     scores_raw = review.get("scores") if isinstance(review.get("scores"), Mapping) else {}
+    bonus_signals_raw = review.get("bonus_signals") if isinstance(review.get("bonus_signals"), Mapping) else {}
     findings = {
         "missing_views": _string_list(review.get("missing_views")),
         "blur_observations": _string_list(review.get("blur_observations")),
@@ -729,6 +742,60 @@ def infer_capture_fidelity_review(
             "task_understanding": _bounded_score(scores_raw.get("task_understanding"), default=0.6),
             "world_model_fitness": _bounded_score(scores_raw.get("world_model_fitness"), default=0.5),
             "payout_quality": _bounded_score(scores_raw.get("payout_quality"), default=0.5),
+        },
+        "bonus_signals": {
+            "complete_coverage": {
+                "score": _bounded_score(
+                    (bonus_signals_raw.get("complete_coverage") or {}).get("score")
+                    if isinstance(bonus_signals_raw.get("complete_coverage"), Mapping)
+                    else None,
+                    default=_bounded_score(scores_raw.get("coverage"), 0.0),
+                ),
+                "reason": str(
+                    (bonus_signals_raw.get("complete_coverage") or {}).get("reason")
+                    if isinstance(bonus_signals_raw.get("complete_coverage"), Mapping)
+                    else ""
+                ).strip() or "Gemini assessed task-zone coverage from the capture.",
+            },
+            "multi_pass": {
+                "score": _bounded_score(
+                    (bonus_signals_raw.get("multi_pass") or {}).get("score")
+                    if isinstance(bonus_signals_raw.get("multi_pass"), Mapping)
+                    else None,
+                    default=0.0,
+                ),
+                "reason": str(
+                    (bonus_signals_raw.get("multi_pass") or {}).get("reason")
+                    if isinstance(bonus_signals_raw.get("multi_pass"), Mapping)
+                    else ""
+                ).strip() or "Gemini estimated whether the capture revisited key areas from multiple angles.",
+            },
+            "lidar_depth": {
+                "score": _bounded_score(
+                    (bonus_signals_raw.get("lidar_depth") or {}).get("score")
+                    if isinstance(bonus_signals_raw.get("lidar_depth"), Mapping)
+                    else None,
+                    default=1.0 if str(descriptor.get("capture_modality") or "").strip() == "iphone_arkit_lidar" else 0.0,
+                ),
+                "reason": str(
+                    (bonus_signals_raw.get("lidar_depth") or {}).get("reason")
+                    if isinstance(bonus_signals_raw.get("lidar_depth"), Mapping)
+                    else ""
+                ).strip() or "Gemini assessed whether the capture supports LiDAR/depth-backed review quality.",
+            },
+            "steady_walkthrough": {
+                "score": _bounded_score(
+                    (bonus_signals_raw.get("steady_walkthrough") or {}).get("score")
+                    if isinstance(bonus_signals_raw.get("steady_walkthrough"), Mapping)
+                    else None,
+                    default=_bounded_score(scores_raw.get("motion_stability"), 0.0),
+                ),
+                "reason": str(
+                    (bonus_signals_raw.get("steady_walkthrough") or {}).get("reason")
+                    if isinstance(bonus_signals_raw.get("steady_walkthrough"), Mapping)
+                    else ""
+                ).strip() or "Gemini assessed walkthrough steadiness and pacing from the capture.",
+            },
         },
         "findings": findings,
         "recommendations": {

@@ -32,6 +32,12 @@ def _successful_capture_review() -> dict[str, object]:
             "world_model_fitness": 0.83,
             "payout_quality": 0.78,
         },
+        "bonus_signals": {
+            "complete_coverage": {"score": 0.9, "reason": "Coverage is complete."},
+            "multi_pass": {"score": 0.7, "reason": "Multiple views are present."},
+            "lidar_depth": {"score": 1.0, "reason": "Depth-backed capture quality is strong."},
+            "steady_walkthrough": {"score": 0.85, "reason": "The walkthrough is steady."},
+        },
         "findings": {
             "missing_views": [],
             "blur_observations": [],

@@ -2391,12 +2391,31 @@ def _build_capturer_payout_recommendation(
     rights = _capture_rights(metadata)
     review_status = str(capture_fidelity_review.get("status") or "failed").strip().lower()
     scores = capture_fidelity_review.get("scores") if isinstance(capture_fidelity_review.get("scores"), Mapping) else {}
+    bonus_signals = capture_fidelity_review.get("bonus_signals") if isinstance(capture_fidelity_review.get("bonus_signals"), Mapping) else {}
     payout_quality = float(scores.get("payout_quality") or 0.0)
     confidence = float(capture_fidelity_review.get("confidence") or 0.0)
     base_payout_cents = int(descriptor.quoted_payout_cents or 4500)
     reasons: List[str] = []
     recommendation_status = "review_required"
     recommended_payout_cents: Optional[int] = None
+    bonus_breakdown: List[Dict[str, Any]] = []
+
+    def _bonus_score(key: str) -> float:
+        raw = bonus_signals.get(key)
+        if isinstance(raw, Mapping):
+            try:
+                return max(0.0, min(1.0, float(raw.get("score") or 0.0)))
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+
+    def _bonus_reason(key: str, fallback: str) -> str:
+        raw = bonus_signals.get(key)
+        if isinstance(raw, Mapping):
+            text = str(raw.get("reason") or "").strip()
+            if text:
+                return text
+        return fallback
 
     if not rights["capture_contributor_payout_eligible"]:
         reasons.append("Capture is not yet marked payout-eligible in the source rights metadata.")
@@ -2406,7 +2425,30 @@ def _build_capturer_payout_recommendation(
         reasons.append("Gemini multimodal quality review is incomplete.")
 
     if not reasons:
-        multiplier = 0.8 + (payout_quality * 0.4)
+        multiplier = 1.0
+        bonus_specs = [
+            ("complete_coverage", "complete_coverage_bonus", 0.25, "Gemini reviewed zone coverage for the whole task area."),
+            ("multi_pass", "multi_pass_bonus", 0.50, "Gemini reviewed whether the capture revisited areas from multiple angles."),
+            ("lidar_depth", "lidar_depth_bonus", 1.00, "Gemini reviewed depth and spatial-conditioning quality."),
+            ("steady_walkthrough", "steady_walkthrough_bonus", 0.20, "Gemini reviewed pacing, steadiness, and rescan behavior."),
+        ]
+        for signal_key, label, max_bonus, fallback_reason in bonus_specs:
+            signal_score = _bonus_score(signal_key)
+            bonus_fraction = round(signal_score * max_bonus, 4)
+            bonus_cents = int(round(base_payout_cents * bonus_fraction / 100.0) * 100)
+            bonus_breakdown.append(
+                {
+                    "id": label,
+                    "label": label.replace("_", " "),
+                    "score": round(signal_score, 4),
+                    "max_bonus_percent": round(max_bonus * 100, 2),
+                    "awarded_bonus_percent": round(bonus_fraction * 100, 2),
+                    "awarded_bonus_cents": bonus_cents,
+                    "reason": _bonus_reason(signal_key, fallback_reason),
+                }
+            )
+            multiplier += bonus_fraction
+        multiplier *= 0.8 + (payout_quality * 0.4)
         if confidence < 0.65:
             multiplier = min(multiplier, 1.0)
             reasons.append("Low Gemini confidence caps the payout recommendation at the baseline rate.")
@@ -2425,6 +2467,7 @@ def _build_capturer_payout_recommendation(
         "recommended_payout_cents": recommended_payout_cents,
         "confidence": capture_fidelity_review.get("confidence"),
         "payout_quality_score": round(payout_quality, 4),
+        "bonus_breakdown": bonus_breakdown,
         "reasons": reasons,
         "final_authority": "webapp_ops_review",
     }

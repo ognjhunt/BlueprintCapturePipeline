@@ -119,6 +119,12 @@ def _successful_capture_review() -> dict[str, object]:
             "world_model_fitness": 0.79,
             "payout_quality": 0.76,
         },
+        "bonus_signals": {
+            "complete_coverage": {"score": 0.9, "reason": "All major task zones are visible."},
+            "multi_pass": {"score": 0.7, "reason": "The walkthrough revisits key areas from multiple angles."},
+            "lidar_depth": {"score": 1.0, "reason": "LiDAR/depth-backed capture quality is visible in the bundle."},
+            "steady_walkthrough": {"score": 0.8, "reason": "Pacing and steadiness are strong enough for review."},
+        },
         "findings": {
             "missing_views": [],
             "blur_observations": [],
@@ -173,6 +179,9 @@ def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_p
     assert sync_calls
     assert "scene_memory_manifest_uri" not in sync_calls[0]["artifacts"]
     assert sync_calls[0]["derived_assets"] == {}
+    payout = json.loads((pipeline_root / "capturer_payout_recommendation.json").read_text(encoding="utf-8"))
+    assert len(payout["bonus_breakdown"]) == 4
+    assert payout["recommended_payout_cents"] >= payout["base_payout_cents"]
 
 
 def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_path: Path) -> None:

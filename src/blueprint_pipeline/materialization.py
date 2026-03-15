@@ -61,6 +61,19 @@ def _dict_float(value: Any) -> Dict[str, float]:
     return out
 
 
+def _capture_rights_block(manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    raw = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
+    return {
+        "derived_scene_generation_allowed": bool(raw.get("derived_scene_generation_allowed", False)),
+        "data_licensing_allowed": bool(raw.get("data_licensing_allowed", False)),
+        "capture_contributor_payout_eligible": bool(raw.get("capture_contributor_payout_eligible", False)),
+        "consent_status": str(raw.get("consent_status") or "unknown"),
+        "permission_document_uri": str(raw.get("permission_document_uri") or "").strip() or None,
+        "consent_scope": _string_list(raw.get("consent_scope")),
+        "consent_notes": _string_list(raw.get("consent_notes")),
+    }
+
+
 def _first_int(*values: Any) -> Optional[int]:
     for value in values:
         if value is None or value == "":
@@ -681,11 +694,7 @@ def build_capture_bundle_records(
         "uncertainty_priors": uncertainty_priors,
         "scaffolding_validation": scaffolding_validation,
         "task_hypothesis": task_hypothesis if task_hypothesis else None,
-        "capture_rights": {
-            "derived_scene_generation_allowed": True,
-            "data_licensing_allowed": False,
-            "capture_contributor_payout_eligible": False,
-        },
+        "capture_rights": _capture_rights_block(manifest),
         "capture_orientation": capture_orientation,
         "scene_memory_capture": {
             "continuity_score": 0.9 if raw_video_uri else 0.0,
