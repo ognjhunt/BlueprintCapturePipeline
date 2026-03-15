@@ -60,12 +60,7 @@ def test_capture_fidelity_review_prefers_raw_video(monkeypatch, tmp_path: Path) 
             "video_file_uri": "uri://123",
         }
 
-    def fake_frames(**_kwargs):
-        calls.append("frames")
-        return None
-
     monkeypatch.setattr("blueprint_pipeline.scene_semantics._infer_capture_review_with_gemini_video", fake_video)
-    monkeypatch.setattr("blueprint_pipeline.scene_semantics._infer_capture_review_with_gemini", fake_frames)
 
     review = infer_capture_fidelity_review(
         capture_root=capture_root,
@@ -82,12 +77,9 @@ def test_capture_fidelity_review_prefers_raw_video(monkeypatch, tmp_path: Path) 
     assert review["assessments"]["blur"]["status"] == "good"
 
 
-def test_capture_fidelity_review_falls_back_to_frames(monkeypatch, tmp_path: Path) -> None:
+def test_capture_fidelity_review_fails_without_video_success(monkeypatch, tmp_path: Path) -> None:
     capture_root = tmp_path / "capture"
-    frames_dir = capture_root / "frames"
-    frames_dir.mkdir(parents=True)
-    frame = frames_dir / "000001.jpg"
-    frame.write_bytes(b"frame")
+    capture_root.mkdir(parents=True)
     raw_video = capture_root / "walkthrough.mov"
     raw_video.write_bytes(b"video")
 
@@ -96,48 +88,6 @@ def test_capture_fidelity_review_falls_back_to_frames(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(
         "blueprint_pipeline.scene_semantics._infer_capture_review_with_gemini_video",
         lambda **_kwargs: calls.append("video") or None,
-    )
-    monkeypatch.setattr(
-        "blueprint_pipeline.scene_semantics._infer_capture_review_with_gemini",
-        lambda **_kwargs: calls.append("frames") or {
-            "status": "succeeded",
-            "model": "gemini-frames",
-            "raw_text": "{}",
-            "confidence": 0.8,
-            "summary": "frame fallback ok",
-            "scores": {
-                "coverage": 0.8,
-                "visual_clarity": 0.8,
-                "lighting_stability": 0.8,
-                "motion_stability": 0.8,
-                "task_understanding": 0.8,
-                "world_model_fitness": 0.8,
-                "payout_quality": 0.8,
-            },
-            "bonus_signals": {
-                "complete_coverage": {"score": 0.8, "reason": "frames"},
-                "multi_pass": {"score": 0.6, "reason": "frames"},
-                "lidar_depth": {"score": 1.0, "reason": "frames"},
-                "steady_walkthrough": {"score": 0.7, "reason": "frames"},
-            },
-            "blur_assessment": {"status": "review_required", "score": 0.5, "summary": "some blur", "impact": "medium"},
-            "lighting_assessment": {"status": "good", "score": 0.8, "summary": "lighting ok", "impact": "low"},
-            "motion_speed_assessment": {"status": "review_required", "score": 0.5, "summary": "pace uncertain", "impact": "medium"},
-            "doubling_back_assessment": {"status": "good", "score": 0.8, "summary": "revisits okay", "impact": "low"},
-            "coverage_completeness_assessment": {"status": "good", "score": 0.8, "summary": "coverage okay", "impact": "low"},
-            "task_zone_completeness_assessment": {"status": "good", "score": 0.8, "summary": "task zone okay", "impact": "low"},
-            "occlusion_and_hidden_zone_assessment": {"status": "good", "score": 0.8, "summary": "occlusion okay", "impact": "low"},
-            "depth_and_spatial_conditioning_assessment": {"status": "good", "score": 1.0, "summary": "depth okay", "impact": "low"},
-            "missing_views": [],
-            "blur_observations": [],
-            "lighting_observations": [],
-            "occlusion_observations": [],
-            "task_scope_notes": [],
-            "blocker_summaries": [],
-            "recapture_recommendations": [],
-            "world_model_recommendation": "good_candidate",
-            "payout_recommendation": "baseline",
-        },
     )
 
     review = infer_capture_fidelity_review(
@@ -149,9 +99,10 @@ def test_capture_fidelity_review_falls_back_to_frames(monkeypatch, tmp_path: Pat
         task_hypothesis_report=None,
     )
 
-    assert calls == ["video", "frames"]
-    assert review["review_mode"] == "frame_fallback"
-    assert review["assessments"]["motion_speed"]["status"] == "review_required"
+    assert calls == ["video"]
+    assert review["status"] == "failed"
+    assert review["review_mode"] == "video_file_upload"
+    assert review["findings"]["blocker_summaries"] == ["Gemini raw-video review is unavailable or failed"]
 
 
 def test_raw_video_review_polls_uploaded_file_until_active(monkeypatch, tmp_path: Path) -> None:
@@ -231,12 +182,7 @@ def test_scene_semantics_prefers_raw_video_at_five_fps(monkeypatch, tmp_path: Pa
             detected_objects=[{"sam_prompt": "blue tote"}],
         )
 
-    def fake_frames(**_kwargs):
-        calls.append("frames")
-        return None
-
     monkeypatch.setattr("blueprint_pipeline.scene_semantics._infer_with_gemini_video", fake_video)
-    monkeypatch.setattr("blueprint_pipeline.scene_semantics._infer_with_gemini", fake_frames)
 
     report = infer_scene_semantics(
         frames_dir=frames_dir,
@@ -251,12 +197,10 @@ def test_scene_semantics_prefers_raw_video_at_five_fps(monkeypatch, tmp_path: Pa
     assert report["detection_prompts"] == ["blue tote"]
 
 
-def test_scene_semantics_falls_back_to_frames_when_video_fails(monkeypatch, tmp_path: Path) -> None:
+def test_scene_semantics_uses_local_fallback_when_video_fails(monkeypatch, tmp_path: Path) -> None:
     capture_root = tmp_path / "capture"
     frames_dir = capture_root / "frames"
     frames_dir.mkdir(parents=True)
-    frame = frames_dir / "000001.jpg"
-    frame.write_bytes(b"frame")
     raw_video = capture_root / "walkthrough.mov"
     raw_video.write_bytes(b"video")
 
@@ -266,17 +210,6 @@ def test_scene_semantics_falls_back_to_frames_when_video_fails(monkeypatch, tmp_
         "blueprint_pipeline.scene_semantics._infer_with_gemini_video",
         lambda **_kwargs: calls.append("video") or None,
     )
-    monkeypatch.setattr(
-        "blueprint_pipeline.scene_semantics._infer_with_gemini",
-        lambda **_kwargs: calls.append("frames")
-        or SimpleNamespace(
-            environment="kitchen",
-            confidence=0.7,
-            model="gemini-frames",
-            raw_text='{"room_type":"kitchen"}',
-            detected_objects=[],
-        ),
-    )
 
     report = infer_scene_semantics(
         frames_dir=frames_dir,
@@ -284,7 +217,7 @@ def test_scene_semantics_falls_back_to_frames_when_video_fails(monkeypatch, tmp_
         requested_environment="auto",
     )
 
-    assert calls == ["video", "frames"]
-    assert report["resolved_environment"] == "kitchen"
-    assert report["gemini_inference_mode"] == "frame_fallback"
-    assert report["gemini_video_analysis_fps"] is None
+    assert calls == ["video"]
+    assert report["resolved_environment"] == "default"
+    assert report["environment_source"] == "local_auto_fallback"
+    assert report["fallback_reason"] == "gemini_video_unavailable_or_failed"

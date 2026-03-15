@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -182,19 +181,6 @@ def _normalize_environment(value: str) -> str:
     return text if text in _SUPPORTED_ENVIRONMENTS else "default"
 
 
-def _sample_frame_paths(frames_dir: Path, n_samples: int) -> List[Path]:
-    frames = sorted(frames_dir.glob("*.jpg")) + sorted(frames_dir.glob("*.png"))
-    if not frames:
-        return []
-    if len(frames) <= n_samples:
-        return frames
-    indices = [
-        int(round(i * (len(frames) - 1) / float(max(1, n_samples - 1))))
-        for i in range(n_samples)
-    ]
-    return [frames[idx] for idx in indices]
-
-
 def _extract_json_object(text: str) -> Dict[str, Any]:
     try:
         payload = json.loads(text)
@@ -253,23 +239,6 @@ _DEFAULT_MODEL_CASCADE = [
 ]
 _DEFAULT_GEMINI_VIDEO_ANALYSIS_FPS = 5.0
 _MAX_GEMINI_VIDEO_ANALYSIS_FPS = 24.0
-
-
-def _build_image_parts(frames: List[Path], max_frames: int = 8) -> List[Dict[str, Any]]:
-    """Encode frame images as inline_data parts for Gemini."""
-    parts: List[Dict[str, Any]] = []
-    for frame in frames[:max_frames]:
-        suffix = frame.suffix.lower()
-        mime = "image/png" if suffix == ".png" else "image/jpeg"
-        parts.append(
-            {
-                "inline_data": {
-                    "mime_type": mime,
-                    "data": base64.b64encode(frame.read_bytes()).decode("ascii"),
-                }
-            }
-        )
-    return parts
 
 
 def _gemini_video_analysis_fps() -> float:
@@ -353,92 +322,6 @@ def _extract_json_array(text: str) -> List[Any]:
         except Exception:
             pass
     return []
-
-
-def _infer_with_gemini(*, frames: List[Path], timeout_sec: int) -> Optional[_GeminiResult]:
-    api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
-    if not api_key:
-        return None
-
-    try:
-        from google import genai  # type: ignore
-    except ImportError:
-        log_missing_optional_dependency(
-            logger,
-            feature="Gemini scene semantics inference",
-            package="google-genai",
-            extra="llm",
-        )
-        return None
-    except Exception:
-        return None
-
-    override = (os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
-    models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
-
-    image_parts = _build_image_parts(frames, max_frames=8)
-
-    client = genai.Client(api_key=api_key)
-
-    # Single combined call: room classification + object enumeration
-    combined_prompt = (
-        "Analyze these video frames of an indoor scene. Do TWO things:\n\n"
-        "1. CLASSIFY the environment type as one of: industrial_unknown, manufacturing, fulfillment, warehouse, bedroom, kitchen, default.\n"
-        "2. LIST ALL distinct physical objects visible that could be manipulated in a "
-        "robotics simulator (pick up, open, move, interact with). Include furniture with "
-        "movable parts (drawers, doors), containers, items on surfaces, things on the floor, "
-        "hanging items, etc.\n\n"
-        "Return a single JSON object with these keys:\n"
-        "- room_type: string (one of: industrial_unknown, manufacturing, fulfillment, warehouse, bedroom, kitchen, default)\n"
-        "- confidence: number 0-1\n"
-        "- rationale: short string explaining classification\n"
-        "- objects: array of objects, each with:\n"
-        "  - object_id: short snake_case identifier (e.g. 'blue_suitcase')\n"
-        "  - category: object category (e.g. 'Furniture', 'Container', 'Clothing')\n"
-        "  - sam_prompt: a 1-4 word phrase a segmentation model can use to find this object "
-        "(e.g. 'blue suitcase', 'wooden dresser')\n\n"
-        "Be thorough — list every distinct manipulatable object you see."
-    )
-    combined_parts: List[Dict[str, Any]] = [{"text": combined_prompt}] + image_parts
-
-    for model in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=[{"parts": combined_parts}],
-                config={
-                    "temperature": 0.3,
-                    "max_output_tokens": 8192,
-                    "response_mime_type": "application/json",
-                },
-            )
-        except Exception:
-            continue
-
-        raw_text = _extract_response_text(response)
-        if not raw_text:
-            continue
-
-        payload = _extract_json_object(raw_text)
-        room_type = _normalize_environment(str(payload.get("room_type") or payload.get("environment") or "default"))
-        confidence_raw = payload.get("confidence", 0.0)
-        try:
-            confidence = float(confidence_raw)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
-
-        detected_objects: List[Dict[str, Any]] = []
-        raw_objects = payload.get("objects", [])
-        if isinstance(raw_objects, list):
-            detected_objects = [obj for obj in raw_objects if isinstance(obj, dict)]
-
-        return _GeminiResult(
-            environment=room_type, confidence=confidence, model=model,
-            raw_text=raw_text, detected_objects=detected_objects,
-        )
-
-    return None
 
 
 def _infer_with_gemini_video(*, raw_video_path: Path, timeout_sec: int) -> Optional[_GeminiResult]:
@@ -547,7 +430,6 @@ def infer_scene_semantics(
     requested = str(requested_environment or "").strip().lower()
     normalized_requested = _normalize_environment(requested)
     has_explicit_hint = requested not in {"", "auto", "default"} and normalized_requested in _SUPPORTED_ENVIRONMENTS
-    keyframes = _sample_frame_paths(frames_dir, 8)
 
     # Honor explicit hints to avoid external inference/egress when the
     # operator selected an environment directly.
@@ -561,7 +443,7 @@ def infer_scene_semantics(
             "environment_confidence": 1.0,
             "prompt_source": "explicit_hint",
             "detection_prompts": list(_PROMPTS_BY_ENV[normalized_requested]),
-            "keyframes_used": [str(path) for path in keyframes],
+            "keyframes_used": [],
             "fallback_reason": "",
         }
 
@@ -572,9 +454,6 @@ def infer_scene_semantics(
             raw_video_path=raw_video_path,
             timeout_sec=max(5, int(timeout_sec)),
         )
-    if gemini_result is None:
-        inference_mode = "frame_fallback"
-        gemini_result = _infer_with_gemini(frames=keyframes, timeout_sec=max(5, int(timeout_sec)))
 
     if gemini_result is not None:
         resolved = _normalize_environment(gemini_result.environment)
@@ -613,8 +492,8 @@ def infer_scene_semantics(
             "gemini_raw_response": gemini_result.raw_text,
             "gemini_detected_objects": gemini_result.detected_objects,
             "gemini_inference_mode": inference_mode,
-            "gemini_video_analysis_fps": _gemini_video_analysis_fps() if inference_mode == "video_file_upload" else None,
-            "keyframes_used": [str(path) for path in keyframes],
+            "gemini_video_analysis_fps": _gemini_video_analysis_fps(),
+            "keyframes_used": [],
             "fallback_reason": "",
             "explicit_hint": normalized_requested if has_explicit_hint else None,
         }
@@ -630,9 +509,13 @@ def infer_scene_semantics(
             "environment_confidence": 0.7,
             "prompt_source": "explicit_hint_fallback",
             "detection_prompts": list(_PROMPTS_BY_ENV[normalized_requested]),
-            "keyframes_used": [str(path) for path in keyframes],
+            "keyframes_used": [],
             "fallback_reason": "gemini_unavailable_used_explicit_hint",
         }
+
+    failure_reason = "gemini_video_unavailable_or_failed"
+    if raw_video_path is None or not raw_video_path.is_file():
+        failure_reason = "raw_walkthrough_video_missing"
 
     return {
         "schema_version": "v1",
@@ -643,8 +526,8 @@ def infer_scene_semantics(
         "environment_confidence": 0.35,
         "prompt_source": "auto_fallback",
         "detection_prompts": list(_PROMPTS_BY_ENV["default"]),
-        "keyframes_used": [str(path) for path in keyframes],
-        "fallback_reason": "gemini_unavailable_or_failed",
+        "keyframes_used": [],
+        "fallback_reason": failure_reason,
     }
 
 
@@ -755,72 +638,6 @@ def _gemini_capture_review_prompt(
     )
 
 
-def _infer_capture_review_with_gemini(
-    *,
-    frames: List[Path],
-    descriptor: Mapping[str, Any],
-    qa_report: Mapping[str, Any],
-    task_hypothesis_report: Optional[Mapping[str, Any]],
-    capture_context: Optional[Mapping[str, Any]],
-    timeout_sec: int,
-) -> Optional[Dict[str, Any]]:
-    api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
-    if not api_key or not frames:
-        return None
-
-    try:
-        from google import genai  # type: ignore
-    except ImportError:
-        log_missing_optional_dependency(
-            logger,
-            feature="Gemini capture fidelity review",
-            package="google-genai",
-            extra="llm",
-        )
-        return None
-    except Exception:
-        return None
-
-    override = (os.getenv("CAPTURE_FIDELITY_GEMINI_MODEL") or os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
-    models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
-    image_parts = _build_image_parts(frames, max_frames=8)
-    prompt = _gemini_capture_review_prompt(
-        descriptor=descriptor,
-        qa_report=qa_report,
-        task_hypothesis_report=task_hypothesis_report,
-        capture_context=capture_context,
-    )
-    parts: List[Dict[str, Any]] = [{"text": prompt}] + image_parts
-    client = genai.Client(api_key=api_key)
-
-    for model in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=[{"parts": parts}],
-                config={
-                    "temperature": 0.2,
-                    "max_output_tokens": 8192,
-                    "response_mime_type": "application/json",
-                },
-            )
-        except Exception:
-            continue
-
-        raw_text = _extract_response_text(response)
-        if not raw_text:
-            continue
-
-        payload = _extract_json_object(raw_text)
-        if not payload:
-            continue
-        payload["model"] = model
-        payload["raw_text"] = raw_text
-        return payload
-
-    return None
-
-
 def _infer_capture_review_with_gemini_video(
     *,
     raw_video_path: Path,
@@ -903,14 +720,6 @@ def infer_capture_fidelity_review(
     capture_context: Optional[Mapping[str, Any]] = None,
     timeout_sec: int = 45,
 ) -> Dict[str, Any]:
-    keyframes: List[Path] = []
-    frames_dir = capture_root / "frames"
-    if keyframe_path is not None and keyframe_path.is_file():
-        keyframes.append(keyframe_path)
-    keyframes.extend(
-        path for path in _sample_frame_paths(frames_dir, 8) if path not in keyframes
-    )
-
     qa_quality = qa_report.get("quality") if isinstance(qa_report.get("quality"), Mapping) else {}
     review_mode = "video_file_upload"
     review = None
@@ -923,25 +732,13 @@ def infer_capture_fidelity_review(
             capture_context=capture_context,
             timeout_sec=max(5, int(timeout_sec)),
         )
-    if review is None:
-        review_mode = "frame_fallback"
-        review = _infer_capture_review_with_gemini(
-            frames=keyframes,
-            descriptor=descriptor,
-            qa_report=qa_report,
-            task_hypothesis_report=task_hypothesis_report,
-            capture_context=capture_context,
-            timeout_sec=max(5, int(timeout_sec)),
-        )
 
     if review is None:
         reasons = []
         if raw_video_path is None or not raw_video_path.is_file():
             reasons.append("raw walkthrough video is missing")
-        if not keyframes:
-            reasons.append("no reviewable keyframes are available for Gemini")
         if not reasons:
-            reasons.append("Gemini review is unavailable or failed")
+            reasons.append("Gemini raw-video review is unavailable or failed")
         return {
             "schema_version": "v1",
             "review_type": "gemini_multimodal_capture_review",
@@ -954,7 +751,7 @@ def infer_capture_fidelity_review(
             "summary": "Gemini multimodal review did not complete.",
             "raw_video_present": bool(raw_video_path and raw_video_path.is_file()),
             "raw_video_path": str(raw_video_path) if raw_video_path else None,
-            "keyframes_used": [str(path) for path in keyframes],
+            "keyframes_used": [],
             "scores": {
                 "coverage": 0.0,
                 "visual_clarity": 0.0,
@@ -998,9 +795,9 @@ def infer_capture_fidelity_review(
                 "provider_model": None,
                 "raw_response": None,
                 "input_mode": review_mode,
-                "keyframes_used": [str(path) for path in keyframes],
+                "keyframes_used": [],
                 "raw_video_path": str(raw_video_path) if raw_video_path else None,
-                "video_analysis_fps": _gemini_video_analysis_fps() if review_mode == "video_file_upload" else None,
+                "video_analysis_fps": _gemini_video_analysis_fps(),
             },
         }
 
@@ -1085,7 +882,7 @@ def infer_capture_fidelity_review(
         "summary": str(review.get("summary") or "Gemini reviewed the capture evidence.").strip(),
         "raw_video_present": bool(raw_video_path and raw_video_path.is_file()),
         "raw_video_path": str(raw_video_path) if raw_video_path else None,
-        "keyframes_used": [str(path) for path in keyframes],
+        "keyframes_used": [],
         "scores": {
             "coverage": _bounded_score(scores_raw.get("coverage"), default=_bounded_score(qa_quality.get("pose_match_rate"), 0.0)),
             "visual_clarity": _bounded_score(scores_raw.get("visual_clarity"), default=0.7),
@@ -1160,7 +957,7 @@ def infer_capture_fidelity_review(
             "provider_model": str(review.get("model") or "").strip() or None,
             "raw_response": review.get("raw_text"),
             "input_mode": review_mode,
-            "keyframes_used": [str(path) for path in keyframes],
+            "keyframes_used": [],
             "raw_video_path": str(raw_video_path) if raw_video_path else None,
             "video_analysis_fps": review.get("video_analysis_fps"),
             "video_file_name": review.get("video_file_name"),
