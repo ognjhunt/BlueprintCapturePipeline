@@ -47,6 +47,8 @@ def build_webapp_pipeline_attachment_payload(
     *,
     site_submission_id: object,
     request_id: object = None,
+    buyer_request_id: object = None,
+    capture_job_id: object = None,
     scene_id: object,
     capture_id: object,
     pipeline_prefix: object,
@@ -54,12 +56,15 @@ def build_webapp_pipeline_attachment_payload(
     opportunity_state: object,
     artifacts: Mapping[str, Any],
     derived_assets: Optional[Mapping[str, Any]] = None,
+    deployment_readiness: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
 ) -> Dict[str, Any]:
     payload = {
         "schema_version": "v1",
         "site_submission_id": str(site_submission_id or "").strip(),
         "request_id": str(request_id or "").strip(),
+        "buyer_request_id": str(buyer_request_id or "").strip(),
+        "capture_job_id": str(capture_job_id or "").strip(),
         "scene_id": str(scene_id or "").strip(),
         "capture_id": str(capture_id or "").strip(),
         "pipeline_prefix": str(pipeline_prefix or "").strip(),
@@ -72,6 +77,11 @@ def build_webapp_pipeline_attachment_payload(
             if isinstance(derived_assets, Mapping)
             else {}
         ),
+        "deployment_readiness": (
+            {str(key): value for key, value in deployment_readiness.items()}
+            if isinstance(deployment_readiness, Mapping)
+            else None
+        ),
     }
     if not payload["site_submission_id"] and not payload["request_id"]:
         raise ValueError("site_submission_id or request_id is required")
@@ -82,6 +92,8 @@ def sync_webapp_pipeline_attachment(
     *,
     site_submission_id: object,
     request_id: object = None,
+    buyer_request_id: object = None,
+    capture_job_id: object = None,
     scene_id: object,
     capture_id: object,
     pipeline_prefix: object,
@@ -89,6 +101,7 @@ def sync_webapp_pipeline_attachment(
     opportunity_state: object,
     artifacts: Mapping[str, Any],
     derived_assets: Optional[Mapping[str, Any]] = None,
+    deployment_readiness: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
 ) -> Optional[Dict[str, Any]]:
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
@@ -99,6 +112,8 @@ def sync_webapp_pipeline_attachment(
     payload = build_webapp_pipeline_attachment_payload(
         site_submission_id=site_submission_id,
         request_id=request_id,
+        buyer_request_id=buyer_request_id,
+        capture_job_id=capture_job_id,
         scene_id=scene_id,
         capture_id=capture_id,
         pipeline_prefix=pipeline_prefix,
@@ -106,6 +121,7 @@ def sync_webapp_pipeline_attachment(
         opportunity_state=opportunity_state,
         artifacts=artifacts,
         derived_assets=derived_assets,
+        deployment_readiness=deployment_readiness,
         authoritative_state_update=authoritative_state_update,
     )
     request = urllib_request.Request(

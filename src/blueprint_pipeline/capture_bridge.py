@@ -407,6 +407,15 @@ class CaptureDescriptor:
     uncertainty_priors: Dict[str, float] = field(default_factory=dict)
     capture_orientation: Dict[str, Any] = field(default_factory=dict)
     requested_lanes: List[str] = field(default_factory=lambda: ["qualification"])
+    site_submission_id: Optional[str] = None
+    buyer_request_id: Optional[str] = None
+    capture_job_id: Optional[str] = None
+    region_id: Optional[str] = None
+    special_task_type: Optional[str] = None
+    priority_weight: Optional[float] = None
+    quoted_payout_cents: Optional[int] = None
+    rights_profile: Optional[str] = None
+    requested_outputs: List[str] = field(default_factory=list)
     swap_focus: List[str] = field(default_factory=list)
     manipulation_candidates: List[Dict[str, Any]] = field(default_factory=list)
     articulation_hints: List[Dict[str, Any]] = field(default_factory=list)
@@ -532,6 +541,25 @@ class CaptureDescriptor:
                 or metadata.get("capture_orientation")
             ),
             requested_lanes=_normalize_requested_lanes(data.get("requested_lanes")),
+            site_submission_id=_optional_str(data.get("site_submission_id") or capture_bundle.get("site_submission_id")),
+            buyer_request_id=_optional_str(data.get("buyer_request_id") or capture_bundle.get("buyer_request_id")),
+            capture_job_id=_optional_str(data.get("capture_job_id") or capture_bundle.get("capture_job_id")),
+            region_id=_optional_str(data.get("region_id") or capture_bundle.get("region_id")),
+            special_task_type=_optional_str(data.get("special_task_type") or capture_bundle.get("special_task_type")),
+            priority_weight=(
+                float(data.get("priority_weight") or capture_bundle.get("priority_weight"))
+                if (data.get("priority_weight") or capture_bundle.get("priority_weight")) is not None
+                else None
+            ),
+            quoted_payout_cents=(
+                int(data.get("quoted_payout_cents") or capture_bundle.get("quoted_payout_cents"))
+                if (data.get("quoted_payout_cents") or capture_bundle.get("quoted_payout_cents")) is not None
+                else None
+            ),
+            rights_profile=_optional_str(data.get("rights_profile") or capture_bundle.get("rights_profile")),
+            requested_outputs=_normalize_string_list(
+                data.get("requested_outputs") or capture_bundle.get("requested_outputs")
+            ),
             swap_focus=swap_focus,
             manipulation_candidates=_dict_list(data.get("manipulation_candidates")),
             articulation_hints=_dict_list(data.get("articulation_hints")),
@@ -559,6 +587,15 @@ class CaptureDescriptor:
             "nurec_mode": self.nurec_mode,
             "quality": dict(self.quality),
             "requested_lanes": list(self.requested_lanes),
+            "site_submission_id": self.site_submission_id,
+            "buyer_request_id": self.buyer_request_id,
+            "capture_job_id": self.capture_job_id,
+            "region_id": self.region_id,
+            "special_task_type": self.special_task_type,
+            "priority_weight": self.priority_weight,
+            "quoted_payout_cents": self.quoted_payout_cents,
+            "rights_profile": self.rights_profile,
+            "requested_outputs": list(self.requested_outputs),
             "swap_focus": list(self.swap_focus),
             "manipulation_candidates": list(self.manipulation_candidates),
             "articulation_hints": list(self.articulation_hints),
@@ -616,6 +653,15 @@ def build_capture_bundle_constraints(
         "keyframe_uri": descriptor.keyframe_uri,
         "nurec_mode": descriptor.nurec_mode,
         "requested_lanes": list(descriptor.requested_lanes),
+        "site_submission_id": descriptor.site_submission_id,
+        "buyer_request_id": descriptor.buyer_request_id,
+        "capture_job_id": descriptor.capture_job_id,
+        "region_id": descriptor.region_id,
+        "special_task_type": descriptor.special_task_type,
+        "priority_weight": descriptor.priority_weight,
+        "quoted_payout_cents": descriptor.quoted_payout_cents,
+        "rights_profile": descriptor.rights_profile,
+        "requested_outputs": list(descriptor.requested_outputs),
         "swap_focus": list(descriptor.swap_focus),
         "quality": dict(descriptor.quality),
         "environment_type_hint": descriptor.environment_type_hint,

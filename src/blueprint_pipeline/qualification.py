@@ -27,7 +27,9 @@ from .common import (
 )
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
+from .launch_bundle import build_buyer_trust_score, build_launch_qualification_bundle
 from .object_index_stage import ensure_object_index_stage
+from .provider_preview import run_preview_provider
 from .runtime_layer_grounding import build_presentation_variance_policy, with_grounding_fields
 from .task_targets import infer_task_targets, write_task_targets
 from .webapp_sync import (
@@ -3474,6 +3476,61 @@ def run_qualification_pipeline(
             qualification_state=qualification_state,
         )
 
+        preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "stub_preview").strip()
+        requested_outputs = set(descriptor.requested_outputs or [])
+        preview_requested = "preview_simulation" in requested_outputs or "preview" in requested_outputs
+        provider_run = (
+            run_preview_provider(
+                provider_name=preview_provider_name,
+                descriptor=descriptor.to_dict(),
+                capture_root=capture_root,
+                pipeline_dir=pipeline_dir,
+            )
+            if preview_requested
+            else {
+                "schema_version": "v1",
+                "provider_name": None,
+                "provider_model": None,
+                "provider_run_id": "",
+                "status": "not_requested",
+                "preview_manifest_uri": str(pipeline_dir / "preview_manifest.json"),
+                "artifact_uris": {},
+                "cost_usd": None,
+                "latency_ms": None,
+                "failure_reason": None,
+                "provenance": {"canonical": False, "derived": True},
+            }
+        )
+        if not preview_requested:
+            write_json(pipeline_dir / "provider_run_manifest.json", provider_run)
+            write_json(
+                pipeline_dir / "preview_manifest.json",
+                {
+                    "schema_version": "v1",
+                    "status": "not_requested",
+                    "generated_at": utc_now_iso(),
+                },
+            )
+        buyer_trust_score = build_buyer_trust_score(
+            descriptor=descriptor.to_dict(),
+            qualification_record=qualification_record,
+            scorecard=scorecard,
+            metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
+            provider_status=str(provider_run.get("status") or "not_requested"),
+        )
+        launch_bundle = build_launch_qualification_bundle(
+            descriptor=descriptor.to_dict(),
+            qualification_record=qualification_record,
+            scorecard=scorecard,
+            readiness_decision=readiness_decision,
+            site_intake=site_intake,
+            buyer_trust_score=buyer_trust_score,
+            provider_run=provider_run,
+        )
+        write_json(pipeline_dir / "qualification_summary.json", launch_bundle["qualification_summary"])
+        write_json(pipeline_dir / "capture_quality_summary.json", launch_bundle["capture_quality_summary"])
+        write_json(pipeline_dir / "rights_and_compliance_summary.json", launch_bundle["rights_and_compliance_summary"])
+
         completion_payload = {
             "schema_version": "v1",
             "lane": "qualification",
@@ -3493,12 +3550,16 @@ def run_qualification_pipeline(
             "presentation_bundle": scene_memory_artifacts["presentation_bundle_uri"],
             "presentation_world_manifest": scene_memory_artifacts["presentation_world_manifest_uri"],
             "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
+            "provider_run_manifest": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
+            "preview_manifest": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
         }
         write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
         sync_webapp_pipeline_attachment(
             site_submission_id=opportunity_handoff.get("site_submission_id"),
             request_id=opportunity_handoff.get("site_submission_id"),
+            buyer_request_id=descriptor.buyer_request_id or opportunity_handoff.get("site_submission_id"),
+            capture_job_id=descriptor.capture_job_id or descriptor.capture_id,
             scene_id=descriptor.scene_id,
             capture_id=descriptor.capture_id,
             pipeline_prefix=pipeline_prefix,
@@ -3509,6 +3570,11 @@ def run_qualification_pipeline(
                 "readiness_decision_uri": quality_report["artifacts"]["readiness_decision"],
                 "readiness_report_uri": quality_report["artifacts"]["readiness_report"],
                 "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
+                "qualification_summary_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_summary.json",
+                "capture_quality_summary_uri": f"gs://{bucket}/{pipeline_prefix}/capture_quality_summary.json",
+                "rights_and_compliance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/rights_and_compliance_summary.json",
+                "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
+                "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
                 "opportunity_handoff_uri": quality_report["artifacts"]["opportunity_handoff"],
                 "human_actions_required_uri": quality_report["artifacts"]["human_actions_required"],
                 "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
@@ -3525,6 +3591,17 @@ def run_qualification_pipeline(
                 "cosmos_transfer_adapter_manifest_uri": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
             },
             derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
+            deployment_readiness={
+                "qualification_state": qualification_state,
+                "opportunity_state": opportunity_state,
+                "buyer_trust_score": buyer_trust_score,
+                "qualification_summary": launch_bundle["qualification_summary"],
+                "capture_quality_summary": launch_bundle["capture_quality_summary"],
+                "rights_and_compliance": launch_bundle["rights_and_compliance_summary"],
+                "missing_evidence": launch_bundle["recapture_requirements"]["missing_evidence"],
+                "preview_status": launch_bundle["preview_status"],
+                "provider_run": provider_run,
+            },
         )
 
         return {
