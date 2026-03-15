@@ -114,6 +114,13 @@ def check_optional_sam3() -> CheckResult:
     return False, f"sam3 installed but weights missing at {weights_path}"
 
 
+def check_privacy_command(name: str) -> CheckResult:
+    value = str(os.getenv(name) or "").strip()
+    if value:
+        return True, f"{name} configured"
+    return False, f"{name} not configured"
+
+
 def check_neoverse_runtime() -> CheckResult:
     service_url = str(os.getenv("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip()
     if service_url:
@@ -168,6 +175,9 @@ def run_checks() -> Dict[str, CheckResult]:
     print_header("Optional Runtime")
     checks["sam3"] = check_optional_sam3()
     print_status(checks["sam3"][1], "ok" if checks["sam3"][0] else "info")
+    for name in ("PRIVACY_SAM3_COMMAND", "VIP_COMMAND", "DEEPPRIVACY2_COMMAND"):
+        checks[name.lower()] = check_privacy_command(name)
+        print_status(checks[name.lower()][1], "ok" if checks[name.lower()][0] else "info")
 
     checks["neoverse_runtime"] = check_neoverse_runtime()
     print_status(checks["neoverse_runtime"][1], "ok" if checks["neoverse_runtime"][0] else "warn")

@@ -651,6 +651,7 @@ def _real_path_from_eval_dir(eval_dir: Path, relative_path: str) -> Optional[Pat
 
 def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]) -> Dict[str, str]:
     raw_video_path = context.raw_root / "walkthrough.mov"
+    world_model_video_path = context.capture_root / "privacy" / "final_walkthrough.mov"
     keyframe_candidates = [
         context.capture_root / "frames" / "keyframe.jpg",
         context.capture_root / "frames" / "keyframe.jpeg",
@@ -662,6 +663,7 @@ def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]
     keyframe_path = next((path for path in keyframe_candidates if path.is_file()), None)
     local_paths: Dict[str, str] = {
         "raw_video_path": str(raw_video_path) if raw_video_path.is_file() else "",
+        "world_model_video_path": str(world_model_video_path) if world_model_video_path.is_file() else "",
         "keyframe_path": str(keyframe_path) if keyframe_path is not None else "",
         "arkit_poses_path": str(context.raw_root / "arkit" / "poses.jsonl"),
         "arkit_intrinsics_path": str(context.raw_root / "arkit" / "intrinsics.json"),
@@ -780,7 +782,14 @@ def _primary_runtime_render_descriptor(
             "fallback_mode": str(canonical_world_model.get("fallback_mode") or "arkit_rgbd_last_resort"),
         }
 
-    raw_video_ref = str(conditioning_bundle.get("raw_video_uri") or local_paths.get("raw_video_path") or "").strip()
+    raw_video_ref = str(
+        conditioning_bundle.get("world_model_video_uri")
+        or conditioning_bundle.get("privacy_processed_video_uri")
+        or conditioning_bundle.get("raw_video_uri")
+        or local_paths.get("world_model_video_path")
+        or local_paths.get("raw_video_path")
+        or ""
+    ).strip()
     arkit = dict(conditioning_bundle.get("arkit") or {}) if isinstance(conditioning_bundle.get("arkit"), Mapping) else {}
     poses_ref = str(arkit.get("poses_uri") or local_paths.get("arkit_poses_path") or "").strip()
     intrinsics_ref = str(arkit.get("intrinsics_uri") or local_paths.get("arkit_intrinsics_path") or "").strip()

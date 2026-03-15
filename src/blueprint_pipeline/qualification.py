@@ -29,6 +29,7 @@ from .industrial_ontology import classify_industrial_entity, derive_capture_plan
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
 from .launch_bundle import build_buyer_trust_score, build_launch_qualification_bundle
 from .object_index_stage import ensure_object_index_stage
+from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
 from .runtime_layer_grounding import build_presentation_variance_policy, with_grounding_fields
 from .scene_semantics import infer_capture_fidelity_review
@@ -2331,6 +2332,7 @@ def _build_world_model_fit_summary(
     scorecard: Mapping[str, Any],
     qualification_record: Mapping[str, Any],
     capture_fidelity_review: Mapping[str, Any],
+    privacy_processing: Mapping[str, Any],
     metadata: Mapping[str, Any],
 ) -> Dict[str, Any]:
     rights = _capture_rights(metadata)
@@ -2338,6 +2340,7 @@ def _build_world_model_fit_summary(
     review_scores = capture_fidelity_review.get("scores") if isinstance(capture_fidelity_review.get("scores"), Mapping) else {}
     assessments = capture_fidelity_review.get("assessments") if isinstance(capture_fidelity_review.get("assessments"), Mapping) else {}
     findings = capture_fidelity_review.get("findings") if isinstance(capture_fidelity_review.get("findings"), Mapping) else {}
+    privacy_status = str(privacy_processing.get("status") or "not_run").strip().lower()
     reasons: List[str] = []
     fit_status = "review_required"
 
@@ -2353,10 +2356,20 @@ def _build_world_model_fit_summary(
     if descriptor.evidence_tier == "pre_screen_video":
         reasons.append("Capture remains pre-screen video only and is not yet world-model ready.")
         fit_status = "review_required"
+    if privacy_status == "failed_closed":
+        reasons.append("Privacy post-processing failed closed, so buyer-safe world-model media cannot be published.")
+        fit_status = "review_required"
+    elif privacy_status == "not_run":
+        reasons.append("Privacy post-processing has not completed for world-model media.")
+        fit_status = "review_required"
 
     coverage_score = float(review_scores.get("coverage") or 0.0)
     world_model_fitness = float(review_scores.get("world_model_fitness") or 0.0)
-    if review_status == "succeeded" and rights["derived_scene_generation_allowed"]:
+    if (
+        review_status == "succeeded"
+        and rights["derived_scene_generation_allowed"]
+        and privacy_status in {"no_people_detected", "person_removed", "face_anonymized_fallback"}
+    ):
         if coverage_score >= 0.7 and world_model_fitness >= 0.72 and descriptor.evidence_tier != "pre_screen_video":
             fit_status = "good_candidate"
         elif fit_status != "not_permitted":
@@ -2388,6 +2401,9 @@ def _build_world_model_fit_summary(
         "coverage_score": round(coverage_score, 4),
         "readiness_state": qualification_record.get("readiness_state"),
         "derived_scene_generation_allowed": rights["derived_scene_generation_allowed"],
+        "privacy_status": privacy_status,
+        "privacy_mode": privacy_processing.get("mode"),
+        "world_model_video_uri": descriptor.preferred_world_model_video_uri,
         "assessment_statuses": {
             key: (value.get("status") if isinstance(value, Mapping) else None)
             for key, value in assessments.items()
@@ -3619,13 +3635,24 @@ def run_qualification_pipeline(
             object_index_runtime_blockers=object_index_runtime_blockers,
         )
         stage = "gemini_capture_review"
+        raw_video_path = _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root)
         capture_fidelity_review = infer_capture_fidelity_review(
             capture_root=descriptor_path.parent,
-            raw_video_path=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root),
+            raw_video_path=raw_video_path,
             keyframe_path=_resolve_optional_uri_to_path(descriptor.keyframe_uri, storage_root),
             descriptor=descriptor.to_dict(),
             qa_report=qa_report,
             task_hypothesis_report=task_hypothesis_report,
+            capture_context={
+                "capture_rights": _capture_rights(effective_metadata if isinstance(effective_metadata, Mapping) else {}),
+                "capture_orientation": descriptor.capture_orientation,
+                "requested_outputs": list(descriptor.requested_outputs),
+                "quoted_payout_cents": descriptor.quoted_payout_cents,
+                "site_submission_id": descriptor.site_submission_id,
+                "buyer_request_id": descriptor.buyer_request_id,
+                "capture_job_id": descriptor.capture_job_id,
+                "metadata": dict(effective_metadata) if isinstance(effective_metadata, Mapping) else {},
+            },
             timeout_sec=int(getattr(config, "gemini_timeout_seconds", 45) or 45),
         )
         write_json(pipeline_dir / "gemini_capture_fidelity_review.json", capture_fidelity_review)
@@ -3641,6 +3668,45 @@ def run_qualification_pipeline(
             capture_fidelity_review=capture_fidelity_review,
             metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
         )
+        stage = "privacy_postprocess"
+        privacy_processing = run_privacy_postprocess(
+            bucket=bucket,
+            scene_id=descriptor.scene_id,
+            capture_id=descriptor.capture_id,
+            capture_root=capture_root,
+            pipeline_dir=pipeline_dir,
+            raw_video_path=raw_video_path,
+        )
+        gates.append(
+            QualificationGate(
+                "privacy_postprocess_gate",
+                str(privacy_processing.get("status") or "").strip().lower()
+                in {"not_run", "no_people_detected", "person_removed", "face_anonymized_fallback"},
+                f"privacy_status={privacy_processing.get('status')}",
+            )
+        )
+        descriptor_payload = descriptor.to_dict()
+        descriptor_payload["privacy_processed_video_uri"] = privacy_processing.get("privacy_processed_video_uri")
+        descriptor_payload["world_model_video_uri"] = privacy_processing.get("world_model_video_uri")
+        descriptor_payload["privacy_status"] = privacy_processing.get("status")
+        descriptor_payload["privacy_mode"] = privacy_processing.get("mode")
+        descriptor_payload["privacy_manifest_uri"] = privacy_processing.get("privacy_manifest_uri")
+        metadata_payload = dict(descriptor_payload.get("metadata") or {})
+        metadata_payload["privacy_processing"] = {
+            "status": privacy_processing.get("status"),
+            "mode": privacy_processing.get("mode"),
+            "fallback_used": bool(privacy_processing.get("fallback_used")),
+            "raw_retained": bool(privacy_processing.get("raw_retained")),
+            "fail_closed": bool(privacy_processing.get("fail_closed")),
+            "people_detected": int(privacy_processing.get("people_detected") or 0),
+            "people_removed": int(privacy_processing.get("people_removed") or 0),
+            "face_anonymized_segments": _string_list(privacy_processing.get("face_anonymized_segments")),
+            "privacy_manifest_uri": privacy_processing.get("privacy_manifest_uri"),
+            "privacy_verification_report_uri": privacy_processing.get("privacy_verification_report_uri"),
+        }
+        descriptor_payload["metadata"] = metadata_payload
+        write_json(descriptor_path, descriptor_payload)
+        descriptor = CaptureDescriptor.from_dict(descriptor_payload)
         qualification_brief = _build_qualification_brief(
             descriptor=descriptor,
             scorecard=scorecard,
@@ -3728,6 +3794,7 @@ def run_qualification_pipeline(
             scorecard=scorecard,
             qualification_record=qualification_record,
             capture_fidelity_review=capture_fidelity_review,
+            privacy_processing=privacy_processing,
             metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
         )
         capturer_payout_recommendation = _build_capturer_payout_recommendation(
@@ -3818,6 +3885,11 @@ def run_qualification_pipeline(
             qualification_record=qualification_record,
         )
         write_json(pipeline_dir / "pipeline_summary.json", pipeline_summary)
+        privacy_world_model_ready = str(privacy_processing.get("status") or "").strip().lower() in {
+            "no_people_detected",
+            "person_removed",
+            "face_anonymized_fallback",
+        }
         scene_memory_artifacts = (
             _write_scene_memory_bundle(
                 storage_root=storage_root,
@@ -3828,7 +3900,7 @@ def run_qualification_pipeline(
                 scorecard=scorecard,
                 qualification_record=qualification_record,
             )
-            if "scene_memory" in downstream_requested_lanes
+            if "scene_memory" in downstream_requested_lanes and privacy_world_model_ready
             else _empty_downstream_artifacts()
         )
         opportunity_handoff = attach_handoff_package_paths(
@@ -3843,7 +3915,14 @@ def run_qualification_pipeline(
             "lane": "qualification",
             "scene_id": descriptor.scene_id,
             "capture_id": descriptor.capture_id,
-            "status": "passed" if str(capture_fidelity_review.get("status") or "").strip().lower() == "succeeded" else "blocked",
+            "status": (
+                "passed"
+                if (
+                    str(capture_fidelity_review.get("status") or "").strip().lower() == "succeeded"
+                    and str(privacy_processing.get("status") or "").strip().lower() != "failed_closed"
+                )
+                else "blocked"
+            ),
             "generated_at": utc_now_iso(),
             "readiness_state": readiness_decision.get("status"),
             "completeness_status": scorecard.get("completeness_status"),
@@ -3870,6 +3949,8 @@ def run_qualification_pipeline(
                 "readiness_decision": f"gs://{bucket}/{pipeline_prefix}/readiness_decision.json",
                 "human_actions_required": f"gs://{bucket}/{pipeline_prefix}/human_actions_required.json",
                 "gemini_capture_fidelity_review": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
+                "privacy_processing_manifest": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
+                "privacy_verification_report": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
                 "world_model_fit_summary": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
                 "capturer_payout_recommendation": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
                 "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
@@ -3896,6 +3977,11 @@ def run_qualification_pipeline(
                 "gen3c_adapter_manifest": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
                 "neoverse_adapter_manifest": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
                 "cosmos_transfer_adapter_manifest": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
+                **(
+                    {"privacy_processed_video": str(privacy_processing.get("privacy_processed_video_uri"))}
+                    if privacy_processing.get("privacy_processed_video_uri")
+                    else {}
+                ),
             }),
         }
         write_json(pipeline_dir / "qualification_quality_report.json", quality_report)
@@ -3919,29 +4005,34 @@ def run_qualification_pipeline(
                 capture_root=capture_root,
                 pipeline_dir=pipeline_dir,
             )
-            if preview_requested
+            if preview_requested and privacy_world_model_ready
             else {
                 "schema_version": "v1",
                 "provider_name": None,
                 "provider_model": None,
                 "provider_run_id": "",
-                "status": "not_requested",
+                "status": "failed" if preview_requested and not privacy_world_model_ready else "not_requested",
                 "preview_manifest_uri": str(pipeline_dir / "preview_manifest.json"),
                 "artifact_uris": {},
                 "cost_usd": None,
                 "latency_ms": None,
-                "failure_reason": None,
+                "failure_reason": (
+                    f"privacy_status:{privacy_processing.get('status')}"
+                    if preview_requested and not privacy_world_model_ready
+                    else None
+                ),
                 "provenance": {"canonical": False, "derived": True},
             }
         )
-        if not preview_requested:
+        if not preview_requested or not privacy_world_model_ready:
             write_json(pipeline_dir / "provider_run_manifest.json", provider_run)
             write_json(
                 pipeline_dir / "preview_manifest.json",
                 {
                     "schema_version": "v1",
-                    "status": "not_requested",
+                    "status": provider_run["status"],
                     "generated_at": utc_now_iso(),
+                    "failure_reason": provider_run.get("failure_reason"),
                 },
             )
         buyer_trust_score = build_buyer_trust_score(
@@ -3960,6 +4051,7 @@ def run_qualification_pipeline(
             site_intake=site_intake,
             buyer_trust_score=buyer_trust_score,
             provider_run=provider_run,
+            privacy_processing=privacy_processing,
             fidelity_review=capture_fidelity_review,
             world_model_fit_summary=world_model_fit_summary,
             capturer_payout_recommendation=capturer_payout_recommendation,
@@ -3983,11 +4075,14 @@ def run_qualification_pipeline(
             "qualification_state": qualification_state,
             "opportunity_state": opportunity_state,
             "alpha_scoring_status": capture_fidelity_review.get("status"),
+            "privacy_status": privacy_processing.get("status"),
             "quality_report": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
             "pipeline_summary": f"gs://{bucket}/{pipeline_prefix}/pipeline_summary.json",
             "qualification_record": f"gs://{bucket}/{pipeline_prefix}/qualification_record.json",
             "opportunity_handoff": f"gs://{bucket}/{pipeline_prefix}/opportunity_handoff.json",
             "gemini_capture_fidelity_review": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
+            "privacy_processing_manifest": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
+            "privacy_verification_report": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
             "world_model_fit_summary": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
             "capturer_payout_recommendation": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
             "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
@@ -3998,6 +4093,11 @@ def run_qualification_pipeline(
             "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
             "provider_run_manifest": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
             "preview_manifest": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
+            **(
+                {"privacy_processed_video": str(privacy_processing.get("privacy_processed_video_uri"))}
+                if privacy_processing.get("privacy_processed_video_uri")
+                else {}
+            ),
         })
         write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
@@ -4024,10 +4124,20 @@ def run_qualification_pipeline(
                 "capturer_payout_recommendation_uri": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
                 "recapture_requirements_uri": f"gs://{bucket}/{pipeline_prefix}/recapture_requirements.json",
                 "provider_preview_status_uri": f"gs://{bucket}/{pipeline_prefix}/provider_preview_status.json",
+                "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
+                "privacy_verification_report_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
                 "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
                 "gemini_capture_fidelity_review_uri": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
                 "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
                 "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
+                **(
+                    {
+                        "privacy_processed_video_uri": str(privacy_processing.get("privacy_processed_video_uri")),
+                        "world_model_video_uri": str(privacy_processing.get("world_model_video_uri")),
+                    }
+                    if privacy_world_model_ready and privacy_processing.get("privacy_processed_video_uri")
+                    else {}
+                ),
                 "opportunity_handoff_uri": quality_report["artifacts"].get("opportunity_handoff"),
                 "human_actions_required_uri": quality_report["artifacts"].get("human_actions_required"),
                 "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
@@ -4052,6 +4162,16 @@ def run_qualification_pipeline(
                 "qualification_summary": launch_bundle["qualification_summary"],
                 "capture_quality_summary": launch_bundle["capture_quality_summary"],
                 "rights_and_compliance": launch_bundle["rights_and_compliance_summary"],
+                "privacy_processing": {
+                    "status": privacy_processing.get("status"),
+                    "mode": privacy_processing.get("mode"),
+                    "fallback_used": bool(privacy_processing.get("fallback_used")),
+                    "people_detected": int(privacy_processing.get("people_detected") or 0),
+                    "people_removed": int(privacy_processing.get("people_removed") or 0),
+                    "face_anonymized_segments": _string_list(privacy_processing.get("face_anonymized_segments")),
+                    "raw_retained": bool(privacy_processing.get("raw_retained")),
+                    "fail_closed": bool(privacy_processing.get("fail_closed")),
+                },
                 "missing_evidence": launch_bundle["recapture_requirements"]["missing_evidence"],
                 "recapture_required": launch_bundle["recapture_requirements"]["required"],
                 "recapture_recommendations": launch_bundle["recapture_requirements"].get("recommendations"),

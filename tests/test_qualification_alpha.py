@@ -152,6 +152,24 @@ def _successful_capture_review() -> dict[str, object]:
     }
 
 
+def _successful_privacy_processing() -> dict[str, object]:
+    return {
+        "schema_version": "v1",
+        "status": "person_removed",
+        "mode": "removal",
+        "fallback_used": False,
+        "people_detected": 2,
+        "people_removed": 2,
+        "face_anonymized_segments": [],
+        "raw_retained": True,
+        "fail_closed": True,
+        "privacy_processed_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/privacy/final_walkthrough.mov",
+        "world_model_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/privacy/final_walkthrough.mov",
+        "privacy_manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_processing_manifest.json",
+        "privacy_verification_report_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_verification_report.json",
+    }
+
+
 def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_staged_capture(tmp_path)
     sync_calls: list[dict[str, object]] = []
@@ -163,6 +181,10 @@ def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_p
     monkeypatch.setattr(
         "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
         lambda **kwargs: sync_calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _successful_privacy_processing(),
     )
 
     result = run_capture_pipeline(
@@ -187,6 +209,8 @@ def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_p
     assert (pipeline_root / "buyer_trust_score.json").is_file()
     assert (pipeline_root / "provider_preview_status.json").is_file()
     assert sync_calls
+    assert sync_calls[0]["artifacts"]["privacy_processed_video_uri"].endswith("/privacy/final_walkthrough.mov")
+    assert sync_calls[0]["artifacts"]["world_model_video_uri"].endswith("/privacy/final_walkthrough.mov")
     assert "scene_memory_manifest_uri" not in sync_calls[0]["artifacts"]
     assert sync_calls[0]["derived_assets"] == {}
     payout = json.loads((pipeline_root / "capturer_payout_recommendation.json").read_text(encoding="utf-8"))
@@ -213,6 +237,10 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
         "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
         lambda **_kwargs: None,
     )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _successful_privacy_processing(),
+    )
 
     result = run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
@@ -231,6 +259,49 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
     assert preview_status["status"] == "failed"
     assert completion["provider_run_manifest"].endswith("/provider_run_manifest.json")
     assert "scene_memory_manifest" not in completion
+
+
+def test_qualification_fail_closed_omits_buyer_safe_media(monkeypatch, tmp_path: Path) -> None:
+    _capture_root, descriptor_uri = _build_staged_capture(tmp_path, requested_outputs=["preview_simulation"])
+    sync_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        lambda **_kwargs: _successful_capture_review(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        lambda **kwargs: sync_calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: {
+            "schema_version": "v1",
+            "status": "failed_closed",
+            "mode": "removal",
+            "fallback_used": False,
+            "people_detected": 1,
+            "people_removed": 0,
+            "face_anonymized_segments": [],
+            "raw_retained": True,
+            "fail_closed": True,
+            "privacy_processed_video_uri": None,
+            "world_model_video_uri": None,
+            "privacy_manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_processing_manifest.json",
+            "privacy_verification_report_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_verification_report.json",
+        },
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="qualification",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    assert sync_calls
+    assert "privacy_processed_video_uri" not in sync_calls[0]["artifacts"]
+    assert "world_model_video_uri" not in sync_calls[0]["artifacts"]
+    assert sync_calls[0]["deployment_readiness"]["privacy_processing"]["status"] == "failed_closed"
 
 
 def test_resolve_requested_lanes_demotes_bridge_default_scene_memory(tmp_path: Path) -> None:

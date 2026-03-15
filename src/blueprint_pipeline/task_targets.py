@@ -813,6 +813,8 @@ def _resolve_video_uri_and_path(
 ) -> Tuple[str, Optional[Path]]:
     candidate_uris: List[str] = []
     for uri in (
+        descriptor.world_model_video_uri,
+        descriptor.privacy_processed_video_uri,
         descriptor.raw_video_uri,
         manifest.video_uri,
         join_gs_uri(descriptor.raw_prefix_uri, "video.mp4"),

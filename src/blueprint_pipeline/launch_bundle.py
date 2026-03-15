@@ -80,6 +80,7 @@ def build_launch_qualification_bundle(
     site_intake: Mapping[str, Any],
     buyer_trust_score: Mapping[str, Any],
     provider_run: Mapping[str, Any],
+    privacy_processing: Mapping[str, Any] | None = None,
     fidelity_review: Mapping[str, Any] | None = None,
     world_model_fit_summary: Mapping[str, Any] | None = None,
     capturer_payout_recommendation: Mapping[str, Any] | None = None,
@@ -101,6 +102,7 @@ def build_launch_qualification_bundle(
     review_assessments = normalized_review.get("assessments") if isinstance(normalized_review.get("assessments"), Mapping) else {}
     recapture_recommendations = _string_list(review_findings.get("recapture_recommendations"))
     preview_status = provider_run.get("status") or "not_requested"
+    normalized_privacy = dict(privacy_processing) if isinstance(privacy_processing, Mapping) else {}
 
     return {
         "qualification_summary": {
@@ -141,6 +143,7 @@ def build_launch_qualification_bundle(
             "task_zone_completeness_assessment": review_assessments.get("task_zone_completeness"),
             "occlusion_and_hidden_zone_assessment": review_assessments.get("occlusion_and_hidden_zone"),
             "depth_and_spatial_conditioning_assessment": review_assessments.get("depth_and_spatial_conditioning"),
+            "privacy_processing": normalized_privacy,
         },
         "recapture_requirements": {
             "required": bool(missing_evidence or recapture_recommendations or normalized_review.get("status") != "succeeded"),
@@ -155,6 +158,7 @@ def build_launch_qualification_bundle(
             "provider_run_id": provider_run.get("provider_run_id"),
             "failure_reason": provider_run.get("failure_reason"),
         },
+        "privacy_processing": normalized_privacy,
         "world_model_fit_summary": dict(world_model_fit_summary or {}),
         "capturer_payout_recommendation": dict(capturer_payout_recommendation or {}),
         "provenance_summary": dict(provenance_summary or {}),

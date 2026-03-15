@@ -92,7 +92,11 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         payload = {
             "scene_id": descriptor.get("scene_id"),
             "capture_id": descriptor.get("capture_id"),
-            "video_uri": descriptor.get("raw_video_uri"),
+            "video_uri": (
+                descriptor.get("world_model_video_uri")
+                or descriptor.get("privacy_processed_video_uri")
+                or descriptor.get("raw_video_uri")
+            ),
             "arkit_poses_uri": descriptor.get("arkit_poses_uri"),
         }
         request = urllib_request.Request(

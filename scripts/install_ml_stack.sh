@@ -12,6 +12,7 @@ WITH_SAM3=false
 WITH_DA3=false
 WITH_FIXER=false
 WITH_LOCAL_QWEN=false
+WITH_DEEPPRIVACY2=false
 SKIP_PREWARM=false
 
 HF_CACHE_DIR="${HF_HOME:-/opt/hf}"
@@ -24,6 +25,8 @@ DA3_MODEL_NAME="${DA3_MODEL_NAME:-da3metric-large}"
 FIXER_DIR="${FIXER_DIR:-/opt/Fixer}"
 FIXER_WEIGHTS_DIR="${FIXER_WEIGHTS_DIR:-/opt/fixer_weights}"
 QWEN_EDIT_DIR="${QWEN_IMAGE_EDIT_MODEL_PATH:-/opt/qwen-image-edit}"
+DEEPPRIVACY2_DIR="${DEEPPRIVACY2_DIR:-/opt/deepprivacy2}"
+DEEPPRIVACY2_MODEL_PATH="${DEEPPRIVACY2_MODEL_PATH:-/opt/deepprivacy2/weights}"
 NVIDIA_PYPI_INDEX="${NVIDIA_PYPI_INDEX:-https://pypi.nvidia.com}"
 TORCH_VERSION="${TORCH_VERSION:-2.6.0}"
 TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.21.0}"
@@ -60,6 +63,7 @@ Optional installs:
   --with-da3          Install optional Depth Anything 3 runtime + weights
   --with-fixer        Install optional Fixer runtime + weights
   --with-local-qwen   Install optional local Qwen image-edit weights
+  --with-deepprivacy2 Install optional DeepPrivacy2 runtime from source
   --skip-prewarm      Skip model cache prewarm checks
   -h, --help          Show this help
 EOF
@@ -81,6 +85,10 @@ while [ $# -gt 0 ]; do
       ;;
     --with-local-qwen)
       WITH_LOCAL_QWEN=true
+      shift
+      ;;
+    --with-deepprivacy2)
+      WITH_DEEPPRIVACY2=true
       shift
       ;;
     --skip-prewarm)
@@ -219,6 +227,16 @@ install_local_qwen() {
   fi
 }
 
+install_deepprivacy2() {
+  log "Installing optional DeepPrivacy2 runtime..."
+  clone_or_update_repo "https://github.com/hukkelas/deep_privacy2.git" "${DEEPPRIVACY2_DIR}" "main"
+  python3 -m pip install --no-cache-dir -e "${DEEPPRIVACY2_DIR}"
+  mkdir -p "${DEEPPRIVACY2_MODEL_PATH}"
+  if [ -z "${DEEPPRIVACY2_COMMAND:-}" ]; then
+    log "WARNING: DEEPPRIVACY2_COMMAND is not configured. Privacy fallback will fail closed until it is set."
+  fi
+}
+
 prewarm_optional_models() {
   if [ "${WITH_SAM3}" = true ] && [ -f "${SAM3_WEIGHTS_PATH}" ]; then
     log "Validating SAM3 optional runtime..."
@@ -268,6 +286,8 @@ export DA3_MODEL_NAME=${DA3_MODEL_NAME}
 export FIXER_DIR=${FIXER_DIR}
 export FIXER_WEIGHTS_DIR=${FIXER_WEIGHTS_DIR}
 export QWEN_IMAGE_EDIT_MODEL_PATH=${QWEN_EDIT_DIR}
+export DEEPPRIVACY2_DIR=${DEEPPRIVACY2_DIR}
+export DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH}
 export CROP_CLEANUP_PROVIDER=skip
 EOF
 }
@@ -311,6 +331,9 @@ if [ "${WITH_FIXER}" = true ]; then
 fi
 if [ "${WITH_LOCAL_QWEN}" = true ]; then
   install_local_qwen
+fi
+if [ "${WITH_DEEPPRIVACY2}" = true ]; then
+  install_deepprivacy2
 fi
 
 if [ "${SKIP_PREWARM}" = false ]; then

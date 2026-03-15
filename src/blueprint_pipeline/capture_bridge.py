@@ -385,6 +385,11 @@ class CaptureDescriptor:
     nurec_mode: str
     quality: Dict[str, Any] = field(default_factory=dict)
     raw_video_uri: Optional[str] = None
+    privacy_processed_video_uri: Optional[str] = None
+    world_model_video_uri: Optional[str] = None
+    privacy_status: Optional[str] = None
+    privacy_mode: Optional[str] = None
+    privacy_manifest_uri: Optional[str] = None
     keyframe_uri: Optional[str] = None
     arkit_poses_uri: Optional[str] = None
     arkit_intrinsics_uri: Optional[str] = None
@@ -487,6 +492,11 @@ class CaptureDescriptor:
             ),
             quality=dict(quality),
             raw_video_uri=_optional_str(data.get("raw_video_uri")),
+            privacy_processed_video_uri=_optional_str(data.get("privacy_processed_video_uri")),
+            world_model_video_uri=_optional_str(data.get("world_model_video_uri")),
+            privacy_status=_optional_str(data.get("privacy_status")),
+            privacy_mode=_optional_str(data.get("privacy_mode")),
+            privacy_manifest_uri=_optional_str(data.get("privacy_manifest_uri")),
             keyframe_uri=_optional_str(data.get("keyframe_uri")),
             arkit_poses_uri=(
                 _optional_str(data.get("arkit_poses_uri"))
@@ -603,6 +613,11 @@ class CaptureDescriptor:
         }
         optional = {
             "raw_video_uri": self.raw_video_uri,
+            "privacy_processed_video_uri": self.privacy_processed_video_uri,
+            "world_model_video_uri": self.world_model_video_uri,
+            "privacy_status": self.privacy_status,
+            "privacy_mode": self.privacy_mode,
+            "privacy_manifest_uri": self.privacy_manifest_uri,
             "keyframe_uri": self.keyframe_uri,
             "arkit_poses_uri": self.arkit_poses_uri,
             "arkit_intrinsics_uri": self.arkit_intrinsics_uri,
@@ -631,6 +646,14 @@ class CaptureDescriptor:
             payload["capture_orientation"] = dict(self.capture_orientation)
         return payload
 
+    @property
+    def preferred_world_model_video_uri(self) -> Optional[str]:
+        return (
+            self.world_model_video_uri
+            or self.privacy_processed_video_uri
+            or self.raw_video_uri
+        )
+
 
 def build_capture_bundle_constraints(
     descriptor: CaptureDescriptor,
@@ -649,6 +672,11 @@ def build_capture_bundle_constraints(
         "capture_tier": descriptor.capture_tier,
         "raw_prefix_uri": descriptor.raw_prefix_uri,
         "raw_video_uri": descriptor.raw_video_uri,
+        "privacy_processed_video_uri": descriptor.privacy_processed_video_uri,
+        "world_model_video_uri": descriptor.world_model_video_uri,
+        "privacy_status": descriptor.privacy_status,
+        "privacy_mode": descriptor.privacy_mode,
+        "privacy_manifest_uri": descriptor.privacy_manifest_uri,
         "frames_index_uri": descriptor.frames_index_uri,
         "keyframe_uri": descriptor.keyframe_uri,
         "nurec_mode": descriptor.nurec_mode,
