@@ -98,6 +98,7 @@ def build_launch_qualification_bundle(
     normalized_review = fidelity_review if isinstance(fidelity_review, Mapping) else {}
     review_scores = normalized_review.get("scores") if isinstance(normalized_review.get("scores"), Mapping) else {}
     review_findings = normalized_review.get("findings") if isinstance(normalized_review.get("findings"), Mapping) else {}
+    review_assessments = normalized_review.get("assessments") if isinstance(normalized_review.get("assessments"), Mapping) else {}
     recapture_recommendations = _string_list(review_findings.get("recapture_recommendations"))
     preview_status = provider_run.get("status") or "not_requested"
 
@@ -132,6 +133,14 @@ def build_launch_qualification_bundle(
             "visual_clarity_score": review_scores.get("visual_clarity"),
             "lighting_stability_score": review_scores.get("lighting_stability"),
             "motion_stability_score": review_scores.get("motion_stability"),
+            "blur_assessment": review_assessments.get("blur"),
+            "lighting_assessment": review_assessments.get("lighting"),
+            "motion_speed_assessment": review_assessments.get("motion_speed"),
+            "doubling_back_assessment": review_assessments.get("doubling_back"),
+            "coverage_completeness_assessment": review_assessments.get("coverage_completeness"),
+            "task_zone_completeness_assessment": review_assessments.get("task_zone_completeness"),
+            "occlusion_and_hidden_zone_assessment": review_assessments.get("occlusion_and_hidden_zone"),
+            "depth_and_spatial_conditioning_assessment": review_assessments.get("depth_and_spatial_conditioning"),
         },
         "recapture_requirements": {
             "required": bool(missing_evidence or recapture_recommendations or normalized_review.get("status") != "succeeded"),

@@ -125,6 +125,16 @@ def _successful_capture_review() -> dict[str, object]:
             "lidar_depth": {"score": 1.0, "reason": "LiDAR/depth-backed capture quality is visible in the bundle."},
             "steady_walkthrough": {"score": 0.8, "reason": "Pacing and steadiness are strong enough for review."},
         },
+        "assessments": {
+            "blur": {"status": "good", "score": 0.84, "summary": "Video is sharp enough.", "impact": "low"},
+            "lighting": {"status": "good", "score": 0.8, "summary": "Lighting is stable.", "impact": "low"},
+            "motion_speed": {"status": "good", "score": 0.78, "summary": "Pacing is controlled.", "impact": "low"},
+            "doubling_back": {"status": "good", "score": 0.72, "summary": "Revisits are productive.", "impact": "low"},
+            "coverage_completeness": {"status": "good", "score": 0.86, "summary": "Scene coverage is complete.", "impact": "low"},
+            "task_zone_completeness": {"status": "good", "score": 0.82, "summary": "Task zone is covered.", "impact": "low"},
+            "occlusion_and_hidden_zone": {"status": "good", "score": 0.8, "summary": "Occlusion is limited.", "impact": "low"},
+            "depth_and_spatial_conditioning": {"status": "good", "score": 0.9, "summary": "Spatial conditioning is strong.", "impact": "low"},
+        },
         "findings": {
             "missing_views": [],
             "blur_observations": [],
@@ -180,8 +190,13 @@ def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_p
     assert "scene_memory_manifest_uri" not in sync_calls[0]["artifacts"]
     assert sync_calls[0]["derived_assets"] == {}
     payout = json.loads((pipeline_root / "capturer_payout_recommendation.json").read_text(encoding="utf-8"))
+    quality = json.loads((pipeline_root / "capture_quality_summary.json").read_text(encoding="utf-8"))
+    world_model_fit = json.loads((pipeline_root / "world_model_fit_summary.json").read_text(encoding="utf-8"))
     assert len(payout["bonus_breakdown"]) == 4
     assert payout["recommended_payout_cents"] >= payout["base_payout_cents"]
+    assert quality["blur_assessment"]["status"] == "good"
+    assert quality["coverage_completeness_assessment"]["status"] == "good"
+    assert world_model_fit["status"] == "good_candidate"
 
 
 def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_path: Path) -> None:
@@ -232,3 +247,64 @@ def test_resolve_requested_lanes_demotes_bridge_default_scene_memory(tmp_path: P
     )
 
     assert lanes == ["qualification"]
+
+
+def test_bad_video_review_forces_recapture_and_lower_world_model_fit(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_staged_capture(tmp_path)
+    bad_review = _successful_capture_review()
+    bad_review["scores"] = {
+        **bad_review["scores"],
+        "coverage": 0.4,
+        "world_model_fitness": 0.3,
+        "visual_clarity": 0.35,
+        "lighting_stability": 0.4,
+        "motion_stability": 0.3,
+    }
+    bad_review["assessments"] = {
+        "blur": {"status": "poor", "score": 0.2, "summary": "Strong blur", "impact": "high"},
+        "lighting": {"status": "poor", "score": 0.3, "summary": "Lighting changes", "impact": "high"},
+        "motion_speed": {"status": "poor", "score": 0.2, "summary": "Too fast", "impact": "high"},
+        "doubling_back": {"status": "review_required", "score": 0.3, "summary": "Inefficient rescans", "impact": "medium"},
+        "coverage_completeness": {"status": "poor", "score": 0.4, "summary": "Missing areas", "impact": "high"},
+        "task_zone_completeness": {"status": "review_required", "score": 0.45, "summary": "Task zone incomplete", "impact": "high"},
+        "occlusion_and_hidden_zone": {"status": "review_required", "score": 0.35, "summary": "Occlusion present", "impact": "medium"},
+        "depth_and_spatial_conditioning": {"status": "review_required", "score": 0.4, "summary": "Weak spatial conditioning", "impact": "high"},
+    }
+    bad_review["findings"] = {
+        "missing_views": ["north aisle"],
+        "blur_observations": ["motion blur in center aisle"],
+        "lighting_observations": ["backlit doorway"],
+        "occlusion_observations": ["stacked totes block corner"],
+        "task_scope_notes": [],
+        "blocker_summaries": ["capture quality is insufficient for world-model generation"],
+        "recapture_recommendations": ["slow down and reshoot missing aisle coverage"],
+    }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        lambda **_kwargs: bad_review,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        lambda **_kwargs: None,
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="qualification",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    pipeline_root = capture_root / "pipeline"
+    quality = json.loads((pipeline_root / "capture_quality_summary.json").read_text(encoding="utf-8"))
+    world_model_fit = json.loads((pipeline_root / "world_model_fit_summary.json").read_text(encoding="utf-8"))
+    recapture = json.loads((pipeline_root / "recapture_requirements.json").read_text(encoding="utf-8"))
+    qualification = json.loads((pipeline_root / "qualification_record.json").read_text(encoding="utf-8"))
+
+    assert quality["blur_assessment"]["status"] == "poor"
+    assert quality["motion_speed_assessment"]["status"] == "poor"
+    assert quality["coverage_completeness_assessment"]["status"] == "poor"
+    assert world_model_fit["status"] == "review_required"
+    assert recapture["required"] is True
+    assert recapture["recommendations"]
+    assert qualification["readiness_state"] == "not_ready_yet"

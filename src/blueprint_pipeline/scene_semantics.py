@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -515,6 +516,26 @@ def _string_list(value: Any) -> List[str]:
     return out
 
 
+def _normalize_assessment(
+    raw_value: Any,
+    *,
+    default_score: float,
+    default_status: str,
+    default_summary: str,
+    default_impact: str,
+) -> Dict[str, Any]:
+    raw = raw_value if isinstance(raw_value, Mapping) else {}
+    status = str(raw.get("status") or default_status).strip() or default_status
+    summary = str(raw.get("summary") or default_summary).strip() or default_summary
+    impact = str(raw.get("impact") or default_impact).strip() or default_impact
+    return {
+        "status": status,
+        "score": _bounded_score(raw.get("score"), default=default_score),
+        "summary": summary,
+        "impact": impact,
+    }
+
+
 def _gemini_capture_review_prompt(
     *,
     descriptor: Mapping[str, Any],
@@ -544,6 +565,14 @@ def _gemini_capture_review_prompt(
         '    "lidar_depth": {"score": 0.0, "reason": "..."},\n'
         '    "steady_walkthrough": {"score": 0.0, "reason": "..."}\n'
         "  },\n"
+        '  "blur_assessment": {"status": "good|review_required|poor", "score": 0.0, "summary": "...", "impact": "..."},\n'
+        '  "lighting_assessment": {"status": "good|review_required|poor", "score": 0.0, "summary": "...", "impact": "..."},\n'
+        '  "motion_speed_assessment": {"status": "good|review_required|poor", "score": 0.0, "summary": "...", "impact": "..."},\n'
+        '  "doubling_back_assessment": {"status": "good|review_required|poor", "score": 0.0, "summary": "...", "impact": "..."},\n'
+        '  "coverage_completeness_assessment": {"status": "good|review_required|poor", "score": 0.0, "summary": "...", "impact": "..."},\n'
+        '  "task_zone_completeness_assessment": {"status": "good|review_required|poor", "score": 0.0, "summary": "...", "impact": "..."},\n'
+        '  "occlusion_and_hidden_zone_assessment": {"status": "good|review_required|poor", "score": 0.0, "summary": "...", "impact": "..."},\n'
+        '  "depth_and_spatial_conditioning_assessment": {"status": "good|review_required|poor", "score": 0.0, "summary": "...", "impact": "..."},\n'
         '  "missing_views": ["..."],\n'
         '  "blur_observations": ["..."],\n'
         '  "lighting_observations": ["..."],\n'
@@ -555,6 +584,7 @@ def _gemini_capture_review_prompt(
         '  "payout_recommendation": "bonus|baseline|discount|review_required",\n'
         '  "confidence": 0.0\n'
         "}\n\n"
+        "Review the actual walkthrough quality from the video. Pay special attention to blur, lighting changes, camera speed, doubling back/rescans, full-scene coverage, task-zone completeness, hidden zones, and whether the depth/spatial evidence is sufficient for a site-specific world model.\n\n"
         f"Descriptor:\n{json.dumps(dict(descriptor), indent=2, sort_keys=True)}\n\n"
         f"QA report:\n{json.dumps(dict(qa_report), indent=2, sort_keys=True)}\n\n"
         f"Task hypothesis:\n{json.dumps(dict(task_hypothesis_report or {}), indent=2, sort_keys=True)}\n"
@@ -625,6 +655,92 @@ def _infer_capture_review_with_gemini(
     return None
 
 
+def _infer_capture_review_with_gemini_video(
+    *,
+    raw_video_path: Path,
+    descriptor: Mapping[str, Any],
+    qa_report: Mapping[str, Any],
+    task_hypothesis_report: Optional[Mapping[str, Any]],
+    timeout_sec: int,
+) -> Optional[Dict[str, Any]]:
+    api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key or not raw_video_path.is_file():
+        return None
+
+    try:
+        from google import genai  # type: ignore
+    except ImportError:
+        log_missing_optional_dependency(
+            logger,
+            feature="Gemini raw-video capture fidelity review",
+            package="google-genai",
+            extra="llm",
+        )
+        return None
+    except Exception:
+        return None
+
+    override = (os.getenv("CAPTURE_FIDELITY_GEMINI_MODEL") or os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
+    models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
+    prompt = _gemini_capture_review_prompt(
+        descriptor=descriptor,
+        qa_report=qa_report,
+        task_hypothesis_report=task_hypothesis_report,
+    )
+    client = genai.Client(api_key=api_key)
+
+    try:
+        uploaded = client.files.upload(file=str(raw_video_path))
+    except Exception:
+        return None
+
+    started = time.time()
+    current = uploaded
+    while True:
+        state = getattr(current, "state", None)
+        state_name = str(getattr(state, "name", "") or "").strip().upper()
+        if state_name == "ACTIVE":
+            break
+        if state_name in {"FAILED", "ERROR"}:
+            return None
+        if time.time() - started >= max(5, int(timeout_sec)):
+            return None
+        time.sleep(2)
+        try:
+            current = client.files.get(name=current.name)
+        except Exception:
+            return None
+
+    for model in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[current, prompt],
+                config={
+                    "temperature": 0.2,
+                    "max_output_tokens": 8192,
+                    "response_mime_type": "application/json",
+                },
+            )
+        except Exception:
+            continue
+
+        raw_text = _extract_response_text(response)
+        if not raw_text:
+            continue
+
+        payload = _extract_json_object(raw_text)
+        if not payload:
+            continue
+        payload["model"] = model
+        payload["raw_text"] = raw_text
+        payload["video_file_name"] = getattr(current, "name", None)
+        payload["video_file_uri"] = getattr(current, "uri", None)
+        return payload
+
+    return None
+
+
 def infer_capture_fidelity_review(
     *,
     capture_root: Path,
@@ -644,13 +760,25 @@ def infer_capture_fidelity_review(
     )
 
     qa_quality = qa_report.get("quality") if isinstance(qa_report.get("quality"), Mapping) else {}
-    review = _infer_capture_review_with_gemini(
-        frames=keyframes,
-        descriptor=descriptor,
-        qa_report=qa_report,
-        task_hypothesis_report=task_hypothesis_report,
-        timeout_sec=max(5, int(timeout_sec)),
-    )
+    review_mode = "video_file_upload"
+    review = None
+    if raw_video_path is not None and raw_video_path.is_file():
+        review = _infer_capture_review_with_gemini_video(
+            raw_video_path=raw_video_path,
+            descriptor=descriptor,
+            qa_report=qa_report,
+            task_hypothesis_report=task_hypothesis_report,
+            timeout_sec=max(5, int(timeout_sec)),
+        )
+    if review is None:
+        review_mode = "frame_fallback"
+        review = _infer_capture_review_with_gemini(
+            frames=keyframes,
+            descriptor=descriptor,
+            qa_report=qa_report,
+            task_hypothesis_report=task_hypothesis_report,
+            timeout_sec=max(5, int(timeout_sec)),
+        )
 
     if review is None:
         reasons = []
@@ -667,7 +795,7 @@ def infer_capture_fidelity_review(
             "generated_at": _utc_now_iso(),
             "provider_name": "gemini",
             "provider_model": None,
-            "review_mode": "video_primary_frames_fallback",
+            "review_mode": review_mode,
             "confidence": 0.0,
             "summary": "Gemini multimodal review did not complete.",
             "raw_video_present": bool(raw_video_path and raw_video_path.is_file()),
@@ -688,6 +816,16 @@ def infer_capture_fidelity_review(
                 "lidar_depth": {"score": 0.0, "reason": "Gemini review unavailable."},
                 "steady_walkthrough": {"score": 0.0, "reason": "Gemini review unavailable."},
             },
+            "assessments": {
+                "blur": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Blur quality could not be reviewed.", default_impact="Manual review is required."),
+                "lighting": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Lighting quality could not be reviewed.", default_impact="Manual review is required."),
+                "motion_speed": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Motion speed could not be reviewed.", default_impact="Manual review is required."),
+                "doubling_back": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Doubling-back patterns could not be reviewed.", default_impact="Manual review is required."),
+                "coverage_completeness": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Coverage completeness could not be reviewed.", default_impact="Manual review is required."),
+                "task_zone_completeness": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Task-zone completeness could not be reviewed.", default_impact="Manual review is required."),
+                "occlusion_and_hidden_zone": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Hidden-zone quality could not be reviewed.", default_impact="Manual review is required."),
+                "depth_and_spatial_conditioning": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Depth and spatial conditioning could not be reviewed.", default_impact="Manual review is required."),
+            },
             "findings": {
                 "missing_views": [],
                 "blur_observations": [],
@@ -705,8 +843,9 @@ def infer_capture_fidelity_review(
                 "provider_name": "gemini",
                 "provider_model": None,
                 "raw_response": None,
-                "input_mode": "video_primary_frames_fallback",
+                "input_mode": review_mode,
                 "keyframes_used": [str(path) for path in keyframes],
+                "raw_video_path": str(raw_video_path) if raw_video_path else None,
             },
         }
 
@@ -721,6 +860,64 @@ def infer_capture_fidelity_review(
         "blocker_summaries": _string_list(review.get("blocker_summaries")),
         "recapture_recommendations": _string_list(review.get("recapture_recommendations")),
     }
+    assessments = {
+        "blur": _normalize_assessment(
+            review.get("blur_assessment"),
+            default_score=_bounded_score(scores_raw.get("visual_clarity"), 0.0),
+            default_status="good" if _bounded_score(scores_raw.get("visual_clarity"), 0.0) >= 0.7 else "review_required",
+            default_summary="Gemini assessed image sharpness and blur from the walkthrough.",
+            default_impact="Blur affects the visual quality of the world model.",
+        ),
+        "lighting": _normalize_assessment(
+            review.get("lighting_assessment"),
+            default_score=_bounded_score(scores_raw.get("lighting_stability"), 0.0),
+            default_status="good" if _bounded_score(scores_raw.get("lighting_stability"), 0.0) >= 0.7 else "review_required",
+            default_summary="Gemini assessed lighting stability through the walkthrough.",
+            default_impact="Lighting instability can reduce downstream world-model quality.",
+        ),
+        "motion_speed": _normalize_assessment(
+            review.get("motion_speed_assessment"),
+            default_score=_bounded_score(scores_raw.get("motion_stability"), 0.0),
+            default_status="good" if _bounded_score(scores_raw.get("motion_stability"), 0.0) >= 0.7 else "review_required",
+            default_summary="Gemini assessed camera speed and pacing through the walkthrough.",
+            default_impact="Excessive speed can reduce usable reconstruction evidence.",
+        ),
+        "doubling_back": _normalize_assessment(
+            review.get("doubling_back_assessment"),
+            default_score=_bounded_score((bonus_signals_raw.get("multi_pass") or {}).get("score") if isinstance(bonus_signals_raw.get("multi_pass"), Mapping) else None, default=0.0),
+            default_status="good",
+            default_summary="Gemini assessed whether doubling back improved or harmed scene coverage.",
+            default_impact="Repeated rescans can either strengthen coverage or indicate inefficient capture.",
+        ),
+        "coverage_completeness": _normalize_assessment(
+            review.get("coverage_completeness_assessment"),
+            default_score=_bounded_score(scores_raw.get("coverage"), 0.0),
+            default_status="good" if _bounded_score(scores_raw.get("coverage"), 0.0) >= 0.7 else "review_required",
+            default_summary="Gemini assessed whether the walkthrough captured the full scene and task area.",
+            default_impact="Incomplete coverage often requires recapture before world-model work.",
+        ),
+        "task_zone_completeness": _normalize_assessment(
+            review.get("task_zone_completeness_assessment"),
+            default_score=_bounded_score(scores_raw.get("task_understanding"), 0.0),
+            default_status="good" if _bounded_score(scores_raw.get("task_understanding"), 0.0) >= 0.7 else "review_required",
+            default_summary="Gemini assessed whether the task-relevant zone was fully captured.",
+            default_impact="Weak task-zone coverage reduces buyer confidence and world-model fitness.",
+        ),
+        "occlusion_and_hidden_zone": _normalize_assessment(
+            review.get("occlusion_and_hidden_zone_assessment"),
+            default_score=1.0 if not findings["occlusion_observations"] else 0.4,
+            default_status="good" if not findings["occlusion_observations"] else "review_required",
+            default_summary="Gemini assessed occlusions and hidden zones in the walkthrough.",
+            default_impact="Hidden or occluded areas can block qualification and world-model quality.",
+        ),
+        "depth_and_spatial_conditioning": _normalize_assessment(
+            review.get("depth_and_spatial_conditioning_assessment"),
+            default_score=_bounded_score((bonus_signals_raw.get("lidar_depth") or {}).get("score") if isinstance(bonus_signals_raw.get("lidar_depth"), Mapping) else None, default=0.0),
+            default_status="good" if str(descriptor.get("capture_modality") or "").strip() == "iphone_arkit_lidar" else "review_required",
+            default_summary="Gemini assessed whether depth and spatial evidence are strong enough for downstream world-model work.",
+            default_impact="Weak spatial conditioning can block high-quality site-specific world models.",
+        ),
+    }
     return {
         "schema_version": "v1",
         "review_type": "gemini_multimodal_capture_review",
@@ -728,7 +925,7 @@ def infer_capture_fidelity_review(
         "generated_at": _utc_now_iso(),
         "provider_name": "gemini",
         "provider_model": str(review.get("model") or "").strip() or None,
-        "review_mode": "video_primary_frames_fallback",
+        "review_mode": review_mode,
         "confidence": _bounded_score(review.get("confidence"), default=0.0),
         "summary": str(review.get("summary") or "Gemini reviewed the capture evidence.").strip(),
         "raw_video_present": bool(raw_video_path and raw_video_path.is_file()),
@@ -797,6 +994,7 @@ def infer_capture_fidelity_review(
                 ).strip() or "Gemini assessed walkthrough steadiness and pacing from the capture.",
             },
         },
+        "assessments": assessments,
         "findings": findings,
         "recommendations": {
             "world_model_recommendation": str(review.get("world_model_recommendation") or "review_required").strip() or "review_required",
@@ -806,8 +1004,10 @@ def infer_capture_fidelity_review(
             "provider_name": "gemini",
             "provider_model": str(review.get("model") or "").strip() or None,
             "raw_response": review.get("raw_text"),
-            "input_mode": "video_primary_frames_fallback",
+            "input_mode": review_mode,
             "keyframes_used": [str(path) for path in keyframes],
             "raw_video_path": str(raw_video_path) if raw_video_path else None,
+            "video_file_name": review.get("video_file_name"),
+            "video_file_uri": review.get("video_file_uri"),
         },
     }

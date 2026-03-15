@@ -2336,6 +2336,7 @@ def _build_world_model_fit_summary(
     rights = _capture_rights(metadata)
     review_status = str(capture_fidelity_review.get("status") or "failed").strip().lower()
     review_scores = capture_fidelity_review.get("scores") if isinstance(capture_fidelity_review.get("scores"), Mapping) else {}
+    assessments = capture_fidelity_review.get("assessments") if isinstance(capture_fidelity_review.get("assessments"), Mapping) else {}
     findings = capture_fidelity_review.get("findings") if isinstance(capture_fidelity_review.get("findings"), Mapping) else {}
     reasons: List[str] = []
     fit_status = "review_required"
@@ -2362,6 +2363,16 @@ def _build_world_model_fit_summary(
             fit_status = "review_required"
     if coverage_score < 0.7:
         reasons.append("Gemini review found missing views or weak coverage for scene reconstruction.")
+    for key, message in (
+        ("blur", "Gemini review found blur levels that may limit world-model quality."),
+        ("lighting", "Gemini review found lighting instability that may reduce world-model quality."),
+        ("motion_speed", "Gemini review found camera speed or pacing issues that reduce usable evidence."),
+        ("task_zone_completeness", "Gemini review found incomplete capture of the task-relevant zone."),
+        ("depth_and_spatial_conditioning", "Gemini review found weak depth or spatial conditioning for world-model generation."),
+    ):
+        assessment = assessments.get(key)
+        if isinstance(assessment, Mapping) and str(assessment.get("status") or "").strip() in {"poor", "review_required"}:
+            reasons.append(message)
     if _string_list(findings.get("blur_observations")):
         reasons.append("Gemini review found blur or motion clarity issues that may limit reconstruction quality.")
     if _string_list(findings.get("lighting_observations")):
@@ -2377,6 +2388,10 @@ def _build_world_model_fit_summary(
         "coverage_score": round(coverage_score, 4),
         "readiness_state": qualification_record.get("readiness_state"),
         "derived_scene_generation_allowed": rights["derived_scene_generation_allowed"],
+        "assessment_statuses": {
+            key: (value.get("status") if isinstance(value, Mapping) else None)
+            for key, value in assessments.items()
+        },
         "reasons": reasons,
         "recommended_next_step": "scene_memory" if fit_status == "good_candidate" else "recapture_or_review",
     }
@@ -2392,6 +2407,7 @@ def _build_capturer_payout_recommendation(
     review_status = str(capture_fidelity_review.get("status") or "failed").strip().lower()
     scores = capture_fidelity_review.get("scores") if isinstance(capture_fidelity_review.get("scores"), Mapping) else {}
     bonus_signals = capture_fidelity_review.get("bonus_signals") if isinstance(capture_fidelity_review.get("bonus_signals"), Mapping) else {}
+    assessments = capture_fidelity_review.get("assessments") if isinstance(capture_fidelity_review.get("assessments"), Mapping) else {}
     payout_quality = float(scores.get("payout_quality") or 0.0)
     confidence = float(capture_fidelity_review.get("confidence") or 0.0)
     base_payout_cents = int(descriptor.quoted_payout_cents or 4500)
@@ -2449,6 +2465,12 @@ def _build_capturer_payout_recommendation(
             )
             multiplier += bonus_fraction
         multiplier *= 0.8 + (payout_quality * 0.4)
+        for key in ("blur", "lighting", "motion_speed", "coverage_completeness"):
+            assessment = assessments.get(key)
+            if isinstance(assessment, Mapping) and str(assessment.get("status") or "").strip() == "poor":
+                multiplier = min(multiplier, 1.0)
+                reasons.append("Poor raw-video quality reduces the payout recommendation back toward baseline.")
+                break
         if confidence < 0.65:
             multiplier = min(multiplier, 1.0)
             reasons.append("Low Gemini confidence caps the payout recommendation at the baseline rate.")
@@ -2523,6 +2545,7 @@ def _apply_capture_fidelity_to_qualification(
     ]
     review_status = str(capture_fidelity_review.get("status") or "failed").strip().lower()
     scores = capture_fidelity_review.get("scores") if isinstance(capture_fidelity_review.get("scores"), Mapping) else {}
+    assessments = capture_fidelity_review.get("assessments") if isinstance(capture_fidelity_review.get("assessments"), Mapping) else {}
     findings = capture_fidelity_review.get("findings") if isinstance(capture_fidelity_review.get("findings"), Mapping) else {}
     readiness_state = str(payload.get("readiness_state") or "not_ready_yet")
     confidence = float(payload.get("confidence") or 0.0)
@@ -2563,6 +2586,34 @@ def _apply_capture_fidelity_to_qualification(
                 }
             )
             readiness_state = "risky"
+        for key, risk_id, detail in (
+            ("blur", "gemini_blur_detected", "Gemini review found blur that may reduce world-model quality."),
+            ("lighting", "gemini_lighting_instability", "Gemini review found unstable or poor lighting in the walkthrough."),
+            ("motion_speed", "gemini_excessive_motion_speed", "Gemini review found camera speed or pacing issues in the walkthrough."),
+            ("coverage_completeness", "gemini_incomplete_scene_coverage", "Gemini review found incomplete scene coverage."),
+            ("task_zone_completeness", "gemini_incomplete_task_zone", "Gemini review found incomplete task-zone coverage."),
+            ("occlusion_and_hidden_zone", "gemini_hidden_zone_risk", "Gemini review found occlusions or hidden-zone risks."),
+            ("depth_and_spatial_conditioning", "gemini_weak_spatial_conditioning", "Gemini review found weak depth or spatial conditioning."),
+        ):
+            assessment = assessments.get(key)
+            if not isinstance(assessment, Mapping):
+                continue
+            status = str(assessment.get("status") or "").strip()
+            if status not in {"poor", "review_required"}:
+                continue
+            severity = "high" if key in {"coverage_completeness", "task_zone_completeness", "depth_and_spatial_conditioning"} else "medium"
+            risks.append(
+                {
+                    "id": risk_id,
+                    "severity": severity,
+                    "category": "quality",
+                    "detail": detail,
+                }
+            )
+            if status == "poor":
+                readiness_state = "not_ready_yet"
+            elif readiness_state == "ready":
+                readiness_state = "risky"
         if _string_list(findings.get("blur_observations")):
             risks.append(
                 {
