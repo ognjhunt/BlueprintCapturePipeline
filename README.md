@@ -1,16 +1,19 @@
 # BlueprintCapturePipeline
 
-`BlueprintCapturePipeline` builds the canonical site-world package and presentation/demo world artifacts from raw Blueprint captures.
+`BlueprintCapturePipeline` is the qualification, provenance, and provider-routing service for raw Blueprint captures.
 
-Canonical site-world remains the authoritative grounded source of truth. Presentation artifacts are non-authoritative derivatives that stay linked to canonical and preserve original capture display orientation through the pipeline.
+For alpha, the default output is a qualification bundle with trust, rights/compliance, recapture, and optional provider-preview state. Scene-memory, presentation, and evaluation-prep artifacts remain available as downstream derived lanes.
 
 ## Scope
 
 Primary product path:
 
 - raw capture materialization
-- deterministic object indexing and scene semantics
 - qualification analysis and agent review
+- deterministic QA aggregation and trust/provenance assembly
+- optional provider preview routing
+- webapp sync for buyer-review surfaces
+- deterministic object indexing and scene semantics when deeper work is requested
 - scene-memory assembly
 - presentation-world assembly
 - evaluation-prep packaging
