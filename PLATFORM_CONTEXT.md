@@ -6,178 +6,134 @@
 ### System Framing
 
 - `BlueprintCapture` is the contributor evidence-capture tool inside Blueprint's three-sided marketplace.
-- `BlueprintCapturePipeline` is the authoritative qualification, provenance, and provider-routing service.
-- `Blueprint-WebApp` is the three-sided marketplace and operating system connecting capturers, robot teams, and site operators around qualification records and downstream work.
-- `BlueprintValidation` is optional downstream infrastructure for provider benchmarking, runtime-backed demos, and deeper robot evaluation after qualification.
+- `BlueprintCapturePipeline` is the authoritative qualification, privacy, provenance, and downstream-routing service.
+- `Blueprint-WebApp` is the marketplace and operating system that ingests pipeline outputs and exposes buyer, ops, preview, and hosted-session surfaces.
+- `BlueprintValidation` remains optional downstream infrastructure for benchmarking, runtime-backed demos, and deeper robot evaluation after qualification.
 
 This platform is qualification-first.
 
 ### Three-Sided Marketplace
 
-- **Capturers** supply evidence packages from real sites.
-- **Robot teams** are the primary demand-side buyers of trusted qualification outcomes and downstream technical work.
-- **Site operators** control access, rights, and commercialization boundaries for their facilities.
+- **Capturers** gather evidence packages from real sites.
+- **Robot teams** are the primary buyers of trusted qualification outputs, previews, and deeper downstream work.
+- **Site operators** control access, consent, rights, and commercialization boundaries for their facilities.
 
 ### Truth Hierarchy
 
-- qualification records, readiness decisions, trust signals, and provenance links are authoritative
-- capture-backed scene memory and evaluation-prep packages are preferred downstream technical substrates once qualification justifies them
-- preview simulations, provider outputs, advanced-geometry bundles, and trained policies are derived downstream assets; they do not rewrite qualification truth
+- qualification records, readiness decisions, provenance, and rights/compliance outputs are authoritative
+- privacy-safe derived media, World Labs previews, scene-memory bundles, and hosted/runtime artifacts are downstream products
+- downstream products do not rewrite qualification truth
 
 ### Product Stack
 
 1. primary product: qualification record / readiness decision / buyer-safe evidence bundle
-2. secondary product: qualified opportunity exchange and provider-backed preview lane
-3. third product: scene memory / evaluation-prep / runtime-backed robot evaluation
-4. fourth product: world-model-based adaptation, managed tuning, training data, licensing
-
-### Downstream Training Rule
-
-- world-model RL and world-model-based post-training are first-class downstream paths for site adaptation, checkpoint ranking, synthetic rollout generation, and bounded robot-team evaluation
-- those paths sit behind qualification and do not by themselves replace stricter validation for contact-critical, safety-critical, or contractual deployment claims
-- Isaac-backed, physics-backed, or otherwise stricter validation remains the higher-trust lane when reproducibility, contact fidelity, or formal signoff matters
-
-### Data Rule
-
-- passive site capture and walkthrough evidence are valuable context for qualification, scene memory, preview simulation, and downstream conditioning
-- strong robot adaptation gains usually require action-conditioned robot interaction data such as play, teleop logs, or task rollouts; site video alone is usually not enough for reliable policy training from scratch
-- derived assets may inform routing and downstream work, but they must not mutate qualification truth
+2. secondary product: privacy-safe preview generation and marketplace routing
+3. third product: scene memory / hosted runtime prep / deeper evaluation packages
+4. fourth product: managed tuning, training data, licensing, and deployment support
 <!-- SHARED_PLATFORM_CONTEXT_END -->
 
-This repo is the qualification and provider-routing engine.
+This repo is the authoritative middle of the product.
 
 ## What This Repo Owns
 
-`BlueprintCapturePipeline` is the authoritative middle of the alpha service.
+`BlueprintCapturePipeline` turns a finalized capture bundle into:
 
-Its main job is to turn raw capture evidence plus structured intake into:
-
-- deterministic QA aggregation
 - qualification artifacts and readiness decisions
-- buyer-trust and rights/compliance summaries
-- provider preview routing and normalized provider manifests
-- recapture requirements and follow-up guidance
-- scene-memory bundles
-- evaluation-prep manifests
-- runtime-facing or geometry follow-ons only when requested
+- buyer trust, rights/compliance, and recapture outputs
+- privacy-safe walkthrough media and depth conditioning
+- World Labs request, operation, and world manifests when preview is requested
+- optional scene-memory and evaluation/runtime-prep artifacts when those lanes are explicitly requested
+- best-effort sync back into `Blueprint-WebApp`
 
-Scene/world outputs still exist, but they are not the center of gravity for alpha.
+Today, this repo is not only a qualification engine. It is also the production bridge from capture evidence to privacy-safe World Labs preview generation.
 
-This repo is where the site moves from “we captured something” to “we have a trustworthy qualification bundle and optional downstream routes.”
+## Upstream Contract
 
-## Upstream And Downstream Boundaries
-
-### Upstream
-
-This repo expects a capture bundle from `BlueprintCapture`, not just a loose video.
-
-The raw capture contract is:
+The canonical upstream contract is the raw bundle uploaded by `BlueprintCapture`:
 
 ```text
-raw/
+scenes/{scene_id}/captures/{capture_id}/raw/
   manifest.json
   intake_packet.json
   capture_context.json
   capture_upload_complete.json
+  task_hypothesis.json
   walkthrough.mov
-  optional arkit/...
+  motion.jsonl
+  arkit/...
 ```
 
-### Downstream
+Compatible triggers the repo accepts today:
 
-This repo produces records that should be routed into `Blueprint-WebApp`, including:
+- raw upload completion via `raw/capture_upload_complete.json`
+- materialized `capture_descriptor.json`
+- bridge-produced Pub/Sub handoff payloads that include `capture_descriptor_uri`
 
-- qualification summaries
-- buyer trust and rights/compliance summaries
-- provider preview manifests and provenance
-- scene-memory manifests
-- evaluation-prep bundles
-- runtime and adapter manifests when deeper work is explicitly requested
+## Default Runtime Behavior
 
-## Product Context
+For a normal capture requesting `preview_simulation`, the default path is:
 
-The correct product stack is:
+1. materialize the bundle and descriptor
+2. run qualification and capture-fidelity analysis
+3. run privacy post-processing
+4. preserve ARKit depth when present, otherwise generate depth conditioning
+5. prepare World Labs-compliant video input
+6. submit and poll World Labs
+7. write preview manifests and sync artifacts into the web app
 
-1. primary product: qualification packet and trusted routing object
-2. secondary product: provider-backed preview and qualified opportunity handoff
-3. third product: scene memory / evaluation-prep / runtime-backed evaluation
-4. fourth product: world-model-based adaptation / managed tuning / training data / licensing
+Important boundary:
 
-This repo sits in the middle and owns the transition from evidence to qualification-first outputs.
+- `preview_simulation` does not automatically imply hosted-runtime artifacts
+- hosted/runtime launch artifacts come from `scene_memory` and especially `evaluation_prep`
 
-This repo should treat the default output as:
+## Downstream Outputs
 
-- a normalized qualification bundle
-- buyer-safe quality, rights, and provenance summaries
-- provider preview state that can fail without blocking qualification
-- a reusable scene-memory bundle
-- evaluation/runtime manifests only when a downstream lane needs them
+The main outputs this repo writes today are:
 
-This repo should not assume that every capture should become:
+- qualification summaries and readiness decisions
+- buyer trust, capture quality, and rights/compliance summaries
+- privacy manifests, verification reports, final walkthrough media, and depth manifests
+- provider run manifests and preview manifests
+- World Labs request / operation / world manifests
+- optional `scene_memory/*`
+- optional `evaluation_prep/*` including `site_world_spec.json`, `site_world_registration.json`, and `site_world_health.json`
 
-- a world model
-- a live runtime
-- a tuning engagement
+## WebApp Boundary
 
-Those are downstream lanes, not the default result.
+This repo can push pipeline attachment metadata into `Blueprint-WebApp` through the internal sync endpoint.
 
-## Role In The Business
+That sync is currently:
 
-This repo exists to answer:
+- authenticated by shared token
+- optional, via env configuration
+- best-effort rather than pipeline-blocking
 
-- is the evidence sufficient to make a qualification decision?
-- what holes, blockers, rights issues, or hidden zones still limit trust?
-- what recapture is still required?
-- which downstream provider, scene-memory, runtime, or evaluation paths are justified?
-- what provenance must be preserved for buyer review?
+So qualification can complete even when WebApp attachment sync does not.
 
-## System Lifecycle
+## Operational Reality
 
-The intended end-to-end lifecycle is:
+What is implemented today:
 
-1. `Blueprint-WebApp` creates `site_submission_id` and intake.
-2. `BlueprintCapture` attaches that context to the evidence package.
-3. This repo produces:
-   - qualification artifacts
-   - trust, rights, and recapture summaries
-   - normalized provider preview state
-   - scene-memory artifacts
-   - evaluation-prep manifests
-   - runtime or geometry artifacts only when justified
-4. `Blueprint-WebApp` ingests those outputs and updates:
-   - qualification state
-   - buyer review surfaces
-   - artifact and handoff references
-5. `BlueprintValidation` or another downstream system is used only for benchmarking, demos, or deeper robot evaluation.
+- qualification
+- privacy-safe World Labs preview generation
+- public site-world surfacing in the web app when sync succeeds
+- optional hosted-runtime prep in deeper lanes
 
-## Advisory Model Boundary
+What is not guaranteed by the default preview lane:
 
-Deterministic code should stay authoritative for:
+- runtime launchability
+- `site_world_spec.json`
+- `site_world_registration.json`
+- `site_world_health.json`
 
-- qualification state
-- trust-score assembly
-- provenance
-- rights/compliance status
-- fail-closed preview/provider behavior
-
-API and LLM synthesis are allowed only for advisory artifacts:
-
-- semantic evidence review
-- task/blocker summaries
-- recapture recommendations
-- buyer-safe quality narration
-
-That means agents should not let a model override deterministic QA, final qualification state, rights status, or provenance.
+Those belong to `evaluation_prep`, not to preview alone.
 
 ## Practical Rule For Agents In This Repo
 
-When making changes here, optimize for:
+When changing this repo, optimize for:
 
 1. grounded qualification outputs
-2. fail-closed behavior
-3. explicit human-review boundaries
-4. clean handoff records for the webapp and later technical teams
-5. optional downstream world-model/runtime lanes that never block qualification
-
-Do not let world-model or runtime assumptions replace qualification as the center of gravity.
-Do not let provider previews or generative simulation replace grounded capture evidence; they remain advisory unless separately validated.
+2. fail-closed privacy behavior
+3. explicit separation between preview generation and hosted-runtime prep
+4. durable WebApp handoff records
+5. optional downstream lanes that never rewrite qualification truth

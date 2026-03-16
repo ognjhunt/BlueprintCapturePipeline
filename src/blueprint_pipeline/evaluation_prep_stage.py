@@ -681,6 +681,8 @@ def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]
         "arkit_poses_path": str(context.raw_root / "arkit" / "poses.jsonl"),
         "arkit_intrinsics_path": str(context.raw_root / "arkit" / "intrinsics.json"),
         "arkit_depth_path": str(context.raw_root / "arkit" / "depth"),
+        "privacy_depth_manifest_path": str(context.pipeline_root / "privacy_depth" / "depth_manifest.json"),
+        "privacy_confidence_manifest_path": str(context.pipeline_root / "privacy_depth" / "confidence_manifest.json"),
         "geometry_manifest_path": str(context.pipeline_root / "geometry" / "geometry_manifest.json"),
         "geometry_summary_path": str(context.pipeline_root / "geometry" / "geometry_summary.json"),
         "geometry_poses_path": str(context.pipeline_root / "geometry" / "camera" / "poses.jsonl"),
@@ -1284,6 +1286,17 @@ def _build_site_world_spec(
             "arkit_poses_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("poses_uri"),
             "arkit_intrinsics_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("intrinsics_uri"),
             "arkit_depth_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("depth_prefix_uri"),
+            "depth_conditioning": (
+                dict(conditioning_map.get("depth_conditioning"))
+                if isinstance(conditioning_map.get("depth_conditioning"), Mapping)
+                else {}
+            ),
+            "privacy_depth_manifest_uri": (
+                ((conditioning_map.get("depth_conditioning") or {}) if isinstance(conditioning_map.get("depth_conditioning"), Mapping) else {}).get("depth_manifest_uri")
+            ),
+            "privacy_confidence_manifest_uri": (
+                ((conditioning_map.get("depth_conditioning") or {}) if isinstance(conditioning_map.get("depth_conditioning"), Mapping) else {}).get("confidence_manifest_uri")
+            ),
             "geometry_manifest_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("manifest_uri"),
             "geometry_summary_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("summary_uri"),
             "geometry_poses_uri": ((conditioning_map.get("geometry") or {}) if isinstance(conditioning_map.get("geometry"), Mapping) else {}).get("poses_uri"),

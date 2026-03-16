@@ -773,6 +773,7 @@ def build_capture_bundle_records(
                 "arkit_intrinsics": arkit_intrinsics_uri is not None,
                 "arkit_depth": arkit_depth_prefix_uri is not None,
                 "arkit_confidence": arkit_confidence_prefix_uri is not None,
+                "depth_conditioning": arkit_depth_prefix_uri is not None,
             },
             "operator_notes": [],
             "world_model_candidate": evidence_tier != "pre_screen_video",
@@ -800,6 +801,19 @@ def build_capture_bundle_records(
         "arkit_frames_uri": arkit_frames_uri,
         "arkit_depth_prefix_uri": arkit_depth_prefix_uri,
         "arkit_confidence_prefix_uri": arkit_confidence_prefix_uri,
+        "depth_conditioning": (
+            {
+                "status": "available",
+                "source": "arkit",
+                "provider": "arkit",
+                "depth_prefix_uri": arkit_depth_prefix_uri,
+                "confidence_prefix_uri": arkit_confidence_prefix_uri,
+                "depth_manifest_uri": None,
+                "confidence_manifest_uri": None,
+            }
+            if arkit_depth_prefix_uri
+            else {}
+        ),
         "object_index_uri": object_index_uri,
         "motion_log_uri": motion_log_uri,
         "qa_report_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/qa_report.json",

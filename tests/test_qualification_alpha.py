@@ -166,6 +166,18 @@ def _successful_privacy_processing() -> dict[str, object]:
         "face_anonymized_segments": [],
         "raw_retained": True,
         "fail_closed": True,
+        "depth_source": "depth_anything",
+        "depth_conditioning": {
+            "status": "succeeded",
+            "source": "depth_anything",
+            "provider": "depth_anything_3",
+            "model_name": "da3metric-large",
+            "depth_prefix_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_depth/depth",
+            "confidence_prefix_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_depth/confidence",
+            "depth_manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_depth/depth_manifest.json",
+            "confidence_manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_depth/confidence_manifest.json",
+            "frame_count": 24,
+        },
         "privacy_processed_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/privacy/final_walkthrough.mov",
         "world_model_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/privacy/final_walkthrough.mov",
         "privacy_manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_processing_manifest.json",
@@ -372,11 +384,16 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
     assert metadata["worldlabs_request_manifest_uri"].endswith("/pipeline/worldlabs_request_manifest.json")
     assert metadata["worldlabs_input_manifest_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input_manifest.json")
     assert metadata["worldlabs_input_video_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input.mp4")
+    assert descriptor["depth_conditioning"]["source"] == "depth_anything"
+    assert metadata["privacy_processing"]["depth_conditioning"]["depth_manifest_uri"].endswith(
+        "/pipeline/privacy_depth/depth_manifest.json"
+    )
     assert (pipeline_root / "worldlabs_request_manifest.json").is_file()
     assert sync_calls
     assert sync_calls[0]["artifacts"]["worldlabs_request_manifest_uri"].endswith("/pipeline/worldlabs_request_manifest.json")
     assert sync_calls[0]["artifacts"]["worldlabs_input_manifest_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input_manifest.json")
     assert sync_calls[0]["artifacts"]["worldlabs_input_video_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input.mp4")
+    assert sync_calls[0]["artifacts"]["privacy_depth_manifest_uri"].endswith("/pipeline/privacy_depth/depth_manifest.json")
 
 
 def test_qualification_fail_closed_omits_buyer_safe_media(monkeypatch, tmp_path: Path) -> None:

@@ -78,6 +78,17 @@ def _pipeline_execution_mode() -> str:
     return (os.getenv("PIPELINE_EXECUTION_MODE") or "inline").strip().lower()
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _capture_bridge_handoff_primary() -> bool:
+    return _bool_env("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", default=False)
+
+
 def _build_dispatch_payload(
     *,
     bucket: str,
@@ -302,6 +313,13 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
 
     parsed = parse_descriptor_path(object_name)
     if parsed is not None:
+        if _capture_bridge_handoff_primary():
+            logger.info(
+                "Ignoring descriptor finalize for scene=%s capture=%s because capture bridge handoff is primary",
+                parsed["scene_id"],
+                parsed["capture_id"],
+            )
+            return
         payload = _build_dispatch_payload(
             bucket=bucket,
             object_name=object_name,
@@ -328,6 +346,13 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
         raw_complete["scene_id"],
         raw_complete["capture_id"],
     )
+    if _capture_bridge_handoff_primary() and _dispatch_mode() != "direct":
+        logger.info(
+            "Ignoring raw upload completion for scene=%s capture=%s because capture bridge handoff is primary",
+            raw_complete["scene_id"],
+            raw_complete["capture_id"],
+        )
+        return
     readiness = capture_materialization_readiness(
         bucket=bucket,
         scene_id=raw_complete["scene_id"],

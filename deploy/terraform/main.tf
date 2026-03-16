@@ -400,7 +400,7 @@ resource "google_project_iam_member" "storage_trigger_logging" {
 
 # Main pipeline trigger topic
 resource "google_pubsub_topic" "pipeline_trigger" {
-  name   = "pipeline-trigger"
+  name   = "blueprint-capture-pipeline-handoff"
   labels = local.common_labels
 
   message_retention_duration = "86400s" # 24 hours
@@ -568,6 +568,21 @@ resource "google_cloud_run_v2_job" "pipeline" {
         env {
           name  = "PIPELINE_SYNC_TOKEN"
           value = var.pipeline_sync_token
+        }
+
+        env {
+          name  = "PIPELINE_SYNC_REQUIRED"
+          value = "true"
+        }
+
+        env {
+          name  = "PIPELINE_SYNC_MAX_ATTEMPTS"
+          value = "5"
+        }
+
+        env {
+          name  = "PIPELINE_SYNC_RETRY_DELAY_MS"
+          value = "1000"
         }
 
         volume_mounts {
@@ -920,6 +935,7 @@ resource "google_cloudfunctions2_function" "storage_trigger" {
       REGIONS                    = join(",", local.all_regions)
       SWAP_TRIGGER_DISPATCH_MODE = "pubsub"
       SWAP_TRIGGER_PUBSUB_TOPIC  = google_pubsub_topic.pipeline_trigger.name
+      SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF = "true"
     }
   }
 

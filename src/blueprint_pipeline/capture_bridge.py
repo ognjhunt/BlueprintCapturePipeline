@@ -379,6 +379,7 @@ class CaptureDescriptor:
     arkit_intrinsics_uri: Optional[str] = None
     arkit_depth_prefix_uri: Optional[str] = None
     arkit_confidence_prefix_uri: Optional[str] = None
+    depth_conditioning: Dict[str, Any] = field(default_factory=dict)
     qa_report_uri: Optional[str] = None
     qa_status: Optional[str] = None
     object_index_uri: Optional[str] = None
@@ -492,6 +493,11 @@ class CaptureDescriptor:
             arkit_confidence_prefix_uri=(
                 _optional_str(data.get("arkit_confidence_prefix_uri"))
                 or _optional_str(capture_bundle.get("arkit_confidence_prefix_uri"))
+            ),
+            depth_conditioning=(
+                dict(data.get("depth_conditioning"))
+                if isinstance(data.get("depth_conditioning"), Mapping)
+                else {}
             ),
             qa_report_uri=_optional_str(data.get("qa_report_uri")),
             qa_status=_optional_str(data.get("qa_status")),
@@ -620,6 +626,8 @@ class CaptureDescriptor:
         payload["calibration_assets"] = list(self.calibration_assets)
         payload["scaffolding_validation"] = dict(self.scaffolding_validation)
         payload["uncertainty_priors"] = dict(self.uncertainty_priors)
+        if self.depth_conditioning:
+            payload["depth_conditioning"] = dict(self.depth_conditioning)
         if self.capture_orientation:
             payload["capture_orientation"] = dict(self.capture_orientation)
         return payload
@@ -684,6 +692,7 @@ def build_capture_bundle_constraints(
         "object_index_uri": descriptor.object_index_uri,
         "motion_log_uri": descriptor.motion_log_uri,
         "arkit_frames_uri": descriptor.arkit_frames_uri,
+        "depth_conditioning": dict(descriptor.depth_conditioning),
     }
 
     arkit = {

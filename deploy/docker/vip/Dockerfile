@@ -41,7 +41,7 @@ RUN python -m pip install \
     "huggingface_hub[cli]" \
     "git+https://github.com/ByteDance-Seed/Depth-Anything-3.git@2c21ea849ceec7b469a3e62ea0c0e270afc3281a"
 
-RUN python -m pip install ".[cloud,validation]"
+RUN python -m pip install ".[cloud,runtime,validation]"
 
 RUN mkdir -p /models/hf /models/depth-anything /models/vip
 

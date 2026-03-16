@@ -189,6 +189,14 @@ def _vip_runner_url() -> str:
     return str(os.getenv("PRIVACY_VIP_URL") or "").strip()
 
 
+def _depth_anything_command_template() -> str:
+    return str(os.getenv("PRIVACY_DEPTH_ANYTHING_COMMAND") or os.getenv("DEPTH_ANYTHING_COMMAND") or "").strip()
+
+
+def _depth_anything_runner_url() -> str:
+    return str(os.getenv("PRIVACY_DEPTH_ANYTHING_URL") or _vip_runner_url()).strip()
+
+
 def _deepprivacy_command_template() -> str:
     return str(os.getenv("DEEPPRIVACY2_COMMAND") or "").strip()
 
@@ -267,6 +275,8 @@ def _run_vip(
     output_json_uri: str,
     arkit_depth_prefix_uri: Optional[str],
     arkit_confidence_prefix_uri: Optional[str],
+    depth_manifest_uri: Optional[str],
+    confidence_manifest_uri: Optional[str],
 ) -> Dict[str, Any]:
     timeout_seconds = _timeout_env("PRIVACY_VIP_TIMEOUT_SECONDS", default=7200)
     ensure_dir(output_video.parent)
@@ -286,6 +296,8 @@ def _run_vip(
                 "output_json_path": str(output_json),
                 "arkit_depth_prefix_uri": arkit_depth_prefix_uri,
                 "arkit_confidence_prefix_uri": arkit_confidence_prefix_uri,
+                "depth_manifest_uri": depth_manifest_uri,
+                "confidence_manifest_uri": confidence_manifest_uri,
                 "preferred_depth_source": preferred_depth_source,
                 "vip_model_path": str(os.getenv("VIP_MODEL_PATH") or ""),
                 "depth_anything_model_path": str(os.getenv("DEPTH_ANYTHING_MODEL_PATH") or ""),
@@ -309,6 +321,8 @@ def _run_vip(
                 "OUTPUT_JSON_URI": output_json_uri,
                 "ARKIT_DEPTH_PREFIX_URI": arkit_depth_prefix_uri or "",
                 "ARKIT_CONFIDENCE_PREFIX_URI": arkit_confidence_prefix_uri or "",
+                "DEPTH_MANIFEST_URI": depth_manifest_uri or "",
+                "CONFIDENCE_MANIFEST_URI": confidence_manifest_uri or "",
                 "DEPTH_SOURCE": preferred_depth_source,
                 "VIP_MODEL_PATH": str(os.getenv("VIP_MODEL_PATH") or ""),
                 "DEPTH_ANYTHING_MODEL_PATH": str(os.getenv("DEPTH_ANYTHING_MODEL_PATH") or ""),
@@ -334,6 +348,120 @@ def _run_vip(
         "reason": str(payload.get("reason") or "vip_output_missing"),
         **payload,
     }
+
+
+def _depth_conditioning_from_arkit(
+    *,
+    raw_video_uri: str,
+    arkit_depth_prefix_uri: Optional[str],
+    arkit_confidence_prefix_uri: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "status": "available",
+        "source": "arkit",
+        "provider": "arkit",
+        "model_name": None,
+        "source_video_uri": raw_video_uri or None,
+        "depth_prefix_uri": arkit_depth_prefix_uri,
+        "confidence_prefix_uri": arkit_confidence_prefix_uri,
+        "depth_manifest_uri": None,
+        "confidence_manifest_uri": None,
+        "depth_manifest_path": None,
+        "confidence_manifest_path": None,
+        "frame_count": None,
+    }
+
+
+def _run_depth_anything(
+    *,
+    input_video: Path,
+    input_video_uri: str,
+    depth_dir: Path,
+    depth_prefix_uri: str,
+    confidence_dir: Path,
+    confidence_prefix_uri: str,
+    depth_manifest_path: Path,
+    depth_manifest_uri: str,
+    confidence_manifest_path: Path,
+    confidence_manifest_uri: str,
+) -> Dict[str, Any]:
+    timeout_seconds = _timeout_env("PRIVACY_DEPTH_ANYTHING_TIMEOUT_SECONDS", default=7200)
+    ensure_dir(depth_dir)
+    ensure_dir(confidence_dir)
+    runner_url = _depth_anything_runner_url()
+    if runner_url:
+        payload = _run_http_json(
+            url=runner_url,
+            body={
+                "input_video_uri": input_video_uri,
+                "input_video_path": str(input_video),
+                "depth_generation_only": True,
+                "depth_output_prefix_uri": depth_prefix_uri,
+                "depth_output_dir_path": str(depth_dir),
+                "confidence_output_prefix_uri": confidence_prefix_uri,
+                "confidence_output_dir_path": str(confidence_dir),
+                "output_depth_manifest_uri": depth_manifest_uri,
+                "output_depth_manifest_path": str(depth_manifest_path),
+                "output_confidence_manifest_uri": confidence_manifest_uri,
+                "output_confidence_manifest_path": str(confidence_manifest_path),
+                "depth_anything_model_path": str(os.getenv("DEPTH_ANYTHING_MODEL_PATH") or ""),
+            },
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        template = _depth_anything_command_template()
+        if not template:
+            return {"status": "failed", "reason": "depth_anything_runner_not_configured"}
+        payload = _run_json_command(
+            command_template=template,
+            substitutions={
+                "INPUT_VIDEO": input_video,
+                "INPUT_VIDEO_URI": input_video_uri,
+                "DEPTH_DIR": depth_dir,
+                "DEPTH_PREFIX_URI": depth_prefix_uri,
+                "CONFIDENCE_DIR": confidence_dir,
+                "CONFIDENCE_PREFIX_URI": confidence_prefix_uri,
+                "DEPTH_MANIFEST": depth_manifest_path,
+                "DEPTH_MANIFEST_URI": depth_manifest_uri,
+                "CONFIDENCE_MANIFEST": confidence_manifest_path,
+                "CONFIDENCE_MANIFEST_URI": confidence_manifest_uri,
+                "DEPTH_ANYTHING_MODEL_PATH": str(os.getenv("DEPTH_ANYTHING_MODEL_PATH") or ""),
+            },
+            timeout_seconds=timeout_seconds,
+        )
+    if str(payload.get("status") or "").strip().lower() != "succeeded":
+        return {
+            "status": "failed",
+            "reason": str(payload.get("reason") or "depth_anything_failed"),
+            **payload,
+        }
+
+    _ensure_remote_output_local(
+        capture_root=input_video.parent.parent,
+        output_uri=str(payload.get("depth_manifest_uri") or depth_manifest_uri),
+        destination=depth_manifest_path,
+    )
+    _ensure_remote_output_local(
+        capture_root=input_video.parent.parent,
+        output_uri=str(payload.get("confidence_manifest_uri") or confidence_manifest_uri),
+        destination=confidence_manifest_path,
+    )
+    result = {
+        **payload,
+        "status": "succeeded",
+        "source": "depth_anything",
+        "provider": str(payload.get("provider") or "depth_anything_3"),
+        "model_name": str(payload.get("model_name") or os.getenv("DA3_MODEL_NAME") or "da3metric-large"),
+        "source_video_uri": input_video_uri or None,
+        "depth_prefix_uri": str(payload.get("depth_prefix_uri") or depth_prefix_uri),
+        "confidence_prefix_uri": str(payload.get("confidence_prefix_uri") or confidence_prefix_uri),
+        "depth_manifest_uri": str(payload.get("depth_manifest_uri") or depth_manifest_uri),
+        "confidence_manifest_uri": str(payload.get("confidence_manifest_uri") or confidence_manifest_uri),
+        "depth_manifest_path": str(depth_manifest_path),
+        "confidence_manifest_path": str(confidence_manifest_path),
+        "frame_count": int(payload.get("frame_count") or 0),
+    }
+    return result
 
 
 def _run_deepprivacy2(
@@ -467,6 +595,15 @@ def run_privacy_postprocess(
     final_video_uri = f"{privacy_prefix}/final_walkthrough.mov"
     vip_video_uri = f"{privacy_prefix}/intermediate_vip_walkthrough.mov"
     deepprivacy_video_uri = f"{privacy_prefix}/intermediate_deepprivacy2_walkthrough.mov"
+    privacy_depth_root = pipeline_dir / "privacy_depth"
+    depth_dir = privacy_depth_root / "depth"
+    confidence_dir = privacy_depth_root / "confidence"
+    depth_manifest_path = privacy_depth_root / "depth_manifest.json"
+    confidence_manifest_path = privacy_depth_root / "confidence_manifest.json"
+    depth_prefix_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_depth/depth"
+    confidence_prefix_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_depth/confidence"
+    depth_manifest_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_depth/depth_manifest.json"
+    confidence_manifest_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_depth/confidence_manifest.json"
     raw_video_uri = f"{raw_prefix}/{raw_video_path.name}" if raw_video_path else ""
     raw_arkit_root = capture_root / "raw" / "arkit"
     arkit_depth_prefix_uri = (
@@ -495,6 +632,7 @@ def run_privacy_postprocess(
         "people_removed": 0,
         "face_anonymized_segments": [],
         "depth_source": None,
+        "depth_conditioning": None,
         "raw_video_path": str(raw_video_path) if raw_video_path else None,
         "privacy_processed_video_uri": None,
         "world_model_video_uri": None,
@@ -561,12 +699,51 @@ def run_privacy_postprocess(
         return payload
 
     payload["people_detected"] = int(initial_detection.get("people_count") or 0)
+    if arkit_depth_prefix_uri:
+        depth_conditioning = _depth_conditioning_from_arkit(
+            raw_video_uri=raw_video_uri,
+            arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+            arkit_confidence_prefix_uri=arkit_confidence_prefix_uri,
+        )
+        payload["steps"].append({"name": "depth_conditioning", "result": dict(depth_conditioning)})
+    else:
+        depth_conditioning = _run_depth_anything(
+            input_video=raw_video_path,
+            input_video_uri=raw_video_uri,
+            depth_dir=depth_dir,
+            depth_prefix_uri=depth_prefix_uri,
+            confidence_dir=confidence_dir,
+            confidence_prefix_uri=confidence_prefix_uri,
+            depth_manifest_path=depth_manifest_path,
+            depth_manifest_uri=depth_manifest_uri,
+            confidence_manifest_path=confidence_manifest_path,
+            confidence_manifest_uri=confidence_manifest_uri,
+        )
+        payload["steps"].append({"name": "depth_conditioning", "result": dict(depth_conditioning)})
+        if str(depth_conditioning.get("status") or "").strip().lower() != "succeeded":
+            payload["status"] = "failed_closed"
+            payload["reason"] = str(depth_conditioning.get("reason") or "depth_conditioning_failed")
+            payload["depth_conditioning"] = depth_conditioning
+            write_json(manifest_path, payload)
+            write_json(
+                verification_path,
+                _verification_report(
+                    initial_detection=initial_detection,
+                    vip_verification=None,
+                    fallback_verification=None,
+                    result_status=payload["status"],
+                    result_mode=payload["mode"],
+                ),
+            )
+            return payload
+
+    payload["depth_source"] = str(depth_conditioning.get("source") or "").strip() or None
+    payload["depth_conditioning"] = depth_conditioning
     if not bool(initial_detection.get("people_detected")):
         passthrough = _copy_or_remux_video(raw_video_path, final_video_path)
         payload["steps"].append({"name": "passthrough_copy", "result": dict(passthrough)})
         payload["status"] = "no_people_detected"
         payload["mode"] = "none"
-        payload["depth_source"] = "not_needed"
         payload["privacy_processed_video_uri"] = final_video_uri
         payload["world_model_video_uri"] = final_video_uri
         write_json(manifest_path, payload)
@@ -593,6 +770,16 @@ def run_privacy_postprocess(
         output_json_uri=f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_vip_result.json",
         arkit_depth_prefix_uri=arkit_depth_prefix_uri,
         arkit_confidence_prefix_uri=arkit_confidence_prefix_uri,
+        depth_manifest_uri=(
+            str(depth_conditioning.get("depth_manifest_uri") or "").strip() or None
+            if str(depth_conditioning.get("source") or "").strip() == "depth_anything"
+            else None
+        ),
+        confidence_manifest_uri=(
+            str(depth_conditioning.get("confidence_manifest_uri") or "").strip() or None
+            if str(depth_conditioning.get("source") or "").strip() == "depth_anything"
+            else None
+        ),
     )
     payload["steps"].append({"name": "vip_inpainting", "result": dict(vip_result)})
     if str(vip_result.get("status") or "").strip().lower() != "succeeded":
@@ -649,7 +836,11 @@ def run_privacy_postprocess(
         payload["status"] = "person_removed"
         payload["mode"] = "removal"
         payload["people_removed"] = payload["people_detected"]
-        payload["depth_source"] = str(vip_result.get("depth_source") or "").strip() or None
+        payload["depth_source"] = (
+            str(vip_result.get("depth_source") or "").strip()
+            or str((payload.get("depth_conditioning") or {}).get("source") or "").strip()
+            or None
+        )
         payload["privacy_processed_video_uri"] = final_video_uri
         payload["world_model_video_uri"] = final_video_uri
         write_json(manifest_path, payload)
@@ -749,7 +940,11 @@ def run_privacy_postprocess(
         payload["people_detected"] - int(fallback_verification.get("people_count") or 0),
     )
     payload["face_anonymized_segments"] = _string_list(deepprivacy_result.get("face_anonymized_segments"))
-    payload["depth_source"] = str(vip_result.get("depth_source") or "").strip() or None
+    payload["depth_source"] = (
+        str(vip_result.get("depth_source") or "").strip()
+        or str((payload.get("depth_conditioning") or {}).get("source") or "").strip()
+        or None
+    )
     payload["privacy_processed_video_uri"] = final_video_uri
     payload["world_model_video_uri"] = final_video_uri
     write_json(manifest_path, payload)

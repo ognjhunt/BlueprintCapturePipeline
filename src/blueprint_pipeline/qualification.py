@@ -38,6 +38,7 @@ from .runtime_layer_grounding import build_presentation_variance_policy, with_gr
 from .scene_semantics import infer_capture_fidelity_review
 from .task_targets import infer_task_targets, write_task_targets
 from .webapp_sync import (
+    WebappSyncError,
     derive_webapp_opportunity_state,
     derive_webapp_qualification_state,
     sync_webapp_pipeline_attachment,
@@ -851,6 +852,7 @@ def _scene_memory_capture_summary(
                 "arkit_intrinsics": descriptor.arkit_intrinsics_uri is not None,
                 "arkit_depth": descriptor.arkit_depth_prefix_uri is not None,
                 "arkit_confidence": descriptor.arkit_confidence_prefix_uri is not None,
+                "depth_conditioning": bool(descriptor.depth_conditioning),
             }
         ),
         "operator_notes": _string_list(capture_summary.get("operator_notes")),
@@ -995,10 +997,18 @@ def _write_scene_memory_bundle(
     scorecard: Mapping[str, Any],
     qualification_record: Mapping[str, Any],
     geometry_artifacts: Optional[Mapping[str, Any]] = None,
+    depth_conditioning: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     policy = WorldModelPolicy.from_env()
     geometry_conditioning = (
         dict(geometry_artifacts) if isinstance(geometry_artifacts, Mapping) else {}
+    )
+    effective_depth_conditioning = (
+        dict(depth_conditioning)
+        if isinstance(depth_conditioning, Mapping)
+        else dict(descriptor.depth_conditioning)
+        if isinstance(descriptor.depth_conditioning, Mapping)
+        else {}
     )
     geometry_summary = (
         geometry_conditioning.get("summary")
@@ -1059,6 +1069,16 @@ def _write_scene_memory_bundle(
                 "geometry_confidence_manifest_uri": geometry_conditioning.get("confidence_manifest_uri"),
             }
         )
+    if effective_depth_conditioning:
+        explicit_conditioning.update(
+            {
+                "depth_conditioning_source": effective_depth_conditioning.get("source"),
+                "depth_conditioning_depth_manifest_uri": effective_depth_conditioning.get("depth_manifest_uri"),
+                "depth_conditioning_confidence_manifest_uri": effective_depth_conditioning.get("confidence_manifest_uri"),
+                "depth_conditioning_depth_prefix_uri": effective_depth_conditioning.get("depth_prefix_uri"),
+                "depth_conditioning_confidence_prefix_uri": effective_depth_conditioning.get("confidence_prefix_uri"),
+            }
+        )
 
     conditioning_provenance = build_provenance_record(
         grounding_level="observed",
@@ -1071,6 +1091,10 @@ def _write_scene_memory_bundle(
             geometry_conditioning.get("geometry_summary_uri"),
             geometry_conditioning.get("camera_poses_uri"),
             geometry_conditioning.get("depth_manifest_uri"),
+            effective_depth_conditioning.get("depth_manifest_uri"),
+            effective_depth_conditioning.get("confidence_manifest_uri"),
+            effective_depth_conditioning.get("depth_prefix_uri"),
+            effective_depth_conditioning.get("confidence_prefix_uri"),
         ],
         observation_coverage={
             "capture_modality": descriptor.capture_modality,
@@ -1111,6 +1135,7 @@ def _write_scene_memory_bundle(
             "depth_prefix_uri": descriptor.arkit_depth_prefix_uri,
             "confidence_prefix_uri": descriptor.arkit_confidence_prefix_uri,
         },
+        "depth_conditioning": dict(effective_depth_conditioning),
         "geometry": {
             "manifest_uri": geometry_conditioning.get("geometry_manifest_uri"),
             "summary_uri": geometry_conditioning.get("geometry_summary_uri"),
@@ -1138,6 +1163,7 @@ def _write_scene_memory_bundle(
             "summary_uri": geometry_conditioning.get("geometry_summary_uri"),
             "summary": dict(geometry_summary) if isinstance(geometry_summary, Mapping) else {},
         },
+        "depth_conditioning": dict(effective_depth_conditioning),
         "primary_runtime_backend": "neoverse",
         "canonical_world_model": canonical_world_model,
         "runtime_render_source": runtime_render_source,
@@ -1192,6 +1218,7 @@ def _write_scene_memory_bundle(
             "confidence_manifest_uri": geometry_conditioning.get("confidence_manifest_uri"),
             "summary": dict(geometry_summary) if isinstance(geometry_summary, Mapping) else {},
         },
+        "depth_conditioning": dict(effective_depth_conditioning),
         "primary_runtime_backend": "neoverse",
         "canonical_world_model": canonical_world_model,
         "runtime_render_source": runtime_render_source,
@@ -1530,6 +1557,7 @@ def _write_scene_memory_bundle(
         "geometry_intrinsics_uri": geometry_conditioning.get("camera_intrinsics_uri"),
         "geometry_depth_manifest_uri": geometry_conditioning.get("depth_manifest_uri"),
         "geometry_confidence_manifest_uri": geometry_conditioning.get("confidence_manifest_uri"),
+        "depth_conditioning": dict(effective_depth_conditioning),
         **adapter_artifacts,
     }
 
@@ -4110,6 +4138,13 @@ def run_qualification_pipeline(
         descriptor_payload["privacy_status"] = privacy_processing.get("status")
         descriptor_payload["privacy_mode"] = privacy_processing.get("mode")
         descriptor_payload["privacy_manifest_uri"] = privacy_processing.get("privacy_manifest_uri")
+        descriptor_payload["depth_conditioning"] = (
+            dict(privacy_processing.get("depth_conditioning"))
+            if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
+            else dict(descriptor.depth_conditioning)
+            if isinstance(descriptor.depth_conditioning, Mapping)
+            else {}
+        )
         preview_requested_for_worldlabs = any(
             str(value or "").strip().lower() in {"preview_simulation", "preview"}
             for value in descriptor.requested_outputs
@@ -4141,7 +4176,26 @@ def run_qualification_pipeline(
             "face_anonymized_segments": _string_list(privacy_processing.get("face_anonymized_segments")),
             "privacy_manifest_uri": privacy_processing.get("privacy_manifest_uri"),
             "privacy_verification_report_uri": privacy_processing.get("privacy_verification_report_uri"),
+            "depth_source": privacy_processing.get("depth_source"),
+            "depth_conditioning": (
+                dict(privacy_processing.get("depth_conditioning"))
+                if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
+                else {}
+            ),
         }
+        scene_memory_capture = (
+            dict(metadata_payload.get("scene_memory_capture"))
+            if isinstance(metadata_payload.get("scene_memory_capture"), Mapping)
+            else {}
+        )
+        sensor_availability = (
+            dict(scene_memory_capture.get("sensor_availability"))
+            if isinstance(scene_memory_capture.get("sensor_availability"), Mapping)
+            else {}
+        )
+        sensor_availability["depth_conditioning"] = bool(privacy_processing.get("depth_conditioning"))
+        scene_memory_capture["sensor_availability"] = sensor_availability
+        metadata_payload["scene_memory_capture"] = scene_memory_capture
         metadata_payload["worldlabs_input_video_uri"] = worldlabs_input.get("output_video_uri")
         metadata_payload["worldlabs_input_manifest_uri"] = worldlabs_input.get("manifest_uri")
         metadata_payload["worldlabs_input_status"] = worldlabs_input.get("status")
@@ -4349,6 +4403,7 @@ def run_qualification_pipeline(
                 scorecard=scorecard,
                 qualification_record=qualification_record,
                 geometry_artifacts=geometry_artifacts,
+                depth_conditioning=privacy_processing.get("depth_conditioning"),
             )
             if "scene_memory" in downstream_requested_lanes and privacy_world_model_ready
             else _empty_downstream_artifacts()
@@ -4401,6 +4456,16 @@ def run_qualification_pipeline(
                 "gemini_capture_fidelity_review": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
                 "privacy_processing_manifest": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
                 "privacy_verification_report": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
+                "privacy_depth_manifest": (
+                    (privacy_processing.get("depth_conditioning") or {}).get("depth_manifest_uri")
+                    if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
+                    else None
+                ),
+                "privacy_confidence_manifest": (
+                    (privacy_processing.get("depth_conditioning") or {}).get("confidence_manifest_uri")
+                    if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
+                    else None
+                ),
                 "world_model_fit_summary": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
                 "capturer_payout_recommendation": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
                 "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
@@ -4558,6 +4623,16 @@ def run_qualification_pipeline(
             "gemini_capture_fidelity_review": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
             "privacy_processing_manifest": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
             "privacy_verification_report": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
+            "privacy_depth_manifest": (
+                (privacy_processing.get("depth_conditioning") or {}).get("depth_manifest_uri")
+                if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
+                else None
+            ),
+            "privacy_confidence_manifest": (
+                (privacy_processing.get("depth_conditioning") or {}).get("confidence_manifest_uri")
+                if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
+                else None
+            ),
             "world_model_fit_summary": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
             "capturer_payout_recommendation": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
             "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
@@ -4578,85 +4653,112 @@ def run_qualification_pipeline(
         })
         write_json(pipeline_dir / ".qualification_pipeline_complete", completion_payload)
         write_json(pipeline_dir / ".swap_pipeline_complete", completion_payload)
-        sync_webapp_pipeline_attachment(
-            site_submission_id=opportunity_handoff.get("site_submission_id"),
-            request_id=opportunity_handoff.get("site_submission_id"),
-            buyer_request_id=descriptor.buyer_request_id or opportunity_handoff.get("site_submission_id"),
-            capture_job_id=descriptor.capture_job_id or descriptor.capture_id,
-            scene_id=descriptor.scene_id,
-            capture_id=descriptor.capture_id,
-            pipeline_prefix=pipeline_prefix,
-            qualification_state=qualification_state,
-            opportunity_state=opportunity_state,
-            authoritative_state_update=True,
-            artifacts=_present_artifacts({
-                "readiness_decision_uri": quality_report["artifacts"].get("readiness_decision"),
-                "readiness_report_uri": quality_report["artifacts"].get("readiness_report"),
-                "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
-                "qualification_summary_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_summary.json",
-                "capture_quality_summary_uri": f"gs://{bucket}/{pipeline_prefix}/capture_quality_summary.json",
-                "rights_and_compliance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/rights_and_compliance_summary.json",
-                "buyer_trust_score_uri": f"gs://{bucket}/{pipeline_prefix}/buyer_trust_score.json",
-                "world_model_fit_summary_uri": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
-                "capturer_payout_recommendation_uri": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
-                "recapture_requirements_uri": f"gs://{bucket}/{pipeline_prefix}/recapture_requirements.json",
-                "provider_preview_status_uri": f"gs://{bucket}/{pipeline_prefix}/provider_preview_status.json",
-                "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
-                "privacy_verification_report_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
-                "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
-                "gemini_capture_fidelity_review_uri": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
-                "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
-                "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
-                "worldlabs_request_manifest_uri": worldlabs_request_manifest_uri,
-                "worldlabs_operation_manifest_uri": worldlabs_operation_manifest_uri,
-                "worldlabs_world_manifest_uri": worldlabs_world_manifest_uri,
-                "worldlabs_input_manifest_uri": worldlabs_input.get("manifest_uri"),
-                "worldlabs_input_video_uri": worldlabs_input.get("output_video_uri"),
-                "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),
-                "geometry_summary_uri": geometry_artifacts.get("geometry_summary_uri"),
-                **(
-                    {
-                        "privacy_processed_video_uri": str(privacy_processing.get("privacy_processed_video_uri")),
-                        "world_model_video_uri": str(privacy_processing.get("world_model_video_uri")),
-                    }
-                    if privacy_world_model_ready and privacy_processing.get("privacy_processed_video_uri")
+        webapp_sync_artifacts = _present_artifacts({
+            "readiness_decision_uri": quality_report["artifacts"].get("readiness_decision"),
+            "readiness_report_uri": quality_report["artifacts"].get("readiness_report"),
+            "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
+            "qualification_summary_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_summary.json",
+            "capture_quality_summary_uri": f"gs://{bucket}/{pipeline_prefix}/capture_quality_summary.json",
+            "rights_and_compliance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/rights_and_compliance_summary.json",
+            "buyer_trust_score_uri": f"gs://{bucket}/{pipeline_prefix}/buyer_trust_score.json",
+            "world_model_fit_summary_uri": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
+            "capturer_payout_recommendation_uri": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
+            "recapture_requirements_uri": f"gs://{bucket}/{pipeline_prefix}/recapture_requirements.json",
+            "provider_preview_status_uri": f"gs://{bucket}/{pipeline_prefix}/provider_preview_status.json",
+            "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
+            "privacy_verification_report_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
+            "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
+            "gemini_capture_fidelity_review_uri": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
+            "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
+            "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
+            "worldlabs_request_manifest_uri": worldlabs_request_manifest_uri,
+            "worldlabs_operation_manifest_uri": worldlabs_operation_manifest_uri,
+            "worldlabs_world_manifest_uri": worldlabs_world_manifest_uri,
+            "worldlabs_input_manifest_uri": worldlabs_input.get("manifest_uri"),
+            "worldlabs_input_video_uri": worldlabs_input.get("output_video_uri"),
+            "privacy_depth_manifest_uri": (
+                (privacy_processing.get("depth_conditioning") or {}).get("depth_manifest_uri")
+                if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
+                else None
+            ),
+            "privacy_confidence_manifest_uri": (
+                (privacy_processing.get("depth_conditioning") or {}).get("confidence_manifest_uri")
+                if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
+                else None
+            ),
+            "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),
+            "geometry_summary_uri": geometry_artifacts.get("geometry_summary_uri"),
+            **(
+                {
+                    "privacy_processed_video_uri": str(privacy_processing.get("privacy_processed_video_uri")),
+                    "world_model_video_uri": str(privacy_processing.get("world_model_video_uri")),
+                }
+                if privacy_world_model_ready and privacy_processing.get("privacy_processed_video_uri")
+                else {}
+            ),
+            "opportunity_handoff_uri": quality_report["artifacts"].get("opportunity_handoff"),
+            "human_actions_required_uri": quality_report["artifacts"].get("human_actions_required"),
+            "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
+            "agent_readiness_memo_uri": f"gs://{bucket}/{pipeline_prefix}/agent_readiness_memo.md",
+        })
+        webapp_deployment_readiness = {
+            "qualification_state": qualification_state,
+            "opportunity_state": opportunity_state,
+            "alpha_scoring_status": capture_fidelity_review.get("status"),
+            "buyer_trust_score": buyer_trust_score,
+            "qualification_summary": launch_bundle["qualification_summary"],
+            "capture_quality_summary": launch_bundle["capture_quality_summary"],
+            "rights_and_compliance": launch_bundle["rights_and_compliance_summary"],
+            "privacy_processing": {
+                "status": privacy_processing.get("status"),
+                "mode": privacy_processing.get("mode"),
+                "fallback_used": bool(privacy_processing.get("fallback_used")),
+                "people_detected": int(privacy_processing.get("people_detected") or 0),
+                "people_removed": int(privacy_processing.get("people_removed") or 0),
+                "face_anonymized_segments": _string_list(privacy_processing.get("face_anonymized_segments")),
+                "raw_retained": bool(privacy_processing.get("raw_retained")),
+                "fail_closed": bool(privacy_processing.get("fail_closed")),
+                "depth_source": privacy_processing.get("depth_source"),
+                "depth_conditioning": (
+                    dict(privacy_processing.get("depth_conditioning"))
+                    if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
                     else {}
                 ),
-                "opportunity_handoff_uri": quality_report["artifacts"].get("opportunity_handoff"),
-                "human_actions_required_uri": quality_report["artifacts"].get("human_actions_required"),
-                "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
-                "agent_readiness_memo_uri": f"gs://{bucket}/{pipeline_prefix}/agent_readiness_memo.md",
-            }),
-            derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
-            deployment_readiness={
-                "qualification_state": qualification_state,
-                "opportunity_state": opportunity_state,
-                "alpha_scoring_status": capture_fidelity_review.get("status"),
-                "buyer_trust_score": buyer_trust_score,
-                "qualification_summary": launch_bundle["qualification_summary"],
-                "capture_quality_summary": launch_bundle["capture_quality_summary"],
-                "rights_and_compliance": launch_bundle["rights_and_compliance_summary"],
-                "privacy_processing": {
-                    "status": privacy_processing.get("status"),
-                    "mode": privacy_processing.get("mode"),
-                    "fallback_used": bool(privacy_processing.get("fallback_used")),
-                    "people_detected": int(privacy_processing.get("people_detected") or 0),
-                    "people_removed": int(privacy_processing.get("people_removed") or 0),
-                    "face_anonymized_segments": _string_list(privacy_processing.get("face_anonymized_segments")),
-                    "raw_retained": bool(privacy_processing.get("raw_retained")),
-                    "fail_closed": bool(privacy_processing.get("fail_closed")),
-                },
-                "missing_evidence": launch_bundle["recapture_requirements"]["missing_evidence"],
-                "recapture_required": launch_bundle["recapture_requirements"]["required"],
-                "recapture_recommendations": launch_bundle["recapture_requirements"].get("recommendations"),
-                "preview_status": launch_bundle["preview_status"],
-                "provider_run": provider_run,
-                "world_model_fit_summary": world_model_fit_summary,
-                "capturer_payout_recommendation": capturer_payout_recommendation,
-                "provenance_summary": provenance_summary,
-                "advisory_geometry": _geometry_advisory_payload(geometry_artifacts),
             },
-        )
+            "missing_evidence": launch_bundle["recapture_requirements"]["missing_evidence"],
+            "recapture_required": launch_bundle["recapture_requirements"]["required"],
+            "recapture_recommendations": launch_bundle["recapture_requirements"].get("recommendations"),
+            "preview_status": launch_bundle["preview_status"],
+            "provider_run": provider_run,
+            "world_model_fit_summary": world_model_fit_summary,
+            "capturer_payout_recommendation": capturer_payout_recommendation,
+            "provenance_summary": provenance_summary,
+            "advisory_geometry": _geometry_advisory_payload(geometry_artifacts),
+        }
+        webapp_sync_result_path = pipeline_dir / "webapp_sync_result.json"
+        try:
+            webapp_sync_result = sync_webapp_pipeline_attachment(
+                site_submission_id=opportunity_handoff.get("site_submission_id"),
+                request_id=opportunity_handoff.get("site_submission_id"),
+                buyer_request_id=descriptor.buyer_request_id or opportunity_handoff.get("site_submission_id"),
+                capture_job_id=descriptor.capture_job_id or descriptor.capture_id,
+                scene_id=descriptor.scene_id,
+                capture_id=descriptor.capture_id,
+                pipeline_prefix=pipeline_prefix,
+                qualification_state=qualification_state,
+                opportunity_state=opportunity_state,
+                authoritative_state_update=True,
+                artifacts=webapp_sync_artifacts,
+                derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
+                deployment_readiness=webapp_deployment_readiness,
+            )
+        except WebappSyncError as exc:
+            webapp_sync_result = {"status": "failed", "reason": str(exc)}
+            write_json(webapp_sync_result_path, webapp_sync_result)
+            raise StageError("webapp_sync", str(exc)) from exc
+        if webapp_sync_result is None:
+            webapp_sync_result = {"status": "skipped", "reason": "sync_returned_none"}
+        write_json(webapp_sync_result_path, webapp_sync_result)
 
         return {
             "status": "completed",
@@ -4667,6 +4769,7 @@ def run_qualification_pipeline(
             "readiness_state": qualification_record.get("readiness_state"),
             "completeness_status": scorecard.get("completeness_status"),
             "match_ready": opportunity_handoff.get("match_ready"),
+            "webapp_sync_result_uri": f"gs://{bucket}/{pipeline_prefix}/webapp_sync_result.json",
         }
 
     except Exception as exc:

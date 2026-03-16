@@ -45,7 +45,14 @@ Shared input fields:
 - `output_video_uri` or `output_video_path`
 - `arkit_depth_prefix_uri`
 - `arkit_confidence_prefix_uri`
+- `depth_manifest_uri`
+- `confidence_manifest_uri`
 - `preferred_depth_source`
+- `depth_generation_only`
+- `depth_output_prefix_uri`
+- `confidence_output_prefix_uri`
+- `output_depth_manifest_uri`
+- `output_confidence_manifest_uri`
 - `vip_model_path`
 - `depth_anything_model_path`
 
@@ -55,6 +62,8 @@ Shared input fields:
 - `output_video`
 - `output_video_uri`
 - `depth_source`
+- `depth_manifest_uri`
+- `confidence_manifest_uri`
 
 `deepprivacy2-anonymize` request fields:
 
@@ -78,13 +87,15 @@ The services support both mounted GCS paths and direct `gs://` URIs.
 
 ## Depth Behavior
 
-`vip-inpaint` must select depth automatically:
+Depth behavior is now mandatory and persistent:
 
 - use ARKit depth and confidence when present
-- otherwise use Depth Anything
+- otherwise run Depth Anything 3 for every non-ARKit capture, even when SAM3 finds no people
+- persist `depth_manifest.json` and `confidence_manifest.json` plus the per-frame artifact prefixes
+- reuse those manifests during VIP inpainting for non-ARKit captures
 - always return `depth_source = "arkit"` or `depth_source = "depth_anything"`
 
-No separate Depth Anything service is used.
+No separate service is required. `vip-inpaint` accepts a `depth_generation_only` request mode for DA3 artifact generation, and standard VIP requests can consume the resulting manifests.
 
 ## Model Paths
 
@@ -106,7 +117,7 @@ The services materialize remote weights locally at request time when necessary. 
 ## Runtime Notes
 
 - `sam3-detect` installs Meta's `sam3` package and expects either `SAM3_WEIGHTS_PATH` or Hugging Face access to `facebook/sam3`.
-- `vip-inpaint` uses the repo-managed depth-guided inpainting backend and bundles Depth Anything 3 for non-ARKit captures.
+- `vip-inpaint` uses the repo-managed depth-guided inpainting backend, bundles Depth Anything 3, and supports both depth-only generation and depth-guided inpainting.
 - `deepprivacy2-anonymize` shells into a checked-out `deep_privacy2` repo and uses `configs/anonymizers/face.py`.
 
 ## Deployment Caveats

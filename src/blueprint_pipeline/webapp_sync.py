@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Dict, Mapping, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+
+
+class WebappSyncError(RuntimeError):
+    """Raised when pipeline-to-webapp sync is configured as required and fails."""
 
 
 def _string_env(name: str) -> str:
@@ -22,6 +27,13 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = _string_env(name).lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
 
 
 def derive_webapp_qualification_state(*, readiness_state: object, completeness_status: object) -> str:
@@ -103,11 +115,21 @@ def sync_webapp_pipeline_attachment(
     derived_assets: Optional[Mapping[str, Any]] = None,
     deployment_readiness: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any]:
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
     sync_token = _string_env("PIPELINE_SYNC_TOKEN")
+    sync_required = _bool_env("PIPELINE_SYNC_REQUIRED", default=False)
+    max_attempts = max(1, _int_env("PIPELINE_SYNC_MAX_ATTEMPTS", 3))
+    retry_delay_ms = max(0, _int_env("PIPELINE_SYNC_RETRY_DELAY_MS", 500))
     if not sync_url or not sync_token:
-        return None
+        result = {
+            "status": "failed" if sync_required else "skipped",
+            "reason": "sync_not_configured",
+            "attempts": 0,
+        }
+        if sync_required:
+            raise WebappSyncError("sync_not_configured")
+        return result
 
     payload = build_webapp_pipeline_attachment_payload(
         site_submission_id=site_submission_id,
@@ -124,23 +146,47 @@ def sync_webapp_pipeline_attachment(
         deployment_readiness=deployment_readiness,
         authoritative_state_update=authoritative_state_update,
     )
-    request = urllib_request.Request(
-        sync_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "X-Blueprint-Pipeline-Token": sync_token,
-        },
-        method="POST",
-    )
     timeout_seconds = max(1, _int_env("PIPELINE_SYNC_TIMEOUT_SECONDS", 10))
-    try:
-        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-    except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, ValueError):
-        return None
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    last_reason = "sync_unknown_failure"
+
+    for attempt in range(1, max_attempts + 1):
+        request = urllib_request.Request(
+            sync_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Blueprint-Pipeline-Token": sync_token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            last_reason = f"http_error:{exc.code}"
+        except urllib_error.URLError as exc:
+            last_reason = f"url_error:{exc.reason}"
+        except (TimeoutError, ValueError) as exc:
+            last_reason = exc.__class__.__name__.lower()
+        else:
+            try:
+                parsed = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                last_reason = "invalid_json"
+            else:
+                return {
+                    "status": "succeeded",
+                    "attempts": attempt,
+                    "response": parsed if isinstance(parsed, dict) else {},
+                }
+
+        if attempt < max_attempts and retry_delay_ms:
+            time.sleep(retry_delay_ms / 1000)
+
+    if sync_required:
+        raise WebappSyncError(last_reason)
+    return {
+        "status": "failed",
+        "reason": last_reason,
+        "attempts": max_attempts,
+    }

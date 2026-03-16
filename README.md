@@ -68,6 +68,7 @@ The production preview path expects URL-first privacy runners:
 
 - `PRIVACY_SAM3_URL`
 - `PRIVACY_VIP_URL`
+- `PRIVACY_DEPTH_ANYTHING_URL` (optional; otherwise `vip-inpaint` handles depth-only requests)
 - `PRIVACY_DEEPPRIVACY2_URL`
 - `PRIVACY_RUNNER_TOKEN`
 
@@ -79,11 +80,12 @@ The production deployment should use three GPU Cloud Run services:
 
 The main `blueprint-pipeline` job stays CPU-only. The concrete service contract, storage behavior, and model-path rules are documented in [docs/PRIVACY_RUNNER_SERVICES.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PRIVACY_RUNNER_SERVICES.md).
 
-`vip-inpaint` is responsible for depth selection:
+The privacy path now treats depth generation as a first-class step:
 
 - use ARKit depth/confidence when available
-- fall back to Depth Anything for non-ARKit captures, including glasses captures
-- emit `depth_source` in the VIP result payload
+- otherwise run Depth Anything 3 for every non-ARKit capture, including glasses captures, even if no humans are detected
+- persist the resulting depth and confidence manifests for downstream grounding
+- pass those manifests into VIP so non-ARKit inpainting reuses the generated depth artifacts
 
 ## Local GPU Bring-Up
 

@@ -63,3 +63,38 @@ def test_on_storage_finalize_retries_when_capture_bundle_not_ready(monkeypatch) 
         assert "missing_manifest" in str(exc)
     else:  # pragma: no cover - defensive
         raise AssertionError("Expected readiness failure to raise")
+
+
+def test_on_storage_finalize_ignores_bridge_primary_raw_completion(monkeypatch) -> None:
+    storage_trigger = _load_storage_trigger_module()
+    dispatched: list[dict[str, object]] = []
+
+    monkeypatch.setenv("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", "true")
+    monkeypatch.setenv("SWAP_TRIGGER_DISPATCH_MODE", "pubsub")
+    monkeypatch.setattr(storage_trigger, "_dispatch_payload", lambda payload: dispatched.append(dict(payload)) or "ok")
+
+    event = {
+        "bucket": "bucket",
+        "name": "scenes/scene-1/captures/capture-1/raw/capture_upload_complete.json",
+    }
+
+    storage_trigger.on_storage_finalize(event, context=None)
+
+    assert dispatched == []
+
+
+def test_on_storage_finalize_ignores_bridge_primary_descriptor(monkeypatch) -> None:
+    storage_trigger = _load_storage_trigger_module()
+    dispatched: list[dict[str, object]] = []
+
+    monkeypatch.setenv("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", "true")
+    monkeypatch.setattr(storage_trigger, "_dispatch_payload", lambda payload: dispatched.append(dict(payload)) or "ok")
+
+    event = {
+        "bucket": "bucket",
+        "name": "scenes/scene-1/captures/capture-1/capture_descriptor.json",
+    }
+
+    storage_trigger.on_storage_finalize(event, context=None)
+
+    assert dispatched == []

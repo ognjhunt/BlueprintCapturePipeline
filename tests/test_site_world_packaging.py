@@ -56,6 +56,34 @@ def _successful_capture_review() -> dict[str, object]:
     }
 
 
+def _successful_privacy_processing() -> dict[str, object]:
+    return {
+        "schema_version": "v1",
+        "status": "person_removed",
+        "mode": "removal",
+        "fallback_used": False,
+        "people_detected": 1,
+        "people_removed": 1,
+        "face_anonymized_segments": [],
+        "raw_retained": True,
+        "fail_closed": True,
+        "depth_source": "arkit",
+        "depth_conditioning": {
+            "status": "available",
+            "source": "arkit",
+            "provider": "arkit",
+            "depth_prefix_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/raw/arkit/depth",
+            "confidence_prefix_uri": None,
+            "depth_manifest_uri": None,
+            "confidence_manifest_uri": None,
+        },
+        "privacy_processed_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/privacy/final_walkthrough.mov",
+        "world_model_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/privacy/final_walkthrough.mov",
+        "privacy_manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_processing_manifest.json",
+        "privacy_verification_report_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_verification_report.json",
+    }
+
+
 class _HealthyRuntimeClient:
     def __init__(self, *_args, **_kwargs) -> None:
         pass
@@ -301,6 +329,7 @@ def _build_staged_capture(
         "intended_space_type": "office",
         "width": 1920,
         "height": 1080,
+        "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
     }
     if manifest_overrides:
         manifest_payload.update(manifest_overrides)
@@ -388,6 +417,7 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
     monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
@@ -420,12 +450,12 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert presentation_bundle["render_inputs"]["scene_memory_manifest_uri"].endswith("/scene_memory/scene_memory_manifest.json")
     assert presentation_bundle["render_inputs"]["conditioning_bundle_uri"].endswith("/scene_memory/conditioning_bundle.json")
     assert presentation_bundle["status"] == "missing"
-    assert presentation_bundle["bundle_type"] == ""
-    assert presentation_bundle["renderer_backend"] == "neoverse"
+    assert presentation_bundle["bundle_type"] == "gsplat_scene_v1"
+    assert presentation_bundle["renderer_backend"] == "gsplat"
     assert presentation_bundle["fallback_policy"] == "canonical_only"
     assert presentation_world_manifest["presentation_bundle_uri"].endswith("/presentation_world/presentation_bundle.json")
-    assert presentation_world_manifest["bundle_type"] == ""
-    assert presentation_world_manifest["renderer_backend"] == "neoverse"
+    assert presentation_world_manifest["bundle_type"] == "gsplat_scene_v1"
+    assert presentation_world_manifest["renderer_backend"] == "gsplat"
     assert presentation_world_manifest["readiness"]["bundle_status"] == "missing"
     assert presentation_world_manifest["orientation"]["display_orientation"] == "portrait"
     assert presentation_world_manifest["orientation"]["display_rotation_degrees"] == 90
@@ -433,7 +463,7 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert runtime_demo_manifest["public_ui_base_url"] == "https://demo.example/public"
     assert runtime_demo_manifest["presentation_world_manifest_uri"].endswith("/presentation_world/presentation_world_manifest.json")
     assert runtime_demo_manifest["renderer_backend"] == "gsplat"
-    assert runtime_demo_manifest["bundle_status"] == "ready"
+    assert runtime_demo_manifest["bundle_status"] == "missing"
     assert runtime_demo_manifest["fallback_policy"] == "canonical_only"
     assert runtime_demo_manifest["interactive_demo"]["readiness_state"] == "ready"
     assert runtime_demo_manifest["interactive_demo"]["render_inputs"]["site_world_spec_uri"].endswith("/evaluation_prep/site_world_spec.json")
@@ -449,18 +479,18 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert spec["primary_runtime_backend"] == "neoverse"
     assert spec["canonical_world_model"]["world_model_backend"] == "neoverse"
     assert spec["canonical_world_model"]["scene_representation"] == "pending_world_model_service"
-    assert spec["runtime_render_source"] == "pending_world_model_service"
-    assert spec["fallback_mode"] == "none"
+    assert spec["runtime_render_source"] == "neoverse_full_capture"
+    assert spec["fallback_mode"] == "arkit_rgbd_last_resort"
     assert spec["canonical_world_model"]["primary_asset_path"] == ""
-    assert spec["presentation"]["bundle_type"] == ""
-    assert spec["presentation"]["renderer_backend"] == "neoverse"
+    assert spec["presentation"]["bundle_type"] == "gsplat_scene_v1"
+    assert spec["presentation"]["renderer_backend"] == "gsplat"
     assert spec["presentation"]["bundle_status"] == "missing"
     assert spec["presentation"]["primary_asset_path"] == ""
     assert spec["presentation"]["orientation"]["display_orientation"] == "portrait"
     summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
     launchable_export = json.loads((eval_root / "launchable_export_bundle.json").read_text(encoding="utf-8"))
-    assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is True
-    assert launchable_export["bundles"]["presentation_demo_ui"]["launchable"] is True
+    assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is False
+    assert launchable_export["bundles"]["presentation_demo_ui"]["launchable"] is False
 
 
 def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_path: Path) -> None:
@@ -479,6 +509,7 @@ def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_pat
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
     monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
@@ -515,6 +546,7 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
@@ -549,7 +581,7 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
     runtime_demo_manifest = json.loads((pipeline_root / "presentation_world" / "runtime_demo_manifest.json").read_text(encoding="utf-8"))
     assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is False
-    assert runtime_demo_manifest["status"] == "ready"
+    assert runtime_demo_manifest["status"] == "missing"
     assert runtime_demo_manifest["interactive_demo"]["readiness_state"] == "blocked"
     assert "missing_demo_ui_base_url" in runtime_demo_manifest["interactive_demo"]["blockers"]
 
@@ -576,6 +608,7 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
     monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
@@ -637,6 +670,7 @@ def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: P
             "video_uri": "walkthrough.mov",
             "width": 1920,
             "height": 1080,
+            "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
         },
         {
             "sceneId": scene_id,
@@ -671,6 +705,7 @@ def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: P
             "video_uri": "walkthrough.mov",
             "width": 1920,
             "height": 1080,
+            "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
         },
         {"sceneId": scene_id, "captureId": capture_id},
     )
@@ -699,6 +734,7 @@ def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: P
             "video_uri": "walkthrough.mov",
             "width": 720,
             "height": 1280,
+            "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
         },
         {"sceneId": scene_id, "captureId": capture_id},
     )
