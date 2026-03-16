@@ -16,7 +16,11 @@ VIP requests additionally accept:
 - ``masks_prefix_uri`` or ``masks_dir_path``: source masks from SAM3
 - ``output_video_uri`` or ``output_video_path``: cleaned walkthrough destination
 - ``arkit_depth_prefix_uri`` / ``arkit_confidence_prefix_uri``: optional ARKit depth bundles
+- ``depth_manifest_uri`` / ``confidence_manifest_uri``: optional precomputed DA3 manifests to reuse
 - ``preferred_depth_source``: ``arkit`` or ``depth_anything``
+- ``depth_generation_only``: when true, emit DA3 artifacts and manifests without running VIP
+- ``depth_output_prefix_uri`` / ``confidence_output_prefix_uri``: destinations for per-frame DA3 artifacts
+- ``output_depth_manifest_uri`` / ``output_confidence_manifest_uri``: destinations for DA3 manifests
 - ``vip_model_path``: reserved for proprietary VIP model drops
 - ``depth_anything_model_path``: local path, ``gs://`` URI, or HTTPS URL to the Depth Anything weights
 
@@ -217,6 +221,22 @@ def _write_payload_json(payload: Mapping[str, Any], output_json_path: Path, outp
         _copy_file_to_uri(output_json_path, output_json_uri)
 
 
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _join_output_reference(prefix: str, relative_path: str) -> str:
+    base = _string(prefix).rstrip("/")
+    rel = str(relative_path or "").lstrip("/")
+    if not base or not rel:
+        return ""
+    return f"{base}/{rel}"
+
+
 def _frames_with_suffix(directory: Optional[Path], suffixes: Iterable[str]) -> list[Path]:
     if directory is None or not directory.is_dir():
         return []
@@ -351,8 +371,16 @@ def _run_sam3_backend(
                 masks_array = raw_masks.detach().cpu().numpy()
             else:
                 masks_array = np.asarray(raw_masks)
+            if masks_array.size == 0:
+                frame_index += 1
+                continue
             while masks_array.ndim > 3:
+                if masks_array.shape[0] == 0:
+                    break
                 masks_array = masks_array[0]
+            if masks_array.size == 0:
+                frame_index += 1
+                continue
             if masks_array.ndim == 2:
                 masks_array = masks_array[None, ...]
             if masks_array.ndim != 3:
@@ -392,6 +420,137 @@ def _run_sam3_backend(
         "frames_with_people": positive_frames,
         "frame_stride": frame_stride,
     }
+
+
+def _run_depth_anything_backend(
+    *,
+    input_video: Path,
+    depth_dir: Path,
+    confidence_dir: Path,
+    depth_anything_model_path: str,
+) -> Dict[str, Any]:
+    try:
+        import cv2  # type: ignore[import-not-found]
+        import numpy as np
+        from .geometry_da3 import _infer_depth_with_runtime, _normalized_confidence
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "reason": f"depth_anything_runtime_unavailable:{exc.__class__.__name__}",
+            "detail": str(exc),
+        }
+
+    runtime, warnings = _load_depth_anything_runtime(depth_anything_model_path)
+    if runtime is None:
+        return {
+            "status": "failed",
+            "reason": "depth_anything_runtime_unavailable",
+            "warnings": warnings,
+        }
+
+    ensure_dir(depth_dir)
+    ensure_dir(confidence_dir)
+    cap = cv2.VideoCapture(str(input_video))
+    if not cap.isOpened():
+        return {"status": "failed", "reason": f"video_open_failed:{input_video}"}
+
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    frame_index = 0
+    depth_artifacts: list[Dict[str, Any]] = []
+    confidence_artifacts: list[Dict[str, Any]] = []
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            depth = _infer_depth_with_runtime(runtime, rgb)
+            if depth is None:
+                return {
+                    "status": "failed",
+                    "reason": "depth_anything_inference_failed",
+                    "warnings": warnings,
+                    "failed_frame_index": frame_index,
+                }
+            confidence = _normalized_confidence(depth)
+            timestamp_seconds = round(frame_index / fps, 6) if fps > 0 else float(frame_index)
+            depth_path = depth_dir / f"depth_{frame_index:06d}.npy"
+            confidence_path = confidence_dir / f"confidence_{frame_index:06d}.npy"
+            np.save(depth_path, depth.astype(np.float32))
+            np.save(confidence_path, confidence.astype(np.float32))
+            height, width = depth.shape[:2]
+            depth_artifacts.append(
+                {
+                    "frame_index": frame_index,
+                    "timestamp_seconds": timestamp_seconds,
+                    "path": str(depth_path),
+                    "relative_path": depth_path.name,
+                    "format": "npy",
+                    "width": int(width),
+                    "height": int(height),
+                    "min_depth_m": round(float(np.min(depth)), 6),
+                    "max_depth_m": round(float(np.max(depth)), 6),
+                }
+            )
+            confidence_artifacts.append(
+                {
+                    "frame_index": frame_index,
+                    "timestamp_seconds": timestamp_seconds,
+                    "path": str(confidence_path),
+                    "relative_path": confidence_path.name,
+                    "format": "npy",
+                    "width": int(width),
+                    "height": int(height),
+                    "value_range": [0.0, 1.0],
+                }
+            )
+            frame_index += 1
+    finally:
+        cap.release()
+
+    if frame_index <= 0:
+        return {"status": "failed", "reason": "video_empty"}
+    return {
+        "status": "succeeded",
+        "runner_kind": "depth_anything",
+        "provider": "depth_anything_3",
+        "model_name": str(os.getenv("DA3_MODEL_NAME") or "da3metric-large"),
+        "frame_count": frame_index,
+        "depth_artifacts": depth_artifacts,
+        "confidence_artifacts": confidence_artifacts,
+        "warnings": warnings,
+    }
+
+
+def _materialize_artifact_map(
+    *,
+    manifest: Optional[Mapping[str, Any]],
+    working_dir: Path,
+) -> Dict[int, Path]:
+    artifacts = manifest.get("artifacts") if isinstance(manifest, Mapping) else None
+    if not isinstance(artifacts, list):
+        return {}
+    frame_map: Dict[int, Path] = {}
+    for item in artifacts:
+        if not isinstance(item, Mapping):
+            continue
+        frame_index = int(item.get("frame_index") or 0)
+        local_hint = _string(item.get("path"))
+        uri = _string(item.get("uri"))
+        relative_path = _string(item.get("relative_path")) or Path(local_hint or uri or f"frame_{frame_index:06d}.npy").name
+        try:
+            local_path = _materialize_input_file(
+                uri=uri,
+                local_hint=local_hint,
+                working_path=working_dir / relative_path,
+            )
+        except Exception:
+            candidate = Path(local_hint) if local_hint else None
+            if candidate is None or not candidate.is_file():
+                continue
+            local_path = candidate
+        frame_map[frame_index] = local_path
+    return frame_map
 
 
 def _read_depth_frame(path: Path) -> Any:
@@ -484,6 +643,8 @@ def _run_vip_backend(
     preferred_depth_source: str,
     arkit_depth_dir: Optional[Path],
     arkit_confidence_dir: Optional[Path],
+    precomputed_depth_frames: Optional[Mapping[int, Path]],
+    precomputed_confidence_frames: Optional[Mapping[int, Path]],
     vip_model_path: str,
     depth_anything_model_path: str,
 ) -> Dict[str, Any]:
@@ -503,18 +664,24 @@ def _run_vip_backend(
     arkit_confidence_frames = _frames_with_suffix(
         arkit_confidence_dir, {".png", ".jpg", ".jpeg", ".npy", ".tif", ".tiff"}
     )
+    use_precomputed_depth = False
     if preferred_depth_source == "arkit" and arkit_depth_frames:
         depth_runtime = None
         depth_warnings: list[str] = []
     else:
         depth_source = "depth_anything"
-        depth_runtime, depth_warnings = _load_depth_anything_runtime(depth_anything_model_path)
-        if depth_runtime is None:
-            return {
-                "status": "failed",
-                "reason": "depth_anything_runtime_unavailable",
-                "warnings": depth_warnings,
-            }
+        if precomputed_depth_frames:
+            depth_runtime = None
+            depth_warnings = []
+            use_precomputed_depth = True
+        else:
+            depth_runtime, depth_warnings = _load_depth_anything_runtime(depth_anything_model_path)
+            if depth_runtime is None:
+                return {
+                    "status": "failed",
+                    "reason": "depth_anything_runtime_unavailable",
+                    "warnings": depth_warnings,
+                }
 
     ensure_dir(output_video.parent)
     masks = {path.stem: path for path in _frames_with_suffix(masks_dir, {".png"})}
@@ -561,6 +728,22 @@ def _run_vip_backend(
                 if arkit_confidence_frames:
                     confidence_path = arkit_confidence_frames[min(frame_index, len(arkit_confidence_frames) - 1)]
                     confidence_map = _read_depth_frame(confidence_path)
+            elif use_precomputed_depth:
+                depth_path = precomputed_depth_frames.get(frame_index) if precomputed_depth_frames else None
+                if depth_path is None:
+                    return {
+                        "status": "failed",
+                        "reason": f"precomputed_depth_missing:frame_{frame_index:06d}",
+                        "warnings": depth_warnings,
+                    }
+                depth_map = _read_depth_frame(depth_path)
+                confidence_path = (
+                    precomputed_confidence_frames.get(frame_index)
+                    if precomputed_confidence_frames
+                    else None
+                )
+                if confidence_path is not None:
+                    confidence_map = _read_depth_frame(confidence_path)
             else:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 infer = getattr(depth_runtime, "_blueprint_infer_depth", None)
@@ -593,6 +776,7 @@ def _run_vip_backend(
         "backend": "depth_guided_inpaint",
         "output_video": str(output_video),
         "depth_source": depth_source,
+        "used_precomputed_depth": use_precomputed_depth,
         "frames_processed": frame_index,
         "masks_used": masks_used,
         "warnings": depth_warnings,
@@ -717,6 +901,97 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
             )
 
         if runner_kind == "vip":
+            depth_anything_model_path = _materialize_model_path(
+                _string(body.get("depth_anything_model_path") or os.getenv("DEPTH_ANYTHING_MODEL_PATH")),
+                working_dir=inputs_dir,
+                default_name="depth_anything_model",
+            )
+            if parse_bool(body.get("depth_generation_only"), default=False):
+                depth_dir = outputs_dir / "depth"
+                confidence_dir = outputs_dir / "confidence"
+                result = _run_depth_anything_backend(
+                    input_video=input_video,
+                    depth_dir=depth_dir,
+                    confidence_dir=confidence_dir,
+                    depth_anything_model_path=depth_anything_model_path,
+                )
+                if _string(result.get("status")).lower() == "succeeded":
+                    depth_destination = _string(body.get("depth_output_prefix_uri")) or _string(
+                        body.get("depth_output_dir_path")
+                    )
+                    confidence_destination = _string(body.get("confidence_output_prefix_uri")) or _string(
+                        body.get("confidence_output_dir_path")
+                    )
+                    if depth_destination:
+                        _copy_directory_to_uri(depth_dir, depth_destination)
+                    if confidence_destination:
+                        _copy_directory_to_uri(confidence_dir, confidence_destination)
+
+                    depth_artifacts = [
+                        {
+                            **dict(item),
+                            "uri": _join_output_reference(depth_destination, str(item.get("relative_path") or "")) or None,
+                        }
+                        for item in result.get("depth_artifacts", [])
+                        if isinstance(item, Mapping)
+                    ]
+                    confidence_artifacts = [
+                        {
+                            **dict(item),
+                            "uri": _join_output_reference(confidence_destination, str(item.get("relative_path") or "")) or None,
+                        }
+                        for item in result.get("confidence_artifacts", [])
+                        if isinstance(item, Mapping)
+                    ]
+                    depth_manifest = {
+                        "schema_version": "v1",
+                        "source": "depth_anything_3",
+                        "model_name": result.get("model_name"),
+                        "representation": "per_frame_depth_map",
+                        "unit": "meters",
+                        "prefix_uri": depth_destination or None,
+                        "frame_count": int(result.get("frame_count") or 0),
+                        "artifacts": depth_artifacts,
+                    }
+                    confidence_manifest = {
+                        "schema_version": "v1",
+                        "source": "depth_anything_3",
+                        "model_name": result.get("model_name"),
+                        "representation": "per_frame_confidence_map",
+                        "prefix_uri": confidence_destination or None,
+                        "frame_count": int(result.get("frame_count") or 0),
+                        "artifacts": confidence_artifacts,
+                    }
+                    depth_manifest_path = outputs_dir / "depth_manifest.json"
+                    confidence_manifest_path = outputs_dir / "confidence_manifest.json"
+                    output_depth_manifest_uri = _string(body.get("output_depth_manifest_uri"))
+                    output_confidence_manifest_uri = _string(body.get("output_confidence_manifest_uri"))
+                    _write_payload_json(depth_manifest, depth_manifest_path, output_depth_manifest_uri)
+                    _write_payload_json(
+                        confidence_manifest,
+                        confidence_manifest_path,
+                        output_confidence_manifest_uri,
+                    )
+                    result.update(
+                        {
+                            "depth_source": "depth_anything",
+                            "depth_prefix_uri": depth_destination or None,
+                            "confidence_prefix_uri": confidence_destination or None,
+                            "depth_manifest_uri": output_depth_manifest_uri or None,
+                            "confidence_manifest_uri": output_confidence_manifest_uri or None,
+                            "depth_manifest_path": str(depth_manifest_path),
+                            "confidence_manifest_path": str(confidence_manifest_path),
+                        }
+                    )
+                _write_payload_json(result, output_json_path, output_json_uri)
+                return _to_jsonable(
+                    {
+                        **result,
+                        "output_json_uri": output_json_uri or None,
+                        "output_json_path": str(output_json_path),
+                    }
+                )
+
             try:
                 masks_dir = _materialize_prefix(
                     uri=_string(body.get("masks_prefix_uri")),
@@ -748,11 +1023,28 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                     )
                 except Exception:
                     arkit_confidence_dir = None
-            depth_anything_model_path = _materialize_model_path(
-                _string(body.get("depth_anything_model_path") or os.getenv("DEPTH_ANYTHING_MODEL_PATH")),
-                working_dir=inputs_dir,
-                default_name="depth_anything_model",
-            )
+            depth_manifest = None
+            confidence_manifest = None
+            if _string(body.get("depth_manifest_uri")) or _string(body.get("depth_manifest_path")):
+                try:
+                    depth_manifest_path = _materialize_input_file(
+                        uri=_string(body.get("depth_manifest_uri")),
+                        local_hint=_string(body.get("depth_manifest_path")),
+                        working_path=inputs_dir / "depth_manifest.json",
+                    )
+                    depth_manifest = _read_json_object(depth_manifest_path)
+                except Exception:
+                    depth_manifest = None
+            if _string(body.get("confidence_manifest_uri")) or _string(body.get("confidence_manifest_path")):
+                try:
+                    confidence_manifest_path = _materialize_input_file(
+                        uri=_string(body.get("confidence_manifest_uri")),
+                        local_hint=_string(body.get("confidence_manifest_path")),
+                        working_path=inputs_dir / "confidence_manifest.json",
+                    )
+                    confidence_manifest = _read_json_object(confidence_manifest_path)
+                except Exception:
+                    confidence_manifest = None
             vip_model_path = _materialize_model_path(
                 _string(body.get("vip_model_path") or os.getenv("VIP_MODEL_PATH")),
                 working_dir=inputs_dir,
@@ -766,6 +1058,14 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 preferred_depth_source=_string(body.get("preferred_depth_source")) or "depth_anything",
                 arkit_depth_dir=arkit_depth_dir,
                 arkit_confidence_dir=arkit_confidence_dir,
+                precomputed_depth_frames=_materialize_artifact_map(
+                    manifest=depth_manifest,
+                    working_dir=inputs_dir / "precomputed_depth",
+                ),
+                precomputed_confidence_frames=_materialize_artifact_map(
+                    manifest=confidence_manifest,
+                    working_dir=inputs_dir / "precomputed_confidence",
+                ),
                 vip_model_path=vip_model_path,
                 depth_anything_model_path=depth_anything_model_path,
             )
