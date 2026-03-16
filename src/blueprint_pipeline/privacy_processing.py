@@ -9,8 +9,17 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
-from .common import ensure_dir, parse_bool, utc_now_iso, write_json
+from .common import (
+    ensure_dir,
+    ensure_local_uri_path,
+    infer_storage_root_from_scene_path,
+    parse_bool,
+    utc_now_iso,
+    write_json,
+)
 
 
 def _string_list(value: object) -> list[str]:
@@ -89,6 +98,55 @@ def _run_json_command(
     }
 
 
+def _http_runner_headers() -> Dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    token = str(os.getenv("PRIVACY_RUNNER_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _run_http_json(
+    *,
+    url: str,
+    body: Mapping[str, object],
+    timeout_seconds: int,
+) -> Dict[str, Any]:
+    request = urllib_request.Request(
+        url,
+        data=json.dumps(dict(body)).encode("utf-8"),
+        headers=_http_runner_headers(),
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        return {
+            "status": "failed",
+            "reason": f"http_error:{exc.code}",
+            "detail": detail[-4000:],
+        }
+    except urllib_error.URLError as exc:
+        return {
+            "status": "failed",
+            "reason": f"http_unreachable:{exc.reason}",
+        }
+
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {
+            "status": "failed",
+            "reason": "http_invalid_json",
+            "detail": raw[-4000:],
+        }
+    if isinstance(payload, dict):
+        return payload
+    return {"status": "failed", "reason": "http_non_object_json"}
+
+
 def _copy_or_remux_video(source: Path, destination: Path) -> Dict[str, Any]:
     ensure_dir(destination.parent)
     ffmpeg = shutil.which("ffmpeg")
@@ -119,37 +177,74 @@ def _sam3_command_template() -> str:
     return str(os.getenv("PRIVACY_SAM3_COMMAND") or os.getenv("SAM3_COMMAND") or "").strip()
 
 
+def _sam3_runner_url() -> str:
+    return str(os.getenv("PRIVACY_SAM3_URL") or "").strip()
+
+
 def _vip_command_template() -> str:
     return str(os.getenv("VIP_COMMAND") or "").strip()
+
+
+def _vip_runner_url() -> str:
+    return str(os.getenv("PRIVACY_VIP_URL") or "").strip()
 
 
 def _deepprivacy_command_template() -> str:
     return str(os.getenv("DEEPPRIVACY2_COMMAND") or "").strip()
 
 
+def _deepprivacy_runner_url() -> str:
+    return str(os.getenv("PRIVACY_DEEPPRIVACY2_URL") or "").strip()
+
+
 def _run_sam3(
     *,
     input_video: Path,
+    input_video_uri: str,
     output_json: Path,
+    output_json_uri: str,
     masks_dir: Path,
+    masks_prefix_uri: str,
     stage_name: str,
 ) -> Dict[str, Any]:
-    template = _sam3_command_template()
-    if not template:
-        return {"status": "failed", "reason": "sam3_command_not_configured"}
+    timeout_seconds = _timeout_env("PRIVACY_SAM3_TIMEOUT_SECONDS", default=3600)
     ensure_dir(masks_dir)
-    payload = _run_json_command(
-        command_template=template,
-        substitutions={
-            "INPUT_VIDEO": input_video,
-            "OUTPUT_JSON": output_json,
-            "MASKS_DIR": masks_dir,
-            "PROMPT": "person",
-            "STAGE_NAME": stage_name,
-            "SAM3_WEIGHTS_PATH": str(os.getenv("SAM3_WEIGHTS_PATH") or ""),
-        },
-        timeout_seconds=_timeout_env("PRIVACY_SAM3_TIMEOUT_SECONDS", default=3600),
-    )
+    runner_url = _sam3_runner_url()
+    if runner_url:
+        payload = _run_http_json(
+            url=runner_url,
+            body={
+                "input_video_uri": input_video_uri,
+                "input_video_path": str(input_video),
+                "output_json_uri": output_json_uri,
+                "output_json_path": str(output_json),
+                "masks_prefix_uri": masks_prefix_uri,
+                "masks_dir_path": str(masks_dir),
+                "prompt": "person",
+                "stage_name": stage_name,
+                "sam3_weights_path": str(os.getenv("SAM3_WEIGHTS_PATH") or ""),
+            },
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        template = _sam3_command_template()
+        if not template:
+            return {"status": "failed", "reason": "sam3_runner_not_configured"}
+        payload = _run_json_command(
+            command_template=template,
+            substitutions={
+                "INPUT_VIDEO": input_video,
+                "INPUT_VIDEO_URI": input_video_uri,
+                "OUTPUT_JSON": output_json,
+                "OUTPUT_JSON_URI": output_json_uri,
+                "MASKS_DIR": masks_dir,
+                "MASKS_PREFIX_URI": masks_prefix_uri,
+                "PROMPT": "person",
+                "STAGE_NAME": stage_name,
+                "SAM3_WEIGHTS_PATH": str(os.getenv("SAM3_WEIGHTS_PATH") or ""),
+            },
+            timeout_seconds=timeout_seconds,
+        )
     people_detected = bool(payload.get("people_detected"))
     people_count = int(payload.get("people_count") or 0) if payload.get("people_count") is not None else 0
     if not people_detected and people_count > 0:
@@ -163,31 +258,76 @@ def _run_sam3(
 def _run_vip(
     *,
     input_video: Path,
+    input_video_uri: str,
     masks_dir: Path,
+    masks_prefix_uri: str,
     output_video: Path,
+    output_video_uri: str,
     output_json: Path,
+    output_json_uri: str,
+    arkit_depth_prefix_uri: Optional[str],
+    arkit_confidence_prefix_uri: Optional[str],
 ) -> Dict[str, Any]:
-    template = _vip_command_template()
-    if not template:
-        return {"status": "failed", "reason": "vip_command_not_configured"}
+    timeout_seconds = _timeout_env("PRIVACY_VIP_TIMEOUT_SECONDS", default=7200)
     ensure_dir(output_video.parent)
-    payload = _run_json_command(
-        command_template=template,
-        substitutions={
-            "INPUT_VIDEO": input_video,
-            "MASKS_DIR": masks_dir,
-            "OUTPUT_VIDEO": output_video,
-            "OUTPUT_JSON": output_json,
-            "VIP_MODEL_PATH": str(os.getenv("VIP_MODEL_PATH") or ""),
-        },
-        timeout_seconds=_timeout_env("PRIVACY_VIP_TIMEOUT_SECONDS", default=7200),
-    )
+    preferred_depth_source = "arkit" if arkit_depth_prefix_uri else "depth_anything"
+    runner_url = _vip_runner_url()
+    if runner_url:
+        payload = _run_http_json(
+            url=runner_url,
+            body={
+                "input_video_uri": input_video_uri,
+                "input_video_path": str(input_video),
+                "masks_prefix_uri": masks_prefix_uri,
+                "masks_dir_path": str(masks_dir),
+                "output_video_uri": output_video_uri,
+                "output_video_path": str(output_video),
+                "output_json_uri": output_json_uri,
+                "output_json_path": str(output_json),
+                "arkit_depth_prefix_uri": arkit_depth_prefix_uri,
+                "arkit_confidence_prefix_uri": arkit_confidence_prefix_uri,
+                "preferred_depth_source": preferred_depth_source,
+                "vip_model_path": str(os.getenv("VIP_MODEL_PATH") or ""),
+                "depth_anything_model_path": str(os.getenv("DEPTH_ANYTHING_MODEL_PATH") or ""),
+            },
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        template = _vip_command_template()
+        if not template:
+            return {"status": "failed", "reason": "vip_runner_not_configured"}
+        payload = _run_json_command(
+            command_template=template,
+            substitutions={
+                "INPUT_VIDEO": input_video,
+                "INPUT_VIDEO_URI": input_video_uri,
+                "MASKS_DIR": masks_dir,
+                "MASKS_PREFIX_URI": masks_prefix_uri,
+                "OUTPUT_VIDEO": output_video,
+                "OUTPUT_VIDEO_URI": output_video_uri,
+                "OUTPUT_JSON": output_json,
+                "OUTPUT_JSON_URI": output_json_uri,
+                "ARKIT_DEPTH_PREFIX_URI": arkit_depth_prefix_uri or "",
+                "ARKIT_CONFIDENCE_PREFIX_URI": arkit_confidence_prefix_uri or "",
+                "DEPTH_SOURCE": preferred_depth_source,
+                "VIP_MODEL_PATH": str(os.getenv("VIP_MODEL_PATH") or ""),
+                "DEPTH_ANYTHING_MODEL_PATH": str(os.getenv("DEPTH_ANYTHING_MODEL_PATH") or ""),
+            },
+            timeout_seconds=timeout_seconds,
+        )
     if str(payload.get("status") or "").strip().lower() == "succeeded" and output_video.is_file():
         payload["output_video"] = str(output_video)
+        payload.setdefault("depth_source", preferred_depth_source)
+        return payload
+    if str(payload.get("status") or "").strip().lower() == "succeeded":
+        payload["output_video"] = str(output_video)
+        payload.setdefault("output_video_uri", output_video_uri)
+        payload.setdefault("depth_source", preferred_depth_source)
         return payload
     if output_video.is_file():
         payload["output_video"] = str(output_video)
         payload["status"] = "succeeded"
+        payload.setdefault("depth_source", preferred_depth_source)
         return payload
     return {
         "status": "failed",
@@ -199,25 +339,53 @@ def _run_vip(
 def _run_deepprivacy2(
     *,
     input_video: Path,
+    input_video_uri: str,
     output_video: Path,
+    output_video_uri: str,
     output_json: Path,
+    output_json_uri: str,
 ) -> Dict[str, Any]:
-    template = _deepprivacy_command_template()
-    if not template:
-        return {"status": "failed", "reason": "deepprivacy2_command_not_configured"}
+    timeout_seconds = _timeout_env("PRIVACY_DEEPPRIVACY2_TIMEOUT_SECONDS", default=7200)
     ensure_dir(output_video.parent)
-    payload = _run_json_command(
-        command_template=template,
-        substitutions={
-            "INPUT_VIDEO": input_video,
-            "OUTPUT_VIDEO": output_video,
-            "OUTPUT_JSON": output_json,
-            "DEEPPRIVACY2_MODEL_PATH": str(os.getenv("DEEPPRIVACY2_MODEL_PATH") or ""),
-        },
-        timeout_seconds=_timeout_env("PRIVACY_DEEPPRIVACY2_TIMEOUT_SECONDS", default=7200),
-    )
+    runner_url = _deepprivacy_runner_url()
+    if runner_url:
+        payload = _run_http_json(
+            url=runner_url,
+            body={
+                "input_video_uri": input_video_uri,
+                "input_video_path": str(input_video),
+                "output_video_uri": output_video_uri,
+                "output_video_path": str(output_video),
+                "output_json_uri": output_json_uri,
+                "output_json_path": str(output_json),
+                "deepprivacy2_model_path": str(os.getenv("DEEPPRIVACY2_MODEL_PATH") or ""),
+            },
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        template = _deepprivacy_command_template()
+        if not template:
+            return {"status": "failed", "reason": "deepprivacy2_runner_not_configured"}
+        payload = _run_json_command(
+            command_template=template,
+            substitutions={
+                "INPUT_VIDEO": input_video,
+                "INPUT_VIDEO_URI": input_video_uri,
+                "OUTPUT_VIDEO": output_video,
+                "OUTPUT_VIDEO_URI": output_video_uri,
+                "OUTPUT_JSON": output_json,
+                "OUTPUT_JSON_URI": output_json_uri,
+                "DEEPPRIVACY2_MODEL_PATH": str(os.getenv("DEEPPRIVACY2_MODEL_PATH") or ""),
+            },
+            timeout_seconds=timeout_seconds,
+        )
     if str(payload.get("status") or "").strip().lower() == "succeeded" and output_video.is_file():
         payload["output_video"] = str(output_video)
+        payload["face_anonymized_segments"] = _string_list(payload.get("face_anonymized_segments"))
+        return payload
+    if str(payload.get("status") or "").strip().lower() == "succeeded":
+        payload["output_video"] = str(output_video)
+        payload.setdefault("output_video_uri", output_video_uri)
         payload["face_anonymized_segments"] = _string_list(payload.get("face_anonymized_segments"))
         return payload
     if output_video.is_file():
@@ -251,6 +419,25 @@ def _verification_report(
     }
 
 
+def _ensure_remote_output_local(
+    *,
+    capture_root: Path,
+    output_uri: str,
+    destination: Path,
+) -> None:
+    if destination.is_file() or not output_uri:
+        return
+    storage_root = infer_storage_root_from_scene_path(capture_root)
+    local_path = ensure_local_uri_path(
+        output_uri,
+        gcs_root=storage_root,
+        scratch_dir=destination.parent,
+    )
+    if local_path != destination:
+        ensure_dir(destination.parent)
+        shutil.copyfile(local_path, destination)
+
+
 def run_privacy_postprocess(
     *,
     bucket: str,
@@ -274,9 +461,24 @@ def run_privacy_postprocess(
     enabled = _env_flag("PRIVACY_PIPELINE_ENABLED", default=False)
     fail_closed = _env_flag("PRIVACY_FAIL_CLOSED", default=True)
     privacy_prefix = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/privacy"
+    raw_prefix = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/raw"
     manifest_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_processing_manifest.json"
     verification_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_verification_report.json"
     final_video_uri = f"{privacy_prefix}/final_walkthrough.mov"
+    vip_video_uri = f"{privacy_prefix}/intermediate_vip_walkthrough.mov"
+    deepprivacy_video_uri = f"{privacy_prefix}/intermediate_deepprivacy2_walkthrough.mov"
+    raw_video_uri = f"{raw_prefix}/{raw_video_path.name}" if raw_video_path else ""
+    raw_arkit_root = capture_root / "raw" / "arkit"
+    arkit_depth_prefix_uri = (
+        f"{raw_prefix}/arkit/depth"
+        if (raw_arkit_root / "depth").is_dir()
+        else None
+    )
+    arkit_confidence_prefix_uri = (
+        f"{raw_prefix}/arkit/confidence"
+        if (raw_arkit_root / "confidence").is_dir()
+        else None
+    )
 
     payload: Dict[str, Any] = {
         "schema_version": "v1",
@@ -292,6 +494,7 @@ def run_privacy_postprocess(
         "people_detected": 0,
         "people_removed": 0,
         "face_anonymized_segments": [],
+        "depth_source": None,
         "raw_video_path": str(raw_video_path) if raw_video_path else None,
         "privacy_processed_video_uri": None,
         "world_model_video_uri": None,
@@ -333,8 +536,11 @@ def run_privacy_postprocess(
 
     initial_detection = _run_sam3(
         input_video=raw_video_path,
+        input_video_uri=raw_video_uri,
         output_json=pipeline_dir / "privacy_sam3_detection.json",
+        output_json_uri=f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_sam3_detection.json",
         masks_dir=masks_root / "sam3_initial",
+        masks_prefix_uri=f"{privacy_prefix}/masks/sam3_initial",
         stage_name="initial_detection",
     )
     payload["steps"].append({"name": "sam3_initial_detection", "result": dict(initial_detection)})
@@ -360,6 +566,7 @@ def run_privacy_postprocess(
         payload["steps"].append({"name": "passthrough_copy", "result": dict(passthrough)})
         payload["status"] = "no_people_detected"
         payload["mode"] = "none"
+        payload["depth_source"] = "not_needed"
         payload["privacy_processed_video_uri"] = final_video_uri
         payload["world_model_video_uri"] = final_video_uri
         write_json(manifest_path, payload)
@@ -377,9 +584,15 @@ def run_privacy_postprocess(
 
     vip_result = _run_vip(
         input_video=raw_video_path,
+        input_video_uri=raw_video_uri,
         masks_dir=masks_root / "sam3_initial",
+        masks_prefix_uri=f"{privacy_prefix}/masks/sam3_initial",
         output_video=vip_video_path,
+        output_video_uri=vip_video_uri,
         output_json=pipeline_dir / "privacy_vip_result.json",
+        output_json_uri=f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_vip_result.json",
+        arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+        arkit_confidence_prefix_uri=arkit_confidence_prefix_uri,
     )
     payload["steps"].append({"name": "vip_inpainting", "result": dict(vip_result)})
     if str(vip_result.get("status") or "").strip().lower() != "succeeded":
@@ -398,11 +611,19 @@ def run_privacy_postprocess(
             ),
         )
         return payload
+    _ensure_remote_output_local(
+        capture_root=capture_root,
+        output_uri=str(vip_result.get("output_video_uri") or vip_video_uri),
+        destination=vip_video_path,
+    )
 
     vip_verification = _run_sam3(
         input_video=vip_video_path,
+        input_video_uri=vip_video_uri,
         output_json=pipeline_dir / "privacy_vip_verification.json",
+        output_json_uri=f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_vip_verification.json",
         masks_dir=masks_root / "sam3_vip_verify",
+        masks_prefix_uri=f"{privacy_prefix}/masks/sam3_vip_verify",
         stage_name="vip_verification",
     )
     payload["steps"].append({"name": "sam3_vip_verification", "result": dict(vip_verification)})
@@ -428,6 +649,7 @@ def run_privacy_postprocess(
         payload["status"] = "person_removed"
         payload["mode"] = "removal"
         payload["people_removed"] = payload["people_detected"]
+        payload["depth_source"] = str(vip_result.get("depth_source") or "").strip() or None
         payload["privacy_processed_video_uri"] = final_video_uri
         payload["world_model_video_uri"] = final_video_uri
         write_json(manifest_path, payload)
@@ -445,8 +667,11 @@ def run_privacy_postprocess(
 
     deepprivacy_result = _run_deepprivacy2(
         input_video=vip_video_path,
+        input_video_uri=vip_video_uri,
         output_video=deepprivacy_video_path,
+        output_video_uri=deepprivacy_video_uri,
         output_json=pipeline_dir / "privacy_deepprivacy2_result.json",
+        output_json_uri=f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_deepprivacy2_result.json",
     )
     payload["steps"].append({"name": "deepprivacy2_fallback", "result": dict(deepprivacy_result)})
     if str(deepprivacy_result.get("status") or "").strip().lower() != "succeeded":
@@ -465,11 +690,19 @@ def run_privacy_postprocess(
             ),
         )
         return payload
+    _ensure_remote_output_local(
+        capture_root=capture_root,
+        output_uri=str(deepprivacy_result.get("output_video_uri") or deepprivacy_video_uri),
+        destination=deepprivacy_video_path,
+    )
 
     fallback_verification = _run_sam3(
         input_video=deepprivacy_video_path,
+        input_video_uri=deepprivacy_video_uri,
         output_json=pipeline_dir / "privacy_deepprivacy2_verification.json",
+        output_json_uri=f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline/privacy_deepprivacy2_verification.json",
         masks_dir=masks_root / "sam3_deepprivacy_verify",
+        masks_prefix_uri=f"{privacy_prefix}/masks/sam3_deepprivacy_verify",
         stage_name="deepprivacy2_verification",
     )
     payload["steps"].append({"name": "sam3_deepprivacy2_verification", "result": dict(fallback_verification)})
@@ -511,8 +744,12 @@ def run_privacy_postprocess(
     payload["status"] = "face_anonymized_fallback"
     payload["mode"] = "anonymized_fallback"
     payload["fallback_used"] = True
-    payload["people_removed"] = max(0, payload["people_detected"] - int(fallback_verification.get("people_count") or 0))
+    payload["people_removed"] = max(
+        0,
+        payload["people_detected"] - int(fallback_verification.get("people_count") or 0),
+    )
     payload["face_anonymized_segments"] = _string_list(deepprivacy_result.get("face_anonymized_segments"))
+    payload["depth_source"] = str(vip_result.get("depth_source") or "").strip() or None
     payload["privacy_processed_video_uri"] = final_video_uri
     payload["world_model_video_uri"] = final_video_uri
     write_json(manifest_path, payload)

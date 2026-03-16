@@ -64,14 +64,26 @@ variable "docker_image" {
   default     = "gcr.io/blueprint-8c1ca/blueprint-pipeline:latest"
 }
 
-variable "gpu_type" {
-  description = "GPU type for Cloud Run Jobs"
+variable "privacy_sam3_image" {
+  description = "Docker image for the SAM3 privacy service"
   type        = string
-  default     = "nvidia-l4"
+  default     = "gcr.io/blueprint-8c1ca/sam3-privacy:latest"
+}
+
+variable "privacy_vip_image" {
+  description = "Docker image for the VIP privacy service"
+  type        = string
+  default     = "gcr.io/blueprint-8c1ca/vip-privacy:latest"
+}
+
+variable "privacy_deepprivacy2_image" {
+  description = "Docker image for the DeepPrivacy2 service"
+  type        = string
+  default     = "gcr.io/blueprint-8c1ca/deepprivacy2-privacy:latest"
 }
 
 variable "max_concurrent_jobs" {
-  description = "Maximum concurrent job executions per region"
+  description = "Maximum concurrent privacy service instances"
   type        = number
   default     = 10
 }
@@ -106,38 +118,32 @@ variable "privacy_fail_closed" {
   default     = true
 }
 
-variable "privacy_sam3_command" {
-  description = "Command template used to run SAM3 person detection"
-  type        = string
-  default     = ""
-}
-
-variable "privacy_vip_command" {
-  description = "Command template used to run VIP inpainting"
-  type        = string
-  default     = ""
-}
-
-variable "privacy_deepprivacy2_command" {
-  description = "Command template used to run DeepPrivacy2 fallback anonymization"
-  type        = string
-  default     = ""
-}
-
 variable "sam3_weights_path" {
-  description = "Filesystem path to SAM3 weights inside the runtime"
+  description = "SAM3 checkpoint path or URI for the sam3-detect service"
   type        = string
   default     = ""
 }
 
 variable "vip_model_path" {
-  description = "Filesystem path to the VIP model inside the runtime"
+  description = "Optional VIP model path or URI for custom inpainting backends"
   type        = string
   default     = ""
 }
 
 variable "deepprivacy2_model_path" {
-  description = "Filesystem path to the DeepPrivacy2 model inside the runtime"
+  description = "DeepPrivacy2 model cache path or URI for the deepprivacy2-anonymize service"
+  type        = string
+  default     = ""
+}
+
+variable "depth_anything_model_path" {
+  description = "Depth Anything model path or URI for the vip-inpaint service"
+  type        = string
+  default     = ""
+}
+
+variable "huggingface_token_secret_name" {
+  description = "Optional Secret Manager secret name used for HF_TOKEN/HUGGING_FACE_HUB_TOKEN on privacy services"
   type        = string
   default     = ""
 }
@@ -150,6 +156,13 @@ variable "pipeline_sync_webapp_url" {
 
 variable "pipeline_sync_token" {
   description = "Shared auth token for Blueprint-WebApp pipeline sync"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "privacy_runner_token" {
+  description = "Shared auth token for privacy runner HTTP services"
   type        = string
   default     = ""
   sensitive   = true
@@ -216,11 +229,11 @@ resource "google_project_service" "required_apis" {
 # Service Accounts
 # =============================================================================
 
-# Pipeline service account - runs Cloud Run Jobs
+# Pipeline service account - runs the CPU-only Cloud Run job
 resource "google_service_account" "pipeline_runner" {
   account_id   = "pipeline-runner"
   display_name = "Blueprint Pipeline Runner"
-  description  = "Service account for running GPU pipeline jobs"
+  description  = "Service account for the CPU-only qualification and World Labs pipeline job"
 }
 
 # Pipeline invoker - invokes Cloud Run Jobs from Cloud Tasks
@@ -237,6 +250,24 @@ resource "google_service_account" "storage_trigger" {
   description  = "Service account for storage trigger Cloud Function"
 }
 
+resource "google_service_account" "privacy_sam3_service" {
+  account_id   = "privacy-sam3-service"
+  display_name = "Blueprint SAM3 Detect Service"
+  description  = "Service account for the sam3-detect privacy HTTP service"
+}
+
+resource "google_service_account" "privacy_vip_service" {
+  account_id   = "privacy-vip-service"
+  display_name = "Blueprint VIP Inpaint Service"
+  description  = "Service account for the vip-inpaint privacy HTTP service"
+}
+
+resource "google_service_account" "privacy_deepprivacy2_service" {
+  account_id   = "privacy-deepprivacy2-service"
+  display_name = "Blueprint DeepPrivacy2 Anonymize Service"
+  description  = "Service account for the deepprivacy2-anonymize privacy HTTP service"
+}
+
 # =============================================================================
 # IAM Bindings for Pipeline Runner
 # =============================================================================
@@ -246,6 +277,30 @@ resource "google_project_iam_member" "pipeline_runner_storage" {
   project = var.project_id
   role    = "roles/storage.objectAdmin"
   member  = "serviceAccount:${google_service_account.pipeline_runner.email}"
+}
+
+resource "google_project_iam_member" "privacy_services_storage" {
+  for_each = {
+    sam3         = google_service_account.privacy_sam3_service.email
+    vip          = google_service_account.privacy_vip_service.email
+    deepprivacy2 = google_service_account.privacy_deepprivacy2_service.email
+  }
+
+  project = var.project_id
+  role    = "roles/storage.objectAdmin"
+  member  = "serviceAccount:${each.value}"
+}
+
+resource "google_project_iam_member" "privacy_services_logging" {
+  for_each = {
+    sam3         = google_service_account.privacy_sam3_service.email
+    vip          = google_service_account.privacy_vip_service.email
+    deepprivacy2 = google_service_account.privacy_deepprivacy2_service.email
+  }
+
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${each.value}"
 }
 
 # Firestore access (update job status)
@@ -348,7 +403,7 @@ resource "google_pubsub_topic" "pipeline_trigger" {
   name   = "pipeline-trigger"
   labels = local.common_labels
 
-  message_retention_duration = "86400s"  # 24 hours
+  message_retention_duration = "86400s" # 24 hours
 }
 
 # Dead letter topic for failed messages
@@ -377,7 +432,7 @@ resource "google_cloud_tasks_queue" "pipeline_queue" {
     min_backoff        = "60s"
     max_backoff        = "3600s"
     max_doublings      = 3
-    max_retry_duration = "86400s"  # 24 hours
+    max_retry_duration = "86400s" # 24 hours
   }
 
   stackdriver_logging_config {
@@ -424,7 +479,7 @@ resource "google_cloud_run_v2_job" "pipeline" {
       service_account = google_service_account.pipeline_runner.email
 
       containers {
-        image = var.docker_image
+        image   = var.docker_image
         command = ["python"]
         args    = ["-m", "blueprint_pipeline.capture_orchestrator"]
 
@@ -432,7 +487,6 @@ resource "google_cloud_run_v2_job" "pipeline" {
           limits = {
             cpu    = "4"
             memory = "16Gi"
-            "nvidia.com/gpu" = "1"
           }
         }
 
@@ -487,33 +541,23 @@ resource "google_cloud_run_v2_job" "pipeline" {
         }
 
         env {
-          name  = "PRIVACY_SAM3_COMMAND"
-          value = var.privacy_sam3_command
+          name  = "PRIVACY_SAM3_URL"
+          value = google_cloud_run_v2_service.privacy_sam3.uri
         }
 
         env {
-          name  = "VIP_COMMAND"
-          value = var.privacy_vip_command
+          name  = "PRIVACY_VIP_URL"
+          value = google_cloud_run_v2_service.privacy_vip.uri
         }
 
         env {
-          name  = "DEEPPRIVACY2_COMMAND"
-          value = var.privacy_deepprivacy2_command
+          name  = "PRIVACY_DEEPPRIVACY2_URL"
+          value = google_cloud_run_v2_service.privacy_deepprivacy2.uri
         }
 
         env {
-          name  = "SAM3_WEIGHTS_PATH"
-          value = var.sam3_weights_path
-        }
-
-        env {
-          name  = "VIP_MODEL_PATH"
-          value = var.vip_model_path
-        }
-
-        env {
-          name  = "DEEPPRIVACY2_MODEL_PATH"
-          value = var.deepprivacy2_model_path
+          name  = "PRIVACY_RUNNER_TOKEN"
+          value = var.privacy_runner_token
         }
 
         env {
@@ -546,6 +590,281 @@ resource "google_cloud_run_v2_job" "pipeline" {
   depends_on = [
     google_project_service.required_apis["run.googleapis.com"],
   ]
+}
+
+# =============================================================================
+# Cloud Run Services - Privacy Runners
+# =============================================================================
+
+resource "google_cloud_run_v2_service" "privacy_sam3" {
+  provider = google-beta
+
+  name     = "sam3-detect"
+  location = var.primary_region
+  labels   = local.common_labels
+
+  template {
+    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
+    max_instance_request_concurrency = 1
+    service_account                  = google_service_account.privacy_sam3_service.email
+    timeout                          = "3600s"
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = var.max_concurrent_jobs
+    }
+
+    containers {
+      image = var.privacy_sam3_image
+
+      resources {
+        limits = {
+          cpu              = "4"
+          memory           = "16Gi"
+          "nvidia.com/gpu" = "1"
+        }
+      }
+
+      env {
+        name  = "PRIVACY_RUNNER_KIND"
+        value = "sam3"
+      }
+
+      env {
+        name  = "GCS_ROOT"
+        value = "/mnt/gcs"
+      }
+
+      env {
+        name  = "PRIVACY_RUNNER_TOKEN"
+        value = var.privacy_runner_token
+      }
+
+      env {
+        name  = "SAM3_WEIGHTS_PATH"
+        value = var.sam3_weights_path
+      }
+
+      dynamic "env" {
+        for_each = var.huggingface_token_secret_name != "" ? {
+          HF_TOKEN               = "HF_TOKEN"
+          HUGGING_FACE_HUB_TOKEN = "HUGGING_FACE_HUB_TOKEN"
+        } : {}
+
+        content {
+          name = env.value
+
+          value_source {
+            secret_key_ref {
+              secret  = var.huggingface_token_secret_name
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      volume_mounts {
+        name       = "capture-storage"
+        mount_path = "/mnt/gcs"
+      }
+    }
+
+    volumes {
+      name = "capture-storage"
+
+      gcs {
+        bucket    = var.storage_bucket
+        read_only = false
+      }
+    }
+  }
+}
+
+resource "google_cloud_run_v2_service" "privacy_vip" {
+  provider = google-beta
+
+  name     = "vip-inpaint"
+  location = var.primary_region
+  labels   = local.common_labels
+
+  template {
+    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
+    max_instance_request_concurrency = 1
+    service_account                  = google_service_account.privacy_vip_service.email
+    timeout                          = "7200s"
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = var.max_concurrent_jobs
+    }
+
+    containers {
+      image = var.privacy_vip_image
+
+      resources {
+        limits = {
+          cpu              = "4"
+          memory           = "16Gi"
+          "nvidia.com/gpu" = "1"
+        }
+      }
+
+      env {
+        name  = "PRIVACY_RUNNER_KIND"
+        value = "vip"
+      }
+
+      env {
+        name  = "GCS_ROOT"
+        value = "/mnt/gcs"
+      }
+
+      env {
+        name  = "PRIVACY_RUNNER_TOKEN"
+        value = var.privacy_runner_token
+      }
+
+      env {
+        name  = "VIP_MODEL_PATH"
+        value = var.vip_model_path
+      }
+
+      env {
+        name  = "DEPTH_ANYTHING_MODEL_PATH"
+        value = var.depth_anything_model_path
+      }
+
+      dynamic "env" {
+        for_each = var.huggingface_token_secret_name != "" ? {
+          HF_TOKEN               = "HF_TOKEN"
+          HUGGING_FACE_HUB_TOKEN = "HUGGING_FACE_HUB_TOKEN"
+        } : {}
+
+        content {
+          name = env.value
+
+          value_source {
+            secret_key_ref {
+              secret  = var.huggingface_token_secret_name
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      volume_mounts {
+        name       = "capture-storage"
+        mount_path = "/mnt/gcs"
+      }
+    }
+
+    volumes {
+      name = "capture-storage"
+
+      gcs {
+        bucket    = var.storage_bucket
+        read_only = false
+      }
+    }
+  }
+}
+
+resource "google_cloud_run_v2_service" "privacy_deepprivacy2" {
+  provider = google-beta
+
+  name     = "deepprivacy2-anonymize"
+  location = var.primary_region
+  labels   = local.common_labels
+
+  template {
+    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
+    max_instance_request_concurrency = 1
+    service_account                  = google_service_account.privacy_deepprivacy2_service.email
+    timeout                          = "7200s"
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = var.max_concurrent_jobs
+    }
+
+    containers {
+      image = var.privacy_deepprivacy2_image
+
+      resources {
+        limits = {
+          cpu              = "4"
+          memory           = "16Gi"
+          "nvidia.com/gpu" = "1"
+        }
+      }
+
+      env {
+        name  = "PRIVACY_RUNNER_KIND"
+        value = "deepprivacy2"
+      }
+
+      env {
+        name  = "GCS_ROOT"
+        value = "/mnt/gcs"
+      }
+
+      env {
+        name  = "PRIVACY_RUNNER_TOKEN"
+        value = var.privacy_runner_token
+      }
+
+      env {
+        name  = "DEEPPRIVACY2_MODEL_PATH"
+        value = var.deepprivacy2_model_path
+      }
+
+      dynamic "env" {
+        for_each = var.huggingface_token_secret_name != "" ? {
+          HF_TOKEN               = "HF_TOKEN"
+          HUGGING_FACE_HUB_TOKEN = "HUGGING_FACE_HUB_TOKEN"
+        } : {}
+
+        content {
+          name = env.value
+
+          value_source {
+            secret_key_ref {
+              secret  = var.huggingface_token_secret_name
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      volume_mounts {
+        name       = "capture-storage"
+        mount_path = "/mnt/gcs"
+      }
+    }
+
+    volumes {
+      name = "capture-storage"
+
+      gcs {
+        bucket    = var.storage_bucket
+        read_only = false
+      }
+    }
+  }
+}
+
+resource "google_cloud_run_service_iam_member" "privacy_runner_public_invoker" {
+  for_each = {
+    sam3         = google_cloud_run_v2_service.privacy_sam3.name
+    vip          = google_cloud_run_v2_service.privacy_vip.name
+    deepprivacy2 = google_cloud_run_v2_service.privacy_deepprivacy2.name
+  }
+
+  location = var.primary_region
+  project  = var.project_id
+  service  = each.value
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }
 
 # =============================================================================
@@ -595,10 +914,10 @@ resource "google_cloudfunctions2_function" "storage_trigger" {
     service_account_email = google_service_account.storage_trigger.email
 
     environment_variables = {
-      PIPELINE_PROJECT_ID = var.project_id
-      PIPELINE_REGION     = var.primary_region
-      PIPELINE_BUCKET     = var.storage_bucket
-      REGIONS             = join(",", local.all_regions)
+      PIPELINE_PROJECT_ID        = var.project_id
+      PIPELINE_REGION            = var.primary_region
+      PIPELINE_BUCKET            = var.storage_bucket
+      REGIONS                    = join(",", local.all_regions)
       SWAP_TRIGGER_DISPATCH_MODE = "pubsub"
       SWAP_TRIGGER_PUBSUB_TOPIC  = google_pubsub_topic.pipeline_trigger.name
     }
@@ -773,7 +1092,7 @@ resource "google_monitoring_alert_policy" "pipeline_failures" {
     }
   }
 
-  notification_channels = []  # Add notification channels as needed
+  notification_channels = [] # Add notification channels as needed
 
   documentation {
     content   = "More than 5 pipeline job failures in 5 minutes. Check Cloud Run Job logs for details."
@@ -832,6 +1151,15 @@ output "trigger_service_account" {
 output "cloud_run_jobs" {
   description = "Cloud Run Job URLs by region"
   value       = { for k, v in google_cloud_run_v2_job.pipeline : k => v.name }
+}
+
+output "privacy_runner_services" {
+  description = "Privacy runner service URLs"
+  value = {
+    sam3         = google_cloud_run_v2_service.privacy_sam3.uri
+    vip          = google_cloud_run_v2_service.privacy_vip.uri
+    deepprivacy2 = google_cloud_run_v2_service.privacy_deepprivacy2.uri
+  }
 }
 
 output "cloud_tasks_queues" {

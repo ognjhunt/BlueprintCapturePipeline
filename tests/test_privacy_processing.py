@@ -38,6 +38,7 @@ def test_privacy_postprocess_passthrough_when_no_people(monkeypatch, tmp_path: P
     )
 
     assert result["status"] == "no_people_detected"
+    assert result["depth_source"] == "not_needed"
     assert result["world_model_video_uri"] == result["privacy_processed_video_uri"]
     assert (capture_root / "privacy" / "final_walkthrough.mov").is_file()
     manifest = json.loads((pipeline_dir / "privacy_processing_manifest.json").read_text(encoding="utf-8"))
@@ -107,4 +108,93 @@ def test_privacy_postprocess_uses_anonymized_fallback(monkeypatch, tmp_path: Pat
     assert result["status"] == "face_anonymized_fallback"
     assert result["fallback_used"] is True
     assert result["face_anonymized_segments"] == ["segment-1"]
+    assert result["depth_source"] is None
     assert (capture_root / "privacy" / "final_walkthrough.mov").is_file()
+
+
+def test_privacy_postprocess_prefers_arkit_depth_for_vip(monkeypatch, tmp_path: Path) -> None:
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "cap-1"
+    pipeline_dir = capture_root / "pipeline"
+    raw_video = capture_root / "raw" / "walkthrough.mov"
+    depth_dir = capture_root / "raw" / "arkit" / "depth"
+    confidence_dir = capture_root / "raw" / "arkit" / "confidence"
+    _write_video(raw_video)
+    depth_dir.mkdir(parents=True, exist_ok=True)
+    confidence_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("PRIVACY_PIPELINE_ENABLED", "true")
+    sam3_results = iter(
+        [
+            {"status": "succeeded", "people_detected": True, "people_count": 1, "mask_paths": ["mask-1.png"]},
+            {"status": "succeeded", "people_detected": False, "people_count": 0, "mask_paths": []},
+        ]
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.privacy_processing._run_sam3",
+        lambda **_kwargs: next(sam3_results),
+    )
+
+    def _vip(**kwargs):
+        assert kwargs["arkit_depth_prefix_uri"] == "gs://bucket/scenes/scene-1/captures/cap-1/raw/arkit/depth"
+        assert kwargs["arkit_confidence_prefix_uri"] == "gs://bucket/scenes/scene-1/captures/cap-1/raw/arkit/confidence"
+        output = kwargs["output_video"]
+        _write_video(output, b"vip-video")
+        return {"status": "succeeded", "output_video": str(output), "depth_source": "arkit"}
+
+    monkeypatch.setattr("blueprint_pipeline.privacy_processing._run_vip", _vip)
+
+    result = run_privacy_postprocess(
+        bucket="bucket",
+        scene_id="scene-1",
+        capture_id="cap-1",
+        capture_root=capture_root,
+        pipeline_dir=pipeline_dir,
+        raw_video_path=raw_video,
+    )
+
+    assert result["status"] == "person_removed"
+    assert result["depth_source"] == "arkit"
+
+
+def test_privacy_postprocess_uses_depth_anything_for_non_arkit_capture(monkeypatch, tmp_path: Path) -> None:
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "cap-1"
+    pipeline_dir = capture_root / "pipeline"
+    raw_video = capture_root / "raw" / "walkthrough.mov"
+    _write_video(raw_video)
+
+    monkeypatch.setenv("PRIVACY_PIPELINE_ENABLED", "true")
+    sam3_results = iter(
+        [
+            {"status": "succeeded", "people_detected": True, "people_count": 1, "mask_paths": ["mask-1.png"]},
+            {"status": "succeeded", "people_detected": False, "people_count": 0, "mask_paths": []},
+        ]
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.privacy_processing._run_sam3",
+        lambda **_kwargs: next(sam3_results),
+    )
+
+    def _vip(**kwargs):
+        assert kwargs["arkit_depth_prefix_uri"] is None
+        assert kwargs["arkit_confidence_prefix_uri"] is None
+        output = kwargs["output_video"]
+        _write_video(output, b"vip-video")
+        return {
+            "status": "succeeded",
+            "output_video": str(output),
+            "depth_source": "depth_anything",
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.privacy_processing._run_vip", _vip)
+
+    result = run_privacy_postprocess(
+        bucket="bucket",
+        scene_id="scene-1",
+        capture_id="cap-1",
+        capture_root=capture_root,
+        pipeline_dir=pipeline_dir,
+        raw_video_path=raw_video,
+    )
+
+    assert result["status"] == "person_removed"
+    assert result["depth_source"] == "depth_anything"

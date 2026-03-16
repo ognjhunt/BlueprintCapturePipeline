@@ -37,14 +37,11 @@ Authoritative alpha outputs:
 
 These artifacts are the qualification-first record consumed by `Blueprint-WebApp`.
 
-Optional downstream derived output families:
+Legacy downstream derived output families:
 
 - `scene_memory/scene_memory_manifest.json`
 - `scene_memory/scene_memory_readiness.json`
 - `scene_memory/conditioning_bundle.json`
-- `scene_memory/adapter_manifests/gen3c.json`
-- `scene_memory/adapter_manifests/neoverse.json`
-- `scene_memory/adapter_manifests/cosmos_transfer.json`
 - `presentation_world/presentation_bundle.json`
 - `presentation_world/presentation_world_manifest.json`
 - `presentation_world/runtime_demo_manifest.json`
@@ -55,7 +52,7 @@ Optional downstream derived output families:
 - `evaluation_prep/site_world_health.json`
 - `evaluation_prep/evaluation_prep_manifest.json`
 
-Downstream artifacts are derived only. They do not define qualification success and they do not rewrite qualification truth.
+Downstream artifacts are derived only. They do not define qualification success and they do not rewrite qualification truth. They are not required for `preview_simulation` success, which currently means the World Labs preview path only.
 
 ## Presentation Bundle Contract
 
@@ -84,7 +81,7 @@ Capture orientation is preserved from raw capture metadata when available, then 
 
 The supported modern flow is:
 
-`BlueprintCapture raw bundle -> qualification analysis -> Gemini-backed fidelity review -> trust / provenance / payout recommendation -> WebApp sync`
+`BlueprintCapture raw bundle -> qualification analysis -> Gemini-backed fidelity review -> privacy-safe walkthrough -> World Labs preview -> WebApp sync`
 
 Optional follow-on lanes:
 

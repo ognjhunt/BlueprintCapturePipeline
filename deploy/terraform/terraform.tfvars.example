@@ -19,13 +19,7 @@ storage_bucket = "blueprint-8c1ca.appspot.com"
 # Build and push: docker build -t gcr.io/{project_id}/blueprint-pipeline:latest . && docker push gcr.io/{project_id}/blueprint-pipeline:latest
 docker_image = "gcr.io/blueprint-8c1ca/blueprint-pipeline:latest"
 
-# GPU type for Cloud Run Jobs
-# Options: nvidia-l4 (recommended), nvidia-t4
-gpu_type = "nvidia-l4"
-
-# Maximum concurrent job executions per region
-# Total capacity = max_concurrent_jobs * (1 + len(secondary_regions))
-# For 1000 scans/day with 20 min/scan: need ~14 concurrent GPUs
+# Maximum concurrent privacy-service instances
 max_concurrent_jobs = 10
 
 # Preview + World Labs request-manifest generation
@@ -35,12 +29,11 @@ worldlabs_default_model    = "Marble 0.1-mini"
 # Privacy-safe video preparation
 privacy_pipeline_enabled     = true
 privacy_fail_closed          = true
-privacy_sam3_command         = ""
-privacy_vip_command          = ""
-privacy_deepprivacy2_command = ""
 sam3_weights_path            = ""
 vip_model_path               = ""
 deepprivacy2_model_path      = ""
+depth_anything_model_path    = ""
+huggingface_token_secret_name = ""
 
 # Blueprint-WebApp sync-back
 pipeline_sync_webapp_url = ""

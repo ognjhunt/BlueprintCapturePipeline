@@ -19,7 +19,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
-from blueprint_pipeline.materialization import materialize_capture_bundle
+from blueprint_pipeline.materialization import (
+    capture_materialization_readiness,
+    materialize_capture_bundle,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -256,6 +259,17 @@ def _run_pipeline_inline(payload: Dict[str, Any]) -> str:
     scene_id = str(payload.get("scene_id") or "").strip()
     capture_id = str(payload.get("capture_id") or "").strip()
     if not descriptor_uri and bucket and scene_id and capture_id:
+        readiness = capture_materialization_readiness(
+            bucket=bucket,
+            scene_id=scene_id,
+            capture_id=capture_id,
+            gcs_root=Path(os.getenv("GCS_ROOT", "/mnt/gcs")),
+        )
+        if not readiness["ready"]:
+            raise RuntimeError(
+                "Capture bundle not ready for inline execution: "
+                + ",".join(str(item) for item in readiness["issues"])
+            )
         materialized = materialize_capture_bundle(
             bucket=bucket,
             scene_id=scene_id,
@@ -314,6 +328,17 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
         raw_complete["scene_id"],
         raw_complete["capture_id"],
     )
+    readiness = capture_materialization_readiness(
+        bucket=bucket,
+        scene_id=raw_complete["scene_id"],
+        capture_id=raw_complete["capture_id"],
+        gcs_root=Path(os.getenv("GCS_ROOT", "/mnt/gcs")),
+    )
+    if not readiness["ready"]:
+        raise RuntimeError(
+            "Capture bundle not ready for dispatch: "
+            + ",".join(str(item) for item in readiness["issues"])
+        )
     payload = _build_dispatch_payload(
         bucket=bucket,
         object_name=f"scenes/{raw_complete['scene_id']}/captures/{raw_complete['capture_id']}/capture_descriptor.json",

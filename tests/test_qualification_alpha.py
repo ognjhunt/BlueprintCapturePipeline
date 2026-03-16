@@ -37,7 +37,7 @@ def _build_staged_capture(
         "capture_schema_version": "2.0.0",
         "capture_source": "iphone",
         "capture_tier_hint": "tier1_iphone",
-        "requested_outputs": requested_outputs or [],
+        "requested_outputs": requested_outputs or ["qualification"],
         "capture_rights": {
             "derived_scene_generation_allowed": True,
             "data_licensing_allowed": False,
@@ -327,8 +327,8 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
 
     assert result["status"] == "completed"
     assert completion["status"] == "completed"
-    assert provider_run["status"] == "queued"
-    assert preview_status["status"] == "queued"
+    assert provider_run["status"] == "failed"
+    assert preview_status["status"] == "failed"
     assert completion["provider_run_manifest"].endswith("/provider_run_manifest.json")
     assert "scene_memory_manifest" not in completion
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +81,42 @@ def resolve_gs_uri_to_path(uri: str, gcs_root: Path) -> Path:
     if bucket_dir.exists() and bucket_dir.is_dir():
         return candidate_bucket
     return candidate_flat
+
+
+def ensure_local_uri_path(
+    uri: str,
+    *,
+    gcs_root: Path,
+    scratch_dir: Path | None = None,
+) -> Path:
+    """Return a local path for a URI, downloading from GCS when needed."""
+
+    if is_gs_uri(uri):
+        candidate = resolve_gs_uri_to_path(uri, gcs_root)
+        if candidate.exists():
+            return candidate
+        parsed = parse_gs_uri(uri)
+        try:
+            from google.cloud import storage as gcs_storage  # type: ignore[import-untyped]
+        except ImportError as exc:  # pragma: no cover - environment dependent
+            raise FileNotFoundError(
+                f"GCS URI is not mounted locally and google-cloud-storage is unavailable: {uri}"
+            ) from exc
+
+        ext = Path(parsed.key).suffix
+        target_root = scratch_dir or (gcs_root / ".downloads")
+        ensure_dir(target_root)
+        with tempfile.NamedTemporaryFile(
+            dir=target_root,
+            suffix=ext,
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+        client = gcs_storage.Client()
+        client.bucket(parsed.bucket).blob(parsed.key).download_to_filename(str(temp_path))
+        return temp_path
+
+    return Path(uri)
 
 
 def infer_storage_root_from_scene_path(path: Path) -> Path:

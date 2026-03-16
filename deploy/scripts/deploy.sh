@@ -31,17 +31,23 @@ SECONDARY_REGIONS="${SECONDARY_REGIONS:-us-east1,europe-west1}"
 STORAGE_BUCKET="${STORAGE_BUCKET:-${PROJECT_ID}.appspot.com}"
 IMAGE_NAME="${IMAGE_NAME:-blueprint-pipeline}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
+SAM3_IMAGE_NAME="${SAM3_IMAGE_NAME:-sam3-privacy}"
+VIP_IMAGE_NAME="${VIP_IMAGE_NAME:-vip-privacy}"
+DEEPPRIVACY2_IMAGE_NAME="${DEEPPRIVACY2_IMAGE_NAME:-deepprivacy2-privacy}"
 SWAP_TOPIC="${SWAP_TOPIC:-pipeline-trigger}"
 BLUEPRINT_PREVIEW_PROVIDER="${BLUEPRINT_PREVIEW_PROVIDER:-world_labs}"
 WORLDLABS_DEFAULT_MODEL="${WORLDLABS_DEFAULT_MODEL:-Marble 0.1-mini}"
 PRIVACY_PIPELINE_ENABLED="${PRIVACY_PIPELINE_ENABLED:-true}"
 PRIVACY_FAIL_CLOSED="${PRIVACY_FAIL_CLOSED:-true}"
-PRIVACY_SAM3_COMMAND="${PRIVACY_SAM3_COMMAND:-}"
-VIP_COMMAND="${VIP_COMMAND:-}"
-DEEPPRIVACY2_COMMAND="${DEEPPRIVACY2_COMMAND:-}"
+PRIVACY_SAM3_URL="${PRIVACY_SAM3_URL:-}"
+PRIVACY_VIP_URL="${PRIVACY_VIP_URL:-}"
+PRIVACY_DEEPPRIVACY2_URL="${PRIVACY_DEEPPRIVACY2_URL:-}"
 SAM3_WEIGHTS_PATH="${SAM3_WEIGHTS_PATH:-}"
 VIP_MODEL_PATH="${VIP_MODEL_PATH:-}"
 DEEPPRIVACY2_MODEL_PATH="${DEEPPRIVACY2_MODEL_PATH:-}"
+DEPTH_ANYTHING_MODEL_PATH="${DEPTH_ANYTHING_MODEL_PATH:-}"
+HUGGINGFACE_TOKEN_SECRET_NAME="${HUGGINGFACE_TOKEN_SECRET_NAME:-}"
+PRIVACY_RUNNER_TOKEN="${PRIVACY_RUNNER_TOKEN:-}"
 PIPELINE_SYNC_WEBAPP_URL="${PIPELINE_SYNC_WEBAPP_URL:-}"
 PIPELINE_SYNC_TOKEN="${PIPELINE_SYNC_TOKEN:-}"
 WORLDLABS_API_KEY="${WORLDLABS_API_KEY:-}"
@@ -154,44 +160,72 @@ enable_apis() {
 }
 
 build_docker_image() {
-    log_info "Building Docker image..."
+    log_info "Building Docker images..."
 
     cd "$PROJECT_ROOT"
 
     IMAGE_URI="gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
+    SAM3_IMAGE_URI="gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
+    VIP_IMAGE_URI="gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
+    DEEPPRIVACY2_IMAGE_URI="gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] Would build: $IMAGE_URI"
+        log_info "[DRY-RUN] Would build: $SAM3_IMAGE_URI"
+        log_info "[DRY-RUN] Would build: $VIP_IMAGE_URI"
+        log_info "[DRY-RUN] Would build: $DEEPPRIVACY2_IMAGE_URI"
         return
     fi
 
-    # Build the image
     docker build \
         --target production \
         -t "$IMAGE_URI" \
         -f Dockerfile \
         .
 
-    log_success "Docker image built: $IMAGE_URI"
+    docker build \
+        -t "$SAM3_IMAGE_URI" \
+        -f deploy/docker/sam3/Dockerfile \
+        .
+
+    docker build \
+        -t "$VIP_IMAGE_URI" \
+        -f deploy/docker/vip/Dockerfile \
+        .
+
+    docker build \
+        -t "$DEEPPRIVACY2_IMAGE_URI" \
+        -f deploy/docker/deepprivacy2/Dockerfile \
+        .
+
+    log_success "Docker images built"
 }
 
 push_docker_image() {
-    log_info "Pushing Docker image to GCR..."
+    log_info "Pushing Docker images to GCR..."
 
     IMAGE_URI="gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
+    SAM3_IMAGE_URI="gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
+    VIP_IMAGE_URI="gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
+    DEEPPRIVACY2_IMAGE_URI="gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] Would push: $IMAGE_URI"
+        log_info "[DRY-RUN] Would push: $SAM3_IMAGE_URI"
+        log_info "[DRY-RUN] Would push: $VIP_IMAGE_URI"
+        log_info "[DRY-RUN] Would push: $DEEPPRIVACY2_IMAGE_URI"
         return
     fi
 
     # Configure Docker for GCR
     gcloud auth configure-docker gcr.io --quiet
 
-    # Push the image
     docker push "$IMAGE_URI"
+    docker push "$SAM3_IMAGE_URI"
+    docker push "$VIP_IMAGE_URI"
+    docker push "$DEEPPRIVACY2_IMAGE_URI"
 
-    log_success "Docker image pushed: $IMAGE_URI"
+    log_success "Docker images pushed"
 }
 
 apply_terraform() {
@@ -208,6 +242,17 @@ primary_region     = "${PRIMARY_REGION}"
 secondary_regions  = [$(echo "$SECONDARY_REGIONS" | tr ',' '\n' | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')]
 storage_bucket     = "${STORAGE_BUCKET}"
 docker_image       = "gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
+privacy_sam3_image = "gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
+privacy_vip_image  = "gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
+privacy_deepprivacy2_image = "gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
+privacy_runner_token = "${PRIVACY_RUNNER_TOKEN}"
+sam3_weights_path = "${SAM3_WEIGHTS_PATH}"
+vip_model_path = "${VIP_MODEL_PATH}"
+deepprivacy2_model_path = "${DEEPPRIVACY2_MODEL_PATH}"
+depth_anything_model_path = "${DEPTH_ANYTHING_MODEL_PATH}"
+huggingface_token_secret_name = "${HUGGINGFACE_TOKEN_SECRET_NAME}"
+pipeline_sync_webapp_url = "${PIPELINE_SYNC_WEBAPP_URL}"
+pipeline_sync_token = "${PIPELINE_SYNC_TOKEN}"
 EOF
     fi
 
@@ -299,11 +344,10 @@ create_cloud_run_jobs() {
                 --args "-m,blueprint_pipeline.capture_orchestrator" \
                 --add-volume name=capture-storage,type=cloud-storage,bucket=${STORAGE_BUCKET} \
                 --add-volume-mount volume=capture-storage,mount-path=/mnt/gcs \
-                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET},GCS_ROOT=/mnt/gcs,BLUEPRINT_PREVIEW_PROVIDER=${BLUEPRINT_PREVIEW_PROVIDER},WORLDLABS_API_KEY=${WORLDLABS_API_KEY},WORLDLABS_DEFAULT_MODEL=${WORLDLABS_DEFAULT_MODEL},PRIVACY_PIPELINE_ENABLED=${PRIVACY_PIPELINE_ENABLED},PRIVACY_FAIL_CLOSED=${PRIVACY_FAIL_CLOSED},PRIVACY_SAM3_COMMAND=${PRIVACY_SAM3_COMMAND},VIP_COMMAND=${VIP_COMMAND},DEEPPRIVACY2_COMMAND=${DEEPPRIVACY2_COMMAND},SAM3_WEIGHTS_PATH=${SAM3_WEIGHTS_PATH},VIP_MODEL_PATH=${VIP_MODEL_PATH},DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH},PIPELINE_SYNC_WEBAPP_URL=${PIPELINE_SYNC_WEBAPP_URL},PIPELINE_SYNC_TOKEN=${PIPELINE_SYNC_TOKEN}" \
+                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET},GCS_ROOT=/mnt/gcs,BLUEPRINT_PREVIEW_PROVIDER=${BLUEPRINT_PREVIEW_PROVIDER},WORLDLABS_API_KEY=${WORLDLABS_API_KEY},WORLDLABS_DEFAULT_MODEL=${WORLDLABS_DEFAULT_MODEL},PRIVACY_PIPELINE_ENABLED=${PRIVACY_PIPELINE_ENABLED},PRIVACY_FAIL_CLOSED=${PRIVACY_FAIL_CLOSED},PRIVACY_SAM3_URL=${PRIVACY_SAM3_URL},PRIVACY_VIP_URL=${PRIVACY_VIP_URL},PRIVACY_DEEPPRIVACY2_URL=${PRIVACY_DEEPPRIVACY2_URL},PRIVACY_RUNNER_TOKEN=${PRIVACY_RUNNER_TOKEN},PIPELINE_SYNC_WEBAPP_URL=${PIPELINE_SYNC_WEBAPP_URL},PIPELINE_SYNC_TOKEN=${PIPELINE_SYNC_TOKEN}" \
                 --quiet
         else
             log_info "Creating new job in $region..."
-            # Note: GPU support requires specific configuration
             gcloud run jobs create blueprint-pipeline \
                 --image "$IMAGE_URI" \
                 --region "$region" \
@@ -315,7 +359,7 @@ create_cloud_run_jobs() {
                 --args "-m,blueprint_pipeline.capture_orchestrator" \
                 --add-volume name=capture-storage,type=cloud-storage,bucket=${STORAGE_BUCKET} \
                 --add-volume-mount volume=capture-storage,mount-path=/mnt/gcs \
-                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET},GCS_ROOT=/mnt/gcs,BLUEPRINT_PREVIEW_PROVIDER=${BLUEPRINT_PREVIEW_PROVIDER},WORLDLABS_API_KEY=${WORLDLABS_API_KEY},WORLDLABS_DEFAULT_MODEL=${WORLDLABS_DEFAULT_MODEL},PRIVACY_PIPELINE_ENABLED=${PRIVACY_PIPELINE_ENABLED},PRIVACY_FAIL_CLOSED=${PRIVACY_FAIL_CLOSED},PRIVACY_SAM3_COMMAND=${PRIVACY_SAM3_COMMAND},VIP_COMMAND=${VIP_COMMAND},DEEPPRIVACY2_COMMAND=${DEEPPRIVACY2_COMMAND},SAM3_WEIGHTS_PATH=${SAM3_WEIGHTS_PATH},VIP_MODEL_PATH=${VIP_MODEL_PATH},DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH},PIPELINE_SYNC_WEBAPP_URL=${PIPELINE_SYNC_WEBAPP_URL},PIPELINE_SYNC_TOKEN=${PIPELINE_SYNC_TOKEN}" \
+                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET},GCS_ROOT=/mnt/gcs,BLUEPRINT_PREVIEW_PROVIDER=${BLUEPRINT_PREVIEW_PROVIDER},WORLDLABS_API_KEY=${WORLDLABS_API_KEY},WORLDLABS_DEFAULT_MODEL=${WORLDLABS_DEFAULT_MODEL},PRIVACY_PIPELINE_ENABLED=${PRIVACY_PIPELINE_ENABLED},PRIVACY_FAIL_CLOSED=${PRIVACY_FAIL_CLOSED},PRIVACY_SAM3_URL=${PRIVACY_SAM3_URL},PRIVACY_VIP_URL=${PRIVACY_VIP_URL},PRIVACY_DEEPPRIVACY2_URL=${PRIVACY_DEEPPRIVACY2_URL},PRIVACY_RUNNER_TOKEN=${PRIVACY_RUNNER_TOKEN},PIPELINE_SYNC_WEBAPP_URL=${PIPELINE_SYNC_WEBAPP_URL},PIPELINE_SYNC_TOKEN=${PIPELINE_SYNC_TOKEN}" \
                 --quiet
         fi
     done
@@ -457,7 +501,11 @@ print_summary() {
     echo ""
     echo "Resources:"
     echo "  - Docker Image: gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
-    echo "  - Cloud Run Job: blueprint-pipeline"
+    echo "  - Privacy Service Image (SAM3): gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
+    echo "  - Privacy Service Image (VIP): gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
+    echo "  - Privacy Service Image (DeepPrivacy2): gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
+    echo "  - Cloud Run Job (CPU): blueprint-pipeline"
+    echo "  - Cloud Run Services (GPU): sam3-detect, vip-inpaint, deepprivacy2-anonymize"
     echo "  - Cloud Function: storage-trigger"
     echo "  - Cloud Tasks Queue: blueprint-pipeline-queue"
     echo "  - Pub/Sub Topic: pipeline-trigger"

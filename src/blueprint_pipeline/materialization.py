@@ -460,6 +460,67 @@ def _raw_video_candidates(raw_root: Path) -> List[str]:
     return out
 
 
+def capture_materialization_readiness(
+    *,
+    bucket: str,
+    scene_id: str,
+    capture_id: str,
+    gcs_root: Path,
+    raw_prefix_uri: Optional[str] = None,
+) -> Dict[str, Any]:
+    raw_prefix_uri = raw_prefix_uri or f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/raw"
+    raw_root = resolve_gs_uri_to_path(raw_prefix_uri, gcs_root)
+    manifest_path = raw_root / "manifest.json"
+    manifest = _read_optional_json(manifest_path)
+    requested_outputs = _string_list(
+        manifest.get("requested_outputs") or manifest.get("requestedOutputs")
+    )
+    walkthrough_path = raw_root / "walkthrough.mov"
+    video_candidates = _raw_video_candidates(raw_root)
+    issues: List[str] = []
+    if not manifest_path.is_file():
+        issues.append("missing_manifest")
+    elif not manifest:
+        issues.append("invalid_manifest")
+    if not walkthrough_path.is_file():
+        issues.append("missing_walkthrough_mov")
+    if not video_candidates:
+        issues.append("missing_raw_video")
+    if not requested_outputs:
+        issues.append("missing_requested_outputs")
+    return {
+        "ready": not issues,
+        "issues": issues,
+        "raw_root": str(raw_root),
+        "manifest_path": str(manifest_path),
+        "walkthrough_path": str(walkthrough_path),
+        "requested_outputs": requested_outputs,
+        "video_candidates": video_candidates,
+    }
+
+
+def assert_capture_materialization_ready(
+    *,
+    bucket: str,
+    scene_id: str,
+    capture_id: str,
+    gcs_root: Path,
+    raw_prefix_uri: Optional[str] = None,
+) -> Dict[str, Any]:
+    readiness = capture_materialization_readiness(
+        bucket=bucket,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        gcs_root=gcs_root,
+        raw_prefix_uri=raw_prefix_uri,
+    )
+    if readiness["ready"]:
+        return readiness
+    raise RuntimeError(
+        "capture_not_ready:" + ",".join(str(item) for item in readiness["issues"])
+    )
+
+
 def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> str:
     for candidate in (
         str(manifest.get("capture_source") or "").strip().lower(),
@@ -563,6 +624,13 @@ def build_capture_bundle_records(
     write_frames_index: bool = True,
 ) -> Dict[str, Any]:
     raw_prefix_uri = raw_prefix_uri or f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/raw"
+    assert_capture_materialization_ready(
+        bucket=bucket,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        gcs_root=gcs_root,
+        raw_prefix_uri=raw_prefix_uri,
+    )
     raw_root = resolve_gs_uri_to_path(raw_prefix_uri, gcs_root)
     capture_root = raw_root.parent
 

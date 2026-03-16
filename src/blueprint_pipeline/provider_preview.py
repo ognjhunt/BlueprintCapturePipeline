@@ -246,12 +246,9 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         worldlabs_input_video_uri = self._string(metadata.get("worldlabs_input_video_uri"))
         world_model_video_uri = self._string(descriptor.get("world_model_video_uri"))
         privacy_processed_video_uri = self._string(descriptor.get("privacy_processed_video_uri"))
-        raw_video_uri = self._string(descriptor.get("raw_video_uri"))
         privacy_status = self._string(
             descriptor.get("privacy_status") or privacy_processing.get("status")
         ).lower()
-        raw_retained = bool(privacy_processing.get("raw_retained"))
-        raw_allowed = raw_retained and privacy_status == "no_people_detected"
 
         candidates: List[Dict[str, Any]] = []
         if worldlabs_input_video_uri:
@@ -281,24 +278,10 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                     "reason": "privacy-processed walkthrough video",
                 }
             )
-        if raw_video_uri:
-            candidates.append(
-                {
-                    "source_id": "raw_video_uri",
-                    "uri": raw_video_uri,
-                    "eligible": raw_allowed,
-                    "reason": (
-                        "raw walkthrough explicitly allowed by privacy policy"
-                        if raw_allowed
-                        else "raw walkthrough retained but not approved for direct World Labs generation"
-                    ),
-                }
-            )
 
         selected = next((item for item in candidates if item.get("eligible")), None)
         return {
             "privacy_status": privacy_status or None,
-            "raw_allowed": raw_allowed,
             "selected": selected,
             "candidates": candidates,
         }
@@ -394,7 +377,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             },
             "privacy": {
                 "status": video_candidates.get("privacy_status") if isinstance(video_candidates, Mapping) else None,
-                "raw_allowed": bool(video_candidates.get("raw_allowed")) if isinstance(video_candidates, Mapping) else False,
+                "raw_allowed": False,
             },
         }
 
@@ -463,51 +446,68 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "raw_response": None,
             }
 
-        generation_request: Dict[str, Any] = json.loads(
-            json.dumps(request_manifest.get("generation_request") or {})
-        )
-        generation_request["permission"] = _normalize_permission(generation_request.get("permission"))
-        world_prompt: Dict[str, Any] = dict(generation_request.get("world_prompt") or {})
-        if not world_prompt.get("text_prompt"):
-            world_prompt["text_prompt"] = _DEFAULT_WORLDLABS_TEXT_PROMPT
-        video_prompt: Dict[str, Any] = dict(world_prompt.get("video_prompt") or {})
+        try:
+            generation_request: Dict[str, Any] = json.loads(
+                json.dumps(request_manifest.get("generation_request") or {})
+            )
+            generation_request["permission"] = _normalize_permission(generation_request.get("permission"))
+            world_prompt: Dict[str, Any] = dict(generation_request.get("world_prompt") or {})
+            if not world_prompt.get("text_prompt"):
+                world_prompt["text_prompt"] = _DEFAULT_WORLDLABS_TEXT_PROMPT
+            video_prompt: Dict[str, Any] = dict(world_prompt.get("video_prompt") or {})
 
-        if generation_source_type == "video_uri":
-            video_prompt["source"] = "uri"
-            video_prompt["uri"] = selected_video_uri
-            video_prompt.pop("media_asset_id", None)
-        else:
-            media_asset_id = self._upload_video_as_media_asset(selected_video_uri, descriptor=descriptor)
-            video_prompt["source"] = "media_asset"
-            video_prompt["media_asset_id"] = media_asset_id
-            video_prompt.pop("uri", None)
-            generation_source_type = "video_media_asset"
+            if generation_source_type == "video_uri":
+                video_prompt["source"] = "uri"
+                video_prompt["uri"] = selected_video_uri
+                video_prompt.pop("media_asset_id", None)
+            else:
+                media_asset_id = self._upload_video_as_media_asset(selected_video_uri, descriptor=descriptor)
+                video_prompt["source"] = "media_asset"
+                video_prompt["media_asset_id"] = media_asset_id
+                video_prompt.pop("uri", None)
+                generation_source_type = "video_media_asset"
 
-        world_prompt["video_prompt"] = video_prompt
-        generation_request["world_prompt"] = world_prompt
+            world_prompt["video_prompt"] = video_prompt
+            generation_request["world_prompt"] = world_prompt
 
-        operation = _worldlabs_api_request(
-            "/marble/v1/worlds:generate",
-            method="POST",
-            body=generation_request,
-        )
-        operation_id = str(operation.get("id") or operation.get("operation_id") or "").strip()
-        latency_ms = int((time.time() - started_at) * 1000)
-        return {
-            "provider_name": self.provider_name,
-            "provider_model": str(request_manifest.get("provider_model") or self.provider_model),
-            "provider_run_id": operation_id,
-            "status": "processing" if operation_id else "failed",
-            "artifact_uris": {},
-            "cost_usd": 0.0,
-            "latency_ms": latency_ms,
-            "failure_reason": None if operation_id else "worldlabs_generate_returned_no_operation_id",
-            "input_manifest_uri": descriptor.get("raw_prefix_uri"),
-            "worldlabs_request_manifest": request_manifest,
-            "worldlabs_operation": operation,
-            "generation_source_type": generation_source_type,
-            "raw_response": operation,
-        }
+            operation = _worldlabs_api_request(
+                "/marble/v1/worlds:generate",
+                method="POST",
+                body=generation_request,
+            )
+            operation_id = str(operation.get("id") or operation.get("operation_id") or "").strip()
+            latency_ms = int((time.time() - started_at) * 1000)
+            return {
+                "provider_name": self.provider_name,
+                "provider_model": str(request_manifest.get("provider_model") or self.provider_model),
+                "provider_run_id": operation_id,
+                "status": "processing" if operation_id else "failed",
+                "artifact_uris": {},
+                "cost_usd": 0.0,
+                "latency_ms": latency_ms,
+                "failure_reason": None if operation_id else "worldlabs_generate_returned_no_operation_id",
+                "input_manifest_uri": descriptor.get("raw_prefix_uri"),
+                "worldlabs_request_manifest": request_manifest,
+                "worldlabs_operation": operation,
+                "generation_source_type": generation_source_type,
+                "raw_response": operation,
+            }
+        except Exception as exc:
+            return {
+                "provider_name": self.provider_name,
+                "provider_model": str(request_manifest.get("provider_model") or self.provider_model),
+                "provider_run_id": "",
+                "status": "failed",
+                "artifact_uris": {},
+                "cost_usd": 0.0,
+                "latency_ms": int((time.time() - started_at) * 1000),
+                "failure_reason": str(exc),
+                "input_manifest_uri": descriptor.get("raw_prefix_uri"),
+                "worldlabs_request_manifest": request_manifest,
+                "worldlabs_operation": None,
+                "generation_source_type": generation_source_type or None,
+                "raw_response": None,
+            }
 
     def poll(self, *, run_id: str) -> Dict[str, Any]:
         operation = _worldlabs_api_request(f"/marble/v1/operations/{run_id}")

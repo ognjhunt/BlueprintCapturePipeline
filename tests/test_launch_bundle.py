@@ -99,8 +99,8 @@ def test_preview_provider_failure_is_captured_without_raising(tmp_path: Path, mo
         pipeline_dir=tmp_path,
     )
 
-    assert result["status"] == "queued"
-    assert result["failure_reason"] is None
+    assert result["status"] == "failed"
+    assert result["failure_reason"]
     assert (tmp_path / "provider_run_manifest.json").is_file()
     assert (tmp_path / "preview_manifest.json").is_file()
     assert (tmp_path / "worldlabs_request_manifest.json").is_file()
@@ -121,3 +121,22 @@ def test_worldlabs_preview_provider_uses_detailed_default_prompt() -> None:
     )
 
     assert payload["generation_request"]["world_prompt"]["text_prompt"] == _DEFAULT_WORLDLABS_TEXT_PROMPT
+
+
+def test_worldlabs_preview_provider_never_uses_raw_video() -> None:
+    provider = WorldLabsPreviewProvider()
+
+    payload = provider._build_request_manifest(
+        descriptor={
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "raw_video_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw/walkthrough.mov",
+            "privacy_status": "no_people_detected",
+            "metadata": {},
+        },
+        capture_root=Path("/tmp/capture-root"),
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["selected_video_uri"] is None
+    assert all(item["source_id"] != "raw_video_uri" for item in payload["video_candidates"])

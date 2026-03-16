@@ -12,10 +12,12 @@ __pycache__/
 .DS_Store
 build/
 dist/
-deploy/
 docs/
 local_runs_worldlabs/
 local_runs/
 runs/
 skillpacks/
 tests/
+deploy/terraform/.terraform/
+deploy/terraform/function-source.zip
+deploy/terraform/.terraform.lock.hcl

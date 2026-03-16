@@ -15,6 +15,7 @@ from .common import (
     PipelineError,
     StageError,
     ensure_dir,
+    ensure_local_uri_path,
     has_nonempty_file,
     infer_storage_root_from_scene_path,
     parse_bool,
@@ -2499,7 +2500,7 @@ def _resolve_optional_uri_to_path(uri: Optional[str], storage_root: Path) -> Opt
     if not uri:
         return None
     try:
-        return resolve_gs_uri_to_path(uri, storage_root)
+        return ensure_local_uri_path(uri, gcs_root=storage_root, scratch_dir=storage_root / ".downloads")
     except Exception:
         return None
 
@@ -2544,17 +2545,28 @@ def _worldlabs_source_candidate(
     privacy_processing: Mapping[str, Any],
 ) -> Dict[str, Any]:
     privacy_status = str(privacy_processing.get("status") or descriptor.privacy_status or "").strip().lower()
-    raw_retained = bool(privacy_processing.get("raw_retained"))
-    raw_allowed = raw_retained and privacy_status == "no_people_detected"
+    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    worldlabs_input_video_uri = str(metadata.get("worldlabs_input_video_uri") or "").strip()
     candidates = [
-        {"source_id": "world_model_video_uri", "uri": descriptor.world_model_video_uri, "eligible": bool(descriptor.world_model_video_uri)},
-        {"source_id": "privacy_processed_video_uri", "uri": descriptor.privacy_processed_video_uri, "eligible": bool(descriptor.privacy_processed_video_uri)},
-        {"source_id": "raw_video_uri", "uri": descriptor.raw_video_uri, "eligible": bool(descriptor.raw_video_uri and raw_allowed)},
+        {
+            "source_id": "worldlabs_input_video_uri",
+            "uri": worldlabs_input_video_uri,
+            "eligible": bool(worldlabs_input_video_uri),
+        },
+        {
+            "source_id": "world_model_video_uri",
+            "uri": descriptor.world_model_video_uri,
+            "eligible": bool(descriptor.world_model_video_uri),
+        },
+        {
+            "source_id": "privacy_processed_video_uri",
+            "uri": descriptor.privacy_processed_video_uri,
+            "eligible": bool(descriptor.privacy_processed_video_uri),
+        },
     ]
     selected = next((item for item in candidates if item["eligible"] and item["uri"]), None)
     return {
         "privacy_status": privacy_status or None,
-        "raw_allowed": raw_allowed,
         "selected": selected,
         "candidates": [
             {
@@ -4551,11 +4563,6 @@ def run_qualification_pipeline(
             "provenance_summary": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
             "geometry_manifest": geometry_artifacts.get("geometry_manifest_uri"),
             "geometry_summary": geometry_artifacts.get("geometry_summary_uri"),
-            "scene_memory_manifest": scene_memory_artifacts["scene_memory_manifest_uri"],
-            "preview_simulation_manifest": scene_memory_artifacts["preview_simulation_manifest_uri"],
-            "presentation_bundle": scene_memory_artifacts["presentation_bundle_uri"],
-            "presentation_world_manifest": scene_memory_artifacts["presentation_world_manifest_uri"],
-            "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
             "provider_run_manifest": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
             "preview_manifest": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
             "worldlabs_request_manifest": worldlabs_request_manifest_uri,
@@ -4619,16 +4626,6 @@ def run_qualification_pipeline(
                 "human_actions_required_uri": quality_report["artifacts"].get("human_actions_required"),
                 "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
                 "agent_readiness_memo_uri": f"gs://{bucket}/{pipeline_prefix}/agent_readiness_memo.md",
-                "scene_memory_manifest_uri": scene_memory_artifacts["scene_memory_manifest_uri"],
-                "scene_memory_readiness_uri": scene_memory_artifacts["scene_memory_readiness_uri"],
-                "conditioning_bundle_uri": scene_memory_artifacts["conditioning_bundle_uri"],
-                "preview_simulation_manifest_uri": scene_memory_artifacts["preview_simulation_manifest_uri"],
-                "presentation_bundle_uri": scene_memory_artifacts["presentation_bundle_uri"],
-                "presentation_world_manifest_uri": scene_memory_artifacts["presentation_world_manifest_uri"],
-                "runtime_demo_manifest_uri": scene_memory_artifacts["runtime_demo_manifest_uri"],
-                "gen3c_adapter_manifest_uri": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
-                "neoverse_adapter_manifest_uri": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
-                "cosmos_transfer_adapter_manifest_uri": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
             }),
             derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
             deployment_readiness={

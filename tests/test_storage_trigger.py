@@ -41,3 +41,25 @@ def test_on_swap_dispatch_launches_cloud_run_job(monkeypatch) -> None:
     storage_trigger.on_swap_dispatch(event, context=None)
 
     assert captured["payload"] == payload
+
+
+def test_on_storage_finalize_retries_when_capture_bundle_not_ready(monkeypatch) -> None:
+    storage_trigger = _load_storage_trigger_module()
+
+    monkeypatch.setattr(
+        storage_trigger,
+        "capture_materialization_readiness",
+        lambda **_kwargs: {"ready": False, "issues": ["missing_manifest"]},
+    )
+
+    event = {
+        "bucket": "bucket",
+        "name": "scenes/scene-1/captures/capture-1/raw/capture_upload_complete.json",
+    }
+
+    try:
+        storage_trigger.on_storage_finalize(event, context=None)
+    except RuntimeError as exc:
+        assert "missing_manifest" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("Expected readiness failure to raise")

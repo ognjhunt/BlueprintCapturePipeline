@@ -2,7 +2,7 @@
 
 `BlueprintCapturePipeline` is the qualification, provenance, and provider-routing service for raw Blueprint captures.
 
-For alpha, the default output is a WebApp-facing qualification record built from `BlueprintCapture` evidence, Gemini-backed multimodal fidelity review, deterministic rights/provenance normalization, and optional provider-preview state. Scene-memory, presentation, and evaluation-prep artifacts remain available as explicit downstream derived lanes.
+For alpha, the only supported preview path is World Labs: `BlueprintCapture` evidence -> qualification -> privacy-safe walkthrough video -> World Labs generate/poll -> WebApp sync. Scene-memory, presentation, evaluation-prep, and runtime registration remain legacy downstream derived lanes and are not part of preview success.
 
 ## Scope
 
@@ -14,6 +14,7 @@ Primary product path:
 - deterministic QA aggregation and trust/provenance assembly
 - world-model fit scoring and capturer payout recommendation
 - optional provider preview routing
+- privacy-safe World Labs input preparation
 - webapp sync for buyer-review surfaces
 - deterministic object indexing and scene semantics when deeper work is requested
 - optional scene-memory assembly
@@ -34,7 +35,7 @@ Authoritative alpha artifacts:
 - `provenance_summary.json`
 - `gemini_capture_fidelity_review.json`
 
-Optional downstream artifacts:
+Optional legacy downstream artifacts:
 
 - `scene_memory/*`
 - `presentation_world/presentation_bundle.json`
@@ -59,11 +60,38 @@ Optional LLM support for the qualification agent:
 uv sync --extra dev --extra llm
 ```
 
-## Supported GPU VM Path
+Local tests automatically add `src/` and the sibling `BlueprintContracts/src` to `sys.path` through [`tests/conftest.py`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py). If the contracts repo is not present beside this repo, install `blueprint-contracts` before running `pytest`.
 
-The supported runtime path is documented in [docs/GPU_VM_RUNBOOK.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/GPU_VM_RUNBOOK.md).
+## Privacy Runner Services
 
-The short version is:
+The production preview path expects URL-first privacy runners:
+
+- `PRIVACY_SAM3_URL`
+- `PRIVACY_VIP_URL`
+- `PRIVACY_DEEPPRIVACY2_URL`
+- `PRIVACY_RUNNER_TOKEN`
+
+The production deployment should use three GPU Cloud Run services:
+
+- `sam3-detect`
+- `vip-inpaint`
+- `deepprivacy2-anonymize`
+
+The main `blueprint-pipeline` job stays CPU-only. The concrete service contract, storage behavior, and model-path rules are documented in [docs/PRIVACY_RUNNER_SERVICES.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PRIVACY_RUNNER_SERVICES.md).
+
+`vip-inpaint` is responsible for depth selection:
+
+- use ARKit depth/confidence when available
+- fall back to Depth Anything for non-ARKit captures, including glasses captures
+- emit `depth_source` in the VIP result payload
+
+## Local GPU Bring-Up
+
+The older single-VM GPU runbook is still available for legacy downstream world-model work in [docs/GPU_VM_RUNBOOK.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/GPU_VM_RUNBOOK.md), but it is not the active preview path.
+
+For privacy-service bring-up, use the service images under [`deploy/docker/`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/docker) and the Terraform stack under [`deploy/terraform/main.tf`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/terraform/main.tf).
+
+The local repo bootstrap remains:
 
 ```bash
 python3 -m venv .venv
@@ -120,7 +148,7 @@ blueprint-run-e2e \
   --provider openai
 ```
 
-Optional downstream scene-memory build:
+Optional legacy scene-memory build:
 
 ```bash
 blueprint-capture-pipeline \
