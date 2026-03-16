@@ -6,7 +6,11 @@ from blueprint_pipeline.launch_bundle import (
     build_buyer_trust_score,
     build_launch_qualification_bundle,
 )
-from blueprint_pipeline.provider_preview import run_preview_provider
+from blueprint_pipeline.provider_preview import (
+    _DEFAULT_WORLDLABS_TEXT_PROMPT,
+    WorldLabsPreviewProvider,
+    run_preview_provider,
+)
 
 
 def test_buyer_trust_score_penalizes_missing_rights_without_preview_failure_penalty() -> None:
@@ -84,12 +88,36 @@ def test_preview_provider_failure_is_captured_without_raising(tmp_path: Path, mo
 
     result = run_preview_provider(
         provider_name="world_labs",
-        descriptor={"capture_id": "cap-2", "raw_prefix_uri": "gs://bucket/raw"},
+        descriptor={
+            "capture_id": "cap-2",
+            "raw_prefix_uri": "gs://bucket/raw",
+            "metadata": {
+                "worldlabs_input_video_uri": "gs://bucket/scenes/scene-2/captures/cap-2/pipeline/worldlabs_input/worldlabs_input.mp4",
+            },
+        },
         capture_root=tmp_path,
         pipeline_dir=tmp_path,
     )
 
-    assert result["status"] == "failed"
-    assert result["failure_reason"]
+    assert result["status"] == "queued"
+    assert result["failure_reason"] is None
     assert (tmp_path / "provider_run_manifest.json").is_file()
     assert (tmp_path / "preview_manifest.json").is_file()
+    assert (tmp_path / "worldlabs_request_manifest.json").is_file()
+
+
+def test_worldlabs_preview_provider_uses_detailed_default_prompt() -> None:
+    provider = WorldLabsPreviewProvider()
+
+    payload = provider._build_request_manifest(
+        descriptor={
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "metadata": {
+                "worldlabs_input_video_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4",
+            },
+        },
+        capture_root=Path("/tmp/capture-root"),
+    )
+
+    assert payload["generation_request"]["world_prompt"]["text_prompt"] == _DEFAULT_WORLDLABS_TEXT_PROMPT

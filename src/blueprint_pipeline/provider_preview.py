@@ -11,6 +11,22 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Protocol
 from .common import utc_now_iso, write_json
 
+_DEFAULT_WORLDLABS_TEXT_PROMPT = """Create a grounded, explorable Marble world from this walkthrough video of a real indoor media-room / office-like environment.
+
+Requirements:
+- Preserve the real room layout, scale, walkable floor area, and major object placement from the video.
+- Treat this as a practical, cluttered working room, not a stylized showroom.
+- Keep desks, office chairs, printers, shelving, boxes, monitors, TVs, fireplace, doorways, walls, and window-blind surfaces where they appear in the walkthrough.
+- Respect the captured camera path and inferred spatial relationships from the video.
+- Favor physical plausibility over visual embellishment.
+- Do not invent extra rooms, extra corridors, or dramatic architectural changes.
+- Do not clean up clutter unless the video clearly shows open space.
+- Avoid fantasy, cinematic, game-like, or exaggerated design choices.
+- Maintain a neutral, realistic material palette and ordinary indoor lighting.
+- Output should feel like a believable reconstruction of the same site for interactive review and navigation.
+- Prioritize navigability, stable geometry, and faithful scene structure over decorative detail.
+- If any region is ambiguous, infer the simplest continuation consistent with the walkthrough instead of hallucinating new features."""
+
 
 class PreviewProvider(Protocol):
     def submit(self, *, descriptor: Mapping[str, Any], capture_root: Path) -> Dict[str, Any]: ...
@@ -178,7 +194,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             or descriptor.get("capture_id")
             or descriptor.get("scene_id")
         )
-        prompt_text = scene_summary or "A grounded explorable reconstruction of the captured site."
+        prompt_text = scene_summary or _DEFAULT_WORLDLABS_TEXT_PROMPT
         tags = [
             value
             for value in [
