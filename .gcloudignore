@@ -15,5 +15,7 @@ dist/
 deploy/
 docs/
 local_runs_worldlabs/
+local_runs/
+runs/
 skillpacks/
 tests/

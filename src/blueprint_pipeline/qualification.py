@@ -4470,6 +4470,16 @@ def run_qualification_pipeline(
             if worldlabs_request_manifest_path.is_file()
             else None
         )
+        worldlabs_operation_manifest_uri = (
+            f"gs://{bucket}/{pipeline_prefix}/worldlabs_operation_manifest.json"
+            if (pipeline_dir / "worldlabs_operation_manifest.json").is_file()
+            else None
+        )
+        worldlabs_world_manifest_uri = (
+            f"gs://{bucket}/{pipeline_prefix}/worldlabs_world_manifest.json"
+            if (pipeline_dir / "worldlabs_world_manifest.json").is_file()
+            else None
+        )
         if worldlabs_request_manifest_uri:
             descriptor_payload = descriptor.to_dict()
             metadata_payload = dict(descriptor_payload.get("metadata") or {})
@@ -4549,6 +4559,8 @@ def run_qualification_pipeline(
             "provider_run_manifest": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
             "preview_manifest": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
             "worldlabs_request_manifest": worldlabs_request_manifest_uri,
+            "worldlabs_operation_manifest": worldlabs_operation_manifest_uri,
+            "worldlabs_world_manifest": worldlabs_world_manifest_uri,
             "worldlabs_input_manifest": worldlabs_input.get("manifest_uri"),
             "worldlabs_input_video": worldlabs_input.get("output_video_uri"),
             **(
@@ -4589,6 +4601,8 @@ def run_qualification_pipeline(
                 "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
                 "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
                 "worldlabs_request_manifest_uri": worldlabs_request_manifest_uri,
+                "worldlabs_operation_manifest_uri": worldlabs_operation_manifest_uri,
+                "worldlabs_world_manifest_uri": worldlabs_world_manifest_uri,
                 "worldlabs_input_manifest_uri": worldlabs_input.get("manifest_uri"),
                 "worldlabs_input_video_uri": worldlabs_input.get("output_video_uri"),
                 "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),
