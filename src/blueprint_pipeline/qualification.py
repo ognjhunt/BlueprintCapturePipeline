@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
@@ -2502,6 +2504,217 @@ def _resolve_optional_uri_to_path(uri: Optional[str], storage_root: Path) -> Opt
         return None
 
 
+def _ffprobe_video_metrics(video_path: Path) -> Dict[str, Any]:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration,size",
+            "-of",
+            "default=noprint_wrappers=1:nokey=0",
+            str(video_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise StageError("worldlabs_input_prep", f"ffprobe_failed:{proc.stderr[-400:].strip()}")
+    metrics: Dict[str, Any] = {"duration_seconds": 0.0, "size_bytes": 0}
+    for line in proc.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key == "duration":
+            try:
+                metrics["duration_seconds"] = float(value)
+            except ValueError:
+                metrics["duration_seconds"] = 0.0
+        elif key == "size":
+            try:
+                metrics["size_bytes"] = int(float(value))
+            except ValueError:
+                metrics["size_bytes"] = 0
+    return metrics
+
+
+def _worldlabs_source_candidate(
+    *,
+    descriptor: CaptureDescriptor,
+    privacy_processing: Mapping[str, Any],
+) -> Dict[str, Any]:
+    privacy_status = str(privacy_processing.get("status") or descriptor.privacy_status or "").strip().lower()
+    raw_retained = bool(privacy_processing.get("raw_retained"))
+    raw_allowed = raw_retained and privacy_status == "no_people_detected"
+    candidates = [
+        {"source_id": "world_model_video_uri", "uri": descriptor.world_model_video_uri, "eligible": bool(descriptor.world_model_video_uri)},
+        {"source_id": "privacy_processed_video_uri", "uri": descriptor.privacy_processed_video_uri, "eligible": bool(descriptor.privacy_processed_video_uri)},
+        {"source_id": "raw_video_uri", "uri": descriptor.raw_video_uri, "eligible": bool(descriptor.raw_video_uri and raw_allowed)},
+    ]
+    selected = next((item for item in candidates if item["eligible"] and item["uri"]), None)
+    return {
+        "privacy_status": privacy_status or None,
+        "raw_allowed": raw_allowed,
+        "selected": selected,
+        "candidates": [
+            {
+                "source_id": item["source_id"],
+                "uri": item["uri"],
+                "eligible": item["eligible"],
+            }
+            for item in candidates
+            if item["uri"]
+        ],
+    }
+
+
+def _prepare_worldlabs_input_video(
+    *,
+    descriptor: CaptureDescriptor,
+    privacy_processing: Mapping[str, Any],
+    storage_root: Path,
+    pipeline_dir: Path,
+    bucket: str,
+) -> Dict[str, Any]:
+    artifact_dir = pipeline_dir / "worldlabs_input"
+    ensure_dir(artifact_dir)
+    manifest_path = artifact_dir / "worldlabs_input_manifest.json"
+    output_path = artifact_dir / "worldlabs_input.mp4"
+    output_uri = f"gs://{bucket}/{relative_scene_path(output_path, storage_root)}"
+    manifest_uri = f"gs://{bucket}/{relative_scene_path(manifest_path, storage_root)}"
+    max_duration_seconds = 30.0
+    target_duration_seconds = 24.0
+    max_size_bytes = 100_000_000
+
+    selection = _worldlabs_source_candidate(descriptor=descriptor, privacy_processing=privacy_processing)
+    selected = selection.get("selected") if isinstance(selection, Mapping) else None
+    source_uri = str(selected.get("uri") or "").strip() if isinstance(selected, Mapping) else ""
+    source_id = str(selected.get("source_id") or "").strip() if isinstance(selected, Mapping) else ""
+    if not source_uri:
+        payload = {
+            "schema_version": "v1",
+            "status": "blocked",
+            "generated_at": utc_now_iso(),
+            "reason": "no_worldlabs_source_video",
+            "selected_video_source_id": None,
+            "selected_video_uri": None,
+            "video_candidates": selection.get("candidates") if isinstance(selection, Mapping) else [],
+            "output_video_uri": None,
+        }
+        write_json(manifest_path, payload)
+        return {
+            "status": "blocked",
+            "manifest_uri": manifest_uri,
+            "output_video_uri": None,
+            "manifest_path": str(manifest_path),
+            "output_path": None,
+        }
+
+    source_path = _resolve_optional_uri_to_path(source_uri, storage_root)
+    if not source_path or not source_path.is_file():
+        raise StageError("worldlabs_input_prep", f"source_video_missing:{source_uri}")
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise StageError("worldlabs_input_prep", "ffmpeg_not_found")
+
+    input_metrics = _ffprobe_video_metrics(source_path)
+    input_duration = float(input_metrics.get("duration_seconds") or 0.0)
+    input_size_bytes = int(input_metrics.get("size_bytes") or 0)
+    clip_duration = min(target_duration_seconds, input_duration) if input_duration > 0 else target_duration_seconds
+    trim_applied = input_duration > max_duration_seconds
+    start_seconds = max(0.0, (input_duration - clip_duration) / 2.0) if trim_applied else 0.0
+    end_seconds = min(input_duration, start_seconds + clip_duration) if input_duration > 0 else clip_duration
+
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{start_seconds:.3f}",
+            "-i",
+            str(source_path),
+            "-t",
+            f"{clip_duration:.3f}",
+            "-vf",
+            "scale='min(1280,iw)':-2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "28",
+            "-maxrate",
+            "4M",
+            "-bufsize",
+            "8M",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not output_path.is_file():
+        raise StageError("worldlabs_input_prep", f"ffmpeg_failed:{proc.stderr[-400:].strip()}")
+
+    output_metrics = _ffprobe_video_metrics(output_path)
+    output_duration = float(output_metrics.get("duration_seconds") or 0.0)
+    output_size_bytes = int(output_metrics.get("size_bytes") or 0)
+    compliant = output_duration <= max_duration_seconds + 0.25 and output_size_bytes <= max_size_bytes
+    payload = {
+        "schema_version": "v1",
+        "status": "ready" if compliant else "review_required",
+        "generated_at": utc_now_iso(),
+        "selected_video_source_id": source_id or None,
+        "selected_video_uri": source_uri,
+        "video_candidates": selection.get("candidates") if isinstance(selection, Mapping) else [],
+        "input_metrics": {
+            "duration_seconds": round(input_duration, 3),
+            "size_bytes": input_size_bytes,
+        },
+        "selection_policy": {
+            "max_duration_seconds": max_duration_seconds,
+            "target_duration_seconds": target_duration_seconds,
+            "max_size_bytes": max_size_bytes,
+            "window_strategy": "center_window",
+            "trim_applied": trim_applied,
+            "clip_start_seconds": round(start_seconds, 3),
+            "clip_end_seconds": round(end_seconds, 3),
+        },
+        "output_metrics": {
+            "duration_seconds": round(output_duration, 3),
+            "size_bytes": output_size_bytes,
+            "format": "mp4",
+        },
+        "compliance": {
+            "duration_ok": output_duration <= max_duration_seconds + 0.25,
+            "size_ok": output_size_bytes <= max_size_bytes,
+            "ready_for_worldlabs": compliant,
+        },
+        "output_video_uri": output_uri,
+        "output_video_path": str(output_path),
+    }
+    write_json(manifest_path, payload)
+    return {
+        "status": payload["status"],
+        "manifest_uri": manifest_uri,
+        "output_video_uri": output_uri,
+        "manifest_path": str(manifest_path),
+        "output_path": str(output_path),
+        "payload": payload,
+    }
+
+
 def _build_world_model_fit_summary(
     *,
     descriptor: CaptureDescriptor,
@@ -3885,6 +4098,25 @@ def run_qualification_pipeline(
         descriptor_payload["privacy_status"] = privacy_processing.get("status")
         descriptor_payload["privacy_mode"] = privacy_processing.get("mode")
         descriptor_payload["privacy_manifest_uri"] = privacy_processing.get("privacy_manifest_uri")
+        preview_requested_for_worldlabs = any(
+            str(value or "").strip().lower() in {"preview_simulation", "preview"}
+            for value in descriptor.requested_outputs
+        )
+        worldlabs_input = (
+            _prepare_worldlabs_input_video(
+                descriptor=descriptor,
+                privacy_processing=privacy_processing,
+                storage_root=storage_root,
+                pipeline_dir=pipeline_dir,
+                bucket=bucket,
+            )
+            if preview_requested_for_worldlabs
+            else {
+                "status": "not_requested",
+                "manifest_uri": None,
+                "output_video_uri": None,
+            }
+        )
         metadata_payload = dict(descriptor_payload.get("metadata") or {})
         metadata_payload["privacy_processing"] = {
             "status": privacy_processing.get("status"),
@@ -3898,6 +4130,9 @@ def run_qualification_pipeline(
             "privacy_manifest_uri": privacy_processing.get("privacy_manifest_uri"),
             "privacy_verification_report_uri": privacy_processing.get("privacy_verification_report_uri"),
         }
+        metadata_payload["worldlabs_input_video_uri"] = worldlabs_input.get("output_video_uri")
+        metadata_payload["worldlabs_input_manifest_uri"] = worldlabs_input.get("manifest_uri")
+        metadata_payload["worldlabs_input_status"] = worldlabs_input.get("status")
         descriptor_payload["metadata"] = metadata_payload
         write_json(descriptor_path, descriptor_payload)
         descriptor = CaptureDescriptor.from_dict(descriptor_payload)
@@ -4301,6 +4536,8 @@ def run_qualification_pipeline(
             "provider_run_manifest": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
             "preview_manifest": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
             "worldlabs_request_manifest": f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json",
+            "worldlabs_input_manifest": worldlabs_input.get("manifest_uri"),
+            "worldlabs_input_video": worldlabs_input.get("output_video_uri"),
             **(
                 {"privacy_processed_video": str(privacy_processing.get("privacy_processed_video_uri"))}
                 if privacy_processing.get("privacy_processed_video_uri")
@@ -4339,6 +4576,8 @@ def run_qualification_pipeline(
                 "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
                 "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
                 "worldlabs_request_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json",
+                "worldlabs_input_manifest_uri": worldlabs_input.get("manifest_uri"),
+                "worldlabs_input_video_uri": worldlabs_input.get("output_video_uri"),
                 "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),
                 "geometry_summary_uri": geometry_artifacts.get("geometry_summary_uri"),
                 **(

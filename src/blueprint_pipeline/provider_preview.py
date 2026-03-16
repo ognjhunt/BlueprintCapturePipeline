@@ -93,6 +93,8 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
 
     def _world_prompt_candidates(self, descriptor: Mapping[str, Any]) -> Dict[str, Any]:
         privacy_processing = self._privacy_processing(descriptor)
+        metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+        worldlabs_input_video_uri = self._string(metadata.get("worldlabs_input_video_uri"))
         world_model_video_uri = self._string(descriptor.get("world_model_video_uri"))
         privacy_processed_video_uri = self._string(descriptor.get("privacy_processed_video_uri"))
         raw_video_uri = self._string(descriptor.get("raw_video_uri"))
@@ -103,6 +105,15 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         raw_allowed = raw_retained and privacy_status == "no_people_detected"
 
         candidates: List[Dict[str, Any]] = []
+        if worldlabs_input_video_uri:
+            candidates.append(
+                {
+                    "source_id": "worldlabs_input_video_uri",
+                    "uri": worldlabs_input_video_uri,
+                    "eligible": True,
+                    "reason": "dedicated World Labs compliant input video",
+                }
+            )
         if world_model_video_uri:
             candidates.append(
                 {
