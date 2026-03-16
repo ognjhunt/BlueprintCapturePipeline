@@ -196,7 +196,17 @@ def _launch_cloud_run_job(payload: Dict[str, Any]) -> str:
     bucket = str(payload.get("bucket") or "").strip()
     scene_id = str(payload.get("scene_id") or "").strip()
     capture_id = str(payload.get("capture_id") or "").strip()
-    descriptor_uri = str(payload.get("descriptor_gcs_uri") or "").strip()
+    # Accept capture_descriptor_uri (extractFrames handoff format) as alias for descriptor_gcs_uri
+    descriptor_uri = str(
+        payload.get("descriptor_gcs_uri") or payload.get("capture_descriptor_uri") or ""
+    ).strip()
+    # Derive bucket from a gs:// URI if not explicitly provided (extractFrames handoff omits bucket)
+    if not bucket:
+        for _uri_field in ("descriptor_gcs_uri", "capture_descriptor_uri", "raw_prefix_uri"):
+            _uri = str(payload.get(_uri_field) or "").strip()
+            if _uri.startswith("gs://"):
+                bucket = _uri[5:].split("/", 1)[0]
+                break
     if not bucket or not scene_id or not capture_id:
         raise RuntimeError("Dispatch payload missing bucket/scene_id/capture_id")
 
