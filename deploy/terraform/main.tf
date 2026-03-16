@@ -82,6 +82,79 @@ variable "pipeline_job_timeout_seconds" {
   default     = 14400
 }
 
+variable "blueprint_preview_provider" {
+  description = "Preview provider used when captures request preview artifacts"
+  type        = string
+  default     = "world_labs"
+}
+
+variable "worldlabs_default_model" {
+  description = "Default World Labs model used for request manifests"
+  type        = string
+  default     = "Marble 0.1-mini"
+}
+
+variable "privacy_pipeline_enabled" {
+  description = "Enable privacy-safe walkthrough post-processing in the production runtime"
+  type        = bool
+  default     = true
+}
+
+variable "privacy_fail_closed" {
+  description = "Fail closed when privacy processing cannot safely complete"
+  type        = bool
+  default     = true
+}
+
+variable "privacy_sam3_command" {
+  description = "Command template used to run SAM3 person detection"
+  type        = string
+  default     = ""
+}
+
+variable "privacy_vip_command" {
+  description = "Command template used to run VIP inpainting"
+  type        = string
+  default     = ""
+}
+
+variable "privacy_deepprivacy2_command" {
+  description = "Command template used to run DeepPrivacy2 fallback anonymization"
+  type        = string
+  default     = ""
+}
+
+variable "sam3_weights_path" {
+  description = "Filesystem path to SAM3 weights inside the runtime"
+  type        = string
+  default     = ""
+}
+
+variable "vip_model_path" {
+  description = "Filesystem path to the VIP model inside the runtime"
+  type        = string
+  default     = ""
+}
+
+variable "deepprivacy2_model_path" {
+  description = "Filesystem path to the DeepPrivacy2 model inside the runtime"
+  type        = string
+  default     = ""
+}
+
+variable "pipeline_sync_webapp_url" {
+  description = "Blueprint-WebApp pipeline sync endpoint"
+  type        = string
+  default     = ""
+}
+
+variable "pipeline_sync_token" {
+  description = "Shared auth token for Blueprint-WebApp pipeline sync"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "enable_notifications" {
   description = "Enable push notifications via FCM"
   type        = bool
@@ -253,6 +326,12 @@ resource "google_project_iam_member" "storage_trigger_run" {
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
 }
 
+resource "google_project_iam_member" "storage_trigger_run_jobs" {
+  project = var.project_id
+  role    = "roles/run.jobsExecutorWithOverrides"
+  member  = "serviceAccount:${google_service_account.storage_trigger.email}"
+}
+
 # Logging
 resource "google_project_iam_member" "storage_trigger_logging" {
   project = var.project_id
@@ -326,6 +405,7 @@ resource "google_cloud_tasks_queue" "pipeline_dlq" {
 # =============================================================================
 
 resource "google_cloud_run_v2_job" "pipeline" {
+  provider = google-beta
   for_each = toset(local.all_regions)
 
   name     = "blueprint-pipeline"
@@ -345,6 +425,8 @@ resource "google_cloud_run_v2_job" "pipeline" {
 
       containers {
         image = var.docker_image
+        command = ["python"]
+        args    = ["-m", "blueprint_pipeline.capture_orchestrator"]
 
         resources {
           limits = {
@@ -370,6 +452,11 @@ resource "google_cloud_run_v2_job" "pipeline" {
         }
 
         env {
+          name  = "GCS_ROOT"
+          value = "/mnt/gcs"
+        }
+
+        env {
           name  = "BLUEPRINT_ENV"
           value = "production"
         }
@@ -377,6 +464,80 @@ resource "google_cloud_run_v2_job" "pipeline" {
         env {
           name  = "ENABLE_NOTIFICATIONS"
           value = var.enable_notifications ? "true" : "false"
+        }
+
+        env {
+          name  = "BLUEPRINT_PREVIEW_PROVIDER"
+          value = var.blueprint_preview_provider
+        }
+
+        env {
+          name  = "WORLDLABS_DEFAULT_MODEL"
+          value = var.worldlabs_default_model
+        }
+
+        env {
+          name  = "PRIVACY_PIPELINE_ENABLED"
+          value = var.privacy_pipeline_enabled ? "true" : "false"
+        }
+
+        env {
+          name  = "PRIVACY_FAIL_CLOSED"
+          value = var.privacy_fail_closed ? "true" : "false"
+        }
+
+        env {
+          name  = "PRIVACY_SAM3_COMMAND"
+          value = var.privacy_sam3_command
+        }
+
+        env {
+          name  = "VIP_COMMAND"
+          value = var.privacy_vip_command
+        }
+
+        env {
+          name  = "DEEPPRIVACY2_COMMAND"
+          value = var.privacy_deepprivacy2_command
+        }
+
+        env {
+          name  = "SAM3_WEIGHTS_PATH"
+          value = var.sam3_weights_path
+        }
+
+        env {
+          name  = "VIP_MODEL_PATH"
+          value = var.vip_model_path
+        }
+
+        env {
+          name  = "DEEPPRIVACY2_MODEL_PATH"
+          value = var.deepprivacy2_model_path
+        }
+
+        env {
+          name  = "PIPELINE_SYNC_WEBAPP_URL"
+          value = var.pipeline_sync_webapp_url
+        }
+
+        env {
+          name  = "PIPELINE_SYNC_TOKEN"
+          value = var.pipeline_sync_token
+        }
+
+        volume_mounts {
+          name       = "capture-storage"
+          mount_path = "/mnt/gcs"
+        }
+      }
+
+      volumes {
+        name = "capture-storage"
+
+        gcs {
+          bucket    = var.storage_bucket
+          read_only = false
         }
       }
     }
@@ -487,10 +648,13 @@ resource "google_cloudfunctions2_function" "swap_dispatch_worker" {
     service_account_email = google_service_account.storage_trigger.email
 
     environment_variables = {
-      PIPELINE_PROJECT_ID = var.project_id
-      PIPELINE_REGION     = var.primary_region
-      PIPELINE_BUCKET     = var.storage_bucket
-      REGIONS             = join(",", local.all_regions)
+      PIPELINE_PROJECT_ID     = var.project_id
+      PIPELINE_REGION         = var.primary_region
+      PIPELINE_BUCKET         = var.storage_bucket
+      REGIONS                 = join(",", local.all_regions)
+      PIPELINE_EXECUTION_MODE = "cloud_run_job"
+      PIPELINE_RUN_JOB_NAME   = google_cloud_run_v2_job.pipeline[var.primary_region].name
+      PIPELINE_RUN_JOB_REGION = var.primary_region
     }
   }
 
@@ -516,8 +680,21 @@ resource "google_cloudfunctions2_function" "swap_dispatch_worker" {
 # Package function source code
 data "archive_file" "function_source" {
   type        = "zip"
-  source_dir  = "${path.module}/../../functions"
+  source_dir  = "${path.module}/../.."
   output_path = "${path.module}/function-source.zip"
+  excludes = [
+    ".git",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "build",
+    "deploy",
+    "dist",
+    "docs",
+    "local_runs_worldlabs",
+    "skillpacks",
+    "tests",
+  ]
 }
 
 resource "google_storage_bucket_object" "function_source" {

@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib import request as urllib_request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -64,6 +65,14 @@ def _project_id() -> str:
     if not project_id:
         raise RuntimeError("Missing project id (set PIPELINE_PROJECT_ID or GOOGLE_CLOUD_PROJECT)")
     return project_id
+
+
+def _dispatch_mode(raw: Optional[str] = None) -> str:
+    return (raw or os.getenv("SWAP_TRIGGER_DISPATCH_MODE") or "pubsub").strip().lower()
+
+
+def _pipeline_execution_mode() -> str:
+    return (os.getenv("PIPELINE_EXECUTION_MODE") or "inline").strip().lower()
 
 
 def _build_dispatch_payload(
@@ -144,7 +153,7 @@ def _dispatch_cloud_tasks(payload: Dict[str, Any]) -> str:
 
 
 def _dispatch_payload(payload: Dict[str, Any], *, mode: Optional[str] = None) -> str:
-    dispatch_mode = (mode or os.getenv("SWAP_TRIGGER_DISPATCH_MODE") or "pubsub").strip().lower()
+    dispatch_mode = _dispatch_mode(mode)
     if dispatch_mode == "pubsub":
         return _dispatch_pubsub(payload)
     if dispatch_mode == "cloud_tasks":
@@ -164,6 +173,99 @@ def _dispatch_payload(payload: Dict[str, Any], *, mode: Optional[str] = None) ->
         run_capture_pipeline(descriptor_gcs_uri=str(payload["descriptor_gcs_uri"]))
         return "direct:completed"
     raise RuntimeError(f"Unsupported SWAP_TRIGGER_DISPATCH_MODE: {dispatch_mode}")
+
+
+def _descriptor_uri_for_capture(*, bucket: str, scene_id: str, capture_id: str) -> str:
+    return f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/capture_descriptor.json"
+
+
+def _pipeline_job_target() -> tuple[str, str]:
+    job_name = (os.getenv("PIPELINE_RUN_JOB_NAME") or "blueprint-pipeline").strip()
+    region = (os.getenv("PIPELINE_RUN_JOB_REGION") or os.getenv("PIPELINE_REGION") or "").strip()
+    if not job_name:
+        raise RuntimeError("PIPELINE_RUN_JOB_NAME is required for cloud_run_job execution mode")
+    if not region:
+        raise RuntimeError("PIPELINE_RUN_JOB_REGION or PIPELINE_REGION is required for cloud_run_job execution mode")
+    return job_name, region
+
+
+def _launch_cloud_run_job(payload: Dict[str, Any]) -> str:
+    from google.auth import default as google_auth_default
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+
+    bucket = str(payload.get("bucket") or "").strip()
+    scene_id = str(payload.get("scene_id") or "").strip()
+    capture_id = str(payload.get("capture_id") or "").strip()
+    descriptor_uri = str(payload.get("descriptor_gcs_uri") or "").strip()
+    if not bucket or not scene_id or not capture_id:
+        raise RuntimeError("Dispatch payload missing bucket/scene_id/capture_id")
+
+    job_name, region = _pipeline_job_target()
+    credentials, _ = google_auth_default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    credentials.refresh(GoogleAuthRequest())
+
+    url = (
+        f"https://run.googleapis.com/v2/projects/{_project_id()}/locations/{region}/jobs/{job_name}:run"
+    )
+    env_overrides = [
+        {"name": "PIPELINE_BUCKET", "value": bucket},
+        {"name": "PIPELINE_SCENE_ID", "value": scene_id},
+        {"name": "PIPELINE_CAPTURE_ID", "value": capture_id},
+    ]
+    if descriptor_uri:
+        env_overrides.append({"name": "PIPELINE_DESCRIPTOR_GCS_URI", "value": descriptor_uri})
+    request = urllib_request.Request(
+        url,
+        data=json.dumps(
+            {
+                "overrides": {
+                    "containerOverrides": [
+                        {
+                            "env": env_overrides,
+                        }
+                    ]
+                }
+            }
+        ).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {credentials.token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib_request.urlopen(request, timeout=30) as response:
+        raw = response.read().decode("utf-8")
+    parsed = json.loads(raw) if raw else {}
+    operation_name = parsed.get("name") if isinstance(parsed, dict) else None
+    return f"cloud_run_job:{operation_name or job_name}"
+
+
+def _run_pipeline_inline(payload: Dict[str, Any]) -> str:
+    descriptor_uri = str(payload.get("descriptor_gcs_uri") or "").strip()
+    bucket = str(payload.get("bucket") or "").strip()
+    scene_id = str(payload.get("scene_id") or "").strip()
+    capture_id = str(payload.get("capture_id") or "").strip()
+    if not descriptor_uri and bucket and scene_id and capture_id:
+        materialized = materialize_capture_bundle(
+            bucket=bucket,
+            scene_id=scene_id,
+            capture_id=capture_id,
+            gcs_root=Path(os.getenv("GCS_ROOT", "/mnt/gcs")),
+        )
+        descriptor_uri = str(materialized["descriptor_uri"])
+    if not descriptor_uri:
+        raise RuntimeError("Dispatch payload missing descriptor_gcs_uri")
+    run_capture_pipeline(descriptor_gcs_uri=descriptor_uri)
+    return "inline:completed"
+
+
+def _execute_pipeline_payload(payload: Dict[str, Any]) -> str:
+    execution_mode = _pipeline_execution_mode()
+    if execution_mode == "cloud_run_job":
+        return _launch_cloud_run_job(payload)
+    if execution_mode == "inline":
+        return _run_pipeline_inline(payload)
+    raise RuntimeError(f"Unsupported PIPELINE_EXECUTION_MODE: {execution_mode}")
 
 
 def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: ARG001
@@ -198,15 +300,9 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
         return
 
     logger.info(
-        "Materializing capture descriptor from raw upload completion for scene=%s capture=%s",
+        "Queueing capture pipeline from raw upload completion for scene=%s capture=%s",
         raw_complete["scene_id"],
         raw_complete["capture_id"],
-    )
-    materialized = materialize_capture_bundle(
-        bucket=bucket,
-        scene_id=raw_complete["scene_id"],
-        capture_id=raw_complete["capture_id"],
-        gcs_root=Path(os.getenv("GCS_ROOT", "/mnt/gcs")),
     )
     payload = _build_dispatch_payload(
         bucket=bucket,
@@ -214,7 +310,19 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
         scene_id=raw_complete["scene_id"],
         capture_id=raw_complete["capture_id"],
     )
-    payload["descriptor_gcs_uri"] = str(materialized["descriptor_uri"])
+    payload["descriptor_gcs_uri"] = _descriptor_uri_for_capture(
+        bucket=bucket,
+        scene_id=raw_complete["scene_id"],
+        capture_id=raw_complete["capture_id"],
+    )
+    if _dispatch_mode() == "direct":
+        materialized = materialize_capture_bundle(
+            bucket=bucket,
+            scene_id=raw_complete["scene_id"],
+            capture_id=raw_complete["capture_id"],
+            gcs_root=Path(os.getenv("GCS_ROOT", "/mnt/gcs")),
+        )
+        payload["descriptor_gcs_uri"] = str(materialized["descriptor_uri"])
     dispatch_result = _dispatch_payload(payload)
     logger.info("Dispatch success after materialization: %s", dispatch_result)
 
@@ -229,11 +337,9 @@ def on_swap_dispatch(event: Dict[str, Any], context: Any) -> None:  # noqa: ARG0
     raw = base64.b64decode(data_b64)
     payload = json.loads(raw.decode("utf-8"))
     descriptor_uri = str(payload.get("descriptor_gcs_uri") or "").strip()
-    if not descriptor_uri:
-        raise RuntimeError("Dispatch payload missing descriptor_gcs_uri")
-
-    logger.info("Running capture pipeline from dispatch message: %s", descriptor_uri)
-    run_capture_pipeline(descriptor_gcs_uri=descriptor_uri)
+    logger.info("Dispatch worker executing payload for descriptor=%s", descriptor_uri or "<materialize-first>")
+    execution_result = _execute_pipeline_payload(payload)
+    logger.info("Dispatch worker result: %s", execution_result)
 
 
 def on_swap_dispatch_http(request: Any):  # type: ignore[no-untyped-def]
@@ -243,10 +349,13 @@ def on_swap_dispatch_http(request: Any):  # type: ignore[no-untyped-def]
     if not isinstance(payload, dict):
         return ("Invalid payload", 400)
 
-    descriptor_uri = str(payload.get("descriptor_gcs_uri") or "").strip()
-    if not descriptor_uri:
-        return ("Missing descriptor_gcs_uri", 400)
+    if not str(payload.get("descriptor_gcs_uri") or "").strip() and not (
+        str(payload.get("bucket") or "").strip()
+        and str(payload.get("scene_id") or "").strip()
+        and str(payload.get("capture_id") or "").strip()
+    ):
+        return ("Missing descriptor or capture identity", 400)
 
-    logger.info("Running capture pipeline from HTTP dispatch: %s", descriptor_uri)
-    run_capture_pipeline(descriptor_gcs_uri=descriptor_uri)
+    execution_result = _execute_pipeline_payload(payload)
+    logger.info("HTTP dispatch worker result: %s", execution_result)
     return ("ok", 200)

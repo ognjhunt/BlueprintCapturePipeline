@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from .capture_bridge import CaptureDescriptor
 from .common import PipelineError, parse_gs_uri, resolve_gs_uri_to_path
 from .evaluation_prep_stage import run_evaluation_prep_stage
+from .materialization import materialize_capture_bundle
 from .qualification import run_qualification_pipeline
 
 _SUPPORTED_LANES = {"qualification", "scene_memory", "evaluation_prep", "all"}
@@ -172,13 +173,40 @@ def run_capture_pipeline(
     }
 
 
+def run_capture_pipeline_for_capture(
+    *,
+    bucket: str,
+    scene_id: str,
+    capture_id: str,
+    lane: Optional[str] = None,
+    requested_lanes: Optional[List[str]] = None,
+    config: Optional[PipelineConfig] = None,
+) -> Dict[str, Any]:
+    cfg = config or PipelineConfig()
+    materialized = materialize_capture_bundle(
+        bucket=bucket,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        gcs_root=cfg.gcs_root,
+    )
+    return run_capture_pipeline(
+        descriptor_gcs_uri=str(materialized["descriptor_uri"]),
+        lane=lane,
+        requested_lanes=requested_lanes,
+        config=cfg,
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run lane-aware capture pipeline")
     parser.add_argument(
         "--descriptor-gcs-uri",
-        required=True,
+        default=(os.getenv("PIPELINE_DESCRIPTOR_GCS_URI") or "").strip() or None,
         help="gs:// URI for capture_descriptor.json",
     )
+    parser.add_argument("--bucket", default=(os.getenv("PIPELINE_BUCKET") or "").strip() or None)
+    parser.add_argument("--scene-id", default=(os.getenv("PIPELINE_SCENE_ID") or "").strip() or None)
+    parser.add_argument("--capture-id", default=(os.getenv("PIPELINE_CAPTURE_ID") or "").strip() or None)
     parser.add_argument(
         "--lane",
         default=None,
@@ -187,10 +215,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        run_capture_pipeline(
-            descriptor_gcs_uri=args.descriptor_gcs_uri,
-            lane=args.lane,
-        )
+        if args.descriptor_gcs_uri:
+            cfg = PipelineConfig()
+            descriptor_path = resolve_gs_uri_to_path(args.descriptor_gcs_uri, cfg.gcs_root)
+            if descriptor_path.exists() or not (args.bucket and args.scene_id and args.capture_id):
+                run_capture_pipeline(
+                    descriptor_gcs_uri=args.descriptor_gcs_uri,
+                    lane=args.lane,
+                    config=cfg,
+                )
+            else:
+                run_capture_pipeline_for_capture(
+                    bucket=args.bucket,
+                    scene_id=args.scene_id,
+                    capture_id=args.capture_id,
+                    lane=args.lane,
+                    config=cfg,
+                )
+        elif args.bucket and args.scene_id and args.capture_id:
+            run_capture_pipeline_for_capture(
+                bucket=args.bucket,
+                scene_id=args.scene_id,
+                capture_id=args.capture_id,
+                lane=args.lane,
+            )
+        else:
+            parser.error("--descriptor-gcs-uri or --bucket/--scene-id/--capture-id is required")
     except (PipelineError, ValueError) as exc:
         print(f"[capture-orchestrator] FAILED: {exc}")
         return 1

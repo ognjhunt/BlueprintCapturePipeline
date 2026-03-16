@@ -305,8 +305,6 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setenv("BLUEPRINT_PREVIEW_PROVIDER", "world_labs")
-    monkeypatch.delenv("WORLDLABS_API_KEY", raising=False)
-    monkeypatch.delenv("WORLDLABS_API_URL", raising=False)
     monkeypatch.setattr(
         "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
         lambda **_kwargs: None,
@@ -329,10 +327,56 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
 
     assert result["status"] == "completed"
     assert completion["status"] == "completed"
-    assert provider_run["status"] == "failed"
-    assert preview_status["status"] == "failed"
+    assert provider_run["status"] == "queued"
+    assert preview_status["status"] == "queued"
     assert completion["provider_run_manifest"].endswith("/provider_run_manifest.json")
     assert "scene_memory_manifest" not in completion
+
+
+def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_staged_capture(tmp_path, requested_outputs=["preview_simulation"])
+    sync_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        lambda **_kwargs: _successful_capture_review(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        lambda **kwargs: sync_calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _successful_privacy_processing(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification._prepare_worldlabs_input_video",
+        lambda **_kwargs: {
+            "status": "ready",
+            "manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input_manifest.json",
+            "output_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4",
+        },
+    )
+    monkeypatch.setenv("BLUEPRINT_PREVIEW_PROVIDER", "world_labs")
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="qualification",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    metadata = descriptor["metadata"]
+    pipeline_root = capture_root / "pipeline"
+
+    assert metadata["worldlabs_request_manifest_uri"].endswith("/pipeline/worldlabs_request_manifest.json")
+    assert metadata["worldlabs_input_manifest_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input_manifest.json")
+    assert metadata["worldlabs_input_video_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input.mp4")
+    assert (pipeline_root / "worldlabs_request_manifest.json").is_file()
+    assert sync_calls
+    assert sync_calls[0]["artifacts"]["worldlabs_request_manifest_uri"].endswith("/pipeline/worldlabs_request_manifest.json")
+    assert sync_calls[0]["artifacts"]["worldlabs_input_manifest_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input_manifest.json")
+    assert sync_calls[0]["artifacts"]["worldlabs_input_video_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input.mp4")
 
 
 def test_qualification_fail_closed_omits_buyer_safe_media(monkeypatch, tmp_path: Path) -> None:

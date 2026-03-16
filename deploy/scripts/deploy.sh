@@ -32,13 +32,25 @@ STORAGE_BUCKET="${STORAGE_BUCKET:-${PROJECT_ID}.appspot.com}"
 IMAGE_NAME="${IMAGE_NAME:-blueprint-pipeline}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 SWAP_TOPIC="${SWAP_TOPIC:-pipeline-trigger}"
+BLUEPRINT_PREVIEW_PROVIDER="${BLUEPRINT_PREVIEW_PROVIDER:-world_labs}"
+WORLDLABS_DEFAULT_MODEL="${WORLDLABS_DEFAULT_MODEL:-Marble 0.1-mini}"
+PRIVACY_PIPELINE_ENABLED="${PRIVACY_PIPELINE_ENABLED:-true}"
+PRIVACY_FAIL_CLOSED="${PRIVACY_FAIL_CLOSED:-true}"
+PRIVACY_SAM3_COMMAND="${PRIVACY_SAM3_COMMAND:-}"
+VIP_COMMAND="${VIP_COMMAND:-}"
+DEEPPRIVACY2_COMMAND="${DEEPPRIVACY2_COMMAND:-}"
+SAM3_WEIGHTS_PATH="${SAM3_WEIGHTS_PATH:-}"
+VIP_MODEL_PATH="${VIP_MODEL_PATH:-}"
+DEEPPRIVACY2_MODEL_PATH="${DEEPPRIVACY2_MODEL_PATH:-}"
+PIPELINE_SYNC_WEBAPP_URL="${PIPELINE_SYNC_WEBAPP_URL:-}"
+PIPELINE_SYNC_TOKEN="${PIPELINE_SYNC_TOKEN:-}"
 
 # Directories
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="$(dirname "$DEPLOY_DIR")"
 TERRAFORM_DIR="$DEPLOY_DIR/terraform"
-FUNCTIONS_DIR="$PROJECT_ROOT/functions"
+FUNCTIONS_DIR="$PROJECT_ROOT"
 
 # Colors for output
 RED='\033[0;31m'
@@ -229,17 +241,6 @@ deploy_cloud_function() {
         return
     fi
 
-    # Check if requirements.txt exists
-    if [[ ! -f "requirements.txt" ]]; then
-        log_info "Creating requirements.txt for Cloud Function..."
-        cat > requirements.txt << EOF
-google-cloud-storage>=2.10.0
-google-cloud-firestore>=2.14.0
-google-cloud-tasks>=2.14.0
-functions-framework>=3.0.0
-EOF
-    fi
-
     # Deploy the function
     gcloud functions deploy storage-trigger \
         --gen2 \
@@ -262,7 +263,7 @@ EOF
         --trigger-topic "${SWAP_TOPIC}" \
         --memory 4096M \
         --timeout 3600s \
-        --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${PRIMARY_REGION},REGIONS=${SECONDARY_REGIONS}"
+        --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${PRIMARY_REGION},REGIONS=${SECONDARY_REGIONS},PIPELINE_EXECUTION_MODE=cloud_run_job,PIPELINE_RUN_JOB_NAME=blueprint-pipeline,PIPELINE_RUN_JOB_REGION=${PRIMARY_REGION}"
 
     log_success "Cloud Function deployed"
 }
@@ -293,7 +294,11 @@ create_cloud_run_jobs() {
                 --memory 16Gi \
                 --max-retries 3 \
                 --task-timeout 3600s \
-                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET}" \
+                --command python \
+                --args "-m,blueprint_pipeline.capture_orchestrator" \
+                --add-volume name=capture-storage,type=cloud-storage,bucket=${STORAGE_BUCKET} \
+                --add-volume-mount volume=capture-storage,mount-path=/mnt/gcs \
+                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET},GCS_ROOT=/mnt/gcs,BLUEPRINT_PREVIEW_PROVIDER=${BLUEPRINT_PREVIEW_PROVIDER},WORLDLABS_DEFAULT_MODEL=${WORLDLABS_DEFAULT_MODEL},PRIVACY_PIPELINE_ENABLED=${PRIVACY_PIPELINE_ENABLED},PRIVACY_FAIL_CLOSED=${PRIVACY_FAIL_CLOSED},PRIVACY_SAM3_COMMAND=${PRIVACY_SAM3_COMMAND},VIP_COMMAND=${VIP_COMMAND},DEEPPRIVACY2_COMMAND=${DEEPPRIVACY2_COMMAND},SAM3_WEIGHTS_PATH=${SAM3_WEIGHTS_PATH},VIP_MODEL_PATH=${VIP_MODEL_PATH},DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH},PIPELINE_SYNC_WEBAPP_URL=${PIPELINE_SYNC_WEBAPP_URL},PIPELINE_SYNC_TOKEN=${PIPELINE_SYNC_TOKEN}" \
                 --quiet
         else
             log_info "Creating new job in $region..."
@@ -305,7 +310,11 @@ create_cloud_run_jobs() {
                 --memory 16Gi \
                 --max-retries 3 \
                 --task-timeout 3600s \
-                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET}" \
+                --command python \
+                --args "-m,blueprint_pipeline.capture_orchestrator" \
+                --add-volume name=capture-storage,type=cloud-storage,bucket=${STORAGE_BUCKET} \
+                --add-volume-mount volume=capture-storage,mount-path=/mnt/gcs \
+                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET},GCS_ROOT=/mnt/gcs,BLUEPRINT_PREVIEW_PROVIDER=${BLUEPRINT_PREVIEW_PROVIDER},WORLDLABS_DEFAULT_MODEL=${WORLDLABS_DEFAULT_MODEL},PRIVACY_PIPELINE_ENABLED=${PRIVACY_PIPELINE_ENABLED},PRIVACY_FAIL_CLOSED=${PRIVACY_FAIL_CLOSED},PRIVACY_SAM3_COMMAND=${PRIVACY_SAM3_COMMAND},VIP_COMMAND=${VIP_COMMAND},DEEPPRIVACY2_COMMAND=${DEEPPRIVACY2_COMMAND},SAM3_WEIGHTS_PATH=${SAM3_WEIGHTS_PATH},VIP_MODEL_PATH=${VIP_MODEL_PATH},DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH},PIPELINE_SYNC_WEBAPP_URL=${PIPELINE_SYNC_WEBAPP_URL},PIPELINE_SYNC_TOKEN=${PIPELINE_SYNC_TOKEN}" \
                 --quiet
         fi
     done
@@ -425,7 +434,7 @@ setup_iam() {
 
     # Grant roles to storage-trigger
     TRIGGER_EMAIL="storage-trigger@${PROJECT_ID}.iam.gserviceaccount.com"
-    for role in "roles/storage.objectViewer" "roles/datastore.user" "roles/pubsub.publisher" "roles/cloudtasks.enqueuer" "roles/run.invoker" "roles/logging.logWriter"; do
+    for role in "roles/storage.objectViewer" "roles/datastore.user" "roles/pubsub.publisher" "roles/cloudtasks.enqueuer" "roles/run.invoker" "roles/run.jobsExecutorWithOverrides" "roles/logging.logWriter"; do
         gcloud projects add-iam-policy-binding "$PROJECT_ID" \
             --member "serviceAccount:${TRIGGER_EMAIL}" \
             --role "$role" \

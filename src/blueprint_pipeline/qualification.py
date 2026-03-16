@@ -4464,6 +4464,19 @@ def run_qualification_pipeline(
                 "provenance": {"canonical": False, "derived": True},
             }
         )
+        worldlabs_request_manifest_path = pipeline_dir / "worldlabs_request_manifest.json"
+        worldlabs_request_manifest_uri = (
+            f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json"
+            if worldlabs_request_manifest_path.is_file()
+            else None
+        )
+        if worldlabs_request_manifest_uri:
+            descriptor_payload = descriptor.to_dict()
+            metadata_payload = dict(descriptor_payload.get("metadata") or {})
+            metadata_payload["worldlabs_request_manifest_uri"] = worldlabs_request_manifest_uri
+            descriptor_payload["metadata"] = metadata_payload
+            write_json(descriptor_path, descriptor_payload)
+            descriptor = CaptureDescriptor.from_dict(descriptor_payload)
         if not preview_requested or not privacy_world_model_ready:
             write_json(pipeline_dir / "provider_run_manifest.json", provider_run)
             write_json(
@@ -4535,7 +4548,7 @@ def run_qualification_pipeline(
             "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
             "provider_run_manifest": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
             "preview_manifest": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
-            "worldlabs_request_manifest": f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json",
+            "worldlabs_request_manifest": worldlabs_request_manifest_uri,
             "worldlabs_input_manifest": worldlabs_input.get("manifest_uri"),
             "worldlabs_input_video": worldlabs_input.get("output_video_uri"),
             **(
@@ -4575,7 +4588,7 @@ def run_qualification_pipeline(
                 "gemini_capture_fidelity_review_uri": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
                 "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
                 "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
-                "worldlabs_request_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json",
+                "worldlabs_request_manifest_uri": worldlabs_request_manifest_uri,
                 "worldlabs_input_manifest_uri": worldlabs_input.get("manifest_uri"),
                 "worldlabs_input_video_uri": worldlabs_input.get("output_video_uri"),
                 "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),

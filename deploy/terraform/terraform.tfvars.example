@@ -28,5 +28,23 @@ gpu_type = "nvidia-l4"
 # For 1000 scans/day with 20 min/scan: need ~14 concurrent GPUs
 max_concurrent_jobs = 10
 
+# Preview + World Labs request-manifest generation
+blueprint_preview_provider = "world_labs"
+worldlabs_default_model    = "Marble 0.1-mini"
+
+# Privacy-safe video preparation
+privacy_pipeline_enabled     = true
+privacy_fail_closed          = true
+privacy_sam3_command         = ""
+privacy_vip_command          = ""
+privacy_deepprivacy2_command = ""
+sam3_weights_path            = ""
+vip_model_path               = ""
+deepprivacy2_model_path      = ""
+
+# Blueprint-WebApp sync-back
+pipeline_sync_webapp_url = ""
+pipeline_sync_token      = ""
+
 # Enable push notifications via Firebase Cloud Messaging
 enable_notifications = true
