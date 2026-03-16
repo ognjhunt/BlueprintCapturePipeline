@@ -8,10 +8,7 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Mapping, Protocol
-from urllib import error as urllib_error
-from urllib import request as urllib_request
-
+from typing import Any, Dict, List, Mapping, Optional, Protocol
 from .common import utc_now_iso, write_json
 
 
@@ -80,50 +77,186 @@ class StubPreviewProvider:
 @dataclass
 class WorldLabsPreviewProvider(StubPreviewProvider):
     provider_name: str = "world_labs"
-    provider_model: str = "world-api"
+    provider_model: str = "Marble 0.1-mini"
 
-    def submit(self, *, descriptor: Mapping[str, Any], capture_root: Path) -> Dict[str, Any]:
-        api_key = str(os.getenv("WORLDLABS_API_KEY") or "").strip()
-        endpoint = str(os.getenv("WORLDLABS_API_URL") or "").strip()
-        if not api_key or not endpoint:
-            raise RuntimeError("WORLDLABS_API_KEY and WORLDLABS_API_URL are required")
+    @staticmethod
+    def _string(value: Any) -> str:
+        return str(value or "").strip()
 
-        started_at = time.time()
-        payload = {
+    def _privacy_processing(self, descriptor: Mapping[str, Any]) -> Mapping[str, Any]:
+        metadata = descriptor.get("metadata")
+        if isinstance(metadata, Mapping):
+            payload = metadata.get("privacy_processing")
+            if isinstance(payload, Mapping):
+                return payload
+        return {}
+
+    def _world_prompt_candidates(self, descriptor: Mapping[str, Any]) -> Dict[str, Any]:
+        privacy_processing = self._privacy_processing(descriptor)
+        world_model_video_uri = self._string(descriptor.get("world_model_video_uri"))
+        privacy_processed_video_uri = self._string(descriptor.get("privacy_processed_video_uri"))
+        raw_video_uri = self._string(descriptor.get("raw_video_uri"))
+        privacy_status = self._string(
+            descriptor.get("privacy_status") or privacy_processing.get("status")
+        ).lower()
+        raw_retained = bool(privacy_processing.get("raw_retained"))
+        raw_allowed = raw_retained and privacy_status == "no_people_detected"
+
+        candidates: List[Dict[str, Any]] = []
+        if world_model_video_uri:
+            candidates.append(
+                {
+                    "source_id": "world_model_video_uri",
+                    "uri": world_model_video_uri,
+                    "eligible": True,
+                    "reason": "preferred privacy-safe world-model video",
+                }
+            )
+        if privacy_processed_video_uri:
+            candidates.append(
+                {
+                    "source_id": "privacy_processed_video_uri",
+                    "uri": privacy_processed_video_uri,
+                    "eligible": True,
+                    "reason": "privacy-processed walkthrough video",
+                }
+            )
+        if raw_video_uri:
+            candidates.append(
+                {
+                    "source_id": "raw_video_uri",
+                    "uri": raw_video_uri,
+                    "eligible": raw_allowed,
+                    "reason": (
+                        "raw walkthrough explicitly allowed by privacy policy"
+                        if raw_allowed
+                        else "raw walkthrough retained but not approved for direct World Labs generation"
+                    ),
+                }
+            )
+
+        selected = next((item for item in candidates if item.get("eligible")), None)
+        return {
+            "privacy_status": privacy_status or None,
+            "raw_allowed": raw_allowed,
+            "selected": selected,
+            "candidates": candidates,
+        }
+
+    def _build_request_manifest(
+        self,
+        *,
+        descriptor: Mapping[str, Any],
+        capture_root: Path,
+    ) -> Dict[str, Any]:
+        del capture_root
+        video_candidates = self._world_prompt_candidates(descriptor)
+        metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+        scene_summary = self._string(
+            metadata.get("scene_summary")
+            or metadata.get("site_summary")
+            or metadata.get("environment_summary")
+            or metadata.get("operator_notes")
+        )
+        site_name = self._string(metadata.get("site_name"))
+        industry = self._string(metadata.get("industry"))
+        task_lane = self._string(metadata.get("task_lane") or metadata.get("task_statement"))
+        display_name = self._string(
+            metadata.get("display_name")
+            or site_name
+            or descriptor.get("capture_id")
+            or descriptor.get("scene_id")
+        )
+        prompt_text = scene_summary or "A grounded explorable reconstruction of the captured site."
+        tags = [
+            value
+            for value in [
+                self._string(descriptor.get("scene_id")),
+                self._string(descriptor.get("capture_id")),
+                self._string(descriptor.get("site_submission_id")),
+                site_name,
+                industry,
+                task_lane,
+            ]
+            if value
+        ]
+        keyframe_uri = self._string(descriptor.get("keyframe_uri"))
+        frames_index_uri = self._string(descriptor.get("frames_index_uri"))
+        arkit_poses_uri = self._string(descriptor.get("arkit_poses_uri"))
+
+        selected_video = video_candidates.get("selected") if isinstance(video_candidates, Mapping) else None
+        selected_video_uri = self._string(selected_video.get("uri")) if isinstance(selected_video, Mapping) else ""
+        source_id = self._string(selected_video.get("source_id")) if isinstance(selected_video, Mapping) else ""
+        generation_source_type = (
+            "video_uri"
+            if selected_video_uri.startswith(("http://", "https://"))
+            else "video_media_asset"
+            if selected_video_uri
+            else None
+        )
+        generation_request = {
+            "display_name": display_name or f"Blueprint {self._string(descriptor.get('capture_id'))}",
+            "model": self._string(os.getenv("WORLDLABS_DEFAULT_MODEL")) or self.provider_model,
+            "permission": "private",
+            "tags": tags,
+            "world_prompt": {
+                "type": "video",
+                "video_prompt": {
+                    "source": "uri" if generation_source_type == "video_uri" else "media_asset",
+                    **({"uri": selected_video_uri} if generation_source_type == "video_uri" else {}),
+                },
+            },
+        }
+        if prompt_text:
+            generation_request["world_prompt"]["text_prompt"] = prompt_text
+
+        return {
+            "schema_version": "v1",
+            "provider_name": self.provider_name,
+            "provider_model": generation_request["model"],
             "scene_id": descriptor.get("scene_id"),
             "capture_id": descriptor.get("capture_id"),
-            "video_uri": (
-                descriptor.get("world_model_video_uri")
-                or descriptor.get("privacy_processed_video_uri")
-                or descriptor.get("raw_video_uri")
-            ),
-            "arkit_poses_uri": descriptor.get("arkit_poses_uri"),
-        }
-        request = urllib_request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
+            "site_submission_id": descriptor.get("site_submission_id"),
+            "buyer_request_id": descriptor.get("buyer_request_id"),
+            "generated_at": utc_now_iso(),
+            "status": "ready_for_manual_generation" if selected_video_uri else "blocked",
+            "display_name": generation_request["display_name"],
+            "generation_source_type": generation_source_type,
+            "generation_request": generation_request,
+            "selected_video_source_id": source_id or None,
+            "selected_video_uri": selected_video_uri or None,
+            "video_candidates": video_candidates.get("candidates") if isinstance(video_candidates, Mapping) else [],
+            "fallback_inputs": {
+                "text_prompt": prompt_text,
+                "keyframe_uri": keyframe_uri or None,
+                "frames_index_uri": frames_index_uri or None,
+                "arkit_poses_uri": arkit_poses_uri or None,
             },
-            method="POST",
-        )
-        try:
-            with urllib_request.urlopen(request, timeout=30) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except (urllib_error.HTTPError, urllib_error.URLError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"world_labs_submit_failed:{exc}") from exc
+            "privacy": {
+                "status": video_candidates.get("privacy_status") if isinstance(video_candidates, Mapping) else None,
+                "raw_allowed": bool(video_candidates.get("raw_allowed")) if isinstance(video_candidates, Mapping) else False,
+            },
+            "notes": [
+                "BlueprintCapturePipeline emits the normalized World Labs input bundle only.",
+                "Blueprint-WebApp owns API submission, media upload, polling, and world persistence.",
+            ],
+        }
+
+    def submit(self, *, descriptor: Mapping[str, Any], capture_root: Path) -> Dict[str, Any]:
+        started_at = time.time()
+        request_manifest = self._build_request_manifest(descriptor=descriptor, capture_root=capture_root)
         latency_ms = int((time.time() - started_at) * 1000)
         return {
             "provider_name": self.provider_name,
-            "provider_model": self.provider_model,
-            "provider_run_id": str(body.get("id") or body.get("run_id") or ""),
-            "status": str(body.get("status") or "submitted"),
-            "artifact_uris": body.get("artifact_uris") or {},
-            "cost_usd": body.get("cost_usd"),
+            "provider_model": str(request_manifest.get("provider_model") or self.provider_model),
+            "provider_run_id": "",
+            "status": "queued" if request_manifest.get("selected_video_uri") else "failed",
+            "artifact_uris": {},
+            "cost_usd": 0.0,
             "latency_ms": latency_ms,
             "input_manifest_uri": descriptor.get("raw_prefix_uri"),
-            "raw_response": body,
+            "worldlabs_request_manifest": request_manifest,
+            "raw_response": request_manifest,
         }
 
 
@@ -143,9 +276,17 @@ def run_preview_provider(
 ) -> Dict[str, Any]:
     provider = resolve_preview_provider(provider_name)
     manifest_path = pipeline_dir / "preview_manifest.json"
+    worldlabs_request_manifest_path = pipeline_dir / "worldlabs_request_manifest.json"
     try:
       submitted = provider.submit(descriptor=descriptor, capture_root=capture_root)
       normalized = provider.normalize(submitted)
+      request_manifest = normalized.get("worldlabs_request_manifest") if isinstance(normalized, Mapping) else None
+      if isinstance(request_manifest, Mapping):
+          write_json(worldlabs_request_manifest_path, dict(request_manifest))
+          artifact_uris = dict(normalized.get("artifact_uris") or {})
+          artifact_uris["worldlabs_request_manifest_uri"] = str(worldlabs_request_manifest_path)
+          normalized = dict(normalized)
+          normalized["artifact_uris"] = artifact_uris
       manifest = provider.emit_preview_manifest(normalized=normalized, output_path=manifest_path)
       provenance = provider.emit_provenance(descriptor=descriptor, normalized=normalized)
       run_manifest = {

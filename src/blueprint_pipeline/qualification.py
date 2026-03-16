@@ -4300,6 +4300,7 @@ def run_qualification_pipeline(
             "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
             "provider_run_manifest": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
             "preview_manifest": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
+            "worldlabs_request_manifest": f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json",
             **(
                 {"privacy_processed_video": str(privacy_processing.get("privacy_processed_video_uri"))}
                 if privacy_processing.get("privacy_processed_video_uri")
@@ -4337,6 +4338,7 @@ def run_qualification_pipeline(
                 "gemini_capture_fidelity_review_uri": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
                 "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
                 "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
+                "worldlabs_request_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json",
                 "geometry_manifest_uri": geometry_artifacts.get("geometry_manifest_uri"),
                 "geometry_summary_uri": geometry_artifacts.get("geometry_summary_uri"),
                 **(
