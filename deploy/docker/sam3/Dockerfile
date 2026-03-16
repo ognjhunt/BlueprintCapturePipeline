@@ -40,7 +40,17 @@ RUN python -m pip install \
     "huggingface_hub[cli]" \
     "git+https://github.com/facebookresearch/sam3.git@f6e51f59500a87c576c2df2323ce56b9fd7a12de"
 
-RUN python -m pip install ".[cloud,validation]"
+RUN python -m pip install \
+    decord \
+    einops \
+    matplotlib \
+    numba \
+    pycocotools \
+    python-rapidjson \
+    scikit-image \
+    scikit-learn
+
+RUN python -m pip install ".[cloud,runtime,validation]"
 
 RUN mkdir -p /models/hf /models/sam3
 
