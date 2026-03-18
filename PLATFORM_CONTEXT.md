@@ -40,12 +40,12 @@ This repo is the authoritative middle of the product.
 
 - qualification artifacts and readiness decisions
 - buyer trust, rights/compliance, and recapture outputs
-- privacy-safe walkthrough media and depth conditioning
+- privacy-safe walkthrough media via on-demand GPU privacy services (SAM3, VIP)
 - World Labs request, operation, and world manifests when preview is requested
 - optional scene-memory and evaluation/runtime-prep artifacts when those lanes are explicitly requested
-- best-effort sync back into `Blueprint-WebApp`
+- enforced sync back into `Blueprint-WebApp` with a durable `webapp_sync_result.json` artifact
 
-Today, this repo is not only a qualification engine. It is also the production bridge from capture evidence to privacy-safe World Labs preview generation.
+Today, this repo is not only a qualification engine. It is the production bridge from capture evidence through privacy redaction, World Labs world generation, and automatic web app surfacing.
 
 ## Upstream Contract
 
@@ -65,21 +65,21 @@ scenes/{scene_id}/captures/{capture_id}/raw/
 
 Compatible triggers the repo accepts today:
 
-- raw upload completion via `raw/capture_upload_complete.json`
+- bridge-produced Pub/Sub handoff payloads on `blueprint-capture-pipeline-handoff` (primary path in cloud mode)
 - materialized `capture_descriptor.json`
-- bridge-produced Pub/Sub handoff payloads that include `capture_descriptor_uri`
+- raw upload completion via `raw/capture_upload_complete.json` (storage trigger, secondary; standdown when bridge handoff is primary)
 
 ## Default Runtime Behavior
 
-For a normal capture requesting `preview_simulation`, the default path is:
+All captures now normalize `preview_simulation` to also request `deeper_evaluation`, so the default path for any capture is:
 
 1. materialize the bundle and descriptor
-2. run qualification and capture-fidelity analysis
-3. run privacy post-processing
+2. run qualification and capture-fidelity analysis (Gemini fidelity review included)
+3. call the SAM3 GPU service to detect and remove people; VIP inpaints the removed regions
 4. preserve ARKit depth when present, otherwise generate depth conditioning
-5. prepare World Labs-compliant video input
-6. submit and poll World Labs
-7. write preview manifests and sync artifacts into the web app
+5. prepare World Labs-compliant privacy-safe video input
+6. submit and poll World Labs Marble 0.1-mini
+7. write preview manifests and sync all artifact URIs into the web app (fail-closed, up to 5 retries)
 
 Important boundary:
 
@@ -92,9 +92,10 @@ The main outputs this repo writes today are:
 
 - qualification summaries and readiness decisions
 - buyer trust, capture quality, and rights/compliance summaries
-- privacy manifests, verification reports, final walkthrough media, and depth manifests
+- privacy manifests, verification reports, privacy-safe walkthrough media, and depth manifests
 - provider run manifests and preview manifests
 - World Labs request / operation / world manifests
+- `webapp_sync_result.json` — durable record of the sync attempt, status, and response
 - optional `scene_memory/*`
 - optional `evaluation_prep/*` including `site_world_spec.json`, `site_world_registration.json`, and `site_world_health.json`
 
@@ -105,19 +106,20 @@ This repo can push pipeline attachment metadata into `Blueprint-WebApp` through 
 That sync is currently:
 
 - authenticated by shared token
-- optional, via env configuration
-- best-effort rather than pipeline-blocking
+- enforced: `PIPELINE_SYNC_REQUIRED=true` means sync failure blocks pipeline completion
+- retried up to 5 times with 1000ms backoff before failing
 
-So qualification can complete even when WebApp attachment sync does not.
+Pipeline completion is gated on successful WebApp attachment sync.
 
 ## Operational Reality
 
-What is implemented today:
+What is implemented and live today:
 
-- qualification
-- privacy-safe World Labs preview generation
-- public site-world surfacing in the web app when sync succeeds
-- optional hosted-runtime prep in deeper lanes
+- qualification with Gemini fidelity review
+- on-demand GPU privacy redaction via Cloud Run services (`sam3-detect`, `vip-inpaint`, `deepprivacy2-anonymize`) — idle at zero cost, spin up only during pipeline runs
+- World Labs Marble 0.1-mini world generation from privacy-safe video
+- automatic public site-world surfacing in the web app on every successful run
+- optional hosted-runtime prep in deeper lanes (`scene_memory`, `evaluation_prep`)
 
 What is not guaranteed by the default preview lane:
 

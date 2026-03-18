@@ -10,12 +10,22 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
-from .common import PipelineError, parse_gs_uri, resolve_gs_uri_to_path
+from .common import PipelineError, parse_bool, parse_gs_uri, resolve_gs_uri_to_path
 from .evaluation_prep_stage import run_evaluation_prep_stage
+from .geometry_sources import load_capture_geometry
+from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .qualification import run_qualification_pipeline
+from .frame_alignment_stage import run_frame_alignment_stage
+from .retrieval_index_stage import run_retrieval_index_stage
+from .synthesis.synthesize import synthesize_view
 
-_SUPPORTED_LANES = {"qualification", "scene_memory", "evaluation_prep", "all"}
+_SUPPORTED_LANES = {
+    "qualification", "scene_memory", "evaluation_prep",
+    "retrieval_index", "frame_alignment",
+    "synthesis_coverage_validation",
+    "all",
+}
 
 
 @dataclass(frozen=True)
@@ -41,7 +51,7 @@ def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
         if lane is None:
             continue
         if lane == "all":
-            for expanded in ("qualification", "scene_memory", "evaluation_prep"):
+            for expanded in ("qualification", "scene_memory", "evaluation_prep", "retrieval_index", "frame_alignment", "synthesis_coverage_validation"):
                 if expanded not in normalized:
                     normalized.append(expanded)
             continue
@@ -50,7 +60,7 @@ def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
         if lane not in normalized:
             normalized.append(lane)
     ordered: List[str] = []
-    for lane in ("qualification", "scene_memory", "evaluation_prep"):
+    for lane in ("qualification", "scene_memory", "evaluation_prep", "retrieval_index", "frame_alignment", "synthesis_coverage_validation"):
         if lane in normalized and lane not in ordered:
             ordered.append(lane)
     return ordered
@@ -161,6 +171,31 @@ def run_capture_pipeline(
             }
             results.append(lane_result)
             continue
+        if selected_lane == "retrieval_index":
+            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            retrieval_result = run_retrieval_index_stage(
+                capture_root=capture_root,
+                force_rebuild=parse_bool(os.getenv("RETRIEVAL_INDEX_FORCE_REBUILD"), default=False),
+            )
+            results.append({"lane": "retrieval_index", **retrieval_result})
+            continue
+        if selected_lane == "frame_alignment":
+            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            alignment_result = run_frame_alignment_stage(
+                capture_root=capture_root,
+                force_realign=parse_bool(os.getenv("FRAME_ALIGNMENT_FORCE_REALIGN"), default=False),
+            )
+            results.append({"lane": "frame_alignment", **alignment_result})
+            continue
+        if selected_lane == "synthesis_coverage_validation":
+            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            synthesis_result = _run_synthesis_coverage_validation(
+                capture_root=capture_root,
+                descriptor_gcs_uri=descriptor_gcs_uri,
+                cfg=cfg,
+            )
+            results.append({"lane": "synthesis_coverage_validation", **synthesis_result})
+            continue
         raise ValueError(f"Unsupported pipeline lane: {selected_lane}")
 
     parsed = parse_gs_uri(descriptor_gcs_uri)
@@ -170,6 +205,138 @@ def run_capture_pipeline(
         "bucket": parsed.bucket,
         "lanes": lanes,
         "results": results,
+    }
+
+
+def _run_synthesis_coverage_validation(
+    *,
+    capture_root: Path,
+    descriptor_gcs_uri: str,
+    cfg: PipelineConfig,
+) -> Dict[str, Any]:
+    """
+    Run a single-frame splat_only synthesis as a coverage validation QA check.
+
+    Gates:
+    1. capture_descriptor.json must have world_model_candidate=true
+    2. The site's reference index must contain at least one record from a
+       different pass_id than this capture (so there is a prior reference to
+       warp from).
+
+    Returns a dict with status "completed", "skipped", or "failed".
+    Non-blocking: exceptions from synthesis are caught and returned as "failed".
+    """
+    import datetime
+
+    # --- Load descriptor to check world_model_candidate gate ---
+    descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
+    try:
+        descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "failed", "reason": f"descriptor_unreadable: {exc}"}
+
+    quality = descriptor.get("quality") if isinstance(descriptor.get("quality"), Mapping) else {}
+    if not (descriptor.get("world_model_candidate") or quality.get("world_model_candidate")):
+        return {"status": "skipped", "reason": "not_world_model_candidate"}
+
+    metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+    site_identity = metadata.get("site_identity") if isinstance(metadata.get("site_identity"), Mapping) else {}
+    topology = metadata.get("capture_topology") if isinstance(metadata.get("capture_topology"), Mapping) else {}
+    site_id = site_identity.get("site_id") or descriptor.get("site_id")
+    capture_id = descriptor.get("capture_id")
+    pass_id = topology.get("pass_id")
+
+    if not site_id:
+        return {"status": "skipped", "reason": "no_site_id_in_descriptor"}
+
+    # --- Check site reference index exists and has prior pass records ---
+    parsed = parse_gs_uri(descriptor_gcs_uri)
+    index_path = cfg.gcs_root / parsed.bucket / "sites" / site_id / "reference_memory" / "site_reference_index.jsonl"
+    if not index_path.is_file():
+        return {"status": "skipped", "reason": "no_site_reference_index"}
+
+    try:
+        index_records = [
+            json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "failed", "reason": f"index_unreadable: {exc}"}
+
+    # Only synthesize against a reference from a different pass (not this capture's own frames)
+    prior_records = [r for r in index_records if r.get("pass_id") != pass_id]
+    if not prior_records:
+        return {"status": "skipped", "reason": "no_prior_pass_in_index"}
+
+    # Use spatial retrieval only when the site frame is established (Phase 3B aligned).
+    # Before alignment, site_frame_transform is null, so cross-session spatial distances
+    # are meaningless — fall back to embedding (appearance-based, works pre-alignment).
+    index_aligned = any(r.get("site_frame_transform") is not None for r in prior_records)
+    query_mode = "spatial" if index_aligned else "embedding"
+
+    geometry = load_capture_geometry(
+        context=resolve_local_capture_context(capture_root),
+        descriptor=descriptor,
+    )
+    pose_rows = list(geometry.get("poses") or [])
+    target_T = None
+    target_intrinsics = geometry.get("intrinsics") if isinstance(geometry.get("intrinsics"), Mapping) else None
+    if pose_rows:
+        midpoint_row = pose_rows[len(pose_rows) // 2]
+        target_T = midpoint_row.get("T_world_camera") or midpoint_row.get("transform")
+
+    if target_T is None:
+        return {"status": "skipped", "reason": "no_geometry_poses"}
+
+    import numpy as np
+    T = np.array(target_T, dtype=np.float64)
+    if T.ndim == 1 and T.shape[0] == 16:
+        T = T.reshape(4, 4)
+    if T.shape != (4, 4):
+        return {"status": "skipped", "reason": "invalid_pose_shape"}
+
+    if target_intrinsics is None:
+        # Fall back to a reasonable iPhone Pro default
+        target_intrinsics = {"fx": 1462.0, "fy": 1462.0, "cx": 960.0, "cy": 720.0, "width": 1920, "height": 1440}
+
+    target_h = int(target_intrinsics.get("height", 1440))
+    target_w = int(target_intrinsics.get("width", 1920))
+
+    # --- Run synthesis (splat_only, k=1, non-blocking) ---
+    output_path = (
+        cfg.gcs_root / parsed.bucket / "sites" / site_id / "coverage_validation"
+        / f"{capture_id}_splat.jpg"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        synth_result = synthesize_view(
+            site_id=site_id,
+            storage_root=cfg.gcs_root,
+            bucket=parsed.bucket,
+            target_T_world_camera=T,
+            target_intrinsics=target_intrinsics,
+            target_h=target_h,
+            target_w=target_w,
+            output_path=output_path,
+            mode="splat_only",
+            k=1,
+            query_mode=query_mode,
+            depth_scale=0.001,
+        )
+    except Exception as exc:  # non-blocking: synthesis failure never blocks the pipeline
+        return {"status": "failed", "reason": str(exc)}
+
+    return {
+        "status": synth_result.get("status", "completed"),
+        "capture_id": capture_id,
+        "site_id": site_id,
+        "synthesis_mode": "splat_only",
+        "retrieval_mode": query_mode,
+        "coverage_frac": synth_result.get("coverage_frac"),
+        "ref_frame_distance_m": synth_result.get("retrieval_dist_m"),
+        "output_uri": f"gs://{parsed.bucket}/sites/{site_id}/coverage_validation/{capture_id}_splat.jpg",
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
     }
 
 
@@ -210,7 +377,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--lane",
         default=None,
-        help="qualification, scene_memory, evaluation_prep, or all",
+        help="qualification, scene_memory, evaluation_prep, retrieval_index, frame_alignment, synthesis_coverage_validation, or all",
     )
     args = parser.parse_args(argv)
 

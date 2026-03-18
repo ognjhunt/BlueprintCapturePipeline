@@ -61,6 +61,142 @@ def _dict_float(value: Any) -> Dict[str, float]:
     return out
 
 
+def _canonical_world_model_candidate(
+    manifest: Mapping[str, Any],
+    arkit_poses_uri: Optional[str],
+    arkit_intrinsics_uri: Optional[str],
+    arkit_depth_prefix_uri: Optional[str],
+    intake_complete: bool,
+    evidence_tier: str,
+    geometry_ready: bool = False,
+    geometry_source: Optional[str] = None,
+) -> bool:
+    """Canonical world_model_candidate rule — shared across iOS finalizer, cloud bridge,
+    and local pipeline. Must be kept in sync with bridge/index.ts canonicalWorldModelCandidate()
+    and CaptureBundleContext.worldModelCandidate() in iOS.
+
+    If capture_mode is absent (old captures), falls back to evidence_tier heuristic for
+    backwards compatibility.
+    """
+    capture_mode = manifest.get("capture_mode")
+    if not isinstance(capture_mode, Mapping):
+        # Backwards compatibility: captures predating capture_mode field.
+        return evidence_tier != "pre_screen_video"
+    resolved_mode = str(capture_mode.get("resolved_mode") or "qualification_only")
+    rights_block = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
+    arkit_ready = (
+        arkit_poses_uri is not None
+        and arkit_intrinsics_uri is not None
+        and arkit_depth_prefix_uri is not None
+    )
+    return (
+        resolved_mode == "site_world_candidate"
+        and (arkit_ready or geometry_ready)
+        and intake_complete
+        and bool(rights_block.get("derived_scene_generation_allowed", False))
+    )
+
+
+def _world_model_candidate_reasoning(
+    manifest: Mapping[str, Any],
+    arkit_poses_uri: Optional[str],
+    arkit_intrinsics_uri: Optional[str],
+    arkit_depth_prefix_uri: Optional[str],
+    intake_complete: bool,
+    geometry_ready: bool = False,
+    geometry_source: Optional[str] = None,
+) -> list:
+    capture_mode = manifest.get("capture_mode")
+    resolved_mode = str((capture_mode or {}).get("resolved_mode") or "qualification_only") if isinstance(capture_mode, Mapping) else "qualification_only"
+    rights_block = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
+    return [
+        f"capture_mode_site_world_candidate:{resolved_mode == 'site_world_candidate'}",
+        f"arkit_poses_valid:{arkit_poses_uri is not None}",
+        f"arkit_intrinsics_valid:{arkit_intrinsics_uri is not None}",
+        f"depth_coverage_ok:{arkit_depth_prefix_uri is not None}",
+        f"geometry_ready:{geometry_ready}",
+        f"geometry_source:{geometry_source or 'none'}",
+        f"intake_complete:{intake_complete}",
+        f"derived_scene_generation_allowed:{bool(rights_block.get('derived_scene_generation_allowed', False))}",
+    ]
+
+
+def _normalized_site_identity(manifest: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    raw = manifest.get("site_identity")
+    if not isinstance(raw, Mapping):
+        return None
+    geo_raw = raw.get("geo")
+    geo = None
+    if isinstance(geo_raw, Mapping):
+        geo = {
+            "latitude": geo_raw.get("latitude"),
+            "longitude": geo_raw.get("longitude"),
+            "accuracy_m": geo_raw.get("accuracy_m"),
+        }
+    return {
+        "site_id": str(raw.get("site_id") or "").strip() or None,
+        "site_id_source": str(raw.get("site_id_source") or "unknown"),
+        "place_id": str(raw.get("place_id") or "").strip() or None,
+        "site_name": str(raw.get("site_name") or "").strip() or None,
+        "address_full": str(raw.get("address_full") or "").strip() or None,
+        "geo": geo,
+        "building_id": str(raw.get("building_id") or "").strip() or None,
+        "floor_id": str(raw.get("floor_id") or "").strip() or None,
+        "room_id": str(raw.get("room_id") or "").strip() or None,
+        "zone_id": str(raw.get("zone_id") or "").strip() or None,
+    }
+
+
+def _normalized_capture_topology(manifest: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    raw = manifest.get("capture_topology")
+    if not isinstance(raw, Mapping):
+        return None
+    return {
+        "capture_session_id": str(raw.get("capture_session_id") or "").strip() or None,
+        "route_id": str(raw.get("route_id") or "").strip() or None,
+        "pass_id": str(raw.get("pass_id") or "").strip() or None,
+        "pass_index": int(raw["pass_index"]) if isinstance(raw.get("pass_index"), (int, float)) else None,
+        "intended_pass_role": str(raw.get("intended_pass_role") or "primary"),
+        "entry_anchor_id": str(raw.get("entry_anchor_id") or "").strip() or None,
+        "return_anchor_id": str(raw.get("return_anchor_id") or "").strip() or None,
+    }
+
+
+def _normalized_capture_mode(
+    manifest: Mapping[str, Any],
+    arkit_poses_uri: Optional[str],
+    arkit_intrinsics_uri: Optional[str],
+    arkit_depth_prefix_uri: Optional[str],
+    intake_complete: bool,
+    evidence_tier: str,
+    geometry_ready: bool = False,
+    geometry_source: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    raw = manifest.get("capture_mode")
+    if not isinstance(raw, Mapping):
+        return None
+    requested_mode = str(raw.get("requested_mode") or "qualification_only")
+    candidate = _canonical_world_model_candidate(
+        manifest=manifest,
+        arkit_poses_uri=arkit_poses_uri,
+        arkit_intrinsics_uri=arkit_intrinsics_uri,
+        arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+        intake_complete=intake_complete,
+        evidence_tier=evidence_tier,
+        geometry_ready=geometry_ready,
+        geometry_source=geometry_source,
+    )
+    resolved_mode = "site_world_candidate" if candidate else "qualification_only"
+    downgrade_reason: Optional[str] = None
+    if requested_mode == "site_world_candidate" and resolved_mode == "qualification_only":
+        downgrade_reason = "insufficient_geometry_evidence"
+    return {
+        "requested_mode": requested_mode,
+        "resolved_mode": resolved_mode,
+        "downgrade_reason": downgrade_reason,
+    }
+
+
 def _capture_rights_block(manifest: Mapping[str, Any]) -> Dict[str, Any]:
     raw = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
     return {
@@ -679,6 +815,12 @@ def build_capture_bundle_records(
         object_index_uri = join_gs_uri(raw_prefix_uri, "object_index.json")
     if (raw_root / "motion.jsonl").is_file():
         motion_log_uri = join_gs_uri(raw_prefix_uri, "motion.jsonl")
+    arkit_geometry_ready = bool(
+        arkit_poses_uri is not None
+        and arkit_intrinsics_uri is not None
+        and arkit_depth_prefix_uri is not None
+    )
+    geometry_source = "arkit" if arkit_geometry_ready else None
 
     frames_index_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/frames/index.jsonl"
     frames_dir = capture_root / "frames"
@@ -737,6 +879,8 @@ def build_capture_bundle_records(
         calibration_assets=calibration_assets,
         scaffolding_validation=scaffolding_validation,
     )
+    normalized_site_identity = _normalized_site_identity(manifest)
+    normalized_capture_topology = _normalized_capture_topology(manifest)
 
     metadata: Dict[str, Any] = {
         "site_submission_id": f"{scene_id}:{capture_id}",
@@ -776,8 +920,40 @@ def build_capture_bundle_records(
                 "depth_conditioning": arkit_depth_prefix_uri is not None,
             },
             "operator_notes": [],
-            "world_model_candidate": evidence_tier != "pre_screen_video",
+            "world_model_candidate": _canonical_world_model_candidate(
+                manifest=manifest,
+                arkit_poses_uri=arkit_poses_uri,
+                arkit_intrinsics_uri=arkit_intrinsics_uri,
+                arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+                intake_complete=intake_complete,
+                evidence_tier=evidence_tier,
+                geometry_ready=arkit_geometry_ready,
+                geometry_source=geometry_source,
+            ),
+            "world_model_candidate_reasoning": _world_model_candidate_reasoning(
+                manifest=manifest,
+                arkit_poses_uri=arkit_poses_uri,
+                arkit_intrinsics_uri=arkit_intrinsics_uri,
+                arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+                intake_complete=intake_complete,
+                geometry_ready=arkit_geometry_ready,
+                geometry_source=geometry_source,
+            ),
+            "geometry_source": geometry_source,
+            "geometry_ready": arkit_geometry_ready,
         },
+        "site_identity": normalized_site_identity,
+        "capture_topology": normalized_capture_topology,
+        "capture_mode": _normalized_capture_mode(
+            manifest=manifest,
+            arkit_poses_uri=arkit_poses_uri,
+            arkit_intrinsics_uri=arkit_intrinsics_uri,
+            arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+            intake_complete=intake_complete,
+            evidence_tier=evidence_tier,
+            geometry_ready=arkit_geometry_ready,
+            geometry_source=geometry_source,
+        ),
     }
 
     descriptor = {
@@ -814,6 +990,13 @@ def build_capture_bundle_records(
             if arkit_depth_prefix_uri
             else {}
         ),
+        "geometry_source": geometry_source,
+        "geometry_ready": arkit_geometry_ready,
+        "coordinate_frame_session_id": (
+            (normalized_capture_topology or {}).get("capture_session_id")
+            if isinstance(normalized_capture_topology, Mapping)
+            else None
+        ),
         "object_index_uri": object_index_uri,
         "motion_log_uri": motion_log_uri,
         "qa_report_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/qa_report.json",
@@ -841,7 +1024,18 @@ def build_capture_bundle_records(
             "pose_match_rate": try_parse_float(manifest.get("pose_match_rate"), 0.95 if modality == "iphone_arkit_lidar" else 0.35),
             "has_metric_geometry": evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"},
             "intake_complete": intake_complete,
-            "world_model_candidate": evidence_tier != "pre_screen_video",
+            "world_model_candidate": _canonical_world_model_candidate(
+                manifest=manifest,
+                arkit_poses_uri=arkit_poses_uri,
+                arkit_intrinsics_uri=arkit_intrinsics_uri,
+                arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+                intake_complete=intake_complete,
+                evidence_tier=evidence_tier,
+                geometry_ready=arkit_geometry_ready,
+                geometry_source=geometry_source,
+            ),
+            "geometry_source": geometry_source,
+            "geometry_ready": arkit_geometry_ready,
         },
         "metadata": metadata,
     }
@@ -926,7 +1120,14 @@ def build_capture_bundle_records(
             ),
         },
         "scene_memory_readiness": {
-            "world_model_candidate": evidence_tier != "pre_screen_video",
+            "world_model_candidate": _canonical_world_model_candidate(
+                manifest=manifest,
+                arkit_poses_uri=arkit_poses_uri,
+                arkit_intrinsics_uri=arkit_intrinsics_uri,
+                arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+                intake_complete=intake_complete,
+                evidence_tier=evidence_tier,
+            ),
             "recommended_lane": "scene_memory" if "scene_memory" in descriptor["requested_lanes"] else "qualification",
             "derived_only": True,
         },

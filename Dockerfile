@@ -16,7 +16,12 @@ COPY pyproject.toml uv.lock* ./
 COPY src/ src/
 
 # Install all extras needed for the Cloud Run job
-RUN pip install --no-cache-dir -e ".[cloud,runtime,llm,validation]"
+RUN pip install --no-cache-dir -e ".[cloud,runtime,llm,validation,retrieval]"
+
+# Pre-download DINOv3 ViT-L/16 weights so inference doesn't cold-start during jobs
+RUN python -c "from transformers import AutoImageProcessor, AutoModel; \
+    AutoImageProcessor.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m'); \
+    AutoModel.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m')"
 
 # ---- production stage ----
 FROM base AS production

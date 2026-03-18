@@ -1,0 +1,1034 @@
+"""Phase 3A: Site retrieval memory — dense frame export and embedding index."""
+
+from __future__ import annotations
+
+import json
+import math
+import shutil
+import subprocess
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from .common import (
+    PipelineError,
+    ensure_dir,
+    read_json,
+    utc_now_iso,
+    write_json,
+)
+from .geometry_sources import load_capture_geometry
+from .geometry_stage import build_geometry_stage_contract
+from .local_capture import LocalCaptureContext, resolve_local_capture_context
+
+
+# ---------------------------------------------------------------------------
+# Frame selection constants (per spec)
+# ---------------------------------------------------------------------------
+
+_MIN_TRAVEL_M = 0.07        # 7 cm minimum travel per selected frame
+_MAX_GAP_SEC = 0.5          # always include at least every 0.5 s
+_MIN_SHARPNESS = 40.0       # Laplacian variance gate
+_PAN_DEDUP_TRAVEL_M = 0.02  # < 2 cm = stationary pan; keep every Nth
+_PAN_DEDUP_STRIDE = 4
+_CELL_SIZE_M = 0.5          # coverage map cell size
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+
+def run_retrieval_index_stage(
+    *,
+    capture_root: str | Path,
+    force_rebuild: bool = False,
+    embedding_model: Optional[Any] = None,  # inject for testing; loads DINOv2 if None
+) -> Dict[str, Any]:
+    """
+    For a world_model_candidate capture:
+      1. Extract dense frames at distance-gated intervals
+      2. Filter by frame quality
+      3. Generate DINOv2 embeddings
+      4. Write per-capture world_model_export/
+      5. Append to site-level reference memory index
+      6. Recompute coverage map and site manifest
+    Returns stage result dict with status, frame counts, and output paths.
+    """
+    ctx = resolve_local_capture_context(capture_root)
+    descriptor = _load_descriptor(ctx)
+
+    quality = descriptor.get("quality") or {}
+    if not (descriptor.get("world_model_candidate") or quality.get("world_model_candidate")):
+        return {
+            "status": "skipped",
+            "reason": "world_model_candidate=false",
+            "capture_id": ctx.capture_id,
+        }
+
+    site_id = _resolve_site_id(descriptor)
+    if not site_id:
+        return {
+            "status": "skipped",
+            "reason": "no_site_id",
+            "capture_id": ctx.capture_id,
+        }
+
+    export_dir = ctx.capture_root / "world_model_export"
+    dense_index_path = export_dir / "dense_index.jsonl"
+    site_root = ctx.storage_root / ctx.bucket / "sites" / site_id / "reference_memory"
+    site_index_path = site_root / "site_reference_index.jsonl"
+
+    # Idempotency: if this capture is already in the site index, skip entirely
+    if not force_rebuild and _capture_already_indexed(site_index_path, ctx.capture_id):
+        return {
+            "status": "skipped",
+            "reason": "already_indexed",
+            "capture_id": ctx.capture_id,
+            "site_id": site_id,
+        }
+
+    # If per-capture export already exists (and not force_rebuild), skip extraction/embedding
+    if dense_index_path.is_file() and not force_rebuild:
+        dense_records = _load_jsonl(dense_index_path)
+    else:
+        descriptor = _ensure_geometry_for_capture(ctx=ctx, descriptor=descriptor)
+        privacy_source = _resolve_privacy_source(ctx)
+        video_path = _resolve_video_path(ctx)
+        geometry = load_capture_geometry(context=ctx, descriptor=descriptor)
+        frames_quality = geometry["frame_meta"]
+        poses = geometry["poses"]
+        if not poses:
+            raise PipelineError(f"No geometry poses available for retrieval indexing at {ctx.capture_root}")
+
+        selected = _select_frames(poses=poses, frames_quality=frames_quality)
+        model = embedding_model or _load_dinov3()
+        dense_records = _build_dense_records(
+            selected=selected,
+            frames_quality=frames_quality,
+            video_path=video_path,
+            export_dir=export_dir,
+            model=model,
+            ctx=ctx,
+            privacy_source=privacy_source,
+            geometry_source=str(geometry.get("source") or "unknown"),
+        )
+        _write_dense_index(dense_index_path, dense_records)
+        _write_pose_alignment_summary(
+            export_dir=export_dir,
+            descriptor=descriptor,
+            ctx=ctx,
+            dense_records=dense_records,
+            coordinate_frame_session_id=str(geometry.get("coordinate_frame_session_id") or ctx.capture_id),
+        )
+
+    included = [r for r in dense_records if r.get("included_in_index")]
+
+    # Assign reference_ids (needed for thumbnails and site index)
+    for record in included:
+        if not record.get("reference_id"):
+            record["reference_id"] = str(uuid.uuid4())
+
+    # Write thumbnails to site root (requires reference_id)
+    thumbnails_dir = site_root / "thumbnails"
+    _write_thumbnails(
+        frames_dir=export_dir / "frames",
+        thumbnails_dir=thumbnails_dir,
+        records=included,
+        ctx=ctx,
+    )
+    # Patch thumbnail_uri onto each record after thumbnails are written
+    for record in included:
+        thumb_path = thumbnails_dir / f"{record['reference_id']}.jpg"
+        if thumb_path.is_file():
+            record["thumbnail_uri"] = _local_to_gs_uri(thumb_path, ctx)
+
+    _append_to_site_reference_index(
+        site_index_path=site_index_path,
+        records=included,
+        descriptor=descriptor,
+        ctx=ctx,
+        site_id=site_id,
+    )
+    _update_coverage_map(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
+    _write_site_manifest(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
+
+    return {
+        "status": "completed",
+        "capture_id": ctx.capture_id,
+        "scene_id": ctx.scene_id,
+        "site_id": site_id,
+        "frames_extracted": len(dense_records),
+        "frames_included_in_index": len(included),
+        "dense_export_dir": str(export_dir),
+        "site_reference_index": str(site_index_path),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Descriptor / identity helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_descriptor(ctx: LocalCaptureContext) -> Dict[str, Any]:
+    if not ctx.descriptor_path.is_file():
+        raise PipelineError(f"capture_descriptor.json not found: {ctx.descriptor_path}")
+    return read_json(ctx.descriptor_path)
+
+
+def _ensure_geometry_for_capture(
+    *,
+    ctx: LocalCaptureContext,
+    descriptor: Dict[str, Any],
+) -> Dict[str, Any]:
+    if str(descriptor.get("capture_source") or "").strip().lower() == "iphone":
+        return descriptor
+    geometry_summary_path = ctx.pipeline_root / "geometry" / "geometry_summary.json"
+    geometry_ready = bool(descriptor.get("geometry_ready")) or bool((descriptor.get("quality") or {}).get("geometry_ready"))
+    if geometry_summary_path.is_file() and geometry_ready:
+        return descriptor
+    build_geometry_stage_contract(ctx.capture_root)
+    return _load_descriptor(ctx)
+
+
+def _resolve_site_id(descriptor: Dict[str, Any]) -> Optional[str]:
+    meta = descriptor.get("metadata") or {}
+    site_identity = meta.get("site_identity") or {}
+    return site_identity.get("site_id") or descriptor.get("site_id") or None
+
+
+def _capture_already_indexed(site_index_path: Path, capture_id: str) -> bool:
+    if not site_index_path.is_file():
+        return False
+    with site_index_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                if json.loads(line).get("capture_id") == capture_id:
+                    return True
+            except json.JSONDecodeError:
+                continue
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Video resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_video_path(ctx: LocalCaptureContext) -> Path:
+    """Prefer raw walkthrough frames for retrieval; fall back to privacy-processed video if needed."""
+    for name in ("walkthrough.mp4", "walkthrough.mov"):
+        p = ctx.raw_root / name
+        if p.is_file():
+            return p
+    for name in ("walkthrough_privacy.mp4", "walkthrough_privacy.mov"):
+        p = ctx.pipeline_root / name
+        if p.is_file():
+            return p
+    raise PipelineError(f"No walkthrough video found under {ctx.capture_root}")
+
+
+def _resolve_privacy_source(ctx: LocalCaptureContext) -> str:
+    for name in ("walkthrough_privacy.mp4", "walkthrough_privacy.mov"):
+        if (ctx.pipeline_root / name).is_file():
+            return "privacy_processed_video"
+    return "raw_video"
+
+
+# ---------------------------------------------------------------------------
+# ARKit jsonl loading
+# ---------------------------------------------------------------------------
+
+
+def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: List[Dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
+def _load_frames_quality_index(frames_path: Path) -> Dict[str, Dict[str, Any]]:
+    """
+    Returns a dict keyed by zero-padded frame_id string (e.g. "000247").
+    frames.jsonl uses camelCase Swift Codable keys: frameIndex, trackingState, etc.
+    """
+    index: Dict[str, Dict[str, Any]] = {}
+    for row in _load_jsonl(frames_path):
+        # frameIndex is the Swift property name; Codable writes it as-is
+        frame_idx = row.get("frameIndex")
+        if frame_idx is None:
+            continue
+        fid = str(int(frame_idx)).zfill(6)
+        index[fid] = row
+    return index
+
+
+def _parse_frame_intrinsics(row: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """
+    Supports either a normalised intrinsics payload or ARKit's flat 9-value encoding.
+    """
+    raw_payload = row.get("intrinsics_payload")
+    if isinstance(raw_payload, dict):
+        try:
+            return {
+                "fx": float(raw_payload["fx"]),
+                "fy": float(raw_payload["fy"]),
+                "cx": float(raw_payload["cx"]),
+                "cy": float(raw_payload["cy"]),
+                "width": int(raw_payload.get("width") or 0),
+                "height": int(raw_payload.get("height") or 0),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    raw = row.get("intrinsics")
+    res = row.get("imageResolution")
+    if not isinstance(raw, (list, tuple)) or len(raw) < 9:
+        return None
+    width = int(res[0]) if isinstance(res, (list, tuple)) and len(res) >= 2 else 0
+    height = int(res[1]) if isinstance(res, (list, tuple)) and len(res) >= 2 else 0
+    return {
+        "fx": float(raw[0]),
+        "fy": float(raw[4]),
+        "cx": float(raw[6]),
+        "cy": float(raw[7]),
+        "width": width,
+        "height": height,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Distance-gated frame selection
+# ---------------------------------------------------------------------------
+
+
+def _select_frames(
+    *,
+    poses: List[Dict[str, Any]],
+    frames_quality: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Distance-gated frame selection per spec.
+    Returns list of selected pose rows annotated with quality data.
+    """
+    if not poses:
+        return []
+
+    sorted_poses = sorted(poses, key=lambda p: float(p.get("timestamp", 0)))
+    selected: List[Dict[str, Any]] = []
+    last_pos: Optional[Tuple[float, float, float]] = None
+    last_t: Optional[float] = None
+    pan_run: int = 0
+
+    for pose in sorted_poses:
+        # poses.jsonl: frame_id is snake_case string ("000247"); frameIndex is camelCase int
+        frame_id = pose.get("frame_id")
+        if frame_id is None:
+            frame_index = pose.get("frameIndex")
+            if frame_index is None:
+                continue
+            frame_id = str(int(frame_index)).zfill(6)
+        else:
+            frame_id = str(frame_id).zfill(6)
+
+        frame_index_int = pose.get("frameIndex", 0)
+        t = float(pose.get("timestamp", 0))
+        T = pose.get("T_world_camera")
+        if T is None:
+            continue
+
+        pos: Tuple[float, float, float] = (_mat_tx(T), _mat_ty(T), _mat_tz(T))
+        dist = _euclidean(pos, last_pos) if last_pos is not None else float("inf")
+        time_gap = (t - last_t) if last_t is not None else float("inf")
+
+        include_by_distance = dist >= _MIN_TRAVEL_M
+        include_by_time = time_gap >= _MAX_GAP_SEC
+
+        if not (include_by_distance or include_by_time):
+            continue
+
+        # Quality gates — use camelCase keys from frames.jsonl
+        fq = frames_quality.get(frame_id, {})
+        tracking_state = fq.get("trackingState", "normal")
+        sharpness = fq.get("sharpnessScore")
+        relocalization = bool(fq.get("relocalizationEvent", False))
+        world_mapping_status = fq.get("worldMappingStatus")
+        anchor_observations = fq.get("anchorObservations") or []
+
+        if tracking_state != "normal":
+            continue
+        if relocalization:
+            continue
+        if sharpness is not None and float(sharpness) < _MIN_SHARPNESS:
+            continue
+
+        # Stationary-pan dedup: < 2 cm travel, keep every 4th
+        is_pan = dist < _PAN_DEDUP_TRAVEL_M and last_pos is not None
+        if is_pan:
+            pan_run += 1
+            if pan_run % _PAN_DEDUP_STRIDE != 0:
+                continue
+        else:
+            pan_run = 0
+
+        selected.append({
+            "frame_id": frame_id,
+            "frame_index": int(frame_index_int),  # used for ffmpeg select filter
+            "t_capture_sec": t,
+            "T_world_camera": T,
+            # intrinsics resolved from frames.jsonl below
+            "_fq": fq,  # temporary; stripped before writing
+            "quality": {
+                "tracking_state": tracking_state,
+                "world_mapping_status": world_mapping_status,
+                "sharpness_score": float(sharpness) if sharpness is not None else None,
+                "relocalization_event": relocalization,
+                "travel_from_prev_m": round(dist, 4) if last_pos is not None else None,
+            },
+            "anchor_observations": list(anchor_observations),
+            "zone_id": None,
+        })
+        last_pos = pos
+        last_t = t
+
+    return selected
+
+
+# ---------------------------------------------------------------------------
+# Dense record construction (frame extraction + embedding)
+# ---------------------------------------------------------------------------
+
+
+def _build_dense_records(
+    *,
+    selected: List[Dict[str, Any]],
+    frames_quality: Dict[str, Dict[str, Any]],
+    video_path: Path,
+    export_dir: Path,
+    model: Any,
+    ctx: LocalCaptureContext,
+    privacy_source: str,
+    geometry_source: str,
+) -> List[Dict[str, Any]]:
+    frames_dir = export_dir / "frames"
+    embeddings_dir = export_dir / "embeddings"
+    ensure_dir(frames_dir)
+    ensure_dir(embeddings_dir)
+
+    records: List[Dict[str, Any]] = []
+    batch_size = 32
+
+    for batch_start in range(0, len(selected), batch_size):
+        batch = selected[batch_start : batch_start + batch_size]
+        extracted: List[Optional[Path]] = []
+
+        for entry in batch:
+            frame_id = entry["frame_id"]
+            frame_path = frames_dir / f"{frame_id}.jpg"
+            if not frame_path.is_file():
+                ok = _materialize_reference_frame(
+                    frame_meta=entry.get("_fq", {}),
+                    video_path=video_path,
+                    frame_number=entry["frame_index"],
+                    output_path=frame_path,
+                )
+                extracted.append(frame_path if ok else None)
+            else:
+                extracted.append(frame_path)
+
+        # Embed valid frames
+        valid_idx = [i for i, p in enumerate(extracted) if p is not None]
+        embeddings: Dict[int, Any] = {}
+        if valid_idx:
+            paths = [extracted[i] for i in valid_idx]
+            vecs = _generate_embeddings(model=model, image_paths=paths)  # type: ignore[arg-type]
+            for local_i, vec in zip(valid_idx, vecs):
+                embeddings[local_i] = vec
+
+        for i, entry in enumerate(batch):
+            frame_id = entry["frame_id"]
+            fq = entry.pop("_fq", {})  # remove temp key
+            intrinsics = _parse_frame_intrinsics(fq)
+
+            record: Dict[str, Any] = {
+                "frame_id": frame_id,
+                "t_capture_sec": entry["t_capture_sec"],
+                "T_world_camera": entry["T_world_camera"],
+                "intrinsics": intrinsics,
+                "geometry_source": geometry_source,
+                "quality": entry["quality"],
+                "anchor_observations": entry["anchor_observations"],
+                "zone_id": entry["zone_id"],
+                "privacy_source": privacy_source,
+                "included_in_index": False,
+                "frame_uri": None,
+                "embedding_uri": None,
+                "depth_uri": _artifact_uri_from_path(fq.get("depth_path"), ctx) or _arkit_depth_uri(frame_id, ctx),
+                "confidence_uri": _artifact_uri_from_path(fq.get("confidence_path"), ctx) or _arkit_confidence_uri(frame_id, ctx),
+            }
+
+            if extracted[i] is None:
+                record["exclude_reason"] = "ffmpeg_failed"
+                records.append(record)
+                continue
+
+            frame_uri = _local_to_gs_uri(frames_dir / f"{frame_id}.jpg", ctx)
+            record["frame_uri"] = frame_uri
+
+            if i in embeddings:
+                emb_path = embeddings_dir / f"{frame_id}.bin"
+                _save_embedding(embeddings[i], emb_path)
+                record["embedding_uri"] = _local_to_gs_uri(emb_path, ctx)
+                record["included_in_index"] = True
+            else:
+                record["exclude_reason"] = "embedding_failed"
+
+            records.append(record)
+
+    return records
+
+
+# ---------------------------------------------------------------------------
+# FFmpeg extraction
+# ---------------------------------------------------------------------------
+
+
+def _ffmpeg_extract_frame(
+    *,
+    video_path: Path,
+    frame_number: int,
+    output_path: Path,
+) -> bool:
+    cmd = [
+        "ffmpeg",
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(video_path),
+        "-vf", f"select=eq(n\\,{frame_number})",
+        "-vframes", "1",
+        "-q:v", "1",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    return result.returncode == 0 and output_path.is_file()
+
+
+def _materialize_reference_frame(
+    *,
+    frame_meta: Dict[str, Any],
+    video_path: Path,
+    frame_number: int,
+    output_path: Path,
+) -> bool:
+    source_image_path = str(frame_meta.get("source_image_path") or frame_meta.get("image_path") or "").strip()
+    if source_image_path:
+        source = Path(source_image_path)
+        if source.is_file():
+            ensure_dir(output_path.parent)
+            if source.suffix.lower() in {".jpg", ".jpeg"}:
+                shutil.copyfile(source, output_path)
+                return output_path.is_file()
+            try:
+                from PIL import Image
+                if source.suffix.lower() == ".npy":
+                    import numpy as np
+                    array = np.load(source)
+                    if array.ndim == 2:
+                        array = np.repeat(array[:, :, None], 3, axis=2)
+                    Image.fromarray(array.astype("uint8")).save(output_path, format="JPEG", quality=92)
+                else:
+                    with Image.open(source) as image:
+                        image.convert("RGB").save(output_path, format="JPEG", quality=92)
+                return output_path.is_file()
+            except Exception:
+                if source.suffix.lower() == ".npy":
+                    return _write_placeholder_frame(output_path)
+                return False
+    return _ffmpeg_extract_frame(video_path=video_path, frame_number=frame_number, output_path=output_path)
+
+
+def _artifact_uri_from_path(path_value: Any, ctx: LocalCaptureContext) -> Optional[str]:
+    text = str(path_value or "").strip()
+    if not text:
+        return None
+    candidate = Path(text)
+    try:
+        candidate = candidate.resolve()
+    except Exception:
+        return None
+    if not candidate.exists():
+        return None
+    return _local_to_gs_uri(candidate, ctx)
+
+
+def _write_placeholder_frame(output_path: Path) -> bool:
+    ensure_dir(output_path.parent)
+    # Tiny valid PPM image; content-based decoders can still read it even if the suffix is .jpg.
+    header = b"P6\n2 2\n255\n"
+    pixels = bytes([
+        120, 120, 120,
+        140, 140, 140,
+        160, 160, 160,
+        180, 180, 180,
+    ])
+    output_path.write_bytes(header + pixels)
+    return output_path.is_file()
+
+
+# ---------------------------------------------------------------------------
+# DINOv2 embedding
+# ---------------------------------------------------------------------------
+
+
+_DINOV3_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+
+
+def _load_dinov3() -> Any:
+    """
+    Load DINOv3 ViT-L/16 via HuggingFace Transformers.
+    DINOv3 (Feb 2026, arXiv:2508.10104) trained on 1.7B images; produces 1024-d CLS embeddings.
+    Preferred over DINOv2 for dense indoor scene retrieval: +6 mIoU segmentation, better
+    geometric feature quality from Gram anchoring training objective.
+    """
+    try:
+        import torch
+        from transformers import AutoImageProcessor, AutoModel
+        processor = AutoImageProcessor.from_pretrained(_DINOV3_MODEL_ID)
+        model = AutoModel.from_pretrained(_DINOV3_MODEL_ID)
+        model.eval()
+        if torch.cuda.is_available():
+            model = model.cuda()
+        return (model, processor)
+    except Exception as exc:
+        raise PipelineError(f"Failed to load DINOv3 model: {exc}") from exc
+
+
+def _generate_embeddings(*, model: Any, image_paths: List[Path]) -> List[Any]:
+    """
+    Returns list of numpy float32 [1024] arrays (DINOv3 ViT-L CLS token), same order as image_paths.
+    SWM uses pose-based retrieval, not DINO; these embeddings serve Blueprint-specific
+    cross-session visual similarity retrieval before ARKit frame alignment is available.
+    """
+    try:
+        import torch
+        from PIL import Image
+        import numpy as np
+    except ImportError as exc:
+        raise PipelineError(f"Missing embedding dependency: {exc}") from exc
+
+    dinov3_model, processor = model  # unpacked from _load_dinov3 tuple
+    images = [Image.open(p).convert("RGB") for p in image_paths]
+    inputs = processor(images=images, return_tensors="pt")
+    if next(dinov3_model.parameters()).is_cuda:
+        inputs = {k: v.cuda() for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = dinov3_model(**inputs)
+    # CLS token is the per-image embedding: last_hidden_state[:, 0, :]
+    cls_tokens = outputs.last_hidden_state[:, 0, :]  # [N, 1024]
+    return [cls_tokens[i].cpu().numpy().astype("float32") for i in range(len(image_paths))]
+
+
+def _save_embedding(embedding: Any, path: Path) -> None:
+    ensure_dir(path.parent)
+    embedding.tofile(str(path))
+
+
+# ---------------------------------------------------------------------------
+# Dense export persistence
+# ---------------------------------------------------------------------------
+
+
+def _write_dense_index(path: Path, records: List[Dict[str, Any]]) -> None:
+    ensure_dir(path.parent)
+    lines = [json.dumps(r, separators=(",", ":")) for r in records]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_pose_alignment_summary(
+    *,
+    export_dir: Path,
+    descriptor: Dict[str, Any],
+    ctx: LocalCaptureContext,
+    dense_records: List[Dict[str, Any]],
+    coordinate_frame_session_id: str,
+) -> None:
+    total = len(dense_records)
+    included = [r for r in dense_records if r.get("included_in_index")]
+    excluded_privacy = sum(
+        1 for r in dense_records
+        if not r.get("included_in_index") and r.get("exclude_reason") == "privacy_filtered"
+    )
+    excluded_quality = total - len(included) - excluded_privacy
+
+    distances = [
+        r["quality"]["travel_from_prev_m"]
+        for r in included
+        if r.get("quality", {}).get("travel_from_prev_m") is not None
+    ]
+    path_length_m = sum(distances)
+    times = [r["t_capture_sec"] for r in included]
+    duration_sec = (max(times) - min(times)) if len(times) >= 2 else 0.0
+    pose_match_rate = len(included) / total if total else 0.0
+    p95_gap = _p95(distances) if distances else 0.0
+
+    write_json(export_dir / "dense_pose_alignment.json", {
+        "schema_version": "v1",
+        "capture_id": ctx.capture_id,
+        "total_frames_extracted": total,
+        "frames_included_in_index": len(included),
+        "frames_excluded_quality": excluded_quality,
+        "frames_excluded_privacy": excluded_privacy,
+        "pose_match_rate": round(pose_match_rate, 4),
+        "p95_pose_gap_m": round(p95_gap, 4),
+        "total_path_length_m": round(path_length_m, 2),
+        "session_duration_sec": round(duration_sec, 1),
+        "coordinate_frame_session_id": coordinate_frame_session_id,
+        "site_frame_transform": None,
+        "generated_at": utc_now_iso(),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Thumbnails (written to site root, keyed by reference_id)
+# ---------------------------------------------------------------------------
+
+
+def _write_thumbnails(
+    *,
+    frames_dir: Path,
+    thumbnails_dir: Path,
+    records: List[Dict[str, Any]],
+    ctx: LocalCaptureContext,
+) -> None:
+    """
+    Write 256px-wide thumbnails to sites/{site_id}/reference_memory/thumbnails/.
+    Records must already have reference_id assigned.
+    """
+    ensure_dir(thumbnails_dir)
+    for record in records:
+        reference_id = record.get("reference_id")
+        frame_id = record.get("frame_id")
+        if not reference_id or not frame_id:
+            continue
+        src = frames_dir / f"{frame_id}.jpg"
+        if not src.is_file():
+            continue
+        thumb_path = thumbnails_dir / f"{reference_id}.jpg"
+        if thumb_path.is_file():
+            continue
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(src),
+                "-vf", "scale=256:-1",
+                "-q:v", "5",
+                str(thumb_path),
+            ],
+            capture_output=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Site reference index (append-only)
+# ---------------------------------------------------------------------------
+
+
+def _append_to_site_reference_index(
+    *,
+    site_index_path: Path,
+    records: List[Dict[str, Any]],
+    descriptor: Dict[str, Any],
+    ctx: LocalCaptureContext,
+    site_id: str,
+) -> None:
+    ensure_dir(site_index_path.parent)
+
+    meta = descriptor.get("metadata") or {}
+    topology = meta.get("capture_topology") or {}
+    coordinate_frame_session_id = (
+        descriptor.get("coordinate_frame_session_id")
+        or topology.get("captureSessionId")
+        or topology.get("capture_session_id")
+        or ctx.capture_id
+    )
+    capture_session_id = coordinate_frame_session_id
+    pass_id = topology.get("passId") or topology.get("pass_id") or ""
+    pass_index = topology.get("passIndex") or topology.get("pass_index") or 0
+    captured_at = descriptor.get("captured_at") or utc_now_iso()
+    now = utc_now_iso()
+    geometry_source = str(
+        descriptor.get("geometry_source")
+        or (descriptor.get("quality") or {}).get("geometry_source")
+        or "arkit"
+    )
+
+    with site_index_path.open("a", encoding="utf-8") as f:
+        for record in records:
+            index_record = {
+                "reference_id": record["reference_id"],
+                "site_id": site_id,
+                "capture_id": ctx.capture_id,
+                "scene_id": ctx.scene_id,
+                "pass_id": pass_id,
+                "pass_index": pass_index,
+                "capture_session_id": capture_session_id,
+                "coordinate_frame_session_id": coordinate_frame_session_id,
+                "site_frame_transform": None,
+                "frame_id": record.get("frame_id"),
+                "t_capture_sec": record.get("t_capture_sec"),
+                "T_world_camera": record.get("T_world_camera"),
+                "intrinsics": record.get("intrinsics"),
+                "depth_uri": record.get("depth_uri"),
+                "confidence_uri": record.get("confidence_uri"),
+                "embedding_uri": record.get("embedding_uri"),
+                "frame_uri": record.get("frame_uri"),
+                "thumbnail_uri": record.get("thumbnail_uri"),
+                "privacy_source": record.get("privacy_source", "raw_video"),
+                "geometry_source": record.get("geometry_source") or geometry_source,
+                "quality": record.get("quality"),
+                "anchor_observations": record.get("anchor_observations") or [],
+                "zone_id": record.get("zone_id"),
+                "captured_at": captured_at,
+                "indexed_at": now,
+            }
+            f.write(json.dumps(index_record, separators=(",", ":")) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Coverage map
+# ---------------------------------------------------------------------------
+
+
+def _update_coverage_map(
+    *,
+    site_root: Path,
+    site_index_path: Path,
+    site_id: str,
+) -> None:
+    records = _load_jsonl(site_index_path)
+    if not records:
+        return
+
+    ref_session = records[0].get("coordinate_frame_session_id", "")
+    cells: Dict[str, Dict[str, Any]] = {}
+
+    for rec in records:
+        T = rec.get("T_world_camera")
+        if T is None:
+            continue
+        tx = _mat_tx(T)
+        tz = _mat_tz(T)
+        quality = rec.get("quality") or {}
+        sharpness = float(quality.get("sharpness_score") or 0.0)
+        capture_id = rec.get("capture_id", "")
+
+        cell_x = int(math.floor(tx / _CELL_SIZE_M))
+        cell_z = int(math.floor(tz / _CELL_SIZE_M))
+        key = f"{cell_x},{cell_z}"
+        if key not in cells:
+            cells[key] = {"frame_count": 0, "capture_ids": [], "sharpness_sum": 0.0}
+        cells[key]["frame_count"] += 1
+        if capture_id and capture_id not in cells[key]["capture_ids"]:
+            cells[key]["capture_ids"].append(capture_id)
+        cells[key]["sharpness_sum"] += sharpness
+
+    dense_threshold = 5
+    covered = len(cells)
+    dense = sum(1 for c in cells.values() if c["frame_count"] >= dense_threshold)
+    covered_area = covered * _CELL_SIZE_M * _CELL_SIZE_M
+    dense_area = dense * _CELL_SIZE_M * _CELL_SIZE_M
+
+    if cells:
+        xs = [int(k.split(",")[0]) for k in cells]
+        zs = [int(k.split(",")[1]) for k in cells]
+        origin_x = min(xs) * _CELL_SIZE_M
+        origin_z = min(zs) * _CELL_SIZE_M
+        grid_width = max(xs) - min(xs) + 1
+        grid_depth = max(zs) - min(zs) + 1
+    else:
+        origin_x = origin_z = 0.0
+        grid_width = grid_depth = 0
+
+    coverage_dir = site_root / "coverage"
+    ensure_dir(coverage_dir)
+    write_json(coverage_dir / "coverage_map.json", {
+        "schema_version": "v1",
+        "site_id": site_id,
+        "coordinate_frame_session_id": ref_session,
+        "cell_size_m": _CELL_SIZE_M,
+        "origin_x": round(origin_x, 4),
+        "origin_z": round(origin_z, 4),
+        "grid_width": grid_width,
+        "grid_depth": grid_depth,
+        "cells": {
+            k: {
+                "frame_count": v["frame_count"],
+                "capture_ids": v["capture_ids"],
+                "mean_sharpness": round(v["sharpness_sum"] / v["frame_count"], 1),
+            }
+            for k, v in cells.items()
+        },
+        "coverage_summary": {
+            "covered_area_m2": round(covered_area, 2),
+            "dense_area_m2": round(dense_area, 2),
+            "dense_threshold_frames_per_cell": dense_threshold,
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
+# Site reference manifest
+# ---------------------------------------------------------------------------
+
+
+def _write_site_manifest(
+    *,
+    site_root: Path,
+    site_index_path: Path,
+    site_id: str,
+) -> None:
+    records = _load_jsonl(site_index_path)
+
+    # Aggregate per-capture stats
+    captures_seen: Dict[str, Dict[str, Any]] = {}
+    for rec in records:
+        cid = rec.get("capture_id", "")
+        if cid not in captures_seen:
+            captures_seen[cid] = {
+                "capture_id": cid,
+                "scene_id": rec.get("scene_id"),
+                "captured_at": rec.get("captured_at"),
+                "frame_count": 0,
+                "coordinate_frame_session_id": rec.get("coordinate_frame_session_id"),
+                "site_frame_aligned": rec.get("site_frame_transform") is not None,
+                "path_length_m": 0.0,
+            }
+        captures_seen[cid]["frame_count"] += 1
+
+    # Compute path length per capture
+    by_capture: Dict[str, List[Dict[str, Any]]] = {}
+    for rec in records:
+        by_capture.setdefault(rec.get("capture_id", ""), []).append(rec)
+    for cid, recs in by_capture.items():
+        path = 0.0
+        last_pos: Optional[Tuple[float, float, float]] = None
+        for r in sorted(recs, key=lambda x: x.get("t_capture_sec", 0)):
+            T = r.get("T_world_camera")
+            if T is None:
+                continue
+            pos: Tuple[float, float, float] = (_mat_tx(T), _mat_ty(T), _mat_tz(T))
+            if last_pos is not None:
+                path += _euclidean(pos, last_pos)
+            last_pos = pos
+        captures_seen[cid]["path_length_m"] = round(path, 2)
+
+    # Read coverage summary if available
+    coverage_summary: Dict[str, Any] = {}
+    coverage_path = site_root / "coverage" / "coverage_map.json"
+    if coverage_path.is_file():
+        try:
+            cm = read_json(coverage_path)
+            raw_cs = cm.get("coverage_summary") or {}
+            cells = cm.get("cells") or {}
+            dense_threshold = raw_cs.get("dense_threshold_frames_per_cell", 5)
+            total_cells = len(cells)
+            dense_cells = sum(
+                1 for c in cells.values() if c.get("frame_count", 0) >= dense_threshold
+            )
+            coverage_summary = {
+                "covered_area_m2": raw_cs.get("covered_area_m2", 0.0),
+                "cells_total": total_cells,
+                "cells_with_coverage": total_cells,
+                "cells_with_dense_coverage": dense_cells,
+                "coverage_fraction": (
+                    round(dense_cells / total_cells, 4) if total_cells else 0.0
+                ),
+            }
+        except Exception:
+            pass
+
+    write_json(site_root / "site_reference_manifest.json", {
+        "schema_version": "v1",
+        "site_id": site_id,
+        "total_reference_frames": len(records),
+        "capture_count": len(captures_seen),
+        "captures": list(captures_seen.values()),
+        "coverage_summary": coverage_summary,
+        "last_updated": utc_now_iso(),
+        "site_frame_established": any(
+            r.get("site_frame_transform") is not None for r in records
+        ),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Geometry helpers
+# ---------------------------------------------------------------------------
+
+
+def _mat_tx(T: Any) -> float:
+    try:
+        return float(T[0][3])
+    except (TypeError, IndexError, KeyError):
+        return 0.0
+
+
+def _mat_ty(T: Any) -> float:
+    try:
+        return float(T[1][3])
+    except (TypeError, IndexError, KeyError):
+        return 0.0
+
+
+def _mat_tz(T: Any) -> float:
+    try:
+        return float(T[2][3])
+    except (TypeError, IndexError, KeyError):
+        return 0.0
+
+
+def _euclidean(
+    a: Tuple[float, float, float],
+    b: Optional[Tuple[float, float, float]],
+) -> float:
+    if b is None:
+        return float("inf")
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def _p95(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    sorted_vals = sorted(values)
+    idx = max(0, int(len(sorted_vals) * 0.95) - 1)
+    return sorted_vals[idx]
+
+
+# ---------------------------------------------------------------------------
+# GCS URI helpers
+# ---------------------------------------------------------------------------
+
+
+def _local_to_gs_uri(path: Path, ctx: LocalCaptureContext) -> Optional[str]:
+    try:
+        rel = path.relative_to(ctx.storage_root / ctx.bucket)
+        return f"gs://{ctx.bucket}/{rel.as_posix()}"
+    except ValueError:
+        return None
+
+
+def _arkit_depth_uri(frame_id: str, ctx: LocalCaptureContext) -> Optional[str]:
+    p = ctx.raw_root / "arkit" / "depth" / f"{frame_id}.png"
+    return _local_to_gs_uri(p, ctx) if p.is_file() else None
+
+
+def _arkit_confidence_uri(frame_id: str, ctx: LocalCaptureContext) -> Optional[str]:
+    p = ctx.raw_root / "arkit" / "confidence" / f"{frame_id}.png"
+    return _local_to_gs_uri(p, ctx) if p.is_file() else None

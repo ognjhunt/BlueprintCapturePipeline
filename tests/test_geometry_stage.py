@@ -35,7 +35,7 @@ def _build_staged_capture(
         "capture_source": "glasses",
         "width": 1280,
         "height": 720,
-        "requested_outputs": [],
+        "requested_outputs": ["qualification"],
         "capture_rights": {
             "derived_scene_generation_allowed": True,
             "consent_status": "documented",
@@ -174,12 +174,16 @@ def test_build_geometry_stage_contract_writes_completed_outputs(monkeypatch, tmp
     assert status["status"] == "completed"
     assert status["ready_for_world_model"] is True
     assert summary["ready_for_world_model"] is True
+    assert summary["geometry_source"] == "video_to_world"
+    assert summary["fallback_used"] is False
     assert summary["deliverables"]["pose_count"] == 3
     assert summary["deliverables"]["depth_frame_count"] == 3
     assert depth_manifest["frame_count"] == 3
     assert confidence_manifest["frame_count"] == 3
     assert summary["scale_assessment"]["status"] == "conditioning_only"
     assert (capture_root / "pipeline" / "geometry" / "camera" / "poses.jsonl").read_text(encoding="utf-8")
+    assert (capture_root / "pipeline" / "geometry" / "alignment" / "canonical_pointcloud.ply").is_file()
+    assert (capture_root / "pipeline" / "geometry" / "masks" / "dynamic_mask_manifest.json").is_file()
 
 
 def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_path: Path) -> None:
@@ -199,13 +203,15 @@ def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_pa
         (capture_root / "pipeline" / "geometry" / "logs" / "provider_result.json").read_text(encoding="utf-8")
     )
 
-    assert result.status == "failed"
-    assert manifest["status"] == "failed"
-    assert summary["status"] == "failed"
-    assert status["status"] == "failed"
-    assert status["ready_for_world_model"] is False
-    assert provider_result["status"] == "failed"
-    assert provider_result["errors"] == ["boom"]
+    assert result.status == "completed_with_fallback"
+    assert manifest["status"] == "completed"
+    assert summary["status"] == "completed"
+    assert summary["fallback_used"] is True
+    assert summary["geometry_source"] == "fallback_geometry"
+    assert status["status"] == "completed"
+    assert status["ready_for_world_model"] is True
+    assert provider_result["status"] == "completed"
+    assert "boom" in provider_result["errors"]
 
 
 def test_assess_geometry_scale_respects_metric_policy() -> None:

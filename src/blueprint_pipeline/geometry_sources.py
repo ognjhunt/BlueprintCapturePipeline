@@ -1,0 +1,246 @@
+"""Source-neutral geometry helpers for ARKit and pipeline/geometry consumers."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+from .common import read_json
+from .local_capture import LocalCaptureContext
+
+
+def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: List[Dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, Mapping):
+                rows.append(dict(row))
+    return rows
+
+
+def _zero_pad_frame_id(value: Any, fallback: int = 0) -> str:
+    if value is None or value == "":
+        return str(int(fallback)).zfill(6)
+    try:
+        return str(int(value)).zfill(6)
+    except (TypeError, ValueError):
+        text = str(value).strip()
+        if text.isdigit():
+            return text.zfill(6)
+        return text or str(int(fallback)).zfill(6)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_intrinsics_from_arkit_row(row: Mapping[str, Any]) -> Optional[Dict[str, float]]:
+    raw = row.get("intrinsics")
+    res = row.get("imageResolution")
+    if isinstance(raw, Mapping):
+        try:
+            return {
+                "fx": float(raw["fx"]),
+                "fy": float(raw["fy"]),
+                "cx": float(raw["cx"]),
+                "cy": float(raw["cy"]),
+                "width": int(raw.get("width") or 0),
+                "height": int(raw.get("height") or 0),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    if not isinstance(raw, (list, tuple)) or len(raw) < 9:
+        return None
+    width = int(res[0]) if isinstance(res, (list, tuple)) and len(res) >= 2 else 0
+    height = int(res[1]) if isinstance(res, (list, tuple)) and len(res) >= 2 else 0
+    return {
+        "fx": float(raw[0]),
+        "fy": float(raw[4]),
+        "cx": float(raw[6]),
+        "cy": float(raw[7]),
+        "width": width,
+        "height": height,
+    }
+
+
+def resolve_geometry_source(
+    *,
+    context: LocalCaptureContext,
+    descriptor: Mapping[str, Any],
+) -> str:
+    geometry_dir = context.pipeline_root / "geometry"
+    geometry_pose_path = geometry_dir / "camera" / "poses.jsonl"
+    arkit_pose_path = context.raw_root / "arkit" / "poses.jsonl"
+
+    top_level = str(descriptor.get("geometry_source") or "").strip()
+    quality = descriptor.get("quality") if isinstance(descriptor.get("quality"), Mapping) else {}
+    quality_source = str(quality.get("geometry_source") or "").strip()
+    if geometry_pose_path.is_file():
+        return top_level or quality_source or "video_to_world"
+    if arkit_pose_path.is_file():
+        return "arkit"
+    return top_level or quality_source or "unknown"
+
+
+def load_capture_geometry(
+    *,
+    context: LocalCaptureContext,
+    descriptor: Mapping[str, Any],
+) -> Dict[str, Any]:
+    source = resolve_geometry_source(context=context, descriptor=descriptor)
+    if source == "arkit":
+        return _load_arkit_geometry(context=context, descriptor=descriptor)
+    return _load_pipeline_geometry(context=context, descriptor=descriptor, source=source)
+
+
+def _load_arkit_geometry(
+    *,
+    context: LocalCaptureContext,
+    descriptor: Mapping[str, Any],
+) -> Dict[str, Any]:
+    arkit_root = context.raw_root / "arkit"
+    poses_raw = _load_jsonl(arkit_root / "poses.jsonl")
+    frames_raw = _load_jsonl(arkit_root / "frames.jsonl")
+    frame_meta: Dict[str, Dict[str, Any]] = {}
+
+    for row in frames_raw:
+        frame_index = row.get("frameIndex")
+        frame_id = _zero_pad_frame_id(frame_index)
+        depth_path = arkit_root / "depth" / f"{frame_id}.png"
+        confidence_path = arkit_root / "confidence" / f"{frame_id}.png"
+        frame_meta[frame_id] = {
+            "frame_index": _safe_int(frame_index),
+            "timestamp_seconds": _safe_float(row.get("timestamp")),
+            "intrinsics_payload": _parse_intrinsics_from_arkit_row(row),
+            "trackingState": row.get("trackingState", "normal"),
+            "sharpnessScore": row.get("sharpnessScore"),
+            "relocalizationEvent": bool(row.get("relocalizationEvent", False)),
+            "worldMappingStatus": row.get("worldMappingStatus"),
+            "anchorObservations": list(row.get("anchorObservations") or []),
+            "source_image_path": None,
+            "depth_path": str(depth_path) if depth_path.is_file() else None,
+            "confidence_path": str(confidence_path) if confidence_path.is_file() else None,
+            "pose_confidence": 1.0,
+        }
+
+    poses: List[Dict[str, Any]] = []
+    for idx, row in enumerate(poses_raw):
+        frame_index = row.get("frameIndex", idx)
+        frame_id = _zero_pad_frame_id(row.get("frame_id"), fallback=_safe_int(frame_index))
+        poses.append(
+            {
+                "frame_id": frame_id,
+                "frame_index": _safe_int(frame_index, idx),
+                "timestamp": _safe_float(row.get("timestamp"), _safe_float(row.get("t_device_sec"))),
+                "T_world_camera": row.get("T_world_camera") or row.get("transform"),
+            }
+        )
+
+    metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+    topology = metadata.get("capture_topology") if isinstance(metadata.get("capture_topology"), Mapping) else {}
+    coordinate_frame_session_id = str(
+        descriptor.get("coordinate_frame_session_id")
+        or topology.get("capture_session_id")
+        or topology.get("captureSessionId")
+        or context.capture_id
+    )
+    return {
+        "source": "arkit",
+        "poses": poses,
+        "frame_meta": frame_meta,
+        "intrinsics": read_json(arkit_root / "intrinsics.json") if (arkit_root / "intrinsics.json").is_file() else {},
+        "coordinate_frame_session_id": coordinate_frame_session_id,
+        "ready_for_world_model": bool(descriptor.get("geometry_ready") or descriptor.get("quality", {}).get("world_model_candidate")),
+    }
+
+
+def _load_pipeline_geometry(
+    *,
+    context: LocalCaptureContext,
+    descriptor: Mapping[str, Any],
+    source: str,
+) -> Dict[str, Any]:
+    geometry_root = context.pipeline_root / "geometry"
+    poses_raw = _load_jsonl(geometry_root / "camera" / "poses.jsonl")
+    frames_raw = _load_jsonl(geometry_root / "frames" / "frame_index.jsonl")
+    intrinsics = read_json(geometry_root / "camera" / "intrinsics.json") if (geometry_root / "camera" / "intrinsics.json").is_file() else {}
+
+    meta_by_index: Dict[int, Dict[str, Any]] = {}
+    for row in frames_raw:
+        frame_index = _safe_int(row.get("frame_index"))
+        meta_by_index[frame_index] = {
+            "frame_index": frame_index,
+            "timestamp_seconds": _safe_float(row.get("timestamp_seconds"), _safe_float(row.get("timestamp"))),
+            "intrinsics_payload": dict(intrinsics) if isinstance(intrinsics, Mapping) else {},
+            "trackingState": "normal",
+            "sharpnessScore": row.get("sharpness_score", 100.0),
+            "relocalizationEvent": False,
+            "worldMappingStatus": row.get("world_mapping_status", "mapped"),
+            "anchorObservations": list(row.get("anchor_observations") or []),
+            "source_image_path": row.get("image_path"),
+            "depth_path": row.get("depth_path"),
+            "confidence_path": row.get("confidence_path"),
+            "pose_confidence": _safe_float(row.get("pose_confidence"), 1.0),
+        }
+
+    poses: List[Dict[str, Any]] = []
+    for idx, row in enumerate(poses_raw):
+        frame_index = _safe_int(row.get("frame_index"), idx)
+        frame_id = _zero_pad_frame_id(row.get("frame_id"), fallback=frame_index)
+        pose_meta = meta_by_index.get(frame_index, {})
+        if frame_id not in {"", "000000"} and pose_meta:
+            pose_meta.setdefault("frame_id", frame_id)
+        poses.append(
+            {
+                "frame_id": frame_id,
+                "frame_index": frame_index,
+                "timestamp": _safe_float(row.get("timestamp_seconds"), _safe_float(row.get("timestamp"))),
+                "T_world_camera": row.get("world_from_camera") or row.get("T_world_camera"),
+            }
+        )
+        meta_by_index.setdefault(frame_index, {})
+        meta_by_index[frame_index].setdefault("frame_id", frame_id)
+
+    frame_meta: Dict[str, Dict[str, Any]] = {}
+    for frame_index, row in meta_by_index.items():
+        frame_id = _zero_pad_frame_id(row.get("frame_id"), fallback=frame_index)
+        row["frame_id"] = frame_id
+        frame_meta[frame_id] = row
+
+    coordinate_frame_session_id = str(
+        descriptor.get("coordinate_frame_session_id")
+        or context.capture_id
+    )
+    quality = descriptor.get("quality") if isinstance(descriptor.get("quality"), Mapping) else {}
+    return {
+        "source": source or "video_to_world",
+        "poses": poses,
+        "frame_meta": frame_meta,
+        "intrinsics": dict(intrinsics) if isinstance(intrinsics, Mapping) else {},
+        "coordinate_frame_session_id": coordinate_frame_session_id,
+        "ready_for_world_model": bool(
+            descriptor.get("geometry_ready")
+            or quality.get("geometry_ready")
+            or quality.get("world_model_candidate")
+        ),
+    }

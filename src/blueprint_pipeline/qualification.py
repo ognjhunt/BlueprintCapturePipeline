@@ -28,6 +28,7 @@ from .common import (
     write_json,
     write_text,
 )
+from .geometry_stage import build_geometry_stage_contract
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
 from .launch_bundle import build_buyer_trust_score, build_launch_qualification_bundle
@@ -858,6 +859,22 @@ def _scene_memory_capture_summary(
         "operator_notes": _string_list(capture_summary.get("operator_notes")),
         "world_model_candidate": bool(
             capture_summary.get("world_model_candidate", quality.get("world_model_candidate"))
+        ),
+        "world_model_candidate_reasoning": list(capture_summary.get("world_model_candidate_reasoning") or []),
+        "site_identity": (
+            dict(metadata.get("site_identity"))
+            if isinstance(metadata.get("site_identity"), Mapping)
+            else None
+        ),
+        "capture_topology": (
+            dict(metadata.get("capture_topology"))
+            if isinstance(metadata.get("capture_topology"), Mapping)
+            else None
+        ),
+        "capture_mode": (
+            dict(metadata.get("capture_mode"))
+            if isinstance(metadata.get("capture_mode"), Mapping)
+            else None
         ),
         "geometry_summary": (
             {
@@ -2458,6 +2475,9 @@ def _geometry_artifacts(
         ),
         "status": str(summary.get("status") or "missing"),
         "ready_for_world_model": bool(summary.get("ready_for_world_model")),
+        "geometry_source": str(summary.get("geometry_source") or "missing"),
+        "fallback_used": bool(summary.get("fallback_used")),
+        "canonical_frame_id": summary.get("canonical_frame_id"),
         "scale_status": str(
             ((summary.get("scale_assessment") or {}) if isinstance(summary.get("scale_assessment"), Mapping) else {}).get("status")
             or "missing"
@@ -2484,6 +2504,8 @@ def _geometry_advisory_payload(geometry_artifacts: Mapping[str, Any]) -> Dict[st
     return {
         "status": str(geometry_artifacts.get("status") or "missing"),
         "ready_for_world_model": bool(geometry_artifacts.get("ready_for_world_model")),
+        "geometry_source": str(geometry_artifacts.get("geometry_source") or "missing"),
+        "fallback_used": bool(geometry_artifacts.get("fallback_used")),
         "scale_status": str(geometry_artifacts.get("scale_status") or "missing"),
         "pose_coverage": float(geometry_artifacts.get("pose_coverage") or 0.0),
         "confidence_coverage": float(geometry_artifacts.get("confidence_coverage") or 0.0),
@@ -2495,6 +2517,17 @@ def _geometry_advisory_payload(geometry_artifacts: Mapping[str, Any]) -> Dict[st
             or []
         ),
     }
+
+
+def _should_run_default_geometry_stage(descriptor: CaptureDescriptor) -> bool:
+    if descriptor.capture_source == "iphone" and descriptor.arkit_poses_uri:
+        return False
+    capture_rights = (
+        descriptor.metadata.get("capture_rights")
+        if isinstance(descriptor.metadata.get("capture_rights"), Mapping)
+        else {}
+    )
+    return bool(capture_rights.get("derived_scene_generation_allowed", False))
 
 
 def _requested_downstream_lanes(
@@ -4202,6 +4235,9 @@ def run_qualification_pipeline(
         descriptor_payload["metadata"] = metadata_payload
         write_json(descriptor_path, descriptor_payload)
         descriptor = CaptureDescriptor.from_dict(descriptor_payload)
+        if _should_run_default_geometry_stage(descriptor):
+            build_geometry_stage_contract(capture_root)
+            descriptor = CaptureDescriptor.from_file(descriptor_path)
         qualification_brief = _build_qualification_brief(
             descriptor=descriptor,
             scorecard=scorecard,

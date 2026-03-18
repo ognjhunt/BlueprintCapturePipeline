@@ -380,6 +380,9 @@ class CaptureDescriptor:
     arkit_depth_prefix_uri: Optional[str] = None
     arkit_confidence_prefix_uri: Optional[str] = None
     depth_conditioning: Dict[str, Any] = field(default_factory=dict)
+    geometry_source: Optional[str] = None
+    geometry_ready: bool = False
+    coordinate_frame_session_id: Optional[str] = None
     qa_report_uri: Optional[str] = None
     qa_status: Optional[str] = None
     object_index_uri: Optional[str] = None
@@ -499,6 +502,21 @@ class CaptureDescriptor:
                 if isinstance(data.get("depth_conditioning"), Mapping)
                 else {}
             ),
+            geometry_source=_optional_str(
+                data.get("geometry_source")
+                or quality.get("geometry_source")
+                or ((metadata.get("scene_memory_capture") or {}) if isinstance(metadata.get("scene_memory_capture"), Mapping) else {}).get("geometry_source")
+            ),
+            geometry_ready=bool(
+                data.get("geometry_ready")
+                or quality.get("geometry_ready")
+                or ((metadata.get("scene_memory_capture") or {}) if isinstance(metadata.get("scene_memory_capture"), Mapping) else {}).get("geometry_ready")
+            ),
+            coordinate_frame_session_id=_optional_str(
+                data.get("coordinate_frame_session_id")
+                or ((metadata.get("capture_topology") or {}) if isinstance(metadata.get("capture_topology"), Mapping) else {}).get("capture_session_id")
+                or ((metadata.get("capture_topology") or {}) if isinstance(metadata.get("capture_topology"), Mapping) else {}).get("captureSessionId")
+            ),
             qa_report_uri=_optional_str(data.get("qa_report_uri")),
             qa_status=_optional_str(data.get("qa_status")),
             object_index_uri=_optional_str(data.get("object_index_uri")),
@@ -607,6 +625,9 @@ class CaptureDescriptor:
             "arkit_intrinsics_uri": self.arkit_intrinsics_uri,
             "arkit_depth_prefix_uri": self.arkit_depth_prefix_uri,
             "arkit_confidence_prefix_uri": self.arkit_confidence_prefix_uri,
+            "geometry_source": self.geometry_source,
+            "geometry_ready": self.geometry_ready if self.geometry_ready else None,
+            "coordinate_frame_session_id": self.coordinate_frame_session_id,
             "qa_report_uri": self.qa_report_uri,
             "qa_status": self.qa_status,
             "object_index_uri": self.object_index_uri,
