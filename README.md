@@ -72,11 +72,17 @@ The production preview path expects URL-first privacy runners:
 - `PRIVACY_DEEPPRIVACY2_URL`
 - `PRIVACY_RUNNER_TOKEN`
 
+The non-ARKit geometry path expects a dedicated GPU `video_to_world` runner:
+
+- `VIDEO_TO_WORLD_URL`
+- `VIDEO_TO_WORLD_RUNNER_TOKEN`
+
 The production deployment should use three GPU Cloud Run services:
 
 - `sam3-detect`
 - `vip-inpaint`
 - `deepprivacy2-anonymize`
+- `video-to-world`
 
 The main `blueprint-pipeline` job stays CPU-only. The concrete service contract, storage behavior, and model-path rules are documented in [docs/PRIVACY_RUNNER_SERVICES.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PRIVACY_RUNNER_SERVICES.md).
 

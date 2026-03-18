@@ -13,8 +13,8 @@ import numpy as np
 
 from .capture_bridge import CaptureDescriptor
 from .common import PipelineError, ensure_dir, utc_now_iso, write_json
-from .geometry_da3 import run_da3_provider
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
+from .video_to_world_client import run_video_to_world_provider
 
 
 _VIDEO_CANDIDATES = (
@@ -277,7 +277,6 @@ def _build_manifest_payload(
     implementation_notes_path: Path,
     alignment_manifest_path: Optional[Path] = None,
     canonical_pointcloud_path: Optional[Path] = None,
-    gs_scene_manifest_path: Optional[Path] = None,
     dynamic_mask_manifest_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     return {
@@ -313,7 +312,6 @@ def _build_manifest_payload(
             "implementation_notes": _json_pointer(implementation_notes_path, context=context),
             "alignment_manifest": _json_pointer(alignment_manifest_path, context=context) if alignment_manifest_path else None,
             "canonical_pointcloud": _json_pointer(canonical_pointcloud_path, context=context) if canonical_pointcloud_path else None,
-            "gs_scene_manifest": _json_pointer(gs_scene_manifest_path, context=context) if gs_scene_manifest_path else None,
             "dynamic_mask_manifest": _json_pointer(dynamic_mask_manifest_path, context=context) if dynamic_mask_manifest_path else None,
         },
         "world_model_contract": {
@@ -382,7 +380,10 @@ def _build_inputs_payload(
 def _build_provider_request_payload(
     *,
     video_path: Path,
+    video_uri: str,
     geometry_root: Path,
+    dynamic_mask_manifest_path: Path,
+    dynamic_mask_manifest_uri: str,
     provider: str,
     model: str,
     execution_mode: str,
@@ -395,7 +396,10 @@ def _build_provider_request_payload(
         "model": model,
         "execution_mode": execution_mode,
         "input_video_path": str(video_path),
+        "input_video_uri": video_uri,
         "geometry_root": str(geometry_root),
+        "dynamic_mask_manifest_path": str(dynamic_mask_manifest_path),
+        "dynamic_mask_manifest_uri": dynamic_mask_manifest_uri,
     }
 
 
@@ -579,9 +583,7 @@ def _build_canonical_geometry_artifacts(
     coordinate_frame_session_id: str,
 ) -> Dict[str, Path]:
     alignment_root = geometry_root / "alignment"
-    render_root = geometry_root / "render"
     ensure_dir(alignment_root)
-    ensure_dir(render_root)
 
     canonical_pointcloud_path = alignment_root / "canonical_pointcloud.ply"
     _write_ascii_pointcloud(canonical_pointcloud_path, pose_records)
@@ -600,23 +602,9 @@ def _build_canonical_geometry_artifacts(
             "canonical_pointcloud_path": str(canonical_pointcloud_path),
         },
     )
-
-    gs_scene_manifest_path = render_root / "gs_scene_manifest.json"
-    write_json(
-        gs_scene_manifest_path,
-        {
-            "schema_version": "v1",
-            "generated_at": utc_now_iso(),
-            "status": "not_generated",
-            "required_for_world_model": False,
-            "fallback_used": fallback_used,
-            "geometry_source": geometry_source,
-        },
-    )
     return {
         "alignment_manifest_path": alignment_manifest_path,
         "canonical_pointcloud_path": canonical_pointcloud_path,
-        "gs_scene_manifest_path": gs_scene_manifest_path,
     }
 
 
@@ -741,8 +729,8 @@ def build_geometry_stage_contract(
     implementation_notes_path = geometry_root / "IMPLEMENTATION_NOTES.md"
     alignment_manifest_path = geometry_root / "alignment" / "alignment_manifest.json"
     canonical_pointcloud_path = geometry_root / "alignment" / "canonical_pointcloud.ply"
-    gs_scene_manifest_path = geometry_root / "render" / "gs_scene_manifest.json"
     dynamic_mask_manifest_path = geometry_root / "masks" / "dynamic_mask_manifest.json"
+    dynamic_mask_manifest_path = _build_dynamic_mask_manifest(context=context, geometry_root=geometry_root)
 
     initial_status = _build_status_payload(
         provider=provider,
@@ -763,7 +751,10 @@ def build_geometry_stage_contract(
     )
     provider_request = _build_provider_request_payload(
         video_path=video_path,
+        video_uri=descriptor.raw_video_uri or "",
         geometry_root=geometry_root,
+        dynamic_mask_manifest_path=dynamic_mask_manifest_path,
+        dynamic_mask_manifest_uri=f"gs://{context.bucket}/{context.capture_prefix}/pipeline/geometry/masks/dynamic_mask_manifest.json",
         provider=provider,
         model=model,
         execution_mode=execution_mode,
@@ -794,7 +785,6 @@ def build_geometry_stage_contract(
             implementation_notes_path=implementation_notes_path,
             alignment_manifest_path=alignment_manifest_path,
             canonical_pointcloud_path=canonical_pointcloud_path,
-            gs_scene_manifest_path=gs_scene_manifest_path,
             dynamic_mask_manifest_path=dynamic_mask_manifest_path,
         ),
     )
@@ -808,19 +798,22 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
 - Metric trust follows capture evidence tier and validated scaffolding policy.
 - Meta/glasses geometry without validated scaffolding remains conditioning-only.
 - Canonical poses, depth, and reference frames are readiness-critical.
-- Any GS/splat render asset is optional and non-blocking.
+- GS/splat render assets are not part of the public alpha contract.
 """
     implementation_notes_path.write_text(implementation_notes, encoding="utf-8")
 
     provider_exc: Optional[Exception] = None
     try:
-        provider_result = run_da3_provider(
+        provider_result = run_video_to_world_provider(
             video_path=video_path,
+            video_uri=descriptor.raw_video_uri or "",
             geometry_root=geometry_root,
-            video_probe=video_probe,
+            dynamic_mask_manifest_path=dynamic_mask_manifest_path,
+            dynamic_mask_manifest_uri=f"gs://{context.bucket}/{context.capture_prefix}/pipeline/geometry/masks/dynamic_mask_manifest.json",
             provider=provider,
             model=model,
             execution_mode=execution_mode,
+            video_probe=video_probe,
         )
     except Exception as exc:
         provider_exc = exc
@@ -974,7 +967,6 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         or metadata_topology.get("captureSessionId")
         or context.capture_id
     )
-    dynamic_mask_manifest_path = _build_dynamic_mask_manifest(context=context, geometry_root=geometry_root)
     canonical_artifacts = _build_canonical_geometry_artifacts(
         context=context,
         geometry_root=geometry_root,
@@ -1033,8 +1025,6 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "canonical_scene_assets": {
             "alignment_manifest": _json_pointer(canonical_artifacts["alignment_manifest_path"], context=context),
             "canonical_pointcloud": _json_pointer(canonical_artifacts["canonical_pointcloud_path"], context=context),
-            "gs_scene_manifest": _json_pointer(canonical_artifacts["gs_scene_manifest_path"], context=context),
-            "gs_asset_required": False,
         },
         "deliverables": {
             "manifest": _json_pointer(manifest_path, context=context),
@@ -1091,7 +1081,6 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             implementation_notes_path=implementation_notes_path,
             alignment_manifest_path=canonical_artifacts["alignment_manifest_path"],
             canonical_pointcloud_path=canonical_artifacts["canonical_pointcloud_path"],
-            gs_scene_manifest_path=canonical_artifacts["gs_scene_manifest_path"],
             dynamic_mask_manifest_path=dynamic_mask_manifest_path,
         ),
     )

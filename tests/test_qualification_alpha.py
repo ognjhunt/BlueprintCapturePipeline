@@ -252,7 +252,7 @@ def _write_geometry_lane(monkeypatch, capture_root: Path) -> None:  # type: igno
             "loop_closure_detected": False,
         }
 
-    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_da3_provider", _fake_provider)
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
     build_geometry_stage_contract(capture_root)
 
 

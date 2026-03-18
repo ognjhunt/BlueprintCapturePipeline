@@ -154,7 +154,7 @@ def test_build_geometry_stage_contract_writes_completed_outputs(monkeypatch, tmp
             "loop_closure_detected": False,
         }
 
-    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_da3_provider", _fake_provider)
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
 
     result = build_geometry_stage_contract(capture_root)
 
@@ -192,7 +192,7 @@ def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_pa
     def _failing_provider(**_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_da3_provider", _failing_provider)
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _failing_provider)
 
     result = build_geometry_stage_contract(capture_root)
 

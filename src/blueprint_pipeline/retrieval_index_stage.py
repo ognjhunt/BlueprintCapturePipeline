@@ -216,13 +216,13 @@ def _capture_already_indexed(site_index_path: Path, capture_id: str) -> bool:
 
 
 def _resolve_video_path(ctx: LocalCaptureContext) -> Path:
-    """Prefer raw walkthrough frames for retrieval; fall back to privacy-processed video if needed."""
-    for name in ("walkthrough.mp4", "walkthrough.mov"):
-        p = ctx.raw_root / name
-        if p.is_file():
-            return p
+    """Prefer privacy-safe walkthrough video for retrieval; fall back to raw only if needed."""
     for name in ("walkthrough_privacy.mp4", "walkthrough_privacy.mov"):
         p = ctx.pipeline_root / name
+        if p.is_file():
+            return p
+    for name in ("walkthrough.mp4", "walkthrough.mov"):
+        p = ctx.raw_root / name
         if p.is_file():
             return p
     raise PipelineError(f"No walkthrough video found under {ctx.capture_root}")

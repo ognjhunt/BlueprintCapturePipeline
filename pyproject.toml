@@ -68,6 +68,7 @@ blueprint-build-object-index = "blueprint_pipeline.object_index_stage:main"
 blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"
 blueprint-build-object-geometry = "blueprint_pipeline.object_geometry_stage:main"
 blueprint-build-evaluation-prep = "blueprint_pipeline.evaluation_prep_stage:main"
+blueprint-video-to-world-runner = "blueprint_pipeline.video_to_world_runner_service:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

@@ -130,7 +130,7 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
             "loop_closure_detected": False,
         }
 
-    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_da3_provider", _fake_provider)
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
     monkeypatch.setattr(
         "blueprint_pipeline.retrieval_index_stage._generate_embeddings",
         lambda **_kwargs: [np.ones(1024, dtype=np.float32) for _ in _kwargs["image_paths"]],
