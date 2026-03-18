@@ -219,7 +219,7 @@ def _standards_notes(
         for item in blocker_register.get("entries", [])
         if isinstance(item, Mapping)
     }
-    if artifacts.descriptor.capture_modality == "glasses_video_only":
+    if artifacts.descriptor.capture_modality in {"glasses_video_only", "android_video_only"}:
         categories.add("capture_quality")
     selected = []
     for entry in corpus:

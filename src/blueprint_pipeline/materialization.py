@@ -662,7 +662,7 @@ def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> 
         str(manifest.get("capture_source") or "").strip().lower(),
         str(context.get("captureSource") or "").strip().lower(),
     ):
-        if candidate in {"iphone", "glasses"}:
+        if candidate in {"iphone", "glasses", "android"}:
             return candidate
         if candidate == "iphonevideo":
             return "iphone"
@@ -675,7 +675,11 @@ def _capture_tier(source: str, manifest: Mapping[str, Any]) -> str:
     tier = str(manifest.get("capture_tier_hint") or "").strip()
     if tier:
         return tier
-    return "tier2_glasses" if source == "glasses" else "tier1_iphone"
+    if source == "glasses":
+        return "tier2_glasses"
+    if source == "android":
+        return "tier2_android"
+    return "tier1_iphone"
 
 
 def _capture_modality(
@@ -685,7 +689,7 @@ def _capture_modality(
     scaffolding_used: List[str],
 ) -> str:
     explicit = str(context.get("captureModality") or manifest.get("capture_modality") or "").strip().lower()
-    if explicit in {"iphone_arkit_lidar", "glasses_video_only", "glasses_plus_scaffolding"}:
+    if explicit in {"iphone_arkit_lidar", "glasses_video_only", "glasses_plus_scaffolding", "android_video_only"}:
         return explicit
     if source == "iphone" and parse_bool(manifest.get("has_lidar"), default=False):
         return "iphone_arkit_lidar"
@@ -693,6 +697,8 @@ def _capture_modality(
         return "glasses_plus_scaffolding"
     if source == "glasses":
         return "glasses_video_only"
+    if source == "android":
+        return "android_video_only"
     return "iphone_arkit_lidar"
 
 
@@ -1046,7 +1052,7 @@ def build_capture_bundle_records(
         + 0.15 * len(_string_list(intake.get("privacySecurityLimits"))),
     )
     uncertainty_score = 0.15 if modality == "iphone_arkit_lidar" else 0.45
-    if modality == "glasses_video_only":
+    if modality in {"glasses_video_only", "android_video_only"}:
         uncertainty_score = 0.78
     if not intake_complete:
         uncertainty_score = min(1.0, uncertainty_score + 0.15)

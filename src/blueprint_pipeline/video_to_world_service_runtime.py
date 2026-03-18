@@ -32,11 +32,45 @@ def _timeout_seconds() -> int:
     return max(60, value)
 
 
+def _repo_dir() -> str:
+    return _string(os.getenv("VIDEO_TO_WORLD_REPO_DIR") or "/opt/video_to_world")
+
+
+def _command_preset() -> str:
+    return _string(os.getenv("VIDEO_TO_WORLD_PIPELINE_PRESET") or "preprocess_plus_alignment").lower() or "preprocess_plus_alignment"
+
+
+def _preset_template(preset: str) -> str:
+    repo_dir = _repo_dir()
+    templates = {
+        "preprocess_only": (
+            f"cd {repo_dir} && "
+            "python preprocess_video.py --input_video {INPUT_VIDEO} --scene_root {SCENE_ROOT}"
+        ),
+        "preprocess_plus_alignment": (
+            f"cd {repo_dir} && "
+            "python preprocess_video.py --input_video {INPUT_VIDEO} --scene_root {SCENE_ROOT} && "
+            "python -m frame_to_model_icp --config.root-path {SCENE_ROOT}"
+        ),
+        "full_fast": (
+            f"cd {repo_dir} && "
+            "python run_reconstruction.py --config.input-video {INPUT_VIDEO} "
+            "--config.scene-root {SCENE_ROOT} --config.mode fast"
+        ),
+        "full_extensive": (
+            f"cd {repo_dir} && "
+            "python run_reconstruction.py --config.input-video {INPUT_VIDEO} "
+            "--config.scene-root {SCENE_ROOT} --config.mode extensive"
+        ),
+    }
+    return templates.get(preset, templates["preprocess_plus_alignment"])
+
+
 def _command_template() -> str:
-    return _string(
-        os.getenv("VIDEO_TO_WORLD_COMMAND_TEMPLATE")
-        or "cd ${VIDEO_TO_WORLD_REPO_DIR:-/opt/video_to_world} && python run_reconstruction.py --config.input-video {INPUT_VIDEO} --config.scene-root {SCENE_ROOT} --config.mode fast"
-    )
+    explicit = _string(os.getenv("VIDEO_TO_WORLD_COMMAND_TEMPLATE"))
+    if explicit:
+        return explicit
+    return _preset_template(_command_preset())
 
 
 def _materialize_file(uri: str, path_hint: str, working_dir: Path) -> Path:
@@ -225,4 +259,9 @@ def execute_video_to_world_request(body: Mapping[str, Any]) -> Dict[str, Any]:
                 }
         if not isinstance(payload, dict):
             return {"status": "failed", "reason": "video_to_world_result_invalid_payload"}
+        provider_metrics = dict(payload.get("provider_metrics") or {})
+        provider_metrics.setdefault("runner", "video_to_world")
+        provider_metrics.setdefault("command_preset", _command_preset())
+        provider_metrics.setdefault("repo_dir", _repo_dir())
+        payload["provider_metrics"] = provider_metrics
         return payload

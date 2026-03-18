@@ -7,7 +7,11 @@ from typing import List, Optional
 
 from .agent_runtime.orchestrator import run_agent_review
 from .agent_runtime.openai_phase2 import OpenAIPhase2Config
-from .capture_orchestrator import PipelineConfig, run_capture_pipeline
+from .capture_orchestrator import (
+    PipelineConfig,
+    run_capture_pipeline,
+    run_capture_synthesis_validation,
+)
 from .common import PipelineError
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .local_capture import resolve_local_capture_context
@@ -20,8 +24,10 @@ def run_end_to_end(
     capture_root: str,
     provider: str,
     openai_phase2_config: Optional[OpenAIPhase2Config] = None,
+    pipeline_lane: str = "qualification",
     run_evaluation_prep: bool = False,
     evaluation_prep_provider: str = "manual",
+    run_cosmos_validation: bool = False,
 ) -> dict:
     context = resolve_local_capture_context(capture_root)
     preflight = build_capture_preflight_report(context.capture_root)
@@ -44,7 +50,7 @@ def run_end_to_end(
 
     pipeline = run_capture_pipeline(
         descriptor_gcs_uri=context.descriptor_uri,
-        lane="qualification",
+        lane=pipeline_lane,
         config=PipelineConfig(gcs_root=context.storage_root),
     )
     review = run_agent_review(
@@ -61,16 +67,28 @@ def run_end_to_end(
         if run_evaluation_prep
         else None
     )
+    cosmos_validation = (
+        run_capture_synthesis_validation(
+            capture_root=context.capture_root,
+            descriptor_gcs_uri=context.descriptor_uri,
+            cfg=PipelineConfig(gcs_root=context.storage_root),
+            mode="cosmos_i2w",
+        )
+        if run_cosmos_validation
+        else None
+    )
     return {
         "schema_version": "v1",
         "capture_root": str(context.capture_root),
         "provider": provider,
         "preflight_status": preflight.get("status"),
         "pipeline_status": pipeline.get("status"),
+        "pipeline_lanes": pipeline.get("lanes"),
         "pipeline_summary": review.get("artifacts", {}).get("readiness_report"),
         "final_memo_path": review.get("final_memo_path"),
         "final_bundle_path": review.get("final_bundle_path"),
         "evaluation_prep": evaluation_prep_result,
+        "cosmos_validation": cosmos_validation,
     }
 
 
@@ -78,6 +96,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run a local capture through qualification-first review")
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
     parser.add_argument("--provider", required=True, choices=("claude", "openai"))
+    parser.add_argument(
+        "--pipeline-lane",
+        default="qualification",
+        choices=("qualification", "scene_memory", "evaluation_prep", "retrieval_index", "frame_alignment", "synthesis_coverage_validation", "all"),
+    )
     parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))
     parser.add_argument("--openai-phase2-model")
     parser.add_argument("--openai-phase2-codex-bin")
@@ -85,6 +108,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--openai-phase2-reasoning-effort")
     parser.add_argument("--run-evaluation-prep", action="store_true")
     parser.add_argument("--evaluation-prep-provider", default="manual")
+    parser.add_argument("--run-cosmos-validation", action="store_true")
     args = parser.parse_args(argv)
 
     openai_phase2_config = None
@@ -111,8 +135,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             capture_root=args.capture_root,
             provider=args.provider,
             openai_phase2_config=openai_phase2_config,
+            pipeline_lane=args.pipeline_lane,
             run_evaluation_prep=bool(args.run_evaluation_prep),
             evaluation_prep_provider=args.evaluation_prep_provider,
+            run_cosmos_validation=bool(args.run_cosmos_validation),
         )
     except Exception as exc:
         print(f"[run-e2e] FAILED: {exc}")
@@ -120,10 +146,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"[run-e2e] preflight_status={result['preflight_status']}")
     print(f"[run-e2e] pipeline_status={result['pipeline_status']}")
+    print(f"[run-e2e] pipeline_lanes={result.get('pipeline_lanes')}")
     print(f"[run-e2e] final_memo={result['final_memo_path']}")
     print(f"[run-e2e] final_bundle={result['final_bundle_path']}")
     if result.get("evaluation_prep"):
         print(f"[run-e2e] evaluation_prep={result['evaluation_prep']['manifest_path']}")
+    if result.get("cosmos_validation"):
+        print(f"[run-e2e] cosmos_validation={result['cosmos_validation']['status']}")
     return 0
 
 

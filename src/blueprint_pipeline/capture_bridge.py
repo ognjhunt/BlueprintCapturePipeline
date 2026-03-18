@@ -24,6 +24,7 @@ _ALLOWED_CAPTURE_MODALITIES = {
     "iphone_arkit_lidar",
     "glasses_video_only",
     "glasses_plus_scaffolding",
+    "android_video_only",
 }
 _ALLOWED_EVIDENCE_TIERS = {
     "pre_screen_video",
@@ -123,11 +124,13 @@ def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
 
 def _infer_capture_source(raw_source: str, capture_tier: str) -> str:
     source = raw_source.strip().lower()
-    if source in {"iphone", "glasses"}:
+    if source in {"iphone", "glasses", "android"}:
         return source
     tier = capture_tier.strip().lower()
     if "glasses" in tier:
         return "glasses"
+    if "android" in tier:
+        return "android"
     return "iphone"
 
 
@@ -353,6 +356,8 @@ def _resolve_capture_modality(
         return "glasses_plus_scaffolding"
     if capture_source == "glasses":
         return "glasses_video_only"
+    if capture_source == "android":
+        return "android_video_only"
     return "iphone_arkit_lidar"
 
 
@@ -658,7 +663,6 @@ class CaptureDescriptor:
         return (
             self.world_model_video_uri
             or self.privacy_processed_video_uri
-            or self.raw_video_uri
         )
 
 

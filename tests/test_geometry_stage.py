@@ -261,3 +261,15 @@ def test_assess_geometry_scale_respects_metric_policy() -> None:
         }
     )
     assert assess_geometry_scale(descriptor)["status"] == "metric_trusted"
+
+
+def test_materialization_preserves_android_video_only_capture_source(tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={"capture_source": "android"},
+        context_overrides={"captureSource": "android", "captureModality": "android_video_only"},
+    )
+
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    assert descriptor["capture_source"] == "android"
+    assert descriptor["capture_modality"] == "android_video_only"

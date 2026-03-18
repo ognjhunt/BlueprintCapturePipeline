@@ -37,3 +37,47 @@ def test_run_e2e_keeps_agent_review_and_evaluation_prep(monkeypatch, tmp_path: P
     assert result["final_memo_path"] == "memo.md"
     assert result["evaluation_prep"]["manifest_path"] == "evaluation_prep_manifest.json"
     assert "simready" not in result
+
+
+def test_run_e2e_supports_full_lane_and_optional_cosmos_validation(monkeypatch, tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")
+
+    context = SimpleNamespace(
+        capture_root=capture_root,
+        bucket="bucket",
+        scene_id="scene-1",
+        capture_id="capture-2",
+        storage_root=tmp_path,
+        raw_prefix_uri="gs://bucket/raw",
+        descriptor_uri="gs://bucket/scenes/scene-1/captures/capture-2/capture_descriptor.json",
+        raw_complete_path=capture_root / "raw" / "capture_upload_complete.json",
+        descriptor_path=capture_root / "capture_descriptor.json",
+    )
+
+    monkeypatch.setattr("blueprint_pipeline.run_e2e.resolve_local_capture_context", lambda *_args, **_kwargs: context)
+    monkeypatch.setattr("blueprint_pipeline.run_e2e.build_capture_preflight_report", lambda *_args, **_kwargs: {"status": "passed", "missing_required_inputs": []})
+    monkeypatch.setattr("blueprint_pipeline.run_e2e.materialize_capture_bundle", lambda **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.run_capture_pipeline",
+        lambda **kwargs: {"status": "completed", "lanes": [kwargs["lane"]]},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.run_agent_review",
+        lambda **_kwargs: {"final_memo_path": "memo.md", "final_bundle_path": "bundle.json", "artifacts": {"readiness_report": "report.md"}},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.run_capture_synthesis_validation",
+        lambda **_kwargs: {"status": "completed", "synthesis_mode": "cosmos_i2w"},
+    )
+
+    result = run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        pipeline_lane="all",
+        run_cosmos_validation=True,
+    )
+
+    assert result["pipeline_lanes"] == ["all"]
+    assert result["cosmos_validation"]["synthesis_mode"] == "cosmos_i2w"

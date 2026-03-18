@@ -8,11 +8,12 @@ Only the privacy-safe walkthrough may be used for World Labs. Raw-video fallback
 
 ## Services
 
-Deploy three GPU-backed Cloud Run services:
+Deploy four GPU-backed Cloud Run services:
 
 - `sam3-detect`
 - `vip-inpaint`
 - `deepprivacy2-anonymize`
+- `video-to-world`
 
 The main `blueprint-pipeline` Cloud Run job remains CPU-only.
 
@@ -84,6 +85,29 @@ The services support both mounted GCS paths and direct `gs://` URIs.
 - If the bucket is mounted at `GCS_ROOT`, the service reads and writes directly through the mount.
 - If the object is not mounted locally, the service downloads inputs and uploads outputs with `google-cloud-storage`.
 - The main pipeline still re-materializes remote outputs locally before verification or final ffmpeg steps.
+
+## video_to_world Runtime
+
+The geometry path uses a dedicated `video-to-world` service with:
+
+- `VIDEO_TO_WORLD_RUNNER_TOKEN`
+- `VIDEO_TO_WORLD_PIPELINE_PRESET` or `VIDEO_TO_WORLD_COMMAND_TEMPLATE`
+- `VIDEO_TO_WORLD_COMMAND_TIMEOUT_SECONDS`
+
+Supported presets:
+
+- `preprocess_only`
+- `preprocess_plus_alignment` (default deployment preset)
+- `full_fast`
+- `full_extensive`
+
+If `VIDEO_TO_WORLD_COMMAND_TEMPLATE` is set, it overrides the preset. Template substitutions:
+
+- `{INPUT_VIDEO}`
+- `{GEOMETRY_ROOT}`
+- `{SCENE_ROOT}`
+- `{RESULT_JSON}`
+- `{DYNAMIC_MASK_MANIFEST}`
 
 ## Depth Behavior
 

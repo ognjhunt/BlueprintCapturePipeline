@@ -214,8 +214,23 @@ def _run_synthesis_coverage_validation(
     descriptor_gcs_uri: str,
     cfg: PipelineConfig,
 ) -> Dict[str, Any]:
+    return run_capture_synthesis_validation(
+        capture_root=capture_root,
+        descriptor_gcs_uri=descriptor_gcs_uri,
+        cfg=cfg,
+        mode="splat_only",
+    )
+
+
+def run_capture_synthesis_validation(
+    *,
+    capture_root: Path,
+    descriptor_gcs_uri: str,
+    cfg: PipelineConfig,
+    mode: str = "splat_only",
+) -> Dict[str, Any]:
     """
-    Run a single-frame splat_only synthesis as a coverage validation QA check.
+    Run a single-frame synthesis validation QA check.
 
     Gates:
     1. capture_descriptor.json must have world_model_candidate=true
@@ -302,10 +317,11 @@ def _run_synthesis_coverage_validation(
     target_h = int(target_intrinsics.get("height", 1440))
     target_w = int(target_intrinsics.get("width", 1920))
 
-    # --- Run synthesis (splat_only, k=1, non-blocking) ---
+    # --- Run synthesis (non-blocking) ---
+    output_stem = "cosmos" if mode == "cosmos_i2w" else "splat"
     output_path = (
         cfg.gcs_root / parsed.bucket / "sites" / site_id / "coverage_validation"
-        / f"{capture_id}_splat.jpg"
+        / f"{capture_id}_{output_stem}.jpg"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -319,7 +335,7 @@ def _run_synthesis_coverage_validation(
             target_h=target_h,
             target_w=target_w,
             output_path=output_path,
-            mode="splat_only",
+            mode=mode,
             k=1,
             query_mode=query_mode,
             depth_scale=0.001,
@@ -331,11 +347,16 @@ def _run_synthesis_coverage_validation(
         "status": synth_result.get("status", "completed"),
         "capture_id": capture_id,
         "site_id": site_id,
-        "synthesis_mode": "splat_only",
+        "synthesis_mode": mode,
         "retrieval_mode": query_mode,
         "coverage_frac": synth_result.get("coverage_frac"),
         "ref_frame_distance_m": synth_result.get("retrieval_dist_m"),
-        "output_uri": f"gs://{parsed.bucket}/sites/{site_id}/coverage_validation/{capture_id}_splat.jpg",
+        "output_uri": f"gs://{parsed.bucket}/sites/{site_id}/coverage_validation/{capture_id}_{output_stem}.jpg",
+        "output_video_uri": (
+            f"gs://{parsed.bucket}/sites/{site_id}/coverage_validation/{capture_id}_{output_stem}.mp4"
+            if mode == "cosmos_i2w"
+            else None
+        ),
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
     }
 

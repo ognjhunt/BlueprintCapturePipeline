@@ -82,6 +82,12 @@ variable "privacy_deepprivacy2_image" {
   default     = "gcr.io/blueprint-8c1ca/deepprivacy2-privacy:latest"
 }
 
+variable "video_to_world_image" {
+  description = "Docker image for the video_to_world geometry service"
+  type        = string
+  default     = "gcr.io/blueprint-8c1ca/video-to-world:latest"
+}
+
 variable "max_concurrent_jobs" {
   description = "Maximum concurrent privacy service instances"
   type        = number
@@ -168,6 +174,25 @@ variable "privacy_runner_token" {
   sensitive   = true
 }
 
+variable "video_to_world_runner_token" {
+  description = "Auth token for the video_to_world HTTP service; falls back to privacy_runner_token when empty"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "video_to_world_pipeline_preset" {
+  description = "Default upstream execution preset for video_to_world: preprocess_only, preprocess_plus_alignment, full_fast, or full_extensive"
+  type        = string
+  default     = "preprocess_plus_alignment"
+}
+
+variable "video_to_world_command_template" {
+  description = "Optional explicit shell command template for video_to_world service execution"
+  type        = string
+  default     = ""
+}
+
 variable "enable_notifications" {
   description = "Enable push notifications via FCM"
   type        = bool
@@ -191,7 +216,8 @@ provider "google-beta" {
 # =============================================================================
 
 locals {
-  all_regions = concat([var.primary_region], var.secondary_regions)
+  all_regions                 = concat([var.primary_region], var.secondary_regions)
+  video_to_world_runner_token = var.video_to_world_runner_token != "" ? var.video_to_world_runner_token : var.privacy_runner_token
 
   # Common labels for all resources
   common_labels = {
@@ -268,6 +294,12 @@ resource "google_service_account" "privacy_deepprivacy2_service" {
   description  = "Service account for the deepprivacy2-anonymize privacy HTTP service"
 }
 
+resource "google_service_account" "video_to_world_service" {
+  account_id   = "video-to-world-service"
+  display_name = "Blueprint Video To World Service"
+  description  = "Service account for the video-to-world geometry HTTP service"
+}
+
 # =============================================================================
 # IAM Bindings for Pipeline Runner
 # =============================================================================
@@ -281,9 +313,10 @@ resource "google_project_iam_member" "pipeline_runner_storage" {
 
 resource "google_project_iam_member" "privacy_services_storage" {
   for_each = {
-    sam3         = google_service_account.privacy_sam3_service.email
-    vip          = google_service_account.privacy_vip_service.email
-    deepprivacy2 = google_service_account.privacy_deepprivacy2_service.email
+    sam3           = google_service_account.privacy_sam3_service.email
+    vip            = google_service_account.privacy_vip_service.email
+    deepprivacy2   = google_service_account.privacy_deepprivacy2_service.email
+    video_to_world = google_service_account.video_to_world_service.email
   }
 
   project = var.project_id
@@ -293,9 +326,10 @@ resource "google_project_iam_member" "privacy_services_storage" {
 
 resource "google_project_iam_member" "privacy_services_logging" {
   for_each = {
-    sam3         = google_service_account.privacy_sam3_service.email
-    vip          = google_service_account.privacy_vip_service.email
-    deepprivacy2 = google_service_account.privacy_deepprivacy2_service.email
+    sam3           = google_service_account.privacy_sam3_service.email
+    vip            = google_service_account.privacy_vip_service.email
+    deepprivacy2   = google_service_account.privacy_deepprivacy2_service.email
+    video_to_world = google_service_account.video_to_world_service.email
   }
 
   project = var.project_id
@@ -558,6 +592,21 @@ resource "google_cloud_run_v2_job" "pipeline" {
         env {
           name  = "PRIVACY_RUNNER_TOKEN"
           value = var.privacy_runner_token
+        }
+
+        env {
+          name  = "VIDEO_TO_WORLD_URL"
+          value = google_cloud_run_v2_service.video_to_world.uri
+        }
+
+        env {
+          name  = "VIDEO_TO_WORLD_RUNNER_TOKEN"
+          value = local.video_to_world_runner_token
+        }
+
+        env {
+          name  = "RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO"
+          value = "true"
         }
 
         env {
@@ -868,11 +917,78 @@ resource "google_cloud_run_v2_service" "privacy_deepprivacy2" {
   }
 }
 
+resource "google_cloud_run_v2_service" "video_to_world" {
+  provider = google-beta
+
+  name     = "video-to-world"
+  location = var.primary_region
+  labels   = local.common_labels
+
+  template {
+    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
+    max_instance_request_concurrency = 1
+    service_account                  = google_service_account.video_to_world_service.email
+    timeout                          = "7200s"
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = var.max_concurrent_jobs
+    }
+
+    containers {
+      image = var.video_to_world_image
+
+      resources {
+        limits = {
+          cpu              = "4"
+          memory           = "16Gi"
+          "nvidia.com/gpu" = "1"
+        }
+      }
+
+      env {
+        name  = "GCS_ROOT"
+        value = "/mnt/gcs"
+      }
+
+      env {
+        name  = "VIDEO_TO_WORLD_RUNNER_TOKEN"
+        value = local.video_to_world_runner_token
+      }
+
+      env {
+        name  = "VIDEO_TO_WORLD_PIPELINE_PRESET"
+        value = var.video_to_world_pipeline_preset
+      }
+
+      env {
+        name  = "VIDEO_TO_WORLD_COMMAND_TEMPLATE"
+        value = var.video_to_world_command_template
+      }
+
+      volume_mounts {
+        name       = "capture-storage"
+        mount_path = "/mnt/gcs"
+      }
+    }
+
+    volumes {
+      name = "capture-storage"
+
+      gcs {
+        bucket    = var.storage_bucket
+        read_only = false
+      }
+    }
+  }
+}
+
 resource "google_cloud_run_service_iam_member" "privacy_runner_public_invoker" {
   for_each = {
-    sam3         = google_cloud_run_v2_service.privacy_sam3.name
-    vip          = google_cloud_run_v2_service.privacy_vip.name
-    deepprivacy2 = google_cloud_run_v2_service.privacy_deepprivacy2.name
+    sam3           = google_cloud_run_v2_service.privacy_sam3.name
+    vip            = google_cloud_run_v2_service.privacy_vip.name
+    deepprivacy2   = google_cloud_run_v2_service.privacy_deepprivacy2.name
+    video_to_world = google_cloud_run_v2_service.video_to_world.name
   }
 
   location = var.primary_region
@@ -929,12 +1045,12 @@ resource "google_cloudfunctions2_function" "storage_trigger" {
     service_account_email = google_service_account.storage_trigger.email
 
     environment_variables = {
-      PIPELINE_PROJECT_ID        = var.project_id
-      PIPELINE_REGION            = var.primary_region
-      PIPELINE_BUCKET            = var.storage_bucket
-      REGIONS                    = join(",", local.all_regions)
-      SWAP_TRIGGER_DISPATCH_MODE = "pubsub"
-      SWAP_TRIGGER_PUBSUB_TOPIC  = google_pubsub_topic.pipeline_trigger.name
+      PIPELINE_PROJECT_ID                     = var.project_id
+      PIPELINE_REGION                         = var.primary_region
+      PIPELINE_BUCKET                         = var.storage_bucket
+      REGIONS                                 = join(",", local.all_regions)
+      SWAP_TRIGGER_DISPATCH_MODE              = "pubsub"
+      SWAP_TRIGGER_PUBSUB_TOPIC               = google_pubsub_topic.pipeline_trigger.name
       SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF = "true"
     }
   }
@@ -1170,11 +1286,12 @@ output "cloud_run_jobs" {
 }
 
 output "privacy_runner_services" {
-  description = "Privacy runner service URLs"
+  description = "GPU runner service URLs"
   value = {
-    sam3         = google_cloud_run_v2_service.privacy_sam3.uri
-    vip          = google_cloud_run_v2_service.privacy_vip.uri
-    deepprivacy2 = google_cloud_run_v2_service.privacy_deepprivacy2.uri
+    sam3           = google_cloud_run_v2_service.privacy_sam3.uri
+    vip            = google_cloud_run_v2_service.privacy_vip.uri
+    deepprivacy2   = google_cloud_run_v2_service.privacy_deepprivacy2.uri
+    video_to_world = google_cloud_run_v2_service.video_to_world.uri
   }
 }
 

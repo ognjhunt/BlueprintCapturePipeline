@@ -76,13 +76,23 @@ The non-ARKit geometry path expects a dedicated GPU `video_to_world` runner:
 
 - `VIDEO_TO_WORLD_URL`
 - `VIDEO_TO_WORLD_RUNNER_TOKEN`
+- `VIDEO_TO_WORLD_PIPELINE_PRESET` or `VIDEO_TO_WORLD_COMMAND_TEMPLATE`
 
-The production deployment should use three GPU Cloud Run services:
+The production deployment should use four GPU Cloud Run services:
 
 - `sam3-detect`
 - `vip-inpaint`
 - `deepprivacy2-anonymize`
 - `video-to-world`
+
+Recommended `video_to_world` presets:
+
+- `preprocess_only` for DA3-only geometry bootstrap
+- `preprocess_plus_alignment` for DA3 + non-rigid alignment outputs. This is the default deployment preset.
+- `full_fast` for the end-to-end upstream reconstruction path with the lighter preset
+- `full_extensive` for the full upstream path including global optimization and longer inverse-deformation / GS stages
+
+`RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true` is now the default production expectation. Retrieval indexing fails closed unless it can resolve `world_model_video_uri`, `privacy_processed_video_uri`, or the concrete privacy artifact at `privacy/final_walkthrough.mov` / `privacy/final_walkthrough.mp4`.
 
 The main `blueprint-pipeline` job stays CPU-only. The concrete service contract, storage behavior, and model-path rules are documented in [docs/PRIVACY_RUNNER_SERVICES.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PRIVACY_RUNNER_SERVICES.md).
 

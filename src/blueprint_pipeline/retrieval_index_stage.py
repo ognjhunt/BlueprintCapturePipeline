@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import subprocess
 import uuid
@@ -16,6 +17,7 @@ from .common import (
     ensure_local_uri_path,
     infer_storage_root_from_scene_path,
     is_gs_uri,
+    parse_bool,
     read_json,
     utc_now_iso,
     write_json,
@@ -96,8 +98,7 @@ def run_retrieval_index_stage(
         dense_records = _load_jsonl(dense_index_path)
     else:
         descriptor = _ensure_geometry_for_capture(ctx=ctx, descriptor=descriptor)
-        privacy_source = _resolve_privacy_source(ctx, descriptor)
-        video_path = _resolve_video_path(ctx, descriptor)
+        video_source = _resolve_video_source(ctx, descriptor)
         geometry = load_capture_geometry(context=ctx, descriptor=descriptor)
         frames_quality = geometry["frame_meta"]
         poses = geometry["poses"]
@@ -109,14 +110,27 @@ def run_retrieval_index_stage(
         dense_records = _build_dense_records(
             selected=selected,
             frames_quality=frames_quality,
-            video_path=video_path,
+            video_path=video_source["path"],
             export_dir=export_dir,
             model=model,
             ctx=ctx,
-            privacy_source=privacy_source,
+            privacy_source=str(video_source["source"]),
             geometry_source=str(geometry.get("source") or "unknown"),
         )
         _write_dense_index(dense_index_path, dense_records)
+        write_json(
+            export_dir / "retrieval_source_manifest.json",
+            {
+                "schema_version": "v1",
+                "capture_id": ctx.capture_id,
+                "generated_at": utc_now_iso(),
+                "source_id": video_source["source"],
+                "source_path": str(video_source["path"]),
+                "source_uri": video_source.get("uri"),
+                "privacy_safe": bool(video_source["privacy_safe"]),
+                "privacy_safe_required": _require_privacy_safe_video(),
+            },
+        )
         _write_pose_alignment_summary(
             export_dir=export_dir,
             descriptor=descriptor,
@@ -218,42 +232,68 @@ def _capture_already_indexed(site_index_path: Path, capture_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_video_path(ctx: LocalCaptureContext, descriptor: Dict[str, Any]) -> Path:
-    """Prefer the descriptor's privacy-safe video URI, then local fallbacks."""
-    for key in ("privacy_processed_video_uri", "world_model_video_uri"):
+def _require_privacy_safe_video() -> bool:
+    return parse_bool(os.getenv("RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO"), default=True)
+
+
+def _resolve_video_source(ctx: LocalCaptureContext, descriptor: Dict[str, Any]) -> Dict[str, Any]:
+    """Prefer privacy-safe video and fail closed by default when none exists."""
+    privacy_candidates: List[Tuple[str, Optional[str], Optional[Path]]] = []
+    for key in ("world_model_video_uri", "privacy_processed_video_uri"):
         uri = str(descriptor.get(key) or "").strip()
-        if not uri:
-            continue
-        try:
-            return ensure_local_uri_path(uri, gcs_root=ctx.storage_root)
-        except Exception:
-            pass
-    for name in ("walkthrough_privacy.mp4", "walkthrough_privacy.mov"):
-        p = ctx.pipeline_root / name
+        privacy_candidates.append((key, uri or None, None))
+    for name in ("final_walkthrough.mov", "final_walkthrough.mp4"):
+        p = ctx.capture_root / "privacy" / name
         if p.is_file():
-            return p
+            privacy_candidates.append((f"privacy/{name}", None, p))
+
+    for source_id, uri, local_path in privacy_candidates:
+        resolved = _try_resolve_video_path(ctx=ctx, uri=uri, local_path=local_path)
+        if resolved is not None:
+            return {
+                "source": source_id,
+                "path": resolved,
+                "uri": uri,
+                "privacy_safe": True,
+            }
+
+    if _require_privacy_safe_video():
+        raise PipelineError(f"privacy_safe_video_required:{ctx.capture_root}")
+
+    raw_candidates: List[Tuple[str, Optional[str], Optional[Path]]] = []
     for key in ("raw_video_uri",):
         uri = str(descriptor.get(key) or "").strip()
-        if not uri:
-            continue
-        try:
-            return ensure_local_uri_path(uri, gcs_root=ctx.storage_root)
-        except Exception:
-            pass
+        raw_candidates.append((key, uri or None, None))
     for name in ("walkthrough.mp4", "walkthrough.mov"):
         p = ctx.raw_root / name
         if p.is_file():
-            return p
+            raw_candidates.append((f"raw/{name}", None, p))
+    for source_id, uri, local_path in raw_candidates:
+        resolved = _try_resolve_video_path(ctx=ctx, uri=uri, local_path=local_path)
+        if resolved is not None:
+            return {
+                "source": source_id,
+                "path": resolved,
+                "uri": uri,
+                "privacy_safe": False,
+            }
     raise PipelineError(f"No walkthrough video found under {ctx.capture_root}")
 
 
-def _resolve_privacy_source(ctx: LocalCaptureContext, descriptor: Dict[str, Any]) -> str:
-    if str(descriptor.get("privacy_processed_video_uri") or descriptor.get("world_model_video_uri") or "").strip():
-        return "privacy_processed_video"
-    for name in ("walkthrough_privacy.mp4", "walkthrough_privacy.mov"):
-        if (ctx.pipeline_root / name).is_file():
-            return "privacy_processed_video"
-    return "raw_video"
+def _try_resolve_video_path(
+    *,
+    ctx: LocalCaptureContext,
+    uri: Optional[str],
+    local_path: Optional[Path],
+) -> Optional[Path]:
+    if uri:
+        try:
+            return ensure_local_uri_path(uri, gcs_root=ctx.storage_root)
+        except Exception:
+            pass
+    if local_path and local_path.is_file():
+        return local_path
+    return None
 
 
 # ---------------------------------------------------------------------------
