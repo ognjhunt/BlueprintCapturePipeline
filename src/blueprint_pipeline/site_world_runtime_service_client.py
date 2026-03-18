@@ -1,4 +1,4 @@
-"""Client for optional downstream NeoVerse site-world package registration."""
+"""Client for optional downstream site-world package registration."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class SiteWorldRuntimeServiceClient:
         payload: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         if not self.config.service_url:
-            raise RuntimeError("NeoVerse runtime service URL is not configured")
+            raise RuntimeError("site-world runtime service URL is not configured")
         body = None
         headers = {"Accept": "application/json"}
         if payload is not None:

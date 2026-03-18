@@ -170,7 +170,7 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
 
 def remaining_runtime_requirements() -> Dict[str, list[str]]:
     return {
-        "optional_neoverse_runtime": ["NEOVERSE_RUNTIME_SERVICE_URL"],
+        "optional_site_world_runtime": ["NEOVERSE_RUNTIME_SERVICE_URL"],
         "agent_review_openai": [
             "codex CLI installed",
             "Codex login via local OAuth/session",

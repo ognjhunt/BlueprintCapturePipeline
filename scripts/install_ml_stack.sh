@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Install the supported single-VM NeoVerse pipeline runtime.
+# Install the supported single-VM site-world pipeline runtime.
 # =============================================================================
 
 set -euo pipefail

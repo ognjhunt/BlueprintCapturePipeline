@@ -1273,7 +1273,7 @@ def _write_scene_memory_bundle(
             "status": "available_stage1_remote",
         },
         "neoverse": {
-            "family": "NeoVerse",
+            "family": "Site world runtime",
             "preferred_conditioning": ["rgb_video", "camera_trajectory", "feed_forward_4d_reconstruction"],
             "required_conditioning": ["rgb_video"],
             "execution_mode": "local_gpu_runtime",

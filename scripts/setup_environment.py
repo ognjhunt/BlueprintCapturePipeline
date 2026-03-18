@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the supported single-VM NeoVerse runtime environment."""
+"""Validate the supported single-VM site-world runtime environment."""
 
 from __future__ import annotations
 
@@ -201,7 +201,7 @@ def print_summary(checks: Mapping[str, CheckResult]) -> None:
     gpu_runtime = checks.get("torch", (False, ""))[0] or checks.get("nvidia_smi", (False, ""))[0]
     missing = [name for name in required if not checks.get(name, (False, ""))[0]]
     if not missing and gpu_runtime:
-        print_status("Supported single-VM NeoVerse path is ready.", "ok")
+        print_status("Supported single-VM site-world path is ready.", "ok")
     elif not missing:
         print_status("Core pipeline packages are present, but GPU runtime is not fully ready.", "warn")
     else:
@@ -212,7 +212,7 @@ def print_summary(checks: Mapping[str, CheckResult]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate the supported single-VM NeoVerse environment")
+    parser = argparse.ArgumentParser(description="Validate the supported single-VM site-world environment")
     parser.add_argument("--check", action="store_true", help="Run checks only (default behavior)")
     parser.add_argument("--json-output", help="Optional path to write the check results as JSON")
     args = parser.parse_args()

@@ -2465,7 +2465,7 @@ def _build_launchable_export_bundle(
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "status": "ready" if full_export_ready else "partial" if partial_ready else "partial",
-        "public_runtime_label": "NeoVerse site world runtime",
+        "public_runtime_label": "Site world runtime",
         "default_backend": "neoverse",
         "scenario_variants": [
             str(item.get("name") or "")

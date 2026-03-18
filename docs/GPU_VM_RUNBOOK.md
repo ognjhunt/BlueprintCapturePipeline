@@ -1,6 +1,6 @@
 # GPU VM Runbook
 
-This is the supported bring-up path for the narrowed NeoVerse workflow on one Linux GPU VM.
+This is the supported bring-up path for the narrowed site-world workflow on one Linux GPU VM.
 
 ## Scope
 
@@ -58,7 +58,7 @@ SAM3 is optional. If it is not installed or `SAM3_WEIGHTS_PATH` does not point t
 
 ## Environment variables
 
-Required for downstream NeoVerse handoff:
+Required for downstream site-world runtime handoff:
 
 ```bash
 export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
@@ -127,9 +127,9 @@ From the BlueprintValidation repo:
 cd /Users/nijelhunt_1/workspace/BlueprintValidation
 uv sync --extra vision
 export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
-export NEOVERSE_MODEL_ROOT="/path/to/neoverse/model"
-export NEOVERSE_CHECKPOINT_PATH="/path/to/neoverse/checkpoint.pt"
-export NEOVERSE_RUNNER_COMMAND="/path/to/neoverse-runner"
+export NEOVERSE_MODEL_ROOT="/path/to/runtime/model"
+export NEOVERSE_CHECKPOINT_PATH="/path/to/runtime/checkpoint.pt"
+export NEOVERSE_RUNNER_COMMAND="/path/to/runtime-runner"
 
 blueprint-neoverse-runtime
 ```
@@ -218,7 +218,7 @@ Before regenerating `runtime_demo_manifest.json` for a demo-capable run:
 
 ```bash
 # 1. Launch the demo UI service on the GPU host
-#    Example: operator-managed NeoVerse Gradio or another truthful demo endpoint
+#    Example: operator-managed site-world demo UI or another truthful demo endpoint
 
 # 2. Verify it really serves HTTP 200
 curl -I "$BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL"
