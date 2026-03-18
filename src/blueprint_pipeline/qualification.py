@@ -679,7 +679,7 @@ def _modality_supports_metric_automation(descriptor: CaptureDescriptor) -> bool:
         else {}
     )
     if (
-        descriptor.evidence_tier == "glasses_with_validated_scaffolding"
+        descriptor.evidence_tier == "video_with_validated_scaffolding"
         and bool(scaffolding_validation.get("validated_metric_bundle"))
     ):
         return True
@@ -1760,7 +1760,7 @@ def _build_completeness_scorecard(
         intake_packet_uri=descriptor.intake_packet_uri,
     )
     metric_ready = _modality_supports_metric_automation(descriptor)
-    calibration_sufficient = descriptor.capture_modality != "glasses_plus_scaffolding" or bool(descriptor.calibration_assets)
+    calibration_sufficient = descriptor.capture_modality not in {"glasses_plus_scaffolding", "android_plus_scaffolding"} or bool(descriptor.calibration_assets)
     task_hypothesis_status = str(task_hypothesis_report.get("task_hypothesis_status") or "").strip() if isinstance(task_hypothesis_report, Mapping) else ""
     checks = [
         QualificationGate(
@@ -2077,13 +2077,13 @@ def _build_qualification_record(
                 "detail": "Pre-screen capture is not sufficient for geometry-backed readiness automation.",
             }
         )
-    elif descriptor.capture_modality == "glasses_plus_scaffolding" and not bool(descriptor.scaffolding_validation.get("validated_metric_bundle")):
+    elif descriptor.capture_modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"} and not bool(descriptor.scaffolding_validation.get("validated_metric_bundle")):
         risks.append(
             {
                 "id": "missing_validated_scaffolding",
                 "severity": "high",
                 "category": "geometry",
-                "detail": "Glasses scaffolding lacks validated scale and pose coverage required for metric checks.",
+                "detail": "Video scaffolding lacks validated scale and pose coverage required for metric checks.",
             }
         )
     if metric_ready and measured_route_width is not None and measured_route_width < _GENERIC_CAPABILITY_ENVELOPE["minimum_path_width_m"]:

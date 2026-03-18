@@ -19,7 +19,7 @@ For Phase 4A, use generate_view() with mode="splat_only" or mode="cosmos_i2w".
 
 Cosmos model access:
   pip install cosmos-predict2-5  (NVIDIA's package, requires NGC token)
-  or via HuggingFace: nvidia/Cosmos-Predict2-5-2B
+  or via HuggingFace: nvidia/Cosmos-Predict2.5-2B
 
 Environment variable COSMOS_MODEL_ID overrides the default model path.
 NGC_API_KEY is required for downloading model weights from NVIDIA NGC.
@@ -36,7 +36,7 @@ import numpy as np
 
 _DEFAULT_COSMOS_MODEL_ID = os.getenv(
     "COSMOS_MODEL_ID",
-    "nvidia/Cosmos-Predict2-5-2B",
+    "nvidia/Cosmos-Predict2.5-2B",
 )
 
 # Cosmos generation defaults — tuned for Blueprint facility captures

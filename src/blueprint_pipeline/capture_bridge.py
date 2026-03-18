@@ -25,11 +25,12 @@ _ALLOWED_CAPTURE_MODALITIES = {
     "glasses_video_only",
     "glasses_plus_scaffolding",
     "android_video_only",
+    "android_plus_scaffolding",
 }
 _ALLOWED_EVIDENCE_TIERS = {
     "pre_screen_video",
     "qualified_metric_capture",
-    "glasses_with_validated_scaffolding",
+    "video_with_validated_scaffolding",
 }
 _ALLOWED_DISPLAY_ORIENTATIONS = {"portrait", "landscape", "square", "unknown"}
 
@@ -122,8 +123,20 @@ def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
     return ordered or ["qualification"]
 
 
+def _normalize_capture_tier(raw_capture_tier: Any) -> str:
+    tier = str(raw_capture_tier or "").strip()
+    if not tier:
+        return "tier2_glasses"
+    lowered = tier.lower()
+    if lowered == "tier2_android_phone":
+        return "tier2_android"
+    return tier
+
+
 def _infer_capture_source(raw_source: str, capture_tier: str) -> str:
     source = raw_source.strip().lower()
+    if source == "android_phone":
+        return "android"
     if source in {"iphone", "glasses", "android"}:
         return source
     tier = capture_tier.strip().lower()
@@ -329,12 +342,14 @@ def _resolve_evidence_tier(raw_value: Any, capture_modality: str, quality: Mappi
     explicit = _optional_str(raw_value)
     if explicit:
         lowered = explicit.lower()
+        if lowered == "glasses_with_validated_scaffolding":
+            return "video_with_validated_scaffolding"
         if lowered in _ALLOWED_EVIDENCE_TIERS:
             return lowered
     if capture_modality == "iphone_arkit_lidar":
         return "qualified_metric_capture"
-    if capture_modality == "glasses_plus_scaffolding":
-        return "glasses_with_validated_scaffolding"
+    if capture_modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"}:
+        return "video_with_validated_scaffolding"
     return "pre_screen_video"
 
 
@@ -356,6 +371,8 @@ def _resolve_capture_modality(
         return "glasses_plus_scaffolding"
     if capture_source == "glasses":
         return "glasses_video_only"
+    if capture_source == "android" and scaffolding_used:
+        return "android_plus_scaffolding"
     if capture_source == "android":
         return "android_video_only"
     return "iphone_arkit_lidar"
@@ -429,7 +446,7 @@ class CaptureDescriptor:
         capture_id = str(data.get("capture_id", "")).strip()
         raw_prefix_uri = str(data.get("raw_prefix_uri", "")).strip()
         frames_index_uri = str(data.get("frames_index_uri", "")).strip()
-        capture_tier = str(data.get("capture_tier", "")).strip() or "tier2_glasses"
+        capture_tier = _normalize_capture_tier(data.get("capture_tier"))
         capture_source = _infer_capture_source(str(data.get("capture_source", "")), capture_tier)
 
         if not scene_id:

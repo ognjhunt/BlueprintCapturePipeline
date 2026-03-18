@@ -664,6 +664,8 @@ def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> 
     ):
         if candidate in {"iphone", "glasses", "android"}:
             return candidate
+        if candidate == "android_phone":
+            return "android"
         if candidate == "iphonevideo":
             return "iphone"
         if candidate == "metaglasses":
@@ -673,6 +675,8 @@ def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> 
 
 def _capture_tier(source: str, manifest: Mapping[str, Any]) -> str:
     tier = str(manifest.get("capture_tier_hint") or "").strip()
+    if tier.lower() == "tier2_android_phone":
+        return "tier2_android"
     if tier:
         return tier
     if source == "glasses":
@@ -689,7 +693,13 @@ def _capture_modality(
     scaffolding_used: List[str],
 ) -> str:
     explicit = str(context.get("captureModality") or manifest.get("capture_modality") or "").strip().lower()
-    if explicit in {"iphone_arkit_lidar", "glasses_video_only", "glasses_plus_scaffolding", "android_video_only"}:
+    if explicit in {
+        "iphone_arkit_lidar",
+        "glasses_video_only",
+        "glasses_plus_scaffolding",
+        "android_video_only",
+        "android_plus_scaffolding",
+    }:
         return explicit
     if source == "iphone" and parse_bool(manifest.get("has_lidar"), default=False):
         return "iphone_arkit_lidar"
@@ -697,6 +707,8 @@ def _capture_modality(
         return "glasses_plus_scaffolding"
     if source == "glasses":
         return "glasses_video_only"
+    if source == "android" and scaffolding_used:
+        return "android_plus_scaffolding"
     if source == "android":
         return "android_video_only"
     return "iphone_arkit_lidar"
@@ -721,14 +733,14 @@ def _evidence_tier(
     calibration_assets: List[str],
     scaffolding_validation: Mapping[str, Any],
 ) -> str:
-    if source == "glasses":
+    if source in {"glasses", "android"}:
         if (
-            modality == "glasses_plus_scaffolding"
+            modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"}
             and intake_complete
             and calibration_assets
             and parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False)
         ):
-            return "glasses_with_validated_scaffolding"
+            return "video_with_validated_scaffolding"
         return "pre_screen_video"
     if modality == "iphone_arkit_lidar" and intake_complete:
         return "qualified_metric_capture"
@@ -869,7 +881,7 @@ def build_capture_bundle_records(
         "validated_pose_coverage": round(float(validated_pose_coverage or 0.0), 4),
         "hidden_zone_bound": round(float(hidden_zone_bound or 1.0), 4),
         "validated_metric_bundle": bool(
-            modality == "glasses_plus_scaffolding"
+            modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"}
             and calibration_assets
             and validated_scale_m is not None
             and float(validated_pose_coverage or 0.0) >= 0.7
@@ -1028,7 +1040,7 @@ def build_capture_bundle_records(
         ),
         "quality": {
             "pose_match_rate": try_parse_float(manifest.get("pose_match_rate"), 0.95 if modality == "iphone_arkit_lidar" else 0.35),
-            "has_metric_geometry": evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"},
+            "has_metric_geometry": evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"},
             "intake_complete": intake_complete,
             "world_model_candidate": _canonical_world_model_candidate(
                 manifest=manifest,
@@ -1058,7 +1070,7 @@ def build_capture_bundle_records(
         uncertainty_score = min(1.0, uncertainty_score + 0.15)
     if not raw_video_uri:
         uncertainty_score = min(1.0, uncertainty_score + 0.25)
-    if modality == "glasses_plus_scaffolding" and not parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False):
+    if modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"} and not parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False):
         uncertainty_score = min(1.0, uncertainty_score + 0.2)
     if hidden_zone_bound is not None:
         uncertainty_score = min(1.0, uncertainty_score + max(0.0, float(hidden_zone_bound) - 0.2) * 0.4)
@@ -1086,19 +1098,19 @@ def build_capture_bundle_records(
         },
         {
             "name": "metric_geometry_present",
-            "passed": evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"},
-            "detail": "validated metric evidence present" if evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"} else "metric geometry not present",
+            "passed": evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"},
+            "detail": "validated metric evidence present" if evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"} else "metric geometry not present",
         },
         {
             "name": "scaffolding_validated",
-            "passed": modality != "glasses_plus_scaffolding" or parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False),
-            "detail": "scaffolding validated for metric checks" if modality != "glasses_plus_scaffolding" or parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False) else "glasses scaffolding lacks validated scale/pose coverage",
+            "passed": modality not in {"glasses_plus_scaffolding", "android_plus_scaffolding"} or parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False),
+            "detail": "scaffolding validated for metric checks" if modality not in {"glasses_plus_scaffolding", "android_plus_scaffolding"} or parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False) else "video scaffolding lacks validated scale/pose coverage",
         },
     ]
 
     if evidence_tier == "qualified_metric_capture":
         status = "passed" if manifest_path.is_file() and raw_video_uri and intake_complete else "degraded"
-    elif evidence_tier == "glasses_with_validated_scaffolding":
+    elif evidence_tier == "video_with_validated_scaffolding":
         status = "passed" if manifest_path.is_file() and raw_video_uri and intake_complete else "degraded"
     else:
         status = "degraded"
@@ -1121,7 +1133,7 @@ def build_capture_bundle_records(
             "human_review_required": evidence_tier != "qualified_metric_capture" or uncertainty_score >= 0.3,
             "reason": (
                 "validated metric capture supports scene-memory derivation and explicit geometry conditioning"
-                if evidence_tier in {"qualified_metric_capture", "glasses_with_validated_scaffolding"}
+                if evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"}
                 else "capture remains pre-screen only because metric evidence is incomplete"
             ),
         },

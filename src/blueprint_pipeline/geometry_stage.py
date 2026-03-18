@@ -166,26 +166,24 @@ def assess_geometry_scale(descriptor: CaptureDescriptor) -> Dict[str, Any]:
             "capture_modality": descriptor.capture_modality,
             "evidence_tier": descriptor.evidence_tier,
         }
-    if descriptor.evidence_tier == "glasses_with_validated_scaffolding" and validated_bundle:
+    if descriptor.evidence_tier == "video_with_validated_scaffolding" and validated_bundle:
         return {
             "status": "metric_trusted",
             "metric_trusted": True,
             "trusted_for_measurement": True,
-            "reason": "validated_glasses_scaffolding",
+            "reason": "validated_video_scaffolding",
             "capture_modality": descriptor.capture_modality,
             "evidence_tier": descriptor.evidence_tier,
         }
     if (
         descriptor.capture_source in {"glasses", "android"}
         or descriptor.capture_modality.startswith("glasses")
-        or descriptor.capture_modality == "android_video_only"
+        or descriptor.capture_modality in {"android_video_only", "android_plus_scaffolding"}
     ):
-        if descriptor.capture_modality == "glasses_plus_scaffolding":
-            reason = "glasses_geometry_without_validated_scaffolding"
-        elif descriptor.capture_modality == "android_video_only":
-            reason = "android_video_conditioning_only"
+        if descriptor.capture_modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"}:
+            reason = "video_geometry_without_validated_scaffolding"
         else:
-            reason = "glasses_video_conditioning_only"
+            reason = "video_conditioning_only"
         return {
             "status": "conditioning_only",
             "metric_trusted": False,

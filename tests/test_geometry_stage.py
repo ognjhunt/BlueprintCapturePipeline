@@ -245,7 +245,19 @@ def test_assess_geometry_scale_respects_metric_policy() -> None:
         {
             **base,
             "capture_modality": "glasses_plus_scaffolding",
-            "evidence_tier": "glasses_with_validated_scaffolding",
+            "evidence_tier": "video_with_validated_scaffolding",
+            "scaffolding_validation": {"validated_metric_bundle": True},
+        }
+    )
+    assert assess_geometry_scale(descriptor)["status"] == "metric_trusted"
+
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            **base,
+            "capture_source": "android",
+            "capture_tier": "tier2_android",
+            "capture_modality": "android_plus_scaffolding",
+            "evidence_tier": "video_with_validated_scaffolding",
             "scaffolding_validation": {"validated_metric_bundle": True},
         }
     )
@@ -273,3 +285,38 @@ def test_materialization_preserves_android_video_only_capture_source(tmp_path: P
     descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
     assert descriptor["capture_source"] == "android"
     assert descriptor["capture_modality"] == "android_video_only"
+
+
+def test_materialization_promotes_android_scaffolding_to_metric_ready_video(tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={
+            "capture_source": "android_phone",
+            "capture_tier_hint": "tier2_android_phone",
+            "scaffolding_used": ["checkerboard_calibration"],
+            "calibration_assets": ["checkerboard_01.jpg"],
+            "scaffolding_validation": {
+                "validated_scale_m": 4.0,
+                "validated_pose_coverage": 0.82,
+                "hidden_zone_bound": 0.2,
+            },
+        },
+        context_overrides={
+            "captureSource": "android_phone",
+            "captureModality": "android_plus_scaffolding",
+            "scaleAnchorAssets": ["anchor_a"],
+            "checkpointAssets": ["checkpoint_a"],
+            "validatedScaleMeters": 4.0,
+            "validatedPoseCoverage": 0.82,
+            "hiddenZoneBound": 0.2,
+        },
+    )
+
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    qa_report = json.loads((capture_root / "qa_report.json").read_text(encoding="utf-8"))
+
+    assert descriptor["capture_source"] == "android"
+    assert descriptor["capture_tier"] == "tier2_android"
+    assert descriptor["capture_modality"] == "android_plus_scaffolding"
+    assert descriptor["evidence_tier"] == "video_with_validated_scaffolding"
+    assert qa_report["status"] == "passed"
