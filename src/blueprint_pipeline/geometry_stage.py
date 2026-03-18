@@ -581,12 +581,18 @@ def _build_canonical_geometry_artifacts(
     geometry_source: str,
     fallback_used: bool,
     coordinate_frame_session_id: str,
+    canonical_pointcloud_source_path: Optional[str] = None,
 ) -> Dict[str, Path]:
     alignment_root = geometry_root / "alignment"
     ensure_dir(alignment_root)
 
     canonical_pointcloud_path = alignment_root / "canonical_pointcloud.ply"
-    _write_ascii_pointcloud(canonical_pointcloud_path, pose_records)
+    source_path = Path(canonical_pointcloud_source_path) if canonical_pointcloud_source_path else None
+    if source_path and source_path.is_file():
+        ensure_dir(canonical_pointcloud_path.parent)
+        canonical_pointcloud_path.write_bytes(source_path.read_bytes())
+    else:
+        _write_ascii_pointcloud(canonical_pointcloud_path, pose_records)
 
     canonical_frame_id = str((pose_records[0].get("frame_index") if pose_records else 0))
     alignment_manifest_path = alignment_root / "alignment_manifest.json"
@@ -974,6 +980,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         geometry_source=geometry_source,
         fallback_used=fallback_used,
         coordinate_frame_session_id=coordinate_frame_session_id,
+        canonical_pointcloud_source_path=str(provider_result.get("canonical_pointcloud_source_path") or ""),
     )
 
     provider_result_payload = _provider_result_payload(

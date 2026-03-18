@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from .common import (
     PipelineError,
     ensure_dir,
+    ensure_local_uri_path,
+    infer_storage_root_from_scene_path,
+    is_gs_uri,
     read_json,
     utc_now_iso,
     write_json,
@@ -93,8 +96,8 @@ def run_retrieval_index_stage(
         dense_records = _load_jsonl(dense_index_path)
     else:
         descriptor = _ensure_geometry_for_capture(ctx=ctx, descriptor=descriptor)
-        privacy_source = _resolve_privacy_source(ctx)
-        video_path = _resolve_video_path(ctx)
+        privacy_source = _resolve_privacy_source(ctx, descriptor)
+        video_path = _resolve_video_path(ctx, descriptor)
         geometry = load_capture_geometry(context=ctx, descriptor=descriptor)
         frames_quality = geometry["frame_meta"]
         poses = geometry["poses"]
@@ -215,12 +218,28 @@ def _capture_already_indexed(site_index_path: Path, capture_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_video_path(ctx: LocalCaptureContext) -> Path:
-    """Prefer privacy-safe walkthrough video for retrieval; fall back to raw only if needed."""
+def _resolve_video_path(ctx: LocalCaptureContext, descriptor: Dict[str, Any]) -> Path:
+    """Prefer the descriptor's privacy-safe video URI, then local fallbacks."""
+    for key in ("privacy_processed_video_uri", "world_model_video_uri"):
+        uri = str(descriptor.get(key) or "").strip()
+        if not uri:
+            continue
+        try:
+            return ensure_local_uri_path(uri, gcs_root=ctx.storage_root)
+        except Exception:
+            pass
     for name in ("walkthrough_privacy.mp4", "walkthrough_privacy.mov"):
         p = ctx.pipeline_root / name
         if p.is_file():
             return p
+    for key in ("raw_video_uri",):
+        uri = str(descriptor.get(key) or "").strip()
+        if not uri:
+            continue
+        try:
+            return ensure_local_uri_path(uri, gcs_root=ctx.storage_root)
+        except Exception:
+            pass
     for name in ("walkthrough.mp4", "walkthrough.mov"):
         p = ctx.raw_root / name
         if p.is_file():
@@ -228,7 +247,9 @@ def _resolve_video_path(ctx: LocalCaptureContext) -> Path:
     raise PipelineError(f"No walkthrough video found under {ctx.capture_root}")
 
 
-def _resolve_privacy_source(ctx: LocalCaptureContext) -> str:
+def _resolve_privacy_source(ctx: LocalCaptureContext, descriptor: Dict[str, Any]) -> str:
+    if str(descriptor.get("privacy_processed_video_uri") or descriptor.get("world_model_video_uri") or "").strip():
+        return "privacy_processed_video"
     for name in ("walkthrough_privacy.mp4", "walkthrough_privacy.mov"):
         if (ctx.pipeline_root / name).is_file():
             return "privacy_processed_video"

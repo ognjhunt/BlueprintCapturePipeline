@@ -35,7 +35,7 @@ def _timeout_seconds() -> int:
 def _command_template() -> str:
     return _string(
         os.getenv("VIDEO_TO_WORLD_COMMAND_TEMPLATE")
-        or "cd ${VIDEO_TO_WORLD_REPO_DIR:-/opt/video_to_world} && python preprocess_video.py --input_video {INPUT_VIDEO} --scene_root {SCENE_ROOT}"
+        or "cd ${VIDEO_TO_WORLD_REPO_DIR:-/opt/video_to_world} && python run_reconstruction.py --config.input-video {INPUT_VIDEO} --config.scene-root {SCENE_ROOT} --config.mode fast"
     )
 
 
@@ -156,7 +156,7 @@ def _normalize_npz_outputs(*, scene_root: Path, geometry_root: Path) -> Dict[str
             }
         )
 
-    return {
+    result: Dict[str, Any] = {
         "status": "succeeded",
         "intrinsics": intr_payload,
         "frames": frames,
@@ -165,6 +165,14 @@ def _normalize_npz_outputs(*, scene_root: Path, geometry_root: Path) -> Dict[str
         "provider_errors": [],
         "loop_closure_detected": False,
     }
+    for candidate in (
+        scene_root / "frame_to_model_icp_50_2_offset0" / "after_global_optimization" / "aligned_points.ply",
+        scene_root / "frame_to_model_icp_50_2_offset0" / "after_non_rigid_icp" / "aligned_points.ply",
+    ):
+        if candidate.is_file():
+            result["canonical_pointcloud_source_path"] = str(candidate)
+            break
+    return result
 
 
 def execute_video_to_world_request(body: Mapping[str, Any]) -> Dict[str, Any]:

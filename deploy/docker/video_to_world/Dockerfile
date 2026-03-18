@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     VIDEO_TO_WORLD_REPO_DIR=/opt/video_to_world \
-    VIDEO_TO_WORLD_COMMAND_TEMPLATE="cd /opt/video_to_world && python preprocess_video.py --input_video {INPUT_VIDEO} --scene_root {SCENE_ROOT}" \
+    VIDEO_TO_WORLD_COMMAND_TEMPLATE="cd /opt/video_to_world && python run_reconstruction.py --config.input-video {INPUT_VIDEO} --config.scene-root {SCENE_ROOT} --config.mode fast" \
     VIDEO_TO_WORLD_RUNNER_TOKEN="" \
     PORT=8080
 
