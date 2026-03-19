@@ -154,12 +154,32 @@ def _smoke_manifest_base(
     }
 
 
+def _video_bootstrap_reference_policy(records: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    times = [
+        float(value)
+        for value in (
+            record.get("t_capture_sec")
+            for record in records
+        )
+        if value is not None
+    ]
+    if len(times) < 2:
+        return None
+    span_sec = max(times) - min(times)
+    if span_sec <= 12.0:
+        return None
+    return {
+        "max_temporal_window_sec": max(12.0, span_sec + 1.0),
+        "preferred_temporal_gap_sec": max(1.5, min(span_sec / 3.0, span_sec)),
+    }
+
+
 def run_cosmos_single_capture_smoke_lane(
     *,
     capture_root: str | Path,
     descriptor_gcs_uri: str,
     cfg: PipelineConfig,
-    max_examples: int = 4,
+    max_examples: int = 1,
 ) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     benchmark_root = context.pipeline_root / "cosmos_single_capture_smoke"
@@ -177,8 +197,10 @@ def run_cosmos_single_capture_smoke_lane(
     bootstrap_origin = None
     bootstrap_source_manifest_path: Path | None = None
     benchmark_records = list(dense_index)
+    reference_selection_policy: Dict[str, Any] | None = None
 
     if not benchmark_records:
+        bootstrap_frame_budget = max(4, max_examples)
         bootstrap_sources = resolve_video_bootstrap_sources(
             context=context,
             conditioning_bundle=conditioning_bundle,
@@ -186,7 +208,7 @@ def run_cosmos_single_capture_smoke_lane(
         benchmark_records = extract_video_bootstrap_records(
             bootstrap_sources=bootstrap_sources,
             export_root=benchmark_root,
-            max_frames=max_examples,
+            max_frames=bootstrap_frame_budget,
         ) if bootstrap_sources else []
         if benchmark_records:
             bootstrap_origin = str(bootstrap_sources.get("origin") or "unknown")
@@ -203,6 +225,7 @@ def run_cosmos_single_capture_smoke_lane(
                     "source_video_uri": bootstrap_sources.get("source_video_uri"),
                 },
             )
+            reference_selection_policy = _video_bootstrap_reference_policy(benchmark_records)
 
     reference_selection_manifest_path = benchmark_root / "reference_selection_manifest.json"
     reference_selection_comparison_path = benchmark_root / "reference_selection_comparison.json"
@@ -210,6 +233,7 @@ def run_cosmos_single_capture_smoke_lane(
         records=benchmark_records,
         k=min(4, max(1, len(benchmark_records) - 1)) if benchmark_records else 1,
         selection_name="cosmos_single_capture_smoke",
+        policy=reference_selection_policy,
         max_targets=max_examples,
     ) if benchmark_records else {
         "schema_version": "v1",
@@ -471,8 +495,10 @@ def run_cosmos_zero_shot_validation_lane(
     sparse_view_interpolation_manifest_path = benchmark_root / "sparse_view_interpolation_manifest.json"
     future_anchor_regrounding_manifest_path = benchmark_root / "future_anchor_regrounding_manifest.json"
     benchmark_records = list(dense_index)
+    reference_selection_policy: Dict[str, Any] | None = None
 
     if not benchmark_records:
+        bootstrap_frame_budget = max(4, max_examples)
         bootstrap_sources = resolve_video_bootstrap_sources(
             context=context,
             conditioning_bundle=conditioning_bundle,
@@ -480,7 +506,7 @@ def run_cosmos_zero_shot_validation_lane(
         bootstrap_records = extract_video_bootstrap_records(
             bootstrap_sources=bootstrap_sources,
             export_root=benchmark_root,
-            max_frames=max_examples,
+            max_frames=bootstrap_frame_budget,
         ) if bootstrap_sources else []
         if bootstrap_records:
             bootstrap_origin = str(bootstrap_sources.get("origin") or "unknown")
@@ -498,11 +524,13 @@ def run_cosmos_zero_shot_validation_lane(
                 },
             )
             benchmark_records = bootstrap_records
+            reference_selection_policy = _video_bootstrap_reference_policy(benchmark_records)
 
     reference_selection_manifest = build_reference_selection_manifest(
         records=benchmark_records,
         k=min(4, max(1, len(benchmark_records) - 1)) if benchmark_records else 1,
         selection_name="cosmos_zero_shot_validation",
+        policy=reference_selection_policy,
         max_targets=max_examples,
     ) if benchmark_records else {
         "schema_version": "v1",
@@ -806,10 +834,11 @@ def run_cosmos_zero_shot_validation_lane(
         write_json(benchmark_root / "cosmos_zero_shot_benchmark.json", manifest)
         return manifest
 
+    _ref_dist = synthesis_result.get("ref_frame_distance_m")
     spatial_faithfulness_passed = bool(
         synthesis_result.get("status") == "completed"
         and float(synthesis_result.get("coverage_frac") or 0.0) >= 0.55
-        and float(synthesis_result.get("ref_frame_distance_m") or 99.0) <= 2.0
+        and float(_ref_dist if _ref_dist is not None else 99.0) <= 2.0
     )
     temporal_stability_passed = synthesis_result.get("status") == "completed" and bool(
         synthesis_result.get("output_video_uri")

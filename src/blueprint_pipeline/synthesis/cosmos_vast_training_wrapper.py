@@ -50,7 +50,11 @@ def _accelerate_prefix() -> list[str]:
 
 
 def _trainer_command(args: argparse.Namespace) -> list[str]:
-    trainer_command_template = str(os.getenv("COSMOS_TRAINER_COMMAND") or "").strip()
+    trainer_command_template = str(
+        os.getenv("COSMOS_TRAINER_COMMAND")
+        or os.getenv("COSMOS_TRAINING_COMMAND")
+        or ""
+    ).strip()
     if trainer_command_template:
         mapping = {
             "trainer_config_path": str(Path(args.trainer_config).resolve()),

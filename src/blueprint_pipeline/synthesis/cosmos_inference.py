@@ -27,9 +27,12 @@ NGC_API_KEY is required for downloading model weights from NVIDIA NGC.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Any, List, Optional
+import subprocess
+import uuid
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 
@@ -42,6 +45,25 @@ normalize_model_access_env()
 _DEFAULT_COSMOS_MODEL_ID = os.getenv(
     "COSMOS_MODEL_ID",
     "nvidia/Cosmos-Predict2.5-2B",
+)
+_DEFAULT_COSMOS_MODEL_REVISION = os.getenv(
+    "COSMOS_MODEL_REVISION",
+    "diffusers/base/post-trained",
+)
+_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT = os.getenv("COSMOS_OFFICIAL_REPO_ROOT", "").strip()
+_DEFAULT_COSMOS_DISABLE_GUARDRAILS = str(os.getenv("COSMOS_DISABLE_GUARDRAILS") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_DEFAULT_COSMOS_PROMPT = os.getenv(
+    "COSMOS_DEFAULT_PROMPT",
+    (
+        "First-person camera moving through a real indoor industrial workspace "
+        "with warehouse fixtures, floor markings, shelving, and equipment. "
+        "Preserve the existing geometry and continue the scene naturally."
+    ),
 )
 
 # Cosmos generation defaults — tuned for Blueprint facility captures
@@ -122,13 +144,16 @@ def load_cosmos_model(model_id: Optional[str] = None) -> Any:
     model = _try_load_cosmos_official(mid)
     if model is not None:
         return model
+    model = _try_load_cosmos_official_repo(mid)
+    if model is not None:
+        return model
     model = _try_load_cosmos_diffusers(mid)
     if model is not None:
         return model
     raise ImportError(
-        "Could not load Cosmos-Predict2.5-2B. Install the cosmos-predict2-5 package "
-        f"(pip install cosmos-predict2-5) or set COSMOS_MODEL_ID to a valid HuggingFace "
-        f"model path. Tried: {mid}"
+        "Could not load Cosmos-Predict2.5-2B. Tried the deprecated cosmos-predict2-5 wheel path, "
+        "official NVIDIA repo fallback, and Hugging Face diffusers loader. "
+        f"Tried model path: {mid}"
     )
 
 
@@ -219,6 +244,13 @@ def _invoke_cosmos(
         if frames is not None:
             return list(frames[0]) if isinstance(frames[0], list) else list(frames)
 
+    # --- NVIDIA official repo examples/inference.py wrapper ---
+    if isinstance(model, dict) and model.get("backend") == "official_repo_script":
+        return _invoke_cosmos_official_repo_script(
+            model=model,
+            conditioning_image=conditioning_image,
+        )
+
     raise RuntimeError(
         f"Unrecognised Cosmos model interface: {type(model)}. "
         "Expected .image_to_world() or callable pipeline with frames/images output."
@@ -282,6 +314,7 @@ def _try_load_cosmos_diffusers(model_id: str) -> Optional[Any]:
         from diffusers import DiffusionPipeline  # type: ignore[import]
         pipe = DiffusionPipeline.from_pretrained(
             model_id,
+            revision=_DEFAULT_COSMOS_MODEL_REVISION,
             torch_dtype=torch.bfloat16,
         )
         if torch.cuda.is_available():
@@ -289,3 +322,171 @@ def _try_load_cosmos_diffusers(model_id: str) -> Optional[Any]:
         return pipe
     except (ImportError, Exception):
         return None
+
+
+def _try_load_cosmos_official_repo(model_id: str) -> Optional[Dict[str, Any]]:
+    if not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT:
+        return None
+    repo_root = Path(_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT).expanduser()
+    inference_entrypoint = repo_root / "examples" / "inference.py"
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    if not inference_entrypoint.is_file() or not venv_python.is_file():
+        return None
+    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_REVISION)
+    if model_variant is None:
+        return None
+    return {
+        "backend": "official_repo_script",
+        "repo_root": str(repo_root.resolve()),
+        "python_bin": str(venv_python),
+        "model_variant": model_variant,
+        "disable_guardrails": _DEFAULT_COSMOS_DISABLE_GUARDRAILS,
+        "subprocess_env": _official_repo_subprocess_env(repo_root=repo_root, python_bin=venv_python),
+    }
+
+
+def _official_repo_model_variant(model_id: str, revision: str) -> str | None:
+    text = str(model_id or "").strip()
+    if not text.startswith("nvidia/Cosmos-Predict2.5-"):
+        return None
+    size = "2B" if text.endswith("2B") else ("14B" if text.endswith("14B") else None)
+    if size is None:
+        return None
+    if "pre-trained" in revision:
+        suffix = "pre-trained"
+    else:
+        suffix = "post-trained"
+    return f"{size}/{suffix}"
+
+
+def _invoke_cosmos_official_repo_script(
+    *,
+    model: Mapping[str, Any],
+    conditioning_image: Any,
+) -> List[Any]:
+    from PIL import Image
+
+    repo_root = Path(str(model["repo_root"])).resolve()
+    python_bin = Path(str(model["python_bin"]))
+    output_root = (repo_root / "assets" / "outputs" / f"blueprint_cosmos_official_{uuid.uuid4().hex[:8]}").resolve()
+    output_root.mkdir(parents=True, exist_ok=False)
+    sample_name = output_root.name
+    input_path = output_root / f"{sample_name}.jpg"
+    asset_path = output_root / f"{sample_name}.json"
+    output_dir = output_root
+    output_video_path = output_dir / f"{sample_name}.mp4"
+    subprocess_log_path = output_dir / "official_repo_subprocess.log"
+
+    Image.fromarray(np.array(conditioning_image)).save(input_path)
+    asset_path.write_text(
+        json.dumps(
+            {
+                "inference_type": "image2world",
+                "name": sample_name,
+                "input_path": str(input_path),
+                "prompt": _DEFAULT_COSMOS_PROMPT,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    python_command = [
+        str(python_bin),
+        "examples/inference.py",
+        "-i",
+        str(asset_path),
+        "-o",
+        str(output_dir),
+        f"--model={model['model_variant']}",
+    ]
+    if bool(model.get("disable_guardrails")):
+        python_command.append("--disable-guardrails")
+
+    with subprocess_log_path.open("w", encoding="utf-8") as log_handle:
+        result = subprocess.run(
+            python_command,
+            cwd=str(repo_root),
+            text=True,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            check=False,
+            env=_normalized_subprocess_env(model.get("subprocess_env")),
+        )
+    if result.returncode != 0:
+        failure_detail = ""
+        if subprocess_log_path.is_file():
+            failure_detail = subprocess_log_path.read_text(encoding="utf-8").strip()
+        raise RuntimeError(
+            "official_repo_inference_failed: "
+            + (failure_detail or f"exit_code={result.returncode}")
+        )
+    if not output_video_path.is_file():
+        raise RuntimeError(f"official_repo_output_missing:{output_video_path}")
+
+    try:
+        import imageio.v3 as iio
+
+        frames = list(iio.imiter(output_video_path))
+    except Exception as exc:  # pragma: no cover - best effort decoding
+        raise RuntimeError(f"official_repo_decode_failed:{exc}") from exc
+    if not frames:
+        raise RuntimeError(f"official_repo_output_empty:{output_video_path}")
+    return frames
+
+
+def _official_repo_subprocess_env(*, repo_root: Path, python_bin: Path) -> Dict[str, str]:
+    env = _select_official_repo_env_vars()
+    env["PATH"] = _prepend_search_paths(
+        [
+            str((repo_root / ".venv" / "bin").resolve()),
+            str((Path.home() / ".local" / "bin").resolve()),
+        ],
+        env.get("PATH", ""),
+    )
+    return env
+
+
+def _prepend_search_paths(paths: List[str], existing_path: str) -> str:
+    merged: List[str] = []
+    for value in [*paths, *existing_path.split(":")]:
+        text = str(value or "").strip()
+        if not text or text in merged:
+            continue
+        merged.append(text)
+    return ":".join(merged)
+
+
+def _normalized_subprocess_env(env: object) -> Dict[str, str]:
+    if not isinstance(env, Mapping):
+        return {key: value for key, value in os.environ.items() if isinstance(value, str)}
+    normalized: Dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        normalized[key] = value
+    return normalized
+
+
+def _select_official_repo_env_vars() -> Dict[str, str]:
+    selected: Dict[str, str] = {}
+    allowed_exact = {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LD_LIBRARY_PATH",
+        "LIBRARY_PATH",
+        "PATH",
+        "TZ",
+    }
+    allowed_prefixes = (
+        "HF_",
+        "HUGGINGFACE_",
+        "NGC_",
+    )
+    for key, value in os.environ.items():
+        if not isinstance(value, str):
+            continue
+        if key in allowed_exact or key.startswith(allowed_prefixes):
+            selected[key] = value
+    return selected

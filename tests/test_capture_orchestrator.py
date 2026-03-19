@@ -38,6 +38,39 @@ def test_capture_orchestrator_keeps_supported_lanes(monkeypatch, tmp_path: Path)
     assert all(item["lane"] != "advanced_geometry" for item in result["results"])
 
 
+def test_capture_orchestrator_runs_single_capture_smoke_lane(monkeypatch, tmp_path: Path) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.resolve_requested_lanes",
+        lambda **_kwargs: ["cosmos_single_capture_smoke"],
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.synthesis.cosmos_benchmark.run_cosmos_single_capture_smoke_lane",
+        lambda **_kwargs: {"status": "blocked", "reason": "runtime_unavailable"},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.resolve_gs_uri_to_path",
+        lambda *_args, **_kwargs: descriptor_path,
+    )
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    assert result["lanes"] == ["cosmos_single_capture_smoke"]
+    assert result["results"] == [
+        {
+            "lane": "cosmos_single_capture_smoke",
+            "status": "blocked",
+            "reason": "runtime_unavailable",
+        }
+    ]
+
+
 def test_resolve_requested_lanes_defaults_to_native_stack_for_site_world_candidate(tmp_path: Path) -> None:
     descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
     descriptor_path.parent.mkdir(parents=True)

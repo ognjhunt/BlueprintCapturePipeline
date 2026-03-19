@@ -23,6 +23,7 @@ _SUPPORTED_LANES = {
     "qualification", "scene_memory", "evaluation_prep",
     "retrieval_index", "frame_alignment",
     "synthesis_coverage_validation",
+    "cosmos_single_capture_smoke",
     "all",
 }
 
@@ -57,6 +58,7 @@ def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
                 "frame_alignment",
                 "evaluation_prep",
                 "synthesis_coverage_validation",
+                "cosmos_single_capture_smoke",
             ):
                 if expanded not in normalized:
                     normalized.append(expanded)
@@ -73,6 +75,7 @@ def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
         "frame_alignment",
         "evaluation_prep",
         "synthesis_coverage_validation",
+        "cosmos_single_capture_smoke",
     ):
         if lane in normalized and lane not in ordered:
             ordered.append(lane)
@@ -234,6 +237,17 @@ def run_capture_pipeline(
                 cfg=cfg,
             )
             results.append({"lane": "synthesis_coverage_validation", **synthesis_result})
+            continue
+        if selected_lane == "cosmos_single_capture_smoke":
+            from .synthesis.cosmos_benchmark import run_cosmos_single_capture_smoke_lane
+
+            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            smoke_result = run_cosmos_single_capture_smoke_lane(
+                capture_root=capture_root,
+                descriptor_gcs_uri=descriptor_gcs_uri,
+                cfg=cfg,
+            )
+            results.append({"lane": "cosmos_single_capture_smoke", **smoke_result})
             continue
         raise ValueError(f"Unsupported pipeline lane: {selected_lane}")
 

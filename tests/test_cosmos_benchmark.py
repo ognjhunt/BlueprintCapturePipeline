@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline.capture_orchestrator import PipelineConfig
-from blueprint_pipeline.synthesis.cosmos_benchmark import run_cosmos_zero_shot_validation_lane
+from blueprint_pipeline.synthesis.cosmos_benchmark import (
+    _video_bootstrap_reference_policy,
+    run_cosmos_zero_shot_validation_lane,
+)
 
 
 def _pose(tx: float) -> list[list[float]]:
@@ -224,3 +227,18 @@ def test_cosmos_benchmark_surfaces_sparse_view_interpolation_when_context_is_spa
     assert future_anchor_manifest["re_grounded_target_count"] >= 1
     assert validation_entry["future_anchor_status"] == "re_grounded"
     assert validation_entry["future_anchor_count"] >= 1
+
+
+def test_video_bootstrap_reference_policy_expands_temporal_window_for_sparse_clip() -> None:
+    policy = _video_bootstrap_reference_policy(
+        [
+            {"t_capture_sec": 0.0},
+            {"t_capture_sec": 21.0},
+            {"t_capture_sec": 42.0},
+            {"t_capture_sec": 63.0},
+        ]
+    )
+
+    assert policy is not None
+    assert policy["max_temporal_window_sec"] > 63.0
+    assert policy["preferred_temporal_gap_sec"] >= 1.5

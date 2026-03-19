@@ -161,6 +161,11 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
             f"PYTHONPATH=src python3 -m blueprint_pipeline.evaluation_prep_stage "
             f"--capture-root {resolved_capture} --provider manual"
         ),
+        "cosmos_single_capture_smoke": (
+            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
+            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} "
+            f"--lane cosmos_single_capture_smoke"
+        ),
         "agent_review_openai": (
             f"PYTHONPATH=src python3 -m blueprint_pipeline.run_e2e "
             f"--capture-root {resolved_capture} --provider openai --run-evaluation-prep"
