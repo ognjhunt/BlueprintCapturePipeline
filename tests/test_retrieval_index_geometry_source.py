@@ -189,6 +189,9 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
     assert all(row["privacy_source"] == "privacy/final_walkthrough.mov" for row in rows)
     assert all(row["depth_uri"] for row in rows)
     assert any("anchor_entry" in row["anchor_observations"] for row in rows)
+    assert all("retrieval_signals" in row for row in rows)
+    assert any((row["retrieval_signals"].get("anchor_observation_count") or 0) > 0 for row in rows)
+    assert all("capture_confidence" in row["retrieval_signals"] for row in rows)
     assert Path(str(result["site_reference_index"])).is_file()
 
 

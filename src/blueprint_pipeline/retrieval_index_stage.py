@@ -415,6 +415,107 @@ def _attach_anchor_to_nearest_selected(
         observations.append(anchor_id)
 
 
+def _anchor_ids(raw_value: Any) -> List[str]:
+    if not isinstance(raw_value, list):
+        return []
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in raw_value:
+        if isinstance(item, dict):
+            text = str(item.get("anchor_id") or item.get("anchorId") or "").strip()
+        else:
+            text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _world_mapping_confidence(status: Any) -> float:
+    text = str(status or "").strip().lower()
+    if text in {"mapped", "extending"}:
+        return 1.0
+    if text in {"limited", "limited_tracking"}:
+        return 0.65
+    if text:
+        return 0.5
+    return 0.75
+
+
+def _capture_confidence(entry: Dict[str, Any]) -> float:
+    quality = entry.get("quality") if isinstance(entry.get("quality"), dict) else {}
+    fq = entry.get("_fq") if isinstance(entry.get("_fq"), dict) else {}
+    pose_confidence = fq.get("pose_confidence", fq.get("poseConfidence"))
+    try:
+        pose_score = _clamp01(float(pose_confidence)) if pose_confidence is not None else 0.75
+    except (TypeError, ValueError):
+        pose_score = 0.75
+    sharpness = quality.get("sharpness_score") if isinstance(quality, dict) else None
+    try:
+        sharpness_score = 0.75 if sharpness is None else _clamp01(float(sharpness) / 120.0)
+    except (TypeError, ValueError):
+        sharpness_score = 0.75
+    mapping_score = _world_mapping_confidence((quality or {}).get("world_mapping_status"))
+    return round((pose_score + sharpness_score + mapping_score) / 3.0, 4)
+
+
+def _annotate_retrieval_signals(
+    *,
+    selected: List[Dict[str, Any]],
+    route_anchors: List[Dict[str, Any]],
+    checkpoint_events: List[Dict[str, Any]],
+    density_window_sec: float = 1.5,
+) -> None:
+    route_anchor_ids = {
+        str(item.get("anchor_id") or "").strip()
+        for item in route_anchors
+        if str(item.get("anchor_id") or "").strip()
+    }
+    checkpoint_times = [
+        float(item["t_capture_sec"])
+        for item in checkpoint_events
+        if item.get("completed") and item.get("t_capture_sec") is not None
+    ]
+
+    for entry in selected:
+        entry_time = entry.get("t_capture_sec")
+        entry_time_value = float(entry_time) if entry_time is not None else None
+        anchor_ids = _anchor_ids(entry.get("anchor_observations"))
+        local_anchor_count = 0
+        if entry_time_value is not None:
+            for other in selected:
+                other_time = other.get("t_capture_sec")
+                if other_time is None:
+                    continue
+                if abs(float(other_time) - entry_time_value) > density_window_sec:
+                    continue
+                local_anchor_count += len(
+                    [
+                        anchor_id
+                        for anchor_id in _anchor_ids(other.get("anchor_observations"))
+                        if not route_anchor_ids or anchor_id in route_anchor_ids
+                    ]
+                )
+        checkpoint_proximity_sec: Optional[float] = None
+        if entry_time_value is not None and checkpoint_times:
+            checkpoint_proximity_sec = min(abs(entry_time_value - item) for item in checkpoint_times)
+
+        fq = entry.get("_fq") if isinstance(entry.get("_fq"), dict) else {}
+        geometry_available = bool(fq.get("depth_path") or fq.get("confidence_path"))
+        entry["retrieval_signals"] = {
+            "anchor_observation_count": len(anchor_ids),
+            "route_anchor_density": round(local_anchor_count / max(density_window_sec * 2.0, 1.0), 4),
+            "checkpoint_proximity_sec": round(checkpoint_proximity_sec, 4) if checkpoint_proximity_sec is not None else None,
+            "capture_confidence": _capture_confidence(entry),
+            "pose_confidence": fq.get("pose_confidence", fq.get("poseConfidence")),
+            "geometry_grounding_quality": 1.0 if geometry_available else 0.5,
+        }
+
+
 def _apply_route_anchor_observations(
     *,
     selected: List[Dict[str, Any]],
@@ -464,6 +565,11 @@ def _apply_route_anchor_observations(
             t_capture_sec=float(selected[0].get("t_capture_sec") or 0.0),
             max_delta_sec=float("inf"),
         )
+    _annotate_retrieval_signals(
+        selected=selected,
+        route_anchors=route_anchors,
+        checkpoint_events=checkpoint_events,
+    )
 
 
 def _parse_frame_intrinsics(row: Dict[str, Any]) -> Optional[Dict[str, float]]:
@@ -586,6 +692,7 @@ def _select_frames(
                 "sharpness_score": float(sharpness) if sharpness is not None else None,
                 "relocalization_event": relocalization,
                 "travel_from_prev_m": round(dist, 4) if last_pos is not None else None,
+                "pose_confidence": fq.get("pose_confidence", fq.get("poseConfidence")),
             },
             "anchor_observations": list(anchor_observations),
             "zone_id": None,
@@ -654,12 +761,14 @@ def _build_dense_records(
 
             record: Dict[str, Any] = {
                 "frame_id": frame_id,
+                "frame_index": entry.get("frame_index"),
                 "t_capture_sec": entry["t_capture_sec"],
                 "T_world_camera": entry["T_world_camera"],
                 "intrinsics": intrinsics,
                 "geometry_source": geometry_source,
                 "quality": entry["quality"],
                 "anchor_observations": entry["anchor_observations"],
+                "retrieval_signals": dict(entry.get("retrieval_signals") or {}),
                 "zone_id": entry["zone_id"],
                 "privacy_source": privacy_source,
                 "included_in_index": False,
@@ -976,6 +1085,7 @@ def _append_to_site_reference_index(
                 "coordinate_frame_session_id": coordinate_frame_session_id,
                 "site_frame_transform": None,
                 "frame_id": record.get("frame_id"),
+                "frame_index": record.get("frame_index"),
                 "t_capture_sec": record.get("t_capture_sec"),
                 "T_world_camera": record.get("T_world_camera"),
                 "intrinsics": record.get("intrinsics"),
@@ -988,6 +1098,7 @@ def _append_to_site_reference_index(
                 "geometry_source": record.get("geometry_source") or geometry_source,
                 "quality": record.get("quality"),
                 "anchor_observations": record.get("anchor_observations") or [],
+                "retrieval_signals": record.get("retrieval_signals") or {},
                 "zone_id": record.get("zone_id"),
                 "captured_at": captured_at,
                 "indexed_at": now,

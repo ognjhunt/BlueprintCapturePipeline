@@ -9,9 +9,18 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from ..common import ensure_dir, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
+from ..common import ensure_dir, read_json_any, utc_now_iso, write_json
 from ..local_capture import resolve_local_capture_context
+from .cosmos_capture_bootstrap import extract_video_bootstrap_records, resolve_video_bootstrap_sources
+from .future_anchor_regrounding import build_future_anchor_regrounding_manifest
 from .plucker_rays import compute_plucker_map
+from .reference_selection import (
+    build_legacy_reference_selection_manifest,
+    build_reference_selection_comparison,
+    build_reference_selection_manifest,
+)
+from .sparse_view_interpolation import build_sparse_view_interpolation_manifest
+from .trajectory_augmentation import build_synthetic_trajectory_manifest
 
 
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -50,106 +59,9 @@ def _normalized_intrinsics(record: Mapping[str, Any]) -> Dict[str, float]:
     }
 
 
-def _select_references(records: Sequence[Mapping[str, Any]], *, target_index: int, k: int) -> List[Dict[str, Any]]:
-    target_time = float(records[target_index].get("t_capture_sec") or 0.0)
-    candidates: List[tuple[float, Dict[str, Any]]] = []
-    for index, record in enumerate(records):
-        if index == target_index:
-            continue
-        frame_uri = str(record.get("frame_uri") or "").strip()
-        if not frame_uri:
-            continue
-        delta = abs(float(record.get("t_capture_sec") or 0.0) - target_time)
-        candidates.append((delta, dict(record)))
-    candidates.sort(key=lambda item: item[0])
-    return [item for _delta, item in candidates[: max(1, k)]]
-
-
 def _split_name(frame_id: str) -> str:
     digest = hashlib.sha256(frame_id.encode("utf-8")).hexdigest()
     return "val" if int(digest[:2], 16) < 51 else "train"
-
-
-def _read_pose_rows(path: Path) -> List[Dict[str, Any]]:
-    rows = _read_jsonl(path)
-    return [row for row in rows if row.get("T_world_camera") or row.get("transform")]
-
-
-def _extract_video_bootstrap_records(
-    *,
-    context,
-    conditioning_bundle: Mapping[str, Any],
-    export_root: Path,
-    max_frames: int,
-) -> List[Dict[str, Any]]:
-    raw_video_uri = str(conditioning_bundle.get("raw_video_uri") or "").strip()
-    arkit = dict(conditioning_bundle.get("arkit") or {}) if isinstance(conditioning_bundle.get("arkit"), Mapping) else {}
-    poses_uri = str(arkit.get("poses_uri") or "").strip()
-    intrinsics_uri = str(arkit.get("intrinsics_uri") or "").strip()
-    if not raw_video_uri or not poses_uri or not intrinsics_uri:
-        return []
-
-    video_path = resolve_gs_uri_to_path(raw_video_uri, context.storage_root)
-    poses_path = resolve_gs_uri_to_path(poses_uri, context.storage_root)
-    intrinsics_path = resolve_gs_uri_to_path(intrinsics_uri, context.storage_root)
-    if not video_path.is_file() or not poses_path.is_file() or not intrinsics_path.is_file():
-        return []
-
-    pose_rows = _read_pose_rows(poses_path)
-    intrinsics_payload = read_json_any(intrinsics_path)
-    intrinsics = dict(intrinsics_payload) if isinstance(intrinsics_payload, Mapping) else {}
-    if not pose_rows:
-        return []
-
-    try:
-        import cv2  # type: ignore[import]
-    except ImportError:
-        return []
-
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        return []
-
-    total_frames = max(1, int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
-    output_dir = export_root / "video_bootstrap_frames"
-    ensure_dir(output_dir)
-
-    target_count = min(max_frames, len(pose_rows))
-    if target_count < 2:
-        capture.release()
-        return []
-
-    pose_indices = [
-        round(index * (len(pose_rows) - 1) / float(max(1, target_count - 1)))
-        for index in range(target_count)
-    ]
-    records: List[Dict[str, Any]] = []
-    for export_index, pose_index in enumerate(sorted(dict.fromkeys(pose_indices))):
-        pose_row = pose_rows[pose_index]
-        frame_index = round(pose_index * (total_frames - 1) / float(max(1, len(pose_rows) - 1)))
-        capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
-        ok, frame = capture.read()
-        if not ok or frame is None:
-            continue
-        frame_path = output_dir / f"frame_{export_index:04d}.jpg"
-        if not cv2.imwrite(str(frame_path), frame):
-            continue
-        records.append(
-            {
-                "frame_id": f"video_bootstrap_{export_index:04d}",
-                "frame_uri": str(frame_path.resolve()),
-                "embedding_uri": None,
-                "included_in_index": True,
-                "t_capture_sec": pose_row.get("t_capture_sec", pose_row.get("t_device_sec", float(pose_index))),
-                "T_world_camera": pose_row.get("T_world_camera") or pose_row.get("transform"),
-                "intrinsics": intrinsics,
-                "anchor_observations": [],
-                "source_mode": "video_bootstrap",
-                "source_video_uri": raw_video_uri,
-            }
-        )
-    capture.release()
-    return records
 
 
 def export_cosmos_training_substrate(
@@ -178,16 +90,40 @@ def export_cosmos_training_substrate(
     protected_regions_manifest = read_json_any(protected_regions_path) if protected_regions_path.is_file() else {}
     conditioning_bundle = read_json_any(conditioning_bundle_path) if conditioning_bundle_path.is_file() else {}
     source_mode = "dense_index"
+    bootstrap_origin = None
+    bootstrap_source_manifest_path: Path | None = None
+    reference_selection_manifest_path = export_root / "reference_selection_manifest.json"
+    reference_selection_comparison_path = export_root / "reference_selection_comparison.json"
+    synthetic_trajectory_manifest_path = export_root / "synthetic_trajectory_manifest.json"
+    sparse_view_interpolation_manifest_path = export_root / "sparse_view_interpolation_manifest.json"
+    future_anchor_regrounding_manifest_path = export_root / "future_anchor_regrounding_manifest.json"
 
-    if len(dense_records) < 2 and isinstance(conditioning_bundle, Mapping):
-        dense_records = _extract_video_bootstrap_records(
+    if len(dense_records) < 2:
+        bootstrap_sources = resolve_video_bootstrap_sources(
             context=context,
-            conditioning_bundle=conditioning_bundle,
+            conditioning_bundle=conditioning_bundle if isinstance(conditioning_bundle, Mapping) else {},
+        )
+        dense_records = extract_video_bootstrap_records(
+            bootstrap_sources=bootstrap_sources,
             export_root=export_root,
             max_frames=max_video_bootstrap_frames,
-        )
+        ) if bootstrap_sources else []
         if dense_records:
             source_mode = "video_bootstrap"
+            bootstrap_origin = str(bootstrap_sources.get("origin") or "unknown")
+            bootstrap_source_manifest_path = export_root / "bootstrap_source_manifest.json"
+            write_json(
+                bootstrap_source_manifest_path,
+                {
+                    "schema_version": "v1",
+                    "generated_at": utc_now_iso(),
+                    "origin": bootstrap_origin,
+                    "video_path": bootstrap_sources.get("video_path"),
+                    "poses_path": bootstrap_sources.get("poses_path"),
+                    "intrinsics_path": bootstrap_sources.get("intrinsics_path"),
+                    "source_video_uri": bootstrap_sources.get("source_video_uri"),
+                },
+            )
 
     if len(dense_records) < 2:
         manifest = {
@@ -196,18 +132,89 @@ def export_cosmos_training_substrate(
             "status": "missing",
             "reason": "insufficient_dense_index_records",
             "source_mode": source_mode,
+            "bootstrap_origin": bootstrap_origin,
+            "bootstrap_source_manifest_path": str(bootstrap_source_manifest_path.resolve()) if bootstrap_source_manifest_path else None,
+            "reference_selection_manifest_path": None,
+            "reference_selection_comparison_path": None,
+            "synthetic_trajectory_manifest_path": None,
+            "sparse_view_interpolation_manifest_path": None,
+            "future_anchor_regrounding_manifest_path": None,
             "paired_reference_target_path": None,
             "k_reference_conditioning_path": None,
         }
         write_json(export_root / "manifest.json", manifest)
         return manifest
 
+    reference_selection_manifest = build_reference_selection_manifest(
+        records=dense_records,
+        k=k_references,
+        selection_name="cosmos_training_export",
+    )
+    legacy_reference_selection_manifest = build_legacy_reference_selection_manifest(
+        records=dense_records,
+        k=k_references,
+        selection_name="cosmos_training_export_legacy_baseline",
+    )
+    reference_selection_comparison = build_reference_selection_comparison(
+        current_manifest=reference_selection_manifest,
+        legacy_manifest=legacy_reference_selection_manifest,
+        selection_name="cosmos_training_export",
+    )
+    synthetic_trajectory_manifest = build_synthetic_trajectory_manifest(
+        records=dense_records,
+        selection_entries=list(reference_selection_manifest.get("entries") or []),
+        augmentation_name="cosmos_training_export",
+    )
+    sparse_view_interpolation_manifest = build_sparse_view_interpolation_manifest(
+        records=dense_records,
+        selection_entries=list(reference_selection_manifest.get("entries") or []),
+        trajectory_entries=list(synthetic_trajectory_manifest.get("entries") or []),
+        interpolation_name="cosmos_training_export",
+    )
+    future_anchor_regrounding_manifest = build_future_anchor_regrounding_manifest(
+        records=dense_records,
+        selection_entries=list(reference_selection_manifest.get("entries") or []),
+        task_anchor_manifest=task_anchor_manifest if isinstance(task_anchor_manifest, Mapping) else {},
+        protected_regions_manifest=protected_regions_manifest if isinstance(protected_regions_manifest, Mapping) else {},
+        regrounding_name="cosmos_training_export",
+    )
+    write_json(reference_selection_manifest_path, reference_selection_manifest)
+    write_json(reference_selection_comparison_path, reference_selection_comparison)
+    write_json(synthetic_trajectory_manifest_path, synthetic_trajectory_manifest)
+    write_json(sparse_view_interpolation_manifest_path, sparse_view_interpolation_manifest)
+    write_json(future_anchor_regrounding_manifest_path, future_anchor_regrounding_manifest)
+
+    trajectory_entries = {
+        str(entry.get("target_frame_id") or ""): dict(entry)
+        for entry in list(synthetic_trajectory_manifest.get("entries") or [])
+        if str(entry.get("target_frame_id") or "").strip()
+    }
+    sparse_interpolation_entries = {
+        str(entry.get("target_frame_id") or ""): dict(entry)
+        for entry in list(sparse_view_interpolation_manifest.get("entries") or [])
+        if str(entry.get("target_frame_id") or "").strip()
+    }
+    future_anchor_entries = {
+        str(entry.get("target_frame_id") or ""): dict(entry)
+        for entry in list(future_anchor_regrounding_manifest.get("entries") or [])
+        if str(entry.get("target_frame_id") or "").strip()
+    }
+
     paired_rows: List[Dict[str, Any]] = []
     k_reference_rows: List[Dict[str, Any]] = []
     split_summary = {"train": 0, "val": 0}
 
-    for target_index, record in enumerate(dense_records):
-        references = _select_references(dense_records, target_index=target_index, k=k_references)
+    for selection in list(reference_selection_manifest.get("entries") or []):
+        target_index = int(selection.get("target_index") or 0)
+        if target_index < 0 or target_index >= len(dense_records):
+            continue
+        record = dense_records[target_index]
+        selected_references = list(selection.get("selected_references") or [])
+        references = [
+            dense_records[int(item.get("candidate_index"))]
+            for item in selected_references
+            if int(item.get("candidate_index")) >= 0 and int(item.get("candidate_index")) < len(dense_records)
+        ]
         if not references:
             continue
         frame_id = str(record.get("frame_id") or "").strip()
@@ -227,6 +234,9 @@ def export_cosmos_training_substrate(
         )
         plucker_path = plucker_root / f"{frame_id or f'target_{target_index}'}.npz"
         np.savez_compressed(plucker_path, plucker=plucker)
+        trajectory_entry = trajectory_entries.get(frame_id, {})
+        sparse_interpolation_entry = sparse_interpolation_entries.get(frame_id, {})
+        future_anchor_entry = future_anchor_entries.get(frame_id, {})
 
         paired_rows.append(
             {
@@ -236,9 +246,42 @@ def export_cosmos_training_substrate(
                 "split": split,
                 "target_frame_uri": record.get("frame_uri"),
                 "primary_reference_frame_uri": references[0].get("frame_uri"),
+                "primary_reference_id": selected_references[0].get("reference_id"),
+                "selected_reference_ids": list(selection.get("selected_reference_ids") or []),
+                "selected_reference_frame_ids": list(selection.get("selected_reference_frame_ids") or []),
+                "reference_selection_score": selected_references[0].get("score"),
+                "reference_temporal_gap_sec": selected_references[0].get("temporal_gap_sec"),
+                "reference_pose_distance_m": selected_references[0].get("pose_distance_m"),
+                "rejected_near_duplicate_count": selection.get("rejected_near_duplicate_count"),
+                "target_reference_decoupling_mode": (
+                    (selection.get("decoupling") or {})
+                    if isinstance(selection.get("decoupling"), Mapping)
+                    else {}
+                ).get("mode"),
                 "plucker_conditioning_path": str(plucker_path.resolve()),
                 "task_anchor_manifest_path": str(task_anchor_path.resolve()) if task_anchor_path.is_file() else None,
                 "protected_regions_manifest_path": str(protected_regions_path.resolve()) if protected_regions_path.is_file() else None,
+                "reference_selection_manifest_path": str(reference_selection_manifest_path.resolve()),
+                "reference_selection_comparison_path": str(reference_selection_comparison_path.resolve()),
+                "synthetic_trajectory_manifest_path": str(synthetic_trajectory_manifest_path.resolve()),
+                "sparse_view_interpolation_manifest_path": str(sparse_view_interpolation_manifest_path.resolve()),
+                "future_anchor_regrounding_manifest_path": str(future_anchor_regrounding_manifest_path.resolve()),
+                "trajectory_context_id": trajectory_entry.get("trajectory_context_id"),
+                "synthetic_trajectory_status": trajectory_entry.get("status"),
+                "synthetic_trajectory_reason": trajectory_entry.get("reason"),
+                "synthetic_waypoint_count": trajectory_entry.get("synthetic_waypoint_count"),
+                "synthetic_waypoint_ids": list(trajectory_entry.get("synthetic_waypoint_ids") or []),
+                "sparse_interpolation_context_id": sparse_interpolation_entry.get("interpolation_context_id"),
+                "sparse_view_interpolation_status": sparse_interpolation_entry.get("status"),
+                "sparse_view_interpolation_reason": sparse_interpolation_entry.get("reason"),
+                "interpolated_view_count": sparse_interpolation_entry.get("interpolated_view_count"),
+                "interpolated_view_ids": list(sparse_interpolation_entry.get("interpolated_view_ids") or []),
+                "future_anchor_context_id": future_anchor_entry.get("future_anchor_context_id"),
+                "future_anchor_status": future_anchor_entry.get("status"),
+                "future_anchor_reason": future_anchor_entry.get("reason"),
+                "future_anchor_count": future_anchor_entry.get("future_anchor_count"),
+                "future_anchor_reference_ids": list(future_anchor_entry.get("future_anchor_reference_ids") or []),
+                "future_anchor_frame_ids": list(future_anchor_entry.get("future_anchor_frame_ids") or []),
                 "anchor_observations": list(record.get("anchor_observations") or []),
                 "source_mode": str(record.get("source_mode") or source_mode),
             }
@@ -250,10 +293,42 @@ def export_cosmos_training_substrate(
                 "frame_id": frame_id,
                 "split": split,
                 "target_frame_uri": record.get("frame_uri"),
+                "selected_reference_ids": list(selection.get("selected_reference_ids") or []),
+                "selected_reference_frame_ids": list(selection.get("selected_reference_frame_ids") or []),
                 "reference_frame_uris": [ref.get("frame_uri") for ref in references if str(ref.get("frame_uri") or "").strip()],
                 "reference_embedding_uris": [ref.get("embedding_uri") for ref in references if str(ref.get("embedding_uri") or "").strip()],
+                "reference_scores": [item.get("score") for item in selected_references],
+                "reference_temporal_gaps_sec": [item.get("temporal_gap_sec") for item in selected_references],
+                "reference_pose_distances_m": [item.get("pose_distance_m") for item in selected_references],
+                "rejected_near_duplicate_count": selection.get("rejected_near_duplicate_count"),
+                "target_reference_decoupling_mode": (
+                    (selection.get("decoupling") or {})
+                    if isinstance(selection.get("decoupling"), Mapping)
+                    else {}
+                ).get("mode"),
                 "plucker_conditioning_path": str(plucker_path.resolve()),
                 "conditioning_bundle_path": str(conditioning_bundle_path.resolve()) if conditioning_bundle_path.is_file() else None,
+                "reference_selection_manifest_path": str(reference_selection_manifest_path.resolve()),
+                "reference_selection_comparison_path": str(reference_selection_comparison_path.resolve()),
+                "synthetic_trajectory_manifest_path": str(synthetic_trajectory_manifest_path.resolve()),
+                "sparse_view_interpolation_manifest_path": str(sparse_view_interpolation_manifest_path.resolve()),
+                "future_anchor_regrounding_manifest_path": str(future_anchor_regrounding_manifest_path.resolve()),
+                "trajectory_context_id": trajectory_entry.get("trajectory_context_id"),
+                "synthetic_trajectory_status": trajectory_entry.get("status"),
+                "synthetic_trajectory_reason": trajectory_entry.get("reason"),
+                "synthetic_waypoint_count": trajectory_entry.get("synthetic_waypoint_count"),
+                "synthetic_waypoint_ids": list(trajectory_entry.get("synthetic_waypoint_ids") or []),
+                "sparse_interpolation_context_id": sparse_interpolation_entry.get("interpolation_context_id"),
+                "sparse_view_interpolation_status": sparse_interpolation_entry.get("status"),
+                "sparse_view_interpolation_reason": sparse_interpolation_entry.get("reason"),
+                "interpolated_view_count": sparse_interpolation_entry.get("interpolated_view_count"),
+                "interpolated_view_ids": list(sparse_interpolation_entry.get("interpolated_view_ids") or []),
+                "future_anchor_context_id": future_anchor_entry.get("future_anchor_context_id"),
+                "future_anchor_status": future_anchor_entry.get("status"),
+                "future_anchor_reason": future_anchor_entry.get("reason"),
+                "future_anchor_count": future_anchor_entry.get("future_anchor_count"),
+                "future_anchor_reference_ids": list(future_anchor_entry.get("future_anchor_reference_ids") or []),
+                "future_anchor_frame_ids": list(future_anchor_entry.get("future_anchor_frame_ids") or []),
                 "source_mode": str(record.get("source_mode") or source_mode),
             }
         )
@@ -293,10 +368,19 @@ def export_cosmos_training_substrate(
                 "plucker_conditioning",
             ],
             "source_mode": source_mode,
+            "reference_selection_policy": reference_selection_manifest.get("policy"),
+            "target_reference_decoupling_mode": str(
+                (reference_selection_manifest.get("policy") or {}).get("target_reference_decoupling_mode") or "unknown"
+            ),
             "dataset_paths": {
                 "paired_reference_target": str(paired_path.resolve()),
                 "k_reference_conditioning": str(k_reference_path.resolve()),
                 "train_val_split": str(split_path.resolve()),
+                "reference_selection_manifest": str(reference_selection_manifest_path.resolve()),
+                "reference_selection_comparison": str(reference_selection_comparison_path.resolve()),
+                "synthetic_trajectory_manifest": str(synthetic_trajectory_manifest_path.resolve()),
+                "sparse_view_interpolation_manifest": str(sparse_view_interpolation_manifest_path.resolve()),
+                "future_anchor_regrounding_manifest": str(future_anchor_regrounding_manifest_path.resolve()),
             },
         },
     )
@@ -326,6 +410,28 @@ def export_cosmos_training_substrate(
             "protected_regions_manifest_path": str(protected_regions_path.resolve()) if protected_regions_path.is_file() else None,
             "task_anchor_manifest_path": str(task_anchor_path.resolve()) if task_anchor_path.is_file() else None,
             "source_mode": source_mode,
+            "reference_selection_policy": reference_selection_manifest.get("policy"),
+            "target_reference_decoupling_mode": str(
+                (reference_selection_manifest.get("policy") or {}).get("target_reference_decoupling_mode") or "unknown"
+            ),
+            "reference_selection_quality_comparison": reference_selection_comparison,
+            "synthetic_trajectory_augmentation": {
+                "manifest_path": str(synthetic_trajectory_manifest_path.resolve()),
+                "policy": synthetic_trajectory_manifest.get("policy"),
+                "augmented_target_count": synthetic_trajectory_manifest.get("augmented_target_count"),
+                "synthetic_waypoint_count": synthetic_trajectory_manifest.get("synthetic_waypoint_count"),
+            },
+            "sparse_view_interpolation": {
+                "manifest_path": str(sparse_view_interpolation_manifest_path.resolve()),
+                "policy": sparse_view_interpolation_manifest.get("policy"),
+                "interpolated_target_count": sparse_view_interpolation_manifest.get("interpolated_target_count"),
+                "interpolated_view_count": sparse_view_interpolation_manifest.get("interpolated_view_count"),
+            },
+            "future_anchor_regrounding": {
+                "manifest_path": str(future_anchor_regrounding_manifest_path.resolve()),
+                "policy": future_anchor_regrounding_manifest.get("policy"),
+                "re_grounded_target_count": future_anchor_regrounding_manifest.get("re_grounded_target_count"),
+            },
         },
     )
 
@@ -333,20 +439,53 @@ def export_cosmos_training_substrate(
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "status": "ready" if paired_rows else "missing",
+        "reason": None if paired_rows else "insufficient_decoupled_reference_targets",
         "capture_id": context.capture_id,
         "scene_id": context.scene_id,
         "source_mode": source_mode,
+        "bootstrap_origin": bootstrap_origin,
         "paired_reference_target_path": str(paired_path.resolve()),
         "k_reference_conditioning_path": str(k_reference_path.resolve()),
         "train_val_split_path": str(split_path.resolve()),
         "trainer_config_path": str(trainer_config_path.resolve()),
         "checkpoint_layout_path": str(checkpoint_layout_path.resolve()),
         "inference_backend_shape_path": str(inference_backend_path.resolve()),
+        "bootstrap_source_manifest_path": str(bootstrap_source_manifest_path.resolve()) if bootstrap_source_manifest_path else None,
+        "reference_selection_manifest_path": str(reference_selection_manifest_path.resolve()),
+        "reference_selection_comparison_path": str(reference_selection_comparison_path.resolve()),
+        "synthetic_trajectory_manifest_path": str(synthetic_trajectory_manifest_path.resolve()),
+        "sparse_view_interpolation_manifest_path": str(sparse_view_interpolation_manifest_path.resolve()),
+        "future_anchor_regrounding_manifest_path": str(future_anchor_regrounding_manifest_path.resolve()),
+        "reference_selection_policy": reference_selection_manifest.get("policy"),
+        "target_reference_decoupling_mode": str(
+            (reference_selection_manifest.get("policy") or {}).get("target_reference_decoupling_mode") or "unknown"
+        ),
+        "reference_selection_quality_comparison": reference_selection_comparison,
+        "synthetic_trajectory_augmentation": {
+            "policy": synthetic_trajectory_manifest.get("policy"),
+            "augmented_target_count": synthetic_trajectory_manifest.get("augmented_target_count"),
+            "skipped_sparse_context_count": synthetic_trajectory_manifest.get("skipped_sparse_context_count"),
+            "synthetic_waypoint_count": synthetic_trajectory_manifest.get("synthetic_waypoint_count"),
+        },
+        "sparse_view_interpolation": {
+            "policy": sparse_view_interpolation_manifest.get("policy"),
+            "interpolated_target_count": sparse_view_interpolation_manifest.get("interpolated_target_count"),
+            "skipped_sparse_target_count": sparse_view_interpolation_manifest.get("skipped_sparse_target_count"),
+            "interpolated_view_count": sparse_view_interpolation_manifest.get("interpolated_view_count"),
+        },
+        "future_anchor_regrounding": {
+            "policy": future_anchor_regrounding_manifest.get("policy"),
+            "re_grounded_target_count": future_anchor_regrounding_manifest.get("re_grounded_target_count"),
+            "skipped_target_count": future_anchor_regrounding_manifest.get("skipped_target_count"),
+        },
         "conditioning_bundle_path": str(conditioning_bundle_path.resolve()) if conditioning_bundle_path.is_file() else None,
         "task_anchor_manifest_path": str(task_anchor_path.resolve()) if task_anchor_path.is_file() else None,
         "protected_regions_manifest_path": str(protected_regions_path.resolve()) if protected_regions_path.is_file() else None,
         "paired_example_count": len(paired_rows),
         "k_reference_example_count": len(k_reference_rows),
+        "selected_target_count": int(reference_selection_manifest.get("selected_target_count") or 0),
+        "skipped_target_count": int(reference_selection_manifest.get("skipped_target_count") or 0),
+        "rejected_near_duplicate_count": int(reference_selection_manifest.get("rejected_near_duplicate_count") or 0),
         "train_count": split_summary["train"],
         "val_count": split_summary["val"],
         "protected_region_count": len(list(protected_regions_manifest.get("regions") or []))
