@@ -287,6 +287,86 @@ def test_materialization_preserves_android_video_only_capture_source(tmp_path: P
     assert descriptor["capture_modality"] == "android_video_only"
 
 
+def test_materialization_preserves_iphone_video_only_capture_modality(tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={"capture_source": "iphone", "has_lidar": False},
+        context_overrides={"captureSource": "iphone", "captureModality": "iphone_video_only"},
+    )
+
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+
+    assert descriptor["capture_source"] == "iphone"
+    assert descriptor["capture_modality"] == "iphone_video_only"
+    assert descriptor["evidence_tier"] == "pre_screen_video"
+
+
+def test_materialization_attaches_route_anchor_sidecars(tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={"capture_source": "iphone", "has_lidar": False},
+        context_overrides={"captureSource": "iphone", "captureModality": "iphone_video_only"},
+    )
+    raw_root = capture_root / "raw"
+    (raw_root / "route_anchors.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "route_anchors": [
+                    {
+                        "anchor_id": "anchor_entry",
+                        "anchor_type": "entry",
+                        "label": "Entry",
+                        "expected_observation": "pause_and_pan",
+                        "required_in_primary_pass": True,
+                        "required_in_revisit_pass": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (raw_root / "checkpoint_events.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "checkpoint_events": [
+                    {
+                        "anchor_id": "anchor_entry",
+                        "pass_id": "pass-1",
+                        "t_capture_sec": 0.25,
+                        "hold_duration_sec": 1.1,
+                        "completed": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    materialize_capture_bundle(
+        bucket="local-blueprint",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        gcs_root=tmp_path,
+    )
+
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    metadata = descriptor["metadata"]
+    assert metadata["route_anchors"]["route_anchors"][0]["anchor_id"] == "anchor_entry"
+    assert metadata["checkpoint_events"]["checkpoint_events"][0]["anchor_id"] == "anchor_entry"
+
+
+def test_materialization_maps_preview_simulation_to_scene_memory_requested_lanes(tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={"requested_outputs": ["preview_simulation"]},
+    )
+
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    assert descriptor["requested_lanes"] == ["qualification", "scene_memory"]
+
+
 def test_materialization_promotes_android_scaffolding_to_metric_ready_video(tmp_path: Path) -> None:
     capture_root = _build_staged_capture(
         tmp_path,

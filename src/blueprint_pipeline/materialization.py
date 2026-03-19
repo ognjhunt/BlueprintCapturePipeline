@@ -159,6 +159,84 @@ def _normalized_capture_topology(manifest: Mapping[str, Any]) -> Optional[Dict[s
         "intended_pass_role": str(raw.get("intended_pass_role") or "primary"),
         "entry_anchor_id": str(raw.get("entry_anchor_id") or "").strip() or None,
         "return_anchor_id": str(raw.get("return_anchor_id") or "").strip() or None,
+        "entry_anchor_t_capture_sec": (
+            try_parse_float(raw.get("entry_anchor_t_capture_sec"), 0.0)
+            if raw.get("entry_anchor_t_capture_sec") is not None
+            else None
+        ),
+        "entry_anchor_hold_duration_sec": (
+            try_parse_float(raw.get("entry_anchor_hold_duration_sec"), 0.0)
+            if raw.get("entry_anchor_hold_duration_sec") is not None
+            else None
+        ),
+    }
+
+
+def _normalized_route_anchors(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, Mapping):
+        return None
+    route_anchors_raw = raw.get("route_anchors") or raw.get("routeAnchors")
+    route_anchors: List[Dict[str, Any]] = []
+    if isinstance(route_anchors_raw, list):
+        for item in route_anchors_raw:
+            if not isinstance(item, Mapping):
+                continue
+            route_anchors.append(
+                {
+                    "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip() or None,
+                    "anchor_type": str(item.get("anchor_type") or item.get("anchorType") or "").strip() or None,
+                    "label": str(item.get("label") or "").strip() or None,
+                    "expected_observation": str(
+                        item.get("expected_observation") or item.get("expectedObservation") or ""
+                    ).strip()
+                    or None,
+                    "required_in_primary_pass": bool(
+                        item.get("required_in_primary_pass")
+                        if item.get("required_in_primary_pass") is not None
+                        else item.get("requiredInPrimaryPass")
+                    ),
+                    "required_in_revisit_pass": bool(
+                        item.get("required_in_revisit_pass")
+                        if item.get("required_in_revisit_pass") is not None
+                        else item.get("requiredInRevisitPass")
+                    ),
+                }
+            )
+    return {
+        "schema_version": str(raw.get("schema_version") or raw.get("schemaVersion") or "v1"),
+        "route_anchors": route_anchors,
+    }
+
+
+def _normalized_checkpoint_events(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, Mapping):
+        return None
+    checkpoint_events_raw = raw.get("checkpoint_events") or raw.get("checkpointEvents")
+    checkpoint_events: List[Dict[str, Any]] = []
+    if isinstance(checkpoint_events_raw, list):
+        for item in checkpoint_events_raw:
+            if not isinstance(item, Mapping):
+                continue
+            checkpoint_events.append(
+                {
+                    "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip() or None,
+                    "pass_id": str(item.get("pass_id") or item.get("passId") or "").strip() or None,
+                    "t_capture_sec": (
+                        try_parse_float(item.get("t_capture_sec") or item.get("tCaptureSec"), 0.0)
+                        if (item.get("t_capture_sec") is not None or item.get("tCaptureSec") is not None)
+                        else None
+                    ),
+                    "hold_duration_sec": (
+                        try_parse_float(item.get("hold_duration_sec") or item.get("holdDurationSec"), 0.0)
+                        if (item.get("hold_duration_sec") is not None or item.get("holdDurationSec") is not None)
+                        else None
+                    ),
+                    "completed": bool(item.get("completed")),
+                }
+            )
+    return {
+        "schema_version": str(raw.get("schema_version") or raw.get("schemaVersion") or "v1"),
+        "checkpoint_events": checkpoint_events,
     }
 
 
@@ -561,8 +639,37 @@ def _resolve_capture_orientation(
     return _capture_orientation_from_dimensions(manifest=manifest, context=context)
 
 
-def _scene_memory_requested_lanes(evidence_tier: str) -> List[str]:
-    return ["qualification"]
+def _default_requested_lanes(
+    manifest: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> List[str]:
+    requested_outputs = _string_list(
+        manifest.get("requested_outputs")
+        or manifest.get("requestedOutputs")
+        or context.get("requested_outputs")
+        or context.get("requestedOutputs")
+    )
+    if not requested_outputs:
+        return ["qualification", "scene_memory"]
+
+    lanes: List[str] = []
+    for output in requested_outputs:
+        lowered = str(output).strip().lower()
+        if lowered == "qualification":
+            if "qualification" not in lanes:
+                lanes.append("qualification")
+        elif lowered in {"scene_memory", "preview_simulation", "managed_tuning", "data_licensing"}:
+            for lane in ("qualification", "scene_memory"):
+                if lane not in lanes:
+                    lanes.append(lane)
+        elif lowered in {"deeper_evaluation", "evaluation_prep"}:
+            for lane in ("qualification", "scene_memory", "evaluation_prep"):
+                if lane not in lanes:
+                    lanes.append(lane)
+        elif lowered == "review_intake":
+            if "qualification" not in lanes:
+                lanes.append("qualification")
+    return lanes or ["qualification", "scene_memory"]
 
 
 def _requested_lanes_override(
@@ -691,18 +798,22 @@ def _capture_modality(
     context: Mapping[str, Any],
     source: str,
     scaffolding_used: List[str],
+    has_metric_arkit_bundle: bool,
 ) -> str:
     explicit = str(context.get("captureModality") or manifest.get("capture_modality") or "").strip().lower()
     if explicit in {
         "iphone_arkit_lidar",
+        "iphone_video_only",
         "glasses_video_only",
         "glasses_plus_scaffolding",
         "android_video_only",
         "android_plus_scaffolding",
     }:
         return explicit
-    if source == "iphone" and parse_bool(manifest.get("has_lidar"), default=False):
-        return "iphone_arkit_lidar"
+    if source == "iphone":
+        if has_metric_arkit_bundle or parse_bool(manifest.get("has_lidar"), default=False):
+            return "iphone_arkit_lidar"
+        return "iphone_video_only"
     if source == "glasses" and scaffolding_used:
         return "glasses_plus_scaffolding"
     if source == "glasses":
@@ -809,9 +920,20 @@ def build_capture_bundle_records(
     coverage_plan = _string_list(context.get("coveragePlan") or manifest.get("coverage_plan"))
     calibration_assets = _string_list(context.get("calibrationAssets") or manifest.get("calibration_assets"))
     uncertainty_priors = _dict_float(context.get("uncertaintyPriors") or manifest.get("uncertainty_priors"))
-    modality = _capture_modality(manifest, context, source, scaffolding_used)
 
     arkit_root = raw_root / "arkit"
+    has_metric_arkit_bundle = bool(
+        (arkit_root / "poses.jsonl").is_file()
+        and (arkit_root / "intrinsics.json").is_file()
+        and (arkit_root / "depth").is_dir()
+    )
+    modality = _capture_modality(
+        manifest,
+        context,
+        source,
+        scaffolding_used,
+        has_metric_arkit_bundle,
+    )
     arkit_poses_uri = None
     arkit_intrinsics_uri = None
     arkit_frames_uri = None
@@ -899,6 +1021,12 @@ def build_capture_bundle_records(
     )
     normalized_site_identity = _normalized_site_identity(manifest)
     normalized_capture_topology = _normalized_capture_topology(manifest)
+    normalized_route_anchors = _normalized_route_anchors(
+        _read_optional_json(raw_root / "route_anchors.json")
+    )
+    normalized_checkpoint_events = _normalized_checkpoint_events(
+        _read_optional_json(raw_root / "checkpoint_events.json")
+    )
 
     metadata: Dict[str, Any] = {
         "site_submission_id": f"{scene_id}:{capture_id}",
@@ -962,6 +1090,8 @@ def build_capture_bundle_records(
         },
         "site_identity": normalized_site_identity,
         "capture_topology": normalized_capture_topology,
+        "route_anchors": normalized_route_anchors,
+        "checkpoint_events": normalized_checkpoint_events,
         "capture_mode": _normalized_capture_mode(
             manifest=manifest,
             arkit_poses_uri=arkit_poses_uri,
@@ -1030,7 +1160,7 @@ def build_capture_bundle_records(
         "capture_orientation": capture_orientation,
         "requested_lanes": (
             _requested_lanes_override(manifest, context)
-            or _scene_memory_requested_lanes(evidence_tier)
+            or _default_requested_lanes(manifest, context)
         ),
         "requested_outputs": _string_list(
             manifest.get("requested_outputs")

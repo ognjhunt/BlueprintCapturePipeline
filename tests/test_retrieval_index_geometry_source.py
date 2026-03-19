@@ -67,6 +67,42 @@ def _build_staged_glasses_capture(tmp_path: Path, *, with_privacy_video: bool = 
 
 def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=True)
+    raw_root = capture_root / "raw"
+    (raw_root / "route_anchors.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "route_anchors": [
+                    {
+                        "anchor_id": "anchor_entry",
+                        "anchor_type": "entry",
+                        "label": "Entry",
+                        "expected_observation": "pause_and_pan",
+                        "required_in_primary_pass": True,
+                        "required_in_revisit_pass": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (raw_root / "checkpoint_events.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "checkpoint_events": [
+                    {
+                        "anchor_id": "anchor_entry",
+                        "pass_id": "pass-1",
+                        "t_capture_sec": 1.0,
+                        "hold_duration_sec": 1.0,
+                        "completed": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     def _fake_provider(**kwargs):  # type: ignore[no-untyped-def]
         geometry_root = Path(kwargs["geometry_root"])
@@ -152,6 +188,7 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
     assert all(row["geometry_source"] == "video_to_world" for row in rows)
     assert all(row["privacy_source"] == "privacy/final_walkthrough.mov" for row in rows)
     assert all(row["depth_uri"] for row in rows)
+    assert any("anchor_entry" in row["anchor_observations"] for row in rows)
     assert Path(str(result["site_reference_index"])).is_file()
 
 

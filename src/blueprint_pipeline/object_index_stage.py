@@ -1340,6 +1340,9 @@ def _canonicalize_legacy_index(*, context, descriptor: CaptureDescriptor) -> Opt
     target_path = context.raw_root / "object_index.json"
     if target_path.is_file():
         loaded = load_object_index(join_gs_uri(context.raw_prefix_uri, "object_index.json"), gcs_root=context.storage_root)
+        report = _optional_json(context.raw_root / "object_index_build_report.json")
+        if not _existing_index_is_reusable(loaded=loaded, report=report):
+            return None
         object_index_uri = join_gs_uri(context.raw_prefix_uri, "object_index.json")
         _write_descriptor_updates(context.descriptor_path, descriptor, object_index_uri)
         _write_manifest_updates(context.raw_root / "manifest.json")
@@ -1380,6 +1383,41 @@ def _canonicalize_legacy_index(*, context, descriptor: CaptureDescriptor) -> Opt
         "object_count": len(loaded),
         "grounding_payload": _grounding_payload_from_objects(loaded, descriptor, {"status": "canonicalized_legacy"}),
     }
+
+
+def _existing_index_is_reusable(
+    *,
+    loaded: Sequence[Mapping[str, Any]],
+    report: Optional[Mapping[str, Any]],
+) -> bool:
+    if loaded:
+        return True
+    if not isinstance(report, Mapping):
+        return False
+
+    try:
+        report_object_count = int(report.get("object_count"))
+    except (TypeError, ValueError):
+        return False
+    if report_object_count != len(loaded):
+        return False
+
+    empty_index_cause = str(report.get("empty_index_cause") or "").strip().lower()
+    if empty_index_cause in {"runtime_missing", "backend_skipped"}:
+        return False
+
+    runtime_preflight = report.get("runtime_preflight")
+    backends = runtime_preflight.get("backends") if isinstance(runtime_preflight, Mapping) else {}
+    if isinstance(backends, Mapping):
+        for entry in backends.values():
+            if not isinstance(entry, Mapping):
+                continue
+            support_level = str(entry.get("support_level") or "required").strip().lower() or "required"
+            status = str(entry.get("status") or "").strip().lower()
+            if support_level == "required" and status in {"runtime_missing", "optional_unavailable"}:
+                return False
+
+    return True
 
 
 def run_object_index_stage(

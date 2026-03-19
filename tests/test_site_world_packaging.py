@@ -412,7 +412,7 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
-    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
+    monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
@@ -476,10 +476,10 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert runtime_eligibility["readiness_state"] == "launchable"
     assert spec["canonical_output"]["authoritative_record"] is True
     assert spec["presentation_output"]["authoritative_record"] is False
-    assert spec["primary_runtime_backend"] == "neoverse"
-    assert spec["canonical_world_model"]["world_model_backend"] == "neoverse"
+    assert spec["primary_runtime_backend"] == "site_world_runtime"
+    assert spec["canonical_world_model"]["world_model_backend"] == "site_world_runtime"
     assert spec["canonical_world_model"]["scene_representation"] == "pending_world_model_service"
-    assert spec["runtime_render_source"] == "neoverse_full_capture"
+    assert spec["runtime_render_source"] == "site_world_runtime_full_capture"
     assert spec["fallback_mode"] == "arkit_rgbd_last_resort"
     assert spec["canonical_world_model"]["primary_asset_path"] == ""
     assert spec["presentation"]["bundle_type"] == "gsplat_scene_v1"
@@ -504,7 +504,7 @@ def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_pat
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
-    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
+    monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
@@ -544,7 +544,7 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {missing_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {missing_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
-    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
+    monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
     monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
@@ -605,7 +605,7 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
-    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.test")
+    monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
     monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
     monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
@@ -634,10 +634,10 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     assert site_world_spec["capture_orientation"]["display_orientation"] == "portrait"
     assert site_world_spec["presentation"]["orientation"]["display_orientation"] == "portrait"
     assert site_world_spec["canonical_world_model"]["orientation"]["display_orientation"] == "portrait"
-    assert site_world_spec["canonical_world_model"]["world_model_backend"] == "neoverse"
-    assert scene_memory_manifest["primary_runtime_backend"] == "neoverse"
+    assert site_world_spec["canonical_world_model"]["world_model_backend"] == "site_world_runtime"
+    assert scene_memory_manifest["primary_runtime_backend"] == "site_world_runtime"
     assert scene_memory_manifest["canonical_world_model"]["scene_representation"] == "pending_world_model_service"
-    assert hosted_runtime_manifest["primary_runtime_backend"] == "neoverse"
+    assert hosted_runtime_manifest["primary_runtime_backend"] == "site_world_runtime"
     assert hosted_runtime_manifest["canonical_world_model"]["primary_asset_path"] == ""
     assert hosted_runtime_manifest["capture_orientation"]["display_orientation"] == "portrait"
 

@@ -1,0 +1,587 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+
+from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
+from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
+from blueprint_pipeline.materialization import materialize_capture_bundle
+
+
+def _successful_capture_review() -> dict[str, object]:
+    return {
+        "schema_version": "v1",
+        "review_type": "gemini_multimodal_capture_review",
+        "status": "succeeded",
+        "generated_at": "2026-03-15T00:00:00+00:00",
+        "provider_name": "gemini",
+        "provider_model": "gemini-2.5-pro",
+        "review_mode": "video_primary_frames_fallback",
+        "confidence": 0.9,
+        "summary": "Capture supports downstream work.",
+        "scores": {
+            "coverage": 0.9,
+            "visual_clarity": 0.86,
+            "lighting_stability": 0.84,
+            "motion_stability": 0.82,
+            "task_understanding": 0.86,
+            "world_model_fitness": 0.84,
+            "payout_quality": 0.8,
+        },
+        "bonus_signals": {
+            "complete_coverage": {"score": 0.9, "reason": "Coverage is complete."},
+            "multi_pass": {"score": 0.7, "reason": "Multiple views are present."},
+            "lidar_depth": {"score": 1.0, "reason": "Depth-backed capture quality is strong."},
+            "steady_walkthrough": {"score": 0.85, "reason": "The walkthrough is steady."},
+        },
+        "findings": {
+            "missing_views": [],
+            "blur_observations": [],
+            "lighting_observations": [],
+            "occlusion_observations": [],
+            "task_scope_notes": [],
+            "blocker_summaries": [],
+            "recapture_recommendations": [],
+        },
+        "recommendations": {
+            "world_model_recommendation": "good_candidate",
+            "payout_recommendation": "baseline",
+        },
+        "provenance": {"provider_name": "gemini", "provider_model": "gemini-2.5-pro"},
+    }
+
+
+class _HealthyRuntimeClient:
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    def register_site_world_package(self, *, spec, registration, health):  # type: ignore[no-untyped-def]
+        site_world_id = str(registration.get("site_world_id") or "siteworld-test")
+        return {
+            **dict(registration),
+            "schema_version": "v1",
+            "status": "ready",
+            "site_world_id": site_world_id,
+            "runtime_base_url": "http://runtime.test",
+            "websocket_base_url": "ws://runtime.test",
+            "runtime_capabilities": {
+                "supports_step_rollout": True,
+                "supports_batch_rollout": True,
+                "supports_camera_views": True,
+                "supports_rlds_export": True,
+                "supports_preview_render": True,
+                "protected_region_locking": True,
+                "runtime_layer_compositing": True,
+                "debug_render_outputs": True,
+            },
+            "health": {
+                **dict(health),
+                "schema_version": "v1",
+                "site_world_id": site_world_id,
+                "healthy": True,
+                "launchable": True,
+                "status": "healthy",
+                "blockers": [],
+                "warnings": [],
+            },
+        }
+
+    def get_site_world_health(self, site_world_id: str):  # type: ignore[no-untyped-def]
+        return {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "healthy": True,
+            "launchable": True,
+            "status": "healthy",
+            "blockers": [],
+            "warnings": [],
+        }
+
+    def create_session(self, site_world_id: str, **_kwargs):  # type: ignore[no-untyped-def]
+        return {"site_world_id": site_world_id, "session_id": "session-test"}
+
+    def reset_session(self, _session_id: str, **_kwargs):  # type: ignore[no-untyped-def]
+        return {"status": "ok"}
+
+
+def _write_backend_script(path: Path) -> None:
+    body = """#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+output_path = Path(sys.argv[2])
+objects = [
+    {
+        "id": "cabinet_0001",
+        "object_id": "cabinet_0001",
+        "label": "cabinet",
+        "boundingBox": {
+            "center": [0.0, 0.0, 0.75],
+            "extents": [0.8, 0.45, 0.9],
+            "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "orientationQuaternion": [1.0, 0.0, 0.0, 0.0],
+        },
+        "mean_confidence": 0.95,
+        "confidence": 0.95,
+        "n_total_detections": 3,
+        "n_frame_detections": 2,
+        "reference_crop": "",
+        "all_crops": [],
+        "task_relevance": {"score": 0.9, "matched_terms": ["cabinet"]},
+        "articulation_hints": {"interactive": True, "kind": "cabinet", "confidence": 0.82},
+        "evidence_frames": [0, 1],
+        "source_prompts": ["cabinet"],
+        "provenance": {"grounding_level": "observed", "canonical_truth": True},
+        "mean_box_px": {"area": 64000.0, "width": 240.0, "height": 260.0},
+    }
+]
+output_path.write_text(json.dumps({"backend_status": "ok", "objects": objects}, indent=2), encoding="utf-8")
+"""
+    path.write_text(body, encoding="utf-8")
+
+
+def _set_alpha_env(monkeypatch, tmp_path: Path, *, include_runtime: bool, include_video_to_world: bool = False) -> None:  # type: ignore[no-untyped-def]
+    values = {
+        "PIPELINE_PROJECT_ID": "alpha-project",
+        "PIPELINE_REGION": "us-central1",
+        "PIPELINE_BUCKET": "local-blueprint",
+        "GCS_ROOT": str(tmp_path),
+        "PIPELINE_SYNC_WEBAPP_URL": "https://webapp.test/api/pipeline-sync",
+        "PIPELINE_SYNC_TOKEN": "sync-token",
+        "PIPELINE_SYNC_REQUIRED": "true",
+        "GOOGLE_GENAI_API_KEY": "gemini-key",
+        "PRIVACY_PIPELINE_ENABLED": "true",
+        "PRIVACY_FAIL_CLOSED": "true",
+        "PRIVACY_RUNNER_TOKEN": "privacy-token",
+        "PRIVACY_SAM3_URL": "https://privacy.test/sam3",
+        "PRIVACY_VIP_URL": "https://privacy.test/vip",
+        "PRIVACY_DEEPPRIVACY2_URL": "https://privacy.test/deepprivacy2",
+    }
+    if include_runtime:
+        values["SITE_WORLD_RUNTIME_SERVICE_URL"] = "http://runtime.test"
+    if include_video_to_world:
+        values["VIDEO_TO_WORLD_URL"] = "https://vtw.test"
+        values["VIDEO_TO_WORLD_RUNNER_TOKEN"] = "vtw-token"
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+
+def _stub_sync(monkeypatch, sync_calls: list[dict[str, object]]) -> None:  # type: ignore[no-untyped-def]
+    def _sync(**kwargs):  # type: ignore[no-untyped-def]
+        sync_calls.append(kwargs)
+        return {"status": "succeeded", "attempts": 1, "response": {"ok": True}}
+
+    monkeypatch.setattr("blueprint_pipeline.qualification.sync_webapp_pipeline_attachment", _sync)
+    monkeypatch.setattr("blueprint_pipeline.alpha_readiness.sync_webapp_pipeline_attachment", _sync)
+
+
+def _write_privacy_outputs(
+    capture_root: Path,
+    *,
+    depth_source: str,
+    include_depth_manifests: bool,
+) -> dict[str, object]:
+    pipeline_root = capture_root / "pipeline"
+    pipeline_root.mkdir(parents=True, exist_ok=True)
+    bucket = "local-blueprint"
+    scene_id = "scene-1"
+    capture_id = "capture-1"
+    prefix = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline"
+    depth_conditioning: dict[str, object] = {
+        "status": "available",
+        "source": depth_source,
+        "provider": depth_source,
+        "depth_prefix_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/privacy/depth",
+        "confidence_prefix_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/privacy/confidence",
+        "depth_manifest_uri": None,
+        "confidence_manifest_uri": None,
+    }
+    if include_depth_manifests:
+        privacy_depth_root = pipeline_root / "privacy_depth"
+        privacy_depth_root.mkdir(parents=True, exist_ok=True)
+        (privacy_depth_root / "depth_manifest.json").write_text(
+            json.dumps({"schema_version": "v1", "status": "available"}),
+            encoding="utf-8",
+        )
+        (privacy_depth_root / "confidence_manifest.json").write_text(
+            json.dumps({"schema_version": "v1", "status": "available"}),
+            encoding="utf-8",
+        )
+        depth_conditioning["depth_manifest_uri"] = f"{prefix}/privacy_depth/depth_manifest.json"
+        depth_conditioning["confidence_manifest_uri"] = f"{prefix}/privacy_depth/confidence_manifest.json"
+
+    payload = {
+        "schema_version": "v1",
+        "status": "person_removed",
+        "mode": "removal",
+        "fallback_used": False,
+        "people_detected": 1,
+        "people_removed": 1,
+        "face_anonymized_segments": [],
+        "raw_retained": True,
+        "fail_closed": True,
+        "depth_source": depth_source,
+        "depth_conditioning": depth_conditioning,
+        "privacy_processed_video_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/privacy/final_walkthrough.mov",
+        "world_model_video_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/privacy/final_walkthrough.mov",
+        "privacy_manifest_uri": f"{prefix}/privacy_processing_manifest.json",
+        "privacy_verification_report_uri": f"{prefix}/privacy_verification_report.json",
+    }
+    (pipeline_root / "privacy_processing_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    (pipeline_root / "privacy_verification_report.json").write_text(
+        json.dumps({"schema_version": "v1", "status": "passed"}),
+        encoding="utf-8",
+    )
+    return payload
+
+
+def _write_geometry_lane(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def _fake_provider(**kwargs):  # type: ignore[no-untyped-def]
+        geometry_root = Path(kwargs["geometry_root"])
+        frames_dir = geometry_root / "frames" / "images"
+        depth_dir = geometry_root / "depth"
+        confidence_dir = geometry_root / "confidence"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        depth_dir.mkdir(parents=True, exist_ok=True)
+        confidence_dir.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for frame_index in range(2):
+            image_path = frames_dir / f"frame_{frame_index:06d}.npy"
+            np.save(image_path, np.full((12, 18, 3), 80, dtype=np.float32))
+            depth_path = depth_dir / f"depth_{frame_index:06d}.npy"
+            confidence_path = confidence_dir / f"confidence_{frame_index:06d}.npy"
+            np.save(depth_path, np.full((12, 18), 1.5, dtype=np.float32))
+            np.save(confidence_path, np.full((12, 18), 0.8, dtype=np.float32))
+            frames.append(
+                {
+                    "frame_index": frame_index,
+                    "timestamp_seconds": float(frame_index) * 0.4,
+                    "image_path": str(image_path),
+                    "is_keyframe": True,
+                    "blur_score": 0.1,
+                    "overlap_hint": 0.9,
+                    "world_from_camera": [
+                        [1.0, 0.0, 0.0, frame_index * 0.15],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "camera_from_world": [
+                        [1.0, 0.0, 0.0, -(frame_index * 0.15)],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, -1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "pose_confidence": 0.9,
+                    "depth_path": str(depth_path),
+                    "depth_format": "npy",
+                    "confidence_path": str(confidence_path),
+                    "confidence_format": "npy",
+                    "width": 18,
+                    "height": 12,
+                    "min_depth_m": 1.5,
+                    "max_depth_m": 1.5,
+                    "confidence_range": [0.0, 1.0],
+                }
+            )
+        return {
+            "intrinsics": {
+                "camera_model": "pinhole",
+                "image_width": 18,
+                "image_height": 12,
+                "fx": 16.0,
+                "fy": 16.0,
+                "cx": 9.0,
+                "cy": 6.0,
+                "distortion": {"model": "none", "coefficients": []},
+            },
+            "frames": frames,
+            "provider_metrics": {"backend": "test"},
+            "provider_warnings": [],
+            "provider_errors": [],
+            "loop_closure_detected": False,
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
+
+
+def _build_capture(
+    tmp_path: Path,
+    *,
+    capture_source: str,
+    capture_modality: str,
+    include_arkit: bool | None = None,
+) -> tuple[Path, str]:
+    bucket = "local-blueprint"
+    scene_id = "scene-1"
+    capture_id = "capture-1"
+    capture_root = tmp_path / bucket / "scenes" / scene_id / "captures" / capture_id
+    raw_root = capture_root / "raw"
+    raw_root.mkdir(parents=True)
+
+    manifest_payload = {
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "video_uri": "walkthrough.mov",
+        "capture_source": capture_source,
+        "width": 1920,
+        "height": 1080,
+        "has_lidar": capture_source == "iphone",
+        "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
+        "capture_rights": {
+            "derived_scene_generation_allowed": True,
+            "data_licensing_allowed": False,
+            "capture_contributor_payout_eligible": True,
+            "consent_status": "documented",
+            "consent_scope": ["zone-a"],
+            "consent_notes": [],
+        },
+    }
+    arkit_enabled = include_arkit if include_arkit is not None else capture_modality == "iphone_arkit_lidar"
+    manifest_payload["has_lidar"] = arkit_enabled
+    (raw_root / "manifest.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
+    (raw_root / "intake_packet.json").write_text(
+        json.dumps(
+            {
+                "workflowName": "Open cabinet",
+                "taskSteps": ["Walk to cabinet", "Open cabinet"],
+                "zone": "cabinet zone",
+                "owner": "ops",
+            }
+        ),
+        encoding="utf-8",
+    )
+    context_payload = {
+        "sceneId": scene_id,
+        "captureId": capture_id,
+        "captureSource": capture_source,
+        "captureModality": capture_modality,
+    }
+    if capture_source == "iphone":
+        context_payload["captureOrientation"] = {
+            "displayOrientation": "portrait",
+            "displayWidth": 1080,
+            "displayHeight": 1920,
+            "rotationDegrees": 90,
+        }
+    (raw_root / "capture_context.json").write_text(json.dumps(context_payload), encoding="utf-8")
+    (raw_root / "capture_upload_complete.json").write_text(
+        json.dumps({"sceneId": scene_id, "captureId": capture_id}),
+        encoding="utf-8",
+    )
+    (raw_root / "walkthrough.mov").write_bytes(b"not-a-real-video")
+    if capture_source == "iphone" and arkit_enabled:
+        arkit_root = raw_root / "arkit"
+        (arkit_root / "depth").mkdir(parents=True)
+        (arkit_root / "poses.jsonl").write_text(
+            json.dumps({"frame_id": "000001", "t_device_sec": 0.0, "T_world_camera": np.eye(4).tolist()}) + "\n",
+            encoding="utf-8",
+        )
+        (arkit_root / "intrinsics.json").write_text(
+            json.dumps({"width": 1920, "height": 1080, "fx": 1000.0, "fy": 1000.0, "cx": 960.0, "cy": 540.0}),
+            encoding="utf-8",
+        )
+        (arkit_root / "depth" / "000001.png").write_bytes(b"depth")
+
+    materialized = materialize_capture_bundle(
+        bucket=bucket,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        gcs_root=tmp_path,
+    )
+    return capture_root, str(materialized["descriptor_uri"])
+
+
+def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="iphone",
+        capture_modality="iphone_arkit_lidar",
+    )
+    success_backend = tmp_path / "success_backend.py"
+    _write_backend_script(success_backend)
+    _set_alpha_env(monkeypatch, tmp_path, include_runtime=True)
+    sync_calls: list[dict[str, object]] = []
+    _stub_sync(monkeypatch, sync_calls)
+    monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
+    monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="arkit", include_depth_manifests=False),
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="scene_memory",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+    run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+    sync_result = json.loads((capture_root / "pipeline" / "webapp_sync_result.json").read_text(encoding="utf-8"))
+
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
+    assert sync_result["status"] == "succeeded"
+    assert sync_result["latest_stage"] == "evaluation_prep"
+    assert len(sync_calls) == 2
+    assert sync_calls[1]["artifacts"]["site_world_spec_uri"].endswith("/evaluation_prep/site_world_spec.json")
+    assert sync_calls[1]["artifacts"]["hosted_session_runtime_manifest_uri"].endswith(
+        "/evaluation_prep/hosted_session_runtime_manifest.json"
+    )
+    assert sync_calls[1]["artifacts"]["scene_memory_manifest_uri"].endswith("/scene_memory/scene_memory_manifest.json")
+
+
+def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="iphone",
+        capture_modality="iphone_video_only",
+        include_arkit=False,
+    )
+    success_backend = tmp_path / "success_backend.py"
+    _write_backend_script(success_backend)
+    _set_alpha_env(monkeypatch, tmp_path, include_runtime=True, include_video_to_world=True)
+    sync_calls: list[dict[str, object]] = []
+    _stub_sync(monkeypatch, sync_calls)
+    _write_geometry_lane(monkeypatch)
+    monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
+    monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="depth_anything", include_depth_manifests=True),
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="scene_memory",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+    run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+
+    assert alpha_summary["profile"] == "iphone_video_only"
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
+    assert sync_calls[1]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
+
+
+def test_iphone_alpha_readiness_is_no_go_when_runtime_url_missing(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="iphone",
+        capture_modality="iphone_arkit_lidar",
+    )
+    success_backend = tmp_path / "success_backend.py"
+    _write_backend_script(success_backend)
+    _set_alpha_env(monkeypatch, tmp_path, include_runtime=False)
+    sync_calls: list[dict[str, object]] = []
+    _stub_sync(monkeypatch, sync_calls)
+    monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="arkit", include_depth_manifests=False),
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="scene_memory",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+    run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert any("missing runtime service URL" in reason for reason in alpha_summary["no_go_reasons"])
+
+
+def test_meta_glasses_alpha_readiness_is_internal_only(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="glasses",
+        capture_modality="glasses_video_only",
+    )
+    success_backend = tmp_path / "success_backend.py"
+    _write_backend_script(success_backend)
+    _set_alpha_env(monkeypatch, tmp_path, include_runtime=True, include_video_to_world=True)
+    sync_calls: list[dict[str, object]] = []
+    _stub_sync(monkeypatch, sync_calls)
+    _write_geometry_lane(monkeypatch)
+    monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
+    monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="depth_anything", include_depth_manifests=True),
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="scene_memory",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+    run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert alpha_summary["verdicts"]["internal_experimental_alpha"]["status"] == "go"
+    assert sync_calls[1]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
+    assert sync_calls[1]["artifacts"]["privacy_depth_manifest_uri"].endswith("/privacy_depth/depth_manifest.json")
+
+
+def test_android_alpha_readiness_is_internal_only(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="android",
+        capture_modality="android_video_only",
+    )
+    success_backend = tmp_path / "success_backend.py"
+    _write_backend_script(success_backend)
+    _set_alpha_env(monkeypatch, tmp_path, include_runtime=True, include_video_to_world=True)
+    _stub_sync(monkeypatch, [])
+    _write_geometry_lane(monkeypatch)
+    monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
+    monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
+    monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
+    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="depth_anything", include_depth_manifests=True),
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="scene_memory",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+    run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
+
+    alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+
+    assert alpha_summary["profile"] == "android_video"
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert alpha_summary["verdicts"]["internal_experimental_alpha"]["status"] == "go"

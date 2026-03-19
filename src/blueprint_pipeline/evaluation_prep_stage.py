@@ -9,6 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from .alpha_readiness import sync_webapp_evaluation_prep, write_alpha_readiness_summary
 from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, relative_scene_path, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
 from .object_geometry_stage import resolve_object_geometry_manifest
@@ -78,7 +79,7 @@ def _resolve_object_geometry_manifest(*, context, provider_name: str) -> Dict[st
 
 def _adapter_manifest_details(scene_memory_bundle_manifest: Mapping[str, Any], *, eval_dir: Path) -> Dict[str, Dict[str, Any]]:
     key_map = {
-        "neoverse": "neoverse_adapter_manifest_path",
+        "site_world_runtime": "site_world_runtime_adapter_manifest_path",
         "gen3c": "gen3c_adapter_manifest_path",
         "cosmos_transfer": "cosmos_transfer_adapter_manifest_path",
     }
@@ -463,7 +464,7 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
         "conditioning_bundle_path": scene_memory_dir / "conditioning_bundle.json",
         "preview_simulation_manifest_path": preview_dir / "preview_simulation_manifest.json",
         "gen3c_adapter_manifest_path": adapter_dir / "gen3c.json",
-        "neoverse_adapter_manifest_path": adapter_dir / "neoverse.json",
+        "site_world_runtime_adapter_manifest_path": adapter_dir / "site_world_runtime.json",
         "cosmos_transfer_adapter_manifest_path": adapter_dir / "cosmos_transfer.json",
         "presentation_bundle_path": presentation_dir / "presentation_bundle.json",
         "presentation_world_manifest_path": presentation_dir / "presentation_world_manifest.json",
@@ -496,7 +497,7 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
         "conditioning_bundle_path",
         "preview_simulation_manifest_path",
         "gen3c_adapter_manifest_path",
-        "neoverse_adapter_manifest_path",
+        "site_world_runtime_adapter_manifest_path",
         "cosmos_transfer_adapter_manifest_path",
         "presentation_bundle_path",
         "presentation_world_manifest_path",
@@ -577,7 +578,7 @@ def _normalize_rich_handoff(
         "conditioning_bundle_path",
         "preview_simulation_manifest_path",
         "gen3c_adapter_manifest_path",
-        "neoverse_adapter_manifest_path",
+        "site_world_runtime_adapter_manifest_path",
         "cosmos_transfer_adapter_manifest_path",
         "presentation_bundle_path",
         "presentation_world_manifest_path",
@@ -716,15 +717,15 @@ def _canonical_world_model_payload(
         ]
         if primary_asset_path or primary_asset_uri:
             return {
-                "world_model_backend": "neoverse",
-                "primary_runtime_backend": "neoverse",
-                "scene_representation": str(manifest.get("scene_representation") or "neoverse_video_world_model_v1"),
-                "render_source": str(manifest.get("render_source") or "neoverse_full_capture"),
+                "world_model_backend": "site_world_runtime",
+                "primary_runtime_backend": "site_world_runtime",
+                "scene_representation": str(manifest.get("scene_representation") or "site_world_runtime_video_world_model_v1"),
+                "render_source": str(manifest.get("render_source") or "site_world_runtime_full_capture"),
                 "fallback_mode": str(manifest.get("fallback_mode") or "none"),
                 "evidence_mode": "full_capture_persistent_scene",
                 "primary_render_asset_role": "authoritative_runtime_render_asset",
-                "renderer_backend": str(manifest.get("renderer_backend") or "neoverse"),
-                "bundle_type": str(manifest.get("bundle_type") or manifest.get("scene_representation") or "neoverse_video_world_model_v1"),
+                "renderer_backend": str(manifest.get("renderer_backend") or "site_world_runtime"),
+                "bundle_type": str(manifest.get("bundle_type") or manifest.get("scene_representation") or "site_world_runtime_video_world_model_v1"),
                 "status": "ready",
                 "primary_asset_path": primary_asset_path,
                 "primary_asset_uri": primary_asset_uri,
@@ -745,8 +746,8 @@ def _canonical_world_model_payload(
             }
         )
     return {
-        "world_model_backend": "neoverse",
-        "primary_runtime_backend": "neoverse",
+        "world_model_backend": "site_world_runtime",
+        "primary_runtime_backend": "site_world_runtime",
         "scene_representation": "pending_world_model_service",
         "render_source": "pending_world_model_service",
         "fallback_mode": "none",
@@ -772,8 +773,8 @@ def _primary_runtime_render_descriptor(
     canonical_status = str(canonical_world_model.get("status") or "").strip().lower()
     if canonical_status == "ready":
         return {
-            "world_model_backend": str(canonical_world_model.get("world_model_backend") or "neoverse"),
-            "scene_representation": str(canonical_world_model.get("scene_representation") or "neoverse_video_world_model_v1"),
+            "world_model_backend": str(canonical_world_model.get("world_model_backend") or "site_world_runtime"),
+            "scene_representation": str(canonical_world_model.get("scene_representation") or "site_world_runtime_video_world_model_v1"),
             "runtime_render_source": str(canonical_world_model.get("render_source") or "canonical_world_model"),
             "fallback_mode": str(canonical_world_model.get("fallback_mode") or "none"),
         }
@@ -793,9 +794,9 @@ def _primary_runtime_render_descriptor(
     depth_ref = str(arkit.get("depth_prefix_uri") or local_paths.get("arkit_depth_path") or "").strip()
     if raw_video_ref and poses_ref and intrinsics_ref:
         return {
-            "world_model_backend": "neoverse",
-            "scene_representation": "neoverse_video_world_model_v1",
-            "runtime_render_source": "neoverse_full_capture",
+            "world_model_backend": "site_world_runtime",
+            "scene_representation": "site_world_runtime_video_world_model_v1",
+            "runtime_render_source": "site_world_runtime_full_capture",
             "fallback_mode": "arkit_rgbd_last_resort",
         }
     geometry_poses_ref = str(geometry.get("poses_uri") or local_paths.get("geometry_poses_path") or "").strip()
@@ -807,21 +808,21 @@ def _primary_runtime_render_descriptor(
     ).strip()
     if raw_video_ref and geometry_poses_ref and geometry_intrinsics_ref and geometry_depth_ref:
         return {
-            "world_model_backend": "neoverse",
+            "world_model_backend": "site_world_runtime",
             "scene_representation": "geometry_conditioned_capture_v1",
             "runtime_render_source": "geometry_conditioned_capture",
             "fallback_mode": "geometry_lane_conditioning",
         }
     if raw_video_ref and poses_ref and intrinsics_ref and depth_ref:
         return {
-            "world_model_backend": "neoverse",
-            "scene_representation": "neoverse_video_world_model_v1",
-            "runtime_render_source": "neoverse_full_capture",
+            "world_model_backend": "site_world_runtime",
+            "scene_representation": "site_world_runtime_video_world_model_v1",
+            "runtime_render_source": "site_world_runtime_full_capture",
             "fallback_mode": "arkit_rgbd_last_resort",
         }
 
     return {
-        "world_model_backend": str(canonical_world_model.get("world_model_backend") or "neoverse"),
+        "world_model_backend": str(canonical_world_model.get("world_model_backend") or "site_world_runtime"),
         "scene_representation": str(canonical_world_model.get("scene_representation") or "unavailable"),
         "runtime_render_source": str(canonical_world_model.get("render_source") or "unavailable"),
         "fallback_mode": str(canonical_world_model.get("fallback_mode") or "arkit_rgbd_last_resort"),
@@ -1306,7 +1307,7 @@ def _build_site_world_spec(
             "sensor_availability": scene_memory_capture.get("sensor_availability", {}),
             "local_paths": local_paths,
         },
-        "primary_runtime_backend": "neoverse",
+        "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": canonical_world_model,
         "geometry": {
             "scene_memory_bundle_path": str(_real_path_from_eval_dir(eval_dir, str(geometry_bundle or "")) or ""),
@@ -1337,7 +1338,7 @@ def _build_site_world_spec(
             "renderer_backend": str(
                 presentation_world_manifest.get("renderer_backend")
                 or runtime_demo_manifest.get("renderer_backend")
-                or "neoverse"
+                or "site_world_runtime"
             ),
             "bundle_status": str(
                 runtime_demo_manifest.get("bundle_status")
@@ -1546,7 +1547,7 @@ def _build_site_world_runtime_records(
         "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
         "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
         "supported_cameras": [],
-        "primary_runtime_backend": "neoverse",
+        "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": dict(spec.get("canonical_world_model") or {}),
         "world_model_backend": spec.get("world_model_backend"),
         "scene_representation": spec.get("scene_representation"),
@@ -1585,7 +1586,7 @@ def _build_site_world_runtime_records(
         "websocket_base_url": canonical_runtime_status.get("websocket_base_url"),
         "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or None,
         "supported_cameras": [],
-        "primary_runtime_backend": "neoverse",
+        "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": dict(spec.get("canonical_world_model") or {}),
         "world_model_backend": spec.get("world_model_backend"),
         "scene_representation": spec.get("scene_representation"),
@@ -1869,7 +1870,7 @@ def _build_hosted_session_runtime_manifest(
         canonical_world_model=canonical_world_model,
     )
     adapter_key_map = {
-        "neoverse": "neoverse_adapter_manifest_path",
+        "site_world_runtime": "site_world_runtime_adapter_manifest_path",
         "gen3c": "gen3c_adapter_manifest_path",
         "cosmos_transfer": "cosmos_transfer_adapter_manifest_path",
     }
@@ -1884,7 +1885,7 @@ def _build_hosted_session_runtime_manifest(
         for backend in available_backends
         if str(adapter_details.get(backend, {}).get("status") or "").strip().startswith("available_stage1_")
     ]
-    preferred_order = ["neoverse", "gen3c", "cosmos_transfer"]
+    preferred_order = ["site_world_runtime", "gen3c", "cosmos_transfer"]
     default_backend = next((backend for backend in preferred_order if backend in launchable_backends), None)
 
     tasks = (
@@ -2046,7 +2047,7 @@ def _build_hosted_session_runtime_manifest(
         "presentation_variance_policy_uri": _gs_uri(
             context, "evaluation_prep/presentation_variance_policy.json"
         ),
-        "primary_runtime_backend": "neoverse",
+        "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": canonical_world_model,
         "world_model_backend": runtime_render_descriptor["world_model_backend"],
         "scene_representation": runtime_render_descriptor["scene_representation"],
@@ -2425,7 +2426,7 @@ def _build_launchable_export_bundle(
                 "site_world_registration",
                 "site_world_health",
             ],
-            "backend": "neoverse",
+            "backend": "site_world_runtime",
         },
         "geometry_conditioning": {
             "launchable": bool(scene_memory_bundle_manifest.get("geometry_summary_path")),
@@ -2451,7 +2452,7 @@ def _build_launchable_export_bundle(
         "presentation_demo_ui": {
             "launchable": demo_readiness["readiness_state"] == "ready",
             "required_artifacts": ["presentation_bundle", "runtime_demo_manifest", "interactive_demo.readiness_state"],
-            "backend": "neoverse_gradio",
+            "backend": "site_world_runtime_ui",
             "blockers": demo_readiness["blockers"],
         },
     }
@@ -2466,7 +2467,7 @@ def _build_launchable_export_bundle(
         "generated_at": utc_now_iso(),
         "status": "ready" if full_export_ready else "partial" if partial_ready else "partial",
         "public_runtime_label": "Site world runtime",
-        "default_backend": "neoverse",
+        "default_backend": "site_world_runtime",
         "scenario_variants": [
             str(item.get("name") or "")
             for item in site_world_registration.get("scenario_catalog", [])
@@ -2691,7 +2692,7 @@ def run_evaluation_prep_stage(
     presentation_variance_policy_path = eval_dir / "presentation_variance_policy.json"
     _copy_json(presentation_variance_policy_path, presentation_variance_policy)
 
-    runtime_service_url = (os.getenv("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip().rstrip("/")
+    runtime_service_url = (os.getenv("SITE_WORLD_RUNTIME_SERVICE_URL") or "").strip().rstrip("/")
     canonical_runtime_status = _canonical_site_world_runtime_status(
         qualification_state=normalized_handoff.get("qualification_state"),
         downstream_evaluation_eligibility=bool(normalized_handoff.get("downstream_evaluation_eligibility")),
@@ -3156,12 +3157,16 @@ def run_evaluation_prep_stage(
     }
     manifest_path = eval_dir / "evaluation_prep_manifest.json"
     _copy_json(manifest_path, manifest)
+    webapp_sync_result = sync_webapp_evaluation_prep(capture_root=context.capture_root)
+    alpha_summary = write_alpha_readiness_summary(capture_root=context.capture_root)
     return {
         "schema_version": "v1",
         "capture_root": str(context.capture_root),
         "manifest_path": str(manifest_path),
         "status": legacy_status,
         "canonical_package_status": canonical_package_status,
+        "webapp_sync_result": webapp_sync_result,
+        "alpha_readiness_summary": alpha_summary,
     }
 
 

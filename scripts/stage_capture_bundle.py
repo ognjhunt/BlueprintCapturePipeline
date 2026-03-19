@@ -57,6 +57,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="Replace an existing staged capture root")
     parser.add_argument("--run-qualification", action="store_true", help="Run preflight, materialization, and qualification after staging")
     parser.add_argument("--run-evaluation-prep", action="store_true", help="Run evaluation-prep after qualification")
+    parser.add_argument(
+        "--pipeline-lane",
+        default="qualification",
+        choices=("qualification", "scene_memory"),
+        help="Pipeline lane to request when --run-qualification is set",
+    )
     parser.add_argument("--json-output", help="Optional path to write the full result payload as JSON")
     args = parser.parse_args(argv)
 
@@ -69,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             force=bool(args.force),
             run_qualification=bool(args.run_qualification),
             run_evaluation_prep=bool(args.run_evaluation_prep),
+            pipeline_lane=args.pipeline_lane,
         )
     except Exception as exc:
         print(f"[stage-capture-bundle] FAILED: {exc}")

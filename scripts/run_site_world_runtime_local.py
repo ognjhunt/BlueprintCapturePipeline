@@ -10,7 +10,7 @@ def main(argv: list[str] | None = None) -> int:
     del argv
     raise SystemExit(
         "The named runtime is no longer launched through the Stage 1 artifact contract. "
-        "Use the persistent site-world runtime service via NEOVERSE_RUNTIME_SERVICE_URL "
+        "Use the persistent site-world runtime service via SITE_WORLD_RUNTIME_SERVICE_URL "
         "and build site worlds from evaluation_prep/site_world_spec.json."
     )
 

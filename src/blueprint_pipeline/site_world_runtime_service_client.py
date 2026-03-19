@@ -24,10 +24,10 @@ class SiteWorldRuntimeServiceConfig:
 
     @classmethod
     def from_env(cls) -> "SiteWorldRuntimeServiceConfig":
-        timeout_raw = _env("NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS") or "300"
+        timeout_raw = _env("SITE_WORLD_RUNTIME_SERVICE_TIMEOUT_SECONDS") or "300"
         return cls(
-            service_url=_env("NEOVERSE_RUNTIME_SERVICE_URL").rstrip("/"),
-            api_key=_env("NEOVERSE_RUNTIME_SERVICE_API_KEY"),
+            service_url=_env("SITE_WORLD_RUNTIME_SERVICE_URL").rstrip("/"),
+            api_key=_env("SITE_WORLD_RUNTIME_SERVICE_API_KEY"),
             timeout_seconds=max(1, int(timeout_raw)),
         )
 

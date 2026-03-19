@@ -22,6 +22,7 @@ _ALLOWED_ENVIRONMENT_HINTS = set(_ALLOWED_SWAP_FOCUS)
 _ALLOWED_REQUESTED_LANES = {"qualification", "scene_memory", "evaluation_prep"}
 _ALLOWED_CAPTURE_MODALITIES = {
     "iphone_arkit_lidar",
+    "iphone_video_only",
     "glasses_video_only",
     "glasses_plus_scaffolding",
     "android_video_only",
@@ -359,14 +360,19 @@ def _resolve_capture_modality(
     capture_source: str,
     quality: Mapping[str, Any],
     scaffolding_used: List[str],
+    has_metric_arkit_bundle: bool,
+    evidence_tier_hint: Optional[str] = None,
 ) -> str:
     explicit = _optional_str(raw_modality)
     if explicit:
         lowered = explicit.lower()
         if lowered in _ALLOWED_CAPTURE_MODALITIES:
             return lowered
-    if capture_source == "iphone" and float(quality.get("pose_match_rate", 0.0) or 0.0) >= 0.9:
-        return "iphone_arkit_lidar"
+    evidence_tier = str(evidence_tier_hint or "").strip().lower()
+    if capture_source == "iphone":
+        if has_metric_arkit_bundle or evidence_tier == "qualified_metric_capture":
+            return "iphone_arkit_lidar"
+        return "iphone_video_only"
     if capture_source == "glasses" and scaffolding_used:
         return "glasses_plus_scaffolding"
     if capture_source == "glasses":
@@ -459,12 +465,49 @@ class CaptureDescriptor:
             raise ValueError("capture_descriptor.frames_index_uri is required")
 
         quality = data.get("quality") if isinstance(data.get("quality"), Mapping) else {}
-        metadata = data.get("metadata") if isinstance(data.get("metadata"), Mapping) else {}
+        raw_metadata = data.get("metadata") if isinstance(data.get("metadata"), Mapping) else {}
+        metadata = dict(raw_metadata)
+        for key in (
+            "scene_memory_capture",
+            "capture_rights",
+            "site_identity",
+            "capture_topology",
+            "capture_mode",
+            "route_anchors",
+            "checkpoint_events",
+        ):
+            if key in metadata:
+                continue
+            value = data.get(key)
+            if isinstance(value, Mapping):
+                metadata[key] = dict(value)
         capture_bundle = (
             data.get("capture_bundle") if isinstance(data.get("capture_bundle"), Mapping) else {}
         )
         scaffolding_used = _normalize_string_list(
             data.get("scaffolding_used") or capture_bundle.get("scaffolding_used")
+        )
+        arkit_poses_uri = (
+            _optional_str(data.get("arkit_poses_uri"))
+            or _optional_str(capture_bundle.get("arkit_poses_uri"))
+        )
+        arkit_intrinsics_uri = (
+            _optional_str(data.get("arkit_intrinsics_uri"))
+            or _optional_str(capture_bundle.get("arkit_intrinsics_uri"))
+        )
+        arkit_depth_prefix_uri = (
+            _optional_str(data.get("arkit_depth_prefix_uri"))
+            or _optional_str(capture_bundle.get("arkit_depth_prefix_uri"))
+        )
+        arkit_confidence_prefix_uri = (
+            _optional_str(data.get("arkit_confidence_prefix_uri"))
+            or _optional_str(capture_bundle.get("arkit_confidence_prefix_uri"))
+        )
+        evidence_tier_hint = _optional_str(
+            data.get("evidence_tier") or capture_bundle.get("evidence_tier")
+        )
+        has_metric_arkit_bundle = bool(
+            arkit_poses_uri and arkit_intrinsics_uri and arkit_depth_prefix_uri
         )
 
         swap_focus = _normalize_swap_focus(data.get("swap_focus"))
@@ -480,9 +523,11 @@ class CaptureDescriptor:
             capture_source=capture_source,
             quality=quality,
             scaffolding_used=scaffolding_used,
+            has_metric_arkit_bundle=has_metric_arkit_bundle,
+            evidence_tier_hint=evidence_tier_hint,
         )
         evidence_tier = _resolve_evidence_tier(
-            data.get("evidence_tier") or capture_bundle.get("evidence_tier"),
+            evidence_tier_hint,
             capture_modality,
             quality,
         )
@@ -503,22 +548,10 @@ class CaptureDescriptor:
             privacy_mode=_optional_str(data.get("privacy_mode")),
             privacy_manifest_uri=_optional_str(data.get("privacy_manifest_uri")),
             keyframe_uri=_optional_str(data.get("keyframe_uri")),
-            arkit_poses_uri=(
-                _optional_str(data.get("arkit_poses_uri"))
-                or _optional_str(capture_bundle.get("arkit_poses_uri"))
-            ),
-            arkit_intrinsics_uri=(
-                _optional_str(data.get("arkit_intrinsics_uri"))
-                or _optional_str(capture_bundle.get("arkit_intrinsics_uri"))
-            ),
-            arkit_depth_prefix_uri=(
-                _optional_str(data.get("arkit_depth_prefix_uri"))
-                or _optional_str(capture_bundle.get("arkit_depth_prefix_uri"))
-            ),
-            arkit_confidence_prefix_uri=(
-                _optional_str(data.get("arkit_confidence_prefix_uri"))
-                or _optional_str(capture_bundle.get("arkit_confidence_prefix_uri"))
-            ),
+            arkit_poses_uri=arkit_poses_uri,
+            arkit_intrinsics_uri=arkit_intrinsics_uri,
+            arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+            arkit_confidence_prefix_uri=arkit_confidence_prefix_uri,
             depth_conditioning=(
                 dict(data.get("depth_conditioning"))
                 if isinstance(data.get("depth_conditioning"), Mapping)

@@ -106,6 +106,7 @@ def run_retrieval_index_stage(
             raise PipelineError(f"No geometry poses available for retrieval indexing at {ctx.capture_root}")
 
         selected = _select_frames(poses=poses, frames_quality=frames_quality)
+        _apply_route_anchor_observations(selected=selected, ctx=ctx, descriptor=descriptor)
         model = embedding_model or _load_dinov3()
         dense_records = _build_dense_records(
             selected=selected,
@@ -198,7 +199,8 @@ def _ensure_geometry_for_capture(
     ctx: LocalCaptureContext,
     descriptor: Dict[str, Any],
 ) -> Dict[str, Any]:
-    if str(descriptor.get("capture_source") or "").strip().lower() == "iphone":
+    capture_modality = str(descriptor.get("capture_modality") or "").strip().lower()
+    if capture_modality == "iphone_arkit_lidar":
         return descriptor
     geometry_summary_path = ctx.pipeline_root / "geometry" / "geometry_summary.json"
     geometry_ready = bool(descriptor.get("geometry_ready")) or bool((descriptor.get("quality") or {}).get("geometry_ready"))
@@ -331,6 +333,137 @@ def _load_frames_quality_index(frames_path: Path) -> Dict[str, Dict[str, Any]]:
         fid = str(int(frame_idx)).zfill(6)
         index[fid] = row
     return index
+
+
+def _read_optional_json(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = read_json(path)
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _descriptor_zone_id(descriptor: Dict[str, Any]) -> Optional[str]:
+    meta = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), dict) else {}
+    site_identity = meta.get("site_identity") if isinstance(meta.get("site_identity"), dict) else {}
+    zone_id = str(site_identity.get("zone_id") or "").strip()
+    return zone_id or None
+
+
+def _normalized_route_anchors(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = payload.get("route_anchors") or payload.get("routeAnchors")
+    if not isinstance(raw, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            {
+                "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip() or None,
+                "anchor_type": str(item.get("anchor_type") or item.get("anchorType") or "").strip() or None,
+            }
+        )
+    return normalized
+
+
+def _normalized_checkpoint_events(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = payload.get("checkpoint_events") or payload.get("checkpointEvents")
+    if not isinstance(raw, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        t_capture_sec = item.get("t_capture_sec")
+        if t_capture_sec is None:
+            t_capture_sec = item.get("tCaptureSec")
+        normalized.append(
+            {
+                "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip() or None,
+                "pass_id": str(item.get("pass_id") or item.get("passId") or "").strip() or None,
+                "t_capture_sec": float(t_capture_sec) if t_capture_sec is not None else None,
+                "completed": bool(item.get("completed")),
+            }
+        )
+    return normalized
+
+
+def _attach_anchor_to_nearest_selected(
+    *,
+    selected: List[Dict[str, Any]],
+    anchor_id: str,
+    t_capture_sec: float,
+    max_delta_sec: float = 1.0,
+) -> None:
+    nearest: Optional[Dict[str, Any]] = None
+    nearest_delta = float("inf")
+    for entry in selected:
+        entry_time = entry.get("t_capture_sec")
+        if entry_time is None:
+            continue
+        delta = abs(float(entry_time) - t_capture_sec)
+        if delta < nearest_delta:
+            nearest = entry
+            nearest_delta = delta
+    if nearest is None or nearest_delta > max_delta_sec:
+        return
+    observations = nearest.setdefault("anchor_observations", [])
+    if isinstance(observations, list) and anchor_id not in observations:
+        observations.append(anchor_id)
+
+
+def _apply_route_anchor_observations(
+    *,
+    selected: List[Dict[str, Any]],
+    ctx: LocalCaptureContext,
+    descriptor: Dict[str, Any],
+) -> None:
+    if not selected:
+        return
+
+    zone_id = _descriptor_zone_id(descriptor)
+    if zone_id:
+        for entry in selected:
+            if entry.get("zone_id") is None:
+                entry["zone_id"] = zone_id
+
+    route_anchors = _normalized_route_anchors(_read_optional_json(ctx.raw_root / "route_anchors.json"))
+    checkpoint_events = _normalized_checkpoint_events(_read_optional_json(ctx.raw_root / "checkpoint_events.json"))
+    topology = (
+        (descriptor.get("metadata") or {}).get("capture_topology")
+        if isinstance(descriptor.get("metadata"), dict)
+        else {}
+    )
+    if not isinstance(topology, dict):
+        topology = {}
+
+    for event in checkpoint_events:
+        if not event["completed"] or not event["anchor_id"] or event["t_capture_sec"] is None:
+            continue
+        _attach_anchor_to_nearest_selected(
+            selected=selected,
+            anchor_id=str(event["anchor_id"]),
+            t_capture_sec=float(event["t_capture_sec"]),
+        )
+
+    entry_anchor_id = str(topology.get("entry_anchor_id") or "").strip()
+    entry_anchor_t_capture_sec = topology.get("entry_anchor_t_capture_sec")
+    if entry_anchor_id and entry_anchor_t_capture_sec is not None:
+        _attach_anchor_to_nearest_selected(
+            selected=selected,
+            anchor_id=entry_anchor_id,
+            t_capture_sec=float(entry_anchor_t_capture_sec),
+        )
+    elif entry_anchor_id and route_anchors:
+        _attach_anchor_to_nearest_selected(
+            selected=selected,
+            anchor_id=entry_anchor_id,
+            t_capture_sec=float(selected[0].get("t_capture_sec") or 0.0),
+            max_delta_sec=float("inf"),
+        )
 
 
 def _parse_frame_intrinsics(row: Dict[str, Any]) -> Optional[Dict[str, float]]:

@@ -170,7 +170,7 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
 
 def remaining_runtime_requirements() -> Dict[str, list[str]]:
     return {
-        "optional_site_world_runtime": ["NEOVERSE_RUNTIME_SERVICE_URL"],
+        "optional_site_world_runtime": ["SITE_WORLD_RUNTIME_SERVICE_URL"],
         "agent_review_openai": [
             "codex CLI installed",
             "Codex login via local OAuth/session",
@@ -189,9 +189,12 @@ def run_local_bundle_workflow(
     force: bool = False,
     run_qualification: bool = False,
     run_evaluation_prep: bool = False,
+    pipeline_lane: str = "qualification",
 ) -> Dict[str, Any]:
     if run_evaluation_prep and not run_qualification:
         raise PipelineError("--run-evaluation-prep requires --run-qualification")
+    if pipeline_lane not in {"qualification", "scene_memory"}:
+        raise PipelineError(f"Unsupported local workflow pipeline lane: {pipeline_lane}")
 
     capture_root = stage_local_bundle(
         source_bundle=source_bundle,
@@ -222,7 +225,7 @@ def run_local_bundle_workflow(
     if run_qualification:
         qualification_result = run_capture_pipeline(
             descriptor_gcs_uri=context.descriptor_uri,
-            lane="qualification",
+            lane=pipeline_lane,
             config=PipelineConfig(
                 gcs_root=context.storage_root,
             ),
@@ -239,6 +242,7 @@ def run_local_bundle_workflow(
         "storage_root": str(Path(storage_root).resolve()),
         "bucket": bucket,
         "mode": mode,
+        "pipeline_lane": pipeline_lane,
         "preflight": preflight,
         "materialization": materialization_result,
         "qualification": qualification_result,

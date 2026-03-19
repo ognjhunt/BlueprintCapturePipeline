@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
 from .capture_enrichment_llm import build_capture_enrichment_runner
+from .alpha_readiness import write_alpha_readiness_summary, write_pipeline_sync_result
 from .common import (
     PipelineError,
     StageError,
@@ -196,15 +197,15 @@ def _canonical_world_model_payload(
     )
     status = "ready" if primary_asset is not None else "missing"
     return {
-        "world_model_backend": "neoverse",
-        "primary_runtime_backend": "neoverse",
+        "world_model_backend": "site_world_runtime",
+        "primary_runtime_backend": "site_world_runtime",
         "scene_representation": "advanced_geometry_3dgs" if primary_asset is not None else "pending_world_model_service",
         "render_source": "canonical_world_model" if primary_asset is not None else "pending_world_model_service",
         "fallback_mode": "none",
         "evidence_mode": "full_capture_persistent_scene",
         "primary_render_asset_role": "authoritative_runtime_render_asset",
-        "renderer_backend": "neoverse" if primary_asset is not None else None,
-        "bundle_type": "neoverse_video_world_model_v1" if primary_asset is not None else None,
+        "renderer_backend": "site_world_runtime" if primary_asset is not None else None,
+        "bundle_type": "site_world_runtime_video_world_model_v1" if primary_asset is not None else None,
         "status": status,
         "primary_asset_path": str(primary_asset.get("path") or "") if primary_asset else "",
         "primary_asset_uri": str(primary_asset.get("uri") or "") if primary_asset else "",
@@ -766,9 +767,9 @@ def attach_handoff_package_paths(
                 handoff_dir,
                 scene_memory_manifest.parent / "adapter_manifests" / "gen3c.json",
             ),
-            "neoverse_adapter_manifest_path": _relative_path_from(
+            "site_world_runtime_adapter_manifest_path": _relative_path_from(
                 handoff_dir,
-                scene_memory_manifest.parent / "adapter_manifests" / "neoverse.json",
+                scene_memory_manifest.parent / "adapter_manifests" / "site_world_runtime.json",
             ),
             "cosmos_transfer_adapter_manifest_path": _relative_path_from(
                 handoff_dir,
@@ -1128,13 +1129,13 @@ def _write_scene_memory_bundle(
         capture_orientation=capture_orientation,
     )
     runtime_render_source = (
-        "neoverse_full_capture"
+        "site_world_runtime_full_capture"
         if descriptor.raw_video_uri and descriptor.arkit_poses_uri and descriptor.arkit_intrinsics_uri
         else str(canonical_world_model.get("render_source") or "unavailable")
     )
     scene_representation = (
-        "neoverse_video_world_model_v1"
-        if runtime_render_source == "neoverse_full_capture"
+        "site_world_runtime_video_world_model_v1"
+        if runtime_render_source == "site_world_runtime_full_capture"
         else str(canonical_world_model.get("scene_representation") or "unavailable")
     )
     conditioning_bundle = with_grounding_fields({
@@ -1181,7 +1182,7 @@ def _write_scene_memory_bundle(
             "summary": dict(geometry_summary) if isinstance(geometry_summary, Mapping) else {},
         },
         "depth_conditioning": dict(effective_depth_conditioning),
-        "primary_runtime_backend": "neoverse",
+        "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": canonical_world_model,
         "runtime_render_source": runtime_render_source,
         "fallback_mode": "arkit_rgbd_last_resort",
@@ -1236,7 +1237,7 @@ def _write_scene_memory_bundle(
             "summary": dict(geometry_summary) if isinstance(geometry_summary, Mapping) else {},
         },
         "depth_conditioning": dict(effective_depth_conditioning),
-        "primary_runtime_backend": "neoverse",
+        "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": canonical_world_model,
         "runtime_render_source": runtime_render_source,
         "fallback_mode": "arkit_rgbd_last_resort",
@@ -1272,12 +1273,12 @@ def _write_scene_memory_bundle(
             ],
             "status": "available_stage1_remote",
         },
-        "neoverse": {
+        "site_world_runtime": {
             "family": "Site world runtime",
             "preferred_conditioning": ["rgb_video", "camera_trajectory", "feed_forward_4d_reconstruction"],
             "required_conditioning": ["rgb_video"],
             "execution_mode": "local_gpu_runtime",
-            "reconstruction_backend_name": "neoverse",
+            "reconstruction_backend_name": "site_world_runtime",
             "service_contract_version": "stage1_world_model_local_v1",
             "normalized_output_contract": [
                 "export_last.usdz",
@@ -1352,7 +1353,7 @@ def _write_scene_memory_bundle(
         "generated_at": utc_now_iso(),
         "status": "prep_ready" if readiness_payload["status"] == "ready" else "review_required",
         "scene_memory_manifest_uri": scene_memory_manifest_uri,
-        "supported_backends": ["gen3c", "neoverse", "cosmos_transfer"],
+        "supported_backends": ["gen3c", "site_world_runtime", "cosmos_transfer"],
         "note": "Low-volume preview generation only. High-volume synthetic frames and datasets belong in BlueprintValidation.",
         "world_model_policy": policy.to_dict(),
         "canonical_artifact_uri": scene_memory_manifest_uri,
@@ -1406,6 +1407,30 @@ def _write_scene_memory_bundle(
         supporting_assets=supporting_assets,
         render_inputs=render_inputs,
     )
+    if isinstance(primary_asset, Mapping):
+        authoritative_runtime_render_manifest = with_grounding_fields({
+            "schema_version": "v1",
+            "scene_id": descriptor.scene_id,
+            "capture_id": descriptor.capture_id,
+            "generated_at": utc_now_iso(),
+            "status": "ready",
+            "world_model_backend": "site_world_runtime",
+            "scene_representation": "advanced_geometry_3dgs",
+            "render_source": "canonical_world_model",
+            "fallback_mode": "none",
+            "renderer_backend": "site_world_runtime",
+            "bundle_type": "site_world_runtime_video_world_model_v1",
+            "primary_asset_uri": primary_asset.get("uri"),
+            "primary_asset_path": primary_asset.get("path"),
+            "primary_asset_source": primary_asset.get("source_name"),
+            "supporting_assets": supporting_assets,
+            "orientation": capture_orientation,
+            "provenance": presentation_provenance,
+        }, provenance=presentation_provenance)
+        write_json(
+            presentation_dir / "authoritative_runtime_render_manifest.json",
+            authoritative_runtime_render_manifest,
+        )
     presentation_bundle = with_grounding_fields({
         "schema_version": "v1",
         "lane": "presentation_world_bundle",
@@ -1517,7 +1542,7 @@ def _write_scene_memory_bundle(
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
         "status": demo_status,
-        "primary_runtime_backend": "neoverse",
+        "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": canonical_world_model,
         "runtime_render_source": runtime_render_source,
         "fallback_mode": "arkit_rgbd_last_resort",
@@ -2419,7 +2444,7 @@ def _empty_downstream_artifacts() -> Dict[str, Any]:
         "presentation_world_manifest_uri": None,
         "runtime_demo_manifest_uri": None,
         "gen3c_adapter_manifest_uri": None,
-        "neoverse_adapter_manifest_uri": None,
+        "site_world_runtime_adapter_manifest_uri": None,
         "cosmos_transfer_adapter_manifest_uri": None,
         "scene_memory_status": "not_requested",
         "preview_simulation_status": "not_requested",
@@ -4528,7 +4553,7 @@ def run_qualification_pipeline(
                 "presentation_world_manifest": scene_memory_artifacts["presentation_world_manifest_uri"],
                 "runtime_demo_manifest": scene_memory_artifacts["runtime_demo_manifest_uri"],
                 "gen3c_adapter_manifest": scene_memory_artifacts["gen3c_adapter_manifest_uri"],
-                "neoverse_adapter_manifest": scene_memory_artifacts["neoverse_adapter_manifest_uri"],
+                "site_world_runtime_adapter_manifest": scene_memory_artifacts["site_world_runtime_adapter_manifest_uri"],
                 "cosmos_transfer_adapter_manifest": scene_memory_artifacts["cosmos_transfer_adapter_manifest_uri"],
                 **(
                     {"privacy_processed_video": str(privacy_processing.get("privacy_processed_video_uri"))}
@@ -4794,7 +4819,12 @@ def run_qualification_pipeline(
             raise StageError("webapp_sync", str(exc)) from exc
         if webapp_sync_result is None:
             webapp_sync_result = {"status": "skipped", "reason": "sync_returned_none"}
-        write_json(webapp_sync_result_path, webapp_sync_result)
+        write_pipeline_sync_result(
+            pipeline_root=pipeline_dir,
+            stage="qualification",
+            result=webapp_sync_result,
+        )
+        write_alpha_readiness_summary(capture_root=capture_root)
 
         return {
             "status": "completed",

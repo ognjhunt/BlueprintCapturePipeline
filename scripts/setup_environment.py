@@ -121,11 +121,11 @@ def check_privacy_command(name: str) -> CheckResult:
     return False, f"{name} not configured"
 
 
-def check_neoverse_runtime() -> CheckResult:
-    service_url = str(os.getenv("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip()
+def check_site_world_runtime() -> CheckResult:
+    service_url = str(os.getenv("SITE_WORLD_RUNTIME_SERVICE_URL") or "").strip()
     if service_url:
         return True, service_url
-    return False, "NEOVERSE_RUNTIME_SERVICE_URL is not configured"
+    return False, "SITE_WORLD_RUNTIME_SERVICE_URL is not configured"
 
 
 def backend_checks() -> Dict[str, Mapping[str, object]]:
@@ -179,8 +179,8 @@ def run_checks() -> Dict[str, CheckResult]:
         checks[name.lower()] = check_privacy_command(name)
         print_status(checks[name.lower()][1], "ok" if checks[name.lower()][0] else "info")
 
-    checks["neoverse_runtime"] = check_neoverse_runtime()
-    print_status(checks["neoverse_runtime"][1], "ok" if checks["neoverse_runtime"][0] else "warn")
+    checks["site_world_runtime"] = check_site_world_runtime()
+    print_status(checks["site_world_runtime"][1], "ok" if checks["site_world_runtime"][0] else "warn")
 
     print_header("Object Index Backends")
     for backend, payload in backend_checks().items():

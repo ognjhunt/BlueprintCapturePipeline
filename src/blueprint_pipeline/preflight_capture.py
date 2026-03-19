@@ -12,13 +12,57 @@ from .local_capture import LocalCaptureContext, resolve_local_capture_context
 from .materialization import preview_capture_bundle
 
 
-def _required_raw_entries(context: LocalCaptureContext) -> Dict[str, Path]:
-    return {
+def _string_value(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _uses_open_capture_intake_fallback(
+    *,
+    context: LocalCaptureContext,
+    manifest: Mapping[str, Any],
+    capture_context: Mapping[str, Any],
+) -> bool:
+    special_task_type = _string_value(
+        capture_context.get("special_task_type"),
+        capture_context.get("specialTaskType"),
+        manifest.get("special_task_type"),
+        manifest.get("specialTaskType"),
+    ).lower()
+    if special_task_type != "open_capture":
+        return False
+
+    task_hypothesis = optional_read_json(context.raw_root / "task_hypothesis.json") or {}
+    accepted_statuses = {"accepted", "accepted_with_warnings"}
+    hypothesis_status = _string_value(
+        task_hypothesis.get("status"),
+        capture_context.get("task_hypothesis_status"),
+        capture_context.get("taskHypothesisStatus"),
+    ).lower()
+    return hypothesis_status in accepted_statuses
+
+
+def _required_raw_entries(
+    context: LocalCaptureContext,
+    *,
+    manifest: Mapping[str, Any],
+    capture_context: Mapping[str, Any],
+) -> Dict[str, Path]:
+    required = {
         "manifest": context.raw_root / "manifest.json",
-        "intake_packet": context.raw_root / "intake_packet.json",
         "capture_context": context.raw_root / "capture_context.json",
         "capture_upload_complete": context.raw_complete_path,
     }
+    if not _uses_open_capture_intake_fallback(
+        context=context,
+        manifest=manifest,
+        capture_context=capture_context,
+    ):
+        required["intake_packet"] = context.raw_root / "intake_packet.json"
+    return required
 
 
 def _video_candidates(raw_root: Path, manifest: Mapping[str, Any]) -> List[str]:
@@ -37,10 +81,14 @@ def _video_candidates(raw_root: Path, manifest: Mapping[str, Any]) -> List[str]:
 
 def build_capture_preflight_report(capture_root: str | Path) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
-    required_entries = _required_raw_entries(context)
-    manifest = optional_read_json(required_entries["manifest"]) or {}
-    intake = optional_read_json(required_entries["intake_packet"]) or {}
-    capture_context = optional_read_json(required_entries["capture_context"]) or {}
+    manifest = optional_read_json(context.raw_root / "manifest.json") or {}
+    intake = optional_read_json(context.raw_root / "intake_packet.json") or {}
+    capture_context = optional_read_json(context.raw_root / "capture_context.json") or {}
+    required_entries = _required_raw_entries(
+        context,
+        manifest=manifest,
+        capture_context=capture_context,
+    )
     preview = preview_capture_bundle(
         bucket=context.bucket,
         scene_id=context.scene_id,
@@ -77,6 +125,15 @@ def build_capture_preflight_report(capture_root: str | Path) -> Dict[str, Any]:
         notes.append("This capture can produce a qualification report, but it will not return ready.")
     if intake_missing:
         notes.append("Intake is incomplete and still requires human completion before decision-grade use.")
+    intake_packet_waived = not (context.raw_root / "intake_packet.json").is_file() and _uses_open_capture_intake_fallback(
+        context=context,
+        manifest=manifest,
+        capture_context=capture_context,
+    )
+    if intake_packet_waived:
+        notes.append(
+            "Structured intake packet is missing, but open-capture metadata with an accepted task hypothesis is sufficient to run qualification."
+        )
 
     return {
         "schema_version": "v1",
@@ -91,6 +148,7 @@ def build_capture_preflight_report(capture_root: str | Path) -> Dict[str, Any]:
             name: {"path": str(path), "present": path.is_file()}
             for name, path in required_entries.items()
         },
+        "intake_packet_waived": intake_packet_waived,
         "video_candidates": video_candidates,
         "intake_missing_fields": intake_missing,
         "qa_preview": qa_report,
