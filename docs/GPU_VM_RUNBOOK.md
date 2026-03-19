@@ -33,6 +33,7 @@ From the repo root:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+source .env.vast.local   # if present; ignored local secrets file
 ./scripts/install_ml_stack.sh
 python3 scripts/setup_environment.py --check
 ```
@@ -41,12 +42,14 @@ Default bootstrap installs the supported runtime path:
 
 - CUDA PyTorch
 - repo package plus `runtime` dependencies
+- official Cosmos runtime package plus LoRA-training support libraries
 - ffmpeg and base system tools
 - YOLO-World runtime dependencies
 - helper scripts already present in this repo, including `scripts/sam3_detect.py`
 
 Optional installs:
 
+- `./scripts/install_ml_stack.sh --skip-cosmos`
 - `./scripts/install_ml_stack.sh --with-sam3`
 - `./scripts/install_ml_stack.sh --with-da3`
 - `./scripts/install_ml_stack.sh --with-fixer`
@@ -61,21 +64,32 @@ SAM3 is optional. If it is not installed or `SAM3_WEIGHTS_PATH` does not point t
 Required for downstream site-world runtime handoff:
 
 ```bash
-export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
+export SITE_WORLD_RUNTIME_SERVICE_URL="http://127.0.0.1:8791"
 ```
 
 Optional:
 
 ```bash
-export NEOVERSE_RUNTIME_SERVICE_API_KEY=""
-export NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS="120"
+export SITE_WORLD_RUNTIME_SERVICE_API_KEY=""
+export SITE_WORLD_RUNTIME_SERVICE_TIMEOUT_SECONDS="120"
 export WORLD_MODEL_EMIT_PRESENTATION="true"
 export WORLD_MODEL_ALLOW_GENERATIVE_COMPLETION="limited"
 export HF_HOME="/opt/hf"
+export HF_TOKEN=""
+export HUGGINGFACE_HUB_TOKEN="$HF_TOKEN"
+export NGC_API_KEY=""
 export SAM3_WEIGHTS_PATH="/opt/sam3_weights/sam3.pt"
+export COSMOS_MODEL_ID="nvidia/Cosmos-Predict2.5-2B"
+export COSMOS_TRAINER_ENTRYPOINT="/opt/cosmos/train_lora.py"
+export COSMOS_TRAINER_ENTRYPOINT_MODE="script"
+export COSMOS_TRAINER_LAUNCHER="accelerate"
+export COSMOS_TRAINER_NUM_PROCESSES="1"
+export COSMOS_TRAINING_COMMAND="blueprint-cosmos-vast-train --trainer-config {trainer_config_path} --output-dir {output_dir} --export-manifest {export_manifest_path} --capture-root {capture_root} --paired-reference-target {paired_reference_target_path} --k-reference-conditioning {k_reference_conditioning_path} --train-val-split {train_val_split_path}"
 export BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL=""
 export BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL=""
 ```
+
+The wrapper command above is the supported VM entrypoint for the LoRA lane. It standardizes dataset/env wiring and then delegates to the real trainer specified by `COSMOS_TRAINER_ENTRYPOINT`.
 
 ## Stage and run
 
@@ -126,12 +140,11 @@ From the BlueprintValidation repo:
 ```bash
 cd /Users/nijelhunt_1/workspace/BlueprintValidation
 uv sync --extra vision
-export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
-export NEOVERSE_MODEL_ROOT="/path/to/runtime/model"
-export NEOVERSE_CHECKPOINT_PATH="/path/to/runtime/checkpoint.pt"
-export NEOVERSE_RUNNER_COMMAND="/path/to/runtime-runner"
+export SITE_WORLD_RUNTIME_SERVICE_URL="http://127.0.0.1:8791"
 
-blueprint-neoverse-runtime
+cd /Users/nijelhunt_1/workspace/BlueprintCapturePipeline
+source .venv/bin/activate
+blueprint-native-runtime-service
 ```
 
 Use the production-only validation config in [`BlueprintValidation/configs/example_validation.yaml`](../../BlueprintValidation/configs/example_validation.yaml).
@@ -140,7 +153,7 @@ Run production preflight:
 
 ```bash
 blueprint-validate --config configs/example_validation.yaml \
-  --required-runtime-kind neoverse_production \
+  --required-runtime-kind native_world_model \
   preflight \
   --site-world-registration /data/blueprint-storage/local-blueprint/scenes/<scene>/captures/<capture>/pipeline/evaluation_prep/site_world_registration.json
 ```
@@ -149,7 +162,7 @@ Minimal session flow against the production runtime:
 
 ```bash
 blueprint-validate --config configs/example_validation.yaml \
-  --required-runtime-kind neoverse_production \
+  --required-runtime-kind native_world_model \
   session create \
   --session-id validation-session \
   --session-work-dir data/session-validation \

@@ -8,10 +8,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+if [ -f "${REPO_ROOT}/.env.vast.local" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/.env.vast.local"
+  set +a
+fi
+
+if [ -n "${HF_TOKEN:-}" ] && [ -z "${HUGGINGFACE_HUB_TOKEN:-}" ]; then
+  export HUGGINGFACE_HUB_TOKEN="${HF_TOKEN}"
+fi
+
+if [ -n "${NVIDIA_NGC_API_KEY:-}" ] && [ -z "${NGC_API_KEY:-}" ]; then
+  export NGC_API_KEY="${NVIDIA_NGC_API_KEY}"
+fi
+
 WITH_SAM3=false
 WITH_DA3=false
 WITH_LOCAL_QWEN=false
 WITH_DEEPPRIVACY2=false
+WITH_COSMOS=true
 SKIP_PREWARM=false
 
 HF_CACHE_DIR="${HF_HOME:-/opt/hf}"
@@ -28,6 +44,12 @@ NVIDIA_PYPI_INDEX="${NVIDIA_PYPI_INDEX:-https://pypi.nvidia.com}"
 TORCH_VERSION="${TORCH_VERSION:-2.6.0}"
 TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.21.0}"
 YOLO_WORLD_MODEL="${YOLO_WORLD_MODEL:-yolov8s-worldv2.pt}"
+COSMOS_PREDICT_PACKAGE="${COSMOS_PREDICT_PACKAGE:-cosmos-predict2-5}"
+COSMOS_PREDICT_VERSION="${COSMOS_PREDICT_VERSION:-}"
+COSMOS_MODEL_ID="${COSMOS_MODEL_ID:-nvidia/Cosmos-Predict2.5-2B}"
+COSMOS_PREWARM_MODEL="${COSMOS_PREWARM_MODEL:-false}"
+COSMOS_TRAINER_LAUNCHER="${COSMOS_TRAINER_LAUNCHER:-accelerate}"
+COSMOS_TRAINING_COMMAND_DEFAULT="blueprint-cosmos-vast-train --trainer-config {trainer_config_path} --output-dir {output_dir} --export-manifest {export_manifest_path} --capture-root {capture_root} --paired-reference-target {paired_reference_target_path} --k-reference-conditioning {k_reference_conditioning_path} --train-val-split {train_val_split_path}"
 
 if [ "$(id -u)" -eq 0 ]; then
   SUDO=""
@@ -56,6 +78,7 @@ Default install:
   - YOLO-World cache prewarm
 
 Optional installs:
+  --skip-cosmos       Skip official Cosmos runtime install
   --with-sam3         Install optional SAM3 runtime from source
   --with-da3          Install optional Depth Anything 3 runtime + weights
   --with-local-qwen   Install optional local Qwen image-edit weights
@@ -69,6 +92,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --with-sam3)
       WITH_SAM3=true
+      shift
+      ;;
+    --skip-cosmos)
+      WITH_COSMOS=false
       shift
       ;;
     --with-da3)
@@ -149,6 +176,31 @@ install_python_runtime() {
   python3 -m pip install --no-cache-dir -e "${REPO_ROOT}[runtime]"
 }
 
+install_cosmos_runtime() {
+  local package_spec="${COSMOS_PREDICT_PACKAGE}"
+  if [ -n "${COSMOS_PREDICT_VERSION}" ]; then
+    package_spec="${package_spec}==${COSMOS_PREDICT_VERSION}"
+  fi
+
+  log "Installing Cosmos runtime and trainer support..."
+  python3 -m pip install --no-cache-dir \
+    --extra-index-url "${NVIDIA_PYPI_INDEX}" \
+    "${package_spec}" \
+    diffusers \
+    accelerate \
+    transformers \
+    safetensors \
+    peft \
+    datasets
+
+  if [ -z "${NGC_API_KEY:-}" ]; then
+    log "WARNING: NGC_API_KEY is not set. Official Cosmos package may install, but model downloads may still fail."
+  fi
+  if [ -z "${HUGGINGFACE_HUB_TOKEN:-}" ] && [ -z "${HF_TOKEN:-}" ]; then
+    log "WARNING: Hugging Face token is not set. HF fallback model downloads may fail."
+  fi
+}
+
 prewarm_yolo_world() {
   log "Prewarming YOLO-World model cache..."
   HF_HOME="${HF_CACHE_DIR}" python3 - <<PY
@@ -202,6 +254,34 @@ install_deepprivacy2() {
 }
 
 prewarm_optional_models() {
+  if [ "${WITH_COSMOS}" = true ]; then
+    log "Validating Cosmos runtime install..."
+    HF_HOME="${HF_CACHE_DIR}" COSMOS_MODEL_ID="${COSMOS_MODEL_ID}" python3 - <<'PY'
+import importlib.util
+import os
+
+packages = {
+    "cosmos_predict2_5": importlib.util.find_spec("cosmos_predict2_5") is not None,
+    "diffusers": importlib.util.find_spec("diffusers") is not None,
+    "accelerate": importlib.util.find_spec("accelerate") is not None,
+    "peft": importlib.util.find_spec("peft") is not None,
+}
+if not packages["cosmos_predict2_5"]:
+    raise SystemExit("Official Cosmos package is not importable after bootstrap")
+print(f"COSMOS_RUNTIME_READY {os.environ.get('COSMOS_MODEL_ID') or 'nvidia/Cosmos-Predict2.5-2B'} {packages}")
+PY
+
+    if [ "${COSMOS_PREWARM_MODEL}" = "true" ]; then
+      log "Attempting Cosmos model prewarm..."
+      HF_HOME="${HF_CACHE_DIR}" COSMOS_MODEL_ID="${COSMOS_MODEL_ID}" python3 - <<'PY'
+from blueprint_pipeline.synthesis.cosmos_inference import load_cosmos_model
+
+model = load_cosmos_model()
+print(f"COSMOS_MODEL_READY {type(model).__name__}")
+PY
+    fi
+  fi
+
   if [ "${WITH_SAM3}" = true ] && [ -f "${SAM3_WEIGHTS_PATH}" ]; then
     log "Validating SAM3 optional runtime..."
     HF_HOME="${HF_CACHE_DIR}" SAM3_WEIGHTS_PATH="${SAM3_WEIGHTS_PATH}" python3 - <<'PY'
@@ -250,6 +330,9 @@ export DA3_MODEL_NAME=${DA3_MODEL_NAME}
 export QWEN_IMAGE_EDIT_MODEL_PATH=${QWEN_EDIT_DIR}
 export DEEPPRIVACY2_DIR=${DEEPPRIVACY2_DIR}
 export DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH}
+export COSMOS_MODEL_ID=${COSMOS_MODEL_ID}
+export COSMOS_TRAINER_LAUNCHER=${COSMOS_TRAINER_LAUNCHER}
+export COSMOS_TRAINING_COMMAND='${COSMOS_TRAINING_COMMAND:-${COSMOS_TRAINING_COMMAND_DEFAULT}}'
 export CROP_CLEANUP_PROVIDER=skip
 EOF
 }
@@ -281,6 +364,9 @@ mkdir -p "${HF_CACHE_DIR}"
 
 install_system_dependencies
 install_python_runtime
+if [ "${WITH_COSMOS}" = true ]; then
+  install_cosmos_runtime
+fi
 
 if [ "${WITH_SAM3}" = true ]; then
   install_sam3

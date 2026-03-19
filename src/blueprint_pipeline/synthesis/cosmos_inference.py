@@ -29,9 +29,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
 import numpy as np
+
+from ..model_access_env import normalize_model_access_env
+
+
+normalize_model_access_env()
 
 
 _DEFAULT_COSMOS_MODEL_ID = os.getenv(

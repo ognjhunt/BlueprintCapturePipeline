@@ -23,11 +23,13 @@ classifiers = [
 ]
 
 dependencies = [
-    "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@2933580347090ad01c2bdfb0b56d7c0535924feb",
+    "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@9c076bd812a7b3530ac2fa1312d6e0dfa74eb21b",
     "pyyaml>=6.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
+    "fastapi>=0.115.0",
     "google-cloud-storage>=2.10.0",
+    "uvicorn>=0.30.0",
 ]
 
 [project.optional-dependencies]
@@ -53,6 +55,7 @@ validation = [
     "jsonschema>=4.23.0",
 ]
 dev = [
+    "httpx>=0.28.0",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "jsonschema>=4.23.0",
@@ -69,6 +72,8 @@ blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"
 blueprint-build-object-geometry = "blueprint_pipeline.object_geometry_stage:main"
 blueprint-build-evaluation-prep = "blueprint_pipeline.evaluation_prep_stage:main"
 blueprint-video-to-world-runner = "blueprint_pipeline.video_to_world_runner_service:main"
+blueprint-native-runtime-service = "blueprint_pipeline.native_runtime_service:main"
+blueprint-cosmos-vast-train = "blueprint_pipeline.synthesis.cosmos_vast_training_wrapper:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

@@ -98,7 +98,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--pipeline-lane",
         default="qualification",
-        choices=("qualification", "scene_memory", "evaluation_prep", "retrieval_index", "frame_alignment", "synthesis_coverage_validation", "all"),
+        choices=("qualification", "scene_memory", "evaluation_prep", "retrieval_index", "frame_alignment", "synthesis_coverage_validation", "cosmos_single_capture_smoke", "all"),
     )
     parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))
     parser.add_argument("--openai-phase2-model")
