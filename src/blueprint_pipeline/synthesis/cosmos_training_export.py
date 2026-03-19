@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from ..common import ensure_dir, read_json_any, utc_now_iso, write_json
+from ..common import ensure_dir, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
 from ..local_capture import resolve_local_capture_context
 from .plucker_rays import compute_plucker_map
 
@@ -70,10 +70,93 @@ def _split_name(frame_id: str) -> str:
     return "val" if int(digest[:2], 16) < 51 else "train"
 
 
+def _read_pose_rows(path: Path) -> List[Dict[str, Any]]:
+    rows = _read_jsonl(path)
+    return [row for row in rows if row.get("T_world_camera") or row.get("transform")]
+
+
+def _extract_video_bootstrap_records(
+    *,
+    context,
+    conditioning_bundle: Mapping[str, Any],
+    export_root: Path,
+    max_frames: int,
+) -> List[Dict[str, Any]]:
+    raw_video_uri = str(conditioning_bundle.get("raw_video_uri") or "").strip()
+    arkit = dict(conditioning_bundle.get("arkit") or {}) if isinstance(conditioning_bundle.get("arkit"), Mapping) else {}
+    poses_uri = str(arkit.get("poses_uri") or "").strip()
+    intrinsics_uri = str(arkit.get("intrinsics_uri") or "").strip()
+    if not raw_video_uri or not poses_uri or not intrinsics_uri:
+        return []
+
+    video_path = resolve_gs_uri_to_path(raw_video_uri, context.storage_root)
+    poses_path = resolve_gs_uri_to_path(poses_uri, context.storage_root)
+    intrinsics_path = resolve_gs_uri_to_path(intrinsics_uri, context.storage_root)
+    if not video_path.is_file() or not poses_path.is_file() or not intrinsics_path.is_file():
+        return []
+
+    pose_rows = _read_pose_rows(poses_path)
+    intrinsics_payload = read_json_any(intrinsics_path)
+    intrinsics = dict(intrinsics_payload) if isinstance(intrinsics_payload, Mapping) else {}
+    if not pose_rows:
+        return []
+
+    try:
+        import cv2  # type: ignore[import]
+    except ImportError:
+        return []
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return []
+
+    total_frames = max(1, int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
+    output_dir = export_root / "video_bootstrap_frames"
+    ensure_dir(output_dir)
+
+    target_count = min(max_frames, len(pose_rows))
+    if target_count < 2:
+        capture.release()
+        return []
+
+    pose_indices = [
+        round(index * (len(pose_rows) - 1) / float(max(1, target_count - 1)))
+        for index in range(target_count)
+    ]
+    records: List[Dict[str, Any]] = []
+    for export_index, pose_index in enumerate(sorted(dict.fromkeys(pose_indices))):
+        pose_row = pose_rows[pose_index]
+        frame_index = round(pose_index * (total_frames - 1) / float(max(1, len(pose_rows) - 1)))
+        capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            continue
+        frame_path = output_dir / f"frame_{export_index:04d}.jpg"
+        if not cv2.imwrite(str(frame_path), frame):
+            continue
+        records.append(
+            {
+                "frame_id": f"video_bootstrap_{export_index:04d}",
+                "frame_uri": str(frame_path.resolve()),
+                "embedding_uri": None,
+                "included_in_index": True,
+                "t_capture_sec": pose_row.get("t_capture_sec", pose_row.get("t_device_sec", float(pose_index))),
+                "T_world_camera": pose_row.get("T_world_camera") or pose_row.get("transform"),
+                "intrinsics": intrinsics,
+                "anchor_observations": [],
+                "source_mode": "video_bootstrap",
+                "source_video_uri": raw_video_uri,
+            }
+        )
+    capture.release()
+    return records
+
+
 def export_cosmos_training_substrate(
     *,
     capture_root: str | Path,
     k_references: int = 4,
+    max_video_bootstrap_frames: int = 12,
 ) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     pipeline_root = context.pipeline_root
@@ -94,6 +177,17 @@ def export_cosmos_training_substrate(
     task_anchor_manifest = read_json_any(task_anchor_path) if task_anchor_path.is_file() else {}
     protected_regions_manifest = read_json_any(protected_regions_path) if protected_regions_path.is_file() else {}
     conditioning_bundle = read_json_any(conditioning_bundle_path) if conditioning_bundle_path.is_file() else {}
+    source_mode = "dense_index"
+
+    if len(dense_records) < 2 and isinstance(conditioning_bundle, Mapping):
+        dense_records = _extract_video_bootstrap_records(
+            context=context,
+            conditioning_bundle=conditioning_bundle,
+            export_root=export_root,
+            max_frames=max_video_bootstrap_frames,
+        )
+        if dense_records:
+            source_mode = "video_bootstrap"
 
     if len(dense_records) < 2:
         manifest = {
@@ -101,6 +195,7 @@ def export_cosmos_training_substrate(
             "generated_at": utc_now_iso(),
             "status": "missing",
             "reason": "insufficient_dense_index_records",
+            "source_mode": source_mode,
             "paired_reference_target_path": None,
             "k_reference_conditioning_path": None,
         }
@@ -145,6 +240,7 @@ def export_cosmos_training_substrate(
                 "task_anchor_manifest_path": str(task_anchor_path.resolve()) if task_anchor_path.is_file() else None,
                 "protected_regions_manifest_path": str(protected_regions_path.resolve()) if protected_regions_path.is_file() else None,
                 "anchor_observations": list(record.get("anchor_observations") or []),
+                "source_mode": str(record.get("source_mode") or source_mode),
             }
         )
         k_reference_rows.append(
@@ -158,6 +254,7 @@ def export_cosmos_training_substrate(
                 "reference_embedding_uris": [ref.get("embedding_uri") for ref in references if str(ref.get("embedding_uri") or "").strip()],
                 "plucker_conditioning_path": str(plucker_path.resolve()),
                 "conditioning_bundle_path": str(conditioning_bundle_path.resolve()) if conditioning_bundle_path.is_file() else None,
+                "source_mode": str(record.get("source_mode") or source_mode),
             }
         )
 
@@ -195,6 +292,7 @@ def export_cosmos_training_substrate(
                 "k_reference_conditioning",
                 "plucker_conditioning",
             ],
+            "source_mode": source_mode,
             "dataset_paths": {
                 "paired_reference_target": str(paired_path.resolve()),
                 "k_reference_conditioning": str(k_reference_path.resolve()),
@@ -227,6 +325,7 @@ def export_cosmos_training_substrate(
             "conditioning_bundle_path": str(conditioning_bundle_path.resolve()) if conditioning_bundle_path.is_file() else None,
             "protected_regions_manifest_path": str(protected_regions_path.resolve()) if protected_regions_path.is_file() else None,
             "task_anchor_manifest_path": str(task_anchor_path.resolve()) if task_anchor_path.is_file() else None,
+            "source_mode": source_mode,
         },
     )
 
@@ -236,6 +335,7 @@ def export_cosmos_training_substrate(
         "status": "ready" if paired_rows else "missing",
         "capture_id": context.capture_id,
         "scene_id": context.scene_id,
+        "source_mode": source_mode,
         "paired_reference_target_path": str(paired_path.resolve()),
         "k_reference_conditioning_path": str(k_reference_path.resolve()),
         "train_val_split_path": str(split_path.resolve()),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Mapping
 from ..capture_orchestrator import PipelineConfig, run_capture_synthesis_validation
 from ..common import ensure_dir, resolve_gs_uri_to_path, utc_now_iso, write_json
 from ..local_capture import resolve_local_capture_context
+from .cosmos_inference import _DEFAULT_COSMOS_MODEL_ID
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -32,6 +34,34 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _probe_cosmos_runtime() -> Dict[str, Any]:
+    packages = {
+        "cosmos_predict2_5": bool(importlib.util.find_spec("cosmos_predict2_5")),
+        "diffusers": bool(importlib.util.find_spec("diffusers")),
+        "torch": bool(importlib.util.find_spec("torch")),
+    }
+    blockers: List[str] = []
+    if not packages["torch"]:
+        blockers.append("missing_torch")
+    if not packages["cosmos_predict2_5"] and not packages["diffusers"]:
+        blockers.append("missing_cosmos_runtime_package")
+    return {
+        "status": "ready" if not blockers else "blocked",
+        "model_id": _DEFAULT_COSMOS_MODEL_ID,
+        "packages": packages,
+        "blockers": blockers,
+    }
+
+
+def _runtime_blocked_reason(reason: Any) -> bool:
+    text = str(reason or "").strip().lower()
+    return (
+        "could not load cosmos-predict2.5-2b" in text
+        or "missing_cosmos_runtime_package" in text
+        or "no module named" in text
+    )
+
+
 def run_cosmos_zero_shot_validation_lane(
     *,
     capture_root: str | Path,
@@ -42,6 +72,7 @@ def run_cosmos_zero_shot_validation_lane(
     context = resolve_local_capture_context(capture_root)
     benchmark_root = context.pipeline_root / "cosmos_zero_shot_validation"
     ensure_dir(benchmark_root)
+    runtime_probe = _probe_cosmos_runtime()
 
     dense_index = [
         row
@@ -69,7 +100,23 @@ def run_cosmos_zero_shot_validation_lane(
             "generated_at": utc_now_iso(),
             "status": "missing",
             "reason": "no_dense_validation_examples",
+            "runtime_probe": runtime_probe,
             "validation_set": [],
+        }
+        write_json(benchmark_root / "cosmos_zero_shot_benchmark.json", manifest)
+        return manifest
+
+    if runtime_probe["status"] != "ready":
+        manifest = {
+            "schema_version": "v1",
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "reason": "cosmos_runtime_unavailable",
+            "runtime_probe": runtime_probe,
+            "capture_id": context.capture_id,
+            "scene_id": context.scene_id,
+            "benchmark_family": "cosmos_zero_shot_validation",
+            "validation_set": validation_set,
         }
         write_json(benchmark_root / "cosmos_zero_shot_benchmark.json", manifest)
         return manifest
@@ -80,6 +127,22 @@ def run_cosmos_zero_shot_validation_lane(
         cfg=cfg,
         mode="cosmos_i2w",
     )
+    if synthesis_result.get("status") == "failed" and _runtime_blocked_reason(synthesis_result.get("reason")):
+        manifest = {
+            "schema_version": "v1",
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "reason": str(synthesis_result.get("reason") or "cosmos_runtime_unavailable"),
+            "runtime_probe": runtime_probe,
+            "capture_id": context.capture_id,
+            "scene_id": context.scene_id,
+            "benchmark_family": "cosmos_zero_shot_validation",
+            "validation_set": validation_set,
+            "synthesis_result": synthesis_result,
+        }
+        write_json(benchmark_root / "cosmos_zero_shot_benchmark.json", manifest)
+        return manifest
+
     spatial_faithfulness_passed = bool(
         synthesis_result.get("status") == "completed"
         and float(synthesis_result.get("coverage_frac") or 0.0) >= 0.55
@@ -130,6 +193,7 @@ def run_cosmos_zero_shot_validation_lane(
         "capture_id": context.capture_id,
         "scene_id": context.scene_id,
         "benchmark_family": "cosmos_zero_shot_validation",
+        "runtime_probe": runtime_probe,
         "validation_set": validation_set,
         "task_target_count": len(task_targets),
         "protected_region_count": protected_region_count,

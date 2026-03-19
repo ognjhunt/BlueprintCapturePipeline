@@ -94,6 +94,175 @@ def _adapter_manifest_details(scene_memory_bundle_manifest: Mapping[str, Any], *
     return details
 
 
+def _read_optional_mapping(path: Path) -> Dict[str, Any]:
+    payload = _read_optional_json_any(path)
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _runtime_readiness_state(*, launchable: bool, blockers: Sequence[str]) -> str:
+    if launchable:
+        return "launchable"
+    return "blocked" if blockers else "incomplete"
+
+
+def _cosmos_runtime_backend_variants(
+    *,
+    context,
+    pipeline_dir: Path,
+    native_semantics: Mapping[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    benchmark_path = pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json"
+    export_path = pipeline_dir / "cosmos_training_export" / "manifest.json"
+    training_run_path = pipeline_dir / "cosmos_training_export" / "training_run_manifest.json"
+    benchmark = _read_optional_mapping(benchmark_path)
+    export_manifest = _read_optional_mapping(export_path)
+    training_run = _read_optional_mapping(training_run_path)
+    native_primary_ready = bool(native_semantics.get("native_world_model_primary"))
+
+    variants: Dict[str, Dict[str, Any]] = {}
+
+    zero_shot_blockers: List[str] = []
+    benchmark_status = str(benchmark.get("status") or "").strip()
+    if benchmark_status != "completed":
+        zero_shot_blockers.append(
+            f"cosmos_zero_shot_benchmark:{benchmark_status or 'missing'}"
+        )
+        if str(benchmark.get("reason") or "").strip():
+            zero_shot_blockers.append(str(benchmark.get("reason") or "").strip())
+    zero_shot_blockers.append("native_serving_contract_unimplemented")
+    variants["cosmos_zero_shot_i2w"] = {
+        "backend_id": "cosmos_zero_shot_i2w",
+        "bundle_manifest_uri": _gs_uri(context, "cosmos_zero_shot_validation/cosmos_zero_shot_benchmark.json")
+        if benchmark_path.is_file()
+        else None,
+        "adapter_manifest_uri": None,
+        "launchable": False,
+        "readiness_state": _runtime_readiness_state(launchable=False, blockers=zero_shot_blockers),
+        "blockers": zero_shot_blockers,
+        "warnings": [
+            f"native_world_model_primary:{native_primary_ready}",
+        ],
+        "runtime_mode": "local_gpu_runtime",
+        "grounding_status": str(native_semantics.get("native_world_model_status") or "not_ready"),
+        "quality_flags": {
+            "benchmark_status": benchmark_status or "missing",
+            "benchmark_reason": benchmark.get("reason"),
+        },
+        "conversion": {
+            "benchmark_manifest_uri": _gs_uri(context, "cosmos_zero_shot_validation/cosmos_zero_shot_benchmark.json")
+            if benchmark_path.is_file()
+            else None,
+        },
+        "canonical_write_allowed": False,
+    }
+
+    training_blockers: List[str] = []
+    export_status = str(export_manifest.get("status") or "").strip()
+    training_status = str(training_run.get("status") or "").strip()
+    if export_status != "ready":
+        training_blockers.append(f"cosmos_training_export:{export_status or 'missing'}")
+    if benchmark_status != "completed":
+        training_blockers.append(f"cosmos_zero_shot_benchmark:{benchmark_status or 'missing'}")
+    if training_status != "completed":
+        training_blockers.append(f"cosmos_lora_training:{training_status or 'missing'}")
+        if str(training_run.get("reason") or "").strip():
+            training_blockers.append(str(training_run.get("reason") or "").strip())
+    if not native_primary_ready:
+        training_blockers.append("native_world_model_not_primary")
+    training_launchable = not training_blockers
+    variants["cosmos_predict_lora_adapter"] = {
+        "backend_id": "cosmos_predict_lora_adapter",
+        "bundle_manifest_uri": _gs_uri(context, "cosmos_training_export/manifest.json")
+        if export_path.is_file()
+        else None,
+        "adapter_manifest_uri": _gs_uri(context, "cosmos_training_export/training_run_manifest.json")
+        if training_run_path.is_file()
+        else None,
+        "launchable": training_launchable,
+        "readiness_state": _runtime_readiness_state(
+            launchable=training_launchable,
+            blockers=training_blockers,
+        ),
+        "blockers": training_blockers,
+        "warnings": [
+            f"source_mode:{str(export_manifest.get('source_mode') or 'unknown')}",
+        ]
+        if export_manifest
+        else [],
+        "runtime_mode": "trained_adapter",
+        "grounding_status": str(native_semantics.get("native_world_model_status") or "not_ready"),
+        "quality_flags": {
+            "benchmark_status": benchmark_status or "missing",
+            "training_status": training_status or "missing",
+            "source_mode": export_manifest.get("source_mode"),
+        },
+        "conversion": {
+            "training_export_manifest_uri": _gs_uri(context, "cosmos_training_export/manifest.json")
+            if export_path.is_file()
+            else None,
+            "benchmark_manifest_uri": _gs_uri(context, "cosmos_zero_shot_validation/cosmos_zero_shot_benchmark.json")
+            if benchmark_path.is_file()
+            else None,
+            "training_run_manifest_uri": _gs_uri(context, "cosmos_training_export/training_run_manifest.json")
+            if training_run_path.is_file()
+            else None,
+            "checkpoint_path": training_run.get("checkpoint_path"),
+        },
+        "canonical_write_allowed": False,
+    }
+    return variants
+
+
+def _build_runtime_backend_variants(
+    *,
+    context,
+    eval_dir: Path,
+    pipeline_dir: Path,
+    scene_memory_bundle_manifest: Mapping[str, Any],
+    native_semantics: Mapping[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    adapter_key_map = {
+        "site_world_runtime": "site_world_runtime_adapter_manifest_path",
+        "gen3c": "gen3c_adapter_manifest_path",
+        "cosmos_transfer": "cosmos_transfer_adapter_manifest_path",
+    }
+    adapter_details = _adapter_manifest_details(scene_memory_bundle_manifest, eval_dir=eval_dir)
+    variants: Dict[str, Dict[str, Any]] = {}
+    for backend, key in adapter_key_map.items():
+        adapter_rel_path = str(scene_memory_bundle_manifest.get(key) or "").strip()
+        if not adapter_rel_path:
+            continue
+        detail = adapter_details.get(backend, {})
+        status = str(detail.get("status") or "").strip()
+        blockers: List[str] = []
+        if not status.startswith("available_stage1_"):
+            blockers.append(f"adapter_status:{status or 'missing'}")
+        variants[backend] = {
+            "backend_id": backend,
+            "bundle_manifest_uri": _gs_uri(context, "scene_memory/scene_memory_manifest.json"),
+            "adapter_manifest_uri": _gs_uri(context, f"scene_memory/adapter_manifests/{backend}.json"),
+            "launchable": not blockers,
+            "readiness_state": _runtime_readiness_state(launchable=not blockers, blockers=blockers),
+            "blockers": blockers,
+            "warnings": [],
+            "runtime_mode": str(detail.get("execution_mode") or "unknown"),
+            "grounding_status": str(native_semantics.get("native_world_model_status") or "not_ready"),
+            "quality_flags": {
+                "adapter_status": status or "missing",
+                "native_world_model_primary": bool(native_semantics.get("native_world_model_primary")),
+            },
+            "canonical_write_allowed": False,
+        }
+    variants.update(
+        _cosmos_runtime_backend_variants(
+            context=context,
+            pipeline_dir=pipeline_dir,
+            native_semantics=native_semantics,
+        )
+    )
+    return variants
+
+
 def _task_category(task_text: str) -> str:
     lowered = task_text.strip().lower()
     if "open and close" in lowered or lowered.startswith("open "):
@@ -2068,17 +2237,20 @@ def _build_hosted_session_runtime_manifest(
         "cosmos_transfer": "cosmos_transfer_adapter_manifest_path",
     }
     adapter_details = _adapter_manifest_details(scene_memory_bundle_manifest, eval_dir=eval_dir)
-    available_backends = [
-        backend
-        for backend, key in adapter_key_map.items()
-        if str(scene_memory_bundle_manifest.get(key) or "").strip()
-    ]
+    backend_variants = _build_runtime_backend_variants(
+        context=context,
+        eval_dir=eval_dir,
+        pipeline_dir=context.capture_root / "pipeline",
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+        native_semantics=native_semantics,
+    )
+    available_backends = list(backend_variants.keys())
     launchable_backends = [
         backend
-        for backend in available_backends
-        if str(adapter_details.get(backend, {}).get("status") or "").strip().startswith("available_stage1_")
+        for backend, detail in backend_variants.items()
+        if bool(detail.get("launchable"))
     ]
-    preferred_order = ["site_world_runtime", "gen3c", "cosmos_transfer"]
+    preferred_order = ["site_world_runtime", "cosmos_predict_lora_adapter", "gen3c", "cosmos_transfer"]
     default_backend = next((backend for backend in preferred_order if backend in launchable_backends), None)
 
     tasks = (
@@ -2253,6 +2425,7 @@ def _build_hosted_session_runtime_manifest(
         "available_backends": available_backends,
         "launchable_backends": launchable_backends,
         "default_backend": default_backend,
+        "backend_variants": backend_variants,
         "customer_facing_runtime": (
             "Hosted site runtime"
             if default_backend and not blockers
@@ -2287,10 +2460,26 @@ def _build_hosted_session_runtime_manifest(
         },
         "backend_launch_requirements": {
             backend: {
-                "status": adapter_details.get(backend, {}).get("status"),
-                "execution_mode": adapter_details.get(backend, {}).get("execution_mode"),
-                "required_conditioning": adapter_details.get(backend, {}).get("required_conditioning", []),
-                "service_contract_version": adapter_details.get(backend, {}).get("service_contract_version"),
+                "status": (
+                    adapter_details.get(backend, {}).get("status")
+                    if backend in adapter_key_map
+                    else backend_variants.get(backend, {}).get("readiness_state")
+                ),
+                "execution_mode": (
+                    adapter_details.get(backend, {}).get("execution_mode")
+                    if backend in adapter_key_map
+                    else backend_variants.get(backend, {}).get("runtime_mode")
+                ),
+                "required_conditioning": (
+                    adapter_details.get(backend, {}).get("required_conditioning", [])
+                    if backend in adapter_key_map
+                    else []
+                ),
+                "service_contract_version": (
+                    adapter_details.get(backend, {}).get("service_contract_version")
+                    if backend in adapter_key_map
+                    else None
+                ),
             }
             for backend in available_backends
         },
@@ -3066,6 +3255,11 @@ def run_evaluation_prep_stage(
     )
     hosted_session_runtime_manifest_path = eval_dir / "hosted_session_runtime_manifest.json"
     _copy_json(hosted_session_runtime_manifest_path, hosted_session_runtime_manifest)
+    for target in (site_world_spec,):
+        target["default_backend"] = hosted_session_runtime_manifest.get("default_backend")
+        target["launchable_backends"] = list(hosted_session_runtime_manifest.get("launchable_backends") or [])
+        target["backend_variants"] = dict(hosted_session_runtime_manifest.get("backend_variants") or {})
+    _copy_json(site_world_spec_path, site_world_spec)
 
     site_world_registration, site_world_health = _build_site_world_runtime_records(
         context=context,
@@ -3074,6 +3268,10 @@ def run_evaluation_prep_stage(
     )
     site_world_registration.setdefault("canonical_package_version", canonical_package_version)
     site_world_health.setdefault("canonical_package_version", canonical_package_version)
+    for target in (site_world_registration, site_world_health):
+        target["default_backend"] = hosted_session_runtime_manifest.get("default_backend")
+        target["launchable_backends"] = list(hosted_session_runtime_manifest.get("launchable_backends") or [])
+        target["backend_variants"] = dict(hosted_session_runtime_manifest.get("backend_variants") or {})
     site_world_registration_path = eval_dir / "site_world_registration.json"
     _copy_json(site_world_registration_path, site_world_registration)
     site_world_health_path = eval_dir / "site_world_health.json"
@@ -3134,6 +3332,10 @@ def run_evaluation_prep_stage(
         capture_root=context.capture_root,
     )
     cosmos_training_export_path = pipeline_dir / "cosmos_training_export" / "manifest.json"
+    cosmos_training_run = _read_optional_mapping(pipeline_dir / "cosmos_training_export" / "training_run_manifest.json")
+    cosmos_zero_shot_benchmark = _read_optional_mapping(
+        pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json"
+    )
 
     launchable_export_bundle = _build_launchable_export_bundle(
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
@@ -3195,7 +3397,9 @@ def run_evaluation_prep_stage(
         "benchmark_suite_status": benchmark_suite_manifest.get("status"),
         "compatibility_matrix_status": compatibility_matrix.get("status"),
         "recapture_diff_status": recapture_diff.get("status"),
+        "cosmos_zero_shot_benchmark_status": cosmos_zero_shot_benchmark.get("status"),
         "cosmos_training_export_status": cosmos_training_export.get("status"),
+        "cosmos_lora_training_status": cosmos_training_run.get("status"),
         "export_bundle_status": launchable_export_bundle.get("status"),
         "site_world_status": site_world_health.get("status"),
         "geometry_conditioning_status": "available"
@@ -3348,8 +3552,18 @@ def run_evaluation_prep_stage(
             "compatibility_matrix": _relative_to(eval_dir, compatibility_matrix_path),
             "recapture_diff": _relative_to(eval_dir, recapture_diff_path),
             **(
+                {"cosmos_zero_shot_benchmark": _relative_to(eval_dir, pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json")}
+                if (pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json").is_file()
+                else {}
+            ),
+            **(
                 {"cosmos_training_export": _relative_to(eval_dir, cosmos_training_export_path)}
                 if cosmos_training_export_path.is_file()
+                else {}
+            ),
+            **(
+                {"cosmos_lora_training": _relative_to(eval_dir, pipeline_dir / "cosmos_training_export" / "training_run_manifest.json")}
+                if (pipeline_dir / "cosmos_training_export" / "training_run_manifest.json").is_file()
                 else {}
             ),
             "launchable_export_bundle": _relative_to(eval_dir, launchable_export_bundle_path),

@@ -468,6 +468,11 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert runtime_demo_manifest["interactive_demo"]["readiness_state"] == "ready"
     assert runtime_demo_manifest["interactive_demo"]["render_inputs"]["site_world_spec_uri"].endswith("/evaluation_prep/site_world_spec.json")
     assert health["launchable"] is True
+    registration = json.loads((eval_root / "site_world_registration.json").read_text(encoding="utf-8"))
+    assert registration["default_backend"] == "site_world_runtime"
+    assert "site_world_runtime" in registration["launchable_backends"]
+    assert registration["backend_variants"]["site_world_runtime"]["launchable"] is True
+    assert registration["backend_variants"]["cosmos_predict_lora_adapter"]["launchable"] is False
     assert len(geometry["objects"]) >= 1
     bundle = load_site_world_bundle(eval_root / "site_world_registration.json", require_spec=True)
     assert validate_site_world_bundle(bundle, production_mode=False) == []
