@@ -643,6 +643,37 @@ def _default_requested_lanes(
     manifest: Mapping[str, Any],
     context: Mapping[str, Any],
 ) -> List[str]:
+    raw_capture_mode = manifest.get("capture_mode") if isinstance(manifest.get("capture_mode"), Mapping) else {}
+    capture_mode = (
+        _normalized_capture_mode(
+            manifest=manifest,
+            arkit_poses_uri=None,
+            arkit_intrinsics_uri=None,
+            arkit_depth_prefix_uri=None,
+            intake_complete=bool(context.get("intake_complete") or False),
+            evidence_tier=str(context.get("evidence_tier") or ""),
+            geometry_ready=bool(context.get("geometry_ready") or False),
+            geometry_source=context.get("geometry_source"),
+        )
+        if isinstance(manifest, Mapping)
+        else {}
+    )
+    scene_memory_capture = (
+        manifest.get("scene_memory_capture")
+        if isinstance(manifest.get("scene_memory_capture"), Mapping)
+        else {}
+    )
+    native_default_candidate = (
+        str((raw_capture_mode or {}).get("resolved_mode") or (capture_mode or {}).get("resolved_mode") or "").strip().lower() == "site_world_candidate"
+        and bool(scene_memory_capture.get("world_model_candidate"))
+    )
+    native_default_lanes = [
+        "qualification",
+        "scene_memory",
+        "retrieval_index",
+        "frame_alignment",
+        "evaluation_prep",
+    ]
     requested_outputs = _string_list(
         manifest.get("requested_outputs")
         or manifest.get("requestedOutputs")
@@ -650,7 +681,7 @@ def _default_requested_lanes(
         or context.get("requestedOutputs")
     )
     if not requested_outputs:
-        return ["qualification", "scene_memory"]
+        return native_default_lanes if native_default_candidate else ["qualification", "scene_memory"]
 
     lanes: List[str] = []
     for output in requested_outputs:
@@ -659,11 +690,15 @@ def _default_requested_lanes(
             if "qualification" not in lanes:
                 lanes.append("qualification")
         elif lowered in {"scene_memory", "preview_simulation", "managed_tuning", "data_licensing"}:
-            for lane in ("qualification", "scene_memory"):
+            for lane in (native_default_lanes if native_default_candidate else ("qualification", "scene_memory")):
                 if lane not in lanes:
                     lanes.append(lane)
         elif lowered in {"deeper_evaluation", "evaluation_prep"}:
-            for lane in ("qualification", "scene_memory", "evaluation_prep"):
+            for lane in (
+                native_default_lanes
+                if native_default_candidate
+                else ("qualification", "scene_memory", "evaluation_prep")
+            ):
                 if lane not in lanes:
                     lanes.append(lane)
         elif lowered == "review_intake":

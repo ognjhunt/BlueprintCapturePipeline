@@ -68,7 +68,7 @@ def test_run_e2e_supports_full_lane_and_optional_cosmos_validation(monkeypatch, 
         lambda **_kwargs: {"final_memo_path": "memo.md", "final_bundle_path": "bundle.json", "artifacts": {"readiness_report": "report.md"}},
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.run_e2e.run_capture_synthesis_validation",
+        "blueprint_pipeline.run_e2e.run_cosmos_zero_shot_validation_lane",
         lambda **_kwargs: {"status": "completed", "synthesis_mode": "cosmos_i2w"},
     )
 

@@ -589,6 +589,9 @@ def sync_webapp_evaluation_prep(
         "presentation_bundle_uri": _artifact_if_exists("presentation_world/presentation_bundle.json"),
         "presentation_world_manifest_uri": _artifact_if_exists("presentation_world/presentation_world_manifest.json"),
         "runtime_demo_manifest_uri": _artifact_if_exists("presentation_world/runtime_demo_manifest.json"),
+        "authoritative_runtime_render_manifest_uri": _artifact_if_exists(
+            "presentation_world/authoritative_runtime_render_manifest.json"
+        ),
         "site_world_spec_uri": _artifact_if_exists("evaluation_prep/site_world_spec.json"),
         "site_world_registration_uri": _artifact_if_exists("evaluation_prep/site_world_registration.json"),
         "site_world_health_uri": _artifact_if_exists("evaluation_prep/site_world_health.json"),
@@ -643,20 +646,32 @@ def sync_webapp_evaluation_prep(
         "capture_modality": descriptor.capture_modality,
         "qualification_state": qualification_state,
         "opportunity_state": opportunity_state,
-        "native_world_model_status": (
-            "primary_ready"
-            if artifacts.get("site_world_spec_uri") and artifacts.get("scene_memory_manifest_uri")
-            else "not_ready"
+        "native_world_model_status": str(
+            evaluation_prep_summary.get("native_world_model_status")
+            or ("primary_ready" if artifacts.get("site_world_spec_uri") and artifacts.get("scene_memory_manifest_uri") else "not_ready")
         ),
         "native_world_model_primary": bool(
-            artifacts.get("site_world_spec_uri") and artifacts.get("scene_memory_manifest_uri")
+            evaluation_prep_summary.get("native_world_model_primary")
+            if evaluation_prep_summary.get("native_world_model_primary") is not None
+            else artifacts.get("site_world_spec_uri") and artifacts.get("scene_memory_manifest_uri")
         ),
         "provider_fallback_preview_status": (
-            "fallback_available"
+            str(evaluation_prep_summary.get("provider_fallback_preview_status"))
+            if evaluation_prep_summary.get("provider_fallback_preview_status") is not None
+            else "fallback_available"
             if artifacts.get("preview_simulation_manifest_uri") or artifacts.get("world_model_video_uri")
             else "not_requested"
         ),
-        "provider_fallback_only": True,
+        "provider_fallback_only": bool(
+            evaluation_prep_summary.get("provider_fallback_only")
+            if evaluation_prep_summary.get("provider_fallback_only") is not None
+            else not bool(
+                evaluation_prep_summary.get("native_world_model_primary")
+                if evaluation_prep_summary.get("native_world_model_primary") is not None
+                else artifacts.get("site_world_spec_uri") and artifacts.get("scene_memory_manifest_uri")
+            )
+            and bool(artifacts.get("preview_simulation_manifest_uri") or artifacts.get("world_model_video_uri"))
+        ),
         "runtime_health_status": site_world_health.get("status"),
         "runtime_launchable": bool(site_world_health.get("launchable")),
         "runtime_registration_status": site_world_health.get("runtime_registration_status"),

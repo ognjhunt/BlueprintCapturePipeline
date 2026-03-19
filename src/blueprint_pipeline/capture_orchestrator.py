@@ -51,19 +51,49 @@ def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
         if lane is None:
             continue
         if lane == "all":
-            for expanded in ("qualification", "scene_memory", "evaluation_prep", "retrieval_index", "frame_alignment", "synthesis_coverage_validation"):
+            for expanded in (
+                "qualification",
+                "scene_memory",
+                "retrieval_index",
+                "frame_alignment",
+                "evaluation_prep",
+                "synthesis_coverage_validation",
+            ):
                 if expanded not in normalized:
                     normalized.append(expanded)
             continue
-        if lane == "evaluation_prep" and "qualification" not in normalized:
+        if lane in {"retrieval_index", "frame_alignment", "evaluation_prep"} and "qualification" not in normalized:
             normalized.append("qualification")
         if lane not in normalized:
             normalized.append(lane)
     ordered: List[str] = []
-    for lane in ("qualification", "scene_memory", "evaluation_prep", "retrieval_index", "frame_alignment", "synthesis_coverage_validation"):
+    for lane in (
+        "qualification",
+        "scene_memory",
+        "retrieval_index",
+        "frame_alignment",
+        "evaluation_prep",
+        "synthesis_coverage_validation",
+    ):
         if lane in normalized and lane not in ordered:
             ordered.append(lane)
     return ordered
+
+
+def _descriptor_is_native_default_candidate(raw_payload: Mapping[str, Any]) -> bool:
+    capture_mode = raw_payload.get("capture_mode")
+    metadata = raw_payload.get("metadata") if isinstance(raw_payload.get("metadata"), Mapping) else {}
+    if not isinstance(capture_mode, Mapping) and isinstance(metadata.get("capture_mode"), Mapping):
+        capture_mode = metadata.get("capture_mode")
+    scene_memory_capture = raw_payload.get("scene_memory_capture")
+    if not isinstance(scene_memory_capture, Mapping) and isinstance(metadata.get("scene_memory_capture"), Mapping):
+        scene_memory_capture = metadata.get("scene_memory_capture")
+    quality = raw_payload.get("quality") if isinstance(raw_payload.get("quality"), Mapping) else {}
+    resolved_mode = str((capture_mode or {}).get("resolved_mode") or "").strip().lower()
+    return resolved_mode == "site_world_candidate" and bool(
+        (scene_memory_capture or {}).get("world_model_candidate")
+        or quality.get("world_model_candidate")
+    )
 
 
 def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> List[str]:
@@ -72,6 +102,14 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
         raw_payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         raw_payload = {}
+    if isinstance(raw_payload, Mapping) and _descriptor_is_native_default_candidate(raw_payload):
+        return [
+            "qualification",
+            "scene_memory",
+            "retrieval_index",
+            "frame_alignment",
+            "evaluation_prep",
+        ]
     raw_requested_outputs = raw_payload.get("requested_outputs")
     if isinstance(raw_requested_outputs, str):
         requested_outputs = [raw_requested_outputs]
@@ -81,9 +119,11 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
         requested_outputs = []
     normalized_outputs = {str(value).strip().lower() for value in requested_outputs if str(value).strip()}
     if "deeper_evaluation" in normalized_outputs:
-        return ["qualification", "scene_memory", "evaluation_prep"]
+        return ["qualification", "scene_memory", "retrieval_index", "frame_alignment", "evaluation_prep"]
     if normalized_outputs & {"managed_tuning", "data_licensing"}:
-        return ["qualification", "scene_memory"]
+        return ["qualification", "scene_memory", "retrieval_index", "frame_alignment", "evaluation_prep"]
+    if normalized_outputs & {"scene_memory", "preview_simulation", "evaluation_prep"}:
+        return ["qualification", "scene_memory", "retrieval_index", "frame_alignment", "evaluation_prep"]
     return ["qualification"]
 
 

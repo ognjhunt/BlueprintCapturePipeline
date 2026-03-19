@@ -19,7 +19,14 @@ _ALLOWED_SWAP_FOCUS = {
     "brownfield_site",
 }
 _ALLOWED_ENVIRONMENT_HINTS = set(_ALLOWED_SWAP_FOCUS)
-_ALLOWED_REQUESTED_LANES = {"qualification", "scene_memory", "evaluation_prep"}
+_ALLOWED_REQUESTED_LANES = {
+    "qualification",
+    "scene_memory",
+    "retrieval_index",
+    "frame_alignment",
+    "evaluation_prep",
+    "synthesis_coverage_validation",
+}
 _ALLOWED_CAPTURE_MODALITIES = {
     "iphone_arkit_lidar",
     "iphone_video_only",
@@ -107,18 +114,35 @@ def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
         if not lowered:
             continue
         if lowered == "all":
-            for lane in ("qualification", "scene_memory", "evaluation_prep"):
+            for lane in (
+                "qualification",
+                "scene_memory",
+                "retrieval_index",
+                "frame_alignment",
+                "evaluation_prep",
+                "synthesis_coverage_validation",
+            ):
                 if lane not in normalized:
                     normalized.append(lane)
             continue
         if lowered in _ALLOWED_REQUESTED_LANES and lowered not in normalized:
             normalized.append(lowered)
-            if lowered == "evaluation_prep" and "qualification" not in normalized:
+            if lowered in {"retrieval_index", "frame_alignment", "evaluation_prep"} and "qualification" not in normalized:
                 normalized.append("qualification")
-    if "evaluation_prep" in normalized and "qualification" not in normalized:
+    if (
+        {"retrieval_index", "frame_alignment", "evaluation_prep"} & set(normalized)
+        and "qualification" not in normalized
+    ):
         normalized.append("qualification")
     ordered: List[str] = []
-    for lane in ("qualification", "scene_memory", "evaluation_prep"):
+    for lane in (
+        "qualification",
+        "scene_memory",
+        "retrieval_index",
+        "frame_alignment",
+        "evaluation_prep",
+        "synthesis_coverage_validation",
+    ):
         if lane in normalized and lane not in ordered:
             ordered.append(lane)
     return ordered or ["qualification"]

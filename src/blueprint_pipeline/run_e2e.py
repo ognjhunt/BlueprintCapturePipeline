@@ -10,13 +10,13 @@ from .agent_runtime.openai_phase2 import OpenAIPhase2Config
 from .capture_orchestrator import (
     PipelineConfig,
     run_capture_pipeline,
-    run_capture_synthesis_validation,
 )
 from .common import PipelineError
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .preflight_capture import build_capture_preflight_report
+from .synthesis.cosmos_benchmark import run_cosmos_zero_shot_validation_lane
 
 
 def run_end_to_end(
@@ -68,11 +68,10 @@ def run_end_to_end(
         else None
     )
     cosmos_validation = (
-        run_capture_synthesis_validation(
+        run_cosmos_zero_shot_validation_lane(
             capture_root=context.capture_root,
             descriptor_gcs_uri=context.descriptor_uri,
             cfg=PipelineConfig(gcs_root=context.storage_root),
-            mode="cosmos_i2w",
         )
         if run_cosmos_validation
         else None

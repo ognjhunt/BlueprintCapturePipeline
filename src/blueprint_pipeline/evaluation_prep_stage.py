@@ -28,6 +28,7 @@ from .world_model_policy import (
     build_presentation_derivation_policy,
     build_provenance_record,
 )
+from .synthesis.cosmos_training_export import export_cosmos_training_substrate
 
 
 def _read_optional_json_any(path: Path) -> Any:
@@ -829,6 +830,130 @@ def _primary_runtime_render_descriptor(
     }
 
 
+def _native_world_model_semantics(
+    *,
+    context,
+    canonical_world_model: Mapping[str, Any],
+    runtime_render_descriptor: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    canonical_status = str(canonical_world_model.get("status") or "").strip().lower()
+    runtime_render_source = str(runtime_render_descriptor.get("runtime_render_source") or "").strip().lower()
+    preview_manifest_available = bool(
+        str(scene_memory_bundle_manifest.get("preview_simulation_manifest_path") or "").strip()
+    )
+
+    if canonical_status == "ready":
+        native_world_model_path = "authoritative_native_render"
+    elif runtime_render_source == "geometry_conditioned_capture":
+        native_world_model_path = "geometry_conditioned_native_path"
+    elif runtime_render_source == "site_world_runtime_full_capture":
+        native_world_model_path = "full_capture_native_path"
+    else:
+        native_world_model_path = None
+
+    native_world_model_primary = native_world_model_path is not None
+    provider_fallback_preview_status = "fallback_available" if preview_manifest_available else "not_requested"
+    provider_fallback_only = (
+        not native_world_model_primary and provider_fallback_preview_status == "fallback_available"
+    )
+
+    authoritative_manifest_path = (
+        context.pipeline_root / "presentation_world" / "authoritative_runtime_render_manifest.json"
+    )
+    authoritative_runtime_render_manifest_uri = (
+        _gs_uri(context, "presentation_world/authoritative_runtime_render_manifest.json")
+        if authoritative_manifest_path.is_file()
+        else None
+    )
+
+    return {
+        "native_world_model_status": "primary_ready" if native_world_model_primary else "not_ready",
+        "native_world_model_primary": native_world_model_primary,
+        "native_world_model_path": native_world_model_path,
+        "provider_fallback_preview_status": provider_fallback_preview_status,
+        "provider_fallback_only": provider_fallback_only,
+        "authoritative_runtime_render_manifest_uri": authoritative_runtime_render_manifest_uri,
+        "fallback_order": [
+            "authoritative_native_render",
+            "geometry_conditioned_native_path",
+            "provider_fallback_preview",
+        ],
+    }
+
+
+def _artifact_family_payload(
+    *,
+    context,
+    native_semantics: Mapping[str, Any],
+    scene_memory_bundle_manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    presentation_bundle_available = bool(
+        str(scene_memory_bundle_manifest.get("presentation_bundle_path") or "").strip()
+    )
+    presentation_manifest_available = bool(
+        str(scene_memory_bundle_manifest.get("presentation_world_manifest_path") or "").strip()
+    )
+    runtime_demo_available = bool(
+        str(scene_memory_bundle_manifest.get("runtime_demo_manifest_path") or "").strip()
+    )
+    preview_available = bool(
+        str(scene_memory_bundle_manifest.get("preview_simulation_manifest_path") or "").strip()
+    )
+    return {
+        "canonical_native_artifacts": {
+            "status": str(native_semantics.get("native_world_model_status") or "not_ready"),
+            "primary": bool(native_semantics.get("native_world_model_primary")),
+            "path": native_semantics.get("native_world_model_path"),
+            "artifacts": [
+                _gs_uri(context, "evaluation_prep/site_world_spec.json"),
+                _gs_uri(context, "evaluation_prep/site_world_registration.json"),
+                _gs_uri(context, "evaluation_prep/site_world_health.json"),
+                *(
+                    [str(native_semantics.get("authoritative_runtime_render_manifest_uri"))]
+                    if str(native_semantics.get("authoritative_runtime_render_manifest_uri") or "").strip()
+                    else []
+                ),
+            ],
+        },
+        "derived_presentation_demo_artifacts": {
+            "status": (
+                "ready"
+                if presentation_bundle_available and presentation_manifest_available and runtime_demo_available
+                else "partial"
+                if presentation_bundle_available or presentation_manifest_available or runtime_demo_available
+                else "missing"
+            ),
+            "artifacts": [
+                *(
+                    [_gs_uri(context, "presentation_world/presentation_bundle.json")]
+                    if presentation_bundle_available
+                    else []
+                ),
+                *(
+                    [_gs_uri(context, "presentation_world/presentation_world_manifest.json")]
+                    if presentation_manifest_available
+                    else []
+                ),
+                *(
+                    [_gs_uri(context, "presentation_world/runtime_demo_manifest.json")]
+                    if runtime_demo_available
+                    else []
+                ),
+            ],
+        },
+        "provider_fallback_artifacts": {
+            "status": str(native_semantics.get("provider_fallback_preview_status") or "not_requested"),
+            "provider_fallback_only": bool(native_semantics.get("provider_fallback_only")),
+            "artifacts": (
+                [_gs_uri(context, "preview_simulation/preview_simulation_manifest.json")]
+                if preview_available
+                else []
+            ),
+        },
+    }
+
+
 def _runtime_capabilities_payload(
     *,
     launchable: bool,
@@ -1206,6 +1331,17 @@ def _build_site_world_spec(
         local_paths=local_paths,
         canonical_world_model=canonical_world_model,
     )
+    native_semantics = _native_world_model_semantics(
+        context=context,
+        canonical_world_model=canonical_world_model,
+        runtime_render_descriptor=runtime_render_descriptor,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+    )
+    artifact_families = _artifact_family_payload(
+        context=context,
+        native_semantics=native_semantics,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
+    )
     critical_ids = _task_critical_ids_from_manifest(task_anchor_manifest)
     normalized_tasks = []
     for task in task_anchor_manifest.get("tasks", []) if isinstance(task_anchor_manifest.get("tasks"), list) else []:
@@ -1309,6 +1445,13 @@ def _build_site_world_spec(
         },
         "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": canonical_world_model,
+        "native_world_model_status": native_semantics["native_world_model_status"],
+        "native_world_model_primary": native_semantics["native_world_model_primary"],
+        "native_world_model_path": native_semantics["native_world_model_path"],
+        "provider_fallback_preview_status": native_semantics["provider_fallback_preview_status"],
+        "provider_fallback_only": native_semantics["provider_fallback_only"],
+        "fallback_order": native_semantics["fallback_order"],
+        "artifact_families": artifact_families,
         "geometry": {
             "scene_memory_bundle_path": str(_real_path_from_eval_dir(eval_dir, str(geometry_bundle or "")) or ""),
             "object_geometry_manifest_path": str(object_geometry_path.resolve()),
@@ -1715,6 +1858,12 @@ def _build_site_world_runtime_records(
         if key in registration_response_payload and registration_response_payload.get(key) is not None
     }
     registration.update(runtime_registration)
+    try:
+        remote_site_world = dict(
+            client.get_site_world(str(registration.get("site_world_id") or site_world_id))
+        )
+    except Exception:
+        remote_site_world = {}
     health = dict(
         registration_response_payload.get("health")
         or client.get_site_world_health(str(registration.get("site_world_id") or site_world_id))
@@ -1739,6 +1888,34 @@ def _build_site_world_runtime_records(
         launchable=True,
         base=registration.get("runtime_capabilities") if isinstance(registration.get("runtime_capabilities"), Mapping) else {},
     )
+    verification_blockers: List[str] = []
+    remote_build_id = str(remote_site_world.get("build_id") or "").strip()
+    if remote_build_id and str(registration.get("build_id") or "").strip() and remote_build_id != str(registration.get("build_id") or "").strip():
+        verification_blockers.append("runtime_registered_build_id_mismatch")
+    remote_package_version = str(remote_site_world.get("canonical_package_version") or "").strip()
+    local_package_version = str(spec.get("canonical_package_version") or "").strip()
+    if remote_package_version and local_package_version and remote_package_version != local_package_version:
+        verification_blockers.append("runtime_registered_package_version_mismatch")
+    if not str(remote_site_world.get("runtime_base_url") or registration.get("runtime_base_url") or "").strip():
+        verification_blockers.append("runtime_base_url_missing_after_registration")
+    if not bool(health.get("healthy")) or not bool(health.get("launchable")):
+        verification_blockers.append("runtime_health_not_launchable")
+    if verification_blockers:
+        registration["status"] = "blocked"
+        registration["blockers"] = list(
+            dict.fromkeys([*list(registration.get("blockers") or []), *verification_blockers])
+        )
+        registration["runtime_capabilities"] = _runtime_capabilities_payload(
+            launchable=False,
+            base=registration.get("runtime_capabilities") if isinstance(registration.get("runtime_capabilities"), Mapping) else {},
+        )
+        health = {
+            **health,
+            "healthy": False,
+            "launchable": False,
+            "status": "degraded",
+            "blockers": list(dict.fromkeys([*list(health.get("blockers") or []), *verification_blockers])),
+        }
     if registration.get("status") == "ready":
         if task_catalog and scenario_catalog and start_state_catalog and robot_profiles:
             try:
@@ -1771,6 +1948,11 @@ def _build_site_world_runtime_records(
     registration.setdefault("supported_cameras", [])
     registration["primary_runtime_backend"] = spec.get("primary_runtime_backend")
     registration["canonical_world_model"] = dict(spec.get("canonical_world_model") or {})
+    registration["native_world_model_status"] = spec.get("native_world_model_status")
+    registration["native_world_model_primary"] = spec.get("native_world_model_primary")
+    registration["provider_fallback_preview_status"] = spec.get("provider_fallback_preview_status")
+    registration["provider_fallback_only"] = spec.get("provider_fallback_only")
+    registration["artifact_families"] = dict(spec.get("artifact_families") or {})
     registration["world_model_backend"] = spec.get("world_model_backend")
     registration["scene_representation"] = spec.get("scene_representation")
     registration["render_source"] = spec.get("runtime_render_source")
@@ -1804,6 +1986,11 @@ def _build_site_world_runtime_records(
     health.setdefault("supported_cameras", registration.get("supported_cameras") or [])
     health["primary_runtime_backend"] = spec.get("primary_runtime_backend")
     health["canonical_world_model"] = dict(spec.get("canonical_world_model") or {})
+    health["native_world_model_status"] = spec.get("native_world_model_status")
+    health["native_world_model_primary"] = spec.get("native_world_model_primary")
+    health["provider_fallback_preview_status"] = spec.get("provider_fallback_preview_status")
+    health["provider_fallback_only"] = spec.get("provider_fallback_only")
+    health["artifact_families"] = dict(spec.get("artifact_families") or {})
     health["world_model_backend"] = spec.get("world_model_backend")
     health["scene_representation"] = spec.get("scene_representation")
     health["render_source"] = spec.get("runtime_render_source")
@@ -1868,6 +2055,12 @@ def _build_hosted_session_runtime_manifest(
         conditioning_bundle=conditioning_map,
         local_paths=_conditioning_local_paths(context=context, conditioning_bundle=conditioning_map),
         canonical_world_model=canonical_world_model,
+    )
+    native_semantics = _native_world_model_semantics(
+        context=context,
+        canonical_world_model=canonical_world_model,
+        runtime_render_descriptor=runtime_render_descriptor,
+        scene_memory_bundle_manifest=scene_memory_bundle_manifest,
     )
     adapter_key_map = {
         "site_world_runtime": "site_world_runtime_adapter_manifest_path",
@@ -2049,6 +2242,10 @@ def _build_hosted_session_runtime_manifest(
         ),
         "primary_runtime_backend": "site_world_runtime",
         "canonical_world_model": canonical_world_model,
+        "native_world_model_status": native_semantics["native_world_model_status"],
+        "native_world_model_primary": native_semantics["native_world_model_primary"],
+        "provider_fallback_preview_status": native_semantics["provider_fallback_preview_status"],
+        "provider_fallback_only": native_semantics["provider_fallback_only"],
         "world_model_backend": runtime_render_descriptor["world_model_backend"],
         "scene_representation": runtime_render_descriptor["scene_representation"],
         "render_source": runtime_render_descriptor["runtime_render_source"],
@@ -2933,6 +3130,11 @@ def run_evaluation_prep_stage(
     recapture_diff_path = eval_dir / "recapture_diff.json"
     _copy_json(recapture_diff_path, recapture_diff)
 
+    cosmos_training_export = export_cosmos_training_substrate(
+        capture_root=context.capture_root,
+    )
+    cosmos_training_export_path = pipeline_dir / "cosmos_training_export" / "manifest.json"
+
     launchable_export_bundle = _build_launchable_export_bundle(
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
         geometry_bundle_manifest=geometry_bundle_manifest,
@@ -2993,6 +3195,7 @@ def run_evaluation_prep_stage(
         "benchmark_suite_status": benchmark_suite_manifest.get("status"),
         "compatibility_matrix_status": compatibility_matrix.get("status"),
         "recapture_diff_status": recapture_diff.get("status"),
+        "cosmos_training_export_status": cosmos_training_export.get("status"),
         "export_bundle_status": launchable_export_bundle.get("status"),
         "site_world_status": site_world_health.get("status"),
         "geometry_conditioning_status": "available"
@@ -3002,6 +3205,10 @@ def run_evaluation_prep_stage(
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
         "capture_orientation": site_world_spec.get("capture_orientation"),
+        "native_world_model_status": site_world_spec.get("native_world_model_status"),
+        "native_world_model_primary": site_world_spec.get("native_world_model_primary"),
+        "provider_fallback_preview_status": site_world_spec.get("provider_fallback_preview_status"),
+        "provider_fallback_only": site_world_spec.get("provider_fallback_only"),
     }
     summary_path = eval_dir / "evaluation_prep_summary.json"
     _copy_json(summary_path, summary)
@@ -3045,9 +3252,20 @@ def run_evaluation_prep_stage(
         legacy_status = "not_ready_for_validation"
     elif degradation_reasons:
         legacy_status = "degraded_but_usable"
+    native_world_model_status = str(site_world_spec.get("native_world_model_status") or "not_ready")
+    native_world_model_path = str(site_world_spec.get("native_world_model_path") or "")
+    provider_fallback_only = bool(site_world_spec.get("provider_fallback_only"))
     canonical_package_status = (
         "registration_blocked"
-        if not bool(canonical_runtime_status.get("launchable"))
+        if not bool(site_world_health.get("launchable"))
+        else "native_authoritative_ready"
+        if native_world_model_status == "primary_ready" and native_world_model_path == "authoritative_native_render"
+        else "geometry_conditioned_native_ready"
+        if native_world_model_status == "primary_ready" and native_world_model_path == "geometry_conditioned_native_path"
+        else "native_primary_ready"
+        if native_world_model_status == "primary_ready"
+        else "provider_fallback_only"
+        if provider_fallback_only
         else "degraded_but_usable"
         if degradation_reasons
         else "ready_for_runtime_registration"
@@ -3071,6 +3289,11 @@ def run_evaluation_prep_stage(
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
         "capture_orientation": site_world_spec.get("capture_orientation"),
+        "native_world_model_status": site_world_spec.get("native_world_model_status"),
+        "native_world_model_primary": site_world_spec.get("native_world_model_primary"),
+        "provider_fallback_preview_status": site_world_spec.get("provider_fallback_preview_status"),
+        "provider_fallback_only": site_world_spec.get("provider_fallback_only"),
+        "artifact_families": site_world_spec.get("artifact_families"),
         "geometry_conditioning_status": "available"
         if scene_memory_bundle_manifest.get("geometry_summary_path")
         else "missing",
@@ -3106,6 +3329,7 @@ def run_evaluation_prep_stage(
         "runtime_registration_attempted": bool(site_world_registration.get("runtime_registration_attempted")),
         "runtime_registration_status": str(site_world_registration.get("runtime_registration_status") or "unknown"),
         "runtime_registration_attempt": runtime_registration_attempt,
+        "artifact_families": site_world_spec.get("artifact_families"),
         "artifacts": {
             "qualified_opportunity_handoff": _relative_to(eval_dir, rich_handoff_path),
             "scene_memory_bundle_manifest": _relative_to(eval_dir, scene_memory_bundle_manifest_path),
@@ -3123,10 +3347,20 @@ def run_evaluation_prep_stage(
             "benchmark_suite_manifest": _relative_to(eval_dir, benchmark_suite_manifest_path),
             "compatibility_matrix": _relative_to(eval_dir, compatibility_matrix_path),
             "recapture_diff": _relative_to(eval_dir, recapture_diff_path),
+            **(
+                {"cosmos_training_export": _relative_to(eval_dir, cosmos_training_export_path)}
+                if cosmos_training_export_path.is_file()
+                else {}
+            ),
             "launchable_export_bundle": _relative_to(eval_dir, launchable_export_bundle_path),
             "object_geometry_manifest": _relative_to(eval_dir, object_geometry_target_path),
             "evaluation_prep_summary": _relative_to(eval_dir, summary_path),
             "review_queue": _relative_to(eval_dir, review_queue_path),
+            **(
+                {"authoritative_runtime_render_manifest": _relative_to(eval_dir, pipeline_dir / "presentation_world" / "authoritative_runtime_render_manifest.json")}
+                if (pipeline_dir / "presentation_world" / "authoritative_runtime_render_manifest.json").is_file()
+                else {}
+            ),
             **(
                 {"geometry_manifest": str(scene_memory_bundle_manifest.get("geometry_manifest_path"))}
                 if scene_memory_bundle_manifest.get("geometry_manifest_path")
