@@ -160,6 +160,78 @@ class TestSynthesizeView:
         assert result["status"] == "completed", result.get("reason")
         assert output.is_file()
 
+    def test_portrait_reference_frame_is_rotated_to_match_intrinsics(self, tmp_path, simple_intrinsics):
+        """
+        ARKit reference JPEGs can be saved in display orientation (1440×1920)
+        while the indexed intrinsics/depth stay in encoded orientation
+        (1920×1440). synthesize_view() should rotate the RGB frame back into the
+        indexed camera frame before splatting.
+        """
+        from PIL import Image as PILImage
+        import io
+
+        DEPTH_H, DEPTH_W = 192, 256
+        root = tmp_path / "gcs"
+        depth_dir = root / "bucket" / "depth"
+        frames_dir = root / "bucket" / "frames"
+        embed_dir = root / "bucket" / "embeddings"
+        index_dir = root / "bucket" / "sites" / "site-portrait" / "reference_memory"
+        for d in (depth_dir, frames_dir, embed_dir, index_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        depth_arr = np.full((DEPTH_H, DEPTH_W), 2000, dtype=np.uint16)
+        depth_img = PILImage.fromarray(depth_arr, mode="I;16")
+        buf = io.BytesIO()
+        depth_img.save(buf, format="PNG")
+        (depth_dir / "000001.png").write_bytes(buf.getvalue())
+
+        portrait_rgb = np.zeros((simple_intrinsics["width"], simple_intrinsics["height"], 3), dtype=np.uint8)
+        portrait_rgb[:, : simple_intrinsics["height"] // 2] = [255, 0, 0]
+        portrait_rgb[:, simple_intrinsics["height"] // 2 :] = [0, 255, 0]
+        rgb_img = PILImage.fromarray(portrait_rgb)
+        buf2 = io.BytesIO()
+        rgb_img.save(buf2, format="JPEG", quality=85)
+        (frames_dir / "000001.jpg").write_bytes(buf2.getvalue())
+
+        embed = np.ones(1024, dtype=np.float32)
+        embed /= np.linalg.norm(embed)
+        (embed_dir / "000001.bin").write_bytes(embed.tobytes())
+
+        rec = {
+            "reference_id": "ref-0001",
+            "frame_id": "000001",
+            "capture_id": "cap-portrait",
+            "scene_id": "scene-portrait",
+            "site_id": "site-portrait",
+            "pass_id": "pass-001",
+            "T_world_camera": np.eye(4).tolist(),
+            "intrinsics": simple_intrinsics,
+            "depth_uri": "gs://bucket/depth/000001.png",
+            "frame_uri": "gs://bucket/frames/000001.jpg",
+            "embedding_uri": "gs://bucket/embeddings/000001.bin",
+            "site_frame_transform": None,
+            "quality": {"tracking_state": "normal", "sharpness_score": 100.0},
+        }
+        (index_dir / "site_reference_index.jsonl").write_text(
+            json.dumps(rec) + "\n", encoding="utf-8"
+        )
+
+        output = tmp_path / "out-portrait.jpg"
+        result = synthesize_view(
+            site_id="site-portrait",
+            storage_root=root,
+            bucket="bucket",
+            target_T_world_camera=np.eye(4),
+            target_intrinsics=simple_intrinsics,
+            target_h=simple_intrinsics["height"],
+            target_w=simple_intrinsics["width"],
+            output_path=output,
+            mode="splat_only",
+            depth_scale=0.001,
+        )
+        assert result["status"] == "completed", result.get("reason")
+        assert output.is_file()
+
 
 class TestSynthesizeRoute:
     def test_route_synthesises_all_frames(self, fake_storage_root, simple_intrinsics, tmp_path):

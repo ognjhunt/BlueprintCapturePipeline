@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from PIL import Image
 
 from .depth_splat import depth_splat, load_depth_png
 from .plucker_rays import compute_plucker_map, normalise_plucker
@@ -72,6 +73,11 @@ def synthesize_view(
     cosmos_model: Optional[Any] = None,  # pre-loaded Cosmos model
     depth_scale: float = 0.001,          # 0.001 for 16-bit mm PNG; 1.0 for float32 m
     fill_holes: bool = True,
+    num_frames: Optional[int] = None,
+    previous_tail_path: Optional[Path] = None,
+    previous_tail_alpha: float = 0.35,
+    lookahead_target_T_world_camera: Optional[np.ndarray] = None,
+    lookahead_k: int = 1,
 ) -> Dict[str, Any]:
     """
     Synthesise a novel view from a target camera pose.
@@ -106,6 +112,18 @@ def synthesize_view(
         return {"status": "failed", "reason": "no_reference_frames_found"}
 
     best_ref = refs[0]
+    retrieved_references = [_reference_summary(item) for item in refs]
+    lookahead_references: List[Dict[str, Any]] = []
+    if lookahead_target_T_world_camera is not None:
+        lookahead_refs = query_site(
+            site_index_path=site_index_path,
+            target_T_world_camera=lookahead_target_T_world_camera,
+            k=lookahead_k,
+            mode=query_mode,
+            storage_root=storage_root,
+            bucket=bucket,
+        )
+        lookahead_references = [_reference_summary(item) for item in lookahead_refs]
 
     # --- 2. Load reference frame image and depth ---
     ref_image = _load_ref_image(best_ref, storage_root=storage_root, bucket=bucket)
@@ -154,6 +172,11 @@ def synthesize_view(
     )
 
     coverage_frac = float(coverage_mask.mean())
+    conditioning_image = _blend_previous_tail(
+        warped_image,
+        previous_tail_path=previous_tail_path,
+        alpha=previous_tail_alpha,
+    )
 
     # --- 5. Compute Plücker ray map for target (for Cosmos conditioning or logging) ---
     target_plucker = compute_plucker_map(
@@ -168,13 +191,15 @@ def synthesize_view(
     from .cosmos_inference import generate_view
     output_path = Path(output_path)
     generate_view(
-        splatted_image=warped_image,
+        splatted_image=conditioning_image,
         coverage_mask=coverage_mask,
         target_plucker_map=target_plucker_norm,
         output_path=output_path,
         mode=mode,
         cosmos_model=cosmos_model,
+        num_frames=num_frames or 57,
     )
+    video_path = output_path.with_suffix(".mp4")
 
     # Camera-centre distance to best reference (spatial retrieval quality metric)
     retrieval_dist_m: Optional[float] = None
@@ -191,9 +216,16 @@ def synthesize_view(
             "capture_id": best_ref.get("capture_id"),
             "frame_id": best_ref.get("frame_id"),
         },
+        "retrieved_references": retrieved_references,
+        "lookahead_references": lookahead_references,
         "coverage_frac": round(coverage_frac, 3),
         "retrieval_dist_m": round(retrieval_dist_m, 3) if retrieval_dist_m is not None else None,
         "mode": mode,
+        "video_path": str(video_path) if video_path.is_file() else None,
+        "conditioning": {
+            "previous_tail_path": str(previous_tail_path) if previous_tail_path and previous_tail_path.is_file() else None,
+            "previous_tail_alpha": previous_tail_alpha if previous_tail_path else 0.0,
+        },
     }
 
 
@@ -277,9 +309,57 @@ def _load_ref_image(
     if local is None or not local.is_file():
         return None
     try:
-        return np.array(Image.open(local).convert("RGB"))
+        image = Image.open(local).convert("RGB")
+        intr = rec.get("intrinsics") or {}
+        target_width = int(intr.get("width") or 0)
+        target_height = int(intr.get("height") or 0)
+        if (
+            target_width > 0
+            and target_height > 0
+            and image.size == (target_height, target_width)
+        ):
+            # ARKit-derived reference frames may be materialized in display
+            # orientation (portrait), while the indexed intrinsics/depth remain
+            # in encoded camera orientation (landscape). Rotate back so RGB,
+            # depth, and intrinsics share the same pixel frame.
+            image = image.transpose(Image.Transpose.ROTATE_270)
+        return np.array(image)
     except Exception:
         return None
+
+
+def _reference_summary(rec: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "reference_id": str(rec.get("reference_id") or ""),
+        "capture_id": str(rec.get("capture_id") or ""),
+        "frame_id": str(rec.get("frame_id") or ""),
+        "frame_uri": str(rec.get("frame_uri") or ""),
+    }
+
+
+def _blend_previous_tail(
+    warped_image: np.ndarray,
+    *,
+    previous_tail_path: Optional[Path],
+    alpha: float,
+) -> np.ndarray:
+    if previous_tail_path is None:
+        return warped_image
+    tail_path = Path(previous_tail_path)
+    if not tail_path.is_file():
+        return warped_image
+    try:
+        previous_tail = Image.open(tail_path).convert("RGB").resize(
+            (warped_image.shape[1], warped_image.shape[0]),
+            Image.Resampling.LANCZOS,
+        )
+        previous_tail_np = np.array(previous_tail, dtype=np.float32)
+        warped_np = warped_image.astype(np.float32)
+        blend_alpha = float(min(0.9, max(0.0, alpha)))
+        blended = previous_tail_np * blend_alpha + warped_np * (1.0 - blend_alpha)
+        return np.clip(blended, 0.0, 255.0).astype(np.uint8)
+    except Exception:
+        return warped_image
 
 
 def _load_ref_depth(

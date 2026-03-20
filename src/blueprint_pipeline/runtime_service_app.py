@@ -39,13 +39,19 @@ class RuntimeBackend(Protocol):
     def reset_session(self, session_id: str, **kwargs: Any) -> Dict[str, Any]:
         ...
 
-    def step_session(self, session_id: str, *, action: list[float]) -> Dict[str, Any]:
+    def step_session(self, session_id: str, *, action: Any) -> Dict[str, Any]:
         ...
 
     def session_state(self, session_id: str) -> Dict[str, Any]:
         ...
 
+    def control_session(self, session_id: str, *, control: Dict[str, Any]) -> Dict[str, Any]:
+        ...
+
     def render_bytes(self, session_id: str, camera_id: str) -> bytes:
+        ...
+
+    def media_response(self, session_id: str, *, camera_id: str, chunk_id: str | None) -> Dict[str, Any]:
         ...
 
     def explorer_render(
@@ -88,7 +94,18 @@ class SessionResetRequest(BaseModel):
 
 
 class SessionStepRequest(BaseModel):
-    action: list[float] = Field(default_factory=list)
+    action: list[float] | Dict[str, Any] = Field(default_factory=list)
+
+
+class SessionControlRequest(BaseModel):
+    seq: int | None = None
+    tClientMs: int | None = None
+    vx: float = 0.0
+    vy: float = 0.0
+    vz: float = 0.0
+    yawRate: float = 0.0
+    pitchRate: float = 0.0
+    durationMs: int = 1200
 
 
 class ExplorerPoseRequest(BaseModel):
@@ -234,6 +251,32 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return Response(content=payload, media_type="image/png")
 
+    @app.post("/v2/sessions/{session_id}/control")
+    def control_session(session_id: str, request: SessionControlRequest) -> Dict[str, Any]:
+        try:
+            return dict(backend.control_session(session_id, control=request.model_dump()))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v2/sessions/{session_id}/media")
+    @app.get("/v2/sessions/{session_id}/media/{camera_id}")
+    def media_session(session_id: str, camera_id: str = "head_rgb", chunk_id: str | None = None) -> Response:
+        try:
+            payload = dict(backend.media_response(session_id, camera_id=camera_id, chunk_id=chunk_id))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        response = Response(
+            content=payload.get("content") or b"",
+            media_type=str(payload.get("media_type") or "application/octet-stream"),
+        )
+        for header_name, header_value in dict(payload.get("headers") or {}).items():
+            response.headers[str(header_name)] = str(header_value)
+        return response
+
     @app.post("/v1/sessions/{session_id}/explorer/render")
     @app.post("/v1/sessions/{session_id}/explorer-render")
     def explorer_render(session_id: str, request: ExplorerRenderRequest) -> Dict[str, Any]:
@@ -270,7 +313,7 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         try:
             for _ in range(10_000):
                 await websocket.send_json(dict(backend.session_state(session_id)))
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.25)
         except FileNotFoundError:
             await websocket.send_json({"error": f"session not found: {session_id}"})
         finally:
