@@ -31,6 +31,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import threading
 import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -60,9 +61,10 @@ _DEFAULT_COSMOS_DISABLE_GUARDRAILS = str(os.getenv("COSMOS_DISABLE_GUARDRAILS") 
 _DEFAULT_COSMOS_PROMPT = os.getenv(
     "COSMOS_DEFAULT_PROMPT",
     (
-        "First-person camera moving through a real indoor industrial workspace "
-        "with warehouse fixtures, floor markings, shelving, and equipment. "
-        "Preserve the existing geometry and continue the scene naturally."
+        "First-person camera moving through the same real indoor site shown in "
+        "the conditioning image. Preserve the existing room layout, furniture, "
+        "lighting, textures, and site identity. Continue the scene naturally "
+        "without changing it into a different building type."
     ),
 )
 
@@ -72,6 +74,7 @@ _DEFAULT_WIDTH = 1280
 _DEFAULT_HEIGHT = 720
 _DEFAULT_GUIDANCE_SCALE = 7.0
 _DEFAULT_NUM_STEPS = 35
+_OFFICIAL_REPO_INFERENCE_LOCK = threading.Lock()
 
 
 def generate_view(
@@ -402,16 +405,20 @@ def _invoke_cosmos_official_repo_script(
     if bool(model.get("disable_guardrails")):
         python_command.append("--disable-guardrails")
 
-    with subprocess_log_path.open("w", encoding="utf-8") as log_handle:
-        result = subprocess.run(
-            python_command,
-            cwd=str(repo_root),
-            text=True,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            check=False,
-            env=_normalized_subprocess_env(model.get("subprocess_env")),
-        )
+    # The official repo path cold-loads a large model into a separate Python
+    # process. Running more than one at once on a single H100 quickly exhausts
+    # VRAM and makes every session slower, so serialize these launches.
+    with _OFFICIAL_REPO_INFERENCE_LOCK:
+        with subprocess_log_path.open("w", encoding="utf-8") as log_handle:
+            result = subprocess.run(
+                python_command,
+                cwd=str(repo_root),
+                text=True,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                check=False,
+                env=_normalized_subprocess_env(model.get("subprocess_env")),
+            )
     if result.returncode != 0:
         failure_detail = ""
         if subprocess_log_path.is_file():

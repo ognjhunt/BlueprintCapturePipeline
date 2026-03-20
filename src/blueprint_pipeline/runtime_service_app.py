@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, Protocol
 
-from fastapi import FastAPI, HTTPException, Response, WebSocket
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from blueprint_contracts.site_world_contract import normalize_trajectory_payload
@@ -348,7 +348,12 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
                 await asyncio.sleep(0.25)
         except FileNotFoundError:
             await websocket.send_json({"error": f"session not found: {session_id}"})
+        except WebSocketDisconnect:
+            pass
         finally:
-            await websocket.close()
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass
 
     return app
