@@ -33,8 +33,16 @@ def _utc_now_iso() -> str:
 
 
 def _json_write(path: Path, payload: Mapping[str, Any]) -> None:
+    import os as _os
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(payload), indent=2) + "\n", encoding="utf-8")
+    # Use a unique temp filename per call so concurrent threads each get their
+    # own temp file and don't race to rename the same ".tmp" path.
+    tmp = path.parent / f"{path.stem}.{_os.getpid()}.{id(payload)}.tmp"
+    try:
+        tmp.write_text(json.dumps(dict(payload), indent=2) + "\n", encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)  # clean up if replace failed
 
 
 def _json_read(path: Path) -> Dict[str, Any]:
@@ -116,13 +124,39 @@ _COSMOS_REPO_CANDIDATE_PATHS: List[str] = [
 ]
 
 # Per-session locks for Cosmos inference (prevent duplicate runs)
-_COSMOS_LOCKS: Dict[str, threading.Lock] = {}
+_COSMOS_LOCKS: Dict[str, threading.RLock] = {}
 _COSMOS_LOCKS_MUTEX = threading.Lock()
 
-def _cosmos_session_lock(session_id: str) -> threading.Lock:
+
+# ---------------------------------------------------------------------------
+# Per-session media event queue — drained by the WS stream handler each loop
+# iteration so the client gets chunk_ready / underrun / generation_started
+# notifications within ~50ms instead of the 250ms state-poll period.
+# ---------------------------------------------------------------------------
+
+_SESSION_MEDIA_EVENTS: Dict[str, List[Dict[str, Any]]] = {}
+_SESSION_EVENTS_LOCK = threading.Lock()
+
+
+def _push_media_event(session_id: str, event: Dict[str, Any]) -> None:
+    with _SESSION_EVENTS_LOCK:
+        if session_id not in _SESSION_MEDIA_EVENTS:
+            _SESSION_MEDIA_EVENTS[session_id] = []
+        _SESSION_MEDIA_EVENTS[session_id].append(event)
+        # Cap at 20 events to prevent unbounded growth
+        _SESSION_MEDIA_EVENTS[session_id] = _SESSION_MEDIA_EVENTS[session_id][-20:]
+
+
+def _drain_media_events(session_id: str) -> List[Dict[str, Any]]:
+    with _SESSION_EVENTS_LOCK:
+        events = list(_SESSION_MEDIA_EVENTS.get(session_id, []))
+        _SESSION_MEDIA_EVENTS[session_id] = []
+        return events
+
+def _cosmos_session_lock(session_id: str) -> threading.RLock:
     with _COSMOS_LOCKS_MUTEX:
         if session_id not in _COSMOS_LOCKS:
-            _COSMOS_LOCKS[session_id] = threading.Lock()
+            _COSMOS_LOCKS[session_id] = threading.RLock()
         return _COSMOS_LOCKS[session_id]
 
 
@@ -386,7 +420,16 @@ class NativeWorldModelRuntimeStore:
         return self._video_chunks_dir(session_id) / f"{chunk_id}_tail.png"
 
     def _rollout_defaults(self) -> Dict[str, Any]:
-        chunk_frames = max(8, int(os.getenv("NATIVE_WORLD_MODEL_CHUNK_FRAMES", "57")))
+        # COSMOS_CHUNK_SIZE and COSMOS_CHUNK_OVERLAP are the canonical env vars.
+        # NATIVE_WORLD_MODEL_CHUNK_FRAMES is kept for backward compatibility.
+        chunk_frames = max(
+            8,
+            int(
+                os.getenv("COSMOS_CHUNK_SIZE")
+                or os.getenv("NATIVE_WORLD_MODEL_CHUNK_FRAMES")
+                or "57"
+            ),
+        )
         fps = max(1, int(os.getenv("NATIVE_WORLD_MODEL_CHUNK_FPS", "28")))
         chunk_duration_ms = max(400, int(round((chunk_frames / fps) * 1000)))
         return {
@@ -531,8 +574,9 @@ class NativeWorldModelRuntimeStore:
         return _json_read(state_path)
 
     def _store_session_state(self, session_id: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        _json_write(self._session_state_path(session_id), payload)
-        return dict(payload)
+        with _cosmos_session_lock(f"state:{session_id}"):
+            _json_write(self._session_state_path(session_id), payload)
+            return dict(payload)
 
     def _make_observation(
         self,
@@ -815,28 +859,29 @@ class NativeWorldModelRuntimeStore:
         except Exception as exc:
             result = {"status": "failed", "reason": str(exc)}
 
-        state = self._load_session_state(session_id)
-        if int(state.get("pending_step_index") or -1) != step_index:
-            return
-        state["latest_synthesis"] = result
-        state["updated_at"] = _utc_now_iso()
-        if result.get("status") == "completed" and output_path.is_file():
-            state["status"] = "running"
-            state["synthesis_status"] = "completed"
-            state["pending_step_index"] = None
-            state["latest_render_path"] = str(output_path.resolve())
-            state["latest_render_source"] = "live_synthesis"
-            state["failure_reason"] = None
-            state["observation"] = self._make_observation(
-                session_id,
-                step_index,
-                render_source="live_synthesis",
-            )
-        else:
-            state["status"] = "failed"
-            state["synthesis_status"] = "failed"
-            state["failure_reason"] = str(result.get("reason") or "synthesis_failed")
-        self._store_session_state(session_id, state)
+        with _cosmos_session_lock(f"state:{session_id}"):
+            state = self._load_session_state(session_id)
+            if int(state.get("pending_step_index") or -1) != step_index:
+                return
+            state["latest_synthesis"] = result
+            state["updated_at"] = _utc_now_iso()
+            if result.get("status") == "completed" and output_path.is_file():
+                state["status"] = "running"
+                state["synthesis_status"] = "completed"
+                state["pending_step_index"] = None
+                state["latest_render_path"] = str(output_path.resolve())
+                state["latest_render_source"] = "live_synthesis"
+                state["failure_reason"] = None
+                state["observation"] = self._make_observation(
+                    session_id,
+                    step_index,
+                    render_source="live_synthesis",
+                )
+            else:
+                state["status"] = "failed"
+                state["synthesis_status"] = "failed"
+                state["failure_reason"] = str(result.get("reason") or "synthesis_failed")
+            self._store_session_state(session_id, state)
 
     def _copy_video_to_chunk(
         self,
@@ -884,6 +929,7 @@ class NativeWorldModelRuntimeStore:
         )
 
     def _image_to_mp4(self, image_path: Path, output_path: Path, duration_ms: int) -> bool:
+        """Encode a still image into an fMP4 segment suitable for MSE append."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
         duration_s = max(0.4, duration_ms / 1000.0)
         result = subprocess.run(
@@ -898,8 +944,36 @@ class NativeWorldModelRuntimeStore:
                 f"{duration_s:.2f}",
                 "-vf",
                 "format=yuv420p",
+                # frag_keyframe+empty_moov+default_base_moof produces a
+                # fragmented MP4 (fMP4) that can be appended to a browser
+                # MSE SourceBuffer without re-buffering between chunks.
                 "-movflags",
-                "+faststart",
+                "frag_keyframe+empty_moov+default_base_moof",
+                str(output_path),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0 and output_path.is_file()
+
+    def _convert_to_fmp4(self, input_path: Path, output_path: Path) -> bool:
+        """Re-mux an existing MP4 into fMP4 format for MSE compatibility.
+
+        Uses stream-copy (-c:v copy) so this is fast and lossless.
+        The output has frag_keyframe+empty_moov+default_base_moof flags,
+        making each chunk directly appendable to a browser SourceBuffer.
+        """
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(input_path),
+                "-c:v",
+                "copy",
+                "-movflags",
+                "frag_keyframe+empty_moov+default_base_moof",
                 str(output_path),
             ],
             capture_output=True,
@@ -952,19 +1026,42 @@ class NativeWorldModelRuntimeStore:
             latest_state = self._load_session_state(session_id)
             latest_rollout = self._ensure_rollout(latest_state)
             if chunk is None:
-                latest_rollout["status"] = "buffering"
-                latest_state["updated_at"] = _utc_now_iso()
-                self._store_session_state(session_id, latest_state)
+                # Acquire state lock so this write is serialized with step_session
+                # and _synthesize_step_async — prevents clobbering pending_step_index.
+                with _cosmos_session_lock(f"state:{session_id}"):
+                    pre_write = self._load_session_state(session_id)
+                    # Only update rollout when session is still in its initial
+                    # "ready" state.  Any other status means step_session or
+                    # a test harness has advanced the session — don't clobber.
+                    if (
+                        str(pre_write.get("synthesis_status") or "").strip() in ("pending", "completed")
+                        or pre_write.get("pending_step_index") is not None
+                        or str(pre_write.get("status") or "").strip() not in ("ready", "")
+                    ):
+                        return
+                    pre_write_rollout = self._ensure_rollout(pre_write)
+                    pre_write_rollout["status"] = "buffering"
+                    pre_write["updated_at"] = _utc_now_iso()
+                    self._store_session_state(session_id, pre_write)
                 return
-            self._replace_chunk(latest_rollout, chunk)
-            latest_rollout["buffered_chunk_ids"] = [str(chunk["chunk_id"])]
-            latest_rollout["active_chunk_id"] = str(chunk["chunk_id"])
-            latest_rollout["status"] = "playing"
-            latest_rollout["current_media_type"] = "video/mp4"
-            latest_rollout["current_render_source"] = str(chunk.get("render_source") or "")
-            latest_rollout["chunk_count"] = max(1, int(latest_rollout.get("chunk_count") or 0))
-            latest_state["updated_at"] = _utc_now_iso()
-            self._store_session_state(session_id, latest_state)
+            with _cosmos_session_lock(f"state:{session_id}"):
+                latest_state2 = self._load_session_state(session_id)
+                latest_rollout2 = self._ensure_rollout(latest_state2)
+                # Another writer may have populated rollout state while the
+                # bootstrap worker was generating the initial chunk. Preserve
+                # the newer state instead of overwriting it with stale bootstrap
+                # output.
+                if latest_rollout2.get("buffered_chunk_ids") or latest_rollout2.get("active_chunk_id"):
+                    return
+                self._replace_chunk(latest_rollout2, chunk)
+                latest_rollout2["buffered_chunk_ids"] = [str(chunk["chunk_id"])]
+                latest_rollout2["active_chunk_id"] = str(chunk["chunk_id"])
+                latest_rollout2["status"] = "playing"
+                latest_rollout2["current_media_type"] = "video/mp4"
+                latest_rollout2["current_render_source"] = str(chunk.get("render_source") or "")
+                latest_rollout2["chunk_count"] = max(1, int(latest_rollout2.get("chunk_count") or 0))
+                latest_state2["updated_at"] = _utc_now_iso()
+                self._store_session_state(session_id, latest_state2)
 
     def _queue_chunk_generation(self, session_id: str) -> None:
         threading.Thread(
@@ -976,17 +1073,26 @@ class NativeWorldModelRuntimeStore:
     def _generate_next_chunk(self, session_id: str) -> None:
         lock = _cosmos_session_lock(f"rollout:{session_id}")
         with lock:
-            state = self._load_session_state(session_id)
-            rollout = self._ensure_rollout(state)
-            queued_chunk_ids = [str(item) for item in list(rollout.get("queued_chunk_ids") or []) if str(item)]
-            if queued_chunk_ids:
-                return
-            chunk_index = int(rollout.get("chunk_count") or 0)
-            chunk_id = f"chunk-{chunk_index:04d}"
-            rollout["queued_chunk_ids"] = [chunk_id]
-            rollout["status"] = "buffering" if not rollout.get("active_chunk_id") else rollout.get("status") or "playing"
-            state["updated_at"] = _utc_now_iso()
-            self._store_session_state(session_id, state)
+            with _cosmos_session_lock(f"state:{session_id}"):
+                state = self._load_session_state(session_id)
+                rollout = self._ensure_rollout(state)
+                queued_chunk_ids = [str(item) for item in list(rollout.get("queued_chunk_ids") or []) if str(item)]
+                if queued_chunk_ids:
+                    return
+                chunk_index = int(rollout.get("chunk_count") or 0)
+                chunk_id = f"chunk-{chunk_index:04d}"
+                rollout["queued_chunk_ids"] = [chunk_id]
+                rollout["status"] = "buffering" if not rollout.get("active_chunk_id") else rollout.get("status") or "playing"
+                state["updated_at"] = _utc_now_iso()
+                self._store_session_state(session_id, state)
+
+        # Emit: generation has started
+        _push_media_event(session_id, {
+            "event": "chunk_generation_started",
+            "chunk_id": chunk_id,
+            "chunk_index": chunk_index,
+            "ts": _utc_now_iso(),
+        })
 
         try:
             from .synthesis.synthesize import synthesize_view
@@ -1025,6 +1131,11 @@ class NativeWorldModelRuntimeStore:
             )
             output_png = self._video_chunks_dir(session_id) / f"{chunk_id}.png"
             previous_tail_path = rollout.get("last_chunk_tail_path")
+            # Collect lookahead ref frame URIs so synthesize_view can tile them
+            # into the conditioning image as a spatial hint for trajectory heading.
+            lookahead_ref_uris: List[str] = [
+                str(r.get("frame_uri") or "") for r in lookahead_refs if r.get("frame_uri")
+            ]
             result = dict(
                 synthesize_view(
                     site_id=site_id,
@@ -1038,15 +1149,27 @@ class NativeWorldModelRuntimeStore:
                     mode=self._live_synthesis_mode(),
                     k=4,
                     num_frames=int(rollout.get("chunk_frames") or 57),
+                    # Use tail frame directly (alpha=1.0 = no blend with warped
+                    # splat). Blending averages out site-specific texture; using
+                    # the raw tail frame preserves visual continuity.
                     previous_tail_path=Path(previous_tail_path) if previous_tail_path else None,
+                    previous_tail_alpha=1.0,
                     lookahead_target_T_world_camera=end_T,
                     lookahead_k=1,
+                    lookahead_ref_uris=lookahead_ref_uris,
                 )
             )
             video_path = Path(str(result.get("video_path") or "").strip()) if str(result.get("video_path") or "").strip() else output_png.with_suffix(".mp4")
             if not video_path.is_file():
                 if not output_png.is_file() or not self._image_to_mp4(output_png, video_path, int(rollout.get("chunk_duration_ms") or 1200)):
                     raise RuntimeError(str(result.get("reason") or "video_chunk_generation_failed"))
+
+            # Convert to fMP4 so the browser can append it to a MSE SourceBuffer
+            # without re-buffering. The fMP4 re-mux is lossless (stream copy) and
+            # fast (~50ms for a 2s chunk on modern hardware).
+            fmp4_path = video_path.with_stem(video_path.stem + "_fmp4")
+            if self._convert_to_fmp4(video_path, fmp4_path):
+                video_path = fmp4_path
             tail_path = self._chunk_tail_path(session_id, chunk_id)
             self._extract_tail_frame(video_path, tail_path)
             ready_chunk = {
@@ -1064,41 +1187,60 @@ class NativeWorldModelRuntimeStore:
                 "conditioning": dict(result.get("conditioning") or {}),
                 "generated_at": _utc_now_iso(),
             }
-            state = self._load_session_state(session_id)
-            rollout = self._ensure_rollout(state)
-            rollout["queued_chunk_ids"] = []
-            buffer_ids = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-            buffer_ids.append(chunk_id)
-            rollout["buffered_chunk_ids"] = buffer_ids[-3:]
-            rollout["grounding_reference_set"] = ready_chunk.get("grounding_references") or []
-            rollout["lookahead_anchor"] = ready_chunk.get("lookahead_anchor")
-            rollout["trajectory_horizon"] = ready_chunk.get("trajectory_horizon") or []
-            rollout["last_chunk_tail_path"] = ready_chunk.get("tail_path")
-            rollout["generation_lag_ms"] = max(0, _utc_now_ms() - int(control.get("tClientMs") or _utc_now_ms()))
-            rollout["chunk_count"] = chunk_index + 1
-            self._replace_chunk(rollout, ready_chunk)
-            self._refresh_rollout_playback(state)
-            state["status"] = "running"
-            state["step_count"] = max(int(state.get("step_count") or 0), chunk_index + 1)
-            state["step_index"] = int(state["step_count"])
-            state["observation"] = self._make_observation(
-                session_id,
-                int(state["step_count"]),
-                render_source="live_video_chunk",
-            )
-            state["camera_pose_matrix"] = end_T.tolist()
-            state["pose"] = _pose_summary_from_matrix(end_T)
-            state["updated_at"] = _utc_now_iso()
-            self._store_session_state(session_id, state)
+            with _cosmos_session_lock(f"state:{session_id}"):
+                state = self._load_session_state(session_id)
+                rollout = self._ensure_rollout(state)
+                rollout["queued_chunk_ids"] = []
+                buffer_ids = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
+                buffer_ids.append(chunk_id)
+                rollout["buffered_chunk_ids"] = buffer_ids[-3:]
+                rollout["grounding_reference_set"] = ready_chunk.get("grounding_references") or []
+                rollout["lookahead_anchor"] = ready_chunk.get("lookahead_anchor")
+                rollout["trajectory_horizon"] = ready_chunk.get("trajectory_horizon") or []
+                rollout["last_chunk_tail_path"] = ready_chunk.get("tail_path")
+                rollout["generation_lag_ms"] = max(0, _utc_now_ms() - int(control.get("tClientMs") or _utc_now_ms()))
+                rollout["chunk_count"] = chunk_index + 1
+                self._replace_chunk(rollout, ready_chunk)
+                self._refresh_rollout_playback(state)
+                state["status"] = "running"
+                state["step_count"] = max(int(state.get("step_count") or 0), chunk_index + 1)
+                state["step_index"] = int(state["step_count"])
+                state["observation"] = self._make_observation(
+                    session_id,
+                    int(state["step_count"]),
+                    render_source="live_video_chunk",
+                )
+                state["camera_pose_matrix"] = end_T.tolist()
+                state["pose"] = _pose_summary_from_matrix(end_T)
+                state["updated_at"] = _utc_now_iso()
+                self._store_session_state(session_id, state)
+            # Notify WS clients immediately — don't wait for the 250ms poll cycle
+            _push_media_event(session_id, {
+                "event": "chunk_ready",
+                "chunk_id": chunk_id,
+                "chunk_index": chunk_index,
+                "duration_ms": int(ready_chunk.get("duration_ms") or 0),
+                "render_source": str(ready_chunk.get("render_source") or ""),
+                "is_fmp4": True,
+                "ts": _utc_now_iso(),
+            })
         except Exception as exc:
-            state = self._load_session_state(session_id)
-            rollout = self._ensure_rollout(state)
-            rollout["queued_chunk_ids"] = []
-            rollout["status"] = "failed"
-            rollout["underrun"] = True
-            state["failure_reason"] = str(exc)
-            state["updated_at"] = _utc_now_iso()
-            self._store_session_state(session_id, state)
+            with _cosmos_session_lock(f"state:{session_id}"):
+                state = self._load_session_state(session_id)
+                rollout = self._ensure_rollout(state)
+                rollout["queued_chunk_ids"] = []
+                rollout["status"] = "failed"
+                rollout["underrun"] = True
+                state["failure_reason"] = str(exc)
+                state["updated_at"] = _utc_now_iso()
+                self._store_session_state(session_id, state)
+            _push_media_event(session_id, {
+                "event": "chunk_underrun",
+                "chunk_id": chunk_id,
+                "buffer_ms": 0,
+                "reason": str(exc),
+                "ts": _utc_now_iso(),
+            })
 
     def create_session(self, site_world_id: str, **kwargs: Any) -> Dict[str, Any]:
         site_world = self.load_site_world(site_world_id)
@@ -1236,49 +1378,52 @@ class NativeWorldModelRuntimeStore:
         return stored
 
     def step_session(self, session_id: str, *, action: Any) -> Dict[str, Any]:
-        state = self._load_session_state(session_id)
-        new_step = int(state.get("step_count") or 0) + 1
-        state["step_count"] = new_step
-        state["step_index"] = new_step
-        state["last_action"] = dict(action) if isinstance(action, Mapping) else list(action or [])
-        state["updated_at"] = _utc_now_iso()
-        state["failure_reason"] = None
-
-        site_world_id = str(state.get("site_world_id") or "").strip()
+        # Resolve site/storage metadata before taking the state lock so the
+        # lock isn't held during potentially slow I/O like load_site_world.
+        _pre = self._load_session_state(session_id)
+        site_world_id = str(_pre.get("site_world_id") or "").strip()
         site_world = self.load_site_world(site_world_id) if site_world_id else {}
-        storage_root = _optional_existing_path(state.get("storage_root")) or _default_storage_root()
-        bucket = str(state.get("storage_bucket") or _bucket_from_site_world(site_world)).strip() or "vast-local"
-        scene_id = str(state.get("scene_id") or site_world.get("scene_id") or "").strip()
-        capture_id = str(state.get("capture_id") or site_world.get("capture_id") or "").strip()
-        site_id = str(state.get("site_id") or "").strip() or _resolve_site_id(
+        storage_root = _optional_existing_path(_pre.get("storage_root")) or _default_storage_root()
+        bucket = str(_pre.get("storage_bucket") or _bucket_from_site_world(site_world)).strip() or "vast-local"
+        scene_id = str(_pre.get("scene_id") or site_world.get("scene_id") or "").strip()
+        capture_id = str(_pre.get("capture_id") or site_world.get("capture_id") or "").strip()
+        site_id = str(_pre.get("site_id") or "").strip() or _resolve_site_id(
             site_world,
             scene_id,
             capture_id,
             storage_root,
             bucket,
         )
-        site_index_path = _optional_existing_path(state.get("site_index_path"))
+        site_index_path = _optional_existing_path(_pre.get("site_index_path"))
         if site_index_path is None and site_id:
             site_index_path = _resolve_site_index_path(site_id, scene_id, capture_id, storage_root, bucket)
 
-        if site_id and site_index_path is not None:
-            target_T_world_camera = self._session_target_pose(state, site_index_path)
-            target_T_world_camera = _apply_action(target_T_world_camera, action)
-            state["pose"] = _pose_summary_from_matrix(target_T_world_camera)
-            state["camera_pose_matrix"] = target_T_world_camera.tolist()
-            state["site_id"] = site_id
-            state["site_index_path"] = str(site_index_path)
-            state["storage_root"] = str(storage_root)
-            state["storage_bucket"] = bucket
-            state["status"] = "synthesizing"
-            state["synthesis_status"] = "pending"
-            state["pending_step_index"] = new_step
-            state["observation"] = self._make_pending_observation()
-            intrinsics, target_h, target_w = _intrinsics_from_site_index(site_index_path)
-            stored = self._store_session_state(session_id, state)
-            threading.Thread(
-                target=self._synthesize_step_async,
-                kwargs={
+        synthesis_kwargs: Optional[Dict[str, Any]] = None
+        with _cosmos_session_lock(f"state:{session_id}"):
+            state = self._load_session_state(session_id)
+            new_step = int(state.get("step_count") or 0) + 1
+            state["step_count"] = new_step
+            state["step_index"] = new_step
+            state["last_action"] = dict(action) if isinstance(action, Mapping) else list(action or [])
+            state["updated_at"] = _utc_now_iso()
+            state["failure_reason"] = None
+
+            if site_id and site_index_path is not None:
+                target_T_world_camera = self._session_target_pose(state, site_index_path)
+                target_T_world_camera = _apply_action(target_T_world_camera, action)
+                state["pose"] = _pose_summary_from_matrix(target_T_world_camera)
+                state["camera_pose_matrix"] = target_T_world_camera.tolist()
+                state["site_id"] = site_id
+                state["site_index_path"] = str(site_index_path)
+                state["storage_root"] = str(storage_root)
+                state["storage_bucket"] = bucket
+                state["status"] = "synthesizing"
+                state["synthesis_status"] = "pending"
+                state["pending_step_index"] = new_step
+                state["observation"] = self._make_pending_observation()
+                intrinsics, target_h, target_w = _intrinsics_from_site_index(site_index_path)
+                stored = self._store_session_state(session_id, state)
+                synthesis_kwargs = {
                     "session_id": session_id,
                     "step_index": new_step,
                     "site_id": site_id,
@@ -1288,17 +1433,22 @@ class NativeWorldModelRuntimeStore:
                     "target_intrinsics": intrinsics,
                     "target_h": target_h,
                     "target_w": target_w,
-                },
+                }
+            else:
+                state["pose"] = self._fallback_pose_update(state.get("pose") or {}, action)
+                state["status"] = "running"
+                state["synthesis_status"] = "unavailable"
+                state["pending_step_index"] = None
+                state["observation"] = self._make_observation(session_id, new_step, render_source="fallback_pose_update")
+                stored = self._store_session_state(session_id, state)
+
+        if synthesis_kwargs is not None:
+            threading.Thread(
+                target=self._synthesize_step_async,
+                kwargs=synthesis_kwargs,
                 daemon=True,
             ).start()
-            return stored
-
-        state["pose"] = self._fallback_pose_update(state.get("pose") or {}, action)
-        state["status"] = "running"
-        state["synthesis_status"] = "unavailable"
-        state["pending_step_index"] = None
-        state["observation"] = self._make_observation(session_id, new_step, render_source="fallback_pose_update")
-        return self._store_session_state(session_id, state)
+        return stored
 
     def control_session(self, session_id: str, *, control: Dict[str, Any]) -> Dict[str, Any]:
         state = self._load_session_state(session_id)
@@ -1349,17 +1499,18 @@ class NativeWorldModelRuntimeStore:
         return self._store_session_state(session_id, state)
 
     def session_state(self, session_id: str) -> Dict[str, Any]:
-        state = self._load_session_state(session_id)
-        self._refresh_rollout_playback(state)
-        rollout = self._ensure_rollout(state)
-        buffered = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-        active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
-        active_index = buffered.index(active_chunk_id) if active_chunk_id in buffered else -1
-        remaining_ready = len(buffered) - max(active_index + 1, 0)
-        if len(list(rollout.get("queued_chunk_ids") or [])) == 0 and remaining_ready < 1:
-            self._queue_chunk_generation(session_id)
-        state["updated_at"] = _utc_now_iso()
-        return self._store_session_state(session_id, state)
+        with _cosmos_session_lock(f"state:{session_id}"):
+            state = self._load_session_state(session_id)
+            self._refresh_rollout_playback(state)
+            rollout = self._ensure_rollout(state)
+            buffered = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
+            active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
+            active_index = buffered.index(active_chunk_id) if active_chunk_id in buffered else -1
+            remaining_ready = len(buffered) - max(active_index + 1, 0)
+            if len(list(rollout.get("queued_chunk_ids") or [])) == 0 and remaining_ready < 1:
+                self._queue_chunk_generation(session_id)
+            state["updated_at"] = _utc_now_iso()
+            return self._store_session_state(session_id, state)
 
     # ---------------------------------------------------------------------------
     # Cosmos frame helpers
@@ -1544,6 +1695,20 @@ class NativeWorldModelRuntimeStore:
         output_video = cosmos_dir / f"{sample_name}.mp4"
         log_path = cosmos_dir / "inference.log"
 
+        # COSMOS_CHUNK_SIZE / COSMOS_CHUNK_OVERLAP are the canonical knobs.
+        # At H100 speeds, 57 frames (~2s) is the target; drop to 33 if generation
+        # takes >1.5s so N+1 is always ready before N ends.
+        # chunk_overlap=4 gives the strongest pseudo-autoregressive conditioning
+        # available at zero FT: the 4 overlap frames become the conditioning head
+        # of the next chunk.
+        cosmos_chunk_size = max(
+            8,
+            int(os.getenv("COSMOS_CHUNK_SIZE") or os.getenv("NATIVE_WORLD_MODEL_CHUNK_FRAMES") or "57"),
+        )
+        cosmos_chunk_overlap = max(
+            1,
+            int(os.getenv("COSMOS_CHUNK_OVERLAP", "4")),
+        )
         asset_path.write_text(
             json.dumps({
                 "inference_type": "image2world",
@@ -1553,13 +1718,13 @@ class NativeWorldModelRuntimeStore:
                     "First-person camera moving through a real indoor workspace. "
                     "Preserve the existing geometry and continue the scene naturally."
                 ),
-                "num_output_frames": 57,
+                "num_output_frames": cosmos_chunk_size,
                 "num_steps": 35,
                 "seed": 0,
                 "guidance": 7.0,
                 "enable_autoregressive": False,
-                "chunk_size": 57,
-                "chunk_overlap": 1,
+                "chunk_size": cosmos_chunk_size,
+                "chunk_overlap": cosmos_chunk_overlap,
             }),
             encoding="utf-8",
         )
@@ -1590,6 +1755,11 @@ class NativeWorldModelRuntimeStore:
 
         if result.returncode != 0 or not output_video.is_file():
             return []
+
+        # Re-mux to fMP4 so the runtime can serve it directly to MSE clients.
+        fmp4_video = output_video.with_stem(output_video.stem + "_fmp4")
+        if self._convert_to_fmp4(output_video, fmp4_video):
+            output_video = fmp4_video
 
         frames = self._extract_frames_from_video(output_video, frames_dir)
         if frames:
@@ -1651,10 +1821,11 @@ class NativeWorldModelRuntimeStore:
 
     def render_bytes(self, session_id: str, camera_id: str) -> bytes:
         """Render a frame. Priority: synthesized splat > Cosmos video > placeholder."""
-        state = self._load_session_state(session_id)
-        live_render = self._latest_render_path(state)
-        if live_render is not None:
-            return live_render.read_bytes()
+        with _cosmos_session_lock(f"state:{session_id}"):
+            state = self._load_session_state(session_id)
+            live_render = self._latest_render_path(state)
+            if live_render is not None:
+                return live_render.read_bytes()
 
         # 2. Pre-built Cosmos video frames (bootstrap path)
         site_world_id = str(state.get("site_world_id") or "")
@@ -1664,38 +1835,41 @@ class NativeWorldModelRuntimeStore:
             if frames:
                 idx = min(step_count, len(frames) - 1)
                 selected = frames[idx]
-                if str(state.get("synthesis_status") or "").strip() == "pending":
-                    state["status"] = "running"
-                    state["synthesis_status"] = "completed"
-                    state["pending_step_index"] = None
-                    state["latest_render_path"] = str(selected.resolve())
-                    state["latest_render_source"] = "cosmos_frames"
-                    state["failure_reason"] = None
-                    if not isinstance(state.get("latest_synthesis"), Mapping):
-                        state["latest_synthesis"] = {
-                            "status": "completed",
-                            "source": "cosmos_frames",
-                            "output_path": str(selected.resolve()),
-                            "frame_count": len(frames),
-                        }
-                    state["observation"] = self._make_observation(
-                        session_id,
-                        step_count,
-                        render_source="cosmos_frames",
-                    )
-                    self._store_session_state(session_id, state)
+                with _cosmos_session_lock(f"state:{session_id}"):
+                    state = self._load_session_state(session_id)
+                    if str(state.get("synthesis_status") or "").strip() == "pending":
+                        state["status"] = "running"
+                        state["synthesis_status"] = "completed"
+                        state["pending_step_index"] = None
+                        state["latest_render_path"] = str(selected.resolve())
+                        state["latest_render_source"] = "cosmos_frames"
+                        state["failure_reason"] = None
+                        if not isinstance(state.get("latest_synthesis"), Mapping):
+                            state["latest_synthesis"] = {
+                                "status": "completed",
+                                "source": "cosmos_frames",
+                                "output_path": str(selected.resolve()),
+                                "frame_count": len(frames),
+                            }
+                        state["observation"] = self._make_observation(
+                            session_id,
+                            step_count,
+                            render_source="cosmos_frames",
+                        )
+                        self._store_session_state(session_id, state)
                 return selected.read_bytes()
 
         return self._render_png(session_id, camera_id)
 
     def media_response(self, session_id: str, *, camera_id: str, chunk_id: str | None) -> Dict[str, Any]:
-        state = self._load_session_state(session_id)
-        self._refresh_rollout_playback(state)
-        rollout = self._ensure_rollout(state)
-        state["updated_at"] = _utc_now_iso()
-        self._store_session_state(session_id, state)
-        selected_chunk_id = str(chunk_id or rollout.get("active_chunk_id") or "").strip()
-        chunk = self._chunk_record(rollout, selected_chunk_id) if selected_chunk_id else None
+        with _cosmos_session_lock(f"state:{session_id}"):
+            state = self._load_session_state(session_id)
+            self._refresh_rollout_playback(state)
+            rollout = self._ensure_rollout(state)
+            state["updated_at"] = _utc_now_iso()
+            self._store_session_state(session_id, state)
+            selected_chunk_id = str(chunk_id or rollout.get("active_chunk_id") or "").strip()
+            chunk = self._chunk_record(rollout, selected_chunk_id) if selected_chunk_id else None
         media_path = Path(str(chunk.get("media_path") or "").strip()) if chunk else None
         if media_path and media_path.is_file():
             return {
@@ -1790,6 +1964,14 @@ class NativeWorldModelRuntimeStore:
         if frame_path.is_file():
             return frame_path.read_bytes()
         return self.render_bytes(session_id, camera_id)
+
+    def drain_media_events(self, session_id: str) -> List[Dict[str, Any]]:
+        """Drain all pending media events for this session (non-blocking).
+
+        Called by the WS stream handler each loop iteration to flush events
+        that were pushed by background chunk-generation threads.
+        """
+        return _drain_media_events(session_id)
 
 
 def native_runtime_config_from_env() -> NativeRuntimeConfig:

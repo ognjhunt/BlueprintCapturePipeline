@@ -334,3 +334,15 @@ def test_runtime_control_and_media_endpoints_expose_chunked_rollout(tmp_path: Pa
     assert media.headers["content-type"].startswith("video/mp4")
     assert media.headers["x-blueprint-chunk-id"] == "chunk-0000"
     assert media.content == b"fake-mp4-chunk"
+
+    # WS stream should emit typed messages (Blocker 2)
+    with client.websocket_connect(f"/v1/sessions/{session_id}/stream") as ws:
+        msg = ws.receive_json()
+        # New format: {type: "state", payload: <session_state>}
+        assert msg.get("type") == "state", f"expected type=state, got {msg.get('type')}"
+        assert "payload" in msg
+        assert "rollout" in msg["payload"]
+
+    # drain_media_events should return empty list initially (no chunk worker ran)
+    events = store.drain_media_events(session_id)
+    assert isinstance(events, list)

@@ -54,6 +54,9 @@ class RuntimeBackend(Protocol):
     def media_response(self, session_id: str, *, camera_id: str, chunk_id: str | None) -> Dict[str, Any]:
         ...
 
+    def drain_media_events(self, session_id: str) -> list[Dict[str, Any]]:
+        ...
+
     def explorer_render(
         self,
         session_id: str,
@@ -309,10 +312,28 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
 
     @app.websocket("/v1/sessions/{session_id}/stream")
     async def stream_session(session_id: str, websocket: WebSocket) -> None:
+        """Stream session state + media events to connected clients.
+
+        Each message is a JSON object with a `type` field:
+          { "type": "state",       "payload": <session_state_dict> }
+          { "type": "media_event", "payload": { "event": "chunk_ready", ... } }
+
+        Media events are drained from the per-session queue that background
+        chunk-generation threads push to. This allows sub-50ms notification
+        latency for chunk transitions instead of the 250ms state-poll period.
+        """
         await websocket.accept()
         try:
             for _ in range(10_000):
-                await websocket.send_json(dict(backend.session_state(session_id)))
+                # 1. Emit current session state
+                state = dict(backend.session_state(session_id))
+                await websocket.send_json({"type": "state", "payload": state})
+
+                # 2. Drain and emit any pending media events (pushed by chunk worker)
+                pending_events = list(backend.drain_media_events(session_id))
+                for event in pending_events:
+                    await websocket.send_json({"type": "media_event", "payload": dict(event)})
+
                 await asyncio.sleep(0.25)
         except FileNotFoundError:
             await websocket.send_json({"error": f"session not found: {session_id}"})

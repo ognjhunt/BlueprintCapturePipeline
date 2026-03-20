@@ -78,6 +78,7 @@ def synthesize_view(
     previous_tail_alpha: float = 0.35,
     lookahead_target_T_world_camera: Optional[np.ndarray] = None,
     lookahead_k: int = 1,
+    lookahead_ref_uris: Optional[List[str]] = None,  # local paths or gs:// URIs to lookahead frames
 ) -> Dict[str, Any]:
     """
     Synthesise a novel view from a target camera pose.
@@ -172,10 +173,22 @@ def synthesize_view(
     )
 
     coverage_frac = float(coverage_mask.mean())
-    conditioning_image = _blend_previous_tail(
+
+    # Build the final conditioning image for Cosmos:
+    #   A. Use the previous chunk's tail frame directly (no pixel blend with the
+    #      warped splat — blending averages out site-specific texture). If
+    #      previous_tail_alpha is 1.0 (the new default from the chunk worker)
+    #      the tail frame is used as-is; lower values fall back to the blend.
+    #   B. If lookahead ref images are available, tile them as a right-side
+    #      strip so Cosmos has spatial context for where the trajectory heads.
+    #      This path is taken only when lookahead_ref_uris are supplied.
+    conditioning_image = _build_conditioning_image(
         warped_image,
         previous_tail_path=previous_tail_path,
-        alpha=previous_tail_alpha,
+        previous_tail_alpha=previous_tail_alpha,
+        lookahead_ref_uris=lookahead_ref_uris,
+        storage_root=storage_root,
+        bucket=bucket,
     )
 
     # --- 5. Compute Plücker ray map for target (for Cosmos conditioning or logging) ---
@@ -225,6 +238,7 @@ def synthesize_view(
         "conditioning": {
             "previous_tail_path": str(previous_tail_path) if previous_tail_path and previous_tail_path.is_file() else None,
             "previous_tail_alpha": previous_tail_alpha if previous_tail_path else 0.0,
+            "lookahead_ref_uris": list(lookahead_ref_uris or []),
         },
     }
 
@@ -362,6 +376,93 @@ def _blend_previous_tail(
         return warped_image
 
 
+def _build_conditioning_image(
+    warped_image: np.ndarray,
+    *,
+    previous_tail_path: Optional[Path],
+    previous_tail_alpha: float,
+    lookahead_ref_uris: Optional[List[str]],
+    storage_root: Path,
+    bucket: str,
+) -> np.ndarray:
+    """Build the final conditioning image for Cosmos I2W inference.
+
+    Strategy (in priority order):
+      A. Base image: if previous_tail_path is supplied and alpha >= 1.0, use
+         the tail frame directly with NO blending — blending washes out
+         site-specific texture (confirmed in E2E runs). For alpha < 1.0,
+         fall back to the weighted blend for backward compatibility.
+      B. Lookahead tile: if lookahead_ref_uris are supplied and the paths
+         resolve to local files, load up to 3 refs and stitch a right-side
+         strip (20% of width) onto the base image. This gives Cosmos spatial
+         context about where the trajectory is heading.
+         Path taken: Cosmos I2W does not support multi-image conditioning
+         natively (input_path is a single image), so we tile spatially.
+    """
+    H, W = warped_image.shape[:2]
+
+    # --- A. Base: tail frame or blended splat ---
+    base = warped_image
+    if previous_tail_path is not None:
+        tail_p = Path(previous_tail_path)
+        if tail_p.is_file():
+            try:
+                tail_img = np.array(
+                    Image.open(tail_p).convert("RGB").resize((W, H), Image.Resampling.LANCZOS)
+                )
+                if previous_tail_alpha >= 1.0:
+                    # Direct use: preserve all site-specific texture
+                    base = tail_img
+                else:
+                    # Weighted blend for backward compat
+                    alpha = float(min(0.9, max(0.0, previous_tail_alpha)))
+                    blended = tail_img.astype(np.float32) * alpha + warped_image.astype(np.float32) * (1.0 - alpha)
+                    base = np.clip(blended, 0.0, 255.0).astype(np.uint8)
+            except Exception:
+                pass
+
+    # --- B. Lookahead tile (side panel) ---
+    if not lookahead_ref_uris:
+        return base
+
+    loaded_refs: list[np.ndarray] = []
+    strip_w = max(64, W // 5)  # 20% of width for the lookahead strip
+    n_refs = min(3, len(lookahead_ref_uris))
+    slot_h = max(1, H // n_refs) if n_refs > 0 else H
+
+    for uri in lookahead_ref_uris[:n_refs]:
+        local = _uri_to_local(uri, storage_root=storage_root, bucket=bucket)
+        if local is None or not local.is_file():
+            continue
+        try:
+            ref_img = np.array(
+                Image.open(local).convert("RGB").resize((strip_w, slot_h), Image.Resampling.LANCZOS)
+            )
+            loaded_refs.append(ref_img)
+        except Exception:
+            continue
+
+    if not loaded_refs:
+        return base
+
+    # Resize main image to make room for the strip
+    main_w = W - strip_w
+    main_resized = np.array(
+        Image.fromarray(base).resize((main_w, H), Image.Resampling.LANCZOS)
+    )
+
+    # Stack refs vertically into the strip
+    strip = np.zeros((H, strip_w, 3), dtype=np.uint8)
+    y = 0
+    for ref in loaded_refs:
+        h = ref.shape[0]
+        end_y = min(y + h, H)
+        strip[y:end_y, : ref.shape[1]] = ref[: end_y - y]
+        y += h
+
+    return np.concatenate([main_resized, strip], axis=1)
+
+
 def _load_ref_depth(
     rec: Dict[str, Any],
     *,
@@ -432,7 +533,11 @@ def _uri_to_local(uri: str, *, storage_root: Path, bucket: str) -> Optional[Path
 
 
 def _stitch_frames(frames_dir: Path, output_path: Path, fps: int = 10) -> None:
-    """Stitch numbered JPEG frames into an MP4 using FFmpeg (best-effort)."""
+    """Stitch numbered JPEG frames into an fMP4 using FFmpeg (best-effort).
+
+    Uses frag_keyframe+empty_moov+default_base_moof so the output can be
+    appended directly to a browser MSE SourceBuffer without re-buffering.
+    """
     import subprocess
     pattern = str(frames_dir / "%06d.jpg")
     cmd = [
@@ -441,6 +546,7 @@ def _stitch_frames(frames_dir: Path, output_path: Path, fps: int = 10) -> None:
         "-i", pattern,
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
         str(output_path),
     ]
     try:
