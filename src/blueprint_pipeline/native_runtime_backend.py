@@ -994,6 +994,25 @@ class NativeWorldModelRuntimeStore:
 
         cosmos_repo = _find_cosmos_repo()
         cond_frame = self._find_conditioning_frame(site_world_id)
+        if cond_frame and cond_frame.is_file():
+            still_chunk_path = self._chunk_video_path(session_id, "chunk-0000")
+            if self._image_to_mp4(
+                cond_frame,
+                still_chunk_path,
+                self._rollout_defaults()["chunk_duration_ms"],
+            ):
+                tail_path = self._chunk_tail_path(session_id, "chunk-0000")
+                self._extract_tail_frame(still_chunk_path, tail_path)
+                return {
+                    "chunk_id": "chunk-0000",
+                    "chunk_index": 0,
+                    "status": "ready",
+                    "media_path": str(still_chunk_path.resolve()),
+                    "media_type": "video/mp4",
+                    "render_source": "bootstrap_conditioning_frame",
+                    "duration_ms": self._rollout_defaults()["chunk_duration_ms"],
+                    "tail_path": str(tail_path.resolve()) if tail_path.is_file() else None,
+                }
         if cosmos_repo and cond_frame:
             frames_dir = self._cosmos_frames_dir(session_id)
             _ = self._run_cosmos_inference_sync(
@@ -1516,8 +1535,19 @@ class NativeWorldModelRuntimeStore:
     # Cosmos frame helpers
     # ---------------------------------------------------------------------------
 
+    def _allow_prebuilt_bootstrap_video(self) -> bool:
+        """Generic prebuilt videos are opt-in only.
+
+        Smoke-test MP4s can come from unrelated content. The default live path
+        must stay site-truthful, so we only use those artifacts when the
+        operator explicitly enables them.
+        """
+        return os.getenv("NATIVE_WORLD_MODEL_ALLOW_PREBUILT_BOOTSTRAP_VIDEO", "").strip() == "1"
+
     def _find_prebuilt_cosmos_video(self, site_world_id: str) -> Optional[Path]:
         """Find a pre-existing Cosmos video from pipeline runs for this site world."""
+        if not self._allow_prebuilt_bootstrap_video():
+            return None
         try:
             sw = self.load_site_world(site_world_id)
         except FileNotFoundError:
@@ -1597,7 +1627,8 @@ class NativeWorldModelRuntimeStore:
         """
         Ensure Cosmos frames exist for this session. Returns the frame list.
         Thread-safe: only one caller will run inference; others wait and use cache.
-        Tries pre-built pipeline output first; falls back to on-demand inference.
+        Tries explicit pre-built pipeline output first; otherwise uses the
+        current site's conditioning frame or on-demand inference.
         """
         frames_dir = self._cosmos_frames_dir(session_id)
 
@@ -1615,7 +1646,7 @@ class NativeWorldModelRuntimeStore:
                 if existing:
                     return existing
 
-            # Try pre-built pipeline output first (fast — just ffmpeg extract)
+            # Try pre-built pipeline output only when explicitly enabled.
             prebuilt = self._find_prebuilt_cosmos_video(site_world_id)
             if prebuilt:
                 if prebuilt.suffix.lower() == ".mp4":
@@ -1634,9 +1665,23 @@ class NativeWorldModelRuntimeStore:
                     )
                     return frames
 
-            # Fall back to on-demand Cosmos inference
             cosmos_repo = _find_cosmos_repo()
             cond_frame = self._find_conditioning_frame(site_world_id)
+            if cond_frame and cond_frame.is_file():
+                frames = self._extract_single_frame(cond_frame, frames_dir)
+                if frames:
+                    _json_write(
+                        self._cosmos_status_path(session_id),
+                        {
+                            "source": "conditioning_frame",
+                            "video": str(cond_frame),
+                            "frame_count": len(frames),
+                            "extracted_at": _utc_now_iso(),
+                        },
+                    )
+                    return frames
+
+            # Fall back to on-demand Cosmos inference
             if cosmos_repo and cond_frame:
                 lora_adapter = self._find_lora_adapter(site_world_id)
                 return self._run_cosmos_inference_sync(
