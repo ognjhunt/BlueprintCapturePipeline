@@ -329,6 +329,11 @@ def test_runtime_control_and_media_endpoints_expose_chunked_rollout(tmp_path: Pa
     assert control.json()["rollout"]["control_intent"]["seq"] == 1
     assert len(control.json()["rollout"]["trajectory_horizon"]) >= 3
 
+    rollout = client.get(f"/v2/sessions/{session_id}/rollout")
+    assert rollout.status_code == 200
+    assert rollout.json()["control_intent"]["seq"] == 1
+    assert rollout.json()["active_chunk_id"] == "chunk-0000"
+
     media = client.get(f"/v2/sessions/{session_id}/media")
     assert media.status_code == 200
     assert media.headers["content-type"].startswith("video/mp4")

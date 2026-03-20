@@ -280,6 +280,17 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
             response.headers[str(header_name)] = str(header_value)
         return response
 
+    @app.get("/v2/sessions/{session_id}/rollout")
+    def rollout_session(session_id: str) -> Dict[str, Any]:
+        try:
+            state = dict(backend.session_state(session_id))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        rollout = state.get("rollout")
+        return dict(rollout) if isinstance(rollout, dict) else {}
+
     @app.post("/v1/sessions/{session_id}/explorer/render")
     @app.post("/v1/sessions/{session_id}/explorer-render")
     def explorer_render(session_id: str, request: ExplorerRenderRequest) -> Dict[str, Any]:
