@@ -27,11 +27,15 @@ NGC_API_KEY is required for downloading model weights from NVIDIA NGC.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
+import sys
 import threading
+import time
 import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -75,6 +79,252 @@ _DEFAULT_HEIGHT = 720
 _DEFAULT_GUIDANCE_SCALE = 7.0
 _DEFAULT_NUM_STEPS = 35
 _OFFICIAL_REPO_INFERENCE_LOCK = threading.Lock()
+_LOADED_MODELS: Dict[str, Any] = {}
+_LOADED_MODELS_LOCK = threading.Lock()
+
+
+def _env_truthy(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _persistent_worker_enabled() -> bool:
+    return _env_truthy("COSMOS_ENABLE_PERSISTENT_WORKER", default=True) and not _env_truthy(
+        "COSMOS_DISABLE_PERSISTENT_WORKER",
+        default=False,
+    )
+
+
+def _skip_official_repo_script() -> bool:
+    return _env_truthy("COSMOS_SKIP_OFFICIAL_REPO_SCRIPT", default=False)
+
+
+def _cold_subprocess_fallback_enabled() -> bool:
+    return _env_truthy("COSMOS_ALLOW_COLD_SUBPROCESS_FALLBACK", default=True)
+
+
+class PersistentCosmosWorkerClient:
+    """Resident Cosmos worker backed by a long-lived Python subprocess."""
+
+    def __init__(
+        self,
+        *,
+        repo_root: Path,
+        python_bin: Path,
+        worker_env: Mapping[str, str],
+        model_id: str,
+        model_variant: str,
+    ) -> None:
+        self.repo_root = repo_root.resolve()
+        self.python_bin = python_bin.expanduser()
+        self.worker_env = _normalized_subprocess_env(worker_env)
+        self.model_id = model_id
+        self.model_variant = model_variant
+        self.startup_timeout_s = max(30.0, float(os.getenv("COSMOS_WORKER_STARTUP_TIMEOUT_S", "900")))
+        self.request_timeout_s = max(30.0, float(os.getenv("COSMOS_WORKER_REQUEST_TIMEOUT_S", "900")))
+        self._process: Optional[subprocess.Popen[str]] = None
+        self._stdout_queue: queue.Queue[Dict[str, Any]] = queue.Queue()
+        self._reader_thread: Optional[threading.Thread] = None
+        self._log_handle: Optional[Any] = None
+        self._io_lock = threading.Lock()
+        self._backend_name = "persistent_worker"
+        self._ready_payload: Dict[str, Any] = {}
+
+    @property
+    def backend_name(self) -> str:
+        return self._backend_name
+
+    def describe(self) -> Dict[str, Any]:
+        return {
+            "backend": "persistent_worker",
+            "repo_root": str(self.repo_root),
+            "python_bin": str(self.python_bin),
+            "model_id": self.model_id,
+            "model_variant": self.model_variant,
+            "worker_backend": self.backend_name,
+            "ready": bool(self._ready_payload),
+        }
+
+    def prewarm(self) -> Dict[str, Any]:
+        with self._io_lock:
+            self._ensure_started()
+            self._send_message({"type": "ping"})
+            response = self._await_message(message_type="pong", timeout_s=10.0)
+            return dict(response)
+
+    def close(self) -> None:
+        process = self._process
+        self._process = None
+        if process is not None:
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except Exception:
+                pass
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except Exception:
+                    pass
+        if self._log_handle is not None:
+            try:
+                self._log_handle.close()
+            except Exception:
+                pass
+            self._log_handle = None
+        self._reader_thread = None
+        self._ready_payload = {}
+
+    def generate_image_to_world(
+        self,
+        *,
+        conditioning_image: Any,
+        output_path: Path,
+        num_frames: int,
+        width: int,
+        height: int,
+        guidance_scale: float,
+        num_steps: int,
+    ) -> Dict[str, Any]:
+        from PIL import Image
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        conditioning_path = output_path.with_stem(output_path.stem + "_conditioning")
+        Image.fromarray(np.array(conditioning_image)).save(conditioning_path)
+
+        with self._io_lock:
+            self._ensure_started()
+            request_id = uuid.uuid4().hex
+            self._send_message(
+                {
+                    "type": "generate",
+                    "request_id": request_id,
+                    "input_path": str(conditioning_path),
+                    "output_path": str(output_path),
+                    "num_frames": int(num_frames),
+                    "width": int(width),
+                    "height": int(height),
+                    "guidance_scale": float(guidance_scale),
+                    "num_steps": int(num_steps),
+                }
+            )
+            response = self._await_message(
+                message_type="result",
+                request_id=request_id,
+                timeout_s=self.request_timeout_s,
+            )
+        if not bool(response.get("ok", False)):
+            raise RuntimeError(str(response.get("error") or "persistent_worker_generation_failed"))
+        return dict(response)
+
+    def _ensure_started(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            return
+
+        self.close()
+        log_path = Path(
+            str(self.worker_env.get("COSMOS_WORKER_LOG_PATH") or (self.repo_root / "assets" / "outputs" / "blueprint_cosmos_worker.log"))
+        )
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log_handle = log_path.open("a", encoding="utf-8")
+        self._process = subprocess.Popen(
+            [str(self.python_bin), "-m", "blueprint_pipeline.synthesis.cosmos_worker"],
+            cwd=str(self.repo_root),
+            env=self.worker_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self._log_handle,
+            text=True,
+            bufsize=1,
+        )
+        self._stdout_queue = queue.Queue()
+        self._reader_thread = threading.Thread(target=self._drain_stdout, daemon=True)
+        self._reader_thread.start()
+        try:
+            ready = self._await_message(message_type="ready", timeout_s=self.startup_timeout_s)
+        except Exception:
+            self.close()
+            raise
+        self._backend_name = str(ready.get("backend") or "persistent_worker")
+        self._ready_payload = dict(ready)
+
+    def _drain_stdout(self) -> None:
+        process = self._process
+        if process is None or process.stdout is None:
+            return
+        for raw_line in process.stdout:
+            text = raw_line.strip()
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, Mapping):
+                self._stdout_queue.put(dict(payload))
+
+    def _send_message(self, payload: Mapping[str, Any]) -> None:
+        process = self._process
+        if process is None or process.stdin is None or process.poll() is not None:
+            raise RuntimeError("persistent_worker_not_running")
+        process.stdin.write(json.dumps(dict(payload)) + "\n")
+        process.stdin.flush()
+
+    def _await_message(
+        self,
+        *,
+        message_type: str,
+        timeout_s: float,
+        request_id: str | None = None,
+    ) -> Dict[str, Any]:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"persistent_worker_timeout:{message_type}")
+            process = self._process
+            if process is not None and process.poll() is not None and self._stdout_queue.empty():
+                raise RuntimeError(f"persistent_worker_exited:{process.returncode}")
+            try:
+                message = dict(self._stdout_queue.get(timeout=min(remaining, 0.25)))
+            except queue.Empty as exc:
+                process = self._process
+                if process is not None and process.poll() is not None:
+                    raise RuntimeError(f"persistent_worker_exited:{process.returncode}") from exc
+                continue
+            msg_type = str(message.get("type") or "")
+            if msg_type == "error":
+                stage = str(message.get("stage") or "worker")
+                detail = str(message.get("error") or "persistent_worker_failed")
+                raise RuntimeError(f"{stage}:{detail}")
+            if msg_type == "protocol_error":
+                raise RuntimeError(f"persistent_worker_protocol_error:{message.get('raw')}")
+            if msg_type != message_type:
+                continue
+            if request_id is not None and str(message.get("request_id") or "") != request_id:
+                continue
+            return message
+
+
+def _close_loaded_models() -> None:
+    with _LOADED_MODELS_LOCK:
+        loaded_models = list(_LOADED_MODELS.values())
+        _LOADED_MODELS.clear()
+    for model in loaded_models:
+        if isinstance(model, PersistentCosmosWorkerClient):
+            model.close()
+
+
+atexit.register(_close_loaded_models)
 
 
 def generate_view(
@@ -144,20 +394,47 @@ def load_cosmos_model(model_id: Optional[str] = None) -> Any:
     to avoid reloading on every call.
     """
     mid = model_id or _DEFAULT_COSMOS_MODEL_ID
-    model = _try_load_cosmos_official(mid)
-    if model is not None:
-        return model
-    model = _try_load_cosmos_official_repo(mid)
-    if model is not None:
-        return model
-    model = _try_load_cosmos_diffusers(mid)
-    if model is not None:
-        return model
+    with _LOADED_MODELS_LOCK:
+        cached = _LOADED_MODELS.get(mid)
+        if cached is not None:
+            return cached
+
+        model = _try_load_cosmos_official(mid)
+        if model is None:
+            model = _try_load_cosmos_official_repo_direct(mid)
+        if model is None:
+            model = _try_load_cosmos_diffusers(mid)
+        if model is None:
+            model = _try_load_cosmos_official_repo_worker(mid)
+        if model is None:
+            model = _try_load_cosmos_official_repo(mid)
+        if model is not None:
+            _LOADED_MODELS[mid] = model
+            return model
     raise ImportError(
         "Could not load Cosmos-Predict2.5-2B. Tried the deprecated cosmos-predict2-5 wheel path, "
-        "official NVIDIA repo fallback, and Hugging Face diffusers loader. "
+        "official in-process loaders, resident worker fallback, and cold official NVIDIA repo fallback. "
         f"Tried model path: {mid}"
     )
+
+
+def prewarm_cosmos_model(model_id: Optional[str] = None) -> Dict[str, Any]:
+    started_at = time.monotonic()
+    model = load_cosmos_model(model_id=model_id)
+    payload = describe_cosmos_model(model)
+    if isinstance(model, PersistentCosmosWorkerClient):
+        payload.update(model.prewarm())
+    payload["prewarm_ms"] = int(round((time.monotonic() - started_at) * 1000.0))
+    payload["model_id"] = model_id or _DEFAULT_COSMOS_MODEL_ID
+    return payload
+
+
+def describe_cosmos_model(model: Any) -> Dict[str, Any]:
+    if isinstance(model, PersistentCosmosWorkerClient):
+        return model.describe()
+    if isinstance(model, Mapping):
+        return {str(key): value for key, value in model.items()}
+    return {"backend": type(model).__name__}
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +456,17 @@ def _cosmos_image_to_world(
     from PIL import Image
 
     model = cosmos_model or load_cosmos_model()
+    if isinstance(model, PersistentCosmosWorkerClient):
+        model.generate_image_to_world(
+            conditioning_image=conditioning_image,
+            output_path=output_path,
+            num_frames=num_frames,
+            width=width,
+            height=height,
+            guidance_scale=guidance_scale,
+            num_steps=num_steps,
+        )
+        return output_path
     pil_image = Image.fromarray(conditioning_image).resize(
         (width, height), Image.LANCZOS
     )
@@ -246,6 +534,16 @@ def _invoke_cosmos(
         frames = getattr(result, "frames", None) or getattr(result, "images", None)
         if frames is not None:
             return list(frames[0]) if isinstance(frames[0], list) else list(frames)
+
+    # --- NVIDIA official repo loaded directly in-process ---
+    if isinstance(model, dict) and model.get("backend") == "official_repo_direct":
+        return _invoke_cosmos_official_repo_direct(
+            model=model,
+            conditioning_image=conditioning_image,
+            num_frames=num_frames,
+            guidance_scale=guidance_scale,
+            num_steps=num_steps,
+        )
 
     # --- NVIDIA official repo examples/inference.py wrapper ---
     if isinstance(model, dict) and model.get("backend") == "official_repo_script":
@@ -327,7 +625,67 @@ def _try_load_cosmos_diffusers(model_id: str) -> Optional[Any]:
         return None
 
 
+def _try_load_cosmos_official_repo_direct(model_id: str) -> Optional[Dict[str, Any]]:
+    if not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT:
+        return None
+    repo_root = Path(_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT).expanduser()
+    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_REVISION)
+    if model_variant is None:
+        return None
+    try:
+        from cosmos_oss.init import init_environment, init_output_dir
+        from cosmos_predict2.config import SetupArguments
+        from cosmos_predict2.inference import Inference
+
+        output_root = (repo_root / "assets" / "outputs" / "blueprint_cosmos_resident_worker").resolve()
+        output_root.mkdir(parents=True, exist_ok=True)
+        init_environment()
+        init_output_dir(output_root, profile=False)
+        setup = SetupArguments(
+            output_dir=output_root,
+            model=model_variant,
+            disable_guardrails=bool(_DEFAULT_COSMOS_DISABLE_GUARDRAILS),
+            keep_going=False,
+        )
+        return {
+            "backend": "official_repo_direct",
+            "repo_root": str(repo_root.resolve()),
+            "output_root": str(output_root),
+            "model_variant": model_variant,
+            "disable_guardrails": bool(_DEFAULT_COSMOS_DISABLE_GUARDRAILS),
+            "inference": Inference(setup),
+        }
+    except Exception:
+        return None
+
+
+def _try_load_cosmos_official_repo_worker(model_id: str) -> Optional[PersistentCosmosWorkerClient]:
+    if not _persistent_worker_enabled() or not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT:
+        return None
+    repo_root = Path(_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT).expanduser()
+    inference_entrypoint = repo_root / "examples" / "inference.py"
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    if not inference_entrypoint.is_file() or not venv_python.is_file():
+        return None
+    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_REVISION)
+    if model_variant is None:
+        return None
+    worker_python_raw = str(os.getenv("COSMOS_WORKER_PYTHON_BIN") or "").strip()
+    worker_python = Path(worker_python_raw).expanduser() if worker_python_raw else venv_python
+    if not worker_python.is_file():
+        worker_python = venv_python
+    return PersistentCosmosWorkerClient(
+        repo_root=repo_root,
+        python_bin=worker_python,
+        worker_env=_official_repo_worker_env(repo_root=repo_root, python_bin=worker_python),
+        model_id=model_id,
+        model_variant=model_variant,
+    )
+
+
 def _try_load_cosmos_official_repo(model_id: str) -> Optional[Dict[str, Any]]:
+    if _skip_official_repo_script() or not _cold_subprocess_fallback_enabled():
+        return None
     if not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT:
         return None
     repo_root = Path(_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT).expanduser()
@@ -441,6 +799,58 @@ def _invoke_cosmos_official_repo_script(
     return frames
 
 
+def _invoke_cosmos_official_repo_direct(
+    *,
+    model: Mapping[str, Any],
+    conditioning_image: Any,
+    num_frames: int,
+    guidance_scale: float,
+    num_steps: int,
+) -> List[Any]:
+    from PIL import Image
+
+    output_root = Path(str(model["output_root"])).resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    sample_name = f"blueprint_cosmos_resident_{uuid.uuid4().hex[:8]}"
+    input_path = output_root / f"{sample_name}.jpg"
+    Image.fromarray(np.array(conditioning_image)).save(input_path)
+
+    inference = model.get("inference")
+    if inference is None:
+        raise RuntimeError("official_repo_direct_inference_missing")
+
+    try:
+        from cosmos_predict2.config import InferenceArguments
+    except Exception as exc:
+        raise RuntimeError(f"official_repo_direct_import_failed:{exc}") from exc
+
+    sample = InferenceArguments(
+        inference_type="image2world",
+        name=sample_name,
+        input_path=input_path,
+        prompt=_DEFAULT_COSMOS_PROMPT,
+        num_output_frames=int(num_frames),
+        guidance=max(0, min(7, int(round(guidance_scale)))),
+        num_steps=int(num_steps),
+    )
+    output_paths = inference.generate([sample], output_dir=output_root)
+    if not output_paths:
+        raise RuntimeError("official_repo_direct_output_missing")
+    output_video_path = Path(str(output_paths[0])).resolve()
+    if not output_video_path.is_file():
+        raise RuntimeError(f"official_repo_direct_output_missing:{output_video_path}")
+
+    try:
+        import imageio.v3 as iio
+
+        frames = list(iio.imiter(output_video_path))
+    except Exception as exc:
+        raise RuntimeError(f"official_repo_direct_decode_failed:{exc}") from exc
+    if not frames:
+        raise RuntimeError(f"official_repo_direct_output_empty:{output_video_path}")
+    return frames
+
+
 def _official_repo_subprocess_env(*, repo_root: Path, python_bin: Path) -> Dict[str, str]:
     env = _select_official_repo_env_vars()
     env["PATH"] = _prepend_search_paths(
@@ -450,6 +860,28 @@ def _official_repo_subprocess_env(*, repo_root: Path, python_bin: Path) -> Dict[
         ],
         env.get("PATH", ""),
     )
+    return env
+
+
+def _official_repo_worker_env(*, repo_root: Path, python_bin: Path) -> Dict[str, str]:
+    env = _official_repo_subprocess_env(repo_root=repo_root, python_bin=python_bin)
+    src_root = Path(__file__).resolve().parents[2]
+    env["PYTHONPATH"] = _prepend_search_paths(
+        [
+            str(src_root.resolve()),
+            str(repo_root.resolve()),
+            str((repo_root / "packages" / "cosmos-oss").resolve()),
+        ],
+        os.getenv("PYTHONPATH", ""),
+    )
+    env["PYTHONUNBUFFERED"] = "1"
+    env["COSMOS_OFFICIAL_REPO_ROOT"] = str(repo_root.resolve())
+    env["COSMOS_MODEL_ID"] = _DEFAULT_COSMOS_MODEL_ID
+    env["COSMOS_MODEL_REVISION"] = _DEFAULT_COSMOS_MODEL_REVISION
+    env["COSMOS_DISABLE_GUARDRAILS"] = "1" if _DEFAULT_COSMOS_DISABLE_GUARDRAILS else "0"
+    env["COSMOS_DISABLE_PERSISTENT_WORKER"] = "1"
+    env["COSMOS_SKIP_OFFICIAL_REPO_SCRIPT"] = "1"
+    env["COSMOS_ALLOW_COLD_SUBPROCESS_FALLBACK"] = "0"
     return env
 
 

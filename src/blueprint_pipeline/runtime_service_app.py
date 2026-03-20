@@ -130,6 +130,12 @@ class ExplorerRenderRequest(BaseModel):
 def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
     app = FastAPI(title=title, version="1.0.0")
 
+    @app.on_event("startup")
+    async def prewarm_backend() -> None:
+        prewarm = getattr(backend, "prewarm_runtime", None)
+        if callable(prewarm):
+            await asyncio.to_thread(prewarm)
+
     @app.get("/healthz")
     def healthz() -> Dict[str, Any]:
         runtime = backend.runtime_info(service_version=app.version)

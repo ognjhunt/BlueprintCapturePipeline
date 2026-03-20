@@ -43,11 +43,23 @@ DEEPPRIVACY2_MODEL_PATH="${DEEPPRIVACY2_MODEL_PATH:-/opt/deepprivacy2/weights}"
 NVIDIA_PYPI_INDEX="${NVIDIA_PYPI_INDEX:-https://pypi.nvidia.com}"
 TORCH_VERSION="${TORCH_VERSION:-2.6.0}"
 TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.21.0}"
+DIFFUSERS_VERSION="${DIFFUSERS_VERSION:-0.37.0}"
+PEFT_VERSION_SPEC="${PEFT_VERSION_SPEC:-peft>=0.17.0,<0.19}"
 YOLO_WORLD_MODEL="${YOLO_WORLD_MODEL:-yolov8s-worldv2.pt}"
 COSMOS_PREDICT_PACKAGE="${COSMOS_PREDICT_PACKAGE:-cosmos-predict2-5}"
 COSMOS_PREDICT_VERSION="${COSMOS_PREDICT_VERSION:-}"
 COSMOS_MODEL_ID="${COSMOS_MODEL_ID:-nvidia/Cosmos-Predict2.5-2B}"
 COSMOS_PREWARM_MODEL="${COSMOS_PREWARM_MODEL:-false}"
+COSMOS_OFFICIAL_REPO_URL="${COSMOS_OFFICIAL_REPO_URL:-https://github.com/nvidia-cosmos/cosmos-predict2.git}"
+COSMOS_OFFICIAL_REPO_ROOT="${COSMOS_OFFICIAL_REPO_ROOT:-${HOME}/workspace/cosmos-predict2.5}"
+COSMOS_OFFICIAL_REPO_REF="${COSMOS_OFFICIAL_REPO_REF:-main}"
+COSMOS_OFFICIAL_REPO_UV_EXTRA="${COSMOS_OFFICIAL_REPO_UV_EXTRA:-cu128}"
+COSMOS_WORKER_PYTHON_BIN="${COSMOS_WORKER_PYTHON_BIN:-${COSMOS_OFFICIAL_REPO_ROOT}/.venv/bin/python}"
+COSMOS_CHUNK_SIZE="${COSMOS_CHUNK_SIZE:-33}"
+COSMOS_CHUNK_OVERLAP="${COSMOS_CHUNK_OVERLAP:-4}"
+COSMOS_DISABLE_GUARDRAILS="${COSMOS_DISABLE_GUARDRAILS:-1}"
+NATIVE_WORLD_MODEL_SYNTHESIS_MODE="${NATIVE_WORLD_MODEL_SYNTHESIS_MODE:-cosmos_i2w}"
+SITE_WORLD_RUNTIME_SERVICE_PORT="${SITE_WORLD_RUNTIME_SERVICE_PORT:-8791}"
 COSMOS_TRAINER_LAUNCHER="${COSMOS_TRAINER_LAUNCHER:-accelerate}"
 COSMOS_TRAINING_COMMAND_DEFAULT="blueprint-cosmos-vast-train --trainer-config {trainer_config_path} --output-dir {output_dir} --export-manifest {export_manifest_path} --capture-root {capture_root} --paired-reference-target {paired_reference_target_path} --k-reference-conditioning {k_reference_conditioning_path} --train-val-split {train_val_split_path}"
 
@@ -186,11 +198,11 @@ install_cosmos_runtime() {
   python3 -m pip install --no-cache-dir \
     --extra-index-url "${NVIDIA_PYPI_INDEX}" \
     "${package_spec}" \
-    diffusers \
+    "diffusers==${DIFFUSERS_VERSION}" \
     accelerate \
     transformers \
     safetensors \
-    peft \
+    "${PEFT_VERSION_SPEC}" \
     datasets
 
   if [ -z "${NGC_API_KEY:-}" ]; then
@@ -198,6 +210,22 @@ install_cosmos_runtime() {
   fi
   if [ -z "${HUGGINGFACE_HUB_TOKEN:-}" ] && [ -z "${HF_TOKEN:-}" ]; then
     log "WARNING: Hugging Face token is not set. HF fallback model downloads may fail."
+  fi
+}
+
+bootstrap_cosmos_official_repo() {
+  log "Bootstrapping official Cosmos repo worker environment..."
+  if ! command -v uv >/dev/null 2>&1; then
+    python3 -m pip install --no-cache-dir uv
+  fi
+  mkdir -p "$(dirname "${COSMOS_OFFICIAL_REPO_ROOT}")"
+  clone_or_update_repo "${COSMOS_OFFICIAL_REPO_URL}" "${COSMOS_OFFICIAL_REPO_ROOT}" "${COSMOS_OFFICIAL_REPO_REF}"
+  (
+    cd "${COSMOS_OFFICIAL_REPO_ROOT}"
+    uv sync --extra "${COSMOS_OFFICIAL_REPO_UV_EXTRA}"
+  )
+  if [ ! -x "${COSMOS_WORKER_PYTHON_BIN}" ]; then
+    die "Expected worker python at ${COSMOS_WORKER_PYTHON_BIN} after Cosmos repo bootstrap"
   fi
 }
 
@@ -331,6 +359,13 @@ export QWEN_IMAGE_EDIT_MODEL_PATH=${QWEN_EDIT_DIR}
 export DEEPPRIVACY2_DIR=${DEEPPRIVACY2_DIR}
 export DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH}
 export COSMOS_MODEL_ID=${COSMOS_MODEL_ID}
+export COSMOS_OFFICIAL_REPO_ROOT=${COSMOS_OFFICIAL_REPO_ROOT}
+export COSMOS_WORKER_PYTHON_BIN=${COSMOS_WORKER_PYTHON_BIN}
+export COSMOS_CHUNK_SIZE=${COSMOS_CHUNK_SIZE}
+export COSMOS_CHUNK_OVERLAP=${COSMOS_CHUNK_OVERLAP}
+export COSMOS_DISABLE_GUARDRAILS=${COSMOS_DISABLE_GUARDRAILS}
+export NATIVE_WORLD_MODEL_SYNTHESIS_MODE=${NATIVE_WORLD_MODEL_SYNTHESIS_MODE}
+export SITE_WORLD_RUNTIME_SERVICE_PORT=${SITE_WORLD_RUNTIME_SERVICE_PORT}
 export COSMOS_TRAINER_LAUNCHER=${COSMOS_TRAINER_LAUNCHER}
 export COSMOS_TRAINER_COMMAND='${COSMOS_TRAINER_COMMAND:-${COSMOS_TRAINING_COMMAND:-${COSMOS_TRAINING_COMMAND_DEFAULT}}}'
 export COSMOS_TRAINING_COMMAND='${COSMOS_TRAINER_COMMAND}'
@@ -367,6 +402,7 @@ install_system_dependencies
 install_python_runtime
 if [ "${WITH_COSMOS}" = true ]; then
   install_cosmos_runtime
+  bootstrap_cosmos_official_repo
 fi
 
 if [ "${WITH_SAM3}" = true ]; then

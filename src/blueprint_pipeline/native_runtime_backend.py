@@ -380,6 +380,11 @@ class NativeWorldModelRuntimeStore:
         self.ws_base_url = config.ws_base_url.rstrip("/")
         self.site_worlds_dir = self.root_dir / "site_worlds"
         self.sessions_dir = self.root_dir / "sessions"
+        self._generation_owner_lock = threading.Lock()
+        self._generation_owner_session_id: Optional[str] = None
+        self._generation_owner_acquired_at: Optional[str] = None
+        self._prewarm_lock = threading.Lock()
+        self._prewarm_status: Dict[str, Any] = {"status": "idle"}
         self.site_worlds_dir.mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -462,6 +467,12 @@ class NativeWorldModelRuntimeStore:
             "current_media_type": None,
             "current_render_source": None,
             "chunk_count": 0,
+            "generation_owner_session_id": None,
+            "worker_backend": None,
+            "first_chunk_generation_ms": None,
+            "last_chunk_generation_ms": None,
+            "last_chunk_ready_latency_ms": None,
+            "underrun_count": 0,
         }
 
     def _ensure_rollout(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -482,6 +493,7 @@ class NativeWorldModelRuntimeStore:
 
     def runtime_info(self, *, service_version: str) -> Dict[str, Any]:
         readiness = _runtime_readiness()
+        readiness["prewarm_status"] = dict(self._prewarm_status)
         checkpoint_path = str(readiness.get("checkpoint_path") or "")
         model_dir = str(readiness.get("model_dir") or "")
         cosmos_repo = str(readiness.get("cosmos_repo") or "")
@@ -498,6 +510,7 @@ class NativeWorldModelRuntimeStore:
                 "mode": "contract_complete_native_backend",
                 "packages": dict(readiness.get("packages") or {}),
                 "cosmos_repo": cosmos_repo,
+                "prewarm_status": dict(self._prewarm_status),
             },
             model_identity={
                 "model_family": "cosmos_swm_native",
@@ -532,6 +545,52 @@ class NativeWorldModelRuntimeStore:
             },
             readiness=readiness,
         ).to_dict()
+
+    def _claim_generation_owner(self, session_id: str) -> tuple[bool, Optional[str]]:
+        with self._generation_owner_lock:
+            owner = self._generation_owner_session_id
+            if owner and owner != session_id:
+                return False, owner
+            self._generation_owner_session_id = session_id
+            if not self._generation_owner_acquired_at:
+                self._generation_owner_acquired_at = _utc_now_iso()
+            return True, session_id
+
+    def _release_generation_owner(self, session_id: str) -> None:
+        with self._generation_owner_lock:
+            if self._generation_owner_session_id == session_id:
+                self._generation_owner_session_id = None
+                self._generation_owner_acquired_at = None
+
+    def prewarm_runtime(self) -> Dict[str, Any]:
+        with self._prewarm_lock:
+            readiness = _runtime_readiness()
+            if not bool(readiness.get("ready", False)):
+                self._prewarm_status = {
+                    "status": "skipped",
+                    "reason": "runtime_not_ready",
+                    "checked_at": _utc_now_iso(),
+                }
+                return dict(self._prewarm_status)
+            started_at = _utc_now_iso()
+            try:
+                from .synthesis.cosmos_inference import prewarm_cosmos_model
+
+                result = dict(prewarm_cosmos_model())
+                self._prewarm_status = {
+                    "status": "ready",
+                    "started_at": started_at,
+                    "completed_at": _utc_now_iso(),
+                    **result,
+                }
+            except Exception as exc:
+                self._prewarm_status = {
+                    "status": "failed",
+                    "started_at": started_at,
+                    "completed_at": _utc_now_iso(),
+                    "error": str(exc),
+                }
+            return dict(self._prewarm_status)
 
     def register_site_world_package(
         self,
@@ -1105,6 +1164,30 @@ class NativeWorldModelRuntimeStore:
                 state["updated_at"] = _utc_now_iso()
                 self._store_session_state(session_id, state)
 
+        owner_claimed, owner_session_id = self._claim_generation_owner(session_id)
+        if not owner_claimed:
+            with _cosmos_session_lock(f"state:{session_id}"):
+                state = self._load_session_state(session_id)
+                rollout = self._ensure_rollout(state)
+                rollout["queued_chunk_ids"] = []
+                rollout["status"] = "failed"
+                rollout["underrun"] = True
+                rollout["underrun_count"] = int(rollout.get("underrun_count") or 0) + 1
+                rollout["generation_owner_session_id"] = owner_session_id
+                state["failure_reason"] = f"generation_worker_owned_by:{owner_session_id}"
+                state["updated_at"] = _utc_now_iso()
+                self._store_session_state(session_id, state)
+            _push_media_event(session_id, {
+                "event": "chunk_underrun",
+                "chunk_id": chunk_id,
+                "buffer_ms": 0,
+                "reason": f"generation_worker_owned_by:{owner_session_id}",
+                "ts": _utc_now_iso(),
+            })
+            return
+
+        chunk_generation_started_at_ms = _utc_now_ms()
+
         # Emit: generation has started
         _push_media_event(session_id, {
             "event": "chunk_generation_started",
@@ -1115,6 +1198,7 @@ class NativeWorldModelRuntimeStore:
 
         try:
             from .synthesis.synthesize import synthesize_view
+            from .synthesis.cosmos_inference import describe_cosmos_model, load_cosmos_model
 
             state = self._load_session_state(session_id)
             rollout = self._ensure_rollout(state)
@@ -1150,6 +1234,14 @@ class NativeWorldModelRuntimeStore:
             )
             output_png = self._video_chunks_dir(session_id) / f"{chunk_id}.png"
             previous_tail_path = rollout.get("last_chunk_tail_path")
+            worker_backend = None
+            if self._live_synthesis_mode() == "cosmos_i2w":
+                cosmos_model_description = describe_cosmos_model(load_cosmos_model())
+                worker_backend = str(
+                    cosmos_model_description.get("worker_backend")
+                    or cosmos_model_description.get("backend")
+                    or ""
+                )
             # Collect lookahead ref frame URIs so synthesize_view can tile them
             # into the conditioning image as a spatial hint for trajectory heading.
             lookahead_ref_uris: List[str] = [
@@ -1189,6 +1281,7 @@ class NativeWorldModelRuntimeStore:
             fmp4_path = video_path.with_stem(video_path.stem + "_fmp4")
             if self._convert_to_fmp4(video_path, fmp4_path):
                 video_path = fmp4_path
+            generation_duration_ms = max(0, _utc_now_ms() - chunk_generation_started_at_ms)
             tail_path = self._chunk_tail_path(session_id, chunk_id)
             self._extract_tail_frame(video_path, tail_path)
             ready_chunk = {
@@ -1204,6 +1297,8 @@ class NativeWorldModelRuntimeStore:
                 "lookahead_anchor": (lookahead_refs or list(result.get("lookahead_references") or []))[:1] or None,
                 "trajectory_horizon": horizon,
                 "conditioning": dict(result.get("conditioning") or {}),
+                "generation_duration_ms": generation_duration_ms,
+                "worker_backend": worker_backend,
                 "generated_at": _utc_now_iso(),
             }
             with _cosmos_session_lock(f"state:{session_id}"):
@@ -1219,6 +1314,12 @@ class NativeWorldModelRuntimeStore:
                 rollout["last_chunk_tail_path"] = ready_chunk.get("tail_path")
                 rollout["generation_lag_ms"] = max(0, _utc_now_ms() - int(control.get("tClientMs") or _utc_now_ms()))
                 rollout["chunk_count"] = chunk_index + 1
+                rollout["generation_owner_session_id"] = session_id
+                rollout["worker_backend"] = worker_backend
+                rollout["last_chunk_generation_ms"] = generation_duration_ms
+                rollout["last_chunk_ready_latency_ms"] = generation_duration_ms
+                if int(rollout.get("chunk_count") or 0) == 1 and not rollout.get("first_chunk_generation_ms"):
+                    rollout["first_chunk_generation_ms"] = generation_duration_ms
                 self._replace_chunk(rollout, ready_chunk)
                 self._refresh_rollout_playback(state)
                 state["status"] = "running"
@@ -1240,6 +1341,8 @@ class NativeWorldModelRuntimeStore:
                 "chunk_index": chunk_index,
                 "duration_ms": int(ready_chunk.get("duration_ms") or 0),
                 "render_source": str(ready_chunk.get("render_source") or ""),
+                "generation_duration_ms": generation_duration_ms,
+                "worker_backend": worker_backend,
                 "is_fmp4": True,
                 "ts": _utc_now_iso(),
             })
@@ -1250,9 +1353,12 @@ class NativeWorldModelRuntimeStore:
                 rollout["queued_chunk_ids"] = []
                 rollout["status"] = "failed"
                 rollout["underrun"] = True
+                rollout["underrun_count"] = int(rollout.get("underrun_count") or 0) + 1
+                rollout["generation_owner_session_id"] = self._generation_owner_session_id
                 state["failure_reason"] = str(exc)
                 state["updated_at"] = _utc_now_iso()
                 self._store_session_state(session_id, state)
+            self._release_generation_owner(session_id)
             _push_media_event(session_id, {
                 "event": "chunk_underrun",
                 "chunk_id": chunk_id,
@@ -1352,6 +1458,7 @@ class NativeWorldModelRuntimeStore:
         return stored
 
     def reset_session(self, session_id: str, **kwargs: Any) -> Dict[str, Any]:
+        self._release_generation_owner(session_id)
         state = self._load_session_state(session_id)
         if kwargs.get("task_id"):
             state["task_id"] = kwargs["task_id"]

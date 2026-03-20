@@ -100,6 +100,29 @@ def test_native_runtime_service_contract_round_trip(tmp_path: Path) -> None:
     assert explorer_frame.headers["content-type"].startswith("image/png")
 
 
+def test_runtime_app_startup_prewarms_backend(tmp_path: Path, monkeypatch) -> None:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    called: dict[str, bool] = {}
+
+    def fake_prewarm() -> dict:
+        called["ok"] = True
+        return {"status": "ready"}
+
+    monkeypatch.setattr(store, "prewarm_runtime", fake_prewarm)
+
+    app = create_runtime_app(backend=store, title="test-native-runtime")
+    with TestClient(app):
+        pass
+
+    assert called == {"ok": True}
+
+
 def test_native_runtime_step_session_runs_live_synthesis_when_site_index_exists(
     tmp_path: Path,
     monkeypatch,

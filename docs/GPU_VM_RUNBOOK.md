@@ -34,7 +34,9 @@ From the repo root:
 python3 -m venv .venv
 source .venv/bin/activate
 source .env.vast.local   # if present; ignored local secrets file
+# Optional: copy defaults from configs/native_runtime_vast.env.example into .env.vast.local
 ./scripts/install_ml_stack.sh
+./scripts/bootstrap_cosmos_official_repo.sh
 python3 scripts/setup_environment.py --check
 ```
 
@@ -80,6 +82,14 @@ export HUGGINGFACE_HUB_TOKEN="$HF_TOKEN"
 export NGC_API_KEY=""
 export SAM3_WEIGHTS_PATH="/opt/sam3_weights/sam3.pt"
 export COSMOS_MODEL_ID="nvidia/Cosmos-Predict2.5-2B"
+export COSMOS_OFFICIAL_REPO_ROOT="$HOME/workspace/cosmos-predict2.5"
+export COSMOS_OFFICIAL_REPO_REF="main"
+export COSMOS_OFFICIAL_REPO_UV_EXTRA="cu128"
+export COSMOS_WORKER_PYTHON_BIN="$COSMOS_OFFICIAL_REPO_ROOT/.venv/bin/python"
+export COSMOS_DISABLE_GUARDRAILS="1"
+export COSMOS_CHUNK_SIZE="33"
+export COSMOS_CHUNK_OVERLAP="4"
+export NATIVE_WORLD_MODEL_SYNTHESIS_MODE="cosmos_i2w"
 export COSMOS_TRAINER_ENTRYPOINT="/opt/cosmos/train_lora.py"
 export COSMOS_TRAINER_ENTRYPOINT_MODE="script"
 export COSMOS_TRAINER_LAUNCHER="accelerate"
@@ -144,8 +154,10 @@ export SITE_WORLD_RUNTIME_SERVICE_URL="http://127.0.0.1:8791"
 
 cd /Users/nijelhunt_1/workspace/BlueprintCapturePipeline
 source .venv/bin/activate
-blueprint-native-runtime-service
+./scripts/start_native_runtime_vast.sh
 ```
+
+The supported live-runtime path now depends on the tracked launcher and official repo bootstrap scripts rather than an ad hoc VM-local `/root/blueprint-storage/start_native_runtime.sh` file.
 
 Use the production-only validation config in [`BlueprintValidation/configs/example_validation.yaml`](../../BlueprintValidation/configs/example_validation.yaml).
 
