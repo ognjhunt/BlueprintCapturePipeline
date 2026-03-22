@@ -1,0 +1,27 @@
+{
+  "forbidden_phrases": [
+    "deployment-approved",
+    "exciting opportunity"
+  ],
+  "max_word_count": 700,
+  "required_human_actions": [
+    "Approve targeted recapture for the west aisle hidden zone.",
+    "Review shared-traffic clearance with site safety lead."
+  ],
+  "required_phrases": [
+    "NOT READY YET",
+    "Hidden-zone bound 0.42 exceeds the readiness envelope."
+  ],
+  "required_sections": [
+    "# Site Readiness Assessment:",
+    "## Readiness State:",
+    "## Human Signoff Boundary",
+    "## Executive Summary",
+    "## Blockers",
+    "## Capability Assessment",
+    "## Evidence Assessment",
+    "## Required Human Actions",
+    "## Recapture Recommendations",
+    "## Next Steps"
+  ]
+}

@@ -74,6 +74,10 @@ def synthesize_view(
     depth_scale: float = 0.001,          # 0.001 for 16-bit mm PNG; 1.0 for float32 m
     fill_holes: bool = True,
     num_frames: Optional[int] = None,
+    cosmos_width: Optional[int] = None,
+    cosmos_height: Optional[int] = None,
+    cosmos_guidance_scale: Optional[float] = None,
+    cosmos_num_steps: Optional[int] = None,
     previous_tail_path: Optional[Path] = None,
     previous_tail_alpha: float = 0.35,
     lookahead_target_T_world_camera: Optional[np.ndarray] = None,
@@ -211,6 +215,10 @@ def synthesize_view(
         mode=mode,
         cosmos_model=cosmos_model,
         num_frames=num_frames or 57,
+        width=cosmos_width or 1280,
+        height=cosmos_height or 720,
+        guidance_scale=cosmos_guidance_scale or 7.0,
+        num_steps=cosmos_num_steps or 35,
     )
     video_path = output_path.with_suffix(".mp4")
 

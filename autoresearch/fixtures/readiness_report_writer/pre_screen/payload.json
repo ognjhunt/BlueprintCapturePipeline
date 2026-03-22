@@ -1,0 +1,62 @@
+{
+  "capture_id": "capture-report-2",
+  "blocker_register": {
+    "entries": [
+      {
+        "category": "capture_quality",
+        "detail": "Video-only evidence cannot support decision-grade clearance checks.",
+        "severity": "medium",
+        "source_artifacts": [
+          "capture_package_manifest.json"
+        ]
+      }
+    ]
+  },
+  "capability_envelope": {
+    "bounded_claims": [
+      "Route Traversal: unverifiable - no metric route clearance evidence is available."
+    ],
+    "evidence_gaps": [
+      {
+        "category": "capture_evidence",
+        "detail": "No metric route clearance evidence is available."
+      }
+    ],
+    "measurements": {},
+    "metric_ready": false
+  },
+  "human_actions_required": [
+    {
+      "action": "Confirm whether a metric recapture is in scope before qualification review.",
+      "owner": "project_manager",
+      "reason": "Current evidence grade is pre_screen only.",
+      "priority": "P1",
+      "required": true
+    }
+  ],
+  "readiness_decision": {
+    "confidence": 0.42,
+    "status": "risky"
+  },
+  "recapture_plan": {
+    "required": true,
+    "steps": [
+      {
+        "detail": "Return for metric capture of the primary route and workcell clearances.",
+        "order": 1,
+        "preferred_capture_mode": "iphone_arkit_lidar"
+      }
+    ]
+  },
+  "standards_notes": {
+    "entries": [
+      {
+        "citation": "Internal capture policy",
+        "summary": "Video-only captures are pre-screen artifacts until metric evidence is available.",
+        "title": "Pre-screen evidence boundary"
+      }
+    ],
+    "source": "curated_local_corpus"
+  },
+  "scene_id": "scene-report-2"
+}

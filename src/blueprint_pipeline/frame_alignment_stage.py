@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -43,6 +42,29 @@ from .common import (
     write_json,
 )
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
+from .retrieval_index_stage import (
+    _write_retrieval_validation,
+    _write_site_manifest,
+    _write_site_memory_indices,
+    _update_coverage_map,
+)
+from .site_memory_utils import (
+    backproject_depth_points,
+    effective_pose,
+    fingerprint_similarity,
+    geometry_fingerprint,
+    gs_uri_to_local,
+    iter_groups,
+    load_embedding,
+    load_jsonl as _sm_load_jsonl,
+    load_numeric_array as _sm_load_numeric_array,
+    p95 as _sm_p95,
+    plane_summaries,
+    pose_matrix,
+    rotation_cosine,
+    transform_translation,
+    write_ascii_pointcloud,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +73,7 @@ from .local_capture import LocalCaptureContext, resolve_local_capture_context
 
 # Visual similarity: DINOv3 cosine similarity required for a frame pair to be a candidate match
 _SIM_THRESHOLD = 0.75
+_PAIR_SCORE_THRESHOLD = 0.62
 
 # RANSAC inlier thresholds
 _INLIER_TRANSLATION_M = 0.5   # max positional error (metres) for a pair to be an inlier
@@ -112,62 +135,82 @@ def run_frame_alignment_stage(
             "session_count": len(sessions),
         }
 
-    # Reference session: earliest first-record timestamp
     ref_session_id = _pick_reference_session(sessions)
-    ref_records = sessions[ref_session_id]
 
     results: List[Dict[str, Any]] = []
     aligned_sessions: List[str] = [ref_session_id]
-    # Reference is trivially aligned (identity)
     transforms: Dict[str, Optional[List[List[float]]]] = {ref_session_id: _identity_4x4()}
+    alignment_edges: List[Dict[str, Any]] = []
 
-    # Load reference embeddings once
-    ref_embeddings, ref_record_index = _load_session_embeddings(ref_records, ctx)
-    if ref_embeddings is None or len(ref_embeddings) == 0:
-        return {
-            "status": "failed",
-            "reason": "reference_session_has_no_embeddings",
-            "site_id": site_id,
-            "reference_session": ref_session_id,
-        }
+    pending = {
+        session_id: session_records
+        for session_id, session_records in sessions.items()
+        if session_id != ref_session_id
+    }
 
-    for session_id, session_records in sessions.items():
-        if session_id == ref_session_id:
-            continue
-
-        # Skip if already aligned and not forcing realign
+    for session_id, session_records in list(pending.items()):
         if not force_realign and _session_already_aligned(session_records):
             transforms[session_id] = session_records[0].get("site_frame_transform")
             aligned_sessions.append(session_id)
-            results.append({
-                "session_id": session_id,
-                "status": "skipped",
-                "reason": "already_aligned",
-            })
-            continue
+            results.append(
+                {
+                    "session_id": session_id,
+                    "status": "skipped",
+                    "reason": "already_aligned",
+                }
+            )
+            pending.pop(session_id, None)
 
-        session_result = _align_session(
-            session_id=session_id,
-            session_records=session_records,
-            ref_session_id=ref_session_id,
-            ref_records=ref_records,
-            ref_embeddings=ref_embeddings,
-            ref_record_index=ref_record_index,
-            ctx=ctx,
-        )
-        results.append(session_result)
+    progress = True
+    while pending and progress:
+        progress = False
+        for session_id in list(pending.keys()):
+            session_records = pending[session_id]
+            best_result: Optional[Dict[str, Any]] = None
+            for anchor_session_id in list(aligned_sessions):
+                anchor_records = sessions[anchor_session_id]
+                session_result = _align_session(
+                    session_id=session_id,
+                    session_records=session_records,
+                    anchor_session_id=anchor_session_id,
+                    anchor_records=anchor_records,
+                    anchor_transform=transforms.get(anchor_session_id),
+                    ctx=ctx,
+                )
+                if best_result is None or float(session_result.get("combined_score") or 0.0) > float(best_result.get("combined_score") or 0.0):
+                    best_result = session_result
+            if best_result is None:
+                continue
+            results.append(best_result)
+            if best_result["status"] == "aligned":
+                transforms[session_id] = best_result["site_frame_transform"]
+                aligned_sessions.append(session_id)
+                alignment_edges.append(
+                    {
+                        "from_session_id": session_id,
+                        "to_session_id": str(best_result.get("reference_session") or ref_session_id),
+                        "candidate_count": best_result.get("candidate_count"),
+                        "inlier_count": best_result.get("inlier_count"),
+                        "inlier_fraction": best_result.get("inlier_fraction"),
+                        "combined_score": best_result.get("combined_score"),
+                    }
+                )
+                pending.pop(session_id, None)
+                progress = True
+            elif best_result.get("reason") == "insufficient_matches":
+                continue
+            else:
+                pending.pop(session_id, None)
 
-        if session_result["status"] == "aligned":
-            transforms[session_id] = session_result["site_frame_transform"]
-            aligned_sessions.append(session_id)
-
-    # Patch index records with computed transforms
-    n_patched = _patch_site_index(
-        site_index_path=site_index_path,
-        transforms=transforms,
-    )
-
-    # Update site manifest
+    n_patched = _patch_site_index(site_index_path=site_index_path, transforms=transforms)
+    _write_site_transforms_manifest(site_root=site_root, site_id=site_id, transforms=transforms, results=results)
+    _write_alignment_validation(site_root=site_root, site_id=site_id, results=results, aligned_sessions=aligned_sessions)
+    _update_overlap_graph_alignment(site_root=site_root, alignment_edges=alignment_edges)
+    _write_static_memory_artifacts(site_root=site_root, site_index_path=site_index_path, site_id=site_id, storage_root=ctx.storage_root)
+    _update_coverage_map(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
+    _write_site_manifest(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
+    _write_site_memory_indices(site_root=site_root, site_index_path=site_index_path, site_id=site_id, storage_root=ctx.storage_root)
+    _write_retrieval_validation(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
     _update_site_manifest_alignment(
         site_root=site_root,
         site_index_path=site_index_path,
@@ -194,27 +237,36 @@ def _align_session(
     *,
     session_id: str,
     session_records: List[Dict[str, Any]],
-    ref_session_id: str,
-    ref_records: List[Dict[str, Any]],
-    ref_embeddings: np.ndarray,
-    ref_record_index: List[Dict[str, Any]],
+    anchor_session_id: str,
+    anchor_records: List[Dict[str, Any]],
+    anchor_transform: Optional[List[List[float]]],
     ctx: LocalCaptureContext,
 ) -> Dict[str, Any]:
-    """Estimate T_site_from_session for a single non-reference session."""
+    """Estimate T_site_from_session for a session against one already-aligned anchor session."""
     session_embeddings, session_record_index = _load_session_embeddings(session_records, ctx)
+    anchor_embeddings, anchor_record_index = _load_session_embeddings(anchor_records, ctx)
 
     if session_embeddings is None or len(session_embeddings) == 0:
         return {
             "session_id": session_id,
             "status": "failed",
             "reason": "no_embeddings",
+            "combined_score": 0.0,
+        }
+    if anchor_embeddings is None or len(anchor_embeddings) == 0:
+        return {
+            "session_id": session_id,
+            "status": "failed",
+            "reason": "anchor_session_has_no_embeddings",
+            "reference_session": anchor_session_id,
+            "combined_score": 0.0,
         }
 
     candidates = _find_candidate_matches(
         query_embeddings=session_embeddings,
         query_record_index=session_record_index,
-        ref_embeddings=ref_embeddings,
-        ref_record_index=ref_record_index,
+        ref_embeddings=anchor_embeddings,
+        ref_record_index=anchor_record_index,
         sim_threshold=_SIM_THRESHOLD,
     )
 
@@ -223,7 +275,9 @@ def _align_session(
             "session_id": session_id,
             "status": "failed",
             "reason": "insufficient_matches",
+            "reference_session": anchor_session_id,
             "candidate_count": len(candidates),
+            "combined_score": round(float(np.mean([float(c[2]) for c in candidates]) if candidates else 0.0), 4),
         }
 
     T_site_from_session, inlier_count, inlier_fraction = _ransac_se3(
@@ -238,28 +292,34 @@ def _align_session(
             "session_id": session_id,
             "status": "failed",
             "reason": "ransac_failed",
+            "reference_session": anchor_session_id,
             "candidate_count": len(candidates),
             "inlier_count": inlier_count,
             "inlier_fraction": round(inlier_fraction, 3),
+            "combined_score": round(float(np.mean([float(c[2]) for c in candidates]) if candidates else 0.0), 4),
         }
 
-    # Refine translation estimate over all inliers
-    T_site_from_session = _refine_translation(
+    T_anchor_from_session = _refine_translation(
         T_site_from_session=T_site_from_session,
         candidates=candidates,
         translation_threshold_m=_INLIER_TRANSLATION_M,
         rotation_threshold_deg=_INLIER_ROTATION_DEG,
     )
+    anchor_xform = np.array(anchor_transform or _identity_4x4(), dtype=np.float64)
+    T_site_from_session = anchor_xform @ T_anchor_from_session
 
-    T_list = T_site_from_session.tolist()
+    residuals = _candidate_residuals(T_anchor_from_session=T_anchor_from_session, candidates=candidates)
     return {
         "session_id": session_id,
         "status": "aligned",
-        "reference_session": ref_session_id,
-        "site_frame_transform": T_list,
+        "reference_session": anchor_session_id,
+        "site_frame_transform": T_site_from_session.tolist(),
         "candidate_count": len(candidates),
         "inlier_count": inlier_count,
         "inlier_fraction": round(inlier_fraction, 3),
+        "combined_score": round(float(np.mean([float(c[2]) for c in candidates]) if candidates else 0.0), 4),
+        "residual_translation_p95_m": round(_sm_p95([item["translation_m"] for item in residuals]), 4) if residuals else 0.0,
+        "residual_rotation_p95_deg": round(_sm_p95([item["rotation_deg"] for item in residuals]), 4) if residuals else 0.0,
     }
 
 
@@ -284,20 +344,11 @@ def _load_session_embeddings(
         emb_uri = rec.get("embedding_uri")
         if not emb_uri:
             continue
-        local_path = _uri_to_local(emb_uri, ctx)
-        if local_path is None or not local_path.is_file():
+        vec = load_embedding(embedding_uri=str(emb_uri), storage_root=ctx.storage_root, expected_dim=_EMBED_DIM)
+        if vec is None:
             continue
-        try:
-            vec = np.fromfile(str(local_path), dtype=np.float32)
-            if vec.shape[0] != _EMBED_DIM:
-                continue
-            norm = np.linalg.norm(vec)
-            if norm < 1e-8:
-                continue
-            vecs.append(vec / norm)
-            filtered.append(rec)
-        except Exception:
-            continue
+        vecs.append(vec)
+        filtered.append(rec)
 
     if not vecs:
         return None, []
@@ -323,7 +374,6 @@ def _find_candidate_matches(
     Returns list of (query_record, ref_record, similarity) tuples above threshold,
     one per query frame (best match only).
     """
-    # Cosine similarity matrix: query × ref (both already L2-normalised)
     sims = query_embeddings @ ref_embeddings.T  # [N_q, N_r]
 
     candidates: List[Tuple[Dict[str, Any], Dict[str, Any], float]] = []
@@ -331,31 +381,54 @@ def _find_candidate_matches(
         row = sims[q_idx]
         best_r_idx = int(np.argmax(row))
         best_sim = float(row[best_r_idx])
-        if best_sim >= sim_threshold:
-            q_rec = query_record_index[q_idx]
-            r_rec = ref_record_index[best_r_idx]
-            # Only keep pairs that have valid T_world_camera on both sides
-            if _has_valid_pose(q_rec) and _has_valid_pose(r_rec):
-                candidates.append((q_rec, r_rec, best_sim))
+        q_rec = query_record_index[q_idx]
+        r_rec = ref_record_index[best_r_idx]
+        pair_score = _candidate_pair_score(q_rec=q_rec, r_rec=r_rec, visual_sim=best_sim)
+        if pair_score >= _PAIR_SCORE_THRESHOLD and best_sim >= sim_threshold and _has_valid_pose(q_rec) and _has_valid_pose(r_rec):
+            candidates.append((q_rec, r_rec, pair_score))
 
-    # Also run ref→query direction and merge (mutual NN promotes reliability)
     sims_T = sims.T  # [N_r, N_q]
     for r_idx in range(len(ref_record_index)):
         row = sims_T[r_idx]
         best_q_idx = int(np.argmax(row))
         best_sim = float(row[best_q_idx])
-        if best_sim >= sim_threshold:
-            r_rec = ref_record_index[r_idx]
-            q_rec = query_record_index[best_q_idx]
-            if _has_valid_pose(q_rec) and _has_valid_pose(r_rec):
-                pair = (q_rec, r_rec, best_sim)
-                # Dedup by query frame_id
-                if not any(c[0].get("frame_id") == q_rec.get("frame_id") for c in candidates):
-                    candidates.append(pair)
+        r_rec = ref_record_index[r_idx]
+        q_rec = query_record_index[best_q_idx]
+        pair_score = _candidate_pair_score(q_rec=q_rec, r_rec=r_rec, visual_sim=best_sim)
+        if pair_score >= _PAIR_SCORE_THRESHOLD and best_sim >= sim_threshold and _has_valid_pose(q_rec) and _has_valid_pose(r_rec):
+            pair = (q_rec, r_rec, pair_score)
+            if not any(c[0].get("frame_id") == q_rec.get("frame_id") for c in candidates):
+                candidates.append(pair)
 
-    # Sort descending by similarity so RANSAC samples the best pairs first
     candidates.sort(key=lambda x: x[2], reverse=True)
     return candidates
+
+
+def _candidate_pair_score(
+    *,
+    q_rec: Dict[str, Any],
+    r_rec: Dict[str, Any],
+    visual_sim: float,
+) -> float:
+    q_geometry = q_rec.get("geometry_fingerprint") if isinstance(q_rec.get("geometry_fingerprint"), dict) else {}
+    r_geometry = r_rec.get("geometry_fingerprint") if isinstance(r_rec.get("geometry_fingerprint"), dict) else {}
+    geometry_score = fingerprint_similarity(q_geometry, r_geometry) if q_geometry and r_geometry else 0.0
+    q_anchors = set(str(item).strip() for item in (q_rec.get("anchor_observations") or []) if str(item).strip())
+    r_anchors = set(str(item).strip() for item in (r_rec.get("anchor_observations") or []) if str(item).strip())
+    topology_score = 0.0
+    if q_anchors and r_anchors:
+        topology_score += 0.7 if (q_anchors & r_anchors) else 0.0
+    if q_rec.get("zone_id") and q_rec.get("zone_id") == r_rec.get("zone_id"):
+        topology_score += 0.3
+    staticness = float(q_rec.get("staticness_score") or 0.0) + float(r_rec.get("staticness_score") or 0.0)
+    staticness_score = min(staticness / 2.0, 1.0)
+    return round(
+        (0.55 * float(np.clip(visual_sim, 0.0, 1.0)))
+        + (0.20 * geometry_score)
+        + (0.15 * min(topology_score, 1.0))
+        + (0.10 * staticness_score),
+        4,
+    )
 
 
 def _has_valid_pose(rec: Dict[str, Any]) -> bool:
@@ -484,6 +557,28 @@ def _refine_translation(
     return T_site_from_session
 
 
+def _candidate_residuals(
+    *,
+    T_anchor_from_session: np.ndarray,
+    candidates: List[Tuple[Dict[str, Any], Dict[str, Any], float]],
+) -> List[Dict[str, float]]:
+    residuals: List[Dict[str, float]] = []
+    for q_rec, r_rec, _ in candidates:
+        T_q = _pose_matrix(q_rec)
+        T_r = _pose_matrix(r_rec)
+        predicted = T_anchor_from_session @ T_q
+        translation_m = float(np.linalg.norm(predicted[:3, 3] - T_r[:3, 3]))
+        cos_angle = rotation_cosine(predicted, T_r)
+        rotation_deg = math.degrees(math.acos(float(np.clip(cos_angle, -1.0, 1.0))))
+        residuals.append(
+            {
+                "translation_m": translation_m,
+                "rotation_deg": rotation_deg,
+            }
+        )
+    return residuals
+
+
 # ---------------------------------------------------------------------------
 # Site index patching
 # ---------------------------------------------------------------------------
@@ -506,11 +601,188 @@ def _patch_site_index(
         if session_id in transforms and transforms[session_id] is not None:
             rec = dict(rec)
             rec["site_frame_transform"] = transforms[session_id]
+            T_raw = pose_matrix(rec.get("T_world_camera"))
+            T_site = pose_matrix(transforms[session_id])
+            if T_raw is not None and T_site is not None:
+                rec["T_site_camera"] = (T_site @ T_raw).tolist()
             patched += 1
         out_lines.append(json.dumps(rec, separators=(",", ":")))
 
     site_index_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
     return patched
+
+
+def _write_site_transforms_manifest(
+    *,
+    site_root: Path,
+    site_id: str,
+    transforms: Dict[str, Optional[List[List[float]]]],
+    results: List[Dict[str, Any]],
+) -> None:
+    entries: List[Dict[str, Any]] = []
+    result_by_session = {str(item.get("session_id") or ""): item for item in results}
+    for session_id, transform in transforms.items():
+        result = result_by_session.get(session_id, {})
+        entries.append(
+            {
+                "session_id": session_id,
+                "status": "aligned" if transform is not None else str(result.get("status") or "failed"),
+                "site_frame_transform": transform,
+                "reference_session": result.get("reference_session"),
+                "candidate_count": result.get("candidate_count"),
+                "inlier_count": result.get("inlier_count"),
+                "inlier_fraction": result.get("inlier_fraction"),
+                "combined_score": result.get("combined_score"),
+                "residual_translation_p95_m": result.get("residual_translation_p95_m"),
+                "residual_rotation_p95_deg": result.get("residual_rotation_p95_deg"),
+            }
+        )
+    write_json(
+        site_root / "site_transforms.json",
+        {
+            "schema_version": "v1",
+            "site_id": site_id,
+            "generated_at": utc_now_iso(),
+            "entries": entries,
+        },
+    )
+
+
+def _write_alignment_validation(
+    *,
+    site_root: Path,
+    site_id: str,
+    results: List[Dict[str, Any]],
+    aligned_sessions: List[str],
+) -> None:
+    aligned = [item for item in results if item.get("status") == "aligned"]
+    write_json(
+        site_root / "alignment_validation.json",
+        {
+            "schema_version": "v1",
+            "site_id": site_id,
+            "generated_at": utc_now_iso(),
+            "session_results": results,
+            "aligned_session_count": len(aligned_sessions),
+            "mean_inlier_fraction": round(
+                float(np.mean([float(item.get("inlier_fraction") or 0.0) for item in aligned])) if aligned else 0.0,
+                4,
+            ),
+            "translation_residual_p95_m": round(
+                _sm_p95([float(item.get("residual_translation_p95_m") or 0.0) for item in aligned]) if aligned else 0.0,
+                4,
+            ),
+            "rotation_residual_p95_deg": round(
+                _sm_p95([float(item.get("residual_rotation_p95_deg") or 0.0) for item in aligned]) if aligned else 0.0,
+                4,
+            ),
+        },
+    )
+
+
+def _update_overlap_graph_alignment(
+    *,
+    site_root: Path,
+    alignment_edges: List[Dict[str, Any]],
+) -> None:
+    graph_path = site_root / "site_overlap_graph.json"
+    if not graph_path.is_file():
+        return
+    graph = read_json(graph_path)
+    edges = list(graph.get("edges") or [])
+    accepted_pairs = {
+        (str(item.get("from_session_id") or ""), str(item.get("to_session_id") or ""))
+        for item in alignment_edges
+    }
+    for edge in edges:
+        pair = (str(edge.get("from_session_id") or ""), str(edge.get("to_session_id") or ""))
+        reverse_pair = (pair[1], pair[0])
+        if pair in accepted_pairs or reverse_pair in accepted_pairs:
+            edge["accepted_for_alignment"] = True
+    graph["generated_at"] = utc_now_iso()
+    graph["alignment_edges"] = alignment_edges
+    write_json(graph_path, graph)
+
+
+def _write_static_memory_artifacts(
+    *,
+    site_root: Path,
+    site_index_path: Path,
+    site_id: str,
+    storage_root: Path,
+) -> None:
+    records = _sm_load_jsonl(site_index_path)
+    aligned_records = [record for record in records if record.get("site_frame_transform") is not None]
+    if not aligned_records:
+        return
+
+    static_root = site_root / "static_memory"
+    static_root.mkdir(parents=True, exist_ok=True)
+    point_rows: List[np.ndarray] = []
+    dynamic_rows: List[Dict[str, Any]] = []
+    visibility_graph: Dict[str, List[str]] = {}
+    for record in aligned_records:
+        reference_id = str(record.get("reference_id") or "")
+        visibility_graph[reference_id] = list(record.get("visibility_cells") or [])
+        if float(record.get("staticness_score") or 0.0) < 0.55:
+            dynamic_rows.append(
+                {
+                    "reference_id": reference_id,
+                    "capture_id": record.get("capture_id"),
+                    "chunk_id": record.get("chunk_id"),
+                    "staticness_score": record.get("staticness_score"),
+                    "anchor_observations": record.get("anchor_observations") or [],
+                }
+            )
+            continue
+        depth = _sm_load_numeric_array(record.get("depth_uri"), storage_root=storage_root)
+        if depth is None:
+            continue
+        confidence = _sm_load_numeric_array(record.get("confidence_uri"), storage_root=storage_root)
+        intrinsics = record.get("intrinsics") if isinstance(record.get("intrinsics"), dict) else {}
+        T_site = effective_pose(record)
+        if T_site is None:
+            continue
+        points = backproject_depth_points(
+            depth=depth,
+            intrinsics=intrinsics,
+            T_world_camera=T_site,
+            confidence=confidence,
+            static_weight=float(record.get("staticness_score") or 1.0),
+        )
+        if points.size == 0:
+            continue
+        point_rows.append(points)
+
+    all_points = np.concatenate(point_rows, axis=0) if point_rows else np.zeros((0, 4), dtype=np.float32)
+    pointcloud_path = static_root / "static_pointcloud.ply"
+    write_ascii_pointcloud(pointcloud_path, all_points)
+    planes = plane_summaries(all_points)
+    planes_path = static_root / "planes.json"
+    write_json(planes_path, {"schema_version": "v1", "site_id": site_id, "planes": planes})
+    visibility_path = static_root / "visibility_graph.json"
+    write_json(visibility_path, {"schema_version": "v1", "site_id": site_id, "visibility": visibility_graph})
+    dynamic_path = static_root / "dynamic_observations.jsonl"
+    with dynamic_path.open("w", encoding="utf-8") as handle:
+        for row in dynamic_rows:
+            handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+    write_json(
+        site_root / "site_static_map_manifest.json",
+        {
+            "schema_version": "v1",
+            "site_id": site_id,
+            "generated_at": utc_now_iso(),
+            "point_count": int(all_points.shape[0]),
+            "aligned_reference_frame_count": len(aligned_records),
+            "dynamic_observation_count": len(dynamic_rows),
+            "artifacts": {
+                "static_pointcloud": str(pointcloud_path),
+                "planes": str(planes_path),
+                "visibility_graph": str(visibility_path),
+                "dynamic_observations": str(dynamic_path),
+            },
+        },
+    )
 
 
 def _update_site_manifest_alignment(
@@ -534,6 +806,10 @@ def _update_site_manifest_alignment(
 
     manifest["site_frame_established"] = len(aligned_sessions) > 1
     manifest["aligned_session_count"] = len(aligned_sessions)
+    manifest["aligned_capture_fraction"] = round(
+        len(aligned_sessions) / float(len(captures) or 1),
+        4,
+    )
     manifest["last_updated"] = utc_now_iso()
     write_json(manifest_path, manifest)
 
@@ -620,35 +896,19 @@ def _resolve_site_id(descriptor: Dict[str, Any]) -> Optional[str]:
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
-    if not path.is_file():
-        return []
-    rows: List[Dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return rows
+    return _sm_load_jsonl(path)
 
 
 def _uri_to_local(uri: str, ctx: LocalCaptureContext) -> Optional[Path]:
     """Resolve a gs:// URI to a local path via the storage root."""
-    if not uri.startswith("gs://"):
-        return Path(uri)
-    remainder = uri[5:]
-    bucket, _, key = remainder.partition("/")
-    if not bucket or not key:
-        return None
-    # Try bucket-prefixed path first, then flat
-    candidate_bucket = ctx.storage_root / bucket / key
-    candidate_flat = ctx.storage_root / key
-    if candidate_bucket.is_file():
-        return candidate_bucket
-    if candidate_flat.is_file():
-        return candidate_flat
-    # Best-effort: return bucket path even if it doesn't exist yet
-    return candidate_bucket
+    local = gs_uri_to_local(uri, storage_root=ctx.storage_root)
+    if local is not None and local.is_file():
+        return local
+    if uri.startswith("gs://"):
+        trimmed = uri[5:]
+        bucket, _, key = trimmed.partition("/")
+        if bucket and key:
+            flat = ctx.storage_root / key
+            if flat.is_file():
+                return flat
+    return local

@@ -182,17 +182,25 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
 
     assert result["status"] == "completed"
     assert result["frames_included_in_index"] >= 1
+    assert (capture_root / "world_model_export" / "dense_export_manifest.json").is_file()
     dense_index = (capture_root / "world_model_export" / "dense_index.jsonl").read_text(encoding="utf-8").splitlines()
     rows = [json.loads(line) for line in dense_index if line.strip()]
     assert rows
     assert all(row["geometry_source"] == "video_to_world" for row in rows)
     assert all(row["privacy_source"] == "privacy/final_walkthrough.mov" for row in rows)
     assert all(row["depth_uri"] for row in rows)
+    assert all("chunk_id" in row for row in rows)
+    assert all("geometry_fingerprint" in row for row in rows)
+    assert all("staticness_score" in row for row in rows)
     assert any("anchor_entry" in row["anchor_observations"] for row in rows)
     assert all("retrieval_signals" in row for row in rows)
     assert any((row["retrieval_signals"].get("anchor_observation_count") or 0) > 0 for row in rows)
     assert all("capture_confidence" in row["retrieval_signals"] for row in rows)
     assert Path(str(result["site_reference_index"])).is_file()
+    site_root = capture_root.parents[3] / "sites" / "site-1" / "reference_memory"
+    assert (site_root / "site_overlap_graph.json").is_file()
+    assert (site_root / "indices" / "manifest.json").is_file()
+    assert (site_root / "retrieval_validation.json").is_file()
 
 
 def test_retrieval_index_requires_privacy_safe_video_by_default(monkeypatch, tmp_path: Path) -> None:

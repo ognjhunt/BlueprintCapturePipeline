@@ -565,12 +565,36 @@ def _build_dynamic_mask_manifest(
     ensure_dir(masks_root)
     manifest_path = masks_root / "dynamic_mask_manifest.json"
     privacy_manifest = context.pipeline_root / "privacy_processing_manifest.json"
+    privacy_masks_root = context.capture_root / "privacy" / "masks"
+    artifacts: List[Dict[str, Any]] = []
+    if privacy_masks_root.is_dir():
+        for candidate in sorted(privacy_masks_root.rglob("*")):
+            if not candidate.is_file():
+                continue
+            artifacts.append(
+                {
+                    "path": str(candidate),
+                    "relative_path": str(candidate.relative_to(context.capture_root)),
+                    "kind": "privacy_mask",
+                }
+            )
     payload: Dict[str, Any] = {
-        "schema_version": "v1",
+        "schema_version": "v2",
         "generated_at": utc_now_iso(),
         "mask_source": "privacy_processing" if privacy_manifest.is_file() else "none",
         "privacy_manifest_path": str(privacy_manifest) if privacy_manifest.is_file() else None,
-        "artifacts": [],
+        "policies": {
+            "exclude_from_retrieval": True,
+            "exclude_from_static_fusion": True,
+            "fallback_dynamic_regions": ["people", "unknown_motion"],
+        },
+        "static_scene_priors": {
+            "assume_walls_static": True,
+            "assume_floor_static": True,
+            "assume_vehicles_dynamic": True,
+            "assume_people_dynamic": True,
+        },
+        "artifacts": artifacts,
     }
     write_json(manifest_path, payload)
     return manifest_path

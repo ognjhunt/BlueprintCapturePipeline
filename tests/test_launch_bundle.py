@@ -106,6 +106,20 @@ def test_preview_provider_failure_is_captured_without_raising(tmp_path: Path, mo
     assert (tmp_path / "worldlabs_request_manifest.json").is_file()
 
 
+def test_preview_provider_requires_explicit_selection(tmp_path: Path) -> None:
+    result = run_preview_provider(
+        provider_name="",
+        descriptor={"capture_id": "cap-3", "raw_prefix_uri": "gs://bucket/raw"},
+        capture_root=tmp_path,
+        pipeline_dir=tmp_path,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_reason"] == "preview_provider_not_configured"
+    assert (tmp_path / "provider_run_manifest.json").is_file()
+    assert (tmp_path / "preview_manifest.json").is_file()
+
+
 def test_worldlabs_preview_provider_uses_detailed_default_prompt() -> None:
     provider = WorldLabsPreviewProvider()
 

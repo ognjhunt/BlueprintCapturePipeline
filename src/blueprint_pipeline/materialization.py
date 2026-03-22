@@ -19,6 +19,9 @@ from .common import (
     write_json,
 )
 
+_IPHONE_POSE_MATCH_RATE_MIN = 0.65
+_IPHONE_P95_POSE_DELTA_MAX = 0.2
+
 
 def _read_optional_json(path: Path) -> Dict[str, Any]:
     if not path.is_file():
@@ -61,6 +64,153 @@ def _dict_float(value: Any) -> Dict[str, float]:
     return out
 
 
+def _read_json_lines(path: Path) -> List[Dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, Mapping):
+                    rows.append(dict(payload))
+    except OSError:
+        return []
+    return rows
+
+
+def _normalized_frame_id(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if text:
+        return text
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return str(max(0, index) + 1).zfill(6)
+
+
+def _time_value(row: Mapping[str, Any]) -> Optional[float]:
+    for key in ("t_device_sec", "tCaptureSec", "timestamp"):
+        if row.get(key) is None:
+            continue
+        try:
+            return float(row[key])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _percentile(values: List[float], percentile: float) -> Optional[float]:
+    if not values:
+        return None
+    if percentile <= 0:
+        return min(values)
+    if percentile >= 100:
+        return max(values)
+    ordered = sorted(values)
+    rank = (percentile / 100.0) * (len(ordered) - 1)
+    low = int(rank)
+    high = min(len(ordered) - 1, low + 1)
+    if low == high:
+        return ordered[low]
+    weight = rank - low
+    return ordered[low] * (1.0 - weight) + ordered[high] * weight
+
+
+def _nearest_pose_time(ordered_pose_times: List[float], target_time: float) -> Optional[float]:
+    if not ordered_pose_times:
+        return None
+    if len(ordered_pose_times) == 1:
+        return ordered_pose_times[0]
+    low = 0
+    high = len(ordered_pose_times) - 1
+    while low < high:
+        mid = (low + high) // 2
+        if ordered_pose_times[mid] < target_time:
+            low = mid + 1
+        else:
+            high = mid
+    best = ordered_pose_times[low]
+    if low > 0:
+        previous = ordered_pose_times[low - 1]
+        if abs(previous - target_time) <= abs(best - target_time):
+            best = previous
+    return best
+
+
+def _inspect_pose_alignment(raw_root: Path) -> Dict[str, Optional[float]]:
+    frames_rows = _read_json_lines(raw_root / "arkit" / "frames.jsonl")
+    pose_rows = _read_json_lines(raw_root / "arkit" / "poses.jsonl")
+    if not frames_rows or not pose_rows:
+        return {
+            "pose_match_rate": None,
+            "p95_pose_delta_sec": None,
+            "matched_pose_count": None,
+            "frame_count": float(len(frames_rows)) if frames_rows else None,
+        }
+
+    poses_by_frame_id: Dict[str, float] = {}
+    pose_times: List[float] = []
+    for row in pose_rows:
+        pose_time = _time_value(row)
+        if pose_time is None:
+            continue
+        pose_times.append(pose_time)
+        frame_id = _normalized_frame_id(
+            row.get("frame_id") or row.get("frameIndex") or row.get("frame_index")
+        )
+        if frame_id:
+            poses_by_frame_id[frame_id] = pose_time
+    pose_times.sort()
+
+    matched = 0
+    deltas: List[float] = []
+    for row in frames_rows:
+        frame_time = _time_value(row)
+        frame_id = _normalized_frame_id(
+            row.get("frame_id") or row.get("frameIndex") or row.get("frame_index")
+        )
+        matched_pose_time: Optional[float] = None
+        if frame_id and frame_id in poses_by_frame_id:
+            matched_pose_time = poses_by_frame_id[frame_id]
+        elif frame_time is not None:
+            matched_pose_time = _nearest_pose_time(pose_times, frame_time)
+        if matched_pose_time is None:
+            continue
+        matched += 1
+        if frame_time is not None:
+            deltas.append(abs(frame_time - matched_pose_time))
+
+    frame_count = len(frames_rows)
+    pose_match_rate = float(matched) / float(frame_count) if frame_count else None
+    p95_pose_delta_sec = _percentile(deltas, 95.0)
+    return {
+        "pose_match_rate": pose_match_rate,
+        "p95_pose_delta_sec": p95_pose_delta_sec,
+        "matched_pose_count": float(matched),
+        "frame_count": float(frame_count),
+    }
+
+
+def _iphone_pose_alignment_ok(
+    pose_match_rate: Optional[float],
+    p95_pose_delta_sec: Optional[float],
+) -> bool:
+    return (
+        pose_match_rate is not None
+        and p95_pose_delta_sec is not None
+        and pose_match_rate >= _IPHONE_POSE_MATCH_RATE_MIN
+        and p95_pose_delta_sec <= _IPHONE_P95_POSE_DELTA_MAX
+    )
+
+
 def _canonical_world_model_candidate(
     manifest: Mapping[str, Any],
     arkit_poses_uri: Optional[str],
@@ -68,6 +218,9 @@ def _canonical_world_model_candidate(
     arkit_depth_prefix_uri: Optional[str],
     intake_complete: bool,
     evidence_tier: str,
+    capture_source: str = "iphone",
+    pose_match_rate: Optional[float] = None,
+    p95_pose_delta_sec: Optional[float] = None,
     geometry_ready: bool = False,
     geometry_source: Optional[str] = None,
 ) -> bool:
@@ -89,9 +242,16 @@ def _canonical_world_model_candidate(
         and arkit_intrinsics_uri is not None
         and arkit_depth_prefix_uri is not None
     )
+    if capture_source == "iphone":
+        spatial_conditioning_ready = arkit_ready and _iphone_pose_alignment_ok(
+            pose_match_rate,
+            p95_pose_delta_sec,
+        )
+    else:
+        spatial_conditioning_ready = arkit_ready or geometry_ready
     return (
         resolved_mode == "site_world_candidate"
-        and (arkit_ready or geometry_ready)
+        and spatial_conditioning_ready
         and intake_complete
         and bool(rights_block.get("derived_scene_generation_allowed", False))
     )
@@ -103,6 +263,9 @@ def _world_model_candidate_reasoning(
     arkit_intrinsics_uri: Optional[str],
     arkit_depth_prefix_uri: Optional[str],
     intake_complete: bool,
+    capture_source: str = "iphone",
+    pose_match_rate: Optional[float] = None,
+    p95_pose_delta_sec: Optional[float] = None,
     geometry_ready: bool = False,
     geometry_source: Optional[str] = None,
 ) -> list:
@@ -111,9 +274,13 @@ def _world_model_candidate_reasoning(
     rights_block = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
     return [
         f"capture_mode_site_world_candidate:{resolved_mode == 'site_world_candidate'}",
+        f"capture_source:{capture_source or 'unknown'}",
         f"arkit_poses_valid:{arkit_poses_uri is not None}",
         f"arkit_intrinsics_valid:{arkit_intrinsics_uri is not None}",
         f"depth_coverage_ok:{arkit_depth_prefix_uri is not None}",
+        f"pose_alignment_ok:{capture_source != 'iphone' or _iphone_pose_alignment_ok(pose_match_rate, p95_pose_delta_sec)}",
+        f"pose_match_rate:{round(pose_match_rate, 4) if pose_match_rate is not None else 'missing'}",
+        f"p95_pose_delta_sec:{round(p95_pose_delta_sec, 4) if p95_pose_delta_sec is not None else 'missing'}",
         f"geometry_ready:{geometry_ready}",
         f"geometry_source:{geometry_source or 'none'}",
         f"intake_complete:{intake_complete}",
@@ -247,6 +414,9 @@ def _normalized_capture_mode(
     arkit_depth_prefix_uri: Optional[str],
     intake_complete: bool,
     evidence_tier: str,
+    capture_source: str = "iphone",
+    pose_match_rate: Optional[float] = None,
+    p95_pose_delta_sec: Optional[float] = None,
     geometry_ready: bool = False,
     geometry_source: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
@@ -261,13 +431,16 @@ def _normalized_capture_mode(
         arkit_depth_prefix_uri=arkit_depth_prefix_uri,
         intake_complete=intake_complete,
         evidence_tier=evidence_tier,
+        capture_source=capture_source,
+        pose_match_rate=pose_match_rate,
+        p95_pose_delta_sec=p95_pose_delta_sec,
         geometry_ready=geometry_ready,
         geometry_source=geometry_source,
     )
     resolved_mode = "site_world_candidate" if candidate else "qualification_only"
     downgrade_reason: Optional[str] = None
     if requested_mode == "site_world_candidate" and resolved_mode == "qualification_only":
-        downgrade_reason = "insufficient_geometry_evidence"
+        downgrade_reason = "insufficient_spatial_evidence"
     return {
         "requested_mode": requested_mode,
         "resolved_mode": resolved_mode,
@@ -652,6 +825,9 @@ def _default_requested_lanes(
             arkit_depth_prefix_uri=None,
             intake_complete=bool(context.get("intake_complete") or False),
             evidence_tier=str(context.get("evidence_tier") or ""),
+            capture_source=str(context.get("capture_source") or manifest.get("capture_source") or "iphone"),
+            pose_match_rate=try_parse_float(context.get("pose_match_rate")),
+            p95_pose_delta_sec=try_parse_float(context.get("p95_pose_delta_sec")),
             geometry_ready=bool(context.get("geometry_ready") or False),
             geometry_source=context.get("geometry_source"),
         )
@@ -996,6 +1172,19 @@ def build_capture_bundle_records(
         and arkit_depth_prefix_uri is not None
     )
     geometry_source = "arkit" if arkit_geometry_ready else None
+    pose_alignment = _inspect_pose_alignment(raw_root)
+    pose_match_rate = try_parse_float(
+        manifest.get("pose_match_rate"),
+        pose_alignment.get("pose_match_rate"),
+    )
+    p95_pose_delta_sec = try_parse_float(
+        manifest.get("p95_pose_delta_sec"),
+        pose_alignment.get("p95_pose_delta_sec"),
+    )
+    pose_alignment_ok = source != "iphone" or _iphone_pose_alignment_ok(
+        pose_match_rate,
+        p95_pose_delta_sec,
+    )
 
     frames_index_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/frames/index.jsonl"
     frames_dir = capture_root / "frames"
@@ -1117,6 +1306,9 @@ def build_capture_bundle_records(
                 arkit_intrinsics_uri=arkit_intrinsics_uri,
                 arkit_depth_prefix_uri=arkit_depth_prefix_uri,
                 intake_complete=intake_complete,
+                capture_source=source,
+                pose_match_rate=pose_match_rate,
+                p95_pose_delta_sec=p95_pose_delta_sec,
                 geometry_ready=arkit_geometry_ready,
                 geometry_source=geometry_source,
             ),
@@ -1134,6 +1326,9 @@ def build_capture_bundle_records(
             arkit_depth_prefix_uri=arkit_depth_prefix_uri,
             intake_complete=intake_complete,
             evidence_tier=evidence_tier,
+            capture_source=source,
+            pose_match_rate=pose_match_rate,
+            p95_pose_delta_sec=p95_pose_delta_sec,
             geometry_ready=arkit_geometry_ready,
             geometry_source=geometry_source,
         ),
@@ -1204,7 +1399,9 @@ def build_capture_bundle_records(
             or context.get("requestedOutputs")
         ),
         "quality": {
-            "pose_match_rate": try_parse_float(manifest.get("pose_match_rate"), 0.95 if modality == "iphone_arkit_lidar" else 0.35),
+            "pose_match_rate": pose_match_rate,
+            "p95_pose_delta_sec": p95_pose_delta_sec,
+            "pose_alignment_ok": pose_alignment_ok,
             "has_metric_geometry": evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"},
             "intake_complete": intake_complete,
             "world_model_candidate": _canonical_world_model_candidate(
@@ -1214,6 +1411,9 @@ def build_capture_bundle_records(
                 arkit_depth_prefix_uri=arkit_depth_prefix_uri,
                 intake_complete=intake_complete,
                 evidence_tier=evidence_tier,
+                capture_source=source,
+                pose_match_rate=pose_match_rate,
+                p95_pose_delta_sec=p95_pose_delta_sec,
                 geometry_ready=arkit_geometry_ready,
                 geometry_source=geometry_source,
             ),

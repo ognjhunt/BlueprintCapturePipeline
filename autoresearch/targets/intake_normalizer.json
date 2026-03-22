@@ -1,0 +1,33 @@
+{
+  "target_skill": "intake_normalizer",
+  "mutable_paths": [
+    "skillpacks/industrial_readiness/skills/intake_normalizer/SKILL.md"
+  ],
+  "optional_mutable_paths": [
+    "skillpacks/industrial_readiness/skills/intake_normalizer/skill_config.json",
+    "skillpacks/industrial_readiness/skills/intake_normalizer/prompt_block.json"
+  ],
+  "preflight_repo_tests": [
+    "tests/test_capture_orchestrator.py",
+    "tests/test_qualification_alpha.py"
+  ],
+  "locked_harness_tests": [
+    "autoresearch/tests/test_intake_normalizer_eval.py"
+  ],
+  "eval_cases": [
+    {
+      "case_id": "complete_intake",
+      "fixture_root": "autoresearch/fixtures/intake_normalizer/complete_intake",
+      "payload_file": "payload.json",
+      "expected_output_name": "normalized_site_intake.json"
+    },
+    {
+      "case_id": "missing_required_fields",
+      "fixture_root": "autoresearch/fixtures/intake_normalizer/missing_required_fields",
+      "payload_file": "payload.json",
+      "expected_output_name": "normalized_site_intake.json"
+    }
+  ],
+  "adapter_profile": "intake_normalizer_v1",
+  "scoring_profile": "intake_normalizer_v1"
+}

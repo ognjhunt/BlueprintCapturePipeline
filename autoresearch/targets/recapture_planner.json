@@ -1,0 +1,33 @@
+{
+  "target_skill": "recapture_planner",
+  "mutable_paths": [
+    "skillpacks/industrial_readiness/skills/recapture_planner/SKILL.md"
+  ],
+  "optional_mutable_paths": [
+    "skillpacks/industrial_readiness/skills/recapture_planner/skill_config.json",
+    "skillpacks/industrial_readiness/skills/recapture_planner/prompt_block.json"
+  ],
+  "preflight_repo_tests": [
+    "tests/test_capture_orchestrator.py",
+    "tests/test_qualification_alpha.py"
+  ],
+  "locked_harness_tests": [
+    "autoresearch/tests/test_recapture_planner_eval.py"
+  ],
+  "eval_cases": [
+    {
+      "case_id": "targeted_recapture",
+      "fixture_root": "autoresearch/fixtures/recapture_planner/targeted_recapture",
+      "payload_file": "payload.json",
+      "expected_output_name": "recapture_plan.json"
+    },
+    {
+      "case_id": "access_constrained",
+      "fixture_root": "autoresearch/fixtures/recapture_planner/access_constrained",
+      "payload_file": "payload.json",
+      "expected_output_name": "recapture_plan.json"
+    }
+  ],
+  "adapter_profile": "recapture_planner_v1",
+  "scoring_profile": "recapture_planner_v1"
+}

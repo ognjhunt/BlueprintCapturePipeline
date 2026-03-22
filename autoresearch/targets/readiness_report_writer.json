@@ -1,0 +1,33 @@
+{
+  "target_skill": "readiness_report_writer",
+  "mutable_paths": [
+    "skillpacks/industrial_readiness/skills/readiness_report_writer/SKILL.md"
+  ],
+  "optional_mutable_paths": [
+    "skillpacks/industrial_readiness/skills/readiness_report_writer/skill_config.json",
+    "skillpacks/industrial_readiness/skills/readiness_report_writer/prompt_block.json"
+  ],
+  "preflight_repo_tests": [
+    "tests/test_capture_orchestrator.py",
+    "tests/test_alpha_readiness.py"
+  ],
+  "locked_harness_tests": [
+    "autoresearch/tests/test_readiness_report_writer_eval.py"
+  ],
+  "eval_cases": [
+    {
+      "case_id": "not_ready_yet",
+      "fixture_root": "autoresearch/fixtures/readiness_report_writer/not_ready_yet",
+      "payload_file": "payload.json",
+      "expected_output_name": "readiness_report.md"
+    },
+    {
+      "case_id": "pre_screen",
+      "fixture_root": "autoresearch/fixtures/readiness_report_writer/pre_screen",
+      "payload_file": "payload.json",
+      "expected_output_name": "readiness_report.md"
+    }
+  ],
+  "adapter_profile": "readiness_report_writer_v1",
+  "scoring_profile": "readiness_report_writer_v1"
+}

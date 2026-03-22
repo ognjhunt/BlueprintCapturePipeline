@@ -437,12 +437,24 @@ class NativeWorldModelRuntimeStore:
         )
         fps = max(1, int(os.getenv("NATIVE_WORLD_MODEL_CHUNK_FPS", "28")))
         chunk_duration_ms = max(400, int(round((chunk_frames / fps) * 1000)))
+        output_profile = self._output_profile()
+        uses_truthful_preview = self._uses_truthful_preview()
+        refinement_enabled = self._cosmos_refinement_enabled()
         return {
             "mode": "chunked_video",
             "status": "idle",
+            "output_profile": output_profile,
+            "presentation_mode": "truthful_preview" if uses_truthful_preview else "generated_chunk",
+            "interactive_path_kind": "retrieval_depth_splat_preview" if uses_truthful_preview else "cosmos_chunk_generation",
+            "provenance_mode": "truthful_preview_with_async_refinement" if uses_truthful_preview else "cosmos_primary",
             "target_fps": fps,
             "chunk_frames": chunk_frames,
             "chunk_duration_ms": chunk_duration_ms,
+            "target_ready_chunks": self._target_ready_chunks(),
+            "refinement_enabled": refinement_enabled,
+            "refinement_status": "idle" if refinement_enabled else "disabled",
+            "refinement_inflight_chunk_id": None,
+            "refined_chunk_ids": [],
             "control_intent": {
                 "seq": 0,
                 "tClientMs": None,
@@ -473,6 +485,21 @@ class NativeWorldModelRuntimeStore:
             "last_chunk_generation_ms": None,
             "last_chunk_ready_latency_ms": None,
             "underrun_count": 0,
+            "world_state_version": 0,
+            "world_state": {
+                "state_id": None,
+                "state_version": 0,
+                "updated_at": _utc_now_iso(),
+                "model_state_kind": "external_runtime_state",
+                "memory_mode": "retrieval_grounded_preview" if uses_truthful_preview else "chunk_generation_only",
+                "pose": None,
+                "target_pose": None,
+                "control_intent": {},
+                "trajectory_horizon": [],
+                "grounding_reference_set": [],
+                "lookahead_anchor": None,
+                "last_committed_chunk_id": None,
+            },
         }
 
     def _ensure_rollout(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -488,8 +515,124 @@ class NativeWorldModelRuntimeStore:
         merged["queued_chunk_ids"] = list(rollout.get("queued_chunk_ids") or [])
         merged["buffered_chunk_ids"] = list(rollout.get("buffered_chunk_ids") or [])
         merged["chunks"] = list(rollout.get("chunks") or [])
+        merged["refined_chunk_ids"] = list(rollout.get("refined_chunk_ids") or [])
+        merged["world_state"] = {
+            **dict(defaults.get("world_state") or {}),
+            **dict(rollout.get("world_state") or {}),
+        }
         state["rollout"] = merged
         return merged
+
+    def _output_profile(self) -> str:
+        explicit = str(os.getenv("NATIVE_WORLD_MODEL_OUTPUT_PROFILE") or "").strip().lower()
+        if explicit:
+            return explicit
+        return "swm_preview_refine"
+
+    def _uses_truthful_preview(self) -> bool:
+        explicit = str(os.getenv("NATIVE_WORLD_MODEL_ENABLE_TRUTHFUL_PREVIEW") or "").strip().lower()
+        if explicit in {"1", "true", "yes", "on"}:
+            return True
+        if explicit in {"0", "false", "no", "off"}:
+            return False
+        return self._output_profile() in {"swm_preview_refine", "truthful_preview", "preview_refine"}
+
+    def _cosmos_refinement_enabled(self) -> bool:
+        explicit = str(os.getenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT") or "").strip().lower()
+        if explicit in {"0", "false", "no", "off"}:
+            return False
+        if explicit in {"1", "true", "yes", "on"}:
+            return bool(_runtime_readiness().get("ready"))
+        return self._uses_truthful_preview() and bool(_runtime_readiness().get("ready"))
+
+    def _preview_generation_mode(self) -> str:
+        if self._uses_truthful_preview():
+            return "splat_only"
+        return self._live_synthesis_mode()
+
+    def _target_ready_chunks(self) -> int:
+        default = "2" if self._uses_truthful_preview() else "1"
+        return max(1, int(os.getenv("NATIVE_WORLD_MODEL_TARGET_READY_CHUNKS", default)))
+
+    def _remaining_ready_chunks(self, rollout: Mapping[str, Any]) -> int:
+        buffered = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
+        active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
+        active_index = buffered.index(active_chunk_id) if active_chunk_id in buffered else -1
+        return len(buffered) - max(active_index + 1, 0)
+
+    def _should_queue_more_chunks(self, rollout: Mapping[str, Any]) -> bool:
+        if len(list(rollout.get("queued_chunk_ids") or [])) > 0:
+            return False
+        return self._remaining_ready_chunks(rollout) < max(
+            1,
+            int(rollout.get("target_ready_chunks") or self._target_ready_chunks()),
+        )
+
+    def _cosmos_refinement_settings(self, rollout: Mapping[str, Any]) -> Dict[str, Any]:
+        chunk_frames = max(8, int(rollout.get("chunk_frames") or 57))
+        width = max(320, int(os.getenv("NATIVE_WORLD_MODEL_COSMOS_WIDTH", "960")))
+        height = max(180, int(os.getenv("NATIVE_WORLD_MODEL_COSMOS_HEIGHT", "540")))
+        num_steps = max(1, int(os.getenv("NATIVE_WORLD_MODEL_COSMOS_NUM_STEPS", "12")))
+        guidance_scale = max(0.0, float(os.getenv("NATIVE_WORLD_MODEL_COSMOS_GUIDANCE", "4.0")))
+        return {
+            "num_frames": chunk_frames,
+            "width": width,
+            "height": height,
+            "num_steps": num_steps,
+            "guidance_scale": guidance_scale,
+        }
+
+    def _update_rollout_world_state(
+        self,
+        *,
+        session_id: str,
+        rollout: Dict[str, Any],
+        pose: Mapping[str, Any],
+        target_pose: Mapping[str, Any],
+        trajectory_horizon: List[Dict[str, float]],
+        grounding_reference_set: List[Dict[str, Any]],
+        lookahead_anchor: Dict[str, Any] | None,
+        last_committed_chunk_id: str | None,
+    ) -> None:
+        world_state_version = int(rollout.get("world_state_version") or 0) + 1
+        rollout["world_state_version"] = world_state_version
+        rollout["world_state"] = {
+            "state_id": f"{session_id}-state-{world_state_version:06d}",
+            "state_version": world_state_version,
+            "updated_at": _utc_now_iso(),
+            "model_state_kind": "external_runtime_state",
+            "memory_mode": "retrieval_grounded_preview" if self._uses_truthful_preview() else "chunk_generation_only",
+            "pose": dict(pose),
+            "target_pose": dict(target_pose),
+            "control_intent": dict(rollout.get("control_intent") or {}),
+            "trajectory_horizon": list(trajectory_horizon),
+            "grounding_reference_set": list(grounding_reference_set),
+            "lookahead_anchor": dict(lookahead_anchor) if isinstance(lookahead_anchor, Mapping) else None,
+            "last_committed_chunk_id": last_committed_chunk_id,
+        }
+
+    def _chunk_provenance(
+        self,
+        *,
+        rollout: Mapping[str, Any],
+        render_source: str,
+        grounding_refs: List[Dict[str, Any]],
+        lookahead_refs: List[Dict[str, Any]],
+        previous_tail_path: str | None,
+        refinement_status: str,
+    ) -> Dict[str, Any]:
+        return {
+            "presentation_mode": str(rollout.get("presentation_mode") or ""),
+            "interactive_path_kind": str(rollout.get("interactive_path_kind") or ""),
+            "provenance_mode": str(rollout.get("provenance_mode") or ""),
+            "render_source": render_source,
+            "grounded": True,
+            "retrieval_reference_count": len(grounding_refs),
+            "lookahead_reference_count": len(lookahead_refs),
+            "tail_conditioned": bool(previous_tail_path),
+            "future_conditioned": bool(lookahead_refs),
+            "refinement_status": refinement_status,
+        }
 
     def runtime_info(self, *, service_version: str) -> Dict[str, Any]:
         readiness = _runtime_readiness()
@@ -542,6 +685,8 @@ class NativeWorldModelRuntimeStore:
                 "protected_region_locking": True,
                 "runtime_layer_compositing": False,
                 "debug_render_outputs": True,
+                "truthful_preview_rollout": True,
+                "async_cosmos_refinement": True,
             },
             readiness=readiness,
         ).to_dict()
@@ -1148,6 +1293,193 @@ class NativeWorldModelRuntimeStore:
             daemon=True,
         ).start()
 
+    def _refine_chunk_async(
+        self,
+        *,
+        session_id: str,
+        chunk_id: str,
+        chunk_index: int,
+        site_id: str,
+        storage_root: Path,
+        bucket: str,
+        target_T_world_camera: Any,
+        lookahead_T_world_camera: Any,
+        target_intrinsics: Dict[str, float],
+        target_h: int,
+        target_w: int,
+        previous_tail_path: str | None,
+        lookahead_ref_uris: List[str],
+        grounding_refs: List[Dict[str, Any]],
+        lookahead_refs: List[Dict[str, Any]],
+        horizon: List[Dict[str, float]],
+        control: Mapping[str, Any],
+    ) -> None:
+        from .synthesis.synthesize import synthesize_view
+        from .synthesis.cosmos_inference import describe_cosmos_model, load_cosmos_model
+
+        owner_claimed, owner_session_id = self._claim_generation_owner(session_id)
+        if not owner_claimed:
+            with _cosmos_session_lock(f"state:{session_id}"):
+                state = self._load_session_state(session_id)
+                rollout = self._ensure_rollout(state)
+                chunk = self._chunk_record(rollout, chunk_id)
+                if chunk is not None:
+                    chunk["refinement_status"] = "skipped"
+                    provenance = dict(chunk.get("provenance") or {})
+                    provenance["refinement_status"] = "skipped"
+                    provenance["refinement_reason"] = f"generation_worker_owned_by:{owner_session_id}"
+                    chunk["provenance"] = provenance
+                    self._replace_chunk(rollout, chunk)
+                rollout["refinement_status"] = "skipped"
+                rollout["refinement_inflight_chunk_id"] = None
+                rollout["generation_owner_session_id"] = owner_session_id
+                state["updated_at"] = _utc_now_iso()
+                self._store_session_state(session_id, state)
+            _push_media_event(session_id, {
+                "event": "chunk_refinement_skipped",
+                "chunk_id": chunk_id,
+                "chunk_index": chunk_index,
+                "reason": f"generation_worker_owned_by:{owner_session_id}",
+                "ts": _utc_now_iso(),
+            })
+            return
+
+        refinement_started_at_ms = _utc_now_ms()
+        _push_media_event(session_id, {
+            "event": "chunk_refinement_started",
+            "chunk_id": chunk_id,
+            "chunk_index": chunk_index,
+            "ts": _utc_now_iso(),
+        })
+
+        try:
+            cosmos_model_description = describe_cosmos_model(load_cosmos_model())
+            worker_backend = str(
+                cosmos_model_description.get("worker_backend")
+                or cosmos_model_description.get("backend")
+                or ""
+            )
+            settings = self._cosmos_refinement_settings(self._rollout_defaults())
+            refined_png = self._video_chunks_dir(session_id) / f"{chunk_id}_refined.png"
+            result = dict(
+                synthesize_view(
+                    site_id=site_id,
+                    storage_root=storage_root,
+                    bucket=bucket,
+                    target_T_world_camera=target_T_world_camera,
+                    target_intrinsics=target_intrinsics,
+                    target_h=target_h,
+                    target_w=target_w,
+                    output_path=refined_png,
+                    mode="cosmos_i2w",
+                    k=4,
+                    num_frames=int(settings["num_frames"]),
+                    cosmos_width=int(settings["width"]),
+                    cosmos_height=int(settings["height"]),
+                    cosmos_guidance_scale=float(settings["guidance_scale"]),
+                    cosmos_num_steps=int(settings["num_steps"]),
+                    previous_tail_path=Path(previous_tail_path) if previous_tail_path else None,
+                    previous_tail_alpha=1.0,
+                    lookahead_target_T_world_camera=lookahead_T_world_camera,
+                    lookahead_k=1,
+                    lookahead_ref_uris=lookahead_ref_uris,
+                )
+            )
+            refined_video_path = (
+                Path(str(result.get("video_path") or "").strip())
+                if str(result.get("video_path") or "").strip()
+                else refined_png.with_suffix(".mp4")
+            )
+            if not refined_video_path.is_file():
+                if not refined_png.is_file() or not self._image_to_mp4(
+                    refined_png,
+                    refined_video_path,
+                    int(self._rollout_defaults().get("chunk_duration_ms") or 1200),
+                ):
+                    raise RuntimeError(str(result.get("reason") or "refined_video_chunk_generation_failed"))
+            refined_fmp4_path = refined_video_path.with_stem(refined_video_path.stem + "_fmp4")
+            if self._convert_to_fmp4(refined_video_path, refined_fmp4_path):
+                refined_video_path = refined_fmp4_path
+            refinement_duration_ms = max(0, _utc_now_ms() - refinement_started_at_ms)
+
+            promoted = False
+            with _cosmos_session_lock(f"state:{session_id}"):
+                state = self._load_session_state(session_id)
+                rollout = self._ensure_rollout(state)
+                chunk = self._chunk_record(rollout, chunk_id)
+                if chunk is None:
+                    return
+                chunk["refinement_status"] = "completed"
+                chunk["refinement_render_source"] = "cosmos_async_refinement"
+                chunk["refined_media_path"] = str(refined_video_path.resolve())
+                chunk["refinement_generation_ms"] = refinement_duration_ms
+                chunk["worker_backend"] = worker_backend
+                provenance = dict(chunk.get("provenance") or {})
+                provenance["refinement_status"] = "completed"
+                provenance["refinement_render_source"] = "cosmos_async_refinement"
+                chunk["provenance"] = provenance
+                active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
+                if active_chunk_id != chunk_id and str(chunk.get("media_path") or "").strip() == str(chunk.get("preview_media_path") or "").strip():
+                    chunk["media_path"] = str(refined_video_path.resolve())
+                    chunk["render_source"] = "cosmos_async_refinement"
+                    promoted = True
+                self._replace_chunk(rollout, chunk)
+                refined_chunk_ids = [str(item) for item in list(rollout.get("refined_chunk_ids") or []) if str(item)]
+                if chunk_id not in refined_chunk_ids:
+                    refined_chunk_ids.append(chunk_id)
+                rollout["refined_chunk_ids"] = refined_chunk_ids[-6:]
+                rollout["refinement_status"] = "completed"
+                rollout["refinement_inflight_chunk_id"] = None
+                rollout["worker_backend"] = worker_backend
+                rollout["generation_owner_session_id"] = session_id
+                self._update_rollout_world_state(
+                    session_id=session_id,
+                    rollout=rollout,
+                    pose=_pose_summary_from_matrix(target_T_world_camera),
+                    target_pose=_pose_summary_from_matrix(lookahead_T_world_camera),
+                    trajectory_horizon=horizon,
+                    grounding_reference_set=grounding_refs,
+                    lookahead_anchor=(lookahead_refs[:1] or [None])[0],
+                    last_committed_chunk_id=chunk_id,
+                )
+                state["updated_at"] = _utc_now_iso()
+                self._store_session_state(session_id, state)
+            _push_media_event(session_id, {
+                "event": "chunk_refinement_ready",
+                "chunk_id": chunk_id,
+                "chunk_index": chunk_index,
+                "render_source": "cosmos_async_refinement",
+                "generation_duration_ms": refinement_duration_ms,
+                "worker_backend": worker_backend,
+                "promoted": promoted,
+                "ts": _utc_now_iso(),
+            })
+        except Exception as exc:
+            with _cosmos_session_lock(f"state:{session_id}"):
+                state = self._load_session_state(session_id)
+                rollout = self._ensure_rollout(state)
+                chunk = self._chunk_record(rollout, chunk_id)
+                if chunk is not None:
+                    chunk["refinement_status"] = "failed"
+                    provenance = dict(chunk.get("provenance") or {})
+                    provenance["refinement_status"] = "failed"
+                    provenance["refinement_reason"] = str(exc)
+                    chunk["provenance"] = provenance
+                    self._replace_chunk(rollout, chunk)
+                rollout["refinement_status"] = "failed"
+                rollout["refinement_inflight_chunk_id"] = None
+                state["updated_at"] = _utc_now_iso()
+                self._store_session_state(session_id, state)
+            _push_media_event(session_id, {
+                "event": "chunk_refinement_failed",
+                "chunk_id": chunk_id,
+                "chunk_index": chunk_index,
+                "reason": str(exc),
+                "ts": _utc_now_iso(),
+            })
+        finally:
+            self._release_generation_owner(session_id)
+
     def _generate_next_chunk(self, session_id: str) -> None:
         lock = _cosmos_session_lock(f"rollout:{session_id}")
         with lock:
@@ -1164,41 +1496,24 @@ class NativeWorldModelRuntimeStore:
                 state["updated_at"] = _utc_now_iso()
                 self._store_session_state(session_id, state)
 
-        owner_claimed, owner_session_id = self._claim_generation_owner(session_id)
-        if not owner_claimed:
-            with _cosmos_session_lock(f"state:{session_id}"):
-                state = self._load_session_state(session_id)
-                rollout = self._ensure_rollout(state)
-                rollout["queued_chunk_ids"] = []
-                rollout["status"] = "failed"
-                rollout["underrun"] = True
-                rollout["underrun_count"] = int(rollout.get("underrun_count") or 0) + 1
-                rollout["generation_owner_session_id"] = owner_session_id
-                state["failure_reason"] = f"generation_worker_owned_by:{owner_session_id}"
-                state["updated_at"] = _utc_now_iso()
-                self._store_session_state(session_id, state)
-            _push_media_event(session_id, {
-                "event": "chunk_underrun",
-                "chunk_id": chunk_id,
-                "buffer_ms": 0,
-                "reason": f"generation_worker_owned_by:{owner_session_id}",
-                "ts": _utc_now_iso(),
-            })
-            return
-
         chunk_generation_started_at_ms = _utc_now_ms()
+        primary_mode = self._preview_generation_mode()
+        refinement_requested = primary_mode == "splat_only" and self._cosmos_refinement_enabled()
+        worker_backend = None
 
         # Emit: generation has started
         _push_media_event(session_id, {
             "event": "chunk_generation_started",
             "chunk_id": chunk_id,
             "chunk_index": chunk_index,
+            "render_mode": primary_mode,
             "ts": _utc_now_iso(),
         })
 
         try:
             from .synthesis.synthesize import synthesize_view
-            from .synthesis.cosmos_inference import describe_cosmos_model, load_cosmos_model
+            if primary_mode == "cosmos_i2w":
+                from .synthesis.cosmos_inference import describe_cosmos_model, load_cosmos_model
 
             state = self._load_session_state(session_id)
             rollout = self._ensure_rollout(state)
@@ -1232,10 +1547,18 @@ class NativeWorldModelRuntimeStore:
                 bucket=bucket,
                 k=1,
             )
+            target_intrinsics, target_h, target_w = (
+                _intrinsics_from_site_index(site_index_path)
+                if site_index_path
+                else ({"fx": 960.0, "fy": 960.0, "cx": 480.0, "cy": 270.0}, 540, 960)
+            )
             output_png = self._video_chunks_dir(session_id) / f"{chunk_id}.png"
             previous_tail_path = rollout.get("last_chunk_tail_path")
-            worker_backend = None
-            if self._live_synthesis_mode() == "cosmos_i2w":
+            cosmos_settings = self._cosmos_refinement_settings(rollout)
+            if primary_mode == "cosmos_i2w":
+                owner_claimed, owner_session_id = self._claim_generation_owner(session_id)
+                if not owner_claimed:
+                    raise RuntimeError(f"generation_worker_owned_by:{owner_session_id}")
                 cosmos_model_description = describe_cosmos_model(load_cosmos_model())
                 worker_backend = str(
                     cosmos_model_description.get("worker_backend")
@@ -1253,13 +1576,17 @@ class NativeWorldModelRuntimeStore:
                     storage_root=storage_root,
                     bucket=bucket,
                     target_T_world_camera=start_T,
-                    target_intrinsics=_intrinsics_from_site_index(site_index_path)[0] if site_index_path else {"fx": 960.0, "fy": 960.0, "cx": 480.0, "cy": 270.0},
-                    target_h=_intrinsics_from_site_index(site_index_path)[1] if site_index_path else 540,
-                    target_w=_intrinsics_from_site_index(site_index_path)[2] if site_index_path else 960,
+                    target_intrinsics=target_intrinsics,
+                    target_h=target_h,
+                    target_w=target_w,
                     output_path=output_png,
-                    mode=self._live_synthesis_mode(),
+                    mode=primary_mode,
                     k=4,
                     num_frames=int(rollout.get("chunk_frames") or 57),
+                    cosmos_width=int(cosmos_settings["width"]),
+                    cosmos_height=int(cosmos_settings["height"]),
+                    cosmos_guidance_scale=float(cosmos_settings["guidance_scale"]),
+                    cosmos_num_steps=int(cosmos_settings["num_steps"]),
                     # Use tail frame directly (alpha=1.0 = no blend with warped
                     # splat). Blending averages out site-specific texture; using
                     # the raw tail frame preserves visual continuity.
@@ -1284,21 +1611,36 @@ class NativeWorldModelRuntimeStore:
             generation_duration_ms = max(0, _utc_now_ms() - chunk_generation_started_at_ms)
             tail_path = self._chunk_tail_path(session_id, chunk_id)
             self._extract_tail_frame(video_path, tail_path)
+            render_source = "truthful_preview_splat" if primary_mode == "splat_only" else str(result.get("mode") or primary_mode)
+            grounding_refs_final = grounding_refs or list(result.get("retrieved_references") or [])
+            lookahead_anchor = (lookahead_refs or list(result.get("lookahead_references") or []))[:1] or None
             ready_chunk = {
                 "chunk_id": chunk_id,
                 "chunk_index": chunk_index,
                 "status": "ready",
                 "media_path": str(video_path.resolve()),
+                "preview_media_path": str(video_path.resolve()),
                 "media_type": "video/mp4",
-                "render_source": str(result.get("mode") or self._live_synthesis_mode()),
+                "render_source": render_source,
+                "preview_render_source": render_source,
                 "duration_ms": int(rollout.get("chunk_duration_ms") or 1200),
                 "tail_path": str(tail_path.resolve()) if tail_path.is_file() else None,
-                "grounding_references": grounding_refs or list(result.get("retrieved_references") or []),
-                "lookahead_anchor": (lookahead_refs or list(result.get("lookahead_references") or []))[:1] or None,
+                "grounding_references": grounding_refs_final,
+                "lookahead_anchor": lookahead_anchor,
                 "trajectory_horizon": horizon,
                 "conditioning": dict(result.get("conditioning") or {}),
                 "generation_duration_ms": generation_duration_ms,
                 "worker_backend": worker_backend,
+                "presentation_mode": str(rollout.get("presentation_mode") or ""),
+                "provenance": self._chunk_provenance(
+                    rollout=rollout,
+                    render_source=render_source,
+                    grounding_refs=grounding_refs_final,
+                    lookahead_refs=lookahead_refs,
+                    previous_tail_path=str(previous_tail_path or ""),
+                    refinement_status="pending" if refinement_requested else "disabled",
+                ),
+                "refinement_status": "pending" if refinement_requested else "disabled",
                 "generated_at": _utc_now_iso(),
             }
             with _cosmos_session_lock(f"state:{session_id}"):
@@ -1308,16 +1650,18 @@ class NativeWorldModelRuntimeStore:
                 buffer_ids = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
                 buffer_ids.append(chunk_id)
                 rollout["buffered_chunk_ids"] = buffer_ids[-3:]
-                rollout["grounding_reference_set"] = ready_chunk.get("grounding_references") or []
+                rollout["grounding_reference_set"] = grounding_refs_final
                 rollout["lookahead_anchor"] = ready_chunk.get("lookahead_anchor")
                 rollout["trajectory_horizon"] = ready_chunk.get("trajectory_horizon") or []
                 rollout["last_chunk_tail_path"] = ready_chunk.get("tail_path")
                 rollout["generation_lag_ms"] = max(0, _utc_now_ms() - int(control.get("tClientMs") or _utc_now_ms()))
                 rollout["chunk_count"] = chunk_index + 1
-                rollout["generation_owner_session_id"] = session_id
+                rollout["generation_owner_session_id"] = session_id if primary_mode == "cosmos_i2w" else rollout.get("generation_owner_session_id")
                 rollout["worker_backend"] = worker_backend
                 rollout["last_chunk_generation_ms"] = generation_duration_ms
                 rollout["last_chunk_ready_latency_ms"] = generation_duration_ms
+                rollout["refinement_status"] = "pending" if refinement_requested else rollout.get("refinement_status")
+                rollout["refinement_inflight_chunk_id"] = chunk_id if refinement_requested else None
                 if int(rollout.get("chunk_count") or 0) == 1 and not rollout.get("first_chunk_generation_ms"):
                     rollout["first_chunk_generation_ms"] = generation_duration_ms
                 self._replace_chunk(rollout, ready_chunk)
@@ -1328,10 +1672,20 @@ class NativeWorldModelRuntimeStore:
                 state["observation"] = self._make_observation(
                     session_id,
                     int(state["step_count"]),
-                    render_source="live_video_chunk",
+                    render_source=render_source,
                 )
                 state["camera_pose_matrix"] = end_T.tolist()
                 state["pose"] = _pose_summary_from_matrix(end_T)
+                self._update_rollout_world_state(
+                    session_id=session_id,
+                    rollout=rollout,
+                    pose=_pose_summary_from_matrix(start_T),
+                    target_pose=_pose_summary_from_matrix(end_T),
+                    trajectory_horizon=horizon,
+                    grounding_reference_set=grounding_refs_final,
+                    lookahead_anchor=lookahead_anchor[0] if isinstance(lookahead_anchor, list) and lookahead_anchor else None,
+                    last_committed_chunk_id=chunk_id,
+                )
                 state["updated_at"] = _utc_now_iso()
                 self._store_session_state(session_id, state)
             # Notify WS clients immediately — don't wait for the 250ms poll cycle
@@ -1343,9 +1697,35 @@ class NativeWorldModelRuntimeStore:
                 "render_source": str(ready_chunk.get("render_source") or ""),
                 "generation_duration_ms": generation_duration_ms,
                 "worker_backend": worker_backend,
+                "presentation_mode": str(ready_chunk.get("presentation_mode") or ""),
+                "refinement_status": str(ready_chunk.get("refinement_status") or ""),
                 "is_fmp4": True,
                 "ts": _utc_now_iso(),
             })
+            if refinement_requested:
+                threading.Thread(
+                    target=self._refine_chunk_async,
+                    kwargs={
+                        "session_id": session_id,
+                        "chunk_id": chunk_id,
+                        "chunk_index": chunk_index,
+                        "site_id": site_id,
+                        "storage_root": storage_root,
+                        "bucket": bucket,
+                        "target_T_world_camera": start_T,
+                        "lookahead_T_world_camera": end_T,
+                        "target_intrinsics": target_intrinsics,
+                        "target_h": target_h,
+                        "target_w": target_w,
+                        "previous_tail_path": str(previous_tail_path or ""),
+                        "lookahead_ref_uris": lookahead_ref_uris,
+                        "grounding_refs": grounding_refs_final,
+                        "lookahead_refs": lookahead_refs,
+                        "horizon": horizon,
+                        "control": control,
+                    },
+                    daemon=True,
+                ).start()
         except Exception as exc:
             with _cosmos_session_lock(f"state:{session_id}"):
                 state = self._load_session_state(session_id)
@@ -1358,7 +1738,8 @@ class NativeWorldModelRuntimeStore:
                 state["failure_reason"] = str(exc)
                 state["updated_at"] = _utc_now_iso()
                 self._store_session_state(session_id, state)
-            self._release_generation_owner(session_id)
+            if primary_mode == "cosmos_i2w":
+                self._release_generation_owner(session_id)
             _push_media_event(session_id, {
                 "event": "chunk_underrun",
                 "chunk_id": chunk_id,
@@ -1613,14 +1994,20 @@ class NativeWorldModelRuntimeStore:
             k=1,
         )
         rollout["lookahead_anchor"] = lookahead[0] if lookahead else None
+        self._update_rollout_world_state(
+            session_id=session_id,
+            rollout=rollout,
+            pose=_pose_summary_from_matrix(start_T),
+            target_pose=_pose_summary_from_matrix(end_T),
+            trajectory_horizon=horizon,
+            grounding_reference_set=list(rollout.get("grounding_reference_set") or []),
+            lookahead_anchor=rollout.get("lookahead_anchor"),
+            last_committed_chunk_id=str(rollout.get("active_chunk_id") or "").strip() or None,
+        )
         self._refresh_rollout_playback(state)
-        buffered = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-        active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
-        active_index = buffered.index(active_chunk_id) if active_chunk_id in buffered else -1
-        remaining_ready = len(buffered) - max(active_index + 1, 0)
-        if len(list(rollout.get("queued_chunk_ids") or [])) == 0 and remaining_ready < 1:
+        if self._should_queue_more_chunks(rollout):
             self._queue_chunk_generation(session_id)
-            rollout["status"] = "buffering" if not active_chunk_id else rollout.get("status") or "playing"
+            rollout["status"] = "buffering" if not rollout.get("active_chunk_id") else rollout.get("status") or "playing"
         state["updated_at"] = _utc_now_iso()
         return self._store_session_state(session_id, state)
 
@@ -1629,11 +2016,7 @@ class NativeWorldModelRuntimeStore:
             state = self._load_session_state(session_id)
             self._refresh_rollout_playback(state)
             rollout = self._ensure_rollout(state)
-            buffered = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-            active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
-            active_index = buffered.index(active_chunk_id) if active_chunk_id in buffered else -1
-            remaining_ready = len(buffered) - max(active_index + 1, 0)
-            if len(list(rollout.get("queued_chunk_ids") or [])) == 0 and remaining_ready < 1:
+            if self._should_queue_more_chunks(rollout):
                 self._queue_chunk_generation(session_id)
             state["updated_at"] = _utc_now_iso()
             return self._store_session_state(session_id, state)
@@ -2032,6 +2415,8 @@ class NativeWorldModelRuntimeStore:
                     "X-Blueprint-Render-Source": str(chunk.get("render_source") or "runtime-video-chunk"),
                     "X-Blueprint-Media-Status": str(rollout.get("status") or "playing"),
                     "X-Blueprint-Chunk-Id": selected_chunk_id,
+                    "X-Blueprint-Presentation-Mode": str(rollout.get("presentation_mode") or ""),
+                    "X-Blueprint-Refinement-Status": str(chunk.get("refinement_status") or rollout.get("refinement_status") or ""),
                 },
             }
         placeholder = self._render_png(session_id, camera_id)
@@ -2042,6 +2427,8 @@ class NativeWorldModelRuntimeStore:
                 "Cache-Control": "no-store",
                 "X-Blueprint-Render-Source": "placeholder_cosmos_pending",
                 "X-Blueprint-Media-Status": str(rollout.get("status") or "buffering"),
+                "X-Blueprint-Presentation-Mode": str(rollout.get("presentation_mode") or ""),
+                "X-Blueprint-Refinement-Status": str(rollout.get("refinement_status") or ""),
             },
         }
 

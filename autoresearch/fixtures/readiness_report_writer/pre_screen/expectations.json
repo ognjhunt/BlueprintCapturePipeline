@@ -1,0 +1,24 @@
+{
+  "forbidden_phrases": [
+    "qualified for deployment",
+    "promising results"
+  ],
+  "max_word_count": 650,
+  "required_human_actions": [
+    "Confirm whether a metric recapture is in scope before qualification review."
+  ],
+  "required_phrases": [
+    "PRE-SCREEN ASSESSMENT ONLY",
+    "pre_screen"
+  ],
+  "required_sections": [
+    "# Site Readiness Assessment:",
+    "## Readiness State:",
+    "## Human Signoff Boundary",
+    "## Executive Summary",
+    "## Evidence Assessment",
+    "## Required Human Actions",
+    "## Recapture Recommendations",
+    "## Next Steps"
+  ]
+}

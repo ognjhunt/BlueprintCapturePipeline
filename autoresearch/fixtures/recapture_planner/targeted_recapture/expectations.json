@@ -1,0 +1,13 @@
+{
+  "allowed_detail_substrings": [
+    "Hidden-zone bound 0.42 exceeds the readiness envelope.",
+    "Route segment A3-B1 width measured at 2.4 m"
+  ],
+  "max_lines": 30,
+  "min_steps": 2,
+  "required": true,
+  "required_detail_substrings": [
+    "Hidden-zone bound 0.42 exceeds the readiness envelope.",
+    "Route segment A3-B1 width measured at 2.4 m"
+  ]
+}

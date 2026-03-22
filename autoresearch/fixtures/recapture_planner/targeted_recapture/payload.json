@@ -1,0 +1,38 @@
+{
+  "capture_id": "capture-recapture-1",
+  "blocker_register": {
+    "entries": [
+      {
+        "category": "hidden_zone",
+        "detail": "Hidden-zone bound 0.42 exceeds the readiness envelope.",
+        "severity": "high",
+        "source_artifacts": [
+          "geometry_evidence.json"
+        ]
+      },
+      {
+        "category": "route_clearance",
+        "detail": "Route segment A3-B1 width measured at 2.4 m, below required shared-traffic clearance.",
+        "severity": "high",
+        "source_artifacts": [
+          "qualification_record.json"
+        ]
+      }
+    ]
+  },
+  "capture_qa_scorecard": {
+    "coverage_zones": [
+      "west aisle",
+      "workcell entry"
+    ],
+    "qa_flags": [
+      "hidden zone at west aisle"
+    ],
+    "registration_rate": 0.81
+  },
+  "geometry_evidence": {
+    "hidden_zone_bound": 0.42,
+    "metric_ready": true
+  },
+  "scene_id": "scene-recapture-1"
+}

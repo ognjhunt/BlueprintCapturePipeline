@@ -327,10 +327,14 @@ def _build_capture(
         "capture_id": capture_id,
         "video_uri": "walkthrough.mov",
         "capture_source": capture_source,
+        "capture_job_id": f"capture-job-{capture_source}",
+        "buyer_request_id": f"buyer-request-{capture_source}",
+        "site_submission_id": f"site-submission-{capture_source}",
         "width": 1920,
         "height": 1080,
         "has_lidar": capture_source == "iphone",
         "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
+        "quoted_payout_cents": 6500,
         "capture_rights": {
             "derived_scene_generation_allowed": True,
             "data_licensing_allowed": False,
@@ -392,6 +396,17 @@ def _build_capture(
         capture_id=capture_id,
         gcs_root=tmp_path,
     )
+    descriptor_path = capture_root / "capture_descriptor.json"
+    descriptor_payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor_payload.update(
+        {
+            "capture_job_id": manifest_payload["capture_job_id"],
+            "buyer_request_id": manifest_payload["buyer_request_id"],
+            "site_submission_id": manifest_payload["site_submission_id"],
+            "quoted_payout_cents": manifest_payload["quoted_payout_cents"],
+        }
+    )
+    descriptor_path.write_text(json.dumps(descriptor_payload), encoding="utf-8")
     return capture_root, str(materialized["descriptor_uri"])
 
 
@@ -426,9 +441,12 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+    launch_gate_summary = json.loads((capture_root / "pipeline" / "launch_gate_summary.json").read_text(encoding="utf-8"))
     sync_result = json.loads((capture_root / "pipeline" / "webapp_sync_result.json").read_text(encoding="utf-8"))
 
     assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
+    assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
+    assert all(check["passed"] for check in launch_gate_summary["stage_checks"])
     assert sync_result["status"] == "succeeded"
     assert sync_result["latest_stage"] == "evaluation_prep"
     assert len(sync_calls) == 2
@@ -437,6 +455,10 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
         "/evaluation_prep/hosted_session_runtime_manifest.json"
     )
     assert sync_calls[1]["artifacts"]["scene_memory_manifest_uri"].endswith("/scene_memory/scene_memory_manifest.json")
+    assert sync_calls[1]["artifacts"]["capturer_payout_recommendation_uri"].endswith(
+        "/capturer_payout_recommendation.json"
+    )
+    assert sync_calls[1]["artifacts"]["launch_gate_summary_uri"].endswith("/launch_gate_summary.json")
 
 
 def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypatch, tmp_path: Path) -> None:
@@ -472,9 +494,11 @@ def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypa
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+    launch_gate_summary = json.loads((capture_root / "pipeline" / "launch_gate_summary.json").read_text(encoding="utf-8"))
 
     assert alpha_summary["profile"] == "iphone_video_only"
     assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
+    assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
     assert sync_calls[1]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
 
 
@@ -506,12 +530,14 @@ def test_iphone_alpha_readiness_is_no_go_when_runtime_url_missing(monkeypatch, t
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+    launch_gate_summary = json.loads((capture_root / "pipeline" / "launch_gate_summary.json").read_text(encoding="utf-8"))
 
     assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert launch_gate_summary["overall_status"] == "blocked"
     assert any("missing runtime service URL" in reason for reason in alpha_summary["no_go_reasons"])
 
 
-def test_meta_glasses_alpha_readiness_is_internal_only(monkeypatch, tmp_path: Path) -> None:
+def test_meta_glasses_alpha_readiness_is_external_when_runtime_capability_is_ready(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_capture(
         tmp_path,
         capture_source="glasses",
@@ -543,14 +569,22 @@ def test_meta_glasses_alpha_readiness_is_internal_only(monkeypatch, tmp_path: Pa
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+    launch_gate_summary = json.loads((capture_root / "pipeline" / "launch_gate_summary.json").read_text(encoding="utf-8"))
 
-    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
     assert alpha_summary["verdicts"]["internal_experimental_alpha"]["status"] == "go"
+    assert alpha_summary["device_alpha_profile"]["status"] == "ready_for_external_alpha"
+    assert alpha_summary["runtime_capability"]["status"] == "ready"
+    assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
+    assert any(
+        "Do not claim strong site-faithful world-model quality" in claim
+        for claim in launch_gate_summary["launch_claims"]["not_justified"]
+    )
     assert sync_calls[1]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
     assert sync_calls[1]["artifacts"]["privacy_depth_manifest_uri"].endswith("/privacy_depth/depth_manifest.json")
 
 
-def test_android_alpha_readiness_is_internal_only(monkeypatch, tmp_path: Path) -> None:
+def test_android_alpha_readiness_is_external_when_runtime_capability_is_ready(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_capture(
         tmp_path,
         capture_source="android",
@@ -581,7 +615,15 @@ def test_android_alpha_readiness_is_internal_only(monkeypatch, tmp_path: Path) -
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
+    launch_gate_summary = json.loads((capture_root / "pipeline" / "launch_gate_summary.json").read_text(encoding="utf-8"))
 
     assert alpha_summary["profile"] == "android_video"
-    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
     assert alpha_summary["verdicts"]["internal_experimental_alpha"]["status"] == "go"
+    assert alpha_summary["device_alpha_profile"]["status"] == "ready_for_external_alpha"
+    assert alpha_summary["runtime_capability"]["status"] == "ready"
+    assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
+    assert any(
+        "Do not claim strong site-faithful world-model quality" in claim
+        for claim in launch_gate_summary["launch_claims"]["not_justified"]
+    )

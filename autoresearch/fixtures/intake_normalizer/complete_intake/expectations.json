@@ -1,0 +1,7 @@
+{
+  "capture_id": "capture-complete",
+  "expected_missing_required_fields": [],
+  "required_capture_modality": "metric_scan",
+  "required_status": "normalized",
+  "scene_id": "scene-complete"
+}

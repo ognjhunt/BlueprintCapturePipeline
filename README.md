@@ -62,6 +62,12 @@ uv sync --extra dev --extra llm
 
 Local tests automatically add `src/` and the sibling `BlueprintContracts/src` to `sys.path` through [`tests/conftest.py`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py). If the contracts repo is not present beside this repo, install `blueprint-contracts` before running `pytest`.
 
+Cross-repo external alpha gate:
+
+```bash
+python scripts/run_external_alpha_launch_gate.py
+```
+
 ## Privacy Runner Services
 
 The production preview path expects URL-first privacy runners:

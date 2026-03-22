@@ -1,0 +1,29 @@
+{
+  "capture_id": "capture-recapture-2",
+  "blocker_register": {
+    "entries": [
+      {
+        "category": "hidden_zone",
+        "detail": "Restricted mezzanine access prevents verification of the east-side drop zone; escort required.",
+        "severity": "high",
+        "source_artifacts": [
+          "geometry_evidence.json"
+        ]
+      }
+    ]
+  },
+  "capture_qa_scorecard": {
+    "coverage_zones": [
+      "east mezzanine"
+    ],
+    "qa_flags": [
+      "restricted mezzanine access"
+    ],
+    "registration_rate": 0.74
+  },
+  "geometry_evidence": {
+    "hidden_zone_bound": 0.38,
+    "metric_ready": false
+  },
+  "scene_id": "scene-recapture-2"
+}

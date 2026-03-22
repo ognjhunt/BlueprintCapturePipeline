@@ -107,6 +107,43 @@ def _latest_sync_payload(existing: Mapping[str, Any]) -> Dict[str, Any]:
     return dict(existing)
 
 
+def _runtime_capability_payload(
+    *,
+    profile: str,
+    runtime_launch_expected: bool,
+    geometry_summary: Mapping[str, Any],
+    site_world_spec: Mapping[str, Any],
+    site_world_registration: Mapping[str, Any],
+    site_world_health: Mapping[str, Any],
+) -> Dict[str, Any]:
+    has_site_world_bundle = bool(site_world_spec and site_world_registration and site_world_health)
+    geometry_ready = bool(geometry_summary.get("ready_for_world_model"))
+    runtime_launchable = bool(site_world_health.get("launchable"))
+    runtime_status = str(site_world_health.get("status") or "missing").strip().lower()
+    geometry_required = profile in {"meta_glasses", "android_video", "iphone_video_only"}
+
+    blockers: List[str] = []
+    if not has_site_world_bundle:
+        blockers.append("missing_site_world_bundle")
+    if geometry_required and not geometry_ready:
+        blockers.append("geometry_not_ready")
+    if runtime_launch_expected and not runtime_launchable:
+        blockers.append("runtime_not_launchable")
+    if runtime_launch_expected and runtime_status in {"missing", "", "blocked", "failed"}:
+        blockers.append("runtime_health_not_ready")
+
+    return {
+        "claim_scope": "native_runtime_capability_only",
+        "status": "ready" if not blockers else "blocked",
+        "launchable": runtime_launchable,
+        "geometry_required": geometry_required,
+        "geometry_ready": geometry_ready,
+        "site_world_bundle_ready": has_site_world_bundle,
+        "runtime_health_status": runtime_status or "missing",
+        "blockers": blockers,
+    }
+
+
 def write_pipeline_sync_result(
     *,
     pipeline_root: Path,
@@ -202,6 +239,14 @@ def build_alpha_readiness_summary(
     runtime_launch_expected = parse_bool(
         resolved_env.get("PIPELINE_ALPHA_EXPECT_HOSTED_RUNTIME"),
         default=evaluation_requested,
+    )
+    runtime_capability = _runtime_capability_payload(
+        profile=profile,
+        runtime_launch_expected=runtime_launch_expected,
+        geometry_summary=geometry_summary,
+        site_world_spec=site_world_spec,
+        site_world_registration=site_world_registration,
+        site_world_health=site_world_health,
     )
 
     env_checks: List[Dict[str, Any]] = [_env_check(resolved_env, name) for name in _COMMON_ENV_VARS]
@@ -348,6 +393,14 @@ def build_alpha_readiness_summary(
                 else "privacy did not produce buyer-safe walkthrough URI",
                 category="path",
             ),
+            _check(
+                "native_runtime_capability_ready",
+                runtime_capability["status"] == "ready",
+                "native runtime capability artifacts are ready"
+                if runtime_capability["status"] == "ready"
+                else f"native runtime capability is blocked: {', '.join(runtime_capability['blockers']) or 'unknown'}",
+                category="path",
+            ),
         ]
         external_alpha = {
             "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
@@ -394,6 +447,14 @@ def build_alpha_readiness_summary(
             _check_file(eval_root / "site_world_spec.json", name="site_world_spec", detail="site_world_spec.json exists", category="path"),
             _check_file(eval_root / "site_world_registration.json", name="site_world_registration", detail="site_world_registration.json exists", category="path"),
             _check_file(eval_root / "site_world_health.json", name="site_world_health", detail="site_world_health.json exists", category="path"),
+            _check(
+                "native_runtime_capability_ready",
+                runtime_capability["status"] == "ready",
+                "native runtime capability artifacts are ready"
+                if runtime_capability["status"] == "ready"
+                else f"native runtime capability is blocked: {', '.join(runtime_capability['blockers']) or 'unknown'}",
+                category="path",
+            ),
         ]
         external_alpha = {
             "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
@@ -436,10 +497,20 @@ def build_alpha_readiness_summary(
             _check_file(eval_root / "site_world_spec.json", name="site_world_spec", detail="site_world_spec.json exists", category="path"),
             _check_file(eval_root / "site_world_registration.json", name="site_world_registration", detail="site_world_registration.json exists", category="path"),
             _check_file(eval_root / "site_world_health.json", name="site_world_health", detail="site_world_health.json exists", category="path"),
+            _check(
+                "native_runtime_capability_ready",
+                runtime_capability["status"] == "ready",
+                "native runtime capability artifacts are ready"
+                if runtime_capability["status"] == "ready"
+                else f"native runtime capability is blocked: {', '.join(runtime_capability['blockers']) or 'unknown'}",
+                category="path",
+            ),
         ]
         external_alpha = {
-            "status": "no_go",
-            "reason": "meta_glasses_remains_internal_experimental_for_site_faithful_world_model_claims",
+            "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
+            "reason": "all_common_and_glasses_checks_passed"
+            if common_passed and all(item["passed"] for item in path_checks)
+            else "glasses_external_alpha_requirements_not_met",
         }
         internal_alpha = {
             "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
@@ -480,16 +551,44 @@ def build_alpha_readiness_summary(
             _check_file(eval_root / "site_world_spec.json", name="site_world_spec", detail="site_world_spec.json exists", category="path"),
             _check_file(eval_root / "site_world_registration.json", name="site_world_registration", detail="site_world_registration.json exists", category="path"),
             _check_file(eval_root / "site_world_health.json", name="site_world_health", detail="site_world_health.json exists", category="path"),
+            _check(
+                "native_runtime_capability_ready",
+                runtime_capability["status"] == "ready",
+                "native runtime capability artifacts are ready"
+                if runtime_capability["status"] == "ready"
+                else f"native runtime capability is blocked: {', '.join(runtime_capability['blockers']) or 'unknown'}",
+                category="path",
+            ),
         ]
         external_alpha = {
-            "status": "no_go",
-            "reason": "android_remains_internal_until_parity_thresholds_and_marketing_truth_are_met",
+            "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
+            "reason": "all_common_and_android_checks_passed"
+            if common_passed and all(item["passed"] for item in path_checks)
+            else "android_external_alpha_requirements_not_met",
         }
         internal_alpha = {
             "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
             "reason": "all_common_and_android_checks_passed"
             if common_passed and all(item["passed"] for item in path_checks)
             else "android_internal_alpha_requirements_not_met",
+        }
+
+    external_alpha_go = str(external_alpha.get("status") or "").strip().lower() == "go"
+    internal_alpha_go = str(internal_alpha.get("status") or "").strip().lower() == "go"
+    if external_alpha_go:
+        device_alpha_profile = {
+            "status": "ready_for_external_alpha",
+            "reason": external_alpha.get("reason"),
+        }
+    elif internal_alpha_go:
+        device_alpha_profile = {
+            "status": "internal_only",
+            "reason": internal_alpha.get("reason"),
+        }
+    else:
+        device_alpha_profile = {
+            "status": "blocked",
+            "reason": external_alpha.get("reason") or internal_alpha.get("reason"),
         }
 
     failed_checks = [
@@ -509,6 +608,7 @@ def build_alpha_readiness_summary(
         "capture_mode": capture_mode_resolved,
         "profile": profile,
         "runtime_launch_expected": runtime_launch_expected,
+        "runtime_capability": runtime_capability,
         "environment_checks": env_checks,
         "common_checks": common_checks,
         "path_checks": path_checks,
@@ -516,6 +616,7 @@ def build_alpha_readiness_summary(
             "external_alpha": external_alpha,
             "internal_experimental_alpha": internal_alpha,
         },
+        "device_alpha_profile": device_alpha_profile,
         "common_status": "passed" if common_passed else "failed",
         "path_status": "passed" if path_checks and all(item["passed"] for item in path_checks) else "failed",
         "failed_checks": failed_checks,
@@ -539,6 +640,253 @@ def write_alpha_readiness_summary(
     return payload
 
 
+def build_launch_gate_summary(
+    *,
+    capture_root: Path,
+    env: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Any]:
+    resolved_env = dict(os.environ if env is None else env)
+    descriptor = CaptureDescriptor.from_dict(_read_json_object(capture_root / "capture_descriptor.json"))
+    pipeline_root = capture_root / "pipeline"
+    eval_root = pipeline_root / "evaluation_prep"
+
+    alpha_summary = write_alpha_readiness_summary(capture_root=capture_root, env=resolved_env)
+    opportunity_handoff = _read_json_object(pipeline_root / "opportunity_handoff.json")
+    qualification_record = _read_json_object(pipeline_root / "qualification_record.json")
+    scorecard = _read_json_object(pipeline_root / "capture_qa_scorecard.json")
+    privacy_manifest = _read_json_object(pipeline_root / "privacy_processing_manifest.json")
+    payout_recommendation = _read_json_object(pipeline_root / "capturer_payout_recommendation.json")
+    launchable_export_bundle = _read_json_object(eval_root / "launchable_export_bundle.json")
+    webapp_sync = _read_json_object(pipeline_root / "webapp_sync_result.json")
+    authoritative_qualification_state = derive_webapp_qualification_state(
+        readiness_state=qualification_record.get("readiness_state"),
+        completeness_status=scorecard.get("completeness_status"),
+    )
+
+    site_submission_id = (
+        descriptor.site_submission_id
+        or str(opportunity_handoff.get("site_submission_id") or "").strip()
+    )
+    capture_job_id = (
+        descriptor.capture_job_id
+        or str(opportunity_handoff.get("capture_job_id") or "").strip()
+    )
+    payout_eligible = bool(
+        payout_recommendation.get("eligible_for_payout")
+        if payout_recommendation.get("eligible_for_payout") is not None
+        else descriptor.quoted_payout_cents is not None
+        or payout_recommendation.get("recommended_payout_cents") is not None
+    )
+    profile = str(alpha_summary.get("profile") or "unsupported")
+    external_alpha = alpha_summary.get("verdicts", {}).get("external_alpha", {})
+    internal_alpha = alpha_summary.get("verdicts", {}).get("internal_experimental_alpha", {})
+    device_alpha_profile = alpha_summary.get("device_alpha_profile", {})
+    runtime_capability = alpha_summary.get("runtime_capability", {})
+    external_alpha_go = str(external_alpha.get("status") or "").strip().lower() == "go"
+    internal_alpha_go = str(internal_alpha.get("status") or "").strip().lower() == "go"
+    launchable_bundle_ready = bool(
+        launchable_export_bundle
+        and str(launchable_export_bundle.get("status") or "").strip().lower() in {"ready", "launch_ready"}
+    )
+    if not launchable_bundle_ready and (eval_root / "launchable_export_bundle.json").is_file():
+        launchable_bundle_ready = True
+
+    stage_checks = [
+        _check(
+            "inbound_request_linked",
+            bool(site_submission_id),
+            f"site_submission_id is {site_submission_id}"
+            if site_submission_id
+            else "site_submission_id is missing from the captured opportunity handoff",
+            category="launch_gate",
+        ),
+        _check(
+            "approved_marketplace_capture_job_linked",
+            bool(capture_job_id),
+            f"capture_job_id is {capture_job_id}"
+            if capture_job_id
+            else "capture_job_id is missing from the captured job linkage",
+            category="launch_gate",
+        ),
+        _check(
+            "mobile_claim_context_captured",
+            bool(descriptor.capture_source and descriptor.quoted_payout_cents is not None),
+            (
+                f"capture source {descriptor.capture_source} retained quoted payout {descriptor.quoted_payout_cents}"
+                if descriptor.capture_source and descriptor.quoted_payout_cents is not None
+                else "capture descriptor is missing source or quoted payout context"
+            ),
+            category="launch_gate",
+        ),
+        _check_file(
+            capture_root / "raw" / "capture_upload_complete.json",
+            name="mobile_upload_completed",
+            detail="raw/capture_upload_complete.json exists",
+            category="launch_gate",
+        ),
+        _check(
+            "qualification_authoritative",
+            authoritative_qualification_state in {"qualified_ready", "qualified_risky"}
+            or external_alpha_go
+            or internal_alpha_go,
+            (
+                f"qualification_state is {authoritative_qualification_state or 'not_ready_yet'} and alpha verdict is authoritative"
+                if authoritative_qualification_state in {"qualified_ready", "qualified_risky"}
+                or external_alpha_go
+                or internal_alpha_go
+                else "authoritative qualification_state did not reach a launchable verdict"
+            ),
+            category="launch_gate",
+        ),
+        _check(
+            "privacy_safe_buyer_media_ready",
+            bool(_present_value(privacy_manifest, "privacy_processed_video_uri", "world_model_video_uri")),
+            "privacy manifest includes buyer-safe walkthrough media"
+            if _present_value(privacy_manifest, "privacy_processed_video_uri", "world_model_video_uri")
+            else "privacy-safe walkthrough media is missing",
+            category="launch_gate",
+        ),
+        _check(
+            "webapp_sync_completed",
+            str(webapp_sync.get("status") or "").strip().lower() == "succeeded",
+            "webapp sync succeeded"
+            if str(webapp_sync.get("status") or "").strip().lower() == "succeeded"
+            else f"webapp sync status is {webapp_sync.get('status') or 'missing'}",
+            category="launch_gate",
+        ),
+        _check(
+            "buyer_fulfillment_bundle_ready",
+            launchable_bundle_ready,
+            "launchable_export_bundle.json is ready for buyer fulfillment"
+            if launchable_bundle_ready
+            else "launchable_export_bundle.json is missing or not ready",
+            category="launch_gate",
+        ),
+        _check(
+            "native_runtime_capability_ready",
+            str(runtime_capability.get("status") or "").strip().lower() == "ready",
+            "native runtime capability is ready"
+            if str(runtime_capability.get("status") or "").strip().lower() == "ready"
+            else f"native runtime capability is blocked: {', '.join(runtime_capability.get('blockers') or []) or 'unknown'}",
+            category="launch_gate",
+        ),
+        _check(
+            "capturer_payout_transition_ready",
+            payout_eligible,
+            "capturer payout recommendation is present and payout-eligible"
+            if payout_eligible
+            else "capturer payout recommendation is missing or not payout-eligible",
+            category="launch_gate",
+        ),
+    ]
+
+    all_stage_checks_passed = all(item["passed"] for item in stage_checks)
+
+    if all_stage_checks_passed and external_alpha_go:
+        source_status = "external_beta_contract_ready"
+    elif all_stage_checks_passed and internal_alpha_go:
+        source_status = "internal_only_contract_ready"
+    else:
+        source_status = "blocked"
+
+    justified_claims = [
+        "Qualification and readiness remain the authoritative launch gate.",
+        "Privacy-safe walkthrough media is the buyer-facing artifact; runtime or world-model outputs stay downstream.",
+    ]
+    if all_stage_checks_passed:
+        justified_claims.extend(
+            [
+                "Inbound request linkage, marketplace job linkage, upload completion, qualification, privacy processing, and WebApp sync are all contract-verified.",
+                "Launchable export packaging exists for buyer fulfillment or buyer access flows.",
+                "Capturer payout readiness is contract-verified through the payout recommendation artifact.",
+            ]
+        )
+    if source_status == "external_beta_contract_ready":
+        justified_claims.append(
+            "This source path is externally marketable for the paid marketplace beta at contract level once operator checks pass."
+        )
+    elif source_status == "internal_only_contract_ready":
+        justified_claims.append(
+            "This source path is suitable for internal beta operations, qualification, privacy-safe previews, and workflow orchestration."
+        )
+
+    not_justified_claims = [
+        "Do not claim runtime or world-model outputs can override qualification truth.",
+        "Do not claim strong site-faithful world-model quality; only native runtime capability and downstream packaging are proven here.",
+        "Do not claim live buyer payments or live capturer payouts are proven until the operator payment checklist is completed.",
+        "Do not claim real-device discovery and claim UX is proven in production until the device checklist is completed.",
+    ]
+    if not external_alpha_go:
+        not_justified_claims.append(
+            "Do not market this source as externally launch-ready while alpha readiness remains blocked."
+        )
+
+    operator_required_checks = [
+        {
+            "id": f"{descriptor.capture_source or 'unknown'}_real_device_claim_flow",
+            "scope": "device",
+            "required_evidence": "Screenshot or screen recording showing discovery, claim, and upload completion for the same capture_job_id.",
+        },
+        {
+            "id": "buyer_payment_settlement",
+            "scope": "payments",
+            "required_evidence": "Stripe payment intent or checkout session proving a buyer purchase completed for the launch SKU.",
+        },
+        {
+            "id": "capturer_payout_settlement",
+            "scope": "payouts",
+            "required_evidence": "Stripe payout or transfer evidence matching the approved creator capture record.",
+        },
+        {
+            "id": "buyer_artifact_access",
+            "scope": "buyer_access",
+            "required_evidence": "Authenticated buyer session proving artifact or fulfillment access resolves after purchase.",
+        },
+    ]
+
+    return {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "scene_id": descriptor.scene_id,
+        "capture_id": descriptor.capture_id,
+        "capture_source": descriptor.capture_source,
+        "capture_modality": descriptor.capture_modality,
+        "profile": profile,
+        "overall_status": source_status,
+        "device_alpha_profile": {
+            "status": device_alpha_profile.get("status"),
+            "reason": device_alpha_profile.get("reason"),
+        },
+        "runtime_capability": runtime_capability,
+        "qualification_policy": {
+            "authoritative_truth": True,
+            "detail": "Qualification and readiness are authoritative; runtime and world-model outputs are derived only.",
+        },
+        "stage_checks": stage_checks,
+        "source_acceptance": {
+            "status": source_status,
+            "external_alpha_status": external_alpha.get("status"),
+            "internal_alpha_status": internal_alpha.get("status"),
+            "alpha_reason": external_alpha.get("reason") or internal_alpha.get("reason"),
+        },
+        "launch_claims": {
+            "justified": justified_claims,
+            "not_justified": not_justified_claims,
+        },
+        "operator_required_checks": operator_required_checks,
+    }
+
+
+def write_launch_gate_summary(
+    *,
+    capture_root: Path,
+    env: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Any]:
+    payload = build_launch_gate_summary(capture_root=capture_root, env=env)
+    write_json(capture_root / "pipeline" / "launch_gate_summary.json", payload)
+    return payload
+
+
 def sync_webapp_evaluation_prep(
     *,
     capture_root: Path,
@@ -559,6 +907,7 @@ def sync_webapp_evaluation_prep(
     site_world_health = _read_json_object(eval_root / "site_world_health.json")
     evaluation_prep_summary = _read_json_object(eval_root / "evaluation_prep_summary.json")
     alpha_summary = write_alpha_readiness_summary(capture_root=capture_root, env=resolved_env)
+    launch_gate_summary = write_launch_gate_summary(capture_root=capture_root, env=resolved_env)
 
     qualification_state = derive_webapp_qualification_state(
         readiness_state=qualification_record.get("readiness_state"),
@@ -577,12 +926,14 @@ def sync_webapp_evaluation_prep(
         "capture_quality_summary_uri": _artifact_if_exists("capture_quality_summary.json"),
         "rights_and_compliance_summary_uri": _artifact_if_exists("rights_and_compliance_summary.json"),
         "buyer_trust_score_uri": _artifact_if_exists("buyer_trust_score.json"),
+        "capturer_payout_recommendation_uri": _artifact_if_exists("capturer_payout_recommendation.json"),
         "world_model_fit_summary_uri": _artifact_if_exists("world_model_fit_summary.json"),
         "provenance_summary_uri": _artifact_if_exists("provenance_summary.json"),
         "gemini_capture_fidelity_review_uri": _artifact_if_exists("gemini_capture_fidelity_review.json"),
         "privacy_processing_manifest_uri": _artifact_if_exists("privacy_processing_manifest.json"),
         "privacy_verification_report_uri": _artifact_if_exists("privacy_verification_report.json"),
         "webapp_sync_result_uri": _artifact_if_exists("webapp_sync_result.json"),
+        "launch_gate_summary_uri": _artifact_if_exists("launch_gate_summary.json"),
         "scene_memory_manifest_uri": _artifact_if_exists("scene_memory/scene_memory_manifest.json"),
         "conditioning_bundle_uri": _artifact_if_exists("scene_memory/conditioning_bundle.json"),
         "preview_simulation_manifest_uri": _artifact_if_exists("preview_simulation/preview_simulation_manifest.json"),
@@ -644,6 +995,8 @@ def sync_webapp_evaluation_prep(
     deployment_readiness = {
         "capture_source": descriptor.capture_source,
         "capture_modality": descriptor.capture_modality,
+        "device_alpha_profile_status": alpha_summary.get("device_alpha_profile", {}).get("status"),
+        "device_alpha_profile_reason": alpha_summary.get("device_alpha_profile", {}).get("reason"),
         "qualification_state": qualification_state,
         "opportunity_state": opportunity_state,
         "native_world_model_status": str(
@@ -675,8 +1028,11 @@ def sync_webapp_evaluation_prep(
         "runtime_health_status": site_world_health.get("status"),
         "runtime_launchable": bool(site_world_health.get("launchable")),
         "runtime_registration_status": site_world_health.get("runtime_registration_status"),
+        "native_runtime_capability_state": alpha_summary.get("runtime_capability", {}).get("status"),
+        "native_runtime_capability": alpha_summary.get("runtime_capability"),
         "evaluation_prep_summary": evaluation_prep_summary,
         "alpha_readiness": alpha_summary,
+        "launch_gate_summary": launch_gate_summary,
     }
 
     result = sync_webapp_pipeline_attachment(

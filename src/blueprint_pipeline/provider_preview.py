@@ -551,10 +551,14 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
 
 
 def resolve_preview_provider(name: str) -> PreviewProvider:
-    normalized = str(name or "stub").strip().lower()
+    normalized = str(name or "").strip().lower()
     if normalized in {"world_labs", "worldlabs"}:
         return WorldLabsPreviewProvider()
-    return StubPreviewProvider()
+    if normalized in {"stub", "stub_preview"}:
+        return StubPreviewProvider()
+    if not normalized:
+        raise ValueError("preview_provider_not_configured")
+    raise ValueError(f"unsupported_preview_provider:{normalized}")
 
 
 def run_preview_provider(
@@ -564,12 +568,13 @@ def run_preview_provider(
     capture_root: Path,
     pipeline_dir: Path,
 ) -> Dict[str, Any]:
-    provider = resolve_preview_provider(provider_name)
     manifest_path = pipeline_dir / "preview_manifest.json"
     worldlabs_request_manifest_path = pipeline_dir / "worldlabs_request_manifest.json"
     worldlabs_operation_manifest_path = pipeline_dir / "worldlabs_operation_manifest.json"
     worldlabs_world_manifest_path = pipeline_dir / "worldlabs_world_manifest.json"
+    provider: PreviewProvider | None = None
     try:
+        provider = resolve_preview_provider(provider_name)
         submitted = provider.submit(descriptor=descriptor, capture_root=capture_root)
         normalized: Dict[str, Any] = dict(provider.normalize(submitted))
 
@@ -632,7 +637,7 @@ def run_preview_provider(
     except Exception as exc:
         run_manifest = {
             "schema_version": "v1",
-            "provider_name": getattr(provider, "provider_name", provider_name),
+            "provider_name": getattr(provider, "provider_name", str(provider_name or "").strip() or None),
             "provider_model": getattr(provider, "provider_model", "unknown"),
             "provider_run_id": "",
             "status": "failed",

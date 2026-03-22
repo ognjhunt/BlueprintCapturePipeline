@@ -1,0 +1,80 @@
+{
+  "capture_id": "capture-report-1",
+  "blocker_register": {
+    "entries": [
+      {
+        "category": "route_clearance",
+        "detail": "Route segment A3-B1 width measured at 2.4 m, below the required 2.65 m shared-traffic clearance.",
+        "severity": "high",
+        "source_artifacts": [
+          "qualification_record.json"
+        ]
+      },
+      {
+        "category": "hidden_zone",
+        "detail": "Hidden-zone bound 0.42 exceeds the readiness envelope.",
+        "severity": "high",
+        "source_artifacts": [
+          "geometry_evidence.json"
+        ]
+      }
+    ]
+  },
+  "capability_envelope": {
+    "bounded_claims": [
+      "Route Traversal: fail - route segment A3-B1 is below required shared-traffic clearance.",
+      "Reach and Manipulation: conditional - two manipulation targets remain unverifiable."
+    ],
+    "evidence_gaps": [
+      {
+        "category": "hidden_zone",
+        "detail": "Hidden-zone bound 0.42 exceeds the readiness envelope."
+      }
+    ],
+    "measurements": {
+      "minimum_route_width_m": 2.4
+    },
+    "metric_ready": true
+  },
+  "human_actions_required": [
+    {
+      "action": "Approve targeted recapture for the west aisle hidden zone.",
+      "owner": "human_reviewer",
+      "reason": "Geometry evidence is incomplete.",
+      "priority": "P0",
+      "required": true
+    },
+    {
+      "action": "Review shared-traffic clearance with site safety lead.",
+      "owner": "site_owner",
+      "reason": "Primary route is below required shared-traffic clearance.",
+      "priority": "P0",
+      "required": true
+    }
+  ],
+  "readiness_decision": {
+    "confidence": 0.71,
+    "status": "not_ready_yet"
+  },
+  "recapture_plan": {
+    "required": true,
+    "steps": [
+      {
+        "detail": "Capture the west aisle hidden zone with metric-grade geometry coverage.",
+        "order": 1,
+        "preferred_capture_mode": "iphone_arkit_lidar"
+      }
+    ]
+  },
+  "standards_notes": {
+    "entries": [
+      {
+        "citation": "ANSI/RIA R15.08",
+        "summary": "Shared operating space needs explicit clearance analysis.",
+        "title": "Shared traffic clearance"
+      }
+    ],
+    "source": "curated_local_corpus"
+  },
+  "scene_id": "scene-report-1"
+}

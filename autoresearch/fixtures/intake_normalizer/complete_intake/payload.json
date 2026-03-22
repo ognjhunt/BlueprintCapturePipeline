@@ -1,0 +1,48 @@
+{
+  "capture_id": "capture-complete",
+  "capture_package_manifest": {
+    "capture_date": "2026-03-15",
+    "capture_duration": 742,
+    "capture_type": "iphone_walkthrough",
+    "device_info": {
+      "device_model": "iPhone 15 Pro"
+    },
+    "modalities": [
+      "video",
+      "lidar"
+    ]
+  },
+  "scene_id": "scene-complete",
+  "site_intake": {
+    "constraints": {
+      "known_blockers": [
+        "West camera mast blocks one corner view"
+      ],
+      "privacy_restrictions": [
+        "No faces in final artifacts"
+      ],
+      "security_restrictions": [
+        "Escort required after 18:00"
+      ]
+    },
+    "task_context": {
+      "adjacent_systems": [
+        "AMR arrival station",
+        "Outbound conveyor B3"
+      ],
+      "non_routine_modes": [
+        "Jam clearing at conveyor merge"
+      ],
+      "owner": "site_ops_lead",
+      "people_traffic_notes": [
+        "Forklift cross-traffic enters from the west aisle"
+      ],
+      "success_criteria": [
+        "Route clearance verified for all primary workflow segments",
+        "Pickup and placement targets remain visible and reachable"
+      ],
+      "task_statement": "Pick totes from AMR arrival station and place on outbound conveyor belt B3",
+      "task_zone": "Pick Module 3"
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "capture_id": "capture-missing",
+  "capture_package_manifest": {
+    "capture_date": "2026-03-16",
+    "capture_duration": 420,
+    "capture_type": "glasses_walkthrough",
+    "device_info": {
+      "device_model": "Meta Glasses"
+    },
+    "modalities": [
+      "video"
+    ]
+  },
+  "scene_id": "scene-missing",
+  "site_intake": {
+    "constraints": {
+      "known_blockers": [],
+      "privacy_restrictions": [],
+      "security_restrictions": []
+    },
+    "task_context": {
+      "adjacent_systems": [
+        "Manual pallet staging"
+      ],
+      "non_routine_modes": [],
+      "owner": "",
+      "people_traffic_notes": [
+        "Shared pedestrian path"
+      ],
+      "success_criteria": [],
+      "task_statement": "",
+      "task_zone": ""
+    }
+  }
+}

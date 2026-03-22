@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from .common import (
     PipelineError,
     ensure_dir,
@@ -25,6 +27,20 @@ from .common import (
 from .geometry_sources import load_capture_geometry
 from .geometry_stage import build_geometry_stage_contract
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
+from .site_memory_utils import (
+    aggregate_chunk_summary,
+    clamp01 as _sm_clamp01,
+    effective_pose,
+    fingerprint_similarity as _sm_fingerprint_similarity,
+    geometry_fingerprint,
+    iter_groups,
+    load_embedding,
+    load_jsonl as _sm_load_jsonl,
+    p95 as _sm_p95,
+    transform_translation,
+    visibility_cells_from_record,
+    write_jsonl as _sm_write_jsonl,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +53,8 @@ _MIN_SHARPNESS = 40.0       # Laplacian variance gate
 _PAN_DEDUP_TRAVEL_M = 0.02  # < 2 cm = stationary pan; keep every Nth
 _PAN_DEDUP_STRIDE = 4
 _CELL_SIZE_M = 0.5          # coverage map cell size
+_CHUNK_GAP_SEC = 1.5
+_CHUNK_JUMP_M = 1.25
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +111,19 @@ def run_retrieval_index_stage(
             "site_id": site_id,
         }
 
-    # If per-capture export already exists (and not force_rebuild), skip extraction/embedding
+    # If per-capture export already exists (and not force_rebuild), reuse only if it already carries
+    # the enriched site-memory schema.
+    dense_records: List[Dict[str, Any]]
     if dense_index_path.is_file() and not force_rebuild:
-        dense_records = _load_jsonl(dense_index_path)
-    else:
+        candidate_dense_records = _load_jsonl(dense_index_path)
+        if candidate_dense_records and all(
+            "chunk_id" in row and "geometry_fingerprint" in row for row in candidate_dense_records
+        ):
+            dense_records = candidate_dense_records
+        else:
+            force_rebuild = True
+
+    if not dense_index_path.is_file() or force_rebuild:
         descriptor = _ensure_geometry_for_capture(ctx=ctx, descriptor=descriptor)
         video_source = _resolve_video_source(ctx, descriptor)
         geometry = load_capture_geometry(context=ctx, descriptor=descriptor)
@@ -107,6 +134,12 @@ def run_retrieval_index_stage(
 
         selected = _select_frames(poses=poses, frames_quality=frames_quality)
         _apply_route_anchor_observations(selected=selected, ctx=ctx, descriptor=descriptor)
+        _assign_chunk_ids(
+            selected=selected,
+            relocalization_events=_normalized_relocalization_events(
+                _read_optional_json(ctx.raw_root / "relocalization_events.json")
+            ),
+        )
         model = embedding_model or _load_dinov3()
         dense_records = _build_dense_records(
             selected=selected,
@@ -139,6 +172,12 @@ def run_retrieval_index_stage(
             dense_records=dense_records,
             coordinate_frame_session_id=str(geometry.get("coordinate_frame_session_id") or ctx.capture_id),
         )
+        _write_dense_export_manifest(
+            export_dir=export_dir,
+            ctx=ctx,
+            geometry_source=str(geometry.get("source") or "unknown"),
+            dense_records=dense_records,
+        )
 
     included = [r for r in dense_records if r.get("included_in_index")]
 
@@ -170,6 +209,9 @@ def run_retrieval_index_stage(
     )
     _update_coverage_map(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
     _write_site_manifest(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
+    _write_site_memory_indices(site_root=site_root, site_index_path=site_index_path, site_id=site_id, storage_root=ctx.storage_root)
+    _write_overlap_graph(site_root=site_root, site_index_path=site_index_path, site_id=site_id, storage_root=ctx.storage_root)
+    _write_retrieval_validation(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
 
     return {
         "status": "completed",
@@ -304,19 +346,7 @@ def _try_resolve_video_path(
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
-    if not path.is_file():
-        return []
-    rows: List[Dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return rows
+    return _sm_load_jsonl(path)
 
 
 def _load_frames_quality_index(frames_path: Path) -> Dict[str, Dict[str, Any]]:
@@ -343,6 +373,36 @@ def _read_optional_json(path: Path) -> Dict[str, Any]:
     except Exception:
         return {}
     return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _normalized_relocalization_events(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = payload.get("relocalization_events") or payload.get("relocalizationEvents")
+    if not isinstance(raw, list):
+        return []
+    events: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        start_t = item.get("start_t_capture_sec", item.get("startTCaptureSec"))
+        end_t = item.get("end_t_capture_sec", item.get("endTCaptureSec"))
+        try:
+            start_value = float(start_t) if start_t is not None else None
+        except (TypeError, ValueError):
+            start_value = None
+        try:
+            end_value = float(end_t) if end_t is not None else None
+        except (TypeError, ValueError):
+            end_value = None
+        if start_value is None and end_value is None:
+            continue
+        events.append(
+            {
+                "start_t_capture_sec": start_value,
+                "end_t_capture_sec": end_value,
+                "frame_count": int(item.get("frame_count") or item.get("frameCount") or 0),
+            }
+        )
+    return events
 
 
 def _descriptor_zone_id(descriptor: Dict[str, Any]) -> Optional[str]:
@@ -432,7 +492,7 @@ def _anchor_ids(raw_value: Any) -> List[str]:
 
 
 def _clamp01(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
+    return _sm_clamp01(value, default=0.0)
 
 
 def _world_mapping_confidence(status: Any) -> float:
@@ -461,6 +521,28 @@ def _capture_confidence(entry: Dict[str, Any]) -> float:
         sharpness_score = 0.75
     mapping_score = _world_mapping_confidence((quality or {}).get("world_mapping_status"))
     return round((pose_score + sharpness_score + mapping_score) / 3.0, 4)
+
+
+def _staticness_score(
+    *,
+    entry: Dict[str, Any],
+    geometry_fingerprint: Dict[str, Any],
+) -> float:
+    retrieval_signals = entry.get("retrieval_signals") if isinstance(entry.get("retrieval_signals"), dict) else {}
+    quality = entry.get("quality") if isinstance(entry.get("quality"), dict) else {}
+    pose_score = _capture_confidence(entry)
+    mapping_score = _world_mapping_confidence(quality.get("world_mapping_status"))
+    geometry_valid_fraction = float(geometry_fingerprint.get("valid_fraction") or 0.0)
+    plane_support = float(geometry_fingerprint.get("plane_support_ratio") or 0.0)
+    anchor_density = _sm_clamp01(float(retrieval_signals.get("route_anchor_density") or 0.0) / 2.0, default=0.0)
+    score = (
+        (0.30 * pose_score)
+        + (0.20 * mapping_score)
+        + (0.20 * geometry_valid_fraction)
+        + (0.15 * plane_support)
+        + (0.15 * anchor_density)
+    )
+    return round(_sm_clamp01(score, default=0.0), 4)
 
 
 def _annotate_retrieval_signals(
@@ -570,6 +652,68 @@ def _apply_route_anchor_observations(
         route_anchors=route_anchors,
         checkpoint_events=checkpoint_events,
     )
+
+
+def _assign_chunk_ids(
+    *,
+    selected: List[Dict[str, Any]],
+    relocalization_events: List[Dict[str, Any]],
+) -> None:
+    if not selected:
+        return
+
+    chunk_index = 0
+    previous_time: Optional[float] = None
+    previous_pos: Optional[Tuple[float, float, float]] = None
+    relocalization_boundaries: List[Tuple[float, float]] = []
+    for event in relocalization_events:
+        start_t = event.get("start_t_capture_sec")
+        end_t = event.get("end_t_capture_sec")
+        if start_t is None and end_t is None:
+            continue
+        relocalization_boundaries.append(
+            (
+                float(start_t if start_t is not None else end_t),
+                float(end_t if end_t is not None else start_t),
+            )
+        )
+
+    for index, entry in enumerate(selected):
+        current_time = float(entry.get("t_capture_sec") or 0.0)
+        T = entry.get("T_world_camera")
+        position = (_mat_tx(T), _mat_ty(T), _mat_tz(T))
+        start_new_chunk = index == 0
+
+        if previous_time is not None and (current_time - previous_time) > _CHUNK_GAP_SEC:
+            start_new_chunk = True
+        if previous_pos is not None and _euclidean(position, previous_pos) > _CHUNK_JUMP_M:
+            start_new_chunk = True
+        if previous_time is not None:
+            for start_t, end_t in relocalization_boundaries:
+                if previous_time <= start_t <= current_time or previous_time <= end_t <= current_time:
+                    start_new_chunk = True
+                    break
+
+        if start_new_chunk and index > 0:
+            chunk_index += 1
+
+        boundary_reason = None
+        if start_new_chunk:
+            if index == 0:
+                boundary_reason = "capture_start"
+            elif previous_time is not None and (current_time - previous_time) > _CHUNK_GAP_SEC:
+                boundary_reason = "temporal_gap"
+            elif previous_pos is not None and _euclidean(position, previous_pos) > _CHUNK_JUMP_M:
+                boundary_reason = "spatial_jump"
+            else:
+                boundary_reason = "relocalization_boundary"
+
+        entry["chunk_id"] = f"chunk_{chunk_index:03d}"
+        entry["chunk_order"] = chunk_index
+        entry["chunk_boundary_reason"] = boundary_reason
+
+        previous_time = current_time
+        previous_pos = position
 
 
 def _parse_frame_intrinsics(row: Dict[str, Any]) -> Optional[Dict[str, float]]:
@@ -758,28 +902,49 @@ def _build_dense_records(
             frame_id = entry["frame_id"]
             fq = entry.pop("_fq", {})  # remove temp key
             intrinsics = _parse_frame_intrinsics(fq)
+            depth_uri = _artifact_uri_from_path(fq.get("depth_path"), ctx) or _arkit_depth_uri(frame_id, ctx)
+            confidence_uri = _artifact_uri_from_path(fq.get("confidence_path"), ctx) or _arkit_confidence_uri(frame_id, ctx)
+            fingerprint = geometry_fingerprint(
+                depth_path=fq.get("depth_path"),
+                confidence_path=fq.get("confidence_path"),
+                storage_root=ctx.storage_root,
+                intrinsics=intrinsics,
+            )
+            retrieval_signals = dict(entry.get("retrieval_signals") or {})
+            staticness_score = _staticness_score(entry=entry, geometry_fingerprint=fingerprint)
+            retrieval_signals["staticness_score"] = staticness_score
+            retrieval_signals["dynamic_penalty"] = round(1.0 - staticness_score, 4)
 
             record: Dict[str, Any] = {
                 "frame_id": frame_id,
                 "frame_index": entry.get("frame_index"),
                 "t_capture_sec": entry["t_capture_sec"],
                 "T_world_camera": entry["T_world_camera"],
+                "T_site_camera": None,
                 "intrinsics": intrinsics,
                 "geometry_source": geometry_source,
                 "quality": entry["quality"],
                 "anchor_observations": entry["anchor_observations"],
-                "retrieval_signals": dict(entry.get("retrieval_signals") or {}),
+                "retrieval_signals": retrieval_signals,
                 "zone_id": entry["zone_id"],
+                "chunk_id": entry.get("chunk_id"),
+                "chunk_order": entry.get("chunk_order"),
+                "chunk_boundary_reason": entry.get("chunk_boundary_reason"),
                 "privacy_source": privacy_source,
+                "staticness_score": staticness_score,
+                "geometry_fingerprint": fingerprint,
+                "visibility_cells": [],
                 "included_in_index": False,
                 "frame_uri": None,
                 "embedding_uri": None,
-                "depth_uri": _artifact_uri_from_path(fq.get("depth_path"), ctx) or _arkit_depth_uri(frame_id, ctx),
-                "confidence_uri": _artifact_uri_from_path(fq.get("confidence_path"), ctx) or _arkit_confidence_uri(frame_id, ctx),
+                "embedding_model_id": _DINOV3_MODEL_ID,
+                "depth_uri": depth_uri,
+                "confidence_uri": confidence_uri,
             }
 
             if extracted[i] is None:
                 record["exclude_reason"] = "ffmpeg_failed"
+                record["visibility_cells"] = visibility_cells_from_record(record, cell_size_m=_CELL_SIZE_M)
                 records.append(record)
                 continue
 
@@ -794,6 +959,7 @@ def _build_dense_records(
             else:
                 record["exclude_reason"] = "embedding_failed"
 
+            record["visibility_cells"] = visibility_cells_from_record(record, cell_size_m=_CELL_SIZE_M)
             records.append(record)
 
     return records
@@ -950,8 +1116,45 @@ def _save_embedding(embedding: Any, path: Path) -> None:
 
 def _write_dense_index(path: Path, records: List[Dict[str, Any]]) -> None:
     ensure_dir(path.parent)
-    lines = [json.dumps(r, separators=(",", ":")) for r in records]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _sm_write_jsonl(path, records)
+
+
+def _write_dense_export_manifest(
+    *,
+    export_dir: Path,
+    ctx: LocalCaptureContext,
+    geometry_source: str,
+    dense_records: List[Dict[str, Any]],
+) -> None:
+    chunks = iter_groups(dense_records, "chunk_id")
+    write_json(
+        export_dir / "dense_export_manifest.json",
+        {
+            "schema_version": "v2",
+            "capture_id": ctx.capture_id,
+            "scene_id": ctx.scene_id,
+            "generated_at": utc_now_iso(),
+            "geometry_source": geometry_source,
+            "record_count": len(dense_records),
+            "included_record_count": sum(1 for row in dense_records if row.get("included_in_index")),
+            "chunk_count": len(chunks),
+            "schema_fields": [
+                "reference_id",
+                "chunk_id",
+                "T_world_camera",
+                "T_site_camera",
+                "intrinsics",
+                "embedding_uri",
+                "geometry_fingerprint",
+                "staticness_score",
+                "visibility_cells",
+            ],
+            "artifacts": {
+                "dense_index": str((export_dir / "dense_index.jsonl").resolve()),
+                "dense_pose_alignment": str((export_dir / "dense_pose_alignment.json").resolve()),
+            },
+        },
+    )
 
 
 def _write_pose_alignment_summary(
@@ -979,7 +1182,12 @@ def _write_pose_alignment_summary(
     times = [r["t_capture_sec"] for r in included]
     duration_sec = (max(times) - min(times)) if len(times) >= 2 else 0.0
     pose_match_rate = len(included) / total if total else 0.0
-    p95_gap = _p95(distances) if distances else 0.0
+    p95_gap = _sm_p95(distances) if distances else 0.0
+    chunk_count = len({str(r.get("chunk_id") or "") for r in included if str(r.get("chunk_id") or "").strip()})
+    staticness = [
+        float(r.get("staticness_score") or 0.0)
+        for r in included
+    ]
 
     write_json(export_dir / "dense_pose_alignment.json", {
         "schema_version": "v1",
@@ -992,6 +1200,8 @@ def _write_pose_alignment_summary(
         "p95_pose_gap_m": round(p95_gap, 4),
         "total_path_length_m": round(path_length_m, 2),
         "session_duration_sec": round(duration_sec, 1),
+        "chunk_count": chunk_count,
+        "mean_staticness_score": round(sum(staticness) / float(len(staticness) or 1), 4),
         "coordinate_frame_session_id": coordinate_frame_session_id,
         "site_frame_transform": None,
         "generated_at": utc_now_iso(),
@@ -1083,15 +1293,19 @@ def _append_to_site_reference_index(
                 "pass_index": pass_index,
                 "capture_session_id": capture_session_id,
                 "coordinate_frame_session_id": coordinate_frame_session_id,
+                "chunk_id": record.get("chunk_id"),
+                "chunk_order": record.get("chunk_order"),
                 "site_frame_transform": None,
                 "frame_id": record.get("frame_id"),
                 "frame_index": record.get("frame_index"),
                 "t_capture_sec": record.get("t_capture_sec"),
                 "T_world_camera": record.get("T_world_camera"),
+                "T_site_camera": None,
                 "intrinsics": record.get("intrinsics"),
                 "depth_uri": record.get("depth_uri"),
                 "confidence_uri": record.get("confidence_uri"),
                 "embedding_uri": record.get("embedding_uri"),
+                "embedding_model_id": record.get("embedding_model_id") or _DINOV3_MODEL_ID,
                 "frame_uri": record.get("frame_uri"),
                 "thumbnail_uri": record.get("thumbnail_uri"),
                 "privacy_source": record.get("privacy_source", "raw_video"),
@@ -1099,6 +1313,9 @@ def _append_to_site_reference_index(
                 "quality": record.get("quality"),
                 "anchor_observations": record.get("anchor_observations") or [],
                 "retrieval_signals": record.get("retrieval_signals") or {},
+                "staticness_score": record.get("staticness_score"),
+                "geometry_fingerprint": record.get("geometry_fingerprint") or {},
+                "visibility_cells": record.get("visibility_cells") or [],
                 "zone_id": record.get("zone_id"),
                 "captured_at": captured_at,
                 "indexed_at": now,
@@ -1125,24 +1342,41 @@ def _update_coverage_map(
     cells: Dict[str, Dict[str, Any]] = {}
 
     for rec in records:
-        T = rec.get("T_world_camera")
+        T = effective_pose(rec)
         if T is None:
             continue
-        tx = _mat_tx(T)
-        tz = _mat_tz(T)
+        tx = float(T[0, 3])
+        tz = float(T[2, 3])
         quality = rec.get("quality") or {}
         sharpness = float(quality.get("sharpness_score") or 0.0)
         capture_id = rec.get("capture_id", "")
+        staticness_score = float(rec.get("staticness_score") or 0.0)
 
         cell_x = int(math.floor(tx / _CELL_SIZE_M))
         cell_z = int(math.floor(tz / _CELL_SIZE_M))
         key = f"{cell_x},{cell_z}"
         if key not in cells:
-            cells[key] = {"frame_count": 0, "capture_ids": [], "sharpness_sum": 0.0}
+            cells[key] = {
+                "frame_count": 0,
+                "capture_ids": [],
+                "sharpness_sum": 0.0,
+                "staticness_sum": 0.0,
+            }
         cells[key]["frame_count"] += 1
         if capture_id and capture_id not in cells[key]["capture_ids"]:
             cells[key]["capture_ids"].append(capture_id)
         cells[key]["sharpness_sum"] += sharpness
+        cells[key]["staticness_sum"] += staticness_score
+
+        for visible_key in rec.get("visibility_cells") or []:
+            if visible_key not in cells:
+                cells[visible_key] = {
+                    "frame_count": 0,
+                    "capture_ids": [],
+                    "sharpness_sum": 0.0,
+                    "staticness_sum": 0.0,
+                    "visible_only": True,
+                }
 
     dense_threshold = 5
     covered = len(cells)
@@ -1176,7 +1410,9 @@ def _update_coverage_map(
             k: {
                 "frame_count": v["frame_count"],
                 "capture_ids": v["capture_ids"],
-                "mean_sharpness": round(v["sharpness_sum"] / v["frame_count"], 1),
+                "mean_sharpness": round(v["sharpness_sum"] / v["frame_count"], 1) if v["frame_count"] else 0.0,
+                "mean_staticness": round(v["staticness_sum"] / v["frame_count"], 4) if v["frame_count"] else 0.0,
+                "visible_only": bool(v.get("visible_only", False)),
             }
             for k, v in cells.items()
         },
@@ -1211,6 +1447,7 @@ def _write_site_manifest(
                 "scene_id": rec.get("scene_id"),
                 "captured_at": rec.get("captured_at"),
                 "frame_count": 0,
+                "chunk_count": 0,
                 "coordinate_frame_session_id": rec.get("coordinate_frame_session_id"),
                 "site_frame_aligned": rec.get("site_frame_transform") is not None,
                 "path_length_m": 0.0,
@@ -1223,16 +1460,18 @@ def _write_site_manifest(
         by_capture.setdefault(rec.get("capture_id", ""), []).append(rec)
     for cid, recs in by_capture.items():
         path = 0.0
-        last_pos: Optional[Tuple[float, float, float]] = None
+        last_pos: Optional[np.ndarray] = None
+        chunk_ids = {str(r.get("chunk_id") or "") for r in recs if str(r.get("chunk_id") or "").strip()}
         for r in sorted(recs, key=lambda x: x.get("t_capture_sec", 0)):
-            T = r.get("T_world_camera")
+            T = effective_pose(r)
             if T is None:
                 continue
-            pos: Tuple[float, float, float] = (_mat_tx(T), _mat_ty(T), _mat_tz(T))
+            pos = transform_translation(T)
             if last_pos is not None:
-                path += _euclidean(pos, last_pos)
+                path += float(np.linalg.norm(pos - last_pos))
             last_pos = pos
         captures_seen[cid]["path_length_m"] = round(path, 2)
+        captures_seen[cid]["chunk_count"] = len(chunk_ids)
 
     # Read coverage summary if available
     coverage_summary: Dict[str, Any] = {}
@@ -1260,10 +1499,11 @@ def _write_site_manifest(
             pass
 
     write_json(site_root / "site_reference_manifest.json", {
-        "schema_version": "v1",
+        "schema_version": "v2",
         "site_id": site_id,
         "total_reference_frames": len(records),
         "capture_count": len(captures_seen),
+        "chunk_count": len({str(r.get("chunk_id") or "") for r in records if str(r.get("chunk_id") or "").strip()}),
         "captures": list(captures_seen.values()),
         "coverage_summary": coverage_summary,
         "last_updated": utc_now_iso(),
@@ -1271,6 +1511,214 @@ def _write_site_manifest(
             r.get("site_frame_transform") is not None for r in records
         ),
     })
+
+
+def _write_site_memory_indices(
+    *,
+    site_root: Path,
+    site_index_path: Path,
+    site_id: str,
+    storage_root: Path,
+) -> None:
+    records = _load_jsonl(site_index_path)
+    if not records:
+        return
+
+    indices_root = site_root / "indices"
+    ensure_dir(indices_root)
+
+    visual_rows: List[Dict[str, Any]] = []
+    geometry_rows: List[Dict[str, Any]] = []
+    anchor_index: Dict[str, Dict[str, Any]] = {}
+    zone_index: Dict[str, Dict[str, Any]] = {}
+
+    for record in records:
+        reference_id = str(record.get("reference_id") or "")
+        chunk_id = str(record.get("chunk_id") or "")
+        if record.get("embedding_uri"):
+            visual_rows.append(
+                {
+                    "reference_id": reference_id,
+                    "chunk_id": chunk_id,
+                    "embedding_uri": record.get("embedding_uri"),
+                    "staticness_score": record.get("staticness_score"),
+                    "site_frame_aligned": record.get("site_frame_transform") is not None,
+                }
+            )
+        geometry_rows.append(
+            {
+                "reference_id": reference_id,
+                "chunk_id": chunk_id,
+                "geometry_fingerprint": record.get("geometry_fingerprint") or {},
+                "visibility_cells": record.get("visibility_cells") or [],
+            }
+        )
+        for anchor_id in _anchor_ids(record.get("anchor_observations")):
+            payload = anchor_index.setdefault(anchor_id, {"reference_ids": [], "chunk_ids": []})
+            if reference_id and reference_id not in payload["reference_ids"]:
+                payload["reference_ids"].append(reference_id)
+            if chunk_id and chunk_id not in payload["chunk_ids"]:
+                payload["chunk_ids"].append(chunk_id)
+        zone_id = str(record.get("zone_id") or "").strip()
+        if zone_id:
+            payload = zone_index.setdefault(zone_id, {"reference_ids": [], "chunk_ids": []})
+            if reference_id and reference_id not in payload["reference_ids"]:
+                payload["reference_ids"].append(reference_id)
+            if chunk_id and chunk_id not in payload["chunk_ids"]:
+                payload["chunk_ids"].append(chunk_id)
+
+    write_json(indices_root / "visual_index.json", {"schema_version": "v1", "site_id": site_id, "rows": visual_rows})
+    write_json(indices_root / "geometry_index.json", {"schema_version": "v1", "site_id": site_id, "rows": geometry_rows})
+    write_json(indices_root / "anchor_inverted_index.json", {"schema_version": "v1", "site_id": site_id, "anchors": anchor_index})
+    write_json(indices_root / "zone_index.json", {"schema_version": "v1", "site_id": site_id, "zones": zone_index})
+    write_json(
+        indices_root / "manifest.json",
+        {
+            "schema_version": "v1",
+            "site_id": site_id,
+            "generated_at": utc_now_iso(),
+            "visual_row_count": len(visual_rows),
+            "geometry_row_count": len(geometry_rows),
+            "anchor_count": len(anchor_index),
+            "zone_count": len(zone_index),
+            "storage_root": str(storage_root),
+        },
+    )
+
+
+def _write_overlap_graph(
+    *,
+    site_root: Path,
+    site_index_path: Path,
+    site_id: str,
+    storage_root: Path,
+) -> None:
+    records = _load_jsonl(site_index_path)
+    if not records:
+        return
+
+    chunks = iter_groups(records, "chunk_id")
+    chunk_summaries = {
+        chunk_id: aggregate_chunk_summary(chunk_records, storage_root=storage_root)
+        for chunk_id, chunk_records in chunks.items()
+    }
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+
+    for chunk_id, chunk_records in chunks.items():
+        exemplar = chunk_records[0]
+        summary = chunk_summaries[chunk_id]
+        nodes.append(
+            {
+                "node_id": chunk_id,
+                "node_type": "chunk",
+                "capture_id": exemplar.get("capture_id"),
+                "coordinate_frame_session_id": exemplar.get("coordinate_frame_session_id"),
+                "zone_id": summary.get("zone_id"),
+                "anchor_ids": summary.get("anchor_ids") or [],
+                "record_count": summary.get("record_count"),
+                "staticness_score": summary.get("staticness_score"),
+            }
+        )
+
+    chunk_items = list(chunks.items())
+    for index, (left_chunk_id, left_records) in enumerate(chunk_items):
+        left_summary = chunk_summaries[left_chunk_id]
+        left_centroid = left_summary.get("embedding_centroid")
+        left_geometry = left_summary.get("geometry_fingerprint") or {}
+        left_anchors = set(left_summary.get("anchor_ids") or [])
+        left_zone = str(left_summary.get("zone_id") or "")
+        left_session = str(left_records[0].get("coordinate_frame_session_id") or "")
+        for right_chunk_id, right_records in chunk_items[index + 1 :]:
+            right_summary = chunk_summaries[right_chunk_id]
+            right_centroid = right_summary.get("embedding_centroid")
+            right_geometry = right_summary.get("geometry_fingerprint") or {}
+            right_anchors = set(right_summary.get("anchor_ids") or [])
+            right_zone = str(right_summary.get("zone_id") or "")
+            right_session = str(right_records[0].get("coordinate_frame_session_id") or "")
+
+            score_visual = 0.0
+            if isinstance(left_centroid, np.ndarray) and isinstance(right_centroid, np.ndarray):
+                score_visual = float(np.clip(np.dot(left_centroid, right_centroid), 0.0, 1.0))
+            score_geometry = 0.0
+            if left_geometry and right_geometry:
+                score_geometry = _sm_fingerprint_similarity(left_geometry, right_geometry)
+            shared_anchors = sorted(left_anchors & right_anchors)
+            zone_match = bool(left_zone and left_zone == right_zone)
+            score_topology = 0.0
+            if shared_anchors:
+                score_topology += 0.6
+            if zone_match:
+                score_topology += 0.2
+            if left_session == right_session:
+                score_topology += 0.2
+            total_score = round((0.45 * score_visual) + (0.30 * score_geometry) + (0.25 * min(score_topology, 1.0)), 4)
+            if total_score < 0.2:
+                continue
+            edges.append(
+                {
+                    "edge_id": f"edge_{left_chunk_id}_{right_chunk_id}",
+                    "edge_type": "candidate_overlap",
+                    "from_chunk_id": left_chunk_id,
+                    "to_chunk_id": right_chunk_id,
+                    "from_session_id": left_session,
+                    "to_session_id": right_session,
+                    "score_visual": round(score_visual, 4),
+                    "score_geometry": round(score_geometry, 4),
+                    "score_topology": round(min(score_topology, 1.0), 4),
+                    "total_score": total_score,
+                    "shared_anchor_ids": shared_anchors,
+                    "zone_match": zone_match,
+                    "accepted_for_alignment": False,
+                    "supporting_reference_ids": [
+                        str(item.get("reference_id"))
+                        for item in (left_records[:2] + right_records[:2])
+                        if item.get("reference_id")
+                    ],
+                }
+            )
+
+    write_json(
+        site_root / "site_overlap_graph.json",
+        {
+            "schema_version": "v1",
+            "site_id": site_id,
+            "generated_at": utc_now_iso(),
+            "nodes": nodes,
+            "edges": sorted(edges, key=lambda item: float(item.get("total_score") or 0.0), reverse=True),
+        },
+    )
+
+
+def _write_retrieval_validation(
+    *,
+    site_root: Path,
+    site_index_path: Path,
+    site_id: str,
+) -> None:
+    records = _load_jsonl(site_index_path)
+    if not records:
+        return
+
+    chunk_groups = iter_groups(records, "chunk_id")
+    staticness_scores = [float(record.get("staticness_score") or 0.0) for record in records]
+    geometry_available = sum(1 for record in records if (record.get("geometry_fingerprint") or {}).get("available"))
+    write_json(
+        site_root / "retrieval_validation.json",
+        {
+            "schema_version": "v1",
+            "site_id": site_id,
+            "generated_at": utc_now_iso(),
+            "reference_frame_count": len(records),
+            "chunk_count": len(chunk_groups),
+            "geometry_fingerprint_coverage": round(geometry_available / float(len(records) or 1), 4),
+            "mean_staticness_score": round(sum(staticness_scores) / float(len(staticness_scores) or 1), 4),
+            "aligned_fraction": round(
+                sum(1 for record in records if record.get("site_frame_transform") is not None) / float(len(records) or 1),
+                4,
+            ),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1309,11 +1757,7 @@ def _euclidean(
 
 
 def _p95(values: List[float]) -> float:
-    if not values:
-        return 0.0
-    sorted_vals = sorted(values)
-    idx = max(0, int(len(sorted_vals) * 0.95) - 1)
-    return sorted_vals[idx]
+    return _sm_p95(values)
 
 
 # ---------------------------------------------------------------------------

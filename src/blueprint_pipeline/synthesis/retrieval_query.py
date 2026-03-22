@@ -187,6 +187,11 @@ def _effective_pose(rec: Dict[str, Any]) -> Optional[np.ndarray]:
     If site_frame_transform is set: T_site = site_frame_transform @ T_world_camera_session.
     If not set (unaligned): T_world_camera_session (per-session frame, not comparable cross-session).
     """
+    T_site_camera = rec.get("T_site_camera")
+    if T_site_camera is not None:
+        T_direct = np.array(T_site_camera, dtype=np.float64)
+        if T_direct.shape == (4, 4):
+            return T_direct
     T_raw = rec.get("T_world_camera")
     if T_raw is None:
         return None

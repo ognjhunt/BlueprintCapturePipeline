@@ -64,4 +64,5 @@ tmp/
 # Pipeline run data
 runs/
 local_runs/
+.local_runs/
 uv.lock

@@ -1,0 +1,11 @@
+{
+  "capture_id": "capture-missing",
+  "expected_missing_required_fields": [
+    "workflow",
+    "task_zone",
+    "success_criteria"
+  ],
+  "required_capture_modality": "video_only",
+  "required_status": "needs_human_completion",
+  "scene_id": "scene-missing"
+}
