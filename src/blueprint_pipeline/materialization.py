@@ -976,6 +976,13 @@ def assert_capture_materialization_ready(
 
 
 def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> str:
+    profile = str(manifest.get("capture_profile_id") or context.get("captureProfileId") or "").strip().lower()
+    if profile.startswith("android_"):
+        return "android"
+    if profile.startswith("glasses_"):
+        return "glasses"
+    if profile.startswith("iphone_"):
+        return "iphone"
     for candidate in (
         str(manifest.get("capture_source") or "").strip().lower(),
         str(context.get("captureSource") or "").strip().lower(),
@@ -988,7 +995,7 @@ def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> 
             return "iphone"
         if candidate == "metaglasses":
             return "glasses"
-    return "iphone"
+    return "unknown"
 
 
 def _capture_tier(source: str, manifest: Mapping[str, Any]) -> str:
@@ -1014,13 +1021,29 @@ def _capture_modality(
     explicit = str(context.get("captureModality") or manifest.get("capture_modality") or "").strip().lower()
     if explicit in {
         "iphone_arkit_lidar",
+        "iphone_arkit_non_lidar",
         "iphone_video_only",
+        "android_arcore_depth",
+        "android_arcore_pose_only",
         "glasses_video_only",
+        "glasses_pov",
+        "glasses_pov_companion_phone",
         "glasses_plus_scaffolding",
         "android_video_only",
         "android_plus_scaffolding",
     }:
         return explicit
+    explicit_profile = str(manifest.get("capture_profile_id") or "").strip().lower()
+    if explicit_profile in {
+        "iphone_arkit_lidar",
+        "iphone_arkit_non_lidar",
+        "android_arcore_depth",
+        "android_arcore_pose_only",
+        "android_camera_only",
+        "glasses_pov",
+        "glasses_pov_companion_phone",
+    }:
+        return explicit_profile
     if source == "iphone":
         if has_metric_arkit_bundle or parse_bool(manifest.get("has_lidar"), default=False):
             return "iphone_arkit_lidar"
@@ -1033,7 +1056,7 @@ def _capture_modality(
         return "android_plus_scaffolding"
     if source == "android":
         return "android_video_only"
-    return "iphone_arkit_lidar"
+    return "android_video_only" if source == "android" else "iphone_video_only"
 
 
 def _has_minimum_intake(intake: Mapping[str, Any]) -> bool:
@@ -1133,6 +1156,8 @@ def build_capture_bundle_records(
     uncertainty_priors = _dict_float(context.get("uncertaintyPriors") or manifest.get("uncertainty_priors"))
 
     arkit_root = raw_root / "arkit"
+    arcore_root = raw_root / "arcore"
+    companion_phone_root = raw_root / "companion_phone"
     has_metric_arkit_bundle = bool(
         (arkit_root / "poses.jsonl").is_file()
         and (arkit_root / "intrinsics.json").is_file()
@@ -1150,6 +1175,20 @@ def build_capture_bundle_records(
     arkit_frames_uri = None
     arkit_depth_prefix_uri = None
     arkit_confidence_prefix_uri = None
+    arcore_poses_uri = None
+    arcore_intrinsics_uri = None
+    arcore_frames_uri = None
+    arcore_depth_manifest_uri = None
+    arcore_confidence_manifest_uri = None
+    arcore_depth_prefix_uri = None
+    arcore_confidence_prefix_uri = None
+    arcore_point_cloud_uri = None
+    arcore_planes_uri = None
+    arcore_tracking_state_uri = None
+    arcore_light_estimates_uri = None
+    companion_phone_poses_uri = None
+    companion_phone_intrinsics_uri = None
+    companion_phone_calibration_uri = None
     object_index_uri = None
     motion_log_uri = None
     if (arkit_root / "poses.jsonl").is_file():
@@ -1162,6 +1201,34 @@ def build_capture_bundle_records(
         arkit_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/depth")
     if (arkit_root / "confidence").is_dir():
         arkit_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/confidence")
+    if (arcore_root / "poses.jsonl").is_file():
+        arcore_poses_uri = join_gs_uri(raw_prefix_uri, "arcore/poses.jsonl")
+    if (arcore_root / "session_intrinsics.json").is_file():
+        arcore_intrinsics_uri = join_gs_uri(raw_prefix_uri, "arcore/session_intrinsics.json")
+    if (arcore_root / "frames.jsonl").is_file():
+        arcore_frames_uri = join_gs_uri(raw_prefix_uri, "arcore/frames.jsonl")
+    if (arcore_root / "depth_manifest.json").is_file():
+        arcore_depth_manifest_uri = join_gs_uri(raw_prefix_uri, "arcore/depth_manifest.json")
+    if (arcore_root / "confidence_manifest.json").is_file():
+        arcore_confidence_manifest_uri = join_gs_uri(raw_prefix_uri, "arcore/confidence_manifest.json")
+    if (arcore_root / "depth").is_dir():
+        arcore_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arcore/depth")
+    if (arcore_root / "confidence").is_dir():
+        arcore_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arcore/confidence")
+    if (arcore_root / "point_cloud.jsonl").is_file():
+        arcore_point_cloud_uri = join_gs_uri(raw_prefix_uri, "arcore/point_cloud.jsonl")
+    if (arcore_root / "planes.jsonl").is_file():
+        arcore_planes_uri = join_gs_uri(raw_prefix_uri, "arcore/planes.jsonl")
+    if (arcore_root / "tracking_state.jsonl").is_file():
+        arcore_tracking_state_uri = join_gs_uri(raw_prefix_uri, "arcore/tracking_state.jsonl")
+    if (arcore_root / "light_estimates.jsonl").is_file():
+        arcore_light_estimates_uri = join_gs_uri(raw_prefix_uri, "arcore/light_estimates.jsonl")
+    if (companion_phone_root / "poses.jsonl").is_file():
+        companion_phone_poses_uri = join_gs_uri(raw_prefix_uri, "companion_phone/poses.jsonl")
+    if (companion_phone_root / "session_intrinsics.json").is_file():
+        companion_phone_intrinsics_uri = join_gs_uri(raw_prefix_uri, "companion_phone/session_intrinsics.json")
+    if (companion_phone_root / "calibration.json").is_file():
+        companion_phone_calibration_uri = join_gs_uri(raw_prefix_uri, "companion_phone/calibration.json")
     if (raw_root / "object_index.json").is_file():
         object_index_uri = join_gs_uri(raw_prefix_uri, "object_index.json")
     if (raw_root / "motion.jsonl").is_file():
@@ -1171,7 +1238,8 @@ def build_capture_bundle_records(
         and arkit_intrinsics_uri is not None
         and arkit_depth_prefix_uri is not None
     )
-    geometry_source = "arkit" if arkit_geometry_ready else None
+    arcore_geometry_present = bool(arcore_poses_uri is not None and arcore_intrinsics_uri is not None)
+    geometry_source = "arkit" if arkit_geometry_ready else "arcore" if arcore_geometry_present else None
     pose_alignment = _inspect_pose_alignment(raw_root)
     pose_match_rate = try_parse_float(
         manifest.get("pose_match_rate"),
@@ -1252,6 +1320,7 @@ def build_capture_bundle_records(
         _read_optional_json(raw_root / "checkpoint_events.json")
     )
 
+    capture_capabilities = manifest.get("capture_capabilities") if isinstance(manifest.get("capture_capabilities"), Mapping) else {}
     metadata: Dict[str, Any] = {
         "site_submission_id": f"{scene_id}:{capture_id}",
         "opportunity_id": scene_id,
@@ -1277,6 +1346,8 @@ def build_capture_bundle_records(
         "scaffolding_validation": scaffolding_validation,
         "task_hypothesis": task_hypothesis if task_hypothesis else None,
         "capture_rights": _capture_rights_block(manifest),
+        "capture_profile_id": str(manifest.get("capture_profile_id") or "").strip() or None,
+        "capture_capabilities": dict(capture_capabilities) if isinstance(capture_capabilities, Mapping) else {},
         "capture_orientation": capture_orientation,
         "scene_memory_capture": {
             "continuity_score": 0.9 if raw_video_uri else 0.0,
@@ -1288,6 +1359,18 @@ def build_capture_bundle_records(
                 "arkit_depth": arkit_depth_prefix_uri is not None,
                 "arkit_confidence": arkit_confidence_prefix_uri is not None,
                 "depth_conditioning": arkit_depth_prefix_uri is not None,
+                "camera_pose": arcore_poses_uri is not None,
+                "camera_intrinsics": arcore_intrinsics_uri is not None,
+                "depth": arcore_depth_manifest_uri is not None or arcore_depth_prefix_uri is not None,
+                "depth_confidence": arcore_confidence_manifest_uri is not None or arcore_confidence_prefix_uri is not None,
+                "point_cloud": arcore_point_cloud_uri is not None,
+                "planes": arcore_planes_uri is not None,
+                "tracking_state": arcore_tracking_state_uri is not None,
+                "light_estimate": arcore_light_estimates_uri is not None,
+                "motion": motion_log_uri is not None,
+                "companion_phone_pose": companion_phone_poses_uri is not None,
+                "companion_phone_intrinsics": companion_phone_intrinsics_uri is not None,
+                "companion_phone_calibration": companion_phone_calibration_uri is not None,
             },
             "operator_notes": [],
             "world_model_candidate": _canonical_world_model_candidate(
@@ -1339,6 +1422,8 @@ def build_capture_bundle_records(
         "scene_id": scene_id,
         "capture_id": capture_id,
         "capture_source": source,
+        "capture_profile_id": str(manifest.get("capture_profile_id") or "").strip() or None,
+        "capture_capabilities": dict(capture_capabilities) if isinstance(capture_capabilities, Mapping) else {},
         "capture_tier": tier,
         "capture_modality": modality,
         "evidence_tier": evidence_tier,
@@ -1355,6 +1440,20 @@ def build_capture_bundle_records(
         "arkit_frames_uri": arkit_frames_uri,
         "arkit_depth_prefix_uri": arkit_depth_prefix_uri,
         "arkit_confidence_prefix_uri": arkit_confidence_prefix_uri,
+        "arcore_poses_uri": arcore_poses_uri,
+        "arcore_intrinsics_uri": arcore_intrinsics_uri,
+        "arcore_frames_uri": arcore_frames_uri,
+        "arcore_depth_manifest_uri": arcore_depth_manifest_uri,
+        "arcore_confidence_manifest_uri": arcore_confidence_manifest_uri,
+        "arcore_depth_prefix_uri": arcore_depth_prefix_uri,
+        "arcore_confidence_prefix_uri": arcore_confidence_prefix_uri,
+        "arcore_point_cloud_uri": arcore_point_cloud_uri,
+        "arcore_planes_uri": arcore_planes_uri,
+        "arcore_tracking_state_uri": arcore_tracking_state_uri,
+        "arcore_light_estimates_uri": arcore_light_estimates_uri,
+        "companion_phone_poses_uri": companion_phone_poses_uri,
+        "companion_phone_intrinsics_uri": companion_phone_intrinsics_uri,
+        "companion_phone_calibration_uri": companion_phone_calibration_uri,
         "depth_conditioning": (
             {
                 "status": "available",
@@ -1366,6 +1465,16 @@ def build_capture_bundle_records(
                 "confidence_manifest_uri": None,
             }
             if arkit_depth_prefix_uri
+            else {
+                "status": "available",
+                "source": "arcore",
+                "provider": "arcore",
+                "depth_prefix_uri": arcore_depth_prefix_uri,
+                "confidence_prefix_uri": arcore_confidence_prefix_uri,
+                "depth_manifest_uri": arcore_depth_manifest_uri,
+                "confidence_manifest_uri": arcore_confidence_manifest_uri,
+            }
+            if arcore_depth_manifest_uri or arcore_depth_prefix_uri
             else {}
         ),
         "geometry_source": geometry_source,

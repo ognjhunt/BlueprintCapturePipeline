@@ -91,6 +91,7 @@ def resolve_geometry_source(
     geometry_dir = context.pipeline_root / "geometry"
     geometry_pose_path = geometry_dir / "camera" / "poses.jsonl"
     arkit_pose_path = context.raw_root / "arkit" / "poses.jsonl"
+    arcore_pose_path = context.raw_root / "arcore" / "poses.jsonl"
 
     top_level = str(descriptor.get("geometry_source") or "").strip()
     quality = descriptor.get("quality") if isinstance(descriptor.get("quality"), Mapping) else {}
@@ -99,6 +100,8 @@ def resolve_geometry_source(
         return top_level or quality_source or "video_to_world"
     if arkit_pose_path.is_file():
         return "arkit"
+    if arcore_pose_path.is_file():
+        return top_level or quality_source or "arcore"
     return top_level or quality_source or "unknown"
 
 
@@ -110,6 +113,8 @@ def load_capture_geometry(
     source = resolve_geometry_source(context=context, descriptor=descriptor)
     if source == "arkit":
         return _load_arkit_geometry(context=context, descriptor=descriptor)
+    if source == "arcore":
+        return _load_arcore_geometry(context=context, descriptor=descriptor)
     return _load_pipeline_geometry(context=context, descriptor=descriptor, source=source)
 
 
@@ -244,3 +249,79 @@ def _load_pipeline_geometry(
             or quality.get("world_model_candidate")
         ),
     }
+
+
+def _load_arcore_geometry(
+    *,
+    context: LocalCaptureContext,
+    descriptor: Mapping[str, Any],
+) -> Dict[str, Any]:
+    arcore_root = context.raw_root / "arcore"
+    poses_raw = _load_jsonl(arcore_root / "poses.jsonl")
+    frames_raw = _load_jsonl(arcore_root / "frames.jsonl")
+    intrinsics = read_json(arcore_root / "session_intrinsics.json") if (arcore_root / "session_intrinsics.json").is_file() else {}
+
+    frame_meta: Dict[str, Dict[str, Any]] = {}
+    for idx, row in enumerate(frames_raw):
+        frame_index = _safe_int(row.get("frame_index"), idx)
+        frame_id = _zero_pad_frame_id(row.get("frame_id"), fallback=frame_index)
+        frame_meta[frame_id] = {
+            "frame_index": frame_index,
+            "timestamp_seconds": _safe_float(row.get("t_capture_sec"), _safe_float(row.get("timestamp_seconds"))),
+            "intrinsics_payload": dict(intrinsics) if isinstance(intrinsics, Mapping) else {},
+            "trackingState": row.get("tracking_state", "unknown"),
+            "sharpnessScore": None,
+            "relocalizationEvent": False,
+            "worldMappingStatus": None,
+            "anchorObservations": [],
+            "source_image_path": None,
+            "depth_path": _manifest_relative_path(arcore_root / "depth_manifest.json", "depth_path", frame_id),
+            "confidence_path": _manifest_relative_path(arcore_root / "confidence_manifest.json", "confidence_path", frame_id),
+            "pose_confidence": 1.0 if str(row.get("tracking_state") or "").upper() == "TRACKING" else 0.0,
+        }
+
+    poses: List[Dict[str, Any]] = []
+    for idx, row in enumerate(poses_raw):
+        frame_index = _safe_int(row.get("frame_index"), idx)
+        frame_id = _zero_pad_frame_id(row.get("frame_id"), fallback=frame_index)
+        poses.append(
+            {
+                "frame_id": frame_id,
+                "frame_index": frame_index,
+                "timestamp": _safe_float(row.get("t_capture_sec"), _safe_float(row.get("timestamp_seconds"))),
+                "T_world_camera": row.get("T_world_camera"),
+            }
+        )
+
+    coordinate_frame_session_id = str(
+        descriptor.get("coordinate_frame_session_id")
+        or context.capture_id
+    )
+    quality = descriptor.get("quality") if isinstance(descriptor.get("quality"), Mapping) else {}
+    return {
+        "source": "arcore",
+        "poses": poses,
+        "frame_meta": frame_meta,
+        "intrinsics": dict(intrinsics) if isinstance(intrinsics, Mapping) else {},
+        "coordinate_frame_session_id": coordinate_frame_session_id,
+        "ready_for_world_model": bool(
+            descriptor.get("geometry_ready")
+            or quality.get("geometry_ready")
+            or quality.get("world_model_candidate")
+        ),
+    }
+
+
+def _manifest_relative_path(manifest_path: Path, key: str, frame_id: str) -> Optional[str]:
+    manifest = read_json(manifest_path) if manifest_path.is_file() else {}
+    rows = manifest.get("frames") if isinstance(manifest, Mapping) else None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("frame_id") or "") == frame_id:
+            raw_path = row.get(key)
+            if raw_path:
+                return str(raw_path)
+    return None

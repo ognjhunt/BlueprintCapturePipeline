@@ -178,10 +178,17 @@ def assess_geometry_scale(descriptor: CaptureDescriptor) -> Dict[str, Any]:
     if (
         descriptor.capture_source in {"glasses", "android"}
         or descriptor.capture_modality.startswith("glasses")
-        or descriptor.capture_modality in {"android_video_only", "android_plus_scaffolding"}
+        or descriptor.capture_modality in {
+            "android_video_only",
+            "android_plus_scaffolding",
+            "android_arcore_depth",
+            "android_arcore_pose_only",
+        }
     ):
         if descriptor.capture_modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"}:
             reason = "video_geometry_without_validated_scaffolding"
+        elif descriptor.capture_modality in {"android_arcore_depth", "android_arcore_pose_only"}:
+            reason = "raw_tracking_without_validated_scale"
         else:
             reason = "video_conditioning_only"
         return {

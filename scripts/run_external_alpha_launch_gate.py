@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,32 @@ def _run(cmd: Iterable[str], *, cwd: Path) -> None:
     print(f"[external-alpha-gate] cwd={cwd}")
     print(f"[external-alpha-gate] $ {printable}")
     subprocess.run(list(cmd), cwd=cwd, check=True)
+
+
+def _ensure_extract_frames_dependencies(extract_frames_dir: Path) -> None:
+    if (extract_frames_dir / "node_modules" / ".bin" / "tsc").exists():
+        return
+    _run(["npm", "ci"], cwd=extract_frames_dir)
+
+
+def _resolve_swift_packages(capture_repo: Path, derived_data_path: Path) -> None:
+    cmd = [
+        "xcodebuild",
+        "-resolvePackageDependencies",
+        "-project",
+        "BlueprintCapture.xcodeproj",
+        "-scheme",
+        "BlueprintCapture",
+        "-derivedDataPath",
+        str(derived_data_path),
+    ]
+    try:
+        _run(cmd, cwd=capture_repo)
+    except subprocess.CalledProcessError:
+        source_packages_dir = derived_data_path / "SourcePackages"
+        print(f"[external-alpha-gate] repairing stale Swift package state at {source_packages_dir}")
+        shutil.rmtree(source_packages_dir, ignore_errors=True)
+        _run(cmd, cwd=capture_repo)
 
 
 def _resolve_simulator_name(preferred_name: str, preferred_os: str | None) -> str:
@@ -82,9 +109,12 @@ def main() -> int:
         )
 
     if not args.skip_capture_cloud:
+        _ensure_extract_frames_dependencies(capture_repo / "cloud" / "extract-frames")
         _run(["npm", "test"], cwd=capture_repo / "cloud" / "extract-frames")
 
     if not args.skip_ios:
+        derived_data_path = capture_repo / "build" / "DerivedData"
+        _resolve_swift_packages(capture_repo, derived_data_path)
         simulator_name = _resolve_simulator_name(
             preferred_name=os.getenv("BLUEPRINT_IOS_SIMULATOR_NAME", "iPhone 17 Pro"),
             preferred_os=os.getenv("BLUEPRINT_IOS_SIMULATOR_OS"),
@@ -100,7 +130,7 @@ def main() -> int:
                 "-destination",
                 f"platform=iOS Simulator,name={simulator_name}",
                 "-derivedDataPath",
-                "build/DerivedData",
+                str(derived_data_path),
                 "-only-testing:BlueprintCaptureTests/CaptureBundleAndInferenceTests",
                 "-only-testing:BlueprintCaptureTests/PipelineContractTests",
                 "-only-testing:BlueprintCaptureTests/RuntimeConfigTests",
@@ -109,7 +139,7 @@ def main() -> int:
         )
 
     if not args.skip_android:
-        _run(["./gradlew", "assembleDebug"], cwd=capture_repo / "android")
+        _run(["./gradlew", "testDebugUnitTest", "assembleDebug"], cwd=capture_repo / "android")
 
     if not args.skip_pipeline:
         _run(
