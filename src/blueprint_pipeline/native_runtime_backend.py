@@ -168,13 +168,16 @@ def _find_cosmos_repo() -> Optional[Tuple[Path, Path]]:
         root = Path(candidate).expanduser()
         inf = root / "examples" / "inference.py"
         py = root / ".venv" / "bin" / "python"
-        if (
-            inf.is_file()
-            and py.is_file()
-            and os.access(inf, os.R_OK)
-            and os.access(py, os.X_OK)
-        ):
+        try:
+            if not inf.is_file() or not py.is_file():
+                continue
+            if not os.access(inf, os.R_OK):
+                continue
+            if not os.access(py, os.X_OK):
+                continue
             return root, py
+        except OSError:
+            continue
     return None
 
 
