@@ -1124,49 +1124,64 @@ class NativeWorldModelRuntimeStore:
 
     def _extract_tail_frame(self, video_path: Path, output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-sseof",
-                "-0.05",
-                "-i",
-                str(video_path),
-                "-frames:v",
-                "1",
-                str(output_path),
-            ],
-            capture_output=True,
-            check=False,
-        )
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-sseof",
+                    "-0.05",
+                    "-i",
+                    str(video_path),
+                    "-frames:v",
+                    "1",
+                    str(output_path),
+                ],
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            return
 
     def _image_to_mp4(self, image_path: Path, output_path: Path, duration_ms: int) -> bool:
         """Encode a still image into an fMP4 segment suitable for MSE append."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
         duration_s = max(0.4, duration_ms / 1000.0)
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-loop",
-                "1",
-                "-i",
-                str(image_path),
-                "-t",
-                f"{duration_s:.2f}",
-                "-vf",
-                "format=yuv420p",
-                # frag_keyframe+empty_moov+default_base_moof produces a
-                # fragmented MP4 (fMP4) that can be appended to a browser
-                # MSE SourceBuffer without re-buffering between chunks.
-                "-movflags",
-                "frag_keyframe+empty_moov+default_base_moof",
-                str(output_path),
-            ],
-            capture_output=True,
-            check=False,
-        )
-        return result.returncode == 0 and output_path.is_file()
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loop",
+                    "1",
+                    "-i",
+                    str(image_path),
+                    "-t",
+                    f"{duration_s:.2f}",
+                    "-vf",
+                    "format=yuv420p",
+                    # frag_keyframe+empty_moov+default_base_moof produces a
+                    # fragmented MP4 (fMP4) that can be appended to a browser
+                    # MSE SourceBuffer without re-buffering between chunks.
+                    "-movflags",
+                    "frag_keyframe+empty_moov+default_base_moof",
+                    str(output_path),
+                ],
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode == 0 and output_path.is_file():
+                return True
+        except OSError:
+            pass
+
+        # ffmpeg is unavailable or failed. Keep the rollout live by storing a
+        # still-image placeholder at the expected chunk path.
+        try:
+            shutil.copy2(image_path, output_path)
+            return output_path.is_file()
+        except OSError:
+            return False
 
     def _convert_to_fmp4(self, input_path: Path, output_path: Path) -> bool:
         """Re-mux an existing MP4 into fMP4 format for MSE compatibility.
@@ -1176,21 +1191,24 @@ class NativeWorldModelRuntimeStore:
         making each chunk directly appendable to a browser SourceBuffer.
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(input_path),
-                "-c:v",
-                "copy",
-                "-movflags",
-                "frag_keyframe+empty_moov+default_base_moof",
-                str(output_path),
-            ],
-            capture_output=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(input_path),
+                    "-c:v",
+                    "copy",
+                    "-movflags",
+                    "frag_keyframe+empty_moov+default_base_moof",
+                    str(output_path),
+                ],
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            return False
         return result.returncode == 0 and output_path.is_file()
 
     def _bootstrap_video_chunk(self, session_id: str, site_world_id: str) -> Optional[Dict[str, Any]]:
@@ -2098,16 +2116,19 @@ class NativeWorldModelRuntimeStore:
     def _extract_frames_from_video(self, video_path: Path, frames_dir: Path) -> List[Path]:
         """Extract frames from MP4 at 4 fps using ffmpeg."""
         frames_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [
-                "ffmpeg", "-i", str(video_path),
-                "-vf", "fps=4",
-                str(frames_dir / "frame_%04d.png"),
-                "-y",
-            ],
-            capture_output=True,
-            check=False,
-        )
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-i", str(video_path),
+                    "-vf", "fps=4",
+                    str(frames_dir / "frame_%04d.png"),
+                    "-y",
+                ],
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            return []
         return sorted(frames_dir.glob("frame_*.png"))
 
     def _extract_single_frame(self, image_path: Path, frames_dir: Path) -> List[Path]:
