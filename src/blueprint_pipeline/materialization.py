@@ -686,20 +686,23 @@ def _capture_orientation_from_metadata(
 
 
 def _ffprobe_capture_orientation(video_path: Path) -> Dict[str, Any]:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_streams",
-            str(video_path),
-        ],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_streams",
+                str(video_path),
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+    except OSError:
+        return {}
     if result.returncode != 0:
         return {}
     try:

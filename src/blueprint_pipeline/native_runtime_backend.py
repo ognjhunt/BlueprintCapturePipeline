@@ -168,7 +168,12 @@ def _find_cosmos_repo() -> Optional[Tuple[Path, Path]]:
         root = Path(candidate).expanduser()
         inf = root / "examples" / "inference.py"
         py = root / ".venv" / "bin" / "python"
-        if inf.is_file() and py.is_file():
+        if (
+            inf.is_file()
+            and py.is_file()
+            and os.access(inf, os.R_OK)
+            and os.access(py, os.X_OK)
+        ):
             return root, py
     return None
 
@@ -2279,14 +2284,17 @@ class NativeWorldModelRuntimeStore:
             cmd += ["--lora-checkpoint", str(lora_adapter)]
 
         with log_path.open("w", encoding="utf-8") as lf:
-            result = subprocess.run(
-                cmd,
-                cwd=str(repo_root),
-                env=env,
-                stdout=lf,
-                stderr=subprocess.STDOUT,
-                check=False,
-            )
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=str(repo_root),
+                    env=env,
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            except OSError:
+                return []
 
         if result.returncode != 0 or not output_video.is_file():
             return []

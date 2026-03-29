@@ -1236,16 +1236,20 @@ def _write_thumbnails(
         thumb_path = thumbnails_dir / f"{reference_id}.jpg"
         if thumb_path.is_file():
             continue
-        subprocess.run(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-i", str(src),
-                "-vf", "scale=256:-1",
-                "-q:v", "5",
-                str(thumb_path),
-            ],
-            capture_output=True,
-        )
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(src),
+                    "-vf", "scale=256:-1",
+                    "-q:v", "5",
+                    str(thumb_path),
+                ],
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            continue
 
 
 # ---------------------------------------------------------------------------

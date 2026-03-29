@@ -355,21 +355,24 @@ def _sample_keyframes(
 
 
 def _ffprobe_duration_seconds(video_path: Path) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(video_path),
-        ],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+    except OSError:
+        return 0.0
     if result.returncode != 0:
         return 0.0
     return _safe_float(result.stdout.strip(), 0.0)
@@ -387,24 +390,28 @@ def _extract_keyframe_images(video_path: Optional[Path], keyframes: Sequence[_Ke
         if video_path is None or not video_path.is_file():
             _ensure_png(keyframe.image_path)
             continue
-        proc = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-loglevel",
-                "error",
-                "-ss",
-                f"{max(0.0, keyframe.timestamp):.6f}",
-                "-i",
-                str(video_path),
-                "-frames:v",
-                "1",
-                str(keyframe.image_path),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            proc = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    f"{max(0.0, keyframe.timestamp):.6f}",
+                    "-i",
+                    str(video_path),
+                    "-frames:v",
+                    "1",
+                    str(keyframe.image_path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            _ensure_png(keyframe.image_path)
+            continue
         if proc.returncode != 0 or not keyframe.image_path.is_file():
             _ensure_png(keyframe.image_path)
 
@@ -919,22 +926,26 @@ def _copy_crop(frame_path: Path, crop_path: Path, bbox: Sequence[float]) -> None
     height = max(1, int(round(float(bbox[3]) - float(bbox[1]))))
     left = max(0, int(round(float(bbox[0]))))
     top = max(0, int(round(float(bbox[1]))))
-    proc = subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            str(frame_path),
-            "-vf",
-            f"crop={width}:{height}:{left}:{top}",
-            str(crop_path),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(frame_path),
+                "-vf",
+                f"crop={width}:{height}:{left}:{top}",
+                str(crop_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        shutil.copyfile(frame_path, crop_path)
+        return
     if proc.returncode != 0 or not crop_path.is_file():
         shutil.copyfile(frame_path, crop_path)
 
