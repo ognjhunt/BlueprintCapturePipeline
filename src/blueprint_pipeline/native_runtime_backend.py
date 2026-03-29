@@ -2081,13 +2081,19 @@ class NativeWorldModelRuntimeStore:
                 pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
             ]
             for c in candidates:
-                if c.is_file():
-                    return c
+                try:
+                    if c.is_file():
+                        return c
+                except OSError:
+                    continue
 
         # Global fallback: manual probe output
         fallback = gcs_root / "manual_cosmos_probe_official" / "blueprint_probe.mp4"
-        if fallback.is_file():
-            return fallback
+        try:
+            if fallback.is_file():
+                return fallback
+        except OSError:
+            return None
         return None
 
     def _find_conditioning_frame(self, site_world_id: str) -> Optional[Path]:
@@ -2109,8 +2115,11 @@ class NativeWorldModelRuntimeStore:
                 pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
             ]
             for c in candidates:
-                if c.is_file():
-                    return c
+                try:
+                    if c.is_file():
+                        return c
+                except OSError:
+                    continue
         return None
 
     def _extract_frames_from_video(self, video_path: Path, frames_dir: Path) -> List[Path]:
@@ -2139,7 +2148,10 @@ class NativeWorldModelRuntimeStore:
             img = Image.open(image_path).convert("RGB")
             img.save(frame_out, format="PNG")
         except Exception:
-            shutil.copy2(image_path, frame_out)
+            try:
+                shutil.copy2(image_path, frame_out)
+            except OSError:
+                return []
         return [frame_out] if frame_out.is_file() else []
 
     def _ensure_cosmos_frames(self, session_id: str, site_world_id: str) -> List[Path]:
@@ -2237,8 +2249,11 @@ class NativeWorldModelRuntimeStore:
                 / "pipeline" / "cosmos_training_export" / "checkpoints"
                 / "adapter_model.safetensors"
             )
-            if adapter.is_file():
-                return adapter
+            try:
+                if adapter.is_file():
+                    return adapter
+            except OSError:
+                return None
         return None
 
     def _run_cosmos_inference_sync(
