@@ -47,6 +47,22 @@ def _site_world_payload() -> dict:
     }
 
 
+def _patch_fast_chunk_encoding(monkeypatch, store: NativeWorldModelRuntimeStore) -> None:
+    def fake_image_to_mp4(image_path: Path, output_path: Path, duration_ms: int) -> bool:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(image_path.read_bytes())
+        return True
+
+    def fake_convert_to_fmp4(input_path: Path, output_path: Path) -> bool:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(input_path.read_bytes())
+        return True
+
+    monkeypatch.setattr(store, "_image_to_mp4", fake_image_to_mp4)
+    monkeypatch.setattr(store, "_convert_to_fmp4", fake_convert_to_fmp4)
+    monkeypatch.setattr(store, "_extract_tail_frame", lambda *_args, **_kwargs: None)
+
+
 def test_native_runtime_service_contract_round_trip(tmp_path: Path) -> None:
     store = NativeWorldModelRuntimeStore(
         NativeRuntimeConfig(
@@ -192,6 +208,7 @@ def test_native_runtime_step_session_runs_live_synthesis_when_site_index_exists(
             ws_base_url="ws://127.0.0.1:8791",
         )
     )
+    _patch_fast_chunk_encoding(monkeypatch, store)
     payload = _site_world_payload()
     payload["spec"]["canonical_package_uri"] = "gs://bucket/site-worlds/site-1/canonical.json"
     store.register_site_world_package(**payload)
@@ -570,6 +587,7 @@ def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
             ws_base_url="ws://127.0.0.1:8791",
         )
     )
+    _patch_fast_chunk_encoding(monkeypatch, store)
     payload = _site_world_payload()
     payload["spec"]["canonical_package_uri"] = "gs://bucket/site-worlds/site-1/canonical.json"
     store.register_site_world_package(**payload)
@@ -605,3 +623,56 @@ def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
     assert Path(chunk["refined_media_path"]).is_file()
     assert chunk["provenance"]["refinement_status"] == "completed"
     assert "chunk_refinement_ready" in event_names
+
+
+def test_ensure_cosmos_frames_skips_inaccessible_storage_probes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    monkeypatch.setenv("GCS_ROOT", str(tmp_path / "storage"))
+    monkeypatch.setenv("NATIVE_WORLD_MODEL_ALLOW_PREBUILT_BOOTSTRAP_VIDEO", "1")
+    monkeypatch.setattr(
+        store,
+        "load_site_world",
+        lambda site_world_id: {"scene_id": "scene-1", "capture_id": "capture-1"},
+    )
+
+    original_is_file = Path.is_file
+
+    def flaky_is_file(self: Path) -> bool:
+        path_text = str(self)
+        if "cosmos_single_capture_smoke" in path_text or "manual_cosmos_probe_official" in path_text:
+            raise OSError("storage path inaccessible")
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file, raising=False)
+
+    frames = store._ensure_cosmos_frames("session-1", "siteworld-1")
+
+    assert frames == []
+
+
+def test_extract_single_frame_returns_empty_when_source_is_missing(
+    tmp_path: Path,
+) -> None:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    frames = store._extract_single_frame(
+        tmp_path / "missing-source.jpg",
+        tmp_path / "frames",
+    )
+
+    assert frames == []
+    assert not any((tmp_path / "frames").iterdir())
