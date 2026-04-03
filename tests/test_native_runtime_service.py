@@ -676,3 +676,173 @@ def test_extract_single_frame_returns_empty_when_source_is_missing(
 
     assert frames == []
     assert not any((tmp_path / "frames").iterdir())
+
+
+def test_render_bytes_falls_back_when_latest_render_is_unreadable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    store.register_site_world_package(**_site_world_payload())
+    session = store.create_session(
+        "siteworld-1",
+        robot_profile_id="robot-1",
+        task_id="task-1",
+        scenario_id="scenario-1",
+        start_state_id="start-1",
+    )
+    session_id = session["session_id"]
+    render_path = store._session_dir(session_id) / "live_synth" / "step_00001.png"
+    render_path.parent.mkdir(parents=True, exist_ok=True)
+    render_path.write_bytes(b"not-an-image")
+    state = store.session_state(session_id)
+    state["latest_render_path"] = str(render_path)
+    state["latest_render_source"] = "live_synthesis"
+    state["step_count"] = 1
+    store._store_session_state(session_id, state)
+
+    original_read_bytes = Path.read_bytes
+
+    def flaky_read_bytes(self: Path) -> bytes:
+        if self == render_path:
+            raise OSError("storage path inaccessible")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes, raising=False)
+
+    payload = store.render_bytes(session_id, "head_rgb")
+
+    assert payload.startswith(b"\x89PNG")
+
+
+def test_render_bytes_falls_back_when_cosmos_frame_is_unreadable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    store.register_site_world_package(**_site_world_payload())
+    session = store.create_session(
+        "siteworld-1",
+        robot_profile_id="robot-1",
+        task_id="task-1",
+        scenario_id="scenario-1",
+        start_state_id="start-1",
+    )
+    session_id = session["session_id"]
+    cosmos_frame = store._cosmos_frames_dir(session_id) / "frame_0001.png"
+    cosmos_frame.parent.mkdir(parents=True, exist_ok=True)
+    cosmos_frame.write_bytes(b"not-an-image")
+
+    original_read_bytes = Path.read_bytes
+
+    def flaky_read_bytes(self: Path) -> bytes:
+        if self == cosmos_frame:
+            raise OSError("storage path inaccessible")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes, raising=False)
+
+    payload = store.render_bytes(session_id, "head_rgb")
+
+    assert payload.startswith(b"\x89PNG")
+
+
+def test_explorer_render_falls_back_when_cosmos_frame_is_unreadable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    store.register_site_world_package(**_site_world_payload())
+    session = store.create_session(
+        "siteworld-1",
+        robot_profile_id="robot-1",
+        task_id="task-1",
+        scenario_id="scenario-1",
+        start_state_id="start-1",
+    )
+    session_id = session["session_id"]
+    cosmos_frame = store._cosmos_frames_dir(session_id) / "frame_0001.png"
+    cosmos_frame.parent.mkdir(parents=True, exist_ok=True)
+    cosmos_frame.write_bytes(b"not-an-image")
+
+    original_read_bytes = Path.read_bytes
+
+    def flaky_read_bytes(self: Path) -> bytes:
+        if self == cosmos_frame:
+            raise OSError("storage path inaccessible")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes, raising=False)
+
+    result = store.explorer_render(
+        session_id,
+        camera_id="head_rgb",
+        pose={"x": 1.0, "y": 0.0, "z": 0.0, "yaw": 0.0, "pitch": 0.0},
+        viewport_width=None,
+        viewport_height=None,
+        refine_mode=None,
+    )
+
+    frame_path = Path(result["frame_path"])
+    assert result["status"] == "completed"
+    assert frame_path.is_file()
+    assert frame_path.read_bytes().startswith(b"\x89PNG")
+
+
+def test_explorer_frame_bytes_falls_back_when_saved_frame_is_unreadable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    store.register_site_world_package(**_site_world_payload())
+    session = store.create_session(
+        "siteworld-1",
+        robot_profile_id="robot-1",
+        task_id="task-1",
+        scenario_id="scenario-1",
+        start_state_id="start-1",
+    )
+    session_id = session["session_id"]
+    frame_path = store._session_dir(session_id) / "explorer_frames" / "head_rgb.png"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    frame_path.write_bytes(b"not-an-image")
+    state = store.session_state(session_id)
+    state["site_world_id"] = ""
+    store._store_session_state(session_id, state)
+
+    original_read_bytes = Path.read_bytes
+
+    def flaky_read_bytes(self: Path) -> bytes:
+        if self == frame_path:
+            raise OSError("storage path inaccessible")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes, raising=False)
+
+    payload = store.explorer_frame_bytes(session_id, "head_rgb")
+
+    assert payload.startswith(b"\x89PNG")

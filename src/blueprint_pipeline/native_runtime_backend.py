@@ -50,6 +50,13 @@ def _json_read(path: Path) -> Dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+def _read_bytes_if_available(path: Path) -> Optional[bytes]:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -1272,8 +1279,6 @@ class NativeWorldModelRuntimeStore:
             if rollout.get("buffered_chunk_ids"):
                 return
             chunk = self._bootstrap_video_chunk(session_id, site_world_id)
-            latest_state = self._load_session_state(session_id)
-            latest_rollout = self._ensure_rollout(latest_state)
             if chunk is None:
                 # Acquire state lock so this write is serialized with step_session
                 # and _synthesize_step_async — prevents clobbering pending_step_index.
@@ -2407,7 +2412,9 @@ class NativeWorldModelRuntimeStore:
             state = self._load_session_state(session_id)
             live_render = self._latest_render_path(state)
             if live_render is not None:
-                return live_render.read_bytes()
+                live_render_bytes = _read_bytes_if_available(live_render)
+                if live_render_bytes is not None:
+                    return live_render_bytes
 
         # 2. Pre-built Cosmos video frames (bootstrap path)
         site_world_id = str(state.get("site_world_id") or "")
@@ -2439,7 +2446,9 @@ class NativeWorldModelRuntimeStore:
                             render_source="cosmos_frames",
                         )
                         self._store_session_state(session_id, state)
-                return selected.read_bytes()
+                selected_bytes = _read_bytes_if_available(selected)
+                if selected_bytes is not None:
+                    return selected_bytes
 
         return self._render_png(session_id, camera_id)
 
@@ -2454,18 +2463,20 @@ class NativeWorldModelRuntimeStore:
             chunk = self._chunk_record(rollout, selected_chunk_id) if selected_chunk_id else None
         media_path = Path(str(chunk.get("media_path") or "").strip()) if chunk else None
         if media_path and media_path.is_file():
-            return {
-                "content": media_path.read_bytes(),
-                "media_type": str(chunk.get("media_type") or "video/mp4"),
-                "headers": {
-                    "Cache-Control": "no-store",
-                    "X-Blueprint-Render-Source": str(chunk.get("render_source") or "runtime-video-chunk"),
-                    "X-Blueprint-Media-Status": str(rollout.get("status") or "playing"),
-                    "X-Blueprint-Chunk-Id": selected_chunk_id,
-                    "X-Blueprint-Presentation-Mode": str(rollout.get("presentation_mode") or ""),
-                    "X-Blueprint-Refinement-Status": str(chunk.get("refinement_status") or rollout.get("refinement_status") or ""),
-                },
-            }
+            media_bytes = _read_bytes_if_available(media_path)
+            if media_bytes is not None:
+                return {
+                    "content": media_bytes,
+                    "media_type": str(chunk.get("media_type") or "video/mp4"),
+                    "headers": {
+                        "Cache-Control": "no-store",
+                        "X-Blueprint-Render-Source": str(chunk.get("render_source") or "runtime-video-chunk"),
+                        "X-Blueprint-Media-Status": str(rollout.get("status") or "playing"),
+                        "X-Blueprint-Chunk-Id": selected_chunk_id,
+                        "X-Blueprint-Presentation-Mode": str(rollout.get("presentation_mode") or ""),
+                        "X-Blueprint-Refinement-Status": str(chunk.get("refinement_status") or rollout.get("refinement_status") or ""),
+                    },
+                }
         placeholder = self._render_png(session_id, camera_id)
         return {
             "content": placeholder,
@@ -2498,16 +2509,18 @@ class NativeWorldModelRuntimeStore:
         frame_path = frame_dir / f"{camera_id}.png"
         live_render = self._latest_render_path(state)
         if live_render is not None:
-            frame_path.write_bytes(live_render.read_bytes())
-            return {
-                "status": "completed",
-                "session_id": session_id,
-                "camera_id": camera_id,
-                "pose": dict(pose),
-                "refine_mode": refine_mode,
-                "frame_path": str(frame_path.resolve()),
-                "runtime_kind": "native_world_model",
-            }
+            live_render_bytes = _read_bytes_if_available(live_render)
+            if live_render_bytes is not None:
+                frame_path.write_bytes(live_render_bytes)
+                return {
+                    "status": "completed",
+                    "session_id": session_id,
+                    "camera_id": camera_id,
+                    "pose": dict(pose),
+                    "refine_mode": refine_mode,
+                    "frame_path": str(frame_path.resolve()),
+                    "runtime_kind": "native_world_model",
+                }
 
         # Try Cosmos frames first
         site_world_id = str(state.get("site_world_id") or "")
@@ -2517,7 +2530,7 @@ class NativeWorldModelRuntimeStore:
             frames = self._ensure_cosmos_frames(session_id, site_world_id)
             if frames:
                 idx = min(step_count, len(frames) - 1)
-                cosmos_bytes = frames[idx].read_bytes()
+                cosmos_bytes = _read_bytes_if_available(frames[idx])
 
         if cosmos_bytes:
             frame_path.write_bytes(cosmos_bytes)
@@ -2548,7 +2561,9 @@ class NativeWorldModelRuntimeStore:
     def explorer_frame_bytes(self, session_id: str, camera_id: str) -> bytes:
         frame_path = self._session_dir(session_id) / "explorer_frames" / f"{camera_id}.png"
         if frame_path.is_file():
-            return frame_path.read_bytes()
+            frame_bytes = _read_bytes_if_available(frame_path)
+            if frame_bytes is not None:
+                return frame_bytes
         return self.render_bytes(session_id, camera_id)
 
     def drain_media_events(self, session_id: str) -> List[Dict[str, Any]]:
