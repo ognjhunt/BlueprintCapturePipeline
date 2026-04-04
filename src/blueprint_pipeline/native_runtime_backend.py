@@ -1247,6 +1247,17 @@ class NativeWorldModelRuntimeStore:
                     "duration_ms": self._rollout_defaults()["chunk_duration_ms"],
                     "tail_path": str(tail_path.resolve()) if tail_path.is_file() else None,
                 }
+            # ffmpeg unavailable — deliver the conditioning frame as PNG
+            return {
+                "chunk_id": "chunk-0000",
+                "chunk_index": 0,
+                "status": "ready",
+                "media_path": str(cond_frame.resolve()),
+                "media_type": "image/png",
+                "render_source": "bootstrap_conditioning_frame",
+                "duration_ms": self._rollout_defaults()["chunk_duration_ms"],
+                "tail_path": None,
+            }
         if cosmos_repo and cond_frame:
             frames_dir = self._cosmos_frames_dir(session_id)
             _ = self._run_cosmos_inference_sync(
@@ -1418,16 +1429,23 @@ class NativeWorldModelRuntimeStore:
                 if str(result.get("video_path") or "").strip()
                 else refined_png.with_suffix(".mp4")
             )
+            refinement_is_png = False
             if not refined_video_path.is_file():
-                if not refined_png.is_file() or not self._image_to_mp4(
+                if not refined_png.is_file():
+                    raise RuntimeError(str(result.get("reason") or "refined_video_chunk_generation_failed"))
+                if not self._image_to_mp4(
                     refined_png,
                     refined_video_path,
                     int(self._rollout_defaults().get("chunk_duration_ms") or 1200),
                 ):
-                    raise RuntimeError(str(result.get("reason") or "refined_video_chunk_generation_failed"))
-            refined_fmp4_path = refined_video_path.with_stem(refined_video_path.stem + "_fmp4")
-            if self._convert_to_fmp4(refined_video_path, refined_fmp4_path):
-                refined_video_path = refined_fmp4_path
+                    # ffmpeg unavailable — use PNG for the refinement output
+                    refinement_is_png = True
+                    refined_video_path = refined_png
+
+            if not refinement_is_png:
+                refined_fmp4_path = refined_video_path.with_stem(refined_video_path.stem + "_fmp4")
+                if self._convert_to_fmp4(refined_video_path, refined_fmp4_path):
+                    refined_video_path = refined_fmp4_path
             refinement_duration_ms = max(0, _utc_now_ms() - refinement_started_at_ms)
 
             promoted = False
@@ -1626,19 +1644,31 @@ class NativeWorldModelRuntimeStore:
                 )
             )
             video_path = Path(str(result.get("video_path") or "").strip()) if str(result.get("video_path") or "").strip() else output_png.with_suffix(".mp4")
+            # When ffmpeg isn't available, fall back to delivering the PNG output
+            # directly rather than raising an error. This keeps the runtime
+            # functional on machines without video encoding tooling.
+            media_is_png = False
             if not video_path.is_file():
-                if not output_png.is_file() or not self._image_to_mp4(output_png, video_path, int(rollout.get("chunk_duration_ms") or 1200)):
+                if not output_png.is_file():
                     raise RuntimeError(str(result.get("reason") or "video_chunk_generation_failed"))
+                if not self._image_to_mp4(output_png, video_path, int(rollout.get("chunk_duration_ms") or 1200)):
+                    # ffmpeg is not available — deliver the still image as PNG
+                    media_is_png = True
 
-            # Convert to fMP4 so the browser can append it to a MSE SourceBuffer
-            # without re-buffering. The fMP4 re-mux is lossless (stream copy) and
-            # fast (~50ms for a 2s chunk on modern hardware).
-            fmp4_path = video_path.with_stem(video_path.stem + "_fmp4")
-            if self._convert_to_fmp4(video_path, fmp4_path):
-                video_path = fmp4_path
+            if media_is_png:
+                video_path = output_png
+
+            if not media_is_png:
+                # Convert to fMP4 so the browser can append it to a MSE SourceBuffer
+                # without re-buffering. The fMP4 re-mux is lossless (stream copy) and
+                # fast (~50ms for a 2s chunk on modern hardware).
+                fmp4_path = video_path.with_stem(video_path.stem + "_fmp4")
+                if self._convert_to_fmp4(video_path, fmp4_path):
+                    video_path = fmp4_path
             generation_duration_ms = max(0, _utc_now_ms() - chunk_generation_started_at_ms)
             tail_path = self._chunk_tail_path(session_id, chunk_id)
-            self._extract_tail_frame(video_path, tail_path)
+            if not media_is_png:
+                self._extract_tail_frame(video_path, tail_path)
             render_source = "truthful_preview_splat" if primary_mode == "splat_only" else str(result.get("mode") or primary_mode)
             grounding_refs_final = grounding_refs or list(result.get("retrieved_references") or [])
             lookahead_anchor = (lookahead_refs or list(result.get("lookahead_references") or []))[:1] or None
@@ -1648,7 +1678,7 @@ class NativeWorldModelRuntimeStore:
                 "status": "ready",
                 "media_path": str(video_path.resolve()),
                 "preview_media_path": str(video_path.resolve()),
-                "media_type": "video/mp4",
+                "media_type": "image/png" if media_is_png else "video/mp4",
                 "render_source": render_source,
                 "preview_render_source": render_source,
                 "duration_ms": int(rollout.get("chunk_duration_ms") or 1200),

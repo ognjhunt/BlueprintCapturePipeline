@@ -493,6 +493,7 @@ def test_runtime_control_prefers_truthful_preview_even_when_generation_owner_is_
             ws_base_url="ws://127.0.0.1:8791",
         )
     )
+    _patch_fast_chunk_encoding(monkeypatch, store)
     payload = _site_world_payload()
     payload["spec"]["canonical_package_uri"] = "gs://bucket/site-worlds/site-1/canonical.json"
     store.register_site_world_package(**payload)
@@ -629,7 +630,8 @@ def test_runtime_control_runs_async_cosmos_refinement_without_ffmpeg_uses_png_me
             ws_base_url="ws://127.0.0.1:8791",
         )
     )
-    _patch_fast_chunk_encoding(monkeypatch, store)
+    # Intentionally do NOT use _patch_fast_chunk_encoding — this test verifies
+    # the PNG fallback path when ffmpeg is unavailable.
     payload = _site_world_payload()
     payload["spec"]["canonical_package_uri"] = "gs://bucket/site-worlds/site-1/canonical.json"
     store.register_site_world_package(**payload)
