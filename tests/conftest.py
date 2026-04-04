@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 CONTRACTS_SRC_DIR = REPO_ROOT.parent / "BlueprintContracts" / "src"
 
-for candidate in (SRC_DIR, CONTRACTS_SRC_DIR):
+for candidate in (REPO_ROOT, SRC_DIR, CONTRACTS_SRC_DIR):
     if candidate.is_dir():
         candidate_str = str(candidate)
         if candidate_str not in sys.path:

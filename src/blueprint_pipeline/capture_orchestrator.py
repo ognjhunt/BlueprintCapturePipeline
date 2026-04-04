@@ -44,9 +44,18 @@ def _normalize_lane_value(raw: Optional[str]) -> Optional[str]:
     return value
 
 
-def _normalize_requested_lanes(values: Optional[List[str]]) -> List[str]:
+def _normalize_requested_lanes(values: Any) -> List[str]:
+    if values is None:
+        raw_values: List[str] = []
+    elif isinstance(values, str):
+        raw_values = [values]
+    elif isinstance(values, (list, tuple, set)):
+        raw_values = [str(value) for value in values]
+    else:
+        raw_values = [str(values)]
+
     normalized: List[str] = []
-    for value in values or []:
+    for value in raw_values:
         lane = _normalize_lane_value(value)
         if lane is None:
             continue
@@ -104,6 +113,21 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
         raw_payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         raw_payload = {}
+    raw_requested_outputs = raw_payload.get("requested_outputs") or raw_payload.get("requestedOutputs")
+    if isinstance(raw_requested_outputs, str):
+        requested_outputs = [raw_requested_outputs]
+    elif isinstance(raw_requested_outputs, (list, tuple, set)):
+        requested_outputs = [str(value) for value in raw_requested_outputs]
+    else:
+        requested_outputs = []
+    normalized_outputs = {str(value).strip().lower() for value in requested_outputs if str(value).strip()}
+    descriptor_requested_lanes = _normalize_requested_lanes(
+        raw_payload.get("requested_lanes") or raw_payload.get("requestedLanes")
+    )
+    if descriptor_requested_lanes:
+        if not normalized_outputs and descriptor_requested_lanes == ["qualification", "scene_memory"]:
+            return ["qualification"]
+        return descriptor_requested_lanes
     if isinstance(raw_payload, Mapping) and _descriptor_is_native_default_candidate(raw_payload):
         return [
             "qualification",
@@ -112,14 +136,6 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
             "frame_alignment",
             "evaluation_prep",
         ]
-    raw_requested_outputs = raw_payload.get("requested_outputs")
-    if isinstance(raw_requested_outputs, str):
-        requested_outputs = [raw_requested_outputs]
-    elif isinstance(raw_requested_outputs, (list, tuple, set)):
-        requested_outputs = [str(value) for value in raw_requested_outputs]
-    else:
-        requested_outputs = []
-    normalized_outputs = {str(value).strip().lower() for value in requested_outputs if str(value).strip()}
     if "deeper_evaluation" in normalized_outputs:
         return ["qualification", "scene_memory", "retrieval_index", "frame_alignment", "evaluation_prep"]
     if normalized_outputs & {"managed_tuning", "data_licensing"}:

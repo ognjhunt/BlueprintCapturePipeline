@@ -1,3 +1,9 @@
+# Agent skills (symlinks to Paperclip/node_modules)
+.agents/skills/paperclip
+.agents/skills/paperclip-create-agent
+.agents/skills/paperclip-create-plugin
+.agents/skills/para-memory-files
+
 # Python
 __pycache__/
 *.py[cod]

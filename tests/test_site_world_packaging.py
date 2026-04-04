@@ -760,6 +760,54 @@ def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: P
     assert fallback["descriptor"]["capture_orientation"]["normalization_applied"] is False
 
 
+def test_materialization_capture_orientation_handles_missing_ffprobe(monkeypatch, tmp_path: Path) -> None:
+    bucket = "local-blueprint"
+    scene_id = "scene-1"
+    capture_id = "capture-1"
+    raw_root = tmp_path / bucket / "scenes" / scene_id / "captures" / capture_id / "raw"
+    raw_root.mkdir(parents=True)
+    (raw_root / "walkthrough.mov").write_bytes(b"not-a-real-video")
+    (raw_root / "capture_upload_complete.json").write_text(
+        json.dumps({"sceneId": scene_id, "captureId": capture_id}),
+        encoding="utf-8",
+    )
+    (raw_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "scene_id": scene_id,
+                "capture_id": capture_id,
+                "video_uri": "walkthrough.mov",
+                "width": 720,
+                "height": 1280,
+                "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (raw_root / "capture_context.json").write_text(
+        json.dumps({"sceneId": scene_id, "captureId": capture_id}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.materialization.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+
+    records = build_capture_bundle_records(
+        bucket=bucket,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        gcs_root=tmp_path,
+        write_frames_index=False,
+    )
+
+    assert records["descriptor"]["capture_orientation"]["display_orientation"] == "portrait"
+    assert records["descriptor"]["capture_orientation"]["source"] == "inferred"
+    assert records["descriptor"]["capture_orientation"]["display_rotation_degrees"] == 0
+    assert records["descriptor"]["capture_orientation"]["normalization_applied"] is False
+
+
 def test_presentation_primary_asset_uses_advanced_geometry(tmp_path: Path) -> None:
     capture_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
     pipeline_dir = capture_root / "pipeline"

@@ -100,3 +100,182 @@ def test_resolve_requested_lanes_defaults_to_native_stack_for_site_world_candida
         "frame_alignment",
         "evaluation_prep",
     ]
+
+
+def test_resolve_requested_lanes_honors_explicit_descriptor_requested_lanes(tmp_path: Path) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "requested_lanes": [
+                    "qualification",
+                    "retrieval_index",
+                    "synthesis_coverage_validation",
+                ],
+                "requested_outputs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == [
+        "qualification",
+        "retrieval_index",
+        "synthesis_coverage_validation",
+    ]
+
+
+def test_resolve_requested_lanes_demotes_bridge_default_scene_memory_pair(tmp_path: Path) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "requested_lanes": ["qualification", "scene_memory"],
+                "requested_outputs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == ["qualification"]
+
+
+def test_resolve_requested_lanes_prefers_explicit_descriptor_lanes_over_output_inference(
+    tmp_path: Path,
+) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "requested_lanes": [
+                    "qualification",
+                    "synthesis_coverage_validation",
+                ],
+                "requested_outputs": ["preview_simulation", "deeper_evaluation"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == [
+        "qualification",
+        "synthesis_coverage_validation",
+    ]
+
+
+def test_resolve_requested_lanes_prefers_explicit_descriptor_lanes_over_native_candidate_default(
+    tmp_path: Path,
+) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "capture_mode": {"resolved_mode": "site_world_candidate"},
+                "scene_memory_capture": {"world_model_candidate": True},
+                "requested_lanes": [
+                    "qualification",
+                    "synthesis_coverage_validation",
+                ],
+                "requested_outputs": ["preview_simulation"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == [
+        "qualification",
+        "synthesis_coverage_validation",
+    ]
+
+
+def test_resolve_requested_lanes_accepts_camel_case_descriptor_fields(tmp_path: Path) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "requestedLanes": [
+                    "qualification",
+                    "retrieval_index",
+                ],
+                "requestedOutputs": ["preview_simulation"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == [
+        "qualification",
+        "retrieval_index",
+    ]
+
+
+def test_resolve_requested_lanes_accepts_scalar_descriptor_requested_lanes(tmp_path: Path) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "requestedLanes": "retrieval_index",
+                "requestedOutputs": ["preview_simulation"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == [
+        "qualification",
+        "retrieval_index",
+    ]

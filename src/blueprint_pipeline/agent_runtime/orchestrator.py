@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -31,6 +32,375 @@ _LLM_OVERRIDE_SKILLS = {
     "recapture_planner",
     "readiness_report_writer",
 }
+
+_RECAPTURE_KEYWORDS = (
+    "hidden zone",
+    "hidden-zone",
+    "clearance",
+    "width",
+    "route",
+    "reach",
+    "occlusion",
+    "coverage",
+    "measurement",
+    "metric",
+    "geometry",
+    "missing evidence",
+    "missing view",
+)
+
+_ACCESS_KEYWORDS = (
+    "restricted",
+    "escort",
+    "badge",
+    "access",
+    "permission",
+)
+
+_RECAPTURE_EQUIPMENT_BY_CATEGORY = {
+    "floor": ["digital inclinometer", "phone camera"],
+    "machine_interface": ["structured light scanner", "calipers", "tape measure"],
+}
+
+
+def _lower_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _zone_text(value: Any) -> str:
+    if isinstance(value, Mapping):
+        for key in ("name", "label", "zone", "title", "id"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+        return ""
+    return str(value or "").strip()
+
+
+def _resolve_blocker_resolution_path(
+    *,
+    category: Any,
+    detail: Any,
+    severity: Any = "",
+    resolution_path: Any = "",
+) -> str:
+    existing = _lower_text(resolution_path)
+    if existing in {"recapture", "scope_change", "site_modification", "human_review", "platform_change", "oem_consultation", "not_resolvable"}:
+        return existing
+
+    normalized_category = _lower_text(category)
+    normalized_detail = _lower_text(detail)
+    severity_text = _lower_text(severity)
+
+    if normalized_category in {"geometry", "capture_quality", "capture_coverage", "evidence", "hidden_zone"}:
+        return "recapture"
+    if normalized_category in {"scoping", "privacy_security", "non_routine"}:
+        return "human_review"
+    if normalized_category == "access":
+        return "human_review"
+    if normalized_category in {"integration", "machine_interface"}:
+        return "oem_consultation"
+    if normalized_category in {"task_fit"}:
+        return "platform_change"
+    if normalized_category in {"runtime"}:
+        return "platform_change"
+    if normalized_category in {"traffic_shared", "traffic_pedestrian"}:
+        return "site_modification"
+    if normalized_category in {"workflow_ambiguity"}:
+        return "scope_change"
+    if normalized_category == "automation_gap":
+        if any(keyword in normalized_detail for keyword in _RECAPTURE_KEYWORDS):
+            return "recapture"
+        if any(keyword in normalized_detail for keyword in _ACCESS_KEYWORDS):
+            return "human_review"
+        return "recapture" if severity_text in {"high", "hard_blocker"} else "human_review"
+    if any(keyword in normalized_detail for keyword in _RECAPTURE_KEYWORDS):
+        return "recapture"
+    if any(keyword in normalized_detail for keyword in _ACCESS_KEYWORDS):
+        return "human_review"
+    return "human_review"
+
+
+def _recapture_priority(severity: Any) -> str:
+    severity_text = _lower_text(severity)
+    if severity_text == "hard_blocker":
+        return "P0"
+    if severity_text == "high":
+        return "P1"
+    if severity_text == "medium":
+        return "P2"
+    if severity_text == "low":
+        return "P3"
+    return "P4"
+
+
+def _recapture_priority_rank(priority: str) -> int:
+    return {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}.get(priority, 5)
+
+
+def _recapture_equipment(category: str, detail: str) -> List[str]:
+    normalized_category = _lower_text(category)
+    normalized_detail = _lower_text(detail)
+    if "floor" in normalized_category or any(keyword in normalized_detail for keyword in ("floor", "grade", "slope")):
+        return ["digital inclinometer", "phone camera"]
+    if "machine_interface" in normalized_category or any(
+        keyword in normalized_detail for keyword in ("machine interface", "button", "handle", "fixture", "door force")
+    ):
+        return ["structured light scanner", "calipers", "tape measure"]
+    if normalized_category in {"hidden_zone", "capture_coverage", "geometry", "evidence", "capture_quality"} or any(
+        keyword in normalized_detail
+        for keyword in ("width", "clearance", "route", "reach", "hidden zone", "hidden-zone", "occlusion", "coverage", "geometry")
+    ):
+        return ["LiDAR scanner", "laser range finder", "phone camera"]
+    if "capture_quality" in normalized_category:
+        return ["tripod", "phone camera"]
+    return ["phone camera"]
+
+
+def _preferred_capture_mode(category: str, detail: str, fallback: str) -> str:
+    normalized_category = _lower_text(category)
+    normalized_detail = _lower_text(detail)
+    if normalized_category in {"geometry", "capture_coverage", "capture_quality", "evidence", "hidden_zone"}:
+        return "iphone_arkit_lidar"
+    if any(keyword in normalized_detail for keyword in ("width", "clearance", "route", "reach", "hidden zone", "hidden-zone", "occlusion", "coverage", "metric")):
+        return "iphone_arkit_lidar"
+    return fallback or "iphone_arkit_lidar"
+
+
+def _recapture_access(detail: str, category: str) -> str:
+    normalized_detail = _lower_text(detail)
+    normalized_category = _lower_text(category)
+    if normalized_category in {"access", "privacy_security"}:
+        return "restricted"
+    if any(keyword in normalized_detail for keyword in ("restricted", "escort", "badge", "permission")):
+        return "restricted; escort required"
+    return "open"
+
+
+def _recapture_timing(category: str, detail: str) -> str:
+    normalized_category = _lower_text(category)
+    normalized_detail = _lower_text(detail)
+    if normalized_category in {"traffic_shared", "traffic_pedestrian"} or any(keyword in normalized_detail for keyword in ("traffic", "shift", "operations")):
+        return "during operations"
+    if _recapture_access(detail, category) != "open":
+        return "scheduled access"
+    return "off-hours"
+
+
+def _recapture_instructions(category: str, detail: str, access: str, preferred_mode: str) -> List[str]:
+    normalized_category = _lower_text(category)
+    normalized_detail = _lower_text(detail)
+    steps = [
+        f"Re-capture the affected zone with `{preferred_mode}` and preserve the original capture provenance.",
+        "Include a scale reference or metric measurement so the blocker can be resolved quantitatively.",
+    ]
+    if any(keyword in normalized_detail for keyword in ("hidden zone", "coverage", "occlusion")):
+        steps.append("Cover the previously hidden or occluded area in a full pass, including the adjacent transition.")
+    if any(keyword in normalized_detail for keyword in ("width", "clearance", "route", "reach")):
+        steps.append("Measure the narrowest point and record the exact clearance from the same standing position used for qualification.")
+    if "floor" in normalized_category or any(keyword in normalized_detail for keyword in ("floor", "grade", "slope")):
+        steps.append("Capture floor condition and slope from multiple points along the affected path.")
+    if access != "open":
+        steps.append("Confirm the access requirement before capture and document the escort or authorization used.")
+    return steps
+
+
+def _recapture_acceptance_criteria(category: str, detail: str) -> List[str]:
+    normalized_category = _lower_text(category)
+    normalized_detail = _lower_text(detail)
+    criteria = []
+    if any(keyword in normalized_detail for keyword in ("width", "clearance", "route", "reach")):
+        criteria.extend(
+            [
+                "Metric measurement is recorded at the narrowest point.",
+                "Confidence is at least 0.7 or an equivalent metric-grade source is cited.",
+            ]
+        )
+    elif any(keyword in normalized_detail for keyword in ("hidden zone", "coverage", "occlusion")):
+        criteria.extend(
+            [
+                "The previously uncovered area is visible in the new capture pass.",
+                "The blocker detail is no longer uncited by the evidence bundle.",
+            ]
+        )
+    elif "floor" in normalized_category or any(keyword in normalized_detail for keyword in ("floor", "grade", "slope")):
+        criteria.extend(
+            [
+                "Slope or grade is measured with a calibrated tool.",
+                "A reference image or scan includes scale context.",
+            ]
+        )
+    else:
+        criteria.extend(
+            [
+                "The blocker detail is resolved with cited capture evidence.",
+                "The evidence bundle links back to the affected zone.",
+            ]
+        )
+    return criteria
+
+
+def _recapture_effort_minutes(category: str, detail: str, access: str) -> int:
+    normalized_category = _lower_text(category)
+    normalized_detail = _lower_text(detail)
+    if access != "open":
+        return 30
+    if "machine_interface" in normalized_category or any(keyword in normalized_detail for keyword in ("machine interface", "button", "fixture", "door force")):
+        return 30
+    if "floor" in normalized_category or any(keyword in normalized_detail for keyword in ("floor", "grade", "slope")):
+        return 25
+    if any(keyword in normalized_detail for keyword in ("width", "clearance", "route", "reach", "hidden zone", "hidden-zone", "occlusion", "coverage")):
+        return 20
+    return 15
+
+
+def _resolution_detail(resolution_path: str, category: str, detail: str) -> str:
+    normalized_detail = _lower_text(detail)
+    normalized_category = _lower_text(category)
+    if resolution_path == "recapture":
+        if any(keyword in normalized_detail for keyword in ("width", "clearance", "route", "reach")):
+            return "Re-capture the affected zone with metric evidence and a scale reference."
+        if any(keyword in normalized_detail for keyword in ("hidden zone", "coverage", "occlusion")) or "capture_coverage" in normalized_category:
+            return "Re-capture the uncovered area with complete coverage and preserve provenance."
+        if "floor" in normalized_category or any(keyword in normalized_detail for keyword in ("floor", "grade", "slope")):
+            return "Re-capture the floor condition with calibrated metric evidence."
+        return "Re-capture the missing evidence for this blocker."
+    if resolution_path == "human_review":
+        return "Capture alone cannot close this blocker. Escalate to human review."
+    if resolution_path == "scope_change":
+        return "Adjust the qualification scope before another capture pass will help."
+    if resolution_path == "site_modification":
+        return "Requires a site change before another capture pass will help."
+    if resolution_path == "oem_consultation":
+        return "Confirm OEM or integrator constraints before recapture."
+    if resolution_path == "platform_change":
+        return "The current platform or configuration appears insufficient; reassess the platform."
+    if resolution_path == "not_resolvable":
+        return "No capture-only resolution path was identified."
+    return "Capture-only follow-up is not yet determined."
+
+
+def _enrich_blocker_entry(
+    blocker: Mapping[str, Any],
+    *,
+    default_zone: str,
+    source_artifact: str,
+) -> Dict[str, Any]:
+    category = str(blocker.get("category") or "general").strip()
+    detail = str(blocker.get("detail") or "").strip()
+    severity = str(blocker.get("severity") or "medium").strip()
+    resolution_path = _resolve_blocker_resolution_path(
+        category=category,
+        detail=detail,
+        severity=severity,
+        resolution_path=blocker.get("resolution_path"),
+    )
+    zone = _zone_text(blocker.get("zone") or default_zone)
+    source_artifacts = blocker.get("source_artifacts")
+    normalized_source_artifacts = (
+        _normalize_strings(source_artifacts)
+        if isinstance(source_artifacts, list)
+        else []
+    )
+    if source_artifact not in normalized_source_artifacts:
+        normalized_source_artifacts.append(source_artifact)
+    enriched = dict(blocker)
+    enriched["id"] = str(blocker.get("id") or blocker.get("blocker_id") or blocker.get("category") or "blocker").strip()
+    enriched["category"] = category
+    enriched["severity"] = severity
+    enriched["detail"] = detail
+    enriched["zone"] = zone
+    enriched["resolution_path"] = resolution_path
+    enriched["resolution_detail"] = str(blocker.get("resolution_detail") or "").strip() or _resolution_detail(
+        resolution_path,
+        category,
+        detail,
+    )
+    enriched["source_artifacts"] = normalized_source_artifacts
+    return enriched
+
+
+def _build_recapture_step(
+    blocker: Mapping[str, Any],
+    *,
+    fallback_capture_modality: str,
+    default_zone: str,
+) -> Optional[Dict[str, Any]]:
+    resolution_path = _lower_text(blocker.get("resolution_path"))
+    if resolution_path != "recapture":
+        return None
+
+    category = str(blocker.get("category") or "capture_evidence").strip()
+    detail = str(blocker.get("detail") or "").strip()
+    severity = str(blocker.get("severity") or "medium").strip()
+    zone = _zone_text(blocker.get("zone") or default_zone)
+    preferred_capture_mode = _preferred_capture_mode(category, detail, fallback_capture_modality)
+    access = _recapture_access(detail, category)
+    equipment = _recapture_equipment(category, detail)
+    timing = _recapture_timing(category, detail)
+    priority = _recapture_priority(severity)
+    blocker_id = str(blocker.get("id") or blocker.get("blocker_id") or "").strip()
+    source_artifacts = blocker.get("source_artifacts")
+    normalized_source_artifacts = (
+        _normalize_strings(source_artifacts)
+        if isinstance(source_artifacts, list)
+        else []
+    )
+    estimated_effort_minutes = _recapture_effort_minutes(category, detail, access)
+    return {
+        "blocker_id": blocker_id,
+        "category": category,
+        "detail": detail,
+        "zone": zone,
+        "priority": priority,
+        "resolution_path": "recapture",
+        "preferred_capture_mode": preferred_capture_mode,
+        "equipment": equipment,
+        "instructions": _recapture_instructions(category, detail, access, preferred_capture_mode),
+        "acceptance_criteria": _recapture_acceptance_criteria(category, detail),
+        "access": access,
+        "timing": timing,
+        "estimated_effort_minutes": estimated_effort_minutes,
+        "justification": "Metric capture is preferred when blockers affect geometry, hidden zones, or coverage.",
+        "source_artifacts": normalized_source_artifacts,
+        "resolution_detail": str(blocker.get("resolution_detail") or "").strip() or _resolution_detail(
+            "recapture",
+            category,
+            detail,
+        ),
+        "source_blockers": [blocker_id] if blocker_id else [],
+    }
+
+
+def _group_recapture_sessions(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sessions: List[Dict[str, Any]] = []
+    session_index: Dict[tuple[str, str, tuple[str, ...]], Dict[str, Any]] = {}
+    for step in steps:
+        equipment = tuple(str(item) for item in step.get("equipment", []) if str(item).strip())
+        key = (str(step.get("zone") or ""), str(step.get("access") or ""), equipment)
+        session = session_index.get(key)
+        if session is None:
+            session = {
+                "order": len(session_index) + 1,
+                "zone": step.get("zone"),
+                "access": step.get("access"),
+                "timing": step.get("timing"),
+                "equipment": list(equipment),
+                "items": [],
+                "estimated_effort_minutes": 0,
+            }
+            session_index[key] = session
+            sessions.append(session)
+        session["items"].append(
+            {
+                "order": step.get("order"),
+                "blocker_id": step.get("blocker_id"),
+                "detail": step.get("detail"),
+                "priority": step.get("priority"),
+            }
+        )
+        session["estimated_effort_minutes"] += int(step.get("estimated_effort_minutes") or 0)
+    return sessions
 
 
 def _repo_root() -> Path:
@@ -162,7 +532,12 @@ def _agent_blocker_register(
     artifacts: PipelineReviewArtifacts,
     evidence_audit: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    entries = [dict(item) for item in artifacts.blocker_register.get("entries", []) if isinstance(item, Mapping)]
+    default_zone = _zone_text(artifacts.task_scope_record.get("task_zone"))
+    entries = [
+        _enrich_blocker_entry(item, default_zone=default_zone, source_artifact="blocker_register.json")
+        for item in artifacts.blocker_register.get("entries", [])
+        if isinstance(item, Mapping)
+    ]
     existing_details = {str(item.get("detail") or "").strip() for item in entries}
     for gap in evidence_audit.get("evidence_gaps", []):
         if not isinstance(gap, Mapping):
@@ -170,13 +545,19 @@ def _agent_blocker_register(
         detail = str(gap.get("detail") or "").strip()
         if not detail or detail in existing_details:
             continue
+        gap_entry = {
+            "id": str(gap.get("id") or gap.get("blocker_id") or f"evidence_gap_{len(entries) + 1}"),
+            "severity": gap.get("severity", "medium"),
+            "category": gap.get("category", "evidence"),
+            "detail": detail,
+            "source_artifacts": gap.get("source_artifacts", []),
+        }
         entries.append(
-            {
-                "severity": gap.get("severity", "medium"),
-                "category": gap.get("category", "evidence"),
-                "detail": detail,
-                "source_artifacts": gap.get("source_artifacts", []),
-            }
+            _enrich_blocker_entry(
+                gap_entry,
+                default_zone=default_zone,
+                source_artifact="evidence_audit.json",
+            )
         )
     return {
         "schema_version": "v1",
@@ -243,33 +624,73 @@ def _standards_notes(
 
 def _recapture_plan(
     artifacts: PipelineReviewArtifacts,
-    evidence_audit: Mapping[str, Any],
+    blocker_register: Mapping[str, Any],
+    *,
+    route_access_review: Optional[Mapping[str, Any]] = None,
+    workcell_risk_review: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    readiness_state = str(artifacts.readiness_decision.get("status") or "not_ready_yet")
-    steps = []
-    for index, gap in enumerate(evidence_audit.get("evidence_gaps", []), start=1):
-        if not isinstance(gap, Mapping):
+    default_zone = _zone_text(artifacts.task_scope_record.get("task_zone"))
+    blockers = [
+        _enrich_blocker_entry(item, default_zone=default_zone, source_artifact="blocker_register.json")
+        for item in blocker_register.get("entries", [])
+        if isinstance(item, Mapping)
+    ]
+    steps: List[Dict[str, Any]] = []
+    for source_order, blocker in enumerate(blockers, start=1):
+        step = _build_recapture_step(
+            blocker,
+            fallback_capture_modality=artifacts.descriptor.capture_modality,
+            default_zone=default_zone,
+        )
+        if step is None:
             continue
-        category = str(gap.get("category") or "capture_evidence")
-        preferred_mode = "iphone_arkit_lidar"
-        if category not in {"hidden_zone", "capture_evidence"}:
-            preferred_mode = artifacts.descriptor.capture_modality
-        steps.append(
+        step["source_order"] = source_order
+        steps.append(step)
+
+    steps.sort(key=lambda item: (_recapture_priority_rank(str(item.get("priority") or "P4")), int(item.get("source_order") or 0)))
+    for index, step in enumerate(steps, start=1):
+        step["order"] = index
+
+    capture_sessions = _group_recapture_sessions(steps)
+    priority_distribution = dict(Counter(str(step.get("priority") or "P4") for step in steps))
+    equipment_list: List[str] = []
+    access_requirements_summary: List[str] = []
+    estimated_total_effort_minutes = 0
+    expected_impact: List[Dict[str, Any]] = []
+    for step in steps:
+        estimated_total_effort_minutes += int(step.get("estimated_effort_minutes") or 0)
+        expected_impact.append(
             {
-                "order": index,
-                "category": category,
-                "detail": gap.get("detail"),
-                "preferred_capture_mode": preferred_mode,
-                "justification": "Metric capture is preferred when blockers affect geometry or hidden zones.",
+                "blocker_id": step.get("blocker_id"),
+                "detail": step.get("detail"),
+                "resolution_path": step.get("resolution_path"),
             }
         )
-    required = readiness_state != "ready" or bool(steps)
+        for item in step.get("equipment", []):
+            text = str(item).strip()
+            if text and text not in equipment_list:
+                equipment_list.append(text)
+        access_text = str(step.get("access") or "").strip()
+        if access_text and access_text not in access_requirements_summary and access_text != "open":
+            access_requirements_summary.append(access_text)
+
+    access_pending = bool(steps) and all(str(step.get("access") or "").strip() not in {"", "open"} for step in steps)
+    required = bool(steps)
     return {
         "schema_version": "v1",
         "scene_id": artifacts.descriptor.scene_id,
         "capture_id": artifacts.descriptor.capture_id,
         "required": required,
+        "access_pending": access_pending,
         "steps": steps,
+        "capture_sessions": capture_sessions,
+        "priority_distribution": priority_distribution,
+        "equipment_list": equipment_list,
+        "access_requirements_summary": access_requirements_summary,
+        "estimated_total_recapture_effort_minutes": estimated_total_effort_minutes,
+        "expected_impact": expected_impact,
+        "route_access_review": dict(route_access_review) if isinstance(route_access_review, Mapping) else {},
+        "workcell_risk_review": dict(workcell_risk_review) if isinstance(workcell_risk_review, Mapping) else {},
     }
 
 
@@ -394,12 +815,14 @@ def _render_agent_memo(
     if not parse_bool(recapture_plan.get("required"), default=False):
         lines.append("- No recapture plan was generated.")
     else:
+        if parse_bool(recapture_plan.get("access_pending"), default=False):
+            lines.append("- Access pending: restricted-zone authorization is still required.")
         for step in recapture_plan.get("steps", [])[:8]:
             if not isinstance(step, Mapping):
                 continue
             lines.append(
                 f"- Step {step.get('order')}: {step.get('detail')} "
-                f"(preferred mode: {step.get('preferred_capture_mode')})"
+                f"(zone: {step.get('zone') or 'unknown'}, preferred mode: {step.get('preferred_capture_mode')}, access: {step.get('access') or 'open'})"
             )
 
     return "\n".join(lines) + "\n"
@@ -522,7 +945,7 @@ def run_agent_review(
         lambda: _standards_notes(artifacts, agent_blocker_register),
         {"site_intake": artifacts.site_intake, "blocker_register": agent_blocker_register},
     )
-    humanoid_site_review = run_step(
+    run_step(
         "humanoid_site_readiness_reviewer",
         "humanoid_site_readiness_review.json",
         lambda: _humanoid_site_review(artifacts, standards_notes),
@@ -540,7 +963,7 @@ def run_agent_review(
         lambda: _humanoid_route_access_review(artifacts),
         {"route_graph": artifacts.route_graph, "qualification_record": artifacts.qualification_record},
     )
-    oem_handoff = run_step(
+    run_step(
         "oem_handoff_writer",
         "oem_handoff_summary.json",
         lambda: _oem_handoff_summary(artifacts),
@@ -549,11 +972,19 @@ def run_agent_review(
     recapture_plan = run_step(
         "recapture_planner",
         "recapture_plan.json",
-        lambda: _recapture_plan(artifacts, evidence_audit),
+        lambda: _recapture_plan(
+            artifacts,
+            agent_blocker_register,
+            route_access_review=humanoid_route_review,
+            workcell_risk_review=humanoid_workcell_review,
+        ),
         {
+            "normalized_intake": normalized_intake,
             "capture_qa_scorecard": artifacts.capture_qa_scorecard,
             "geometry_evidence": artifacts.geometry_evidence,
             "blocker_register": agent_blocker_register,
+            "route_access_review": humanoid_route_review,
+            "workcell_risk_review": humanoid_workcell_review,
         },
     )
 

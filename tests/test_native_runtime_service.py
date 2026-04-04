@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import shutil
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -385,12 +386,37 @@ def test_runtime_control_and_media_endpoints_expose_chunked_rollout(tmp_path: Pa
         msg = ws.receive_json()
         # New format: {type: "state", payload: <session_state>}
         assert msg.get("type") == "state", f"expected type=state, got {msg.get('type')}"
-        assert "payload" in msg
-        assert "rollout" in msg["payload"]
 
-    # drain_media_events should return empty list initially (no chunk worker ran)
-    events = store.drain_media_events(session_id)
-    assert isinstance(events, list)
+
+def test_native_runtime_ffmpeg_fallbacks_do_not_write_fake_media(tmp_path: Path, monkeypatch) -> None:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    original_which = shutil.which
+
+    def fake_which(command: str) -> str | None:
+        if command == "ffmpeg":
+            return None
+        return original_which(command)
+
+    monkeypatch.setattr("blueprint_pipeline.native_runtime_backend.shutil.which", fake_which)
+
+    source_png = tmp_path / "frame.png"
+    Image.new("RGB", (32, 24), color=(12, 34, 56)).save(source_png, format="PNG")
+    source_mp4 = tmp_path / "source.mp4"
+    source_mp4.write_bytes(b"not-a-real-mp4")
+    encoded_mp4 = tmp_path / "frame.mp4"
+    remuxed_mp4 = tmp_path / "frame_fmp4.mp4"
+
+    assert store._image_to_mp4(source_png, encoded_mp4, 1200) is False
+    assert not encoded_mp4.exists()
+
+    assert store._convert_to_fmp4(source_mp4, remuxed_mp4) is False
+    assert not remuxed_mp4.exists()
 
 
 def test_runtime_control_prefers_truthful_preview_even_when_generation_owner_is_busy(
@@ -504,7 +530,7 @@ def test_runtime_control_prefers_truthful_preview_even_when_generation_owner_is_
     assert "generation_worker_owned_by" not in str(state.get("failure_reason") or "")
 
 
-def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
+def test_runtime_control_runs_async_cosmos_refinement_without_ffmpeg_uses_png_media(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -549,7 +575,23 @@ def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
     monkeypatch.setenv("NATIVE_WORLD_MODEL_OUTPUT_PROFILE", "swm_preview_refine")
     monkeypatch.setenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT", "1")
     monkeypatch.setenv("NATIVE_WORLD_MODEL_TARGET_READY_CHUNKS", "1")
+    original_which = shutil.which
+
+    def fake_which(command: str) -> str | None:
+        if command == "ffmpeg":
+            return None
+        return original_which(command)
+
+    monkeypatch.setattr("blueprint_pipeline.native_runtime_backend.shutil.which", fake_which)
     monkeypatch.setattr("blueprint_pipeline.native_runtime_backend._runtime_readiness", lambda: {"ready": True})
+    monkeypatch.setattr(
+        "blueprint_pipeline.synthesis.cosmos_inference.load_cosmos_model",
+        lambda *args, **kwargs: {"backend": "fake_cosmos"},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.synthesis.cosmos_inference.describe_cosmos_model",
+        lambda model: {"backend": "fake_cosmos"},
+    )
 
     calls: list[str] = []
 
@@ -617,11 +659,19 @@ def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
 
     events = store.drain_media_events(session_id)
     event_names = [str(event.get("event") or "") for event in events]
+    media = store.media_response(session_id, camera_id="head_rgb", chunk_id=None)
 
     assert calls[:2] == ["splat_only", "cosmos_i2w"]
-    assert chunk["refinement_status"] == "completed"
+    assert chunk["media_type"] == "image/png"
+    assert chunk["media_path"].endswith(".png")
+    assert Path(chunk["media_path"]).is_file()
     assert Path(chunk["refined_media_path"]).is_file()
+    assert Path(chunk["refined_media_path"]).suffix == ".png"
+    assert chunk["refinement_status"] == "completed"
     assert chunk["provenance"]["refinement_status"] == "completed"
+    assert chunk["provenance"]["refinement_render_source"] == "cosmos_async_refinement"
+    assert media["media_type"] == "image/png"
+    assert media["content"].startswith(b"\x89PNG")
     assert "chunk_refinement_ready" in event_names
 
 

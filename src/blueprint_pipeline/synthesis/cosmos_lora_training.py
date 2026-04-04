@@ -6,6 +6,8 @@ import argparse
 import os
 import shlex
 import subprocess
+import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -32,6 +34,19 @@ def _discover_adapter_checkpoint(root_dir: Path) -> Optional[Path]:
 def _expand_training_command(template: str, values: Mapping[str, Any]) -> str:
     mapping = {key: str(value) for key, value in values.items()}
     return template.format_map(mapping)
+
+
+def _normalize_python_command(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return command
+    if not parts:
+        return command
+    if parts[0] in {"python", "python3"} and not shutil.which(parts[0]):
+        parts[0] = sys.executable
+        return shlex.join(parts)
+    return command
 
 
 def run_cosmos_lora_training(
@@ -134,6 +149,7 @@ def run_cosmos_lora_training(
             "source_mode": str(export_manifest.get("source_mode") or ""),
         },
     )
+    expanded_command = _normalize_python_command(expanded_command)
 
     timeout = max(1, int(timeout_seconds or int(os.getenv("COSMOS_TRAINING_TIMEOUT_SECONDS", "3600"))))
     result = subprocess.run(

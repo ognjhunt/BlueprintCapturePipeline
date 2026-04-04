@@ -38,6 +38,14 @@ def _build_staged_capture(
         "capture_source": "iphone",
         "capture_tier_hint": "tier1_iphone",
         "requested_outputs": requested_outputs or ["qualification"],
+        "capture_orientation": {
+            "display_orientation": "landscape",
+            "rotation_degrees": 0,
+            "display_size": {
+                "width": 1920,
+                "height": 1080,
+            },
+        },
         "capture_rights": {
             "derived_scene_generation_allowed": True,
             "data_licensing_allowed": False,
