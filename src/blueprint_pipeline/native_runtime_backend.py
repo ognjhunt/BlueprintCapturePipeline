@@ -1182,13 +1182,10 @@ class NativeWorldModelRuntimeStore:
         except OSError:
             pass
 
-        # ffmpeg is unavailable or failed. Keep the rollout live by storing a
-        # still-image placeholder at the expected chunk path.
-        try:
-            shutil.copy2(image_path, output_path)
-            return output_path.is_file()
-        except OSError:
-            return False
+        # ffmpeg is unavailable or failed — do not write fake media (e.g. a
+        # PNG renamed to .mp4). Return False so the rollout layer can
+        # gracefully fall back to image-only delivery.
+        return False
 
     def _convert_to_fmp4(self, input_path: Path, output_path: Path) -> bool:
         """Re-mux an existing MP4 into fMP4 format for MSE compatibility.
