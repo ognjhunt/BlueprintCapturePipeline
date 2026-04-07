@@ -372,6 +372,8 @@ def _ffprobe_duration_seconds(video_path: Path) -> float:
             capture_output=True,
         )
     except OSError:
+        # Keyframe sampling can fall back to evenly spaced placeholder frames
+        # when local media tooling is unavailable.
         return 0.0
     if result.returncode != 0:
         return 0.0

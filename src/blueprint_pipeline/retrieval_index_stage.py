@@ -17,8 +17,6 @@ from .common import (
     PipelineError,
     ensure_dir,
     ensure_local_uri_path,
-    infer_storage_root_from_scene_path,
-    is_gs_uri,
     parse_bool,
     read_json,
     utc_now_iso,
@@ -34,7 +32,6 @@ from .site_memory_utils import (
     fingerprint_similarity as _sm_fingerprint_similarity,
     geometry_fingerprint,
     iter_groups,
-    load_embedding,
     load_jsonl as _sm_load_jsonl,
     p95 as _sm_p95,
     transform_translation,
@@ -1088,7 +1085,6 @@ def _generate_embeddings(*, model: Any, image_paths: List[Path]) -> List[Any]:
     try:
         import torch
         from PIL import Image
-        import numpy as np
     except ImportError as exc:
         raise PipelineError(f"Missing embedding dependency: {exc}") from exc
 
@@ -1246,7 +1242,6 @@ def _write_thumbnails(
                     str(thumb_path),
                 ],
                 capture_output=True,
-                check=False,
             )
         except OSError:
             continue

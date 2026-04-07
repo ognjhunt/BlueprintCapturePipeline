@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import json
 from pathlib import Path
 import sys
@@ -201,6 +203,92 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
     assert (site_root / "site_overlap_graph.json").is_file()
     assert (site_root / "indices" / "manifest.json").is_file()
     assert (site_root / "retrieval_validation.json").is_file()
+
+
+def test_retrieval_index_thumbnail_generation_is_optional_when_ffmpeg_missing(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=True)
+
+    def _fake_provider(**kwargs):  # type: ignore[no-untyped-def]
+        geometry_root = Path(kwargs["geometry_root"])
+        frames_dir = geometry_root / "frames" / "images"
+        depth_dir = geometry_root / "depth"
+        confidence_dir = geometry_root / "confidence"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        depth_dir.mkdir(parents=True, exist_ok=True)
+        confidence_dir.mkdir(parents=True, exist_ok=True)
+        image_path = frames_dir / "frame_000000.npy"
+        depth_path = depth_dir / "depth_000000.npy"
+        confidence_path = confidence_dir / "confidence_000000.npy"
+        np.save(image_path, np.full((16, 24, 3), 100, dtype=np.float32))
+        np.save(depth_path, np.full((16, 24), 1.0, dtype=np.float32))
+        np.save(confidence_path, np.full((16, 24), 0.8, dtype=np.float32))
+        return {
+            "intrinsics": {
+                "camera_model": "pinhole",
+                "image_width": 24,
+                "image_height": 16,
+                "fx": 18.0,
+                "fy": 18.0,
+                "cx": 12.0,
+                "cy": 8.0,
+                "distortion": {"model": "none", "coefficients": []},
+            },
+            "frames": [
+                {
+                    "frame_index": 0,
+                    "frame_id": "000000",
+                    "timestamp_seconds": 0.0,
+                    "image_path": str(image_path),
+                    "is_keyframe": True,
+                    "blur_score": 0.0,
+                    "overlap_hint": 0.9,
+                    "world_from_camera": [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "camera_from_world": [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, -1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "pose_confidence": 0.9,
+                    "depth_path": str(depth_path),
+                    "confidence_path": str(confidence_path),
+                    "depth_format": "npy",
+                    "confidence_format": "npy",
+                    "width": 24,
+                    "height": 16,
+                    "min_depth_m": 1.0,
+                    "max_depth_m": 1.0,
+                    "confidence_range": [0.0, 1.0],
+                }
+            ],
+            "provider_metrics": {},
+            "provider_warnings": [],
+            "provider_errors": [],
+            "loop_closure_detected": False,
+        }
+
+    def _missing_ffmpeg(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
+    monkeypatch.setattr(
+        "blueprint_pipeline.retrieval_index_stage._generate_embeddings",
+        lambda **_kwargs: [np.ones(1024, dtype=np.float32) for _ in _kwargs["image_paths"]],
+    )
+    monkeypatch.setattr("blueprint_pipeline.retrieval_index_stage.subprocess.run", _missing_ffmpeg)
+
+    build_geometry_stage_contract(capture_root)
+    result = run_retrieval_index_stage(capture_root=capture_root, embedding_model=object())
+
+    assert result["status"] == "completed"
+    site_root = capture_root.parents[3] / "sites" / "site-1" / "reference_memory"
+    thumbnails = site_root / "thumbnails"
+    assert not any(thumbnails.glob("*.jpg"))
 
 
 def test_retrieval_index_requires_privacy_safe_video_by_default(monkeypatch, tmp_path: Path) -> None:

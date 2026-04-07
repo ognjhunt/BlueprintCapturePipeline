@@ -26,6 +26,12 @@
       "fixture_root": "autoresearch/fixtures/recapture_planner/access_constrained",
       "payload_file": "payload.json",
       "expected_output_name": "recapture_plan.json"
+    },
+    {
+      "case_id": "mixed_access",
+      "fixture_root": "autoresearch/fixtures/recapture_planner/mixed_access",
+      "payload_file": "payload.json",
+      "expected_output_name": "recapture_plan.json"
     }
   ],
   "adapter_profile": "recapture_planner_v1",

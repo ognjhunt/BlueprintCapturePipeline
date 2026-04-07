@@ -1,0 +1,14 @@
+{
+  "access_pending": true,
+  "allowed_detail_substrings": [
+    "Restricted mezzanine access prevents verification of the east-side drop zone; escort required.",
+    "Route segment A3-B1 width measured at 2.4 m, below required shared-traffic clearance."
+  ],
+  "max_lines": 24,
+  "min_steps": 2,
+  "required": true,
+  "required_detail_substrings": [
+    "Restricted mezzanine access prevents verification of the east-side drop zone; escort required.",
+    "Route segment A3-B1 width measured at 2.4 m, below required shared-traffic clearance."
+  ]
+}

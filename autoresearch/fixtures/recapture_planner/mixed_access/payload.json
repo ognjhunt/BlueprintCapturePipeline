@@ -1,0 +1,39 @@
+{
+  "capture_id": "capture-recapture-3",
+  "blocker_register": {
+    "entries": [
+      {
+        "category": "hidden_zone",
+        "detail": "Restricted mezzanine access prevents verification of the east-side drop zone; escort required.",
+        "severity": "high",
+        "source_artifacts": [
+          "geometry_evidence.json"
+        ]
+      },
+      {
+        "category": "route_clearance",
+        "detail": "Route segment A3-B1 width measured at 2.4 m, below required shared-traffic clearance.",
+        "severity": "high",
+        "source_artifacts": [
+          "qualification_record.json"
+        ]
+      }
+    ]
+  },
+  "capture_qa_scorecard": {
+    "coverage_zones": [
+      "east mezzanine",
+      "west aisle"
+    ],
+    "qa_flags": [
+      "restricted mezzanine access",
+      "west aisle clearance"
+    ],
+    "registration_rate": 0.76
+  },
+  "geometry_evidence": {
+    "hidden_zone_bound": 0.39,
+    "metric_ready": true
+  },
+  "scene_id": "scene-recapture-3"
+}

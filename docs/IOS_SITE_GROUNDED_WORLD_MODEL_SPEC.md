@@ -15,17 +15,15 @@ The emphasis is iOS only for now.
 
 Blueprint is not trying to build a generic unconstrained world model that invents arbitrary worlds.
 
-Blueprint is building a qualification-first marketplace and operating system around real sites:
-
-- `BlueprintCapture` captures raw evidence from real facilities.
-- `BlueprintCapturePipeline` is the authoritative middle layer for qualification, privacy, provenance, downstream routing, preview generation, and deeper hosted-runtime preparation.
-- `Blueprint-WebApp` is the operational and buyer-facing surface where those outputs appear.
+Blueprint is capture-first and world-model-product-first. The iPhone capture path records real-site evidence, `BlueprintCapturePipeline` turns that evidence into site-specific packages and optional trust outputs, and `Blueprint-WebApp` is the operational and buyer-facing surface where those outputs appear.
 
 The product doctrine is:
 
-- qualification and readiness are authoritative truth
+- raw capture, timestamps, poses, device metadata, and provenance are authoritative truth
+- site-specific world-model packages and hosted outputs are the primary downstream product
+- qualification and readiness are optional trust layers
 - generated previews and world artifacts are downstream derivatives
-- derived outputs must never overwrite qualification truth
+- derived outputs must never overwrite capture truth
 
 That matters because the target system is not “train a cool model from videos.” The target system is:
 
@@ -42,7 +40,7 @@ This is already conceptually aligned with Seoul World Model:
 The key difference is:
 
 - SWM is a generative model architecture built on top of Cosmos Predict
-- Blueprint today is primarily the capture, qualification, and packaging pipeline around grounded world generation
+- Blueprint today is primarily the capture and packaging pipeline around grounded world generation, with qualification as a support layer
 
 ## Why This Spec Exists
 
@@ -58,7 +56,7 @@ The current iPhone pipeline already captures much more than plain video:
 
 That is already enough to support a prototype site-grounded retrieval world model workflow.
 
-However, the current contract was designed for qualification-first capture and preview generation, not specifically for:
+However, the current contract was designed for evidence capture and preview generation, not specifically for:
 
 - repeated same-site capture over time
 - site-local retrieval databases
@@ -721,4 +719,4 @@ Minimum conclusion:
   - privacy-safe site retrieval index
   - dense aligned export separate from QA frames
 
-If those changes are made, Blueprint iPhone captures become a credible substrate for an indoor SWM-like approach rather than just a qualification-first walkthrough pipeline.
+If those changes are made, Blueprint iPhone captures become a credible substrate for an indoor SWM-like approach rather than just a walkthrough pipeline.

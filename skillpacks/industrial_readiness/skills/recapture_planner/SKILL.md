@@ -115,6 +115,7 @@ Every recapture item must have acceptance criteria so the capture operator knows
 - Estimated total recapture effort.
 - Equipment list (combined across all items).
 - Access requirements summary.
+- `access_pending`: `true` when any recapture item still needs special access that has not been confirmed, even if other items are open-access.
 - Expected impact: which blockers/gaps will be resolved by this recapture.
 
 ---
@@ -134,7 +135,7 @@ Every recapture item must have acceptance criteria so the capture operator knows
 ## Fail-closed rules
 
 - If `evidence_audit.json` is missing: recapture plan cannot be generated. Return error.
-- If all evidence gaps are in zones that require special access and access is not confirmed: flag the entire recapture plan as `access_pending`.
+- If any recapture item requires special access and access is not confirmed: flag the entire recapture plan as `access_pending`, including mixed-access plans that also contain open-access items.
 - If the recapture plan has > 10 P0 items: consider whether the capture was fundamentally inadequate and a full re-capture is more efficient than targeted recapture.
 
 ---

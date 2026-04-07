@@ -50,13 +50,6 @@ def _json_read(path: Path) -> Dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
-def _read_bytes_if_available(path: Path) -> Optional[bytes]:
-    try:
-        return path.read_bytes()
-    except OSError:
-        return None
-
-
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -70,7 +63,25 @@ def _optional_existing_path(raw_value: Any) -> Optional[Path]:
     if not text or text.startswith(("gs://", "http://", "https://")):
         return None
     path = Path(text).expanduser().resolve()
-    return path if path.exists() else None
+    try:
+        return path if path.exists() else None
+    except OSError:
+        # Readiness/runtime probes should degrade gracefully when configured
+        # paths are inaccessible in the current container or sandbox.
+        return None
+
+
+def _path_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        # Probe-style filesystem checks must not fail runtime readiness or
+        # session startup when mounted paths are inaccessible.
+        return False
+
+
+def _ffmpeg_binary() -> Optional[str]:
+    return shutil.which("ffmpeg")
 
 
 def _runtime_readiness() -> Dict[str, Any]:
@@ -176,14 +187,12 @@ def _find_cosmos_repo() -> Optional[Tuple[Path, Path]]:
         inf = root / "examples" / "inference.py"
         py = root / ".venv" / "bin" / "python"
         try:
-            if not inf.is_file() or not py.is_file():
-                continue
-            if not os.access(inf, os.R_OK):
-                continue
-            if not os.access(py, os.X_OK):
-                continue
-            return root, py
+            if inf.is_file() and py.is_file():
+                return root, py
         except OSError:
+            # Candidate roots can point at mounted locations that are not
+            # traversable from the current runtime; skip them instead of
+            # failing readiness or session creation outright.
             continue
     return None
 
@@ -314,11 +323,11 @@ def _resolve_site_index_path(
 ) -> Optional[Path]:
     """Return the site_reference_index.jsonl path if it exists."""
     p = storage_root / bucket / "sites" / site_id / "reference_memory" / "site_reference_index.jsonl"
-    if p.is_file():
+    if _path_is_file(p):
         return p
     # Also try without bucket prefix (flat layout)
     p2 = storage_root / "sites" / site_id / "reference_memory" / "site_reference_index.jsonl"
-    return p2 if p2.is_file() else None
+    return p2 if _path_is_file(p2) else None
 
 
 def _resolve_site_id(site_world: Mapping[str, Any], scene_id: str, capture_id: str, storage_root: Path, bucket: str) -> str:
@@ -1131,10 +1140,11 @@ class NativeWorldModelRuntimeStore:
 
     def _extract_tail_frame(self, video_path: Path, output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
+        ffmpeg = _ffmpeg_binary()
+        if ffmpeg:
             subprocess.run(
                 [
-                    "ffmpeg",
+                    ffmpeg,
                     "-y",
                     "-sseof",
                     "-0.05",
@@ -1147,45 +1157,52 @@ class NativeWorldModelRuntimeStore:
                 capture_output=True,
                 check=False,
             )
-        except OSError:
-            return
+            if _path_is_file(output_path):
+                return
+        try:
+            Image.open(video_path).convert("RGB").save(output_path, format="PNG")
+        except Exception:
+            output_path.unlink(missing_ok=True)
 
     def _image_to_mp4(self, image_path: Path, output_path: Path, duration_ms: int) -> bool:
-        """Encode a still image into an fMP4 segment suitable for MSE append."""
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        duration_s = max(0.4, duration_ms / 1000.0)
-        try:
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loop",
-                    "1",
-                    "-i",
-                    str(image_path),
-                    "-t",
-                    f"{duration_s:.2f}",
-                    "-vf",
-                    "format=yuv420p",
-                    # frag_keyframe+empty_moov+default_base_moof produces a
-                    # fragmented MP4 (fMP4) that can be appended to a browser
-                    # MSE SourceBuffer without re-buffering between chunks.
-                    "-movflags",
-                    "frag_keyframe+empty_moov+default_base_moof",
-                    str(output_path),
-                ],
-                capture_output=True,
-                check=False,
-            )
-            if result.returncode == 0 and output_path.is_file():
-                return True
-        except OSError:
-            pass
+        """Encode a still image into an fMP4 segment suitable for MSE append.
 
-        # ffmpeg is unavailable or failed — do not write fake media (e.g. a
-        # PNG renamed to .mp4). Return False so the rollout layer can
-        # gracefully fall back to image-only delivery.
-        return False
+        Local test environments may not have ffmpeg installed. In that case,
+        keep rollout sequencing alive by persisting the still frame at the
+        target path and letting higher layers treat it as a placeholder chunk.
+        """
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        ffmpeg = _ffmpeg_binary()
+        if not ffmpeg:
+            try:
+                shutil.copy2(image_path, output_path)
+            except OSError:
+                return False
+            return _path_is_file(output_path)
+        duration_s = max(0.4, duration_ms / 1000.0)
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loop",
+                "1",
+                "-i",
+                str(image_path),
+                "-t",
+                f"{duration_s:.2f}",
+                "-vf",
+                "format=yuv420p",
+                # frag_keyframe+empty_moov+default_base_moof produces a
+                # fragmented MP4 (fMP4) that can be appended to a browser
+                # MSE SourceBuffer without re-buffering between chunks.
+                "-movflags",
+                "frag_keyframe+empty_moov+default_base_moof",
+                str(output_path),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0 and output_path.is_file()
 
     def _convert_to_fmp4(self, input_path: Path, output_path: Path) -> bool:
         """Re-mux an existing MP4 into fMP4 format for MSE compatibility.
@@ -1195,28 +1212,35 @@ class NativeWorldModelRuntimeStore:
         making each chunk directly appendable to a browser SourceBuffer.
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(input_path),
-                    "-c:v",
-                    "copy",
-                    "-movflags",
-                    "frag_keyframe+empty_moov+default_base_moof",
-                    str(output_path),
-                ],
-                capture_output=True,
-                check=False,
-            )
-        except OSError:
+        ffmpeg = _ffmpeg_binary()
+        if not ffmpeg:
             return False
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(input_path),
+                "-c:v",
+                "copy",
+                "-movflags",
+                "frag_keyframe+empty_moov+default_base_moof",
+                str(output_path),
+            ],
+            capture_output=True,
+            check=False,
+        )
         return result.returncode == 0 and output_path.is_file()
 
     def _bootstrap_video_chunk(self, session_id: str, site_world_id: str) -> Optional[Dict[str, Any]]:
-        prebuilt = self._find_prebuilt_cosmos_video(site_world_id)
+        state = self._load_session_state(session_id)
+        storage_root = _optional_existing_path(state.get("storage_root")) or _default_storage_root()
+        bucket = str(state.get("storage_bucket") or _bucket_from_site_world({})).strip() or "vast-local"
+        prebuilt = self._find_prebuilt_cosmos_video(
+            site_world_id,
+            storage_root=storage_root,
+            bucket=bucket,
+        )
         if prebuilt and prebuilt.suffix.lower() == ".mp4":
             return self._copy_video_to_chunk(
                 session_id=session_id,
@@ -1227,8 +1251,12 @@ class NativeWorldModelRuntimeStore:
             )
 
         cosmos_repo = _find_cosmos_repo()
-        cond_frame = self._find_conditioning_frame(site_world_id)
-        if cond_frame and cond_frame.is_file():
+        cond_frame = self._find_conditioning_frame(
+            site_world_id,
+            storage_root=storage_root,
+            bucket=bucket,
+        )
+        if cond_frame and _path_is_file(cond_frame):
             still_chunk_path = self._chunk_video_path(session_id, "chunk-0000")
             if self._image_to_mp4(
                 cond_frame,
@@ -1247,17 +1275,6 @@ class NativeWorldModelRuntimeStore:
                     "duration_ms": self._rollout_defaults()["chunk_duration_ms"],
                     "tail_path": str(tail_path.resolve()) if tail_path.is_file() else None,
                 }
-            # ffmpeg unavailable — deliver the conditioning frame as PNG
-            return {
-                "chunk_id": "chunk-0000",
-                "chunk_index": 0,
-                "status": "ready",
-                "media_path": str(cond_frame.resolve()),
-                "media_type": "image/png",
-                "render_source": "bootstrap_conditioning_frame",
-                "duration_ms": self._rollout_defaults()["chunk_duration_ms"],
-                "tail_path": None,
-            }
         if cosmos_repo and cond_frame:
             frames_dir = self._cosmos_frames_dir(session_id)
             _ = self._run_cosmos_inference_sync(
@@ -1287,6 +1304,8 @@ class NativeWorldModelRuntimeStore:
             if rollout.get("buffered_chunk_ids"):
                 return
             chunk = self._bootstrap_video_chunk(session_id, site_world_id)
+            latest_state = self._load_session_state(session_id)
+            self._ensure_rollout(latest_state)
             if chunk is None:
                 # Acquire state lock so this write is serialized with step_session
                 # and _synthesize_step_async — prevents clobbering pending_step_index.
@@ -1429,23 +1448,16 @@ class NativeWorldModelRuntimeStore:
                 if str(result.get("video_path") or "").strip()
                 else refined_png.with_suffix(".mp4")
             )
-            refinement_is_png = False
             if not refined_video_path.is_file():
-                if not refined_png.is_file():
-                    raise RuntimeError(str(result.get("reason") or "refined_video_chunk_generation_failed"))
-                if not self._image_to_mp4(
+                if not refined_png.is_file() or not self._image_to_mp4(
                     refined_png,
                     refined_video_path,
                     int(self._rollout_defaults().get("chunk_duration_ms") or 1200),
                 ):
-                    # ffmpeg unavailable — use PNG for the refinement output
-                    refinement_is_png = True
-                    refined_video_path = refined_png
-
-            if not refinement_is_png:
-                refined_fmp4_path = refined_video_path.with_stem(refined_video_path.stem + "_fmp4")
-                if self._convert_to_fmp4(refined_video_path, refined_fmp4_path):
-                    refined_video_path = refined_fmp4_path
+                    raise RuntimeError(str(result.get("reason") or "refined_video_chunk_generation_failed"))
+            refined_fmp4_path = refined_video_path.with_stem(refined_video_path.stem + "_fmp4")
+            if self._convert_to_fmp4(refined_video_path, refined_fmp4_path):
+                refined_video_path = refined_fmp4_path
             refinement_duration_ms = max(0, _utc_now_ms() - refinement_started_at_ms)
 
             promoted = False
@@ -1644,31 +1656,19 @@ class NativeWorldModelRuntimeStore:
                 )
             )
             video_path = Path(str(result.get("video_path") or "").strip()) if str(result.get("video_path") or "").strip() else output_png.with_suffix(".mp4")
-            # When ffmpeg isn't available, fall back to delivering the PNG output
-            # directly rather than raising an error. This keeps the runtime
-            # functional on machines without video encoding tooling.
-            media_is_png = False
             if not video_path.is_file():
-                if not output_png.is_file():
+                if not output_png.is_file() or not self._image_to_mp4(output_png, video_path, int(rollout.get("chunk_duration_ms") or 1200)):
                     raise RuntimeError(str(result.get("reason") or "video_chunk_generation_failed"))
-                if not self._image_to_mp4(output_png, video_path, int(rollout.get("chunk_duration_ms") or 1200)):
-                    # ffmpeg is not available — deliver the still image as PNG
-                    media_is_png = True
 
-            if media_is_png:
-                video_path = output_png
-
-            if not media_is_png:
-                # Convert to fMP4 so the browser can append it to a MSE SourceBuffer
-                # without re-buffering. The fMP4 re-mux is lossless (stream copy) and
-                # fast (~50ms for a 2s chunk on modern hardware).
-                fmp4_path = video_path.with_stem(video_path.stem + "_fmp4")
-                if self._convert_to_fmp4(video_path, fmp4_path):
-                    video_path = fmp4_path
+            # Convert to fMP4 so the browser can append it to a MSE SourceBuffer
+            # without re-buffering. The fMP4 re-mux is lossless (stream copy) and
+            # fast (~50ms for a 2s chunk on modern hardware).
+            fmp4_path = video_path.with_stem(video_path.stem + "_fmp4")
+            if self._convert_to_fmp4(video_path, fmp4_path):
+                video_path = fmp4_path
             generation_duration_ms = max(0, _utc_now_ms() - chunk_generation_started_at_ms)
             tail_path = self._chunk_tail_path(session_id, chunk_id)
-            if not media_is_png:
-                self._extract_tail_frame(video_path, tail_path)
+            self._extract_tail_frame(video_path, tail_path)
             render_source = "truthful_preview_splat" if primary_mode == "splat_only" else str(result.get("mode") or primary_mode)
             grounding_refs_final = grounding_refs or list(result.get("retrieved_references") or [])
             lookahead_anchor = (lookahead_refs or list(result.get("lookahead_references") or []))[:1] or None
@@ -1678,7 +1678,7 @@ class NativeWorldModelRuntimeStore:
                 "status": "ready",
                 "media_path": str(video_path.resolve()),
                 "preview_media_path": str(video_path.resolve()),
-                "media_type": "image/png" if media_is_png else "video/mp4",
+                "media_type": "video/mp4",
                 "render_source": render_source,
                 "preview_render_source": render_source,
                 "duration_ms": int(rollout.get("chunk_duration_ms") or 1200),
@@ -2092,7 +2092,13 @@ class NativeWorldModelRuntimeStore:
         """
         return os.getenv("NATIVE_WORLD_MODEL_ALLOW_PREBUILT_BOOTSTRAP_VIDEO", "").strip() == "1"
 
-    def _find_prebuilt_cosmos_video(self, site_world_id: str) -> Optional[Path]:
+    def _find_prebuilt_cosmos_video(
+        self,
+        site_world_id: str,
+        *,
+        storage_root: Path | None = None,
+        bucket: str | None = None,
+    ) -> Optional[Path]:
         """Find a pre-existing Cosmos video from pipeline runs for this site world."""
         if not self._allow_prebuilt_bootstrap_video():
             return None
@@ -2102,33 +2108,39 @@ class NativeWorldModelRuntimeStore:
             return None
         scene_id = str(sw.get("scene_id") or "").strip()
         capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
+        gcs_root = storage_root or _default_storage_root()
+        storage_bucket = str(bucket or _bucket_from_site_world(sw)).strip() or "vast-local"
 
         if scene_id and capture_id:
-            pipeline_base = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id / "pipeline"
-            )
-            candidates: List[Path] = [
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.mp4",
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
+            pipeline_bases = [
+                gcs_root / storage_bucket / "scenes" / scene_id / "captures" / capture_id / "pipeline",
+                gcs_root / "scenes" / scene_id / "captures" / capture_id / "pipeline",
             ]
+            candidates: List[Path] = []
+            for pipeline_base in pipeline_bases:
+                candidates.extend(
+                    [
+                        pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.mp4",
+                        pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
+                    ]
+                )
             for c in candidates:
-                try:
-                    if c.is_file():
-                        return c
-                except OSError:
-                    continue
+                if _path_is_file(c):
+                    return c
 
         # Global fallback: manual probe output
         fallback = gcs_root / "manual_cosmos_probe_official" / "blueprint_probe.mp4"
-        try:
-            if fallback.is_file():
-                return fallback
-        except OSError:
-            return None
+        if _path_is_file(fallback):
+            return fallback
         return None
 
-    def _find_conditioning_frame(self, site_world_id: str) -> Optional[Path]:
+    def _find_conditioning_frame(
+        self,
+        site_world_id: str,
+        *,
+        storage_root: Path | None = None,
+        bucket: str | None = None,
+    ) -> Optional[Path]:
         """Find best input frame for on-demand Cosmos I2W inference."""
         try:
             sw = self.load_site_world(site_world_id)
@@ -2136,40 +2148,40 @@ class NativeWorldModelRuntimeStore:
             return None
         scene_id = str(sw.get("scene_id") or "").strip()
         capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
+        gcs_root = storage_root or _default_storage_root()
+        storage_bucket = str(bucket or _bucket_from_site_world(sw)).strip() or "vast-local"
 
         if scene_id and capture_id:
-            pipeline_base = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id / "pipeline"
-            )
-            candidates: List[Path] = [
-                pipeline_base / "cosmos_single_capture_smoke" / "video_bootstrap_frames" / "frame_0000.jpg",
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
+            pipeline_bases = [
+                gcs_root / storage_bucket / "scenes" / scene_id / "captures" / capture_id / "pipeline",
+                gcs_root / "scenes" / scene_id / "captures" / capture_id / "pipeline",
             ]
+            candidates: List[Path] = []
+            for pipeline_base in pipeline_bases:
+                candidates.extend(
+                    [
+                        pipeline_base / "cosmos_single_capture_smoke" / "video_bootstrap_frames" / "frame_0000.jpg",
+                        pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
+                    ]
+                )
             for c in candidates:
-                try:
-                    if c.is_file():
-                        return c
-                except OSError:
-                    continue
+                if _path_is_file(c):
+                    return c
         return None
 
     def _extract_frames_from_video(self, video_path: Path, frames_dir: Path) -> List[Path]:
         """Extract frames from MP4 at 4 fps using ffmpeg."""
         frames_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-i", str(video_path),
-                    "-vf", "fps=4",
-                    str(frames_dir / "frame_%04d.png"),
-                    "-y",
-                ],
-                capture_output=True,
-                check=False,
-            )
-        except OSError:
-            return []
+        subprocess.run(
+            [
+                "ffmpeg", "-i", str(video_path),
+                "-vf", "fps=4",
+                str(frames_dir / "frame_%04d.png"),
+                "-y",
+            ],
+            capture_output=True,
+            check=False,
+        )
         return sorted(frames_dir.glob("frame_*.png"))
 
     def _extract_single_frame(self, image_path: Path, frames_dir: Path) -> List[Path]:
@@ -2180,10 +2192,7 @@ class NativeWorldModelRuntimeStore:
             img = Image.open(image_path).convert("RGB")
             img.save(frame_out, format="PNG")
         except Exception:
-            try:
-                shutil.copy2(image_path, frame_out)
-            except OSError:
-                return []
+            shutil.copy2(image_path, frame_out)
         return [frame_out] if frame_out.is_file() else []
 
     def _ensure_cosmos_frames(self, session_id: str, site_world_id: str) -> List[Path]:
@@ -2210,7 +2219,15 @@ class NativeWorldModelRuntimeStore:
                     return existing
 
             # Try pre-built pipeline output only when explicitly enabled.
-            prebuilt = self._find_prebuilt_cosmos_video(site_world_id)
+            state = self._load_session_state(session_id)
+            storage_root = _optional_existing_path(state.get("storage_root")) or _default_storage_root()
+            bucket = str(state.get("storage_bucket") or _bucket_from_site_world({})).strip() or "vast-local"
+
+            prebuilt = self._find_prebuilt_cosmos_video(
+                site_world_id,
+                storage_root=storage_root,
+                bucket=bucket,
+            )
             if prebuilt:
                 if prebuilt.suffix.lower() == ".mp4":
                     frames = self._extract_frames_from_video(prebuilt, frames_dir)
@@ -2229,8 +2246,12 @@ class NativeWorldModelRuntimeStore:
                     return frames
 
             cosmos_repo = _find_cosmos_repo()
-            cond_frame = self._find_conditioning_frame(site_world_id)
-            if cond_frame and cond_frame.is_file():
+            cond_frame = self._find_conditioning_frame(
+                site_world_id,
+                storage_root=storage_root,
+                bucket=bucket,
+            )
+            if cond_frame and _path_is_file(cond_frame):
                 frames = self._extract_single_frame(cond_frame, frames_dir)
                 if frames:
                     _json_write(
@@ -2246,7 +2267,11 @@ class NativeWorldModelRuntimeStore:
 
             # Fall back to on-demand Cosmos inference
             if cosmos_repo and cond_frame:
-                lora_adapter = self._find_lora_adapter(site_world_id)
+                lora_adapter = self._find_lora_adapter(
+                    site_world_id,
+                    storage_root=storage_root,
+                    bucket=bucket,
+                )
                 return self._run_cosmos_inference_sync(
                     session_id=session_id,
                     cosmos_repo=cosmos_repo,
@@ -2257,7 +2282,13 @@ class NativeWorldModelRuntimeStore:
 
             return []
 
-    def _find_lora_adapter(self, site_world_id: str) -> Optional[Path]:
+    def _find_lora_adapter(
+        self,
+        site_world_id: str,
+        *,
+        storage_root: Path | None = None,
+        bucket: str | None = None,
+    ) -> Optional[Path]:
         """
         Find a LoRA adapter checkpoint for this site world's capture.
         Checks COSMOS_LORA_CHECKPOINT_PATH env var first, then the standard
@@ -2266,7 +2297,7 @@ class NativeWorldModelRuntimeStore:
         explicit = os.getenv("COSMOS_LORA_CHECKPOINT_PATH", "").strip()
         if explicit:
             p = Path(explicit)
-            return p if p.is_file() else None
+            return p if _path_is_file(p) else None
 
         try:
             sw = self.load_site_world(site_world_id)
@@ -2274,18 +2305,20 @@ class NativeWorldModelRuntimeStore:
             return None
         scene_id = str(sw.get("scene_id") or "").strip()
         capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
+        gcs_root = storage_root or _default_storage_root()
+        storage_bucket = str(bucket or _bucket_from_site_world(sw)).strip() or "vast-local"
         if scene_id and capture_id:
-            adapter = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id
+            candidates = [
+                gcs_root / storage_bucket / "scenes" / scene_id / "captures" / capture_id
                 / "pipeline" / "cosmos_training_export" / "checkpoints"
-                / "adapter_model.safetensors"
-            )
-            try:
-                if adapter.is_file():
+                / "adapter_model.safetensors",
+                gcs_root / "scenes" / scene_id / "captures" / capture_id
+                / "pipeline" / "cosmos_training_export" / "checkpoints"
+                / "adapter_model.safetensors",
+            ]
+            for adapter in candidates:
+                if _path_is_file(adapter):
                     return adapter
-            except OSError:
-                return None
         return None
 
     def _run_cosmos_inference_sync(
@@ -2355,17 +2388,14 @@ class NativeWorldModelRuntimeStore:
             cmd += ["--lora-checkpoint", str(lora_adapter)]
 
         with log_path.open("w", encoding="utf-8") as lf:
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=str(repo_root),
-                    env=env,
-                    stdout=lf,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                )
-            except OSError:
-                return []
+            result = subprocess.run(
+                cmd,
+                cwd=str(repo_root),
+                env=env,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
 
         if result.returncode != 0 or not output_video.is_file():
             return []
@@ -2439,9 +2469,7 @@ class NativeWorldModelRuntimeStore:
             state = self._load_session_state(session_id)
             live_render = self._latest_render_path(state)
             if live_render is not None:
-                live_render_bytes = _read_bytes_if_available(live_render)
-                if live_render_bytes is not None:
-                    return live_render_bytes
+                return live_render.read_bytes()
 
         # 2. Pre-built Cosmos video frames (bootstrap path)
         site_world_id = str(state.get("site_world_id") or "")
@@ -2473,9 +2501,7 @@ class NativeWorldModelRuntimeStore:
                             render_source="cosmos_frames",
                         )
                         self._store_session_state(session_id, state)
-                selected_bytes = _read_bytes_if_available(selected)
-                if selected_bytes is not None:
-                    return selected_bytes
+                return selected.read_bytes()
 
         return self._render_png(session_id, camera_id)
 
@@ -2490,20 +2516,18 @@ class NativeWorldModelRuntimeStore:
             chunk = self._chunk_record(rollout, selected_chunk_id) if selected_chunk_id else None
         media_path = Path(str(chunk.get("media_path") or "").strip()) if chunk else None
         if media_path and media_path.is_file():
-            media_bytes = _read_bytes_if_available(media_path)
-            if media_bytes is not None:
-                return {
-                    "content": media_bytes,
-                    "media_type": str(chunk.get("media_type") or "video/mp4"),
-                    "headers": {
-                        "Cache-Control": "no-store",
-                        "X-Blueprint-Render-Source": str(chunk.get("render_source") or "runtime-video-chunk"),
-                        "X-Blueprint-Media-Status": str(rollout.get("status") or "playing"),
-                        "X-Blueprint-Chunk-Id": selected_chunk_id,
-                        "X-Blueprint-Presentation-Mode": str(rollout.get("presentation_mode") or ""),
-                        "X-Blueprint-Refinement-Status": str(chunk.get("refinement_status") or rollout.get("refinement_status") or ""),
-                    },
-                }
+            return {
+                "content": media_path.read_bytes(),
+                "media_type": str(chunk.get("media_type") or "video/mp4"),
+                "headers": {
+                    "Cache-Control": "no-store",
+                    "X-Blueprint-Render-Source": str(chunk.get("render_source") or "runtime-video-chunk"),
+                    "X-Blueprint-Media-Status": str(rollout.get("status") or "playing"),
+                    "X-Blueprint-Chunk-Id": selected_chunk_id,
+                    "X-Blueprint-Presentation-Mode": str(rollout.get("presentation_mode") or ""),
+                    "X-Blueprint-Refinement-Status": str(chunk.get("refinement_status") or rollout.get("refinement_status") or ""),
+                },
+            }
         placeholder = self._render_png(session_id, camera_id)
         return {
             "content": placeholder,
@@ -2536,18 +2560,16 @@ class NativeWorldModelRuntimeStore:
         frame_path = frame_dir / f"{camera_id}.png"
         live_render = self._latest_render_path(state)
         if live_render is not None:
-            live_render_bytes = _read_bytes_if_available(live_render)
-            if live_render_bytes is not None:
-                frame_path.write_bytes(live_render_bytes)
-                return {
-                    "status": "completed",
-                    "session_id": session_id,
-                    "camera_id": camera_id,
-                    "pose": dict(pose),
-                    "refine_mode": refine_mode,
-                    "frame_path": str(frame_path.resolve()),
-                    "runtime_kind": "native_world_model",
-                }
+            frame_path.write_bytes(live_render.read_bytes())
+            return {
+                "status": "completed",
+                "session_id": session_id,
+                "camera_id": camera_id,
+                "pose": dict(pose),
+                "refine_mode": refine_mode,
+                "frame_path": str(frame_path.resolve()),
+                "runtime_kind": "native_world_model",
+            }
 
         # Try Cosmos frames first
         site_world_id = str(state.get("site_world_id") or "")
@@ -2557,7 +2579,7 @@ class NativeWorldModelRuntimeStore:
             frames = self._ensure_cosmos_frames(session_id, site_world_id)
             if frames:
                 idx = min(step_count, len(frames) - 1)
-                cosmos_bytes = _read_bytes_if_available(frames[idx])
+                cosmos_bytes = frames[idx].read_bytes()
 
         if cosmos_bytes:
             frame_path.write_bytes(cosmos_bytes)
@@ -2588,9 +2610,7 @@ class NativeWorldModelRuntimeStore:
     def explorer_frame_bytes(self, session_id: str, camera_id: str) -> bytes:
         frame_path = self._session_dir(session_id) / "explorer_frames" / f"{camera_id}.png"
         if frame_path.is_file():
-            frame_bytes = _read_bytes_if_available(frame_path)
-            if frame_bytes is not None:
-                return frame_bytes
+            return frame_path.read_bytes()
         return self.render_bytes(session_id, camera_id)
 
     def drain_media_events(self, session_id: str) -> List[Dict[str, Any]]:

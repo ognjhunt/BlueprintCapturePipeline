@@ -702,6 +702,8 @@ def _ffprobe_capture_orientation(video_path: Path) -> Dict[str, Any]:
             capture_output=True,
         )
     except OSError:
+        # Orientation probing is optional enrichment; callers fall back to
+        # declared metadata or dimension inference when the tool is unavailable.
         return {}
     if result.returncode != 0:
         return {}

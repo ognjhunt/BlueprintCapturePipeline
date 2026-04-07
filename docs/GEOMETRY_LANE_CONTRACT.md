@@ -1,6 +1,6 @@
 # Geometry Lane Contract
 
-This document defines the new `raw/walkthrough.mov -> pipeline/geometry/` lane for
+This document defines the new `raw/walkthrough.mov|mp4 -> pipeline/geometry/` lane for
 Meta-glasses and other non-ARKit video captures that need world-model-friendly geometry
 conditioning.
 

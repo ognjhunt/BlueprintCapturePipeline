@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -195,6 +194,26 @@ def test_recapture_planner_eval_rejects_uncited_geometry_drift(monkeypatch, tmp_
                         "detail": "Restricted mezzanine access prevents verification of the east-side drop zone; escort required.",
                         "preferred_capture_mode": "iphone_arkit_lidar",
                     }
+                ],
+            }
+        if "Case: mixed_access" in prompt:
+            return {
+                "schema_version": "v1",
+                "scene_id": "scene-recapture-3",
+                "capture_id": "capture-recapture-3",
+                "required": True,
+                "access_pending": True,
+                "steps": [
+                    {
+                        "order": 1,
+                        "detail": "Restricted mezzanine access prevents verification of the east-side drop zone; escort required.",
+                        "preferred_capture_mode": "iphone_arkit_lidar",
+                    },
+                    {
+                        "order": 2,
+                        "detail": "Route segment A3-B1 width measured at 2.4 m, below required shared-traffic clearance.",
+                        "preferred_capture_mode": "iphone_arkit_lidar",
+                    },
                 ],
             }
         return {

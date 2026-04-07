@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -55,6 +56,30 @@ def derive_webapp_opportunity_state(*, qualification_state: object) -> str:
     return "not_applicable"
 
 
+def _read_capture_completion_timestamp(raw_capture_complete_path: object) -> str:
+    if not raw_capture_complete_path:
+        return ""
+
+    try:
+        path = Path(raw_capture_complete_path)
+    except TypeError:
+        return ""
+
+    if not path.is_file():
+        return ""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+    if not isinstance(payload, Mapping):
+        return ""
+
+    text = str(payload.get("completed_at") or payload.get("upload_completed_at") or "").strip()
+    return text
+
+
 def build_webapp_pipeline_attachment_payload(
     *,
     site_submission_id: object,
@@ -70,6 +95,7 @@ def build_webapp_pipeline_attachment_payload(
     derived_assets: Optional[Mapping[str, Any]] = None,
     deployment_readiness: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
+    raw_capture_complete_path: object = None,
 ) -> Dict[str, Any]:
     payload = {
         "schema_version": "v1",
@@ -80,6 +106,7 @@ def build_webapp_pipeline_attachment_payload(
         "scene_id": str(scene_id or "").strip(),
         "capture_id": str(capture_id or "").strip(),
         "pipeline_prefix": str(pipeline_prefix or "").strip(),
+        "latest_capture_completed_at": _read_capture_completion_timestamp(raw_capture_complete_path),
         "qualification_state": str(qualification_state or "").strip(),
         "opportunity_state": str(opportunity_state or "").strip(),
         "authoritative_state_update": bool(authoritative_state_update),
@@ -115,6 +142,7 @@ def sync_webapp_pipeline_attachment(
     derived_assets: Optional[Mapping[str, Any]] = None,
     deployment_readiness: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
+    raw_capture_complete_path: object = None,
 ) -> Dict[str, Any]:
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
     sync_token = _string_env("PIPELINE_SYNC_TOKEN")
@@ -139,6 +167,7 @@ def sync_webapp_pipeline_attachment(
         scene_id=scene_id,
         capture_id=capture_id,
         pipeline_prefix=pipeline_prefix,
+        raw_capture_complete_path=raw_capture_complete_path,
         qualification_state=qualification_state,
         opportunity_state=opportunity_state,
         artifacts=artifacts,
