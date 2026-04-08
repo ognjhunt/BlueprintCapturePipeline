@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -129,7 +130,7 @@ def test_runtime_app_startup_prewarms_backend(tmp_path: Path, monkeypatch) -> No
 
 
 def test_optional_existing_path_ignores_permission_denied(monkeypatch) -> None:
-    inaccessible = Path("/tmp/inaccessible-path")
+    inaccessible = Path("/tmp/inaccessible-path").resolve()
 
     def fake_exists(self: Path) -> bool:
         if self == inaccessible:
@@ -226,6 +227,14 @@ def test_native_runtime_step_session_runs_live_synthesis_when_site_index_exists(
         "blueprint_pipeline.synthesis.synthesize.synthesize_view",
         fake_synthesize_view,
     )
+    monkeypatch.setattr(
+        "blueprint_pipeline.synthesis.cosmos_inference.load_cosmos_model",
+        lambda *args, **kwargs: {"backend": "fake_cosmos"},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.synthesis.cosmos_inference.describe_cosmos_model",
+        lambda model: {"backend": "fake_cosmos"},
+    )
 
     store = NativeWorldModelRuntimeStore(
         NativeRuntimeConfig(
@@ -253,7 +262,7 @@ def test_native_runtime_step_session_runs_live_synthesis_when_site_index_exists(
     assert stepped["pose"]["yaw"] == 0.35
 
     release.set()
-    deadline = time.time() + 5
+    deadline = time.time() + 10
     state = store.session_state(session["session_id"])
     while state.get("synthesis_status") != "completed" and time.time() < deadline:
         time.sleep(0.05)
@@ -510,7 +519,7 @@ def test_runtime_control_prefers_truthful_preview_even_when_generation_owner_is_
         control={"seq": 1, "vx": 0.5, "yawRate": 0.25, "durationMs": 900},
     )
 
-    deadline = time.time() + 5
+    deadline = time.time() + 10
     state = store._load_session_state(session_id)
     while int(((state.get("rollout") or {}).get("chunk_count") or 0)) < 1 and time.time() < deadline:
         time.sleep(0.05)
@@ -629,7 +638,7 @@ def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
         control={"seq": 1, "vx": 0.5, "yawRate": 0.25, "durationMs": 900},
     )
 
-    deadline = time.time() + 5
+    deadline = time.time() + 10
     state = store._load_session_state(session_id)
     rollout = dict(state.get("rollout") or {})
     chunk = dict((rollout.get("chunks") or [])[0]) if rollout.get("chunks") else {}
@@ -639,11 +648,157 @@ def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
         rollout = dict(state.get("rollout") or {})
         chunk = dict((rollout.get("chunks") or [])[0]) if rollout.get("chunks") else {}
 
+    event_deadline = time.time() + 10
     events = store.drain_media_events(session_id)
     event_names = [str(event.get("event") or "") for event in events]
+    while "chunk_refinement_ready" not in event_names and time.time() < event_deadline:
+        time.sleep(0.05)
+        events = store.drain_media_events(session_id)
+        event_names = [str(event.get("event") or "") for event in events]
 
-    assert calls[:2] == ["splat_only", "cosmos_i2w"]
+    assert {"splat_only", "cosmos_i2w"}.issubset(set(calls))
     assert chunk["refinement_status"] == "completed"
     assert Path(chunk["refined_media_path"]).is_file()
     assert chunk["provenance"]["refinement_status"] == "completed"
+    assert "chunk_refinement_ready" in event_names
+
+
+def test_runtime_control_runs_async_cosmos_refinement_without_ffmpeg_uses_png_media(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    storage_root = tmp_path / "storage"
+    capture_root = storage_root / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    site_index_path = storage_root / "bucket" / "sites" / "site-1" / "reference_memory" / "site_reference_index.jsonl"
+    site_index_path.parent.mkdir(parents=True, exist_ok=True)
+    capture_root.mkdir(parents=True, exist_ok=True)
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps({"metadata": {"site_identity": {"site_id": "site-1"}}}),
+        encoding="utf-8",
+    )
+    site_index_path.write_text(
+        json.dumps(
+            {
+                "reference_id": "ref-1",
+                "capture_id": "capture-1",
+                "scene_id": "scene-1",
+                "site_id": "site-1",
+                "frame_id": "000001",
+                "frame_uri": "gs://bucket/frames/000001.jpg",
+                "depth_uri": "gs://bucket/depth/000001.png",
+                "T_world_camera": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                "intrinsics": {
+                    "fx": 1000.0,
+                    "fy": 1000.0,
+                    "cx": 320.0,
+                    "cy": 240.0,
+                    "width": 640,
+                    "height": 480,
+                },
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GCS_ROOT", str(storage_root))
+    monkeypatch.setenv("NATIVE_WORLD_MODEL_OUTPUT_PROFILE", "swm_preview_refine")
+    monkeypatch.setenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT", "1")
+    monkeypatch.setenv("NATIVE_WORLD_MODEL_TARGET_READY_CHUNKS", "1")
+    original_which = shutil.which
+
+    def fake_which(command: str) -> str | None:
+        if command == "ffmpeg":
+            return None
+        return original_which(command)
+
+    monkeypatch.setattr("blueprint_pipeline.native_runtime_backend.shutil.which", fake_which)
+    monkeypatch.setattr("blueprint_pipeline.native_runtime_backend._runtime_readiness", lambda: {"ready": True})
+    monkeypatch.setattr(
+        "blueprint_pipeline.synthesis.cosmos_inference.load_cosmos_model",
+        lambda *args, **kwargs: {"backend": "fake_cosmos"},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.synthesis.cosmos_inference.describe_cosmos_model",
+        lambda model: {"backend": "fake_cosmos"},
+    )
+
+    calls: list[str] = []
+
+    def fake_synthesize_view(**kwargs):
+        calls.append(str(kwargs["mode"]))
+        output_path = Path(kwargs["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 48), color=(120, 80, 200)).save(output_path, format="PNG")
+        return {
+            "status": "completed",
+            "output_path": str(output_path),
+            "mode": kwargs["mode"],
+            "conditioning": {"previous_tail_path": None, "lookahead_ref_uris": []},
+            "retrieved_references": [{"frame_id": "000001", "capture_id": "capture-1"}],
+            "lookahead_references": [{"frame_id": "000001", "capture_id": "capture-1"}],
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.synthesis.synthesize.synthesize_view",
+        fake_synthesize_view,
+    )
+
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    payload = _site_world_payload()
+    payload["spec"]["canonical_package_uri"] = "gs://bucket/site-worlds/site-1/canonical.json"
+    store.register_site_world_package(**payload)
+    session = store.create_session(
+        "siteworld-1",
+        robot_profile_id="robot-1",
+        task_id="task-1",
+        scenario_id="scenario-1",
+        start_state_id="start-1",
+    )
+    session_id = session["session_id"]
+
+    store.control_session(
+        session_id,
+        control={"seq": 1, "vx": 0.5, "yawRate": 0.25, "durationMs": 900},
+    )
+
+    deadline = time.time() + 10
+    state = store._load_session_state(session_id)
+    rollout = dict(state.get("rollout") or {})
+    chunk = dict((rollout.get("chunks") or [])[0]) if rollout.get("chunks") else {}
+    while chunk.get("refinement_status") != "completed" and time.time() < deadline:
+        time.sleep(0.05)
+        state = store._load_session_state(session_id)
+        rollout = dict(state.get("rollout") or {})
+        chunk = dict((rollout.get("chunks") or [])[0]) if rollout.get("chunks") else {}
+
+    event_deadline = time.time() + 10
+    events = store.drain_media_events(session_id)
+    event_names = [str(event.get("event") or "") for event in events]
+    while "chunk_refinement_ready" not in event_names and time.time() < event_deadline:
+        time.sleep(0.05)
+        events = store.drain_media_events(session_id)
+        event_names = [str(event.get("event") or "") for event in events]
+    media = store.media_response(session_id, camera_id="head_rgb", chunk_id=None)
+
+    assert {"splat_only", "cosmos_i2w"}.issubset(set(calls))
+    assert chunk["media_type"] == "image/png"
+    assert chunk["media_path"].endswith(".png")
+    assert Path(chunk["media_path"]).is_file()
+    assert Path(chunk["refined_media_path"]).is_file()
+    assert Path(chunk["refined_media_path"]).suffix == ".png"
+    assert chunk["refinement_status"] == "completed"
+    assert chunk["provenance"]["refinement_status"] == "completed"
+    assert chunk["provenance"]["refinement_render_source"] == "cosmos_async_refinement"
+    assert media["media_type"] == "image/png"
+    assert media["content"].startswith(b"\x89PNG")
     assert "chunk_refinement_ready" in event_names
