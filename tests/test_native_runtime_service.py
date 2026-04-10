@@ -14,6 +14,7 @@ from blueprint_pipeline.native_runtime_backend import (
     NativeWorldModelRuntimeStore,
     _find_cosmos_repo,
     _optional_existing_path,
+    _mp4_is_fragmented,
 )
 from blueprint_pipeline.runtime_service_app import create_runtime_app
 
@@ -164,6 +165,78 @@ def test_find_cosmos_repo_ignores_permission_denied_candidates(monkeypatch, tmp_
     assert repo is not None
     assert repo[0] == ready
     assert repo[1] == ready / ".venv" / "bin" / "python"
+
+
+def test_bootstrap_video_chunk_uses_png_fallback_when_ffmpeg_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    storage_root = tmp_path / "storage"
+    capture_root = storage_root / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    cond_frame = (
+        capture_root
+        / "pipeline"
+        / "cosmos_single_capture_smoke"
+        / "video_bootstrap_frames"
+        / "frame_0000.jpg"
+    )
+    cond_frame.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (64, 48), color=(200, 100, 50)).save(cond_frame, format="JPEG")
+    monkeypatch.setenv("GCS_ROOT", str(storage_root))
+
+    original_which = shutil.which
+
+    def fake_which(command: str) -> str | None:
+        if command == "ffmpeg":
+            return None
+        return original_which(command)
+
+    monkeypatch.setattr("blueprint_pipeline.native_runtime_backend.shutil.which", fake_which)
+
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    payload = _site_world_payload()
+    payload["spec"]["canonical_package_uri"] = "gs://bucket/site-worlds/site-1/canonical.json"
+    store.register_site_world_package(**payload)
+    session = store.create_session(
+        "siteworld-1",
+        robot_profile_id="robot-1",
+        task_id="task-1",
+        scenario_id="scenario-1",
+        start_state_id="start-1",
+    )
+
+    store._ensure_initial_rollout_chunk(session["session_id"], "siteworld-1")
+    state = store.session_state(session["session_id"])
+    rollout = dict(state.get("rollout") or {})
+    chunk = dict((rollout.get("chunks") or [])[0]) if rollout.get("chunks") else {}
+
+    assert chunk["media_type"] == "image/png"
+    assert Path(chunk["media_path"]).suffix == ".png"
+    assert Path(chunk["media_path"]).is_file()
+
+    media = store.media_response(session["session_id"], camera_id="head_rgb", chunk_id=None)
+    assert media["media_type"] == "image/png"
+    assert media["content"].startswith(b"\x89PNG")
+
+
+def test_mp4_fragment_detection_uses_file_boxes(tmp_path: Path) -> None:
+    regular_mp4 = tmp_path / "regular.mp4"
+    fragmented_mp4 = tmp_path / "fragmented.mp4"
+
+    def box(box_type: bytes, payload: bytes = b"") -> bytes:
+        return (8 + len(payload)).to_bytes(4, "big") + box_type + payload
+
+    regular_mp4.write_bytes(box(b"ftyp", b"isom") + box(b"moov") + box(b"mdat", b"\x00" * 4))
+    fragmented_mp4.write_bytes(box(b"ftyp", b"isom") + box(b"moov") + box(b"moof") + box(b"mdat", b"\x00" * 4))
+
+    assert _mp4_is_fragmented(regular_mp4) is False
+    assert _mp4_is_fragmented(fragmented_mp4) is True
 
 
 def test_native_runtime_step_session_runs_live_synthesis_when_site_index_exists(
@@ -521,11 +594,15 @@ def test_runtime_control_prefers_truthful_preview_even_when_generation_owner_is_
 
     deadline = time.time() + 10
     state = store._load_session_state(session_id)
-    while int(((state.get("rollout") or {}).get("chunk_count") or 0)) < 1 and time.time() < deadline:
+    rollout = dict(state.get("rollout") or {})
+    while (
+        int(rollout.get("chunk_count") or 0) < 1
+        or not rollout.get("chunks")
+    ) and time.time() < deadline:
         time.sleep(0.05)
         state = store._load_session_state(session_id)
+        rollout = dict(state.get("rollout") or {})
 
-    rollout = dict(state.get("rollout") or {})
     chunk = dict((rollout.get("chunks") or [])[0])
 
     assert modes == ["splat_only"]
@@ -784,10 +861,11 @@ def test_runtime_control_runs_async_cosmos_refinement_without_ffmpeg_uses_png_me
     event_deadline = time.time() + 10
     events = store.drain_media_events(session_id)
     event_names = [str(event.get("event") or "") for event in events]
-    while "chunk_refinement_ready" not in event_names and time.time() < event_deadline:
+    while ("chunk_refinement_ready" not in event_names or "chunk_ready" not in event_names) and time.time() < event_deadline:
         time.sleep(0.05)
         events = store.drain_media_events(session_id)
         event_names = [str(event.get("event") or "") for event in events]
+    chunk_ready_event = next(event for event in events if event.get("event") == "chunk_ready")
     media = store.media_response(session_id, camera_id="head_rgb", chunk_id=None)
 
     assert {"splat_only", "cosmos_i2w"}.issubset(set(calls))
@@ -801,4 +879,5 @@ def test_runtime_control_runs_async_cosmos_refinement_without_ffmpeg_uses_png_me
     assert chunk["provenance"]["refinement_render_source"] == "cosmos_async_refinement"
     assert media["media_type"] == "image/png"
     assert media["content"].startswith(b"\x89PNG")
+    assert chunk_ready_event["is_fmp4"] is False
     assert "chunk_refinement_ready" in event_names

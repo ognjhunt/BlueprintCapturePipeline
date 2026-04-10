@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import mimetypes
 import json
 import math
 import os
@@ -77,6 +78,52 @@ def _path_is_file(path: Path) -> bool:
     except OSError:
         # Probe-style filesystem checks must not fail runtime readiness or
         # session startup when mounted paths are inaccessible.
+        return False
+
+
+def _materialize_png_from_image(source_path: Path, output_path: Path) -> bool:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with Image.open(source_path) as image:
+            image.convert("RGB").save(output_path, format="PNG")
+    except Exception:
+        return False
+    return _path_is_file(output_path)
+
+
+def _mp4_is_fragmented(path: Path) -> bool:
+    """Best-effort check for fragmented MP4 output.
+
+    We only need a cheap truth signal for the runtime event payload, so scan
+    the top-level MP4 boxes until we see a `moof` fragment atom.
+    """
+    if not path.is_file() or path.suffix.lower() != ".mp4":
+        return False
+    try:
+        with path.open("rb") as fh:
+            while True:
+                header = fh.read(8)
+                if len(header) < 8:
+                    return False
+                box_size = int.from_bytes(header[:4], "big")
+                box_type = header[4:8]
+                if box_type == b"moof":
+                    return True
+                if box_size == 1:
+                    large_size_bytes = fh.read(8)
+                    if len(large_size_bytes) < 8:
+                        return False
+                    large_size = int.from_bytes(large_size_bytes, "big")
+                    if large_size < 16:
+                        return False
+                    fh.seek(large_size - 16, 1)
+                    continue
+                if box_size == 0:
+                    return False
+                if box_size < 8:
+                    return False
+                fh.seek(box_size - 8, 1)
+    except Exception:
         return False
 
 
@@ -1271,13 +1318,27 @@ class NativeWorldModelRuntimeStore:
                     "duration_ms": self._rollout_defaults()["chunk_duration_ms"],
                     "tail_path": str(tail_path.resolve()) if tail_path.is_file() else None,
                 }
-            # ffmpeg unavailable — deliver the conditioning frame as PNG
+            png_chunk_path = still_chunk_path.with_suffix(".png")
+            if _materialize_png_from_image(cond_frame, png_chunk_path):
+                return {
+                    "chunk_id": "chunk-0000",
+                    "chunk_index": 0,
+                    "status": "ready",
+                    "media_path": str(png_chunk_path.resolve()),
+                    "media_type": "image/png",
+                    "render_source": "bootstrap_conditioning_frame",
+                    "duration_ms": self._rollout_defaults()["chunk_duration_ms"],
+                    "tail_path": None,
+                }
+            # ffmpeg unavailable or local image re-encoding failed. Fall back
+            # to the source file with its true media type rather than
+            # mislabeling the bytes.
             return {
                 "chunk_id": "chunk-0000",
                 "chunk_index": 0,
                 "status": "ready",
                 "media_path": str(cond_frame.resolve()),
-                "media_type": "image/png",
+                "media_type": str(mimetypes.guess_type(str(cond_frame))[0] or "application/octet-stream"),
                 "render_source": "bootstrap_conditioning_frame",
                 "duration_ms": self._rollout_defaults()["chunk_duration_ms"],
                 "tail_path": None,
@@ -1780,7 +1841,7 @@ class NativeWorldModelRuntimeStore:
                 "worker_backend": worker_backend,
                 "presentation_mode": str(ready_chunk.get("presentation_mode") or ""),
                 "refinement_status": str(ready_chunk.get("refinement_status") or ""),
-                "is_fmp4": True,
+                "is_fmp4": _mp4_is_fragmented(video_path),
                 "ts": _utc_now_iso(),
             })
             if refinement_requested:
