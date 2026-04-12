@@ -459,6 +459,20 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
         "/capturer_payout_recommendation.json"
     )
     assert sync_calls[1]["artifacts"]["launch_gate_summary_uri"].endswith("/launch_gate_summary.json")
+    assert sync_calls[1]["artifacts"]["site_package_manifest_uri"].endswith(
+        "/evaluation_prep/site_package_manifest.json"
+    )
+    assert sync_calls[1]["artifacts"]["proof_pack_manifest_uri"].endswith(
+        "/evaluation_prep/proof_pack_manifest.json"
+    )
+    assert sync_calls[1]["artifacts"]["hosted_review_readiness_uri"].endswith(
+        "/evaluation_prep/hosted_review_readiness.json"
+    )
+    assert sync_calls[1]["artifacts"]["rights_provenance_review_uri"].endswith(
+        "/rights_provenance_review.json"
+    )
+    assert sync_calls[1]["deployment_readiness"]["site_package_manifest"]["status"] in {"ready", "blocked"}
+    assert sync_calls[1]["deployment_readiness"]["proof_pack_manifest"]["status"] in {"ready", "blocked"}
 
 
 def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypatch, tmp_path: Path) -> None:

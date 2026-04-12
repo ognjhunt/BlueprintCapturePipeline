@@ -7,7 +7,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
-from .common import parse_bool, parse_gs_uri, read_json, to_pipeline_prefix, utc_now_iso, write_json
+from .common import (
+    optional_read_json,
+    parse_bool,
+    parse_gs_uri,
+    read_json,
+    to_pipeline_prefix,
+    utc_now_iso,
+    write_json,
+)
 from .webapp_sync import (
     WebappSyncError,
     derive_webapp_opportunity_state,
@@ -904,8 +912,14 @@ def sync_webapp_evaluation_prep(
     qualification_record = _read_json_object(pipeline_root / "qualification_record.json")
     scorecard = _read_json_object(pipeline_root / "capture_qa_scorecard.json")
     privacy_manifest = _read_json_object(pipeline_root / "privacy_processing_manifest.json")
+    provider_run_manifest = _read_json_object(pipeline_root / "provider_run_manifest.json")
     site_world_health = _read_json_object(eval_root / "site_world_health.json")
     evaluation_prep_summary = _read_json_object(eval_root / "evaluation_prep_summary.json")
+    rights_provenance_review = optional_read_json(pipeline_root / "rights_provenance_review.json") or {}
+    site_package_manifest = optional_read_json(eval_root / "site_package_manifest.json") or {}
+    proof_pack_manifest = optional_read_json(eval_root / "proof_pack_manifest.json") or {}
+    hosted_review_readiness = optional_read_json(eval_root / "hosted_review_readiness.json") or {}
+    proof_path_status = optional_read_json(eval_root / "proof_path_status.json") or {}
     alpha_summary = write_alpha_readiness_summary(capture_root=capture_root, env=resolved_env)
     launch_gate_summary = write_launch_gate_summary(capture_root=capture_root, env=resolved_env)
 
@@ -934,6 +948,10 @@ def sync_webapp_evaluation_prep(
         "privacy_verification_report_uri": _artifact_if_exists("privacy_verification_report.json"),
         "webapp_sync_result_uri": _artifact_if_exists("webapp_sync_result.json"),
         "launch_gate_summary_uri": _artifact_if_exists("launch_gate_summary.json"),
+        "preview_manifest_uri": _artifact_if_exists("preview_manifest.json"),
+        "worldlabs_request_manifest_uri": _artifact_if_exists("worldlabs_request_manifest.json"),
+        "worldlabs_operation_manifest_uri": _artifact_if_exists("worldlabs_operation_manifest.json"),
+        "worldlabs_world_manifest_uri": _artifact_if_exists("worldlabs_world_manifest.json"),
         "scene_memory_manifest_uri": _artifact_if_exists("scene_memory/scene_memory_manifest.json"),
         "conditioning_bundle_uri": _artifact_if_exists("scene_memory/conditioning_bundle.json"),
         "preview_simulation_manifest_uri": _artifact_if_exists("preview_simulation/preview_simulation_manifest.json"),
@@ -950,11 +968,17 @@ def sync_webapp_evaluation_prep(
         "launchable_export_bundle_uri": _artifact_if_exists("evaluation_prep/launchable_export_bundle.json"),
         "evaluation_prep_manifest_uri": _artifact_if_exists("evaluation_prep/evaluation_prep_manifest.json"),
         "evaluation_prep_summary_uri": _artifact_if_exists("evaluation_prep/evaluation_prep_summary.json"),
+        "site_package_manifest_uri": _artifact_if_exists("evaluation_prep/site_package_manifest.json"),
+        "proof_pack_manifest_uri": _artifact_if_exists("evaluation_prep/proof_pack_manifest.json"),
+        "hosted_review_readiness_uri": _artifact_if_exists("evaluation_prep/hosted_review_readiness.json"),
+        "proof_path_status_uri": _artifact_if_exists("evaluation_prep/proof_path_status.json"),
+        "rights_provenance_review_uri": _artifact_if_exists("rights_provenance_review.json"),
         "geometry_manifest_uri": _artifact_if_exists("geometry/geometry_manifest.json"),
         "geometry_summary_uri": _artifact_if_exists("geometry/geometry_summary.json"),
         "privacy_depth_manifest_uri": _artifact_if_exists("privacy_depth/depth_manifest.json"),
         "privacy_confidence_manifest_uri": _artifact_if_exists("privacy_depth/confidence_manifest.json"),
         "alpha_readiness_summary_uri": _artifact_if_exists("alpha_readiness_summary.json"),
+        "worldlabs_launch_url": _present_value(provider_run_manifest, "worldlabs_launch_url", "preview_launch_url"),
         "privacy_processed_video_uri": _present_value(privacy_manifest, "privacy_processed_video_uri"),
         "world_model_video_uri": _present_value(privacy_manifest, "world_model_video_uri"),
     }
@@ -1033,6 +1057,11 @@ def sync_webapp_evaluation_prep(
         "evaluation_prep_summary": evaluation_prep_summary,
         "alpha_readiness": alpha_summary,
         "launch_gate_summary": launch_gate_summary,
+        "rights_provenance_review": rights_provenance_review,
+        "site_package_manifest": site_package_manifest,
+        "proof_pack_manifest": proof_pack_manifest,
+        "hosted_review_readiness": hosted_review_readiness,
+        "proof_path_status": proof_path_status,
     }
 
     result = sync_webapp_pipeline_attachment(

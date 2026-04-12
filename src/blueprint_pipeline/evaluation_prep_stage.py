@@ -13,6 +13,12 @@ from .alpha_readiness import sync_webapp_evaluation_prep, write_alpha_readiness_
 from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, relative_scene_path, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
 from .object_geometry_stage import resolve_object_geometry_manifest
+from .proof_contracts import (
+    build_hosted_review_readiness,
+    build_proof_pack_manifest,
+    build_proof_path_status,
+    build_site_package_manifest,
+)
 from .runtime_layer_grounding import (
     build_canonical_render_policy,
     build_presentation_variance_policy,
@@ -3603,6 +3609,117 @@ def run_evaluation_prep_stage(
             **({"simready_prep_manifest": _relative_to(eval_dir, simready_prep_manifest_path)} if simready_prep_manifest_path is not None else {}),
         },
     }
+    descriptor_payload = _read_optional_json_any(context.descriptor_path)
+    descriptor_metadata = (
+        descriptor_payload.get("metadata")
+        if isinstance(descriptor_payload, Mapping) and isinstance(descriptor_payload.get("metadata"), Mapping)
+        else {}
+    )
+    site_identity = (
+        descriptor_metadata.get("site_identity")
+        if isinstance(descriptor_metadata.get("site_identity"), Mapping)
+        else {}
+    )
+    adjacent_systems = _string_list(descriptor_metadata.get("adjacent_systems"))
+    rights_provenance_review = optional_read_json(pipeline_dir / "rights_provenance_review.json") or {}
+    preview_manifest = optional_read_json(pipeline_dir / "preview_manifest.json") or {}
+    provider_run_manifest = optional_read_json(pipeline_dir / "provider_run_manifest.json") or {}
+    worldlabs_launch_url = str(
+        provider_run_manifest.get("worldlabs_launch_url")
+        or provider_run_manifest.get("preview_launch_url")
+        or ""
+    ).strip() or None
+    runtime_demo_manifest = _read_json_object(runtime_demo_manifest_path)
+    demo_readiness = _presentation_demo_readiness(runtime_demo_manifest)
+    shared_artifact_uris = {
+        "qualified_opportunity_handoff_uri": _gs_uri(context, "evaluation_prep/qualified_opportunity_handoff.json"),
+        "evaluation_prep_manifest_uri": _gs_uri(context, "evaluation_prep/evaluation_prep_manifest.json"),
+        "site_world_spec_uri": _gs_uri(context, "evaluation_prep/site_world_spec.json"),
+        "site_world_registration_uri": _gs_uri(context, "evaluation_prep/site_world_registration.json"),
+        "site_world_health_uri": _gs_uri(context, "evaluation_prep/site_world_health.json"),
+        "hosted_session_runtime_manifest_uri": _gs_uri(context, "evaluation_prep/hosted_session_runtime_manifest.json"),
+        "launchable_export_bundle_uri": _gs_uri(context, "evaluation_prep/launchable_export_bundle.json"),
+        "runtime_demo_manifest_uri": _gs_uri(context, "presentation_world/runtime_demo_manifest.json"),
+        "authoritative_runtime_render_manifest_uri": _gs_uri(
+            context, "presentation_world/authoritative_runtime_render_manifest.json"
+        ),
+        "preview_manifest_uri": _gs_uri(context, "preview_manifest.json")
+        if (pipeline_dir / "preview_manifest.json").is_file()
+        else None,
+        "worldlabs_launch_url": worldlabs_launch_url,
+    }
+    site_package_manifest = build_site_package_manifest(
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        site_submission_id=str(normalized_handoff.get("site_submission_id") or ""),
+        opportunity_id=str(normalized_handoff.get("opportunity_id") or ""),
+        evaluation_prep_manifest=manifest,
+        site_world_spec=site_world_spec,
+        site_world_registration=site_world_registration,
+        site_world_health=site_world_health,
+        launchable_export_bundle=launchable_export_bundle,
+        site_identity=site_identity,
+        adjacent_systems=adjacent_systems,
+        rights_review=rights_provenance_review,
+        artifact_uris=shared_artifact_uris,
+    )
+    hosted_review_readiness = build_hosted_review_readiness(
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        site_submission_id=str(normalized_handoff.get("site_submission_id") or ""),
+        opportunity_id=str(normalized_handoff.get("opportunity_id") or ""),
+        site_identity=site_identity,
+        adjacent_systems=adjacent_systems,
+        preview_manifest_uri=(
+            shared_artifact_uris.get("preview_manifest_uri")
+            if isinstance(shared_artifact_uris.get("preview_manifest_uri"), str)
+            else None
+        ),
+        worldlabs_launch_url=worldlabs_launch_url,
+        runtime_demo_manifest_uri=_gs_uri(context, "presentation_world/runtime_demo_manifest.json"),
+        demo_readiness_state=str(demo_readiness.get("readiness_state") or "blocked"),
+        demo_blockers=_string_list(demo_readiness.get("blockers")),
+        site_world_health=site_world_health,
+        launchable_export_bundle=launchable_export_bundle,
+        artifact_uris=shared_artifact_uris,
+    )
+    proof_pack_manifest = build_proof_pack_manifest(
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        site_submission_id=str(normalized_handoff.get("site_submission_id") or ""),
+        opportunity_id=str(normalized_handoff.get("opportunity_id") or ""),
+        site_package_manifest=site_package_manifest,
+        rights_review=rights_provenance_review,
+        hosted_review_readiness=hosted_review_readiness,
+        artifact_uris={
+            **shared_artifact_uris,
+            "site_package_manifest_uri": _gs_uri(context, "evaluation_prep/site_package_manifest.json"),
+            "rights_provenance_review_uri": _gs_uri(context, "rights_provenance_review.json"),
+            "hosted_review_readiness_uri": _gs_uri(context, "evaluation_prep/hosted_review_readiness.json"),
+        },
+    )
+    proof_path_status = build_proof_path_status(
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        site_submission_id=str(normalized_handoff.get("site_submission_id") or ""),
+        opportunity_id=str(normalized_handoff.get("opportunity_id") or ""),
+        rights_review=rights_provenance_review,
+        site_package_manifest=site_package_manifest,
+        proof_pack_manifest=proof_pack_manifest,
+        hosted_review_readiness=hosted_review_readiness,
+    )
+    _copy_json(eval_dir / "site_package_manifest.json", site_package_manifest)
+    _copy_json(eval_dir / "hosted_review_readiness.json", hosted_review_readiness)
+    _copy_json(eval_dir / "proof_pack_manifest.json", proof_pack_manifest)
+    _copy_json(eval_dir / "proof_path_status.json", proof_path_status)
+    manifest["artifacts"].update(
+        {
+            "site_package_manifest": _relative_to(eval_dir, eval_dir / "site_package_manifest.json"),
+            "hosted_review_readiness": _relative_to(eval_dir, eval_dir / "hosted_review_readiness.json"),
+            "proof_pack_manifest": _relative_to(eval_dir, eval_dir / "proof_pack_manifest.json"),
+            "proof_path_status": _relative_to(eval_dir, eval_dir / "proof_path_status.json"),
+        }
+    )
     manifest_path = eval_dir / "evaluation_prep_manifest.json"
     _copy_json(manifest_path, manifest)
     webapp_sync_result = sync_webapp_evaluation_prep(capture_root=context.capture_root)

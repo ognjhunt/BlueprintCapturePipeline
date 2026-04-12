@@ -36,6 +36,7 @@ from .launch_bundle import build_buyer_trust_score, build_launch_qualification_b
 from .object_index_stage import ensure_object_index_stage
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
+from .proof_contracts import build_rights_provenance_review
 from .runtime_layer_grounding import build_presentation_variance_policy, with_grounding_fields
 from .scene_semantics import infer_capture_fidelity_review
 from .task_targets import infer_task_targets, write_task_targets
@@ -4664,6 +4665,28 @@ def run_qualification_pipeline(
         write_json(pipeline_dir / "buyer_trust_score.json", launch_bundle["buyer_trust_score"])
         write_json(pipeline_dir / "recapture_requirements.json", launch_bundle["recapture_requirements"])
         write_json(pipeline_dir / "provider_preview_status.json", launch_bundle["provider_preview_status"])
+        rights_provenance_review = build_rights_provenance_review(
+            rights_summary=launch_bundle["rights_and_compliance_summary"],
+            privacy_processing=privacy_processing,
+            provenance_summary=provenance_summary,
+            site_identity=(
+                effective_metadata.get("site_identity")
+                if isinstance(effective_metadata, Mapping)
+                and isinstance(effective_metadata.get("site_identity"), Mapping)
+                else {}
+            ),
+            adjacent_systems=_string_list(
+                effective_metadata.get("adjacent_systems")
+                if isinstance(effective_metadata, Mapping)
+                else None
+            ),
+            artifact_uris={
+                "rights_and_compliance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/rights_and_compliance_summary.json",
+                "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
+                "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
+            },
+        )
+        write_json(pipeline_dir / "rights_provenance_review.json", rights_provenance_review)
 
         completion_payload = _present_artifacts({
             "schema_version": "v1",
@@ -4729,6 +4752,7 @@ def run_qualification_pipeline(
             "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
             "privacy_verification_report_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
             "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
+            "rights_provenance_review_uri": f"gs://{bucket}/{pipeline_prefix}/rights_provenance_review.json",
             "gemini_capture_fidelity_review_uri": f"gs://{bucket}/{pipeline_prefix}/gemini_capture_fidelity_review.json",
             "provider_run_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/provider_run_manifest.json",
             "preview_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/preview_manifest.json",
@@ -4794,6 +4818,7 @@ def run_qualification_pipeline(
             "world_model_fit_summary": world_model_fit_summary,
             "capturer_payout_recommendation": capturer_payout_recommendation,
             "provenance_summary": provenance_summary,
+            "rights_provenance_review": rights_provenance_review,
             "advisory_geometry": _geometry_advisory_payload(geometry_artifacts),
         }
         webapp_sync_result_path = pipeline_dir / "webapp_sync_result.json"

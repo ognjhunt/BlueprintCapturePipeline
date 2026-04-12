@@ -300,21 +300,25 @@ def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_p
     assert (pipeline_root / "world_model_fit_summary.json").is_file()
     assert (pipeline_root / "capturer_payout_recommendation.json").is_file()
     assert (pipeline_root / "provenance_summary.json").is_file()
+    assert (pipeline_root / "rights_provenance_review.json").is_file()
     assert (pipeline_root / "buyer_trust_score.json").is_file()
     assert (pipeline_root / "provider_preview_status.json").is_file()
     assert sync_calls
     assert sync_calls[0]["artifacts"]["privacy_processed_video_uri"].endswith("/privacy/final_walkthrough.mov")
     assert sync_calls[0]["artifacts"]["world_model_video_uri"].endswith("/privacy/final_walkthrough.mov")
+    assert sync_calls[0]["artifacts"]["rights_provenance_review_uri"].endswith("/rights_provenance_review.json")
     assert "scene_memory_manifest_uri" not in sync_calls[0]["artifacts"]
     assert sync_calls[0]["derived_assets"] == {}
     payout = json.loads((pipeline_root / "capturer_payout_recommendation.json").read_text(encoding="utf-8"))
     quality = json.loads((pipeline_root / "capture_quality_summary.json").read_text(encoding="utf-8"))
     world_model_fit = json.loads((pipeline_root / "world_model_fit_summary.json").read_text(encoding="utf-8"))
+    rights_review = json.loads((pipeline_root / "rights_provenance_review.json").read_text(encoding="utf-8"))
     assert len(payout["bonus_breakdown"]) == 4
     assert payout["recommended_payout_cents"] >= payout["base_payout_cents"]
     assert quality["blur_assessment"]["status"] == "good"
     assert quality["coverage_completeness_assessment"]["status"] == "good"
     assert world_model_fit["status"] == "good_candidate"
+    assert rights_review["status"] == "cleared"
 
 
 def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_path: Path) -> None:
@@ -551,6 +555,7 @@ def test_bad_video_review_forces_recapture_and_lower_world_model_fit(monkeypatch
     world_model_fit = json.loads((pipeline_root / "world_model_fit_summary.json").read_text(encoding="utf-8"))
     recapture = json.loads((pipeline_root / "recapture_requirements.json").read_text(encoding="utf-8"))
     qualification = json.loads((pipeline_root / "qualification_record.json").read_text(encoding="utf-8"))
+    rights_review = json.loads((pipeline_root / "rights_provenance_review.json").read_text(encoding="utf-8"))
 
     assert quality["blur_assessment"]["status"] == "poor"
     assert quality["motion_speed_assessment"]["status"] == "poor"
@@ -559,3 +564,4 @@ def test_bad_video_review_forces_recapture_and_lower_world_model_fit(monkeypatch
     assert recapture["required"] is True
     assert recapture["recommendations"]
     assert qualification["readiness_state"] == "not_ready_yet"
+    assert rights_review["status"] in {"blocked", "needs_review"}

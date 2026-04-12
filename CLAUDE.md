@@ -20,3 +20,8 @@ pytest
 python -m blueprint_pipeline.run_e2e
 python scripts/run_external_alpha_launch_gate.py
 ```
+
+## gstack
+
+- Use the repo-local gstack install at `.agents/skills/gstack` when you need slash-skill workflows.
+- Prefer `/investigate`, `/review`, `/codex`, and `/cso` for cross-repo failures, security-sensitive work, and final review.
