@@ -39,6 +39,7 @@ def _build_staged_glasses_capture(tmp_path: Path, *, with_privacy_video: bool = 
                     "site_id_source": "test",
                 },
                 "requested_outputs": ["qualification"],
+                "disable_default_preview": True,
                 "capture_mode": {
                     "requested_mode": "site_world_candidate",
                     "resolved_mode": "qualification_only",

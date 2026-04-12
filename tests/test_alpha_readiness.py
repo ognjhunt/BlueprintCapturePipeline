@@ -153,6 +153,7 @@ def _set_alpha_env(monkeypatch, tmp_path: Path, *, include_runtime: bool, includ
         "PIPELINE_SYNC_TOKEN": "sync-token",
         "PIPELINE_SYNC_REQUIRED": "true",
         "GOOGLE_GENAI_API_KEY": "gemini-key",
+        "WORLDLABS_API_KEY": "worldlabs-key",
         "PRIVACY_PIPELINE_ENABLED": "true",
         "PRIVACY_FAIL_CLOSED": "true",
         "PRIVACY_RUNNER_TOKEN": "privacy-token",

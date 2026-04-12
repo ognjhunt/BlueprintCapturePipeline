@@ -21,6 +21,7 @@ from .common import (
 
 _IPHONE_POSE_MATCH_RATE_MIN = 0.65
 _IPHONE_P95_POSE_DELTA_MAX = 0.2
+_DEFAULT_REQUESTED_OUTPUTS = ["qualification", "preview_simulation"]
 
 
 def _read_optional_json(path: Path) -> Dict[str, Any]:
@@ -47,6 +48,39 @@ def _string_list(value: Any) -> List[str]:
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _default_preview_disabled(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> bool:
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), Mapping) else {}
+    for raw in (
+        context.get("disable_default_preview"),
+        context.get("disableDefaultPreview"),
+        manifest.get("disable_default_preview"),
+        manifest.get("disableDefaultPreview"),
+        metadata.get("disable_default_preview") if isinstance(metadata, Mapping) else None,
+        metadata.get("disableDefaultPreview") if isinstance(metadata, Mapping) else None,
+    ):
+        if raw is not None:
+            return parse_bool(raw, default=False)
+    return False
+
+
+def _normalized_requested_outputs(
+    manifest: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> List[str]:
+    requested_outputs = _string_list(
+        manifest.get("requested_outputs")
+        or manifest.get("requestedOutputs")
+        or context.get("requested_outputs")
+        or context.get("requestedOutputs")
+    )
+    if _default_preview_disabled(manifest, context):
+        return requested_outputs
+    normalized = [str(value).strip().lower() for value in requested_outputs if str(value).strip()]
+    if not normalized or normalized == ["qualification"]:
+        return list(_DEFAULT_REQUESTED_OUTPUTS)
+    return requested_outputs
 
 
 def _dict_float(value: Any) -> Dict[str, float]:
@@ -853,12 +887,7 @@ def _default_requested_lanes(
         "frame_alignment",
         "evaluation_prep",
     ]
-    requested_outputs = _string_list(
-        manifest.get("requested_outputs")
-        or manifest.get("requestedOutputs")
-        or context.get("requested_outputs")
-        or context.get("requestedOutputs")
-    )
+    requested_outputs = _normalized_requested_outputs(manifest, context)
     if not requested_outputs:
         return native_default_lanes if native_default_candidate else ["qualification", "scene_memory"]
 
@@ -929,9 +958,7 @@ def capture_materialization_readiness(
     raw_root = resolve_gs_uri_to_path(raw_prefix_uri, gcs_root)
     manifest_path = raw_root / "manifest.json"
     manifest = _read_optional_json(manifest_path)
-    requested_outputs = _string_list(
-        manifest.get("requested_outputs") or manifest.get("requestedOutputs")
-    )
+    requested_outputs = _normalized_requested_outputs(manifest, {})
     walkthrough_path = raw_root / "walkthrough.mov"
     video_candidates = _raw_video_candidates(raw_root)
     issues: List[str] = []
@@ -943,8 +970,6 @@ def capture_materialization_readiness(
         issues.append("missing_walkthrough_mov")
     if not video_candidates:
         issues.append("missing_raw_video")
-    if not requested_outputs:
-        issues.append("missing_requested_outputs")
     return {
         "ready": not issues,
         "issues": issues,
@@ -1504,12 +1529,7 @@ def build_capture_bundle_records(
             _requested_lanes_override(manifest, context)
             or _default_requested_lanes(manifest, context)
         ),
-        "requested_outputs": _string_list(
-            manifest.get("requested_outputs")
-            or manifest.get("requestedOutputs")
-            or context.get("requested_outputs")
-            or context.get("requestedOutputs")
-        ),
+        "requested_outputs": _normalized_requested_outputs(manifest, context),
         "quality": {
             "pose_match_rate": pose_match_rate,
             "p95_pose_delta_sec": p95_pose_delta_sec,

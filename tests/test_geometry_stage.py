@@ -36,6 +36,7 @@ def _build_staged_capture(
         "width": 1280,
         "height": 720,
         "requested_outputs": ["qualification"],
+        "disable_default_preview": True,
         "capture_rights": {
             "derived_scene_generation_allowed": True,
             "consent_status": "documented",
@@ -364,6 +365,20 @@ def test_materialization_maps_preview_simulation_to_scene_memory_requested_lanes
     )
 
     descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    assert descriptor["requested_lanes"] == ["qualification", "scene_memory"]
+
+
+def test_materialization_defaults_preview_simulation_for_plain_uploads(tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={
+            "requested_outputs": None,
+            "disable_default_preview": False,
+        },
+    )
+
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    assert descriptor["requested_outputs"] == ["qualification", "preview_simulation"]
     assert descriptor["requested_lanes"] == ["qualification", "scene_memory"]
 
 

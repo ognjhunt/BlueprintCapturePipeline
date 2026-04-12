@@ -281,7 +281,8 @@ def build_alpha_readiness_summary(
     if profile in {"iphone_video_only", "meta_glasses", "android_video"}:
         env_checks.append(_env_check(resolved_env, "VIDEO_TO_WORLD_URL"))
         env_checks.append(_env_check(resolved_env, "VIDEO_TO_WORLD_RUNNER_TOKEN"))
-    if str(resolved_env.get("BLUEPRINT_PREVIEW_PROVIDER") or "").strip() == "world_labs":
+    preview_provider = str(resolved_env.get("BLUEPRINT_PREVIEW_PROVIDER") or "world_labs").strip()
+    if preview_provider == "world_labs":
         env_checks.append(_env_check(resolved_env, "WORLDLABS_API_KEY"))
 
     common_checks: List[Dict[str, Any]] = [
@@ -978,7 +979,12 @@ def sync_webapp_evaluation_prep(
         "privacy_depth_manifest_uri": _artifact_if_exists("privacy_depth/depth_manifest.json"),
         "privacy_confidence_manifest_uri": _artifact_if_exists("privacy_depth/confidence_manifest.json"),
         "alpha_readiness_summary_uri": _artifact_if_exists("alpha_readiness_summary.json"),
-        "worldlabs_launch_url": _present_value(provider_run_manifest, "worldlabs_launch_url", "preview_launch_url"),
+        "worldlabs_launch_url": _present_value(
+            provider_run_manifest,
+            "worldlabs_launch_url",
+            "preview_launch_url",
+            "launch_url",
+        ),
         "privacy_processed_video_uri": _present_value(privacy_manifest, "privacy_processed_video_uri"),
         "world_model_video_uri": _present_value(privacy_manifest, "world_model_video_uri"),
     }

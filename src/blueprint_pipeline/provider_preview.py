@@ -206,6 +206,10 @@ class StubPreviewProvider:
             "provider_run_id": normalized.get("provider_run_id"),
             "status": normalized.get("status"),
             "artifact_uris": dict(normalized.get("artifact_uris") or {}),
+            "world_id": normalized.get("world_id"),
+            "launch_url": normalized.get("launch_url"),
+            "worldlabs_launch_url": normalized.get("worldlabs_launch_url") or normalized.get("launch_url"),
+            "preview_launch_url": normalized.get("preview_launch_url") or normalized.get("launch_url"),
             "generated_at": utc_now_iso(),
         }
         write_json(output_path, manifest)
@@ -226,7 +230,7 @@ class StubPreviewProvider:
 @dataclass
 class WorldLabsPreviewProvider(StubPreviewProvider):
     provider_name: str = "world_labs"
-    provider_model: str = "Marble 0.1-mini"
+    provider_model: str = "marble-1.1"
 
     @staticmethod
     def _string(value: Any) -> str:
@@ -512,34 +516,34 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
     def poll(self, *, run_id: str) -> Dict[str, Any]:
         operation = _worldlabs_api_request(f"/marble/v1/operations/{run_id}")
         done = bool(operation.get("done"))
-        world_id = str(operation.get("world_id") or "").strip()
+        metadata = operation.get("metadata") if isinstance(operation.get("metadata"), Mapping) else {}
+        response = operation.get("response") if isinstance(operation.get("response"), Mapping) else {}
+        world_id = str(
+            response.get("world_id")
+            or metadata.get("world_id")
+            or operation.get("world_id")
+            or ""
+        ).strip()
         error = operation.get("error")
         failure_reason = (
             str(error.get("message") or "") if isinstance(error, dict) else
             str(operation.get("failure_reason") or "")
         ).strip() or None
 
-        if done and world_id:
-            world = _worldlabs_api_request(f"/marble/v1/worlds/{world_id}")
+        if done:
+            world = dict(response) if response else {}
+            if not world and world_id:
+                world = _worldlabs_api_request(f"/marble/v1/worlds/{world_id}")
             launch_url = str(world.get("world_marble_url") or "").strip()
             return {
                 "provider_run_id": run_id,
                 "status": "ready" if launch_url else "failed",
                 "operation_done": True,
-                "world_id": world_id,
+                "world_id": str(world.get("world_id") or world_id or "").strip() or None,
                 "launch_url": launch_url or None,
                 "failure_reason": failure_reason if not launch_url else None,
                 "worldlabs_operation": operation,
-                "worldlabs_world": world,
-            }
-        if done:
-            return {
-                "provider_run_id": run_id,
-                "status": "failed",
-                "operation_done": True,
-                "failure_reason": failure_reason or "generation_failed",
-                "worldlabs_operation": operation,
-                "worldlabs_world": None,
+                "worldlabs_world": world or None,
             }
         raw_status = str(operation.get("status") or "").lower()
         return {
@@ -600,8 +604,12 @@ def run_preview_provider(
             poll_result = _poll_worldlabs_until_terminal(provider=provider, operation_id=operation_id)
             normalized["status"] = poll_result.get("status", "failed")
             normalized["failure_reason"] = poll_result.get("failure_reason")
+            if poll_result.get("world_id"):
+                normalized["world_id"] = poll_result["world_id"]
             if poll_result.get("launch_url"):
                 normalized["launch_url"] = poll_result["launch_url"]
+                normalized["worldlabs_launch_url"] = poll_result["launch_url"]
+                normalized["preview_launch_url"] = poll_result["launch_url"]
             # Write final operation manifest
             final_operation = poll_result.get("worldlabs_operation")
             if isinstance(final_operation, Mapping):
@@ -631,7 +639,10 @@ def run_preview_provider(
             "cost_usd": normalized.get("cost_usd"),
             "latency_ms": normalized.get("latency_ms"),
             "failure_reason": normalized.get("failure_reason"),
+            "world_id": normalized.get("world_id"),
             "launch_url": normalized.get("launch_url"),
+            "worldlabs_launch_url": normalized.get("worldlabs_launch_url") or normalized.get("launch_url"),
+            "preview_launch_url": normalized.get("preview_launch_url") or normalized.get("launch_url"),
             "provenance": provenance,
         }
     except Exception as exc:
@@ -647,7 +658,10 @@ def run_preview_provider(
             "cost_usd": None,
             "latency_ms": None,
             "failure_reason": str(exc),
+            "world_id": None,
             "launch_url": None,
+            "worldlabs_launch_url": None,
+            "preview_launch_url": None,
             "provenance": {"canonical": False, "derived": True},
         }
         write_json(manifest_path, {

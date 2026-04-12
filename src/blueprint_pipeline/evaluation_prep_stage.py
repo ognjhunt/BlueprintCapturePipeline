@@ -3627,6 +3627,10 @@ def run_evaluation_prep_stage(
     worldlabs_launch_url = str(
         provider_run_manifest.get("worldlabs_launch_url")
         or provider_run_manifest.get("preview_launch_url")
+        or provider_run_manifest.get("launch_url")
+        or preview_manifest.get("worldlabs_launch_url")
+        or preview_manifest.get("preview_launch_url")
+        or preview_manifest.get("launch_url")
         or ""
     ).strip() or None
     runtime_demo_manifest = _read_json_object(runtime_demo_manifest_path)

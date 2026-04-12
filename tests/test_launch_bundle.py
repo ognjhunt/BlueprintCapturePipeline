@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from blueprint_pipeline.launch_bundle import (
@@ -154,3 +155,83 @@ def test_worldlabs_preview_provider_never_uses_raw_video() -> None:
     assert payload["status"] == "blocked"
     assert payload["selected_video_uri"] is None
     assert all(item["source_id"] != "raw_video_uri" for item in payload["video_candidates"])
+
+
+def test_worldlabs_poll_reads_world_from_operation_response(monkeypatch) -> None:
+    provider = WorldLabsPreviewProvider()
+    launch_url = "https://marble.worldlabs.ai/worlds/world-1"
+
+    def _fake_worldlabs_api_request(path: str, *, method: str = "GET", body=None) -> dict[str, object]:
+        assert method == "GET"
+        assert body is None
+        assert path == "/marble/v1/operations/op-1"
+        return {
+            "done": True,
+            "operation_id": "op-1",
+            "response": {
+                "world_id": "world-1",
+                "world_marble_url": launch_url,
+                "model": "marble-1.1",
+            },
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.provider_preview._worldlabs_api_request",
+        _fake_worldlabs_api_request,
+    )
+
+    result = provider.poll(run_id="op-1")
+
+    assert result["status"] == "ready"
+    assert result["world_id"] == "world-1"
+    assert result["launch_url"] == launch_url
+
+
+def test_run_preview_provider_persists_worldlabs_launch_url_aliases(tmp_path: Path, monkeypatch) -> None:
+    launch_url = "https://marble.worldlabs.ai/worlds/world-2"
+
+    def _fake_submit(self, *, descriptor, capture_root):  # type: ignore[no-untyped-def]
+        del descriptor, capture_root
+        return {
+            "provider_name": self.provider_name,
+            "provider_model": self.provider_model,
+            "provider_run_id": "op-2",
+            "status": "processing",
+            "artifact_uris": {},
+            "cost_usd": 0.0,
+            "latency_ms": 1,
+        }
+
+    def _fake_poll(self, *, run_id):  # type: ignore[no-untyped-def]
+        assert run_id == "op-2"
+        return {
+            "provider_run_id": run_id,
+            "status": "ready",
+            "world_id": "world-2",
+            "launch_url": launch_url,
+            "worldlabs_operation": {"done": True, "operation_id": run_id},
+            "worldlabs_world": {
+                "world_id": "world-2",
+                "world_marble_url": launch_url,
+            },
+        }
+
+    monkeypatch.setattr(WorldLabsPreviewProvider, "submit", _fake_submit)
+    monkeypatch.setattr(WorldLabsPreviewProvider, "poll", _fake_poll)
+
+    result = run_preview_provider(
+        provider_name="world_labs",
+        descriptor={"capture_id": "cap-4", "raw_prefix_uri": "gs://bucket/raw"},
+        capture_root=tmp_path,
+        pipeline_dir=tmp_path,
+    )
+
+    preview_manifest = json.loads((tmp_path / "preview_manifest.json").read_text(encoding="utf-8"))
+
+    assert result["provider_model"] == "marble-1.1"
+    assert result["world_id"] == "world-2"
+    assert result["launch_url"] == launch_url
+    assert result["worldlabs_launch_url"] == launch_url
+    assert result["preview_launch_url"] == launch_url
+    assert preview_manifest["worldlabs_launch_url"] == launch_url
+    assert preview_manifest["preview_launch_url"] == launch_url

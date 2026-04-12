@@ -1,6 +1,6 @@
 # Privacy Runner Services
 
-The production preview path is:
+The production default preview path is:
 
 `BlueprintCapture upload -> storage trigger -> materialize -> qualification -> privacy/final_walkthrough.mov -> World Labs generate/poll -> WebApp sync -> catalog launch`
 

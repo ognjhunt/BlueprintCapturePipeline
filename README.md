@@ -2,7 +2,7 @@
 
 `BlueprintCapturePipeline` is the packaging, trust, and runtime service that turns raw Blueprint captures into site-specific world-model products with provenance, privacy, and rights safety.
 
-For non-ARKit captures, the default world-model path is now internal: `BlueprintCapture` evidence -> qualification -> privacy-aware geometry staging -> retrieval memory -> alignment -> synthesis/Cosmos conditioning. World Labs remains an optional downstream preview provider rather than the default path. Scene-memory, presentation, evaluation-prep, and runtime registration remain downstream derived lanes.
+For non-ARKit captures, the canonical world-model packaging path remains internal: `BlueprintCapture` evidence -> qualification -> privacy-aware geometry staging -> retrieval memory -> alignment -> synthesis/Cosmos conditioning. The default hosted preview path is now World Labs Marble from the privacy-safe walkthrough, while scene-memory, presentation, evaluation-prep, and runtime registration remain downstream derived lanes.
 
 ## Scope
 

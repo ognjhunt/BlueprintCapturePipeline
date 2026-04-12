@@ -4574,7 +4574,7 @@ def run_qualification_pipeline(
             qualification_state=qualification_state,
         )
 
-        preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "").strip()
+        preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "world_labs").strip()
         requested_outputs = set(descriptor.requested_outputs or [])
         preview_requested = "preview_simulation" in requested_outputs or "preview" in requested_outputs
         provider_run = (
