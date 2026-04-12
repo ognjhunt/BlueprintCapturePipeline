@@ -78,6 +78,8 @@ The production preview path expects URL-first privacy runners:
 - `PRIVACY_DEEPPRIVACY2_URL`
 - `PRIVACY_RUNNER_TOKEN`
 
+For temporary internal demos, `BLUEPRINT_ALLOW_RAW_WORLDLABS_BYPASS=true` allows the World Labs preview path to fall back to the raw walkthrough video when privacy processing is unavailable. The bypass path is intentionally labeled as non-production and unredacted, and the input video is auto-trimmed/compressed to World Labs upload limits before submission.
+
 The non-ARKit geometry path expects a dedicated GPU `video_to_world` runner:
 
 - `VIDEO_TO_WORLD_URL`

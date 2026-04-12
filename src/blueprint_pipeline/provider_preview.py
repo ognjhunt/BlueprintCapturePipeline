@@ -210,6 +210,7 @@ class StubPreviewProvider:
             "launch_url": normalized.get("launch_url"),
             "worldlabs_launch_url": normalized.get("worldlabs_launch_url") or normalized.get("launch_url"),
             "preview_launch_url": normalized.get("preview_launch_url") or normalized.get("launch_url"),
+            "labeling": dict(normalized.get("labeling") or {}),
             "generated_at": utc_now_iso(),
         }
         write_json(output_path, manifest)
@@ -299,6 +300,11 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         del capture_root
         video_candidates = self._world_prompt_candidates(descriptor)
         metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+        input_labeling = (
+            dict(metadata.get("worldlabs_input_labeling"))
+            if isinstance(metadata.get("worldlabs_input_labeling"), Mapping)
+            else {}
+        )
         scene_summary = self._string(
             metadata.get("scene_summary")
             or metadata.get("site_summary")
@@ -327,6 +333,10 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             ]
             if value
         ]
+        if bool(input_labeling.get("non_production")):
+            tags.append("non-production-preview")
+        if bool(input_labeling.get("unredacted_input")):
+            tags.append("unredacted-raw-input")
         keyframe_uri = self._string(descriptor.get("keyframe_uri"))
         frames_index_uri = self._string(descriptor.get("frames_index_uri"))
         arkit_poses_uri = self._string(descriptor.get("arkit_poses_uri"))
@@ -373,6 +383,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             "selected_video_source_id": source_id or None,
             "selected_video_uri": selected_video_uri or None,
             "video_candidates": video_candidates.get("candidates") if isinstance(video_candidates, Mapping) else [],
+            "input_labeling": input_labeling,
             "fallback_inputs": {
                 "text_prompt": prompt_text,
                 "keyframe_uri": keyframe_uri or None,
@@ -495,6 +506,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "worldlabs_operation": operation,
                 "generation_source_type": generation_source_type,
                 "raw_response": operation,
+                "labeling": request_manifest.get("input_labeling") or {},
             }
         except Exception as exc:
             return {
@@ -511,6 +523,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "worldlabs_operation": None,
                 "generation_source_type": generation_source_type or None,
                 "raw_response": None,
+                "labeling": request_manifest.get("input_labeling") or {},
             }
 
     def poll(self, *, run_id: str) -> Dict[str, Any]:
@@ -643,6 +656,7 @@ def run_preview_provider(
             "launch_url": normalized.get("launch_url"),
             "worldlabs_launch_url": normalized.get("worldlabs_launch_url") or normalized.get("launch_url"),
             "preview_launch_url": normalized.get("preview_launch_url") or normalized.get("launch_url"),
+            "labeling": dict(normalized.get("labeling") or {}),
             "provenance": provenance,
         }
     except Exception as exc:
@@ -662,6 +676,7 @@ def run_preview_provider(
             "launch_url": None,
             "worldlabs_launch_url": None,
             "preview_launch_url": None,
+            "labeling": {},
             "provenance": {"canonical": False, "derived": True},
         }
         write_json(manifest_path, {

@@ -6,6 +6,12 @@ The production default preview path is:
 
 Only the privacy-safe walkthrough may be used for World Labs. Raw-video fallback is not allowed.
 
+Exception for temporary internal demos only:
+
+- If `BLUEPRINT_ALLOW_RAW_WORLDLABS_BYPASS=true`, the pipeline may prepare a World Labs input clip from the raw walkthrough when privacy processing is unavailable.
+- This bypass path must be treated as non-production and unredacted.
+- The prepared input is auto-trimmed/compressed to World Labs upload limits before submission.
+
 ## Services
 
 Deploy four GPU-backed Cloud Run services:

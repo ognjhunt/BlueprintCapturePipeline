@@ -157,6 +157,32 @@ def test_worldlabs_preview_provider_never_uses_raw_video() -> None:
     assert all(item["source_id"] != "raw_video_uri" for item in payload["video_candidates"])
 
 
+def test_worldlabs_preview_provider_labels_non_production_raw_bypass() -> None:
+    provider = WorldLabsPreviewProvider()
+
+    payload = provider._build_request_manifest(
+        descriptor={
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "metadata": {
+                "worldlabs_input_video_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4",
+                "worldlabs_input_labeling": {
+                    "non_production": True,
+                    "unredacted_input": True,
+                    "raw_video_bypass_used": True,
+                    "review_state": "non_production_unredacted_raw_preview",
+                },
+            },
+        },
+        capture_root=Path("/tmp/capture-root"),
+    )
+
+    assert payload["input_labeling"]["non_production"] is True
+    assert payload["input_labeling"]["unredacted_input"] is True
+    assert "non-production-preview" in payload["generation_request"]["tags"]
+    assert "unredacted-raw-input" in payload["generation_request"]["tags"]
+
+
 def test_worldlabs_poll_reads_world_from_operation_response(monkeypatch) -> None:
     provider = WorldLabsPreviewProvider()
     launch_url = "https://marble.worldlabs.ai/worlds/world-1"
@@ -189,6 +215,12 @@ def test_worldlabs_poll_reads_world_from_operation_response(monkeypatch) -> None
 
 def test_run_preview_provider_persists_worldlabs_launch_url_aliases(tmp_path: Path, monkeypatch) -> None:
     launch_url = "https://marble.worldlabs.ai/worlds/world-2"
+    labeling = {
+        "non_production": True,
+        "unredacted_input": True,
+        "raw_video_bypass_used": True,
+        "review_state": "non_production_unredacted_raw_preview",
+    }
 
     def _fake_submit(self, *, descriptor, capture_root):  # type: ignore[no-untyped-def]
         del descriptor, capture_root
@@ -200,6 +232,7 @@ def test_run_preview_provider_persists_worldlabs_launch_url_aliases(tmp_path: Pa
             "artifact_uris": {},
             "cost_usd": 0.0,
             "latency_ms": 1,
+            "labeling": labeling,
         }
 
     def _fake_poll(self, *, run_id):  # type: ignore[no-untyped-def]
@@ -233,5 +266,7 @@ def test_run_preview_provider_persists_worldlabs_launch_url_aliases(tmp_path: Pa
     assert result["launch_url"] == launch_url
     assert result["worldlabs_launch_url"] == launch_url
     assert result["preview_launch_url"] == launch_url
+    assert result["labeling"] == labeling
     assert preview_manifest["worldlabs_launch_url"] == launch_url
     assert preview_manifest["preview_launch_url"] == launch_url
+    assert preview_manifest["labeling"] == labeling

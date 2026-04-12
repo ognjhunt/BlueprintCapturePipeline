@@ -157,6 +157,7 @@ def build_launch_qualification_bundle(
             "provider_model": provider_run.get("provider_model"),
             "provider_run_id": provider_run.get("provider_run_id"),
             "failure_reason": provider_run.get("failure_reason"),
+            "labeling": dict(provider_run.get("labeling") or {}),
         },
         "privacy_processing": normalized_privacy,
         "world_model_fit_summary": dict(world_model_fit_summary or {}),

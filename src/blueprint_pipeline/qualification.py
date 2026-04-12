@@ -2626,6 +2626,85 @@ def _ffprobe_video_metrics(video_path: Path) -> Dict[str, Any]:
     return metrics
 
 
+def _allow_raw_worldlabs_bypass(
+    *,
+    descriptor: CaptureDescriptor,
+    privacy_processing: Mapping[str, Any],
+) -> bool:
+    metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    for raw in (
+        metadata.get("allow_raw_worldlabs_bypass"),
+        metadata.get("allowRawWorldlabsBypass"),
+        privacy_processing.get("allow_raw_worldlabs_bypass"),
+        os.getenv("BLUEPRINT_ALLOW_RAW_WORLDLABS_BYPASS"),
+    ):
+        if raw is not None:
+            return parse_bool(raw, default=False)
+    return False
+
+
+def _worldlabs_input_labeling(
+    *,
+    source_id: str,
+    privacy_status: Optional[str],
+    bypass_allowed: bool,
+) -> Dict[str, Any]:
+    raw_bypass_used = source_id == "raw_video_uri"
+    privacy_safe_input = source_id in {
+        "worldlabs_input_video_uri",
+        "world_model_video_uri",
+        "privacy_processed_video_uri",
+    }
+    if raw_bypass_used:
+        warnings = [
+            "Non-production preview only.",
+            "Input came from the unredacted raw walkthrough video.",
+            "Do not present this preview as privacy-safe buyer media.",
+        ]
+        review_state = "non_production_unredacted_raw_preview"
+    else:
+        warnings = []
+        review_state = "standard_privacy_safe_preview"
+    return {
+        "privacy_safe_input": privacy_safe_input,
+        "raw_video_bypass_allowed": bool(bypass_allowed),
+        "raw_video_bypass_used": raw_bypass_used,
+        "unredacted_input": raw_bypass_used,
+        "non_production": raw_bypass_used,
+        "review_state": review_state,
+        "privacy_status": privacy_status,
+        "warnings": warnings,
+    }
+
+
+def _worldlabs_transcode_attempts(
+    *,
+    input_duration: float,
+) -> List[Dict[str, Any]]:
+    defaults = [
+        {"clip_seconds": 30.0, "max_width": 1280, "crf": 28, "maxrate": "4M", "bufsize": "8M", "audio_bitrate": "96k"},
+        {"clip_seconds": 24.0, "max_width": 1280, "crf": 30, "maxrate": "3M", "bufsize": "6M", "audio_bitrate": "96k"},
+        {"clip_seconds": 20.0, "max_width": 960, "crf": 32, "maxrate": "2M", "bufsize": "4M", "audio_bitrate": "64k"},
+    ]
+    attempts: List[Dict[str, Any]] = []
+    for item in defaults:
+        clip_seconds = float(item["clip_seconds"])
+        actual_clip = min(clip_seconds, input_duration) if input_duration > 0 else clip_seconds
+        trim_applied = input_duration > actual_clip if input_duration > 0 else False
+        start_seconds = max(0.0, (input_duration - actual_clip) / 2.0) if trim_applied else 0.0
+        end_seconds = min(input_duration, start_seconds + actual_clip) if input_duration > 0 else actual_clip
+        attempts.append(
+            {
+                **item,
+                "actual_clip_seconds": actual_clip,
+                "trim_applied": trim_applied,
+                "clip_start_seconds": start_seconds,
+                "clip_end_seconds": end_seconds,
+            }
+        )
+    return attempts
+
+
 def _worldlabs_source_candidate(
     *,
     descriptor: CaptureDescriptor,
@@ -2634,6 +2713,7 @@ def _worldlabs_source_candidate(
     privacy_status = str(privacy_processing.get("status") or descriptor.privacy_status or "").strip().lower()
     metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
     worldlabs_input_video_uri = str(metadata.get("worldlabs_input_video_uri") or "").strip()
+    bypass_allowed = _allow_raw_worldlabs_bypass(descriptor=descriptor, privacy_processing=privacy_processing)
     candidates = [
         {
             "source_id": "worldlabs_input_video_uri",
@@ -2650,10 +2730,16 @@ def _worldlabs_source_candidate(
             "uri": descriptor.privacy_processed_video_uri,
             "eligible": bool(descriptor.privacy_processed_video_uri),
         },
+        {
+            "source_id": "raw_video_uri",
+            "uri": descriptor.raw_video_uri,
+            "eligible": bool(bypass_allowed and descriptor.raw_video_uri),
+        },
     ]
     selected = next((item for item in candidates if item["eligible"] and item["uri"]), None)
     return {
         "privacy_status": privacy_status or None,
+        "raw_video_bypass_allowed": bypass_allowed,
         "selected": selected,
         "candidates": [
             {
@@ -2682,13 +2768,17 @@ def _prepare_worldlabs_input_video(
     output_uri = f"gs://{bucket}/{relative_scene_path(output_path, storage_root)}"
     manifest_uri = f"gs://{bucket}/{relative_scene_path(manifest_path, storage_root)}"
     max_duration_seconds = 30.0
-    target_duration_seconds = 24.0
     max_size_bytes = 100_000_000
 
     selection = _worldlabs_source_candidate(descriptor=descriptor, privacy_processing=privacy_processing)
     selected = selection.get("selected") if isinstance(selection, Mapping) else None
     source_uri = str(selected.get("uri") or "").strip() if isinstance(selected, Mapping) else ""
     source_id = str(selected.get("source_id") or "").strip() if isinstance(selected, Mapping) else ""
+    input_labeling = _worldlabs_input_labeling(
+        source_id=source_id,
+        privacy_status=selection.get("privacy_status") if isinstance(selection, Mapping) else None,
+        bypass_allowed=bool(selection.get("raw_video_bypass_allowed")) if isinstance(selection, Mapping) else False,
+    )
     if not source_uri:
         payload = {
             "schema_version": "v1",
@@ -2698,6 +2788,7 @@ def _prepare_worldlabs_input_video(
             "selected_video_source_id": None,
             "selected_video_uri": None,
             "video_candidates": selection.get("candidates") if isinstance(selection, Mapping) else [],
+            "input_labeling": input_labeling,
             "output_video_uri": None,
         }
         write_json(manifest_path, payload)
@@ -2707,6 +2798,7 @@ def _prepare_worldlabs_input_video(
             "output_video_uri": None,
             "manifest_path": str(manifest_path),
             "output_path": None,
+            "input_labeling": input_labeling,
         }
 
     source_path = _resolve_optional_uri_to_path(source_uri, storage_root)
@@ -2720,56 +2812,85 @@ def _prepare_worldlabs_input_video(
     input_metrics = _ffprobe_video_metrics(source_path)
     input_duration = float(input_metrics.get("duration_seconds") or 0.0)
     input_size_bytes = int(input_metrics.get("size_bytes") or 0)
-    clip_duration = min(target_duration_seconds, input_duration) if input_duration > 0 else target_duration_seconds
-    trim_applied = input_duration > max_duration_seconds
-    start_seconds = max(0.0, (input_duration - clip_duration) / 2.0) if trim_applied else 0.0
-    end_seconds = min(input_duration, start_seconds + clip_duration) if input_duration > 0 else clip_duration
+    attempts = _worldlabs_transcode_attempts(input_duration=input_duration)
+    output_metrics: Dict[str, Any] = {}
+    selected_attempt: Dict[str, Any] = {}
+    attempt_reports: List[Dict[str, Any]] = []
+    compliant = False
+    last_error = ""
+    for attempt_index, attempt in enumerate(attempts, start=1):
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{float(attempt['clip_start_seconds']):.3f}",
+                "-i",
+                str(source_path),
+                "-t",
+                f"{float(attempt['actual_clip_seconds']):.3f}",
+                "-vf",
+                f"scale='min({int(attempt['max_width'])},iw)':-2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                str(int(attempt["crf"])),
+                "-maxrate",
+                str(attempt["maxrate"]),
+                "-bufsize",
+                str(attempt["bufsize"]),
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-c:a",
+                "aac",
+                "-b:a",
+                str(attempt["audio_bitrate"]),
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0 or not output_path.is_file():
+            last_error = proc.stderr[-400:].strip()
+            attempt_reports.append(
+                {
+                    "attempt_index": attempt_index,
+                    **attempt,
+                    "status": "failed",
+                    "ffmpeg_error": last_error or "ffmpeg_failed",
+                }
+            )
+            continue
+        output_metrics = _ffprobe_video_metrics(output_path)
+        output_duration = float(output_metrics.get("duration_seconds") or 0.0)
+        output_size_bytes = int(output_metrics.get("size_bytes") or 0)
+        compliant = output_duration <= max_duration_seconds + 0.25 and output_size_bytes <= max_size_bytes
+        selected_attempt = dict(attempt)
+        attempt_reports.append(
+            {
+                "attempt_index": attempt_index,
+                **attempt,
+                "status": "ready" if compliant else "review_required",
+                "output_duration_seconds": round(output_duration, 3),
+                "output_size_bytes": output_size_bytes,
+                "duration_ok": output_duration <= max_duration_seconds + 0.25,
+                "size_ok": output_size_bytes <= max_size_bytes,
+            }
+        )
+        if compliant:
+            break
+    if not selected_attempt:
+        raise StageError("worldlabs_input_prep", f"ffmpeg_failed:{last_error or 'unknown'}")
 
-    proc = subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-loglevel",
-            "error",
-            "-ss",
-            f"{start_seconds:.3f}",
-            "-i",
-            str(source_path),
-            "-t",
-            f"{clip_duration:.3f}",
-            "-vf",
-            "scale='min(1280,iw)':-2",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "28",
-            "-maxrate",
-            "4M",
-            "-bufsize",
-            "8M",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            str(output_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0 or not output_path.is_file():
-        raise StageError("worldlabs_input_prep", f"ffmpeg_failed:{proc.stderr[-400:].strip()}")
-
-    output_metrics = _ffprobe_video_metrics(output_path)
     output_duration = float(output_metrics.get("duration_seconds") or 0.0)
     output_size_bytes = int(output_metrics.get("size_bytes") or 0)
-    compliant = output_duration <= max_duration_seconds + 0.25 and output_size_bytes <= max_size_bytes
     payload = {
         "schema_version": "v1",
         "status": "ready" if compliant else "review_required",
@@ -2777,18 +2898,28 @@ def _prepare_worldlabs_input_video(
         "selected_video_source_id": source_id or None,
         "selected_video_uri": source_uri,
         "video_candidates": selection.get("candidates") if isinstance(selection, Mapping) else [],
+        "input_labeling": input_labeling,
         "input_metrics": {
             "duration_seconds": round(input_duration, 3),
             "size_bytes": input_size_bytes,
         },
         "selection_policy": {
             "max_duration_seconds": max_duration_seconds,
-            "target_duration_seconds": target_duration_seconds,
             "max_size_bytes": max_size_bytes,
             "window_strategy": "center_window",
-            "trim_applied": trim_applied,
-            "clip_start_seconds": round(start_seconds, 3),
-            "clip_end_seconds": round(end_seconds, 3),
+            "transcode_strategy": "iterative_trim_and_compress",
+            "selected_attempt": {
+                "clip_seconds": round(float(selected_attempt.get("actual_clip_seconds") or 0.0), 3),
+                "trim_applied": bool(selected_attempt.get("trim_applied")),
+                "clip_start_seconds": round(float(selected_attempt.get("clip_start_seconds") or 0.0), 3),
+                "clip_end_seconds": round(float(selected_attempt.get("clip_end_seconds") or 0.0), 3),
+                "max_width": int(selected_attempt.get("max_width") or 0),
+                "crf": int(selected_attempt.get("crf") or 0),
+                "maxrate": selected_attempt.get("maxrate"),
+                "bufsize": selected_attempt.get("bufsize"),
+                "audio_bitrate": selected_attempt.get("audio_bitrate"),
+            },
+            "attempts": attempt_reports,
         },
         "output_metrics": {
             "duration_seconds": round(output_duration, 3),
@@ -2811,6 +2942,7 @@ def _prepare_worldlabs_input_video(
         "manifest_path": str(manifest_path),
         "output_path": str(output_path),
         "payload": payload,
+        "input_labeling": input_labeling,
     }
 
 
@@ -4258,6 +4390,11 @@ def run_qualification_pipeline(
         metadata_payload["worldlabs_input_video_uri"] = worldlabs_input.get("output_video_uri")
         metadata_payload["worldlabs_input_manifest_uri"] = worldlabs_input.get("manifest_uri")
         metadata_payload["worldlabs_input_status"] = worldlabs_input.get("status")
+        metadata_payload["worldlabs_input_labeling"] = (
+            dict(worldlabs_input.get("input_labeling"))
+            if isinstance(worldlabs_input.get("input_labeling"), Mapping)
+            else {}
+        )
         descriptor_payload["metadata"] = metadata_payload
         write_json(descriptor_path, descriptor_payload)
         descriptor = CaptureDescriptor.from_dict(descriptor_payload)
@@ -4577,6 +4714,7 @@ def run_qualification_pipeline(
         preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "world_labs").strip()
         requested_outputs = set(descriptor.requested_outputs or [])
         preview_requested = "preview_simulation" in requested_outputs or "preview" in requested_outputs
+        preview_input_ready = bool(worldlabs_input.get("output_video_uri")) and str(worldlabs_input.get("status") or "").strip().lower() == "ready"
         provider_run = (
             run_preview_provider(
                 provider_name=preview_provider_name,
@@ -4584,20 +4722,25 @@ def run_qualification_pipeline(
                 capture_root=capture_root,
                 pipeline_dir=pipeline_dir,
             )
-            if preview_requested and privacy_world_model_ready
+            if preview_requested and preview_input_ready
             else {
                 "schema_version": "v1",
                 "provider_name": None,
                 "provider_model": None,
                 "provider_run_id": "",
-                "status": "failed" if preview_requested and not privacy_world_model_ready else "not_requested",
+                "status": "failed" if preview_requested and not preview_input_ready else "not_requested",
                 "preview_manifest_uri": str(pipeline_dir / "preview_manifest.json"),
                 "artifact_uris": {},
                 "cost_usd": None,
                 "latency_ms": None,
+                "labeling": (
+                    dict(worldlabs_input.get("input_labeling"))
+                    if isinstance(worldlabs_input.get("input_labeling"), Mapping)
+                    else {}
+                ),
                 "failure_reason": (
-                    f"privacy_status:{privacy_processing.get('status')}"
-                    if preview_requested and not privacy_world_model_ready
+                    f"worldlabs_input_status:{worldlabs_input.get('status')}"
+                    if preview_requested and not preview_input_ready
                     else None
                 ),
                 "provenance": {"canonical": False, "derived": True},
@@ -4626,7 +4769,7 @@ def run_qualification_pipeline(
             descriptor_payload["metadata"] = metadata_payload
             write_json(descriptor_path, descriptor_payload)
             descriptor = CaptureDescriptor.from_dict(descriptor_payload)
-        if not preview_requested or not privacy_world_model_ready:
+        if not preview_requested or not preview_input_ready:
             write_json(pipeline_dir / "provider_run_manifest.json", provider_run)
             write_json(
                 pipeline_dir / "preview_manifest.json",
@@ -4635,6 +4778,7 @@ def run_qualification_pipeline(
                     "status": provider_run["status"],
                     "generated_at": utc_now_iso(),
                     "failure_reason": provider_run.get("failure_reason"),
+                    "labeling": dict(provider_run.get("labeling") or {}),
                 },
             )
         buyer_trust_score = build_buyer_trust_score(
@@ -4815,6 +4959,11 @@ def run_qualification_pipeline(
             "recapture_recommendations": launch_bundle["recapture_requirements"].get("recommendations"),
             "preview_status": launch_bundle["preview_status"],
             "provider_run": provider_run,
+            "provider_preview_labeling": (
+                dict(provider_run.get("labeling"))
+                if isinstance(provider_run.get("labeling"), Mapping)
+                else {}
+            ),
             "world_model_fit_summary": world_model_fit_summary,
             "capturer_payout_recommendation": capturer_payout_recommendation,
             "provenance_summary": provenance_summary,
