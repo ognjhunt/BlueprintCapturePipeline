@@ -92,7 +92,7 @@ def run_end_to_end(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run a local capture through qualification-first review")
+    parser = argparse.ArgumentParser(description="Run a local capture through the capture-to-package review path")
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
     parser.add_argument("--provider", required=True, choices=("claude", "openai"))
     parser.add_argument(

@@ -1,4 +1,4 @@
-"""Stage raw local bundles into a capture tree and optionally run qualification-first pipeline steps."""
+"""Stage raw local bundles into a capture tree and optionally run capture-to-package pipeline steps."""
 
 from __future__ import annotations
 

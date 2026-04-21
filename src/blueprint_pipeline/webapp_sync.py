@@ -1,4 +1,4 @@
-"""Helpers for syncing pipeline attachment metadata back into Blueprint-WebApp."""
+"""Helpers for syncing package and review metadata back into Blueprint-WebApp's control plane."""
 
 from __future__ import annotations
 

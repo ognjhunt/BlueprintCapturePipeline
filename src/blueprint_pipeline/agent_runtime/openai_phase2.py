@@ -36,6 +36,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _env_truthy(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class OpenAIPhase2Config:
     mode: str = _DEFAULT_MODE
@@ -203,12 +210,86 @@ def _prompt_for_skill(skill_name: str, payload: Mapping[str, Any]) -> str:
     )
 
 
+def _extract_openai_text(response: Any) -> str:
+    text = str(getattr(response, "output_text", "") or "").strip()
+    if text:
+        return text
+    output = getattr(response, "output", None)
+    if isinstance(output, list):
+        chunks = []
+        for item in output:
+            content = getattr(item, "content", None)
+            if isinstance(content, list):
+                for entry in content:
+                    piece = getattr(entry, "text", None)
+                    if piece:
+                        chunks.append(str(piece))
+        return "".join(chunks).strip()
+    return ""
+
+
+class _OpenAISDKRunner:
+    def __init__(self, *, config: OpenAIPhase2Config) -> None:
+        self._config = config
+
+    def runtime_metadata(self) -> Dict[str, Any]:
+        return {
+            "openai_phase2_mode": "sdk",
+            "openai_phase2_model": self._config.model,
+            "openai_phase2_timeout_seconds": self._config.timeout_seconds,
+            "openai_phase2_transport": "openai_sdk",
+            "openai_phase2_reasoning_effort": self._config.reasoning_effort,
+        }
+
+    def skill_metadata(self, skill_name: str) -> Dict[str, Any]:
+        return {
+            "skill_name": skill_name,
+            "transport": "openai_sdk",
+            "mode": "sdk",
+            "model": self._config.model,
+            "reasoning_effort": self._config.reasoning_effort,
+        }
+
+    def __call__(self, skill_name: str, payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+        api_key = _string_env("OPENAI_API_KEY")
+        if not api_key:
+            return None
+        try:
+            from openai import OpenAI  # type: ignore
+        except ImportError:
+            return None
+        client = OpenAI(api_key=api_key)
+        prompt = _prompt_for_skill(skill_name, payload)
+        try:
+            response = client.responses.create(
+                model=self._config.model,
+                input=prompt,
+            )
+        except Exception:
+            return None
+        text = _extract_openai_text(response)
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, Mapping) else None
+
+
 class CodexOpenAIPhase2Runner:
     """Callable skill runner backed by `codex exec`."""
 
-    def __init__(self, *, config: OpenAIPhase2Config, repo_root: Path) -> None:
+    def __init__(
+        self,
+        *,
+        config: OpenAIPhase2Config,
+        repo_root: Path,
+        fallback_runner: Optional[_OpenAISDKRunner] = None,
+    ) -> None:
         self._config = config
         self._repo_root = repo_root
+        self._fallback_runner = fallback_runner
 
     def runtime_metadata(self) -> Dict[str, Any]:
         return {
@@ -233,6 +314,8 @@ class CodexOpenAIPhase2Runner:
             return None
         codex_path = shutil.which(self._config.codex_bin)
         if not codex_path:
+            if self._fallback_runner is not None:
+                return self._fallback_runner(skill_name, payload)
             return None
 
         schema = _skill_schema(skill_name)
@@ -270,12 +353,18 @@ class CodexOpenAIPhase2Runner:
                     check=False,
                 )
             except (OSError, subprocess.SubprocessError, ValueError):
+                if self._fallback_runner is not None:
+                    return self._fallback_runner(skill_name, payload)
                 return None
             if completed.returncode != 0 or not output_path.is_file():
+                if self._fallback_runner is not None:
+                    return self._fallback_runner(skill_name, payload)
                 return None
             try:
                 response = json.loads(output_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
+                if self._fallback_runner is not None:
+                    return self._fallback_runner(skill_name, payload)
                 return None
             return response if isinstance(response, Mapping) else None
 
@@ -288,6 +377,19 @@ def build_openai_skill_runner(
     resolved = config or OpenAIPhase2Config.from_env()
     if not resolved.enabled():
         return None
+    fallback_runner = _OpenAISDKRunner(config=resolved)
     if resolved.normalized_mode() == "codex_cli":
-        return CodexOpenAIPhase2Runner(config=resolved, repo_root=repo_root)
+        return CodexOpenAIPhase2Runner(
+            config=resolved,
+            repo_root=repo_root,
+            fallback_runner=fallback_runner if _env_truthy("OPENAI_PHASE2_ALLOW_SDK_FALLBACK", default=True) else None,
+        )
+    if resolved.normalized_mode() == "sdk":
+        return fallback_runner
+    if resolved.normalized_mode() == "auto":
+        return CodexOpenAIPhase2Runner(
+            config=resolved,
+            repo_root=repo_root,
+            fallback_runner=fallback_runner if _env_truthy("OPENAI_PHASE2_ALLOW_SDK_FALLBACK", default=True) else None,
+        ) if shutil.which(resolved.codex_bin) else fallback_runner
     return None

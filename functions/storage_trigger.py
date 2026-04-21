@@ -1,4 +1,4 @@
-"""Storage trigger for qualification-first capture orchestration."""
+"""Storage trigger for capture-first upload orchestration into packaging and review lanes."""
 
 from __future__ import annotations
 

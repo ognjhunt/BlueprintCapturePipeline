@@ -4972,6 +4972,9 @@ def run_qualification_pipeline(
         }
         webapp_sync_result_path = pipeline_dir / "webapp_sync_result.json"
         try:
+            # Project package, proof-path, and review readiness truth back into the
+            # WebApp control plane. This module still carries legacy "qualification"
+            # naming, but the sync is part of the capture-first package lifecycle.
             webapp_sync_result = sync_webapp_pipeline_attachment(
                 site_submission_id=opportunity_handoff.get("site_submission_id"),
                 request_id=opportunity_handoff.get("site_submission_id"),

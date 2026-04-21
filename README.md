@@ -10,7 +10,7 @@ Primary product path:
 
 - raw capture materialization from `BlueprintCapture`
 - Gemini-backed multimodal capture review
-- qualification analysis and agent review
+- capture evidence analysis and agent review
 - deterministic QA aggregation and trust/provenance assembly
 - world-model fit scoring and capturer payout recommendation
 - optional provider preview routing
@@ -54,7 +54,7 @@ uv sync --extra dev
 
 This is a repository development setup only. It is not the supported single-VM GPU runtime bootstrap path.
 
-Optional LLM support for the qualification agent:
+Optional LLM support for the capture review agent:
 
 ```bash
 uv sync --extra dev --extra llm
