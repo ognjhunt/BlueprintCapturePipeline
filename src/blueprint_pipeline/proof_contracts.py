@@ -317,6 +317,41 @@ def build_proof_path_status(
     proof_pack_ready = str(proof_pack_manifest.get("status") or "") == "ready"
     hosted_review_ready = str(hosted_review_readiness.get("status") or "") == "ready"
     rights_cleared = str(rights_review.get("status") or "") == "cleared"
+    event_statuses = []
+    for order, (event_name, verified, detail) in enumerate(
+        (
+            (
+                "proof_pack_delivered",
+                proof_pack_ready and rights_cleared,
+                "proof pack is ready and rights review is cleared",
+            ),
+            (
+                "hosted_review_started",
+                hosted_review_ready,
+                "hosted review readiness is ready",
+            ),
+            (
+                "hosted_review_follow_up_sent",
+                proof_pack_ready and hosted_review_ready,
+                "proof pack and hosted review are both ready",
+            ),
+            (
+                "human_commercial_handoff_started",
+                proof_pack_ready and hosted_review_ready and rights_cleared,
+                "proof pack is ready, hosted review is ready, and rights are cleared",
+            ),
+        ),
+        start=1,
+    ):
+        event_statuses.append(
+            {
+                "event_name": event_name,
+                "status": "verified" if verified else "pending",
+                "verified": bool(verified),
+                "order": order,
+                "detail": detail,
+            }
+        )
     next_step = (
         "clear_rights_or_privacy_review"
         if not rights_cleared
@@ -338,4 +373,5 @@ def build_proof_path_status(
         "rights_cleared": rights_cleared,
         "next_truthful_step": next_step,
         "site_labeling": site_package_manifest.get("site_labeling") or rights_review.get("site_labeling") or {},
+        "event_statuses": event_statuses,
     }

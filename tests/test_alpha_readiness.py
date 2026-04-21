@@ -469,6 +469,18 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     assert sync_calls[1]["artifacts"]["hosted_review_readiness_uri"].endswith(
         "/evaluation_prep/hosted_review_readiness.json"
     )
+    assert [event["event_name"] for event in sync_calls[1]["deployment_readiness"]["proof_path_events"]] == [
+        "proof_pack_delivered",
+        "hosted_review_started",
+        "hosted_review_follow_up_sent",
+        "human_commercial_handoff_started",
+    ]
+    assert [event["status"] for event in sync_calls[1]["deployment_readiness"]["proof_path_events"]] == [
+        "verified",
+        "pending",
+        "pending",
+        "pending",
+    ]
     assert sync_calls[1]["artifacts"]["rights_provenance_review_uri"].endswith(
         "/rights_provenance_review.json"
     )

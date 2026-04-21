@@ -1068,6 +1068,7 @@ def sync_webapp_evaluation_prep(
         "proof_pack_manifest": proof_pack_manifest,
         "hosted_review_readiness": hosted_review_readiness,
         "proof_path_status": proof_path_status,
+        "proof_path_events": proof_path_status.get("event_statuses", []),
     }
 
     result = sync_webapp_pipeline_attachment(
