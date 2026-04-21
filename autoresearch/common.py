@@ -183,6 +183,23 @@ def _parse_junit_totals(xml_path: Path) -> tuple[int, int, int, int]:
     return tests, failures, errors, skipped
 
 
+def _pytest_interpreters() -> list[str]:
+    interpreters = [sys.executable]
+    for candidate in ("python", "python3"):
+        resolved = shutil.which(candidate)
+        if resolved and resolved not in interpreters:
+            interpreters.append(resolved)
+    return interpreters
+
+
+def _should_retry_pytest_interpreter(stdout: str, stderr: str) -> bool:
+    combined = f"{stdout}\n{stderr}"
+    return (
+        "ModuleNotFoundError: No module named 'blueprint_contracts'" in combined
+        or "No module named 'blueprint_contracts'" in combined
+    )
+
+
 def run_pytest(
     paths: Sequence[str],
     *,
@@ -190,39 +207,57 @@ def run_pytest(
     env: Mapping[str, str] | None = None,
     extra_args: Sequence[str] | None = None,
 ) -> PytestSummary:
-    with tempfile.TemporaryDirectory(prefix="autoresearch-pytest-") as tmp_dir:
-        xml_path = Path(tmp_dir) / "pytest-report.xml"
-        command = [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--junitxml",
-            str(xml_path),
-            *list(extra_args or []),
-            *[str(item) for item in paths],
-        ]
-        merged_env = os.environ.copy()
-        if env:
-            merged_env.update({str(key): str(value) for key, value in env.items()})
-        completed = subprocess.run(
-            command,
-            cwd=str(cwd),
-            env=merged_env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        tests, failures, errors, skipped = _parse_junit_totals(xml_path)
-        passed = max(0, tests - failures - errors - skipped)
-        return PytestSummary(
-            tests=tests,
-            passed=passed,
-            failed=failures + errors,
-            skipped=skipped,
-            exit_code=int(completed.returncode),
-            paths=[str(item) for item in paths],
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            junit_xml=str(xml_path),
-        )
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update({str(key): str(value) for key, value in env.items()})
+
+    interpreter_candidates = _pytest_interpreters()
+    last_summary: PytestSummary | None = None
+
+    for index, interpreter in enumerate(interpreter_candidates):
+        with tempfile.TemporaryDirectory(prefix="autoresearch-pytest-") as tmp_dir:
+            xml_path = Path(tmp_dir) / "pytest-report.xml"
+            command = [
+                interpreter,
+                "-m",
+                "pytest",
+                "-q",
+                "--junitxml",
+                str(xml_path),
+                *list(extra_args or []),
+                *[str(item) for item in paths],
+            ]
+            completed = subprocess.run(
+                command,
+                cwd=str(cwd),
+                env=merged_env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            tests, failures, errors, skipped = _parse_junit_totals(xml_path)
+            passed = max(0, tests - failures - errors - skipped)
+            summary = PytestSummary(
+                tests=tests,
+                passed=passed,
+                failed=failures + errors,
+                skipped=skipped,
+                exit_code=int(completed.returncode),
+                paths=[str(item) for item in paths],
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                junit_xml=str(xml_path),
+            )
+            last_summary = summary
+            if completed.returncode == 0:
+                return summary
+            if index + 1 < len(interpreter_candidates) and _should_retry_pytest_interpreter(
+                completed.stdout,
+                completed.stderr,
+            ):
+                continue
+            return summary
+
+    if last_summary is None:
+        raise RuntimeError("run_pytest did not execute any interpreter candidates.")
+    return last_summary

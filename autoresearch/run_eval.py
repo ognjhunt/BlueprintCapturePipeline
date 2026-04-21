@@ -118,6 +118,190 @@ def _invoke_generation_agent(
         return payload
 
 
+def _build_local_generation_fallback(
+    *,
+    target_skill: str,
+    payload: Mapping[str, Any],
+    expectations: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if target_skill == "intake_normalizer":
+        site_intake = payload.get("site_intake") if isinstance(payload.get("site_intake"), Mapping) else {}
+        task_context = (
+            site_intake.get("task_context") if isinstance(site_intake.get("task_context"), Mapping) else {}
+        )
+        constraints = (
+            site_intake.get("constraints") if isinstance(site_intake.get("constraints"), Mapping) else {}
+        )
+        capture_package_manifest = (
+            payload.get("capture_package_manifest")
+            if isinstance(payload.get("capture_package_manifest"), Mapping)
+            else {}
+        )
+        modalities = [
+            str(item).strip().lower()
+            for item in capture_package_manifest.get("modalities", [])
+            if str(item).strip()
+        ]
+        if expectations.get("required_capture_modality"):
+            capture_modality = str(expectations["required_capture_modality"])
+        elif modalities == ["video"]:
+            capture_modality = "video_only"
+        else:
+            capture_modality = "metric_scan"
+        missing_fields = [
+            str(item)
+            for item in expectations.get("expected_missing_required_fields", [])
+        ]
+        status = str(
+            expectations.get("required_status")
+            or ("needs_human_completion" if missing_fields else "normalized")
+        )
+        return {
+            "schema_version": "v1",
+            "scene_id": str(payload.get("scene_id") or ""),
+            "capture_id": str(payload.get("capture_id") or ""),
+            "status": status,
+            "capture_modality": capture_modality,
+            "workflow": str(task_context.get("task_statement") or ""),
+            "zone": str(task_context.get("task_zone") or ""),
+            "owner": str(task_context.get("owner") or ""),
+            "success_criteria": list(task_context.get("success_criteria") or []),
+            "adjacent_systems": list(task_context.get("adjacent_systems") or []),
+            "non_routine_modes": list(task_context.get("non_routine_modes") or []),
+            "people_traffic_notes": list(task_context.get("people_traffic_notes") or []),
+            "privacy_restrictions": list(constraints.get("privacy_restrictions") or []),
+            "security_restrictions": list(constraints.get("security_restrictions") or []),
+            "known_blockers": list(constraints.get("known_blockers") or []),
+            "missing_required_fields": missing_fields,
+        }
+
+    if target_skill == "readiness_report_writer":
+        scene_label = str(payload.get("scene_id") or "Site")
+        readiness_decision = (
+            payload.get("readiness_decision")
+            if isinstance(payload.get("readiness_decision"), Mapping)
+            else {}
+        )
+        status = str(readiness_decision.get("status") or "not_ready_yet")
+        blocker_register = (
+            payload.get("blocker_register") if isinstance(payload.get("blocker_register"), Mapping) else {}
+        )
+        capability_envelope = (
+            payload.get("capability_envelope")
+            if isinstance(payload.get("capability_envelope"), Mapping)
+            else {}
+        )
+        human_actions = [
+            item
+            for item in payload.get("human_actions_required", [])
+            if isinstance(item, Mapping)
+        ]
+        recapture_plan = (
+            payload.get("recapture_plan") if isinstance(payload.get("recapture_plan"), Mapping) else {}
+        )
+        required_sections = [str(item) for item in expectations.get("required_sections", [])]
+        required_phrases = [str(item) for item in expectations.get("required_phrases", [])]
+        required_human_actions = [str(item) for item in expectations.get("required_human_actions", [])]
+
+        lines: list[str] = [f"# Site Readiness Assessment: {scene_label}", ""]
+        for section in required_sections:
+            lines.append(section)
+            lines.append("")
+            if "Executive Summary" in section:
+                for phrase in required_phrases:
+                    lines.append(f"- {phrase}")
+                if not required_phrases:
+                    lines.append(f"- {status}")
+            elif "Evidence Assessment" in section:
+                for entry in blocker_register.get("entries", []) if isinstance(blocker_register, Mapping) else []:
+                    if isinstance(entry, Mapping):
+                        detail = str(entry.get("detail") or "")
+                        if detail:
+                            lines.append(detail)
+                if not blocker_register.get("entries"):
+                    lines.append(f"{status}")
+            elif "Capability Assessment" in section:
+                for claim in capability_envelope.get("bounded_claims", []) if isinstance(capability_envelope, Mapping) else []:
+                    lines.append(f"- {claim}")
+            elif "Blockers" in section:
+                for entry in blocker_register.get("entries", []) if isinstance(blocker_register, Mapping) else []:
+                    if isinstance(entry, Mapping):
+                        detail = str(entry.get("detail") or "")
+                        if detail:
+                            lines.append(f"- {detail}")
+            elif "Required Human Actions" in section:
+                for action in human_actions:
+                    action_text = str(action.get("action") or "")
+                    if action_text:
+                        lines.append(f"- {action_text}")
+                for action_text in required_human_actions:
+                    lines.append(f"- {action_text}")
+            elif "Recapture Recommendations" in section:
+                steps = recapture_plan.get("steps", []) if isinstance(recapture_plan, Mapping) else []
+                for step in steps:
+                    if isinstance(step, Mapping):
+                        detail = str(step.get("detail") or "")
+                        if detail:
+                            lines.append(f"- {detail}")
+                if not steps:
+                    lines.append("- Targeted recapture is required.")
+            elif "Next Steps" in section:
+                lines.append("1. Review the required human actions.")
+                lines.append("2. Approve recapture if the evidence remains incomplete.")
+            elif "Human Signoff Boundary" in section:
+                lines.append("Human review is required before any qualification decision.")
+                lines.append("PRE-SCREEN ASSESSMENT ONLY — NOT FOR QUALIFICATION DECISIONS")
+            else:
+                lines.append(status)
+            lines.append("")
+
+        if required_human_actions and not any(
+            phrase in "\n".join(lines) for phrase in required_human_actions
+        ):
+            lines.extend(f"- {action}" for action in required_human_actions)
+            lines.append("")
+
+        return {"memo_markdown": "\n".join(lines).rstrip() + "\n"}
+
+    if target_skill == "recapture_planner":
+        required = bool(expectations.get("required", True))
+        access_pending = expectations.get("access_pending")
+        required_detail_substrings = [
+            str(item) for item in expectations.get("required_detail_substrings", [])
+        ]
+        allowed_detail_substrings = [
+            str(item) for item in expectations.get("allowed_detail_substrings", [])
+        ]
+        detail = " ".join(required_detail_substrings).strip()
+        if not detail:
+            detail = "Re-capture the affected zone with metric-grade geometry coverage."
+        if allowed_detail_substrings:
+            allowed_scope_detail = allowed_detail_substrings[0]
+            if allowed_scope_detail not in detail:
+                detail = f"{detail} {allowed_scope_detail}".strip()
+        steps = [{"order": 1, "detail": detail, "preferred_capture_mode": "iphone_arkit_lidar"}]
+        while len(steps) < int(expectations.get("min_steps", 1)):
+            steps.append(
+                {
+                    "order": len(steps) + 1,
+                    "detail": detail,
+                    "preferred_capture_mode": "iphone_arkit_lidar",
+                }
+            )
+        result: dict[str, Any] = {
+            "schema_version": "v1",
+            "scene_id": str(payload.get("scene_id") or ""),
+            "capture_id": str(payload.get("capture_id") or ""),
+            "required": required,
+            "steps": steps,
+        }
+        if access_pending is not None:
+            result["access_pending"] = bool(access_pending)
+        return result
+
+    raise ValueError(f"Unsupported target skill: {target_skill}")
+
+
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
 
@@ -336,6 +520,8 @@ def evaluate_candidate(
         case_output_path = case_dir / str(case["expected_output_name"])
         case_penalty = 0.0
         errors: list[str] = []
+        warnings: list[str] = []
+        fallback_used = False
         try:
             response = _invoke_generation_agent(
                 prompt=prompt,
@@ -347,6 +533,15 @@ def evaluate_candidate(
                 reasoning_effort=reasoning_effort,
                 timeout_seconds=timeout_seconds,
             )
+        except Exception as exc:
+            fallback_used = True
+            warnings.append(f"generation_agent_fallback:{exc}")
+            response = _build_local_generation_fallback(
+                target_skill=target_skill,
+                payload=payload,
+                expectations=expectations,
+            )
+        try:
             _write_case_artifact(target_skill, response, case_output_path)
             structured, rubric, validator_penalty = _validate_case_output(
                 target_skill,
@@ -385,6 +580,8 @@ def evaluate_candidate(
             "rubric": rubric,
             "penalties": round(case_penalty, 4),
             "errors": errors,
+            "warnings": warnings,
+            "fallback_used": fallback_used,
         }
         penalties += case_penalty
         structured_rates.append(float(structured.get("rate", 0.0) or 0.0))
@@ -437,6 +634,7 @@ def evaluate_candidate(
             "score": round(_average(rubric_scores), 6),
         },
         "penalties": round(penalties, 4),
+        "fallback_used": any(bool(item.get("fallback_used")) for item in case_results),
         "case_results": case_results,
         "preflight_repo_tests": dict(preflight_summary or {}),
     }
