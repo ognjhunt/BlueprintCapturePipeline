@@ -75,6 +75,7 @@ blueprint-build-evaluation-prep = "blueprint_pipeline.evaluation_prep_stage:main
 blueprint-video-to-world-runner = "blueprint_pipeline.video_to_world_runner_service:main"
 blueprint-native-runtime-service = "blueprint_pipeline.native_runtime_service:main"
 blueprint-cosmos-vast-train = "blueprint_pipeline.synthesis.cosmos_vast_training_wrapper:main"
+blueprint-run-city-launch-harness = "blueprint_pipeline.city_launch_autonomy_harness:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

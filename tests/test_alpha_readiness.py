@@ -173,7 +173,13 @@ def _set_alpha_env(monkeypatch, tmp_path: Path, *, include_runtime: bool, includ
 def _stub_sync(monkeypatch, sync_calls: list[dict[str, object]]) -> None:  # type: ignore[no-untyped-def]
     def _sync(**kwargs):  # type: ignore[no-untyped-def]
         sync_calls.append(kwargs)
-        return {"status": "succeeded", "attempts": 1, "response": {"ok": True}}
+        return {
+            "status": "succeeded",
+            "attempts": 1,
+            "response": {"ok": True},
+            "attachment_payload": kwargs,
+            "deployment_readiness": kwargs.get("deployment_readiness"),
+        }
 
     monkeypatch.setattr("blueprint_pipeline.qualification.sync_webapp_pipeline_attachment", _sync)
     monkeypatch.setattr("blueprint_pipeline.alpha_readiness.sync_webapp_pipeline_attachment", _sync)
@@ -450,6 +456,12 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     assert all(check["passed"] for check in launch_gate_summary["stage_checks"])
     assert sync_result["status"] == "succeeded"
     assert sync_result["latest_stage"] == "evaluation_prep"
+    assert (
+        sync_result["syncs"]["evaluation_prep"]["attachment_payload"]["deployment_readiness"]["proof_path_status"]["event_statuses"][0][
+            "event_name"
+        ]
+        == "proof_pack_delivered"
+    )
     assert len(sync_calls) == 2
     assert sync_calls[1]["artifacts"]["site_world_spec_uri"].endswith("/evaluation_prep/site_world_spec.json")
     assert sync_calls[1]["artifacts"]["hosted_session_runtime_manifest_uri"].endswith(
@@ -564,7 +576,7 @@ def test_iphone_alpha_readiness_is_no_go_when_runtime_url_missing(monkeypatch, t
     assert any("missing runtime service URL" in reason for reason in alpha_summary["no_go_reasons"])
 
 
-def test_meta_glasses_alpha_readiness_is_external_when_runtime_capability_is_ready(monkeypatch, tmp_path: Path) -> None:
+def test_meta_glasses_alpha_readiness_is_internal_until_operator_evidence(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_capture(
         tmp_path,
         capture_source="glasses",
@@ -598,20 +610,27 @@ def test_meta_glasses_alpha_readiness_is_external_when_runtime_capability_is_rea
     alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
     launch_gate_summary = json.loads((capture_root / "pipeline" / "launch_gate_summary.json").read_text(encoding="utf-8"))
 
-    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert alpha_summary["verdicts"]["external_alpha"]["contract_status"] == "ready"
     assert alpha_summary["verdicts"]["internal_experimental_alpha"]["status"] == "go"
-    assert alpha_summary["device_alpha_profile"]["status"] == "ready_for_external_alpha"
+    assert alpha_summary["device_alpha_profile"]["status"] == "internal_only"
+    assert alpha_summary["launch_market_readiness"]["internal_pilot_ready"] is True
+    assert alpha_summary["launch_market_readiness"]["external_market_ready"] is False
     assert alpha_summary["runtime_capability"]["status"] == "ready"
-    assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
+    assert launch_gate_summary["overall_status"] == "internal_only_contract_ready"
     assert any(
         "Do not claim strong site-faithful world-model quality" in claim
+        for claim in launch_gate_summary["launch_claims"]["not_justified"]
+    )
+    assert any(
+        "Do not market this source as externally launch-ready" in claim
         for claim in launch_gate_summary["launch_claims"]["not_justified"]
     )
     assert sync_calls[1]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
     assert sync_calls[1]["artifacts"]["privacy_depth_manifest_uri"].endswith("/privacy_depth/depth_manifest.json")
 
 
-def test_android_alpha_readiness_is_external_when_runtime_capability_is_ready(monkeypatch, tmp_path: Path) -> None:
+def test_android_alpha_readiness_is_internal_until_operator_evidence(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_capture(
         tmp_path,
         capture_source="android",
@@ -645,12 +664,19 @@ def test_android_alpha_readiness_is_external_when_runtime_capability_is_ready(mo
     launch_gate_summary = json.loads((capture_root / "pipeline" / "launch_gate_summary.json").read_text(encoding="utf-8"))
 
     assert alpha_summary["profile"] == "android_video"
-    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert alpha_summary["verdicts"]["external_alpha"]["contract_status"] == "ready"
     assert alpha_summary["verdicts"]["internal_experimental_alpha"]["status"] == "go"
-    assert alpha_summary["device_alpha_profile"]["status"] == "ready_for_external_alpha"
+    assert alpha_summary["device_alpha_profile"]["status"] == "internal_only"
+    assert alpha_summary["launch_market_readiness"]["internal_pilot_ready"] is True
+    assert alpha_summary["launch_market_readiness"]["external_market_ready"] is False
     assert alpha_summary["runtime_capability"]["status"] == "ready"
-    assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
+    assert launch_gate_summary["overall_status"] == "internal_only_contract_ready"
     assert any(
         "Do not claim strong site-faithful world-model quality" in claim
+        for claim in launch_gate_summary["launch_claims"]["not_justified"]
+    )
+    assert any(
+        "Do not market this source as externally launch-ready" in claim
         for claim in launch_gate_summary["launch_claims"]["not_justified"]
     )

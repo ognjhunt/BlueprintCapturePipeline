@@ -24,7 +24,10 @@ def test_sync_webapp_pipeline_attachment_skips_when_not_configured(monkeypatch) 
 
     result = sync_webapp_pipeline_attachment(**_minimal_payload())
 
-    assert result == {"status": "skipped", "reason": "sync_not_configured", "attempts": 0}
+    assert result["status"] == "skipped"
+    assert result["reason"] == "sync_not_configured"
+    assert result["attempts"] == 0
+    assert result["attachment_payload"]["qualification_state"] == "qualified_ready"
 
 
 def test_sync_webapp_pipeline_attachment_raises_when_required(monkeypatch) -> None:

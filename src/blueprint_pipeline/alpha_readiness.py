@@ -515,16 +515,21 @@ def build_alpha_readiness_summary(
                 category="path",
             ),
         ]
+        glasses_contract_ready = common_passed and all(item["passed"] for item in path_checks)
         external_alpha = {
-            "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
-            "reason": "all_common_and_glasses_checks_passed"
-            if common_passed and all(item["passed"] for item in path_checks)
+            "status": "no_go",
+            "reason": "glasses_requires_physical_device_and_operator_launch_evidence"
+            if glasses_contract_ready
             else "glasses_external_alpha_requirements_not_met",
+            "contract_status": "ready" if glasses_contract_ready else "blocked",
+            "contract_reason": "all_common_and_glasses_checks_passed"
+            if glasses_contract_ready
+            else "glasses_contract_requirements_not_met",
         }
         internal_alpha = {
-            "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
+            "status": "go" if glasses_contract_ready else "no_go",
             "reason": "all_common_and_glasses_checks_passed"
-            if common_passed and all(item["passed"] for item in path_checks)
+            if glasses_contract_ready
             else "glasses_internal_alpha_requirements_not_met",
         }
     elif profile == "android_video":
@@ -569,16 +574,21 @@ def build_alpha_readiness_summary(
                 category="path",
             ),
         ]
+        android_contract_ready = common_passed and all(item["passed"] for item in path_checks)
         external_alpha = {
-            "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
-            "reason": "all_common_and_android_checks_passed"
-            if common_passed and all(item["passed"] for item in path_checks)
+            "status": "no_go",
+            "reason": "android_requires_physical_device_and_operator_launch_evidence"
+            if android_contract_ready
             else "android_external_alpha_requirements_not_met",
+            "contract_status": "ready" if android_contract_ready else "blocked",
+            "contract_reason": "all_common_and_android_checks_passed"
+            if android_contract_ready
+            else "android_contract_requirements_not_met",
         }
         internal_alpha = {
-            "status": "go" if common_passed and all(item["passed"] for item in path_checks) else "no_go",
+            "status": "go" if android_contract_ready else "no_go",
             "reason": "all_common_and_android_checks_passed"
-            if common_passed and all(item["passed"] for item in path_checks)
+            if android_contract_ready
             else "android_internal_alpha_requirements_not_met",
         }
 
@@ -618,6 +628,17 @@ def build_alpha_readiness_summary(
         "profile": profile,
         "runtime_launch_expected": runtime_launch_expected,
         "runtime_capability": runtime_capability,
+        "launch_market_readiness": {
+            "contract_ready": bool(external_alpha_go or internal_alpha_go),
+            "internal_pilot_ready": bool(internal_alpha_go),
+            "external_market_ready": bool(external_alpha_go),
+            "site_faithful_market_ready": bool(external_alpha_go and profile == "iphone_arkit_lidar"),
+            "claim_boundary": (
+                "external_market"
+                if external_alpha_go
+                else "internal_or_blocked_until_live_operator_evidence"
+            ),
+        },
         "environment_checks": env_checks,
         "common_checks": common_checks,
         "path_checks": path_checks,

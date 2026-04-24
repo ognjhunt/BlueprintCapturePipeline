@@ -3734,6 +3734,10 @@ def run_evaluation_prep_stage(
         "manifest_path": str(manifest_path),
         "status": legacy_status,
         "canonical_package_status": canonical_package_status,
+        "site_package_manifest": site_package_manifest,
+        "hosted_review_readiness": hosted_review_readiness,
+        "proof_pack_manifest": proof_pack_manifest,
+        "proof_path_status": proof_path_status,
         "webapp_sync_result": webapp_sync_result,
         "alpha_readiness_summary": alpha_summary,
     }

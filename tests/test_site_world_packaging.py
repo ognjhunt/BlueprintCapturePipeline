@@ -433,6 +433,8 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     geometry = json.loads((eval_root / "object_geometry_manifest.json").read_text(encoding="utf-8"))
 
     assert evaluation["manifest_path"] == str(eval_root / "evaluation_prep_manifest.json")
+    assert evaluation["proof_path_status"]["event_statuses"][0]["event_name"] == "proof_pack_delivered"
+    assert len(evaluation["proof_path_status"]["event_statuses"]) == 4
     assert (eval_root / "site_world_spec.json").is_file()
     assert (eval_root / "site_world_registration.json").is_file()
     assert (eval_root / "site_world_health.json").is_file()

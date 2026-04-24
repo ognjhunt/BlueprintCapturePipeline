@@ -121,16 +121,6 @@ def sync_webapp_pipeline_attachment(
     sync_required = _bool_env("PIPELINE_SYNC_REQUIRED", default=False)
     max_attempts = max(1, _int_env("PIPELINE_SYNC_MAX_ATTEMPTS", 3))
     retry_delay_ms = max(0, _int_env("PIPELINE_SYNC_RETRY_DELAY_MS", 500))
-    if not sync_url or not sync_token:
-        result = {
-            "status": "failed" if sync_required else "skipped",
-            "reason": "sync_not_configured",
-            "attempts": 0,
-        }
-        if sync_required:
-            raise WebappSyncError("sync_not_configured")
-        return result
-
     payload = build_webapp_pipeline_attachment_payload(
         site_submission_id=site_submission_id,
         request_id=request_id,
@@ -146,6 +136,22 @@ def sync_webapp_pipeline_attachment(
         deployment_readiness=deployment_readiness,
         authoritative_state_update=authoritative_state_update,
     )
+    if not sync_url or not sync_token:
+        result = {
+            "status": "failed" if sync_required else "skipped",
+            "reason": "sync_not_configured",
+            "attempts": 0,
+            "attachment_payload": payload,
+            "deployment_readiness": (
+                {str(key): value for key, value in deployment_readiness.items()}
+                if isinstance(deployment_readiness, Mapping)
+                else None
+            ),
+        }
+        if sync_required:
+            raise WebappSyncError("sync_not_configured")
+        return result
+
     timeout_seconds = max(1, _int_env("PIPELINE_SYNC_TIMEOUT_SECONDS", 10))
     last_reason = "sync_unknown_failure"
 
@@ -178,6 +184,12 @@ def sync_webapp_pipeline_attachment(
                     "status": "succeeded",
                     "attempts": attempt,
                     "response": parsed if isinstance(parsed, dict) else {},
+                    "attachment_payload": payload,
+                    "deployment_readiness": (
+                        {str(key): value for key, value in deployment_readiness.items()}
+                        if isinstance(deployment_readiness, Mapping)
+                        else None
+                    ),
                 }
 
         if attempt < max_attempts and retry_delay_ms:
@@ -189,4 +201,10 @@ def sync_webapp_pipeline_attachment(
         "status": "failed",
         "reason": last_reason,
         "attempts": max_attempts,
+        "attachment_payload": payload,
+        "deployment_readiness": (
+            {str(key): value for key, value in deployment_readiness.items()}
+            if isinstance(deployment_readiness, Mapping)
+            else None
+        ),
     }

@@ -87,6 +87,31 @@ def run_end_to_end(
         "final_memo_path": review.get("final_memo_path"),
         "final_bundle_path": review.get("final_bundle_path"),
         "evaluation_prep": evaluation_prep_result,
+        "webapp_sync_result": (
+            evaluation_prep_result.get("webapp_sync_result")
+            if isinstance(evaluation_prep_result, dict)
+            else None
+        ),
+        "site_package_manifest": (
+            evaluation_prep_result.get("site_package_manifest")
+            if isinstance(evaluation_prep_result, dict)
+            else None
+        ),
+        "hosted_review_readiness": (
+            evaluation_prep_result.get("hosted_review_readiness")
+            if isinstance(evaluation_prep_result, dict)
+            else None
+        ),
+        "proof_pack_manifest": (
+            evaluation_prep_result.get("proof_pack_manifest")
+            if isinstance(evaluation_prep_result, dict)
+            else None
+        ),
+        "proof_path_status": (
+            evaluation_prep_result.get("proof_path_status")
+            if isinstance(evaluation_prep_result, dict)
+            else None
+        ),
         "cosmos_validation": cosmos_validation,
     }
 
