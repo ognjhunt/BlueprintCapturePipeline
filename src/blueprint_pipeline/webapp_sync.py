@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import time
+from hashlib import sha256
 from typing import Any, Dict, Mapping, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+
+from .launch_proof_policy import buyer_access_required, production_forces_false, production_forces_true
 
 
 class WebappSyncError(RuntimeError):
@@ -34,6 +37,85 @@ def _bool_env(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+def _artifact_uri_checksums(artifacts: Mapping[str, Any]) -> Dict[str, str]:
+    checksums: Dict[str, str] = {}
+    for key, value in artifacts.items():
+        if not value:
+            continue
+        text = str(value)
+        checksums[str(key)] = sha256(text.encode("utf-8")).hexdigest()
+    return checksums
+
+
+def _extract_webapp_response_ids(response: Mapping[str, Any]) -> Dict[str, Any]:
+    keys = (
+        "id",
+        "request_id",
+        "attachment_id",
+        "pipeline_attachment_id",
+        "listing_id",
+        "site_world_id",
+        "artifact_id",
+        "capture_job_id",
+        "buyer_artifact_id",
+    )
+    out: Dict[str, Any] = {}
+    for key in keys:
+        value = response.get(key)
+        if value:
+            out[key] = value
+    nested = response.get("attachment") if isinstance(response.get("attachment"), Mapping) else {}
+    for key in keys:
+        value = nested.get(key)
+        if value and key not in out:
+            out[key] = value
+    return out
+
+
+def _buyer_access_check_payload(response: Mapping[str, Any]) -> Dict[str, Any]:
+    check_url = _string_env("PIPELINE_BUYER_ACCESS_CHECK_URL")
+    check_token = _string_env("PIPELINE_BUYER_ACCESS_CHECK_TOKEN") or _string_env("PIPELINE_SYNC_TOKEN")
+    if not check_url:
+        return {
+            "status": "blocked" if buyer_access_required() else "skipped",
+            "buyer_access_checked": False,
+            "reason": "buyer_access_check_not_configured",
+            "blocker": "buyer_access_check_not_configured" if buyer_access_required() else None,
+        }
+    payload = {"webapp_response_ids": _extract_webapp_response_ids(response)}
+    request = urllib_request.Request(
+        check_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            **({"Authorization": f"Bearer {check_token}"} if check_token else {}),
+        },
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=max(1, _int_env("PIPELINE_BUYER_ACCESS_TIMEOUT_SECONDS", 10))) as resp:
+            raw = resp.read().decode("utf-8")
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "buyer_access_checked": False,
+            "reason": f"buyer_access_check_failed:{exc}",
+            "blocker": "buyer_access_check_failed",
+        }
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    allowed = bool(parsed.get("ok") or parsed.get("accessible") or parsed.get("buyer_accessible"))
+    return {
+        "status": "succeeded" if allowed else "blocked",
+        "buyer_access_checked": True,
+        "buyer_accessible": allowed,
+        "response": parsed if isinstance(parsed, dict) else {},
+        "blocker": None if allowed else "buyer_access_check_not_accessible",
+    }
 
 
 def derive_webapp_qualification_state(*, readiness_state: object, completeness_status: object) -> str:
@@ -118,7 +200,8 @@ def sync_webapp_pipeline_attachment(
 ) -> Dict[str, Any]:
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
     sync_token = _string_env("PIPELINE_SYNC_TOKEN")
-    sync_required = _bool_env("PIPELINE_SYNC_REQUIRED", default=False)
+    sync_required = production_forces_true("PIPELINE_SYNC_REQUIRED", default=False)
+    placeholder_sync_allowed = production_forces_false("PIPELINE_SYNC_ALLOW_PLACEHOLDER_FALLBACK", default=True)
     max_attempts = max(1, _int_env("PIPELINE_SYNC_MAX_ATTEMPTS", 3))
     retry_delay_ms = max(0, _int_env("PIPELINE_SYNC_RETRY_DELAY_MS", 500))
     payload = build_webapp_pipeline_attachment_payload(
@@ -136,12 +219,22 @@ def sync_webapp_pipeline_attachment(
         deployment_readiness=deployment_readiness,
         authoritative_state_update=authoritative_state_update,
     )
+    payload["artifact_uri_checksums"] = _artifact_uri_checksums(payload.get("artifacts") or {})
+    payload["placeholder_fallback_allowed"] = bool(placeholder_sync_allowed)
     if not sync_url or not sync_token:
         result = {
             "status": "failed" if sync_required else "skipped",
             "reason": "sync_not_configured",
             "attempts": 0,
             "attachment_payload": payload,
+            "artifact_uri_checksums": payload["artifact_uri_checksums"],
+            "webapp_response_ids": {},
+            "buyer_access_check": {
+                "status": "blocked" if buyer_access_required() else "skipped",
+                "buyer_access_checked": False,
+                "reason": "sync_not_configured",
+                "blocker": "sync_not_configured" if buyer_access_required() else None,
+            },
             "deployment_readiness": (
                 {str(key): value for key, value in deployment_readiness.items()}
                 if isinstance(deployment_readiness, Mapping)
@@ -180,10 +273,15 @@ def sync_webapp_pipeline_attachment(
             except json.JSONDecodeError:
                 last_reason = "invalid_json"
             else:
+                response_ids = _extract_webapp_response_ids(parsed if isinstance(parsed, dict) else {})
+                buyer_access_check = _buyer_access_check_payload(parsed if isinstance(parsed, dict) else {})
                 return {
                     "status": "succeeded",
                     "attempts": attempt,
                     "response": parsed if isinstance(parsed, dict) else {},
+                    "webapp_response_ids": response_ids,
+                    "artifact_uri_checksums": payload["artifact_uri_checksums"],
+                    "buyer_access_check": buyer_access_check,
                     "attachment_payload": payload,
                     "deployment_readiness": (
                         {str(key): value for key, value in deployment_readiness.items()}
@@ -201,6 +299,14 @@ def sync_webapp_pipeline_attachment(
         "status": "failed",
         "reason": last_reason,
         "attempts": max_attempts,
+        "webapp_response_ids": {},
+        "artifact_uri_checksums": payload["artifact_uri_checksums"],
+        "buyer_access_check": {
+            "status": "blocked" if buyer_access_required() else "skipped",
+            "buyer_access_checked": False,
+            "reason": last_reason,
+            "blocker": "sync_failed" if buyer_access_required() else None,
+        },
         "attachment_payload": payload,
         "deployment_readiness": (
             {str(key): value for key, value in deployment_readiness.items()}

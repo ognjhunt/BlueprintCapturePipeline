@@ -116,6 +116,14 @@ REQUIRED_LAUNCH_PROOF_FIELDS: tuple[tuple[str, Any, str, str, bool], ...] = (
     ("pipeline.pipeline_handoff_exists", True, "pipeline", "pipeline handoff missing", False),
     ("pipeline.pubsub_handoff_succeeded", True, "pipeline", "Pub/Sub handoff missing", True),
     ("pipeline.pipeline_processed_capture", True, "pipeline", "pipeline processed capture missing", True),
+    ("privacy_provider.final_walkthrough_uri", "non_empty", "privacy_provider", "privacy-safe final walkthrough missing", False),
+    ("privacy_provider.worldlabs_input_uri", "non_empty", "privacy_provider", "World Labs input proof missing", False),
+    ("privacy_provider.raw_bypass_disabled", True, "privacy_provider", "raw World Labs bypass not proven disabled", False),
+    ("retrieval.dense_index_exists", True, "pipeline", "dense retrieval export missing", False),
+    ("retrieval.site_reference_manifest_exists", True, "pipeline", "site reference memory missing", False),
+    ("hosted_session.runtime_url", "non_empty", "runtime", "runtime URL missing", True),
+    ("hosted_session.webapp_listing_id", "non_empty", "runtime_webapp", "WebApp listing/attachment ID missing", True),
+    ("hosted_session.buyer_access_checked", True, "runtime_webapp", "buyer access check missing", True),
     ("meta_glasses.physical_device_smoke_passed", True, "meta_glasses", "physical Meta glasses smoke missing", True),
     ("meta_glasses.video_first_positioning_confirmed", True, "meta_glasses", "glasses video-first claim boundary missing", False),
     ("meta_glasses.native_geometry_not_marketed", True, "meta_glasses", "native-geometry marketing guardrail missing", False),
@@ -155,6 +163,7 @@ def default_proof(city_slug: str, budget_cents: int, capture_paths: Sequence[str
         "ops": {},
         "privacy_provider": {},
         "hosted_session": {},
+        "retrieval": {},
         "harness": {"generated_at": utc_now_iso(), "proof_mode": "incomplete_until_live_evidence"},
     }
     for field_name, expected, *_rest in REQUIRED_LAUNCH_PROOF_FIELDS:
@@ -463,6 +472,125 @@ def run_command(command: CommandSpec) -> dict[str, Any]:
     }
 
 
+def _optional_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _write_lane_result(path: Path, *, lane_id: str, status: str, evidence: Mapping[str, Any], blockers: Sequence[str]) -> dict[str, Any]:
+    result = {
+        "schema_version": "lane-result.v1",
+        "lane_id": lane_id,
+        "status": status,
+        "generated_at": utc_now_iso(),
+        "evidence": dict(evidence),
+        "blockers": list(blockers),
+    }
+    write_json(path, result)
+    return result
+
+
+def collect_capture_root_evidence(*, capture_root: Path, lane_results_root: Path) -> list[dict[str, Any]]:
+    pipeline_root = capture_root / "pipeline"
+    descriptor = _optional_json(capture_root / "capture_descriptor.json")
+    metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+    privacy_manifest = _optional_json(pipeline_root / "privacy_processing_manifest.json")
+    worldlabs_audit = _optional_json(pipeline_root / "worldlabs_input_audit.json")
+    provider_run = _optional_json(pipeline_root / "provider_run_manifest.json")
+    registration = _optional_json(pipeline_root / "evaluation_prep" / "site_world_registration.json")
+    health = _optional_json(pipeline_root / "evaluation_prep" / "site_world_health.json")
+    webapp_sync = _optional_json(pipeline_root / "webapp_sync_result.json")
+
+    final_walkthrough = capture_root / "privacy" / "final_walkthrough.mov"
+    if not final_walkthrough.is_file():
+        final_walkthrough = capture_root / "privacy" / "final_walkthrough.mp4"
+    dense_index = pipeline_root / "world_model_export" / "dense_index.jsonl"
+    site_reference = next(capture_root.glob("sites/*/reference_memory/site_reference_manifest.json"), None)
+
+    results: list[dict[str, Any]] = []
+    pipeline_evidence = {
+        "pipeline.capture_descriptor_exists": (capture_root / "capture_descriptor.json").is_file(),
+        "pipeline.qa_report_exists": (capture_root / "qa_report.json").is_file(),
+        "pipeline.pipeline_handoff_exists": (pipeline_root / "opportunity_handoff.json").is_file(),
+        "pipeline.pipeline_processed_capture": (pipeline_root / ".qualification_pipeline_complete").is_file(),
+    }
+    results.append(
+        _write_lane_result(
+            lane_results_root / "pipeline.capture-root-evidence.json",
+            lane_id="pipeline",
+            status="succeeded" if all(pipeline_evidence.values()) else "blocked",
+            evidence=pipeline_evidence,
+            blockers=[key for key, value in pipeline_evidence.items() if not value],
+        )
+    )
+
+    worldlabs_input_uri = str(
+        worldlabs_audit.get("output_video_uri")
+        or metadata.get("worldlabs_input_video_uri")
+        or provider_run.get("selected_video_uri")
+        or ""
+    ).strip()
+    final_walkthrough_uri = str(privacy_manifest.get("final_walkthrough_uri") or "").strip()
+    if not final_walkthrough_uri and final_walkthrough.is_file():
+        final_walkthrough_uri = str(final_walkthrough)
+    privacy_evidence = {
+        "privacy_provider.final_walkthrough_uri": final_walkthrough_uri,
+        "privacy_provider.worldlabs_input_uri": worldlabs_input_uri,
+        "privacy_provider.raw_bypass_disabled": (
+            bool(worldlabs_audit.get("privacy_safe_input"))
+            and not bool(worldlabs_audit.get("raw_video_bypass_used"))
+        ),
+    }
+    results.append(
+        _write_lane_result(
+            lane_results_root / "privacy_safe_provider.capture-root-evidence.json",
+            lane_id="privacy_safe_provider",
+            status="succeeded" if all(bool(value) for value in privacy_evidence.values()) else "blocked",
+            evidence=privacy_evidence,
+            blockers=[key for key, value in privacy_evidence.items() if not value],
+        )
+    )
+
+    retrieval_evidence = {
+        "retrieval.dense_index_exists": dense_index.is_file(),
+        "retrieval.site_reference_manifest_exists": bool(site_reference and site_reference.is_file()),
+    }
+    results.append(
+        _write_lane_result(
+            lane_results_root / "site_identity_dense_export.capture-root-evidence.json",
+            lane_id="site_identity_dense_export",
+            status="succeeded" if all(retrieval_evidence.values()) else "blocked",
+            evidence=retrieval_evidence,
+            blockers=[key for key, value in retrieval_evidence.items() if not value],
+        )
+    )
+
+    response_ids = webapp_sync.get("webapp_response_ids") if isinstance(webapp_sync.get("webapp_response_ids"), Mapping) else {}
+    buyer_access = webapp_sync.get("buyer_access_check") if isinstance(webapp_sync.get("buyer_access_check"), Mapping) else {}
+    runtime_url = str(registration.get("runtime_base_url") or health.get("runtime_base_url") or "").strip()
+    webapp_listing_id = str(response_ids.get("listing_id") or response_ids.get("attachment_id") or response_ids.get("pipeline_attachment_id") or "").strip()
+    hosted_evidence = {
+        "hosted_session.runtime_url": runtime_url,
+        "hosted_session.webapp_listing_id": webapp_listing_id,
+        "hosted_session.buyer_access_checked": bool(buyer_access.get("buyer_access_checked")),
+    }
+    results.append(
+        _write_lane_result(
+            lane_results_root / "runtime_webapp_buyer_access.capture-root-evidence.json",
+            lane_id="runtime_webapp_buyer_access",
+            status="succeeded" if all(bool(value) for value in hosted_evidence.values()) else "blocked",
+            evidence=hosted_evidence,
+            blockers=[key for key, value in hosted_evidence.items() if not value],
+        )
+    )
+    return results
+
+
 def execute_local_packets(
     *,
     packets: Sequence[WorkPacket],
@@ -472,6 +600,15 @@ def execute_local_packets(
 ) -> list[dict[str, Any]]:
     command_results: list[dict[str, Any]] = []
     if not args.execute_local:
+        results_dir = run_root / "lane-results"
+        for packet in packets:
+            _write_lane_result(
+                results_dir / f"{packet.lane_id}.not-executed.json",
+                lane_id=packet.lane_id,
+                status="blocked",
+                evidence={},
+                blockers=["local_execution_disabled"],
+            )
         return command_results
     results_dir = run_root / "command-results"
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -532,11 +669,22 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
 
     applied_lane_results = apply_lane_results(proof, lane_results_root)
     command_results = execute_local_packets(packets=packets, proof=proof, run_root=run_root, args=args)
+    capture_root_arg = str(getattr(args, "capture_root", "") or "").strip()
+    capture_root_evidence: list[dict[str, Any]] = []
+    if capture_root_arg:
+        capture_root_evidence = collect_capture_root_evidence(
+            capture_root=Path(capture_root_arg).expanduser().resolve(),
+            lane_results_root=lane_results_root,
+        )
+        applied_lane_results.extend(apply_lane_results(proof, lane_results_root))
+    elif not args.execute_local:
+        applied_lane_results.extend(apply_lane_results(proof, lane_results_root))
     blockers = build_blockers(proof)
     status = determine_status(proof, blockers)
     proof["launch_proof_status"] = status
     proof["harness"]["applied_lane_results"] = applied_lane_results
     proof["harness"]["command_result_count"] = len(command_results)
+    proof["harness"]["capture_root_evidence_result_count"] = len(capture_root_evidence)
     proof["harness"]["work_packet_count"] = len(packets)
     proof["harness"]["updated_at"] = utc_now_iso()
 
@@ -591,6 +739,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--capture-repo", default=str(DEFAULT_CAPTURE_REPO))
     parser.add_argument("--webapp-repo", default=str(DEFAULT_WEBAPP_REPO))
     parser.add_argument("--output-root", default=str(ROOT / "ops/city-launch-runs"))
+    parser.add_argument("--capture-root", help="Optional real capture root to scan for Pipeline lane evidence.")
     return parser
 
 

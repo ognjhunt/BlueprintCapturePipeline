@@ -33,6 +33,11 @@ from .geometry_stage import build_geometry_stage_contract
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
 from .launch_bundle import build_buyer_trust_score, build_launch_qualification_bundle
+from .launch_proof_policy import (
+    production_forces_false,
+    production_launch_mode,
+    relative_artifact_checksum,
+)
 from .object_index_stage import ensure_object_index_stage
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
@@ -2631,6 +2636,8 @@ def _allow_raw_worldlabs_bypass(
     descriptor: CaptureDescriptor,
     privacy_processing: Mapping[str, Any],
 ) -> bool:
+    if production_launch_mode():
+        return False
     metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
     for raw in (
         metadata.get("allow_raw_worldlabs_bypass"),
@@ -2713,7 +2720,10 @@ def _worldlabs_source_candidate(
     privacy_status = str(privacy_processing.get("status") or descriptor.privacy_status or "").strip().lower()
     metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
     worldlabs_input_video_uri = str(metadata.get("worldlabs_input_video_uri") or "").strip()
-    bypass_allowed = _allow_raw_worldlabs_bypass(descriptor=descriptor, privacy_processing=privacy_processing)
+    bypass_allowed = production_forces_false(
+        "BLUEPRINT_ALLOW_RAW_WORLDLABS_BYPASS",
+        default=_allow_raw_worldlabs_bypass(descriptor=descriptor, privacy_processing=privacy_processing),
+    )
     candidates = [
         {
             "source_id": "worldlabs_input_video_uri",
@@ -2764,9 +2774,11 @@ def _prepare_worldlabs_input_video(
     artifact_dir = pipeline_dir / "worldlabs_input"
     ensure_dir(artifact_dir)
     manifest_path = artifact_dir / "worldlabs_input_manifest.json"
+    audit_path = pipeline_dir / "worldlabs_input_audit.json"
     output_path = artifact_dir / "worldlabs_input.mp4"
     output_uri = f"gs://{bucket}/{relative_scene_path(output_path, storage_root)}"
     manifest_uri = f"gs://{bucket}/{relative_scene_path(manifest_path, storage_root)}"
+    audit_uri = f"gs://{bucket}/{relative_scene_path(audit_path, storage_root)}"
     max_duration_seconds = 30.0
     max_size_bytes = 100_000_000
 
@@ -2792,11 +2804,27 @@ def _prepare_worldlabs_input_video(
             "output_video_uri": None,
         }
         write_json(manifest_path, payload)
+        write_json(
+            audit_path,
+            {
+                "schema_version": "v1",
+                "status": "blocked",
+                "generated_at": utc_now_iso(),
+                "reason": "no_worldlabs_source_video",
+                "privacy_safe_input": False,
+                "selected_video_source_id": None,
+                "selected_video_uri": None,
+                "output_video_uri": None,
+                "source_manifest_uri": None,
+            },
+        )
         return {
             "status": "blocked",
             "manifest_uri": manifest_uri,
+            "audit_uri": audit_uri,
             "output_video_uri": None,
             "manifest_path": str(manifest_path),
+            "audit_path": str(audit_path),
             "output_path": None,
             "input_labeling": input_labeling,
         }
@@ -2891,6 +2919,36 @@ def _prepare_worldlabs_input_video(
 
     output_duration = float(output_metrics.get("duration_seconds") or 0.0)
     output_size_bytes = int(output_metrics.get("size_bytes") or 0)
+    source_manifest_uri = str(privacy_processing.get("privacy_manifest_uri") or "").strip() or None
+    source_is_final_walkthrough = source_uri.rstrip("/").endswith("/privacy/final_walkthrough.mov") or source_uri.rstrip("/").endswith("/privacy/final_walkthrough.mp4")
+    derived_from_final_walkthrough = bool(
+        source_is_final_walkthrough
+        or str(privacy_processing.get("privacy_processed_video_uri") or "").strip().rstrip("/") == source_uri.rstrip("/")
+        or str(privacy_processing.get("world_model_video_uri") or "").strip().rstrip("/") == source_uri.rstrip("/")
+    )
+    source_checksum = relative_artifact_checksum(source_path)
+    output_checksum = relative_artifact_checksum(output_path)
+    privacy_safe_input = bool(input_labeling.get("privacy_safe_input")) and not bool(input_labeling.get("raw_video_bypass_used")) and derived_from_final_walkthrough
+    audit_payload = {
+        "schema_version": "v1",
+        "status": "ready" if privacy_safe_input and compliant else "blocked" if production_launch_mode() else "review_required",
+        "generated_at": utc_now_iso(),
+        "selected_video_source_id": source_id or None,
+        "selected_video_uri": source_uri,
+        "source_manifest_uri": source_manifest_uri,
+        "source_checksum_sha256": source_checksum,
+        "source_is_final_walkthrough": source_is_final_walkthrough,
+        "derivative_of_final_walkthrough": derived_from_final_walkthrough,
+        "privacy_safe_input": privacy_safe_input,
+        "raw_video_bypass_used": bool(input_labeling.get("raw_video_bypass_used")),
+        "output_video_uri": output_uri,
+        "output_manifest_uri": manifest_uri,
+        "output_checksum_sha256": output_checksum,
+        "input_labeling": input_labeling,
+    }
+    if production_launch_mode() and not privacy_safe_input:
+        write_json(audit_path, audit_payload)
+        raise StageError("worldlabs_input_prep", "production_worldlabs_input_not_privacy_safe")
     payload = {
         "schema_version": "v1",
         "status": "ready" if compliant else "review_required",
@@ -2933,15 +2991,23 @@ def _prepare_worldlabs_input_video(
         },
         "output_video_uri": output_uri,
         "output_video_path": str(output_path),
+        "input_audit_uri": audit_uri,
+        "input_audit_path": str(audit_path),
+        "input_checksum_sha256": source_checksum,
+        "output_checksum_sha256": output_checksum,
     }
     write_json(manifest_path, payload)
+    write_json(audit_path, audit_payload)
     return {
         "status": payload["status"],
         "manifest_uri": manifest_uri,
+        "audit_uri": audit_uri,
         "output_video_uri": output_uri,
         "manifest_path": str(manifest_path),
+        "audit_path": str(audit_path),
         "output_path": str(output_path),
         "payload": payload,
+        "audit_payload": audit_payload,
         "input_labeling": input_labeling,
     }
 
@@ -4389,6 +4455,12 @@ def run_qualification_pipeline(
         metadata_payload["scene_memory_capture"] = scene_memory_capture
         metadata_payload["worldlabs_input_video_uri"] = worldlabs_input.get("output_video_uri")
         metadata_payload["worldlabs_input_manifest_uri"] = worldlabs_input.get("manifest_uri")
+        metadata_payload["worldlabs_input_audit_uri"] = worldlabs_input.get("audit_uri")
+        metadata_payload["worldlabs_input_audit"] = (
+            dict(worldlabs_input.get("audit_payload"))
+            if isinstance(worldlabs_input.get("audit_payload"), Mapping)
+            else {}
+        )
         metadata_payload["worldlabs_input_status"] = worldlabs_input.get("status")
         metadata_payload["worldlabs_input_labeling"] = (
             dict(worldlabs_input.get("input_labeling"))
@@ -4872,6 +4944,7 @@ def run_qualification_pipeline(
             "worldlabs_operation_manifest": worldlabs_operation_manifest_uri,
             "worldlabs_world_manifest": worldlabs_world_manifest_uri,
             "worldlabs_input_manifest": worldlabs_input.get("manifest_uri"),
+            "worldlabs_input_audit": worldlabs_input.get("audit_uri"),
             "worldlabs_input_video": worldlabs_input.get("output_video_uri"),
             **(
                 {"privacy_processed_video": str(privacy_processing.get("privacy_processed_video_uri"))}
@@ -4904,6 +4977,7 @@ def run_qualification_pipeline(
             "worldlabs_operation_manifest_uri": worldlabs_operation_manifest_uri,
             "worldlabs_world_manifest_uri": worldlabs_world_manifest_uri,
             "worldlabs_input_manifest_uri": worldlabs_input.get("manifest_uri"),
+            "worldlabs_input_audit_uri": worldlabs_input.get("audit_uri"),
             "worldlabs_input_video_uri": worldlabs_input.get("output_video_uri"),
             "privacy_depth_manifest_uri": (
                 (privacy_processing.get("depth_conditioning") or {}).get("depth_manifest_uri")

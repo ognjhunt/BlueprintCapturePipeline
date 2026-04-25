@@ -20,6 +20,7 @@ from .common import (
     utc_now_iso,
     write_json,
 )
+from .launch_proof_policy import production_forces_true
 
 
 def _string_list(value: object) -> list[str]:
@@ -586,7 +587,7 @@ def run_privacy_postprocess(
     ensure_dir(privacy_root)
     ensure_dir(masks_root)
 
-    enabled = _env_flag("PRIVACY_PIPELINE_ENABLED", default=False)
+    enabled = production_forces_true("PRIVACY_PIPELINE_ENABLED", default=False)
     fail_closed = _env_flag("PRIVACY_FAIL_CLOSED", default=True)
     privacy_prefix = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/privacy"
     raw_prefix = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/raw"

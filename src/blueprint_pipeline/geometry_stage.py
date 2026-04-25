@@ -13,6 +13,7 @@ import numpy as np
 
 from .capture_bridge import CaptureDescriptor
 from .common import PipelineError, ensure_dir, utc_now_iso, write_json
+from .launch_proof_policy import fallback_geometry_launchable_allowed
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
 from .video_to_world_client import run_video_to_world_provider
 
@@ -996,6 +997,8 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
 
     fallback_used = bool(provider_result.get("fallback_used"))
     geometry_source = "fallback_geometry" if fallback_used else "video_to_world"
+    fallback_blocks_launch = fallback_used and not fallback_geometry_launchable_allowed()
+    launch_blockers = ["fallback_geometry_not_launchable"] if fallback_used else []
     metadata_topology = (
         descriptor.metadata.get("capture_topology")
         if isinstance(descriptor.metadata.get("capture_topology"), Mapping)
@@ -1034,7 +1037,18 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     pose_coverage = round(len(pose_records) / float(len(frame_records) or 1), 6)
     confidence_coverage = round(len(confidence_artifacts) / float(len(frame_records) or 1), 6)
     depth_coverage = round(len(depth_artifacts) / float(len(frame_records) or 1), 6)
-    ready_for_world_model = bool(pose_records and depth_artifacts and confidence_artifacts)
+    contract_ready_for_world_model = bool(pose_records and depth_artifacts and confidence_artifacts)
+    geometry_live_ready = bool(contract_ready_for_world_model and not fallback_used)
+    ready_for_world_model = bool(contract_ready_for_world_model and not fallback_blocks_launch)
+    if fallback_blocks_launch:
+        launch_blockers.append("production_fallback_geometry_disabled")
+    if not geometry_live_ready and not fallback_used:
+        launch_blockers.append("video_to_world_geometry_incomplete")
+    external_market_ready = bool(geometry_live_ready and not launch_blockers)
+    site_faithful_market_ready = bool(
+        external_market_ready
+        and str(scale_assessment.get("status") or "") in {"metric_trusted", "estimated_scale"}
+    )
 
     summary_payload = {
         "schema_version": "v1",
@@ -1045,6 +1059,12 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "canonical_frame_id": pose_records[0]["frame_id"] if pose_records else None,
         "fallback_used": fallback_used,
         "ready_for_world_model": ready_for_world_model,
+        "contract_ready_for_world_model": contract_ready_for_world_model,
+        "geometry_live_ready": geometry_live_ready,
+        "external_market_ready": external_market_ready,
+        "site_faithful_market_ready": site_faithful_market_ready,
+        "launch_blockers": list(dict.fromkeys(launch_blockers)),
+        "scale_trust_classification": str(scale_assessment.get("status") or "conditioning_only"),
         "source_video": {
             "path": str(video_path),
             "duration_seconds": video_probe.get("duration_seconds"),
@@ -1055,6 +1075,9 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             "name": provider,
             "model": model,
             "execution_mode": execution_mode,
+            "provider_native_result": not fallback_used,
+            "non_fallback_pose_count": len(pose_records) if not fallback_used else 0,
+            "non_fallback_depth_count": len(depth_artifacts) if not fallback_used else 0,
             "warnings": list(provider_result_payload.get("warnings") or []),
         },
         "scale_assessment": {
@@ -1096,7 +1119,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             execution_mode=execution_mode,
             status="completed",
             ready_for_world_model=ready_for_world_model,
-            blocking_issues=list(provider_result_payload.get("errors") or []),
+            blocking_issues=list(dict.fromkeys([*list(provider_result_payload.get("errors") or []), *launch_blockers])),
         ),
     )
     write_json(

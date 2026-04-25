@@ -12,6 +12,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Protocol
 from .common import utc_now_iso, write_json
+from .launch_proof_policy import production_launch_mode
 
 # ---------------------------------------------------------------------------
 # World Labs API helpers
@@ -305,6 +306,12 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             if isinstance(metadata.get("worldlabs_input_labeling"), Mapping)
             else {}
         )
+        input_audit = (
+            dict(metadata.get("worldlabs_input_audit"))
+            if isinstance(metadata.get("worldlabs_input_audit"), Mapping)
+            else {}
+        )
+        input_audit_uri = self._string(metadata.get("worldlabs_input_audit_uri"))
         scene_summary = self._string(
             metadata.get("scene_summary")
             or metadata.get("site_summary")
@@ -344,6 +351,22 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         selected_video = video_candidates.get("selected") if isinstance(video_candidates, Mapping) else None
         selected_video_uri = self._string(selected_video.get("uri")) if isinstance(selected_video, Mapping) else ""
         source_id = self._string(selected_video.get("source_id")) if isinstance(selected_video, Mapping) else ""
+        audit_output_uri = self._string(input_audit.get("output_video_uri"))
+        privacy_safe_input = bool(input_audit.get("privacy_safe_input"))
+        raw_bypass_used = bool(input_audit.get("raw_video_bypass_used") or input_labeling.get("raw_video_bypass_used"))
+        selected_input_checksum = self._string(input_audit.get("output_checksum_sha256"))
+        source_input_checksum = self._string(input_audit.get("source_checksum_sha256"))
+        source_manifest_uri = self._string(
+            input_audit.get("source_manifest_uri")
+            or input_audit.get("source_manifest")
+            or metadata.get("worldlabs_input_manifest_uri")
+        )
+        if production_launch_mode():
+            audit_matches_selected = bool(audit_output_uri and selected_video_uri and audit_output_uri == selected_video_uri)
+            if not input_audit_uri or not privacy_safe_input or raw_bypass_used or not audit_matches_selected:
+                raise RuntimeError("production_worldlabs_input_audit_missing_or_invalid")
+            if not source_manifest_uri or not selected_input_checksum:
+                raise RuntimeError("production_worldlabs_input_audit_incomplete")
         generation_source_type = (
             "video_uri"
             if selected_video_uri.startswith(("http://", "https://"))
@@ -382,8 +405,14 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             "generation_request": generation_request,
             "selected_video_source_id": source_id or None,
             "selected_video_uri": selected_video_uri or None,
+            "selected_input_checksum_sha256": selected_input_checksum or None,
+            "source_input_checksum_sha256": source_input_checksum or None,
+            "source_manifest_uri": source_manifest_uri or None,
+            "worldlabs_input_audit_uri": input_audit_uri or None,
+            "privacy_safe_input": privacy_safe_input,
             "video_candidates": video_candidates.get("candidates") if isinstance(video_candidates, Mapping) else [],
             "input_labeling": input_labeling,
+            "input_audit": input_audit,
             "fallback_inputs": {
                 "text_prompt": prompt_text,
                 "keyframe_uri": keyframe_uri or None,
@@ -401,8 +430,8 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         video_uri: str,
         *,
         descriptor: Mapping[str, Any],
-    ) -> str:
-        """Upload video to World Labs media assets. Returns media_asset_id."""
+    ) -> Dict[str, Any]:
+        """Upload video to World Labs media assets. Returns upload proof fields."""
         ext = _extension_from_uri(video_uri)
         filename = _filename_from_uri(video_uri, f"capture-video.{ext}")
         upload_payload = _worldlabs_api_request(
@@ -439,7 +468,13 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         )
         if not media_asset_id:
             raise RuntimeError("worldlabs_media_asset_id_missing")
-        return media_asset_id
+        return {
+            "media_asset_id": media_asset_id,
+            "upload_id": str(upload_payload.get("upload_id") or upload_payload.get("id") or media_asset_id).strip(),
+            "upload_payload": upload_payload,
+            "filename": filename,
+            "content_type": _mime_for_extension(ext),
+        }
 
     def submit(self, *, descriptor: Mapping[str, Any], capture_root: Path) -> Dict[str, Any]:
         started_at = time.time()
@@ -471,12 +506,18 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 world_prompt["text_prompt"] = _DEFAULT_WORLDLABS_TEXT_PROMPT
             video_prompt: Dict[str, Any] = dict(world_prompt.get("video_prompt") or {})
 
+            media_asset_id = ""
+            upload_id = ""
+            upload_payload: Dict[str, Any] = {}
             if generation_source_type == "video_uri":
                 video_prompt["source"] = "uri"
                 video_prompt["uri"] = selected_video_uri
                 video_prompt.pop("media_asset_id", None)
             else:
-                media_asset_id = self._upload_video_as_media_asset(selected_video_uri, descriptor=descriptor)
+                upload_proof = self._upload_video_as_media_asset(selected_video_uri, descriptor=descriptor)
+                media_asset_id = str(upload_proof.get("media_asset_id") or "").strip()
+                upload_id = str(upload_proof.get("upload_id") or media_asset_id).strip()
+                upload_payload = dict(upload_proof.get("upload_payload") or {})
                 video_prompt["source"] = "media_asset"
                 video_prompt["media_asset_id"] = media_asset_id
                 video_prompt.pop("uri", None)
@@ -504,7 +545,16 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "input_manifest_uri": descriptor.get("raw_prefix_uri"),
                 "worldlabs_request_manifest": request_manifest,
                 "worldlabs_operation": operation,
+                "worldlabs_operation_id": operation_id or None,
+                "worldlabs_media_asset_id": media_asset_id or None,
+                "worldlabs_upload_id": upload_id or None,
+                "worldlabs_upload": upload_payload or None,
                 "generation_source_type": generation_source_type,
+                "selected_input_checksum_sha256": request_manifest.get("selected_input_checksum_sha256"),
+                "source_input_checksum_sha256": request_manifest.get("source_input_checksum_sha256"),
+                "source_manifest_uri": request_manifest.get("source_manifest_uri"),
+                "worldlabs_input_audit_uri": request_manifest.get("worldlabs_input_audit_uri"),
+                "privacy_safe_input": request_manifest.get("privacy_safe_input"),
                 "raw_response": operation,
                 "labeling": request_manifest.get("input_labeling") or {},
             }
@@ -521,7 +571,15 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "input_manifest_uri": descriptor.get("raw_prefix_uri"),
                 "worldlabs_request_manifest": request_manifest,
                 "worldlabs_operation": None,
+                "worldlabs_operation_id": None,
+                "worldlabs_media_asset_id": None,
+                "worldlabs_upload_id": None,
                 "generation_source_type": generation_source_type or None,
+                "selected_input_checksum_sha256": request_manifest.get("selected_input_checksum_sha256"),
+                "source_input_checksum_sha256": request_manifest.get("source_input_checksum_sha256"),
+                "source_manifest_uri": request_manifest.get("source_manifest_uri"),
+                "worldlabs_input_audit_uri": request_manifest.get("worldlabs_input_audit_uri"),
+                "privacy_safe_input": request_manifest.get("privacy_safe_input"),
                 "raw_response": None,
                 "labeling": request_manifest.get("input_labeling") or {},
             }
@@ -555,6 +613,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "world_id": str(world.get("world_id") or world_id or "").strip() or None,
                 "launch_url": launch_url or None,
                 "failure_reason": failure_reason if not launch_url else None,
+                "operation_terminal_status": "ready" if launch_url else "failed",
                 "worldlabs_operation": operation,
                 "worldlabs_world": world or None,
             }
@@ -563,6 +622,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             "provider_run_id": run_id,
             "status": "queued" if raw_status in {"queued", "pending"} else "processing",
             "operation_done": False,
+            "operation_terminal_status": "processing",
             "worldlabs_operation": operation,
         }
 
@@ -602,6 +662,7 @@ def run_preview_provider(
             artifact_uris = dict(normalized.get("artifact_uris") or {})
             artifact_uris["worldlabs_request_manifest_uri"] = str(worldlabs_request_manifest_path)
             normalized["artifact_uris"] = artifact_uris
+            normalized["worldlabs_request_manifest_uri"] = str(worldlabs_request_manifest_path)
 
         # Write initial operation manifest if generate returned one
         worldlabs_operation = normalized.get("worldlabs_operation")
@@ -630,6 +691,7 @@ def run_preview_provider(
                 artifact_uris = dict(normalized.get("artifact_uris") or {})
                 artifact_uris["worldlabs_operation_manifest_uri"] = str(worldlabs_operation_manifest_path)
                 normalized["artifact_uris"] = artifact_uris
+                normalized["worldlabs_operation_manifest_uri"] = str(worldlabs_operation_manifest_path)
             # Write world manifest
             worldlabs_world = poll_result.get("worldlabs_world")
             if isinstance(worldlabs_world, Mapping):
@@ -637,6 +699,8 @@ def run_preview_provider(
                 artifact_uris = dict(normalized.get("artifact_uris") or {})
                 artifact_uris["worldlabs_world_manifest_uri"] = str(worldlabs_world_manifest_path)
                 normalized["artifact_uris"] = artifact_uris
+                normalized["worldlabs_world_manifest_uri"] = str(worldlabs_world_manifest_path)
+            normalized["operation_terminal_status"] = poll_result.get("operation_terminal_status") or poll_result.get("status")
 
         manifest = provider.emit_preview_manifest(normalized=normalized, output_path=manifest_path)
         provenance = provider.emit_provenance(descriptor=descriptor, normalized=normalized)
@@ -645,9 +709,22 @@ def run_preview_provider(
             "provider_name": normalized.get("provider_name"),
             "provider_model": normalized.get("provider_model"),
             "provider_run_id": normalized.get("provider_run_id"),
+            "worldlabs_operation_id": normalized.get("worldlabs_operation_id") or normalized.get("provider_run_id"),
+            "worldlabs_media_asset_id": normalized.get("worldlabs_media_asset_id"),
+            "worldlabs_upload_id": normalized.get("worldlabs_upload_id"),
+            "operation_terminal_status": normalized.get("operation_terminal_status") or normalized.get("status"),
             "status": normalized.get("status"),
             "input_manifest_uri": normalized.get("input_manifest_uri"),
             "preview_manifest_uri": str(manifest_path),
+            "worldlabs_request_manifest_uri": normalized.get("worldlabs_request_manifest_uri"),
+            "worldlabs_operation_manifest_uri": normalized.get("worldlabs_operation_manifest_uri"),
+            "worldlabs_world_manifest_uri": normalized.get("worldlabs_world_manifest_uri"),
+            "request_manifest_uri": normalized.get("worldlabs_request_manifest_uri"),
+            "selected_input_checksum_sha256": normalized.get("selected_input_checksum_sha256"),
+            "source_input_checksum_sha256": normalized.get("source_input_checksum_sha256"),
+            "source_manifest_uri": normalized.get("source_manifest_uri"),
+            "worldlabs_input_audit_uri": normalized.get("worldlabs_input_audit_uri"),
+            "privacy_safe_input": normalized.get("privacy_safe_input"),
             "artifact_uris": normalized.get("artifact_uris") or {},
             "cost_usd": normalized.get("cost_usd"),
             "latency_ms": normalized.get("latency_ms"),

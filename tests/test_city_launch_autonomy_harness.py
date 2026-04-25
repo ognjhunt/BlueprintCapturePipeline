@@ -19,6 +19,7 @@ def _args(tmp_path: Path, *, resume: bool = False) -> Namespace:
         capture_repo=str(tmp_path / "BlueprintCapture"),
         webapp_repo=str(tmp_path / "Blueprint-WebApp"),
         output_root=str(tmp_path / "ops" / "city-launch-runs"),
+        capture_root=None,
     )
 
 
@@ -33,6 +34,7 @@ def test_autonomous_city_launch_harness_writes_packets_proof_and_blockers(tmp_pa
     assert (run_root / "blockers.jsonl").is_file()
     assert (run_root / "work-packets" / "ios_compile_and_real_device.json").is_file()
     assert (run_root / "work-packets" / "meta_glasses_physical_pilot.json").is_file()
+    assert (run_root / "lane-results" / "privacy_safe_provider.not-executed.json").is_file()
 
     proof = json.loads((run_root / "proof.launch-proof.json").read_text(encoding="utf-8"))
     assert proof["city_slug"] == "durham-nc"
@@ -50,7 +52,7 @@ def test_autonomous_city_launch_harness_applies_lane_result_evidence_on_resume(t
     run_harness(_args(tmp_path))
     run_root = tmp_path / "ops" / "city-launch-runs" / "durham-nc" / "test-run"
     lane_results = run_root / "lane-results"
-    lane_results.mkdir(parents=True)
+    lane_results.mkdir(parents=True, exist_ok=True)
     (lane_results / "release.json").write_text(
         json.dumps(
             {
@@ -63,6 +65,12 @@ def test_autonomous_city_launch_harness_applies_lane_result_evidence_on_resume(t
                     "pipeline.capture_descriptor_exists": True,
                     "pipeline.qa_report_exists": True,
                     "pipeline.pipeline_handoff_exists": True,
+                    "pipeline.pipeline_processed_capture": True,
+                    "privacy_provider.final_walkthrough_uri": "gs://bucket/privacy/final_walkthrough.mov",
+                    "privacy_provider.worldlabs_input_uri": "gs://bucket/pipeline/worldlabs_input/worldlabs_input.mp4",
+                    "privacy_provider.raw_bypass_disabled": True,
+                    "retrieval.dense_index_exists": True,
+                    "retrieval.site_reference_manifest_exists": True,
                     "meta_glasses.video_first_positioning_confirmed": True,
                     "meta_glasses.native_geometry_not_marketed": True,
                     "open_capture.review_gated": True,

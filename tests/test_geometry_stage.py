@@ -215,6 +215,29 @@ def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_pa
     assert "boom" in provider_result["errors"]
 
 
+def test_production_fallback_geometry_cannot_mark_launch_ready(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(tmp_path)
+    monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+
+    def _failing_provider(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _failing_provider)
+
+    result = build_geometry_stage_contract(capture_root)
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    status = json.loads(result.status_path.read_text(encoding="utf-8"))
+
+    assert summary["fallback_used"] is True
+    assert summary["contract_ready_for_world_model"] is True
+    assert summary["ready_for_world_model"] is False
+    assert summary["external_market_ready"] is False
+    assert summary["site_faithful_market_ready"] is False
+    assert "fallback_geometry_not_launchable" in summary["launch_blockers"]
+    assert status["ready_for_world_model"] is False
+
+
 def test_assess_geometry_scale_respects_metric_policy() -> None:
     base = {
         "schema_version": "v1",

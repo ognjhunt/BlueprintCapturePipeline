@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .alpha_readiness import sync_webapp_evaluation_prep, write_alpha_readiness_summary
 from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, relative_scene_path, utc_now_iso, write_json
+from .launch_proof_policy import runtime_required
 from .local_capture import resolve_local_capture_context
 from .object_geometry_stage import resolve_object_geometry_manifest
 from .proof_contracts import (
@@ -2091,9 +2092,20 @@ def _build_site_world_runtime_records(
             "status": "degraded",
             "blockers": list(dict.fromkeys([*list(health.get("blockers") or []), *verification_blockers])),
         }
+    runtime_smoke = {
+        "schema_version": "v1",
+        "attempted": False,
+        "status": "not_run",
+        "session_id": None,
+        "session_created": False,
+        "session_reset": False,
+        "runtime_base_url": registration.get("runtime_base_url") or health.get("runtime_base_url"),
+        "blockers": [],
+    }
     if registration.get("status") == "ready":
         if task_catalog and scenario_catalog and start_state_catalog and robot_profiles:
             try:
+                runtime_smoke["attempted"] = True
                 session = client.create_session(
                     str(registration["site_world_id"]),
                     robot_profile_id=str((robot_profiles[0] or {}).get("id") or "mobile_manipulator_rgb_v1"),
@@ -2102,9 +2114,16 @@ def _build_site_world_runtime_records(
                     start_state_id=str((start_state_catalog[0] or {}).get("id") or ""),
                     notes="pipeline_runtime_smoke",
                 )
-                client.reset_session(str(session.get("session_id") or ""))
+                session_id = str(session.get("session_id") or "").strip()
+                runtime_smoke["session_id"] = session_id or None
+                runtime_smoke["session_created"] = bool(session_id)
+                client.reset_session(session_id)
+                runtime_smoke["session_reset"] = True
+                runtime_smoke["status"] = "succeeded"
                 health = dict(client.get_site_world_health(str(registration["site_world_id"])))
             except Exception as exc:
+                runtime_smoke["status"] = "failed"
+                runtime_smoke["blockers"] = [f"runtime_smoke_failed:{exc}"]
                 health = {
                     **health,
                     "healthy": False,
@@ -2114,6 +2133,9 @@ def _build_site_world_runtime_records(
                     "last_heartbeat_at": utc_now_iso(),
                 }
                 health["runtime_capabilities"] = _runtime_capabilities_payload(launchable=False, base=health.get("runtime_capabilities"))
+        else:
+            runtime_smoke["status"] = "blocked"
+            runtime_smoke["blockers"] = ["runtime_smoke_catalogs_missing"]
     registration.setdefault("blockers", list(canonical_runtime_status.get("blockers") or []))
     registration.setdefault("warnings", list(canonical_runtime_status.get("warnings") or []))
     registration.setdefault("task_catalog", task_catalog)
@@ -2200,6 +2222,26 @@ def _build_site_world_runtime_records(
         if isinstance(registration.get("runtime_capabilities"), Mapping)
         else {},
     )
+    if runtime_required() and runtime_smoke.get("status") != "succeeded":
+        blocker = "runtime_session_smoke_required"
+        registration["status"] = "blocked"
+        registration["blockers"] = list(dict.fromkeys([*list(registration.get("blockers") or []), blocker]))
+        registration["runtime_capabilities"] = _runtime_capabilities_payload(
+            launchable=False,
+            base=registration.get("runtime_capabilities")
+            if isinstance(registration.get("runtime_capabilities"), Mapping)
+            else {},
+        )
+        health = {
+            **health,
+            "healthy": False,
+            "launchable": False,
+            "status": "degraded",
+            "blockers": list(dict.fromkeys([*list(health.get("blockers") or []), blocker])),
+        }
+        health["runtime_capabilities"] = _runtime_capabilities_payload(launchable=False, base=health.get("runtime_capabilities"))
+    registration["runtime_smoke"] = dict(runtime_smoke)
+    health["runtime_smoke"] = dict(runtime_smoke)
     return registration, health
 
 
@@ -2848,16 +2890,26 @@ def _build_launchable_export_bundle(
             "blockers": demo_readiness["blockers"],
         },
     }
+    runtime_export_required = runtime_required()
+    runtime_blockers = list(site_world_health.get("blockers") or [])
+    if runtime_export_required and not bool(site_world_health.get("launchable")):
+        runtime_blockers = list(dict.fromkeys([*runtime_blockers, "runtime_required_for_buyer_launch"]))
+        bundles["world_model_runtime"]["blockers"] = runtime_blockers
     full_export_ready = any(
         item["launchable"]
         for name, item in bundles.items()
         if name != "geometry_conditioning"
     )
     partial_ready = full_export_ready or bool(bundles["geometry_conditioning"]["launchable"])
+    status = "ready" if full_export_ready else "partial" if partial_ready else "partial"
+    if runtime_export_required and not bool(site_world_health.get("launchable")):
+        status = "blocked"
     return {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
-        "status": "ready" if full_export_ready else "partial" if partial_ready else "partial",
+        "status": status,
+        "runtime_required": runtime_export_required,
+        "launch_blockers": runtime_blockers if status == "blocked" else [],
         "public_runtime_label": "Site world runtime",
         "default_backend": "site_world_runtime",
         "scenario_variants": [

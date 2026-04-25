@@ -7,7 +7,7 @@ import numpy as np
 
 from blueprint_contracts.site_world_contract import load_site_world_bundle, validate_site_world_bundle
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
-from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
+from blueprint_pipeline.evaluation_prep_stage import _build_launchable_export_bundle, run_evaluation_prep_stage
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import build_capture_bundle_records, materialize_capture_bundle
 from blueprint_pipeline.qualification import _presentation_bundle_status, _presentation_primary_asset
@@ -498,6 +498,29 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     launchable_export = json.loads((eval_root / "launchable_export_bundle.json").read_text(encoding="utf-8"))
     assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is False
     assert launchable_export["bundles"]["presentation_demo_ui"]["launchable"] is False
+    assert health["runtime_smoke"]["status"] == "succeeded"
+    assert health["runtime_smoke"]["session_created"] is True
+
+
+def test_production_launchable_export_requires_runtime_session_smoke(monkeypatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+
+    bundle = _build_launchable_export_bundle(
+        scene_memory_bundle_manifest={"geometry_summary_path": "../geometry/geometry_summary.json"},
+        geometry_bundle_manifest={"status": "complete"},
+        site_world_registration={"runtime_capabilities": {}},
+        site_world_health={
+            "launchable": False,
+            "status": "degraded",
+            "blockers": ["runtime_session_smoke_required"],
+        },
+        runtime_demo_manifest={},
+        simready_prep_manifest_path=None,
+    )
+
+    assert bundle["status"] == "blocked"
+    assert bundle["runtime_required"] is True
+    assert "runtime_required_for_buyer_launch" in bundle["launch_blockers"]
 
 
 def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_path: Path) -> None:

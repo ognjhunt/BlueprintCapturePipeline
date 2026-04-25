@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.launch_bundle import (
     build_buyer_trust_score,
     build_launch_qualification_bundle,
@@ -183,6 +185,56 @@ def test_worldlabs_preview_provider_labels_non_production_raw_bypass() -> None:
     assert "unredacted-raw-input" in payload["generation_request"]["tags"]
 
 
+def test_worldlabs_preview_provider_production_requires_privacy_audit(monkeypatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+    provider = WorldLabsPreviewProvider()
+
+    with pytest.raises(RuntimeError, match="production_worldlabs_input_audit_missing_or_invalid"):
+        provider._build_request_manifest(
+            descriptor={
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "metadata": {
+                    "worldlabs_input_video_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4",
+                },
+            },
+            capture_root=Path("/tmp/capture-root"),
+        )
+
+
+def test_worldlabs_preview_provider_carries_privacy_audit_checksums(monkeypatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+    provider = WorldLabsPreviewProvider()
+    input_uri = "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4"
+
+    payload = provider._build_request_manifest(
+        descriptor={
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "metadata": {
+                "worldlabs_input_video_uri": input_uri,
+                "worldlabs_input_manifest_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input_manifest.json",
+                "worldlabs_input_audit_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input_audit.json",
+                "worldlabs_input_audit": {
+                    "privacy_safe_input": True,
+                    "raw_video_bypass_used": False,
+                    "source_manifest_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/privacy_processing_manifest.json",
+                    "output_video_uri": input_uri,
+                    "output_checksum_sha256": "abc123",
+                    "source_checksum_sha256": "def456",
+                },
+            },
+        },
+        capture_root=Path("/tmp/capture-root"),
+    )
+
+    assert payload["status"] == "ready_for_generation"
+    assert payload["worldlabs_input_audit_uri"].endswith("/worldlabs_input_audit.json")
+    assert payload["selected_input_checksum_sha256"] == "abc123"
+    assert payload["source_input_checksum_sha256"] == "def456"
+    assert payload["privacy_safe_input"] is True
+
+
 def test_worldlabs_poll_reads_world_from_operation_response(monkeypatch) -> None:
     provider = WorldLabsPreviewProvider()
     launch_url = "https://marble.worldlabs.ai/worlds/world-1"
@@ -232,6 +284,13 @@ def test_run_preview_provider_persists_worldlabs_launch_url_aliases(tmp_path: Pa
             "artifact_uris": {},
             "cost_usd": 0.0,
             "latency_ms": 1,
+            "worldlabs_operation_id": "op-2",
+            "worldlabs_media_asset_id": "media-2",
+            "worldlabs_upload_id": "upload-2",
+            "selected_input_checksum_sha256": "abc123",
+            "source_manifest_uri": "gs://bucket/pipeline/privacy_processing_manifest.json",
+            "worldlabs_input_audit_uri": "gs://bucket/pipeline/worldlabs_input_audit.json",
+            "privacy_safe_input": True,
             "labeling": labeling,
         }
 
@@ -266,6 +325,12 @@ def test_run_preview_provider_persists_worldlabs_launch_url_aliases(tmp_path: Pa
     assert result["launch_url"] == launch_url
     assert result["worldlabs_launch_url"] == launch_url
     assert result["preview_launch_url"] == launch_url
+    assert result["worldlabs_operation_id"] == "op-2"
+    assert result["worldlabs_media_asset_id"] == "media-2"
+    assert result["worldlabs_upload_id"] == "upload-2"
+    assert result["selected_input_checksum_sha256"] == "abc123"
+    assert result["worldlabs_input_audit_uri"].endswith("/worldlabs_input_audit.json")
+    assert result["operation_terminal_status"] == "ready"
     assert result["labeling"] == labeling
     assert preview_manifest["worldlabs_launch_url"] == launch_url
     assert preview_manifest["preview_launch_url"] == launch_url
