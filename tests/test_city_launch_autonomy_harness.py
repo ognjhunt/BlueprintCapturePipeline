@@ -89,3 +89,36 @@ def test_autonomous_city_launch_harness_applies_lane_result_evidence_on_resume(t
     assert summary["status"] == "blocked_external_dependency"
     blockers = (run_root / "blockers.jsonl").read_text(encoding="utf-8").splitlines()
     assert not any("release.config_validated_by_archive_script" in line for line in blockers)
+
+
+def test_autonomous_city_launch_harness_persists_local_lane_results(tmp_path: Path, monkeypatch) -> None:
+    def _run_command(command):  # type: ignore[no-untyped-def]
+        return {
+            "id": command.id,
+            "status": "passed",
+            "exit_code": 0,
+            "command": command.command,
+            "cwd": command.cwd,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "proof_on_pass": list(command.proof_on_pass),
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.city_launch_autonomy_harness.run_command", _run_command)
+
+    args = _args(tmp_path)
+    args.execute_local = True
+    args.include_pipeline_tests = True
+
+    summary = run_harness(args)
+    run_root = tmp_path / "ops" / "city-launch-runs" / "durham-nc" / "test-run"
+
+    lane_result_path = run_root / "lane-results" / "site_identity_dense_export.local-execution.json"
+    proof = json.loads((run_root / "proof.launch-proof.json").read_text(encoding="utf-8"))
+    lane_result = json.loads(lane_result_path.read_text(encoding="utf-8"))
+
+    assert summary["blocker_count"] > 0
+    assert lane_result["status"] == "passed"
+    assert lane_result["evidence"]["harness.local_execution.executed_command_count"] == 1
+    assert proof["harness"]["local_execution"]["executed_command_count"] >= 1
+    assert proof["harness"]["site_identity_dense_export_tests_passed"] is True

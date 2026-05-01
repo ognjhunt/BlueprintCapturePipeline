@@ -612,7 +612,14 @@ def execute_local_packets(
         return command_results
     results_dir = run_root / "command-results"
     results_dir.mkdir(parents=True, exist_ok=True)
+    lane_results_dir = run_root / "lane-results"
     for packet in packets:
+        packet_blockers: list[str] = []
+        packet_evidence: dict[str, Any] = {
+            "harness.local_execution.command_count": len(packet.commands),
+            "harness.local_execution.executed_command_count": 0,
+            "harness.local_execution.passed_command_count": 0,
+        }
         for command in packet.commands:
             if not command_allowed(command, args=args):
                 continue
@@ -620,9 +627,27 @@ def execute_local_packets(
             result["lane_id"] = packet.lane_id
             command_results.append(result)
             write_json(results_dir / f"{packet.lane_id}.{command.id}.json", result)
+            packet_evidence["harness.local_execution.executed_command_count"] = (
+                int(packet_evidence["harness.local_execution.executed_command_count"]) + 1
+            )
             if result["status"] == "passed":
+                packet_evidence["harness.local_execution.passed_command_count"] = (
+                    int(packet_evidence["harness.local_execution.passed_command_count"]) + 1
+                )
                 for proof_field in command.proof_on_pass:
                     set_nested(proof, proof_field, True)
+                    packet_evidence[proof_field] = True
+            else:
+                packet_blockers.append(f"{command.id}:exit_{result['exit_code']}")
+        if int(packet_evidence["harness.local_execution.executed_command_count"]) == 0:
+            packet_blockers.append("no_commands_executed")
+        _write_lane_result(
+            lane_results_dir / f"{packet.lane_id}.local-execution.json",
+            lane_id=packet.lane_id,
+            status="passed" if not packet_blockers else "blocked",
+            evidence=packet_evidence,
+            blockers=packet_blockers,
+        )
     return command_results
 
 
@@ -669,6 +694,7 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
 
     applied_lane_results = apply_lane_results(proof, lane_results_root)
     command_results = execute_local_packets(packets=packets, proof=proof, run_root=run_root, args=args)
+    applied_lane_results.extend(apply_lane_results(proof, lane_results_root))
     capture_root_arg = str(getattr(args, "capture_root", "") or "").strip()
     capture_root_evidence: list[dict[str, Any]] = []
     if capture_root_arg:

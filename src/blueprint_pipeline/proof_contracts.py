@@ -173,7 +173,7 @@ def build_site_package_manifest(
 
     status = (
         "ready"
-        if canonical_package_status != "registration_blocked" and bool(site_world_spec)
+        if not blockers and canonical_package_status != "registration_blocked" and bool(site_world_spec)
         else "blocked"
     )
 
@@ -234,7 +234,7 @@ def build_hosted_review_readiness(
         and str(launchable_export_bundle.get("status") or "").strip().lower() in {"ready", "partial"}
     )
     webapp_ready = bool(preview_manifest_uri and worldlabs_launch_url and runtime_demo_manifest_uri)
-    status = "ready" if operator_ready and webapp_ready else "blocked"
+    status = "ready" if operator_ready and webapp_ready and not blockers else "blocked"
 
     return {
         "schema_version": "v1",
