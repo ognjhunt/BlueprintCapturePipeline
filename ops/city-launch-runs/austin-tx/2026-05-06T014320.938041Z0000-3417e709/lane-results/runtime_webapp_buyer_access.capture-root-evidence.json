@@ -1,0 +1,16 @@
+{
+  "blockers": [
+    "hosted_session.runtime_url",
+    "hosted_session.webapp_listing_id",
+    "hosted_session.buyer_access_checked"
+  ],
+  "evidence": {
+    "hosted_session.buyer_access_checked": false,
+    "hosted_session.runtime_url": "",
+    "hosted_session.webapp_listing_id": ""
+  },
+  "generated_at": "2026-05-06T01:44:21.374401+00:00",
+  "lane_id": "runtime_webapp_buyer_access",
+  "schema_version": "lane-result.v1",
+  "status": "blocked"
+}

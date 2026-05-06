@@ -14,7 +14,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
+from blueprint_pipeline.geometry_stage import build_geometry_stage_contract  # noqa: E402
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

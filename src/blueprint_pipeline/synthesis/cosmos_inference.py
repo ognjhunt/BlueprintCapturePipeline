@@ -33,7 +33,6 @@ import os
 from pathlib import Path
 import queue
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -576,7 +575,6 @@ def _save_video(frames: List[Any], path: Path, fps: int = 28) -> None:
     try:
         import imageio
         import numpy as np
-        from PIL import Image
 
         np_frames = []
         for f in frames:

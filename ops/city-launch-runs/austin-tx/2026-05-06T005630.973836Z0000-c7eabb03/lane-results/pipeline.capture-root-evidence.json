@@ -1,0 +1,13 @@
+{
+  "blockers": [],
+  "evidence": {
+    "pipeline.capture_descriptor_exists": true,
+    "pipeline.pipeline_handoff_exists": true,
+    "pipeline.pipeline_processed_capture": true,
+    "pipeline.qa_report_exists": true
+  },
+  "generated_at": "2026-05-06T00:57:11.558823+00:00",
+  "lane_id": "pipeline",
+  "schema_version": "lane-result.v1",
+  "status": "succeeded"
+}

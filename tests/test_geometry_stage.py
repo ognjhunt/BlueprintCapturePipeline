@@ -10,9 +10,9 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from blueprint_pipeline.capture_bridge import CaptureDescriptor
-from blueprint_pipeline.geometry_stage import assess_geometry_scale, build_geometry_stage_contract
-from blueprint_pipeline.materialization import materialize_capture_bundle
+from blueprint_pipeline.capture_bridge import CaptureDescriptor  # noqa: E402
+from blueprint_pipeline.geometry_stage import assess_geometry_scale, build_geometry_stage_contract  # noqa: E402
+from blueprint_pipeline.materialization import materialize_capture_bundle  # noqa: E402
 
 
 def _build_staged_capture(

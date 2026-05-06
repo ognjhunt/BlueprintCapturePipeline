@@ -1,0 +1,10 @@
+{
+  "blockers": [
+    "local_execution_disabled"
+  ],
+  "evidence": {},
+  "generated_at": "2026-05-05T23:39:25.414537+00:00",
+  "lane_id": "ios_compile_and_real_device",
+  "schema_version": "lane-result.v1",
+  "status": "blocked"
+}

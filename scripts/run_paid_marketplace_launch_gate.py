@@ -14,6 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from blueprint_pipeline.safe_env import contract_test_env, load_env_files  # noqa: E402
+
 
 @dataclass
 class CommandSpec:
@@ -58,7 +64,7 @@ def run_command(spec: CommandSpec) -> CommandResult:
         cwd=spec.cwd,
         capture_output=True,
         text=True,
-        env=os.environ.copy(),
+        env=contract_test_env(),
     )
     status = "passed" if completed.returncode == 0 else "failed"
     return CommandResult(
@@ -379,6 +385,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     pipeline_repo = resolve_repo(Path(__file__).resolve().parents[1], args.pipeline_repo, "BlueprintCapturePipeline")
     capture_repo = resolve_repo(pipeline_repo, args.capture_repo, "BlueprintCapture")
     webapp_repo = resolve_repo(pipeline_repo, args.webapp_repo, "Blueprint-WebApp")
+    load_env_files([pipeline_repo, capture_repo, webapp_repo])
 
     specs = default_specs(
         pipeline_repo=pipeline_repo,

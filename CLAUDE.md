@@ -12,6 +12,7 @@ Key rules:
 - Protect provenance, rights, privacy, and raw capture truth.
 - Optimize for strong site-specific packages and hosted runtime outputs.
 - Keep readiness and review logic secondary to the product core.
+- Before claiming Paperclip/autonomous-loop `done`, `blocked`, or `awaiting_human_decision`, apply `/Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md`.
 
 Key commands:
 

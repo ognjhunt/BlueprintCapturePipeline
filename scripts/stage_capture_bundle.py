@@ -14,7 +14,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from blueprint_pipeline.local_bundle_workflow import run_local_bundle_workflow
+from blueprint_pipeline.local_bundle_workflow import run_local_bundle_workflow  # noqa: E402
 
 
 def _print_summary(result: dict[str, object]) -> None:

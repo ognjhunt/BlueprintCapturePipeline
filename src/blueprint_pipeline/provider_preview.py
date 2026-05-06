@@ -702,7 +702,7 @@ def run_preview_provider(
                 normalized["worldlabs_world_manifest_uri"] = str(worldlabs_world_manifest_path)
             normalized["operation_terminal_status"] = poll_result.get("operation_terminal_status") or poll_result.get("status")
 
-        manifest = provider.emit_preview_manifest(normalized=normalized, output_path=manifest_path)
+        provider.emit_preview_manifest(normalized=normalized, output_path=manifest_path)
         provenance = provider.emit_provenance(descriptor=descriptor, normalized=normalized)
         run_manifest: Dict[str, Any] = {
             "schema_version": "v1",

@@ -1,0 +1,10 @@
+{
+  "blockers": [
+    "local_execution_disabled"
+  ],
+  "evidence": {},
+  "generated_at": "2026-05-05T23:39:25.416109+00:00",
+  "lane_id": "privacy_safe_provider",
+  "schema_version": "lane-result.v1",
+  "status": "blocked"
+}

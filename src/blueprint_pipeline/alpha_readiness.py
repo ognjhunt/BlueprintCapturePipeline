@@ -17,7 +17,6 @@ from .common import (
     write_json,
 )
 from .webapp_sync import (
-    WebappSyncError,
     derive_webapp_opportunity_state,
     derive_webapp_qualification_state,
     sync_webapp_pipeline_attachment,
@@ -214,10 +213,7 @@ def build_alpha_readiness_summary(
     qa_report = _read_json_object(capture_root / "qa_report.json")
     gemini_review = _read_json_object(pipeline_root / "gemini_capture_fidelity_review.json")
     privacy_manifest = _read_json_object(pipeline_root / "privacy_processing_manifest.json")
-    privacy_verification = _read_json_object(pipeline_root / "privacy_verification_report.json")
     webapp_sync = _read_json_object(pipeline_root / "webapp_sync_result.json")
-    scene_memory_manifest = _read_json_object(scene_memory_root / "scene_memory_manifest.json")
-    conditioning_bundle = _read_json_object(scene_memory_root / "conditioning_bundle.json")
     geometry_summary = _read_json_object(geometry_root / "geometry_summary.json")
     site_world_spec = _read_json_object(eval_root / "site_world_spec.json")
     site_world_registration = _read_json_object(eval_root / "site_world_registration.json")

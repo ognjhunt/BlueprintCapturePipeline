@@ -1,0 +1,39 @@
+{
+  "allowed_paths": [
+    "/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture",
+    "/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames/src",
+    "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/retrieval_index_stage.py",
+    "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests"
+  ],
+  "blocking_conditions": [
+    "site_id missing",
+    "world_model_candidate false",
+    "dense export missing"
+  ],
+  "commands": [
+    {
+      "command": [
+        "pytest",
+        "tests/test_world_model_candidate_parity.py",
+        "tests/test_retrieval_index_geometry_source.py"
+      ],
+      "cwd": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+      "id": "pipeline_world_model_contracts",
+      "proof_on_pass": [
+        "harness.site_identity_dense_export_tests_passed"
+      ],
+      "run_by_default": true
+    }
+  ],
+  "description": "Guarantee site identity, topology, revisit anchors, and dense export for marketed capture paths.",
+  "expected_artifacts": [],
+  "lane_id": "site_identity_dense_export",
+  "owner_agent": "capture-contract-agent",
+  "proof_fields": [
+    "pipeline.capture_descriptor_exists",
+    "pipeline.qa_report_exists"
+  ],
+  "repo": "BlueprintCapture + BlueprintCapturePipeline",
+  "requires_live_service": false,
+  "requires_physical_hardware": false
+}

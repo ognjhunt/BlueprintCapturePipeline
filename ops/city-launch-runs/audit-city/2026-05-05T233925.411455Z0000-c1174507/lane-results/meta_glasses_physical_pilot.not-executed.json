@@ -1,0 +1,10 @@
+{
+  "blockers": [
+    "local_execution_disabled"
+  ],
+  "evidence": {},
+  "generated_at": "2026-05-05T23:39:25.419327+00:00",
+  "lane_id": "meta_glasses_physical_pilot",
+  "schema_version": "lane-result.v1",
+  "status": "blocked"
+}

@@ -1,0 +1,14 @@
+{
+  "blockers": [
+    "retrieval.dense_index_exists",
+    "retrieval.site_reference_manifest_exists"
+  ],
+  "evidence": {
+    "retrieval.dense_index_exists": false,
+    "retrieval.site_reference_manifest_exists": false
+  },
+  "generated_at": "2026-05-06T00:50:02.360214+00:00",
+  "lane_id": "site_identity_dense_export",
+  "schema_version": "lane-result.v1",
+  "status": "blocked"
+}

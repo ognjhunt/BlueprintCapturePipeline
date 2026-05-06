@@ -12,6 +12,12 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from blueprint_pipeline.safe_env import contract_test_env, load_env_files  # noqa: E402
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -25,11 +31,11 @@ def _desktop_capture_repo() -> Path:
     return Path.home() / "Desktop" / "BlueprintCapture"
 
 
-def _run(cmd: Iterable[str], *, cwd: Path) -> None:
+def _run(cmd: Iterable[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
     printable = " ".join(cmd)
     print(f"[external-alpha-gate] cwd={cwd}")
     print(f"[external-alpha-gate] $ {printable}")
-    subprocess.run(list(cmd), cwd=cwd, check=True)
+    subprocess.run(list(cmd), cwd=cwd, check=True, env=env)
 
 
 def _ensure_extract_frames_dependencies(extract_frames_dir: Path) -> None:
@@ -58,14 +64,32 @@ def _resolve_swift_packages(capture_repo: Path, derived_data_path: Path) -> None
         _run(cmd, cwd=capture_repo)
 
 
-def _resolve_simulator_name(preferred_name: str, preferred_os: str | None) -> str:
+def _android_skip_reason(android_dir: Path) -> str | None:
+    if not (os.getenv("ANDROID_HOME") or os.getenv("ANDROID_SDK_ROOT")):
+        return "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
+    if not (android_dir / "gradlew").is_file():
+        return "Android Gradle wrapper is missing."
+    return None
+
+
+def _parse_os_version(os_name: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for part in os_name.split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def _available_ios_simulators() -> list[dict[str, str]]:
     raw = subprocess.check_output(
         ["xcrun", "simctl", "list", "devices", "available", "-j"],
         text=True,
     )
     payload = json.loads(raw)
     devices = payload.get("devices", {})
-    candidates: list[tuple[str, str]] = []
+    candidates: list[dict[str, str]] = []
     for runtime, runtime_devices in devices.items():
         if not runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS-"):
             continue
@@ -74,15 +98,61 @@ def _resolve_simulator_name(preferred_name: str, preferred_os: str | None) -> st
             if not device.get("isAvailable", True):
                 continue
             name = str(device.get("name") or "").strip()
-            if not name:
+            udid = str(device.get("udid") or "").strip()
+            if not name or not udid:
                 continue
-            candidates.append((name, os_name))
-    for name, os_name in candidates:
-        if name == preferred_name and (preferred_os is None or os_name == preferred_os):
-            return name
-    for name, _os_name in candidates:
-        if "iPhone" in name:
-            return name
+            candidates.append({"name": name, "os": os_name, "udid": udid})
+    return candidates
+
+
+def _simulator_description(candidates: list[dict[str, str]]) -> str:
+    if not candidates:
+        return "none"
+    return ", ".join(
+        f"{candidate['name']} iOS {candidate['os']} ({candidate['udid']})"
+        for candidate in sorted(candidates, key=lambda item: (item["name"], _parse_os_version(item["os"]), item["udid"]))
+    )
+
+
+def _newest_simulator(candidates: list[dict[str, str]]) -> dict[str, str]:
+    return max(candidates, key=lambda item: (_parse_os_version(item["os"]), item["name"], item["udid"]))
+
+
+def _resolve_simulator_destination(
+    *,
+    preferred_name: str,
+    preferred_os: str | None,
+    preferred_udid: str | None,
+) -> str:
+    candidates = _available_ios_simulators()
+    if preferred_udid:
+        for candidate in candidates:
+            if candidate["udid"] == preferred_udid:
+                return f"platform=iOS Simulator,id={candidate['udid']}"
+        raise RuntimeError(
+            "Configured iOS simulator UDID was not found among available iOS simulators: "
+            f"{preferred_udid}. Available: {_simulator_description(candidates)}"
+        )
+
+    named_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate["name"] == preferred_name
+        and (preferred_os is None or candidate["os"] == preferred_os)
+    ]
+    if named_candidates:
+        return f"platform=iOS Simulator,id={_newest_simulator(named_candidates)['udid']}"
+
+    if preferred_os:
+        raise RuntimeError(
+            "No available iOS simulator matched "
+            f"name={preferred_name!r} and os={preferred_os!r}. "
+            f"Available: {_simulator_description(candidates)}"
+        )
+
+    iphone_candidates = [candidate for candidate in candidates if "iPhone" in candidate["name"]]
+    if iphone_candidates:
+        return f"platform=iOS Simulator,id={_newest_simulator(iphone_candidates)['udid']}"
     raise RuntimeError("No available iPhone simulator found for the external alpha launch gate.")
 
 
@@ -94,11 +164,16 @@ def main() -> int:
     parser.add_argument("--skip-android", action="store_true")
     parser.add_argument("--skip-capture-cloud", action="store_true")
     parser.add_argument("--skip-pipeline", action="store_true")
+    parser.add_argument("--require-android", action="store_true")
+    parser.add_argument("--ios-simulator-udid", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_UDID"))
+    parser.add_argument("--ios-simulator-name", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_NAME", "iPhone 17 Pro"))
+    parser.add_argument("--ios-simulator-os", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_OS"))
     args = parser.parse_args()
 
     capture_repo = args.capture_repo.resolve()
     pipeline_repo = args.pipeline_repo.resolve()
     desktop_repo = _desktop_capture_repo()
+    load_env_files([pipeline_repo, capture_repo])
 
     print(f"[external-alpha-gate] canonical capture repo: {capture_repo}")
     print(f"[external-alpha-gate] canonical pipeline repo: {pipeline_repo}")
@@ -115,9 +190,10 @@ def main() -> int:
     if not args.skip_ios:
         derived_data_path = capture_repo / "build" / "DerivedData"
         _resolve_swift_packages(capture_repo, derived_data_path)
-        simulator_name = _resolve_simulator_name(
-            preferred_name=os.getenv("BLUEPRINT_IOS_SIMULATOR_NAME", "iPhone 17 Pro"),
-            preferred_os=os.getenv("BLUEPRINT_IOS_SIMULATOR_OS"),
+        simulator_destination = _resolve_simulator_destination(
+            preferred_name=args.ios_simulator_name,
+            preferred_os=args.ios_simulator_os,
+            preferred_udid=args.ios_simulator_udid,
         )
         _run(
             [
@@ -128,7 +204,7 @@ def main() -> int:
                 "-scheme",
                 "BlueprintCapture",
                 "-destination",
-                f"platform=iOS Simulator,name={simulator_name}",
+                simulator_destination,
                 "-derivedDataPath",
                 str(derived_data_path),
                 "-only-testing:BlueprintCaptureTests/CaptureBundleAndInferenceTests",
@@ -139,7 +215,14 @@ def main() -> int:
         )
 
     if not args.skip_android:
-        _run(["./gradlew", "testDebugUnitTest", "assembleDebug"], cwd=capture_repo / "android")
+        android_dir = capture_repo / "android"
+        android_skip_reason = _android_skip_reason(android_dir)
+        if android_skip_reason and not args.require_android:
+            print(f"[external-alpha-gate] android manual_required: {android_skip_reason}")
+        elif android_skip_reason:
+            raise RuntimeError(android_skip_reason)
+        else:
+            _run(["./gradlew", "testDebugUnitTest", "assembleDebug"], cwd=android_dir)
 
     if not args.skip_pipeline:
         _run(
@@ -153,6 +236,7 @@ def main() -> int:
                 "tests/test_world_model_candidate_parity.py",
             ],
             cwd=pipeline_repo,
+            env=contract_test_env(),
         )
 
     print("[external-alpha-gate] passed")

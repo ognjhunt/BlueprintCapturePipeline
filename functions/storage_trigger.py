@@ -18,8 +18,8 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
-from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
-from blueprint_pipeline.materialization import (
+from blueprint_pipeline.capture_orchestrator import run_capture_pipeline  # noqa: E402
+from blueprint_pipeline.materialization import (  # noqa: E402
     capture_materialization_readiness,
     materialize_capture_bundle,
 )

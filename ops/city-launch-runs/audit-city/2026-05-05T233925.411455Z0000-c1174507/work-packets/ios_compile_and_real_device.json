@@ -1,0 +1,51 @@
+{
+  "allowed_paths": [
+    "/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture",
+    "/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCaptureTests",
+    "/Users/nijelhunt_1/workspace/BlueprintCapture/scripts",
+    "/Users/nijelhunt_1/workspace/BlueprintCapture/ops/launch-readiness"
+  ],
+  "blocking_conditions": [
+    "iOS tests fail",
+    "real iPhone upload is unavailable"
+  ],
+  "commands": [
+    {
+      "command": [
+        "xcodebuild",
+        "test",
+        "-project",
+        "BlueprintCapture.xcodeproj",
+        "-scheme",
+        "BlueprintCapture",
+        "-destination",
+        "platform=iOS Simulator,name=iPhone 17 Pro",
+        "-parallel-testing-enabled",
+        "NO",
+        "-only-testing:BlueprintCaptureTests/CaptureBundleAndInferenceTests/finalizerAndExportProducePipelineReadyBundle",
+        "-only-testing:BlueprintCaptureTests/LaunchCityGateTests"
+      ],
+      "cwd": "/Users/nijelhunt_1/workspace/BlueprintCapture",
+      "id": "ios_targeted_launch_tests",
+      "proof_on_pass": [
+        "harness.ios_targeted_launch_tests_passed"
+      ],
+      "run_by_default": false
+    }
+  ],
+  "description": "Fix and verify iOS launch build, then collect real-device iPhone proof.",
+  "expected_artifacts": [
+    "ops/launch-readiness/<city-slug>.launch-proof.json"
+  ],
+  "lane_id": "ios_compile_and_real_device",
+  "owner_agent": "mobile-ios-agent",
+  "proof_fields": [
+    "release.config_validated_by_archive_script",
+    "capture.real_device_capture_uploaded",
+    "capture.capture_submissions_document_exists",
+    "capture.raw_upload_complete_exists"
+  ],
+  "repo": "BlueprintCapture",
+  "requires_live_service": false,
+  "requires_physical_hardware": true
+}

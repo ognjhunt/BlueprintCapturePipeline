@@ -1,0 +1,18 @@
+{
+  "blocker_count": 33,
+  "first_blocker": {
+    "actual": false,
+    "created_at": "2026-05-06T01:07:46.581793+00:00",
+    "expected": true,
+    "human_required": true,
+    "id": "missing_city_backend_supported",
+    "lane_id": "city_backend",
+    "message": "city is not proven supported",
+    "proof_field": "city.backend_supported",
+    "severity": "blocker"
+  },
+  "proof_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/ops/city-launch-runs/austin-tx/2026-05-06T010552.849763Z0000-e678333b/proof.launch-proof.json",
+  "run_id": "2026-05-06T010552.849763Z0000-e678333b",
+  "status": "blocked_repo_or_contract_failure",
+  "work_packet_count": 9
+}

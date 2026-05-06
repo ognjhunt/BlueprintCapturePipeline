@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from ..capture_bridge import CaptureDescriptor
 from ..common import PipelineError, optional_read_json, read_json

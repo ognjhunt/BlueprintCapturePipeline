@@ -18,9 +18,12 @@ the intrinsic image size, the intrinsics are scaled accordingly.
 
 from __future__ import annotations
 
-from typing import Dict, Union
+from typing import TYPE_CHECKING, Dict
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import torch
 
 
 def compute_plucker_map(
@@ -41,7 +44,7 @@ def compute_plucker_map(
     """
     T = np.asarray(T_world_camera, dtype=np.float64)
     R = T[:3, :3]   # rotation: camera → world
-    O = T[:3, 3]    # camera centre in world frame
+    origin = T[:3, 3]    # camera centre in world frame
 
     # Scale intrinsics if rendering at different resolution than capture
     intr_w = float(intrinsics.get("width") or width)
@@ -75,16 +78,16 @@ def compute_plucker_map(
     norms = np.linalg.norm(rays_world, axis=-1, keepdims=True)  # [H, W, 1]
     d = rays_world / np.maximum(norms, 1e-8)               # [H, W, 3]
 
-    # Moment: m = O × d for each pixel
-    # O: [3]  →  broadcast as [1, 1, 3]
-    m = np.cross(O[np.newaxis, np.newaxis, :], d)          # [H, W, 3]
+    # Moment: m = origin × d for each pixel
+    # origin: [3]  →  broadcast as [1, 1, 3]
+    m = np.cross(origin[np.newaxis, np.newaxis, :], d)     # [H, W, 3]
 
     # Stack and transpose to [6, H, W]
     plucker = np.concatenate([d, m], axis=-1)              # [H, W, 6]
     return plucker.transpose(2, 0, 1).astype(np.float32)   # [6, H, W]
 
 
-def plucker_to_tensor(plucker_map: np.ndarray) -> "torch.Tensor":  # type: ignore[name-defined]
+def plucker_to_tensor(plucker_map: np.ndarray) -> "torch.Tensor":
     """Convert [6, H, W] numpy map to a [1, 6, H, W] torch tensor for model input."""
     import torch
     return torch.from_numpy(plucker_map).unsqueeze(0)  # [1, 6, H, W]

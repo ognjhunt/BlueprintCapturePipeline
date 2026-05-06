@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from .common import PipelineError, optional_read_json, utc_now_iso
+from .common import optional_read_json, utc_now_iso
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
 from .materialization import preview_capture_bundle
 

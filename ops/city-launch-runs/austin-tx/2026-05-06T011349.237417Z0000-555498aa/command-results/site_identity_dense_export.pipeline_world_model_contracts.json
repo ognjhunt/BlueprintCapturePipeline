@@ -1,0 +1,18 @@
+{
+  "command": [
+    "pytest",
+    "tests/test_world_model_candidate_parity.py",
+    "tests/test_retrieval_index_geometry_source.py"
+  ],
+  "cwd": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+  "exit_code": 0,
+  "id": "pipeline_world_model_contracts",
+  "lane_id": "site_identity_dense_export",
+  "proof_on_pass": [
+    "harness.site_identity_dense_export_tests_passed"
+  ],
+  "result_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/ops/city-launch-runs/austin-tx/2026-05-06T011349.237417Z0000-555498aa/command-results/site_identity_dense_export.pipeline_world_model_contracts.json",
+  "status": "passed",
+  "stderr_tail": "",
+  "stdout_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.13.5, pytest-9.0.2, pluggy-1.6.0 -- /opt/homebrew/opt/python@3.13/bin/python3.13\ncachedir: .pytest_cache\nrootdir: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline\nconfigfile: pyproject.toml\nplugins: anyio-4.12.1\ncollecting ... collected 4 items\n\ntests/test_world_model_candidate_parity.py::test_materialization_promotes_aligned_iphone_capture_to_site_world_candidate PASSED [ 25%]\ntests/test_world_model_candidate_parity.py::test_materialization_downgrades_misaligned_iphone_capture_locally PASSED [ 50%]\ntests/test_retrieval_index_geometry_source.py::test_retrieval_index_uses_pipeline_geometry_for_non_arkit PASSED [ 75%]\ntests/test_retrieval_index_geometry_source.py::test_retrieval_index_requires_privacy_safe_video_by_default PASSED [100%]\n\n============================== 4 passed in 0.88s ==============================="
+}

@@ -21,7 +21,8 @@ pass depth_scale=0.001 to convert millimetres → metres.
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Tuple
 
 import numpy as np
 
@@ -128,7 +129,7 @@ def depth_splat(
     return warped, mask
 
 
-def load_depth_png(path: "Path", depth_scale: float = 0.001) -> np.ndarray:  # type: ignore[name-defined]
+def load_depth_png(path: Path, depth_scale: float = 0.001) -> np.ndarray:
     """
     Load an ARKit depth PNG and return float32 metres.
 

@@ -355,7 +355,7 @@ def _write_summary(
     accepted_records: list[Mapping[str, Any]],
     rejected_records: list[Mapping[str, Any]],
 ) -> None:
-    final_diff = read_text = ""
+    final_diff = ""
     best_dir = run_dir / "best"
     if best_dir.exists():
         baseline_dir = run_dir / "baseline" / "candidate"

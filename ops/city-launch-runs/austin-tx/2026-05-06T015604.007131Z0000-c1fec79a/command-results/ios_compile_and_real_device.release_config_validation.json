@@ -1,0 +1,17 @@
+{
+  "command": [
+    "./scripts/archive_external_alpha.sh",
+    "--validate-config-only"
+  ],
+  "cwd": "/Users/nijelhunt_1/workspace/BlueprintCapture",
+  "exit_code": 0,
+  "id": "release_config_validation",
+  "lane_id": "ios_compile_and_real_device",
+  "proof_on_pass": [
+    "release.config_validated_by_archive_script"
+  ],
+  "result_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/ops/city-launch-runs/austin-tx/2026-05-06T015604.007131Z0000-c1fec79a/command-results/ios_compile_and_real_device.release_config_validation.json",
+  "status": "passed",
+  "stderr_tail": "2026-05-05 21:56:05.407 xcodebuild[23549:2920647]  IDEDownloadableMetalToolchainCoordinator: Failed to remount the Metal Toolchain: The file \u201ccom.apple.MobileAsset.MetalToolchain-v17.1.324.0.Gdwlzz\u201d couldn\u2019t be opened because you don\u2019t have permission to view it.\n--- xcodebuild: WARNING: Using the first of multiple matching destinations:\n{ platform:macOS, arch:arm64, variant:Designed for [iPad,iPhone], id:00008112-000C048C3A08201E, name:My Mac }\n{ platform:iOS, id:dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder, name:Any iOS Device }\n{ platform:iOS Simulator, id:dvtdevice-DVTiOSDeviceSimulatorPlaceholder-iphonesimulator:placeholder, name:Any iOS Simulator Device }\n{ platform:iOS Simulator, arch:arm64, id:11545BCE-E80D-4048-8117-965C45BF2524, OS:26.0, name:iPad (A16) }\n{ platform:iOS Simulator, arch:arm64, id:117E7ABF-C726-4CC5-BF60-77B88903AF82, OS:26.0, name:iPad Air 11-inch (M3) }\n{ platform:iOS Simulator, arch:arm64, id:5F69F8EE-F521-4752-81E0-0E90D822EAB5, OS:26.0, name:iPad Air 13-inch (M3) }\n{ platform:iOS Simulator, arch:arm64, id:9F7030CB-0898-45AF-9BE9-9653FE11D93D, OS:26.0, name:iPad Pro 11-inch (M4) }\n{ platform:iOS Simulator, arch:arm64, id:F20BEBF8-836B-46F0-A4D0-EC0EC0FC5BA2, OS:26.0, name:iPad Pro 13-inch (M4) }\n{ platform:iOS Simulator, arch:arm64, id:AA0BB283-D470-48D0-9A4D-A37D9F98FC14, OS:26.0, name:iPad mini (A17 Pro) }\n{ platform:iOS Simulator, arch:arm64, id:5A2041D6-4BF1-4D63-8C5D-9622AF8D3683, OS:26.0, name:iPhone 16e }\n{ platform:iOS Simulator, arch:arm64, id:FDBA516B-7978-4B04-8674-267CBE1AB898, OS:26.0, name:iPhone 17 }\n{ platform:iOS Simulator, arch:arm64, id:89A8BE7D-C8A3-4EA2-878B-E2B0F5D2C3FF, OS:26.0, name:iPhone 17 Pro }\n{ platform:iOS Simulator, arch:arm64, id:D72B2B3E-83EE-42ED-990E-ED8158220BF7, OS:26.0, name:iPhone 17 Pro }\n{ platform:iOS Simulator, arch:arm64, id:6B7011FE-C6D1-4A36-9291-D55AD6ED5D2C, OS:26.0, name:iPhone 17 Pro Max }\n{ platform:iOS Simulator, arch:arm64, id:4ED8EA9C-D42B-42E5-890D-7E18988F6526, OS:26.0, name:iPhone Air }",
+  "stdout_tail": "Release config validated: /Users/nijelhunt_1/workspace/BlueprintCapture/Config/BlueprintCapture.release.xcconfig\nResolved build settings saved at /Users/nijelhunt_1/workspace/BlueprintCapture/build/BlueprintCaptureExternalRelease.settings"
+}

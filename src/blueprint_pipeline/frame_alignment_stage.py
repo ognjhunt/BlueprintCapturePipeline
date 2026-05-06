@@ -35,8 +35,6 @@ import numpy as np
 
 from .common import (
     PipelineError,
-    ensure_dir,
-    parse_bool,
     read_json,
     utc_now_iso,
     write_json,
@@ -52,9 +50,7 @@ from .site_memory_utils import (
     backproject_depth_points,
     effective_pose,
     fingerprint_similarity,
-    geometry_fingerprint,
     gs_uri_to_local,
-    iter_groups,
     load_embedding,
     load_jsonl as _sm_load_jsonl,
     load_numeric_array as _sm_load_numeric_array,
@@ -62,7 +58,6 @@ from .site_memory_utils import (
     plane_summaries,
     pose_matrix,
     rotation_cosine,
-    transform_translation,
     write_ascii_pointcloud,
 )
 

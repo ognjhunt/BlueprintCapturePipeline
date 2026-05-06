@@ -651,7 +651,6 @@ def _run_vip_backend(
     del vip_model_path
     try:
         import cv2  # type: ignore[import-not-found]
-        import numpy as np
     except Exception as exc:
         return {
             "status": "failed",

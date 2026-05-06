@@ -1,0 +1,72 @@
+{
+  "artifacts": {
+    "blockers": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/ops/city-launch-runs/austin-tx/2026-05-06T004342.138680Z0000-738c5244/blockers.jsonl",
+    "lane_results": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/ops/city-launch-runs/austin-tx/2026-05-06T004342.138680Z0000-738c5244/lane-results",
+    "proof": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/ops/city-launch-runs/austin-tx/2026-05-06T004342.138680Z0000-738c5244/proof.launch-proof.json",
+    "work_packets": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/ops/city-launch-runs/austin-tx/2026-05-06T004342.138680Z0000-738c5244/work-packets"
+  },
+  "budget_cents": 100000,
+  "capture_paths": [
+    "iphone",
+    "meta_glasses"
+  ],
+  "city_slug": "austin-tx",
+  "created_or_updated_at": "2026-05-06T00:44:35.782302+00:00",
+  "env_files_loaded": {
+    "files": [
+      "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.env",
+      "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.env.local",
+      "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.env.alpha.local",
+      "/Users/nijelhunt_1/workspace/Blueprint-WebApp/.env",
+      "/Users/nijelhunt_1/workspace/Blueprint-WebApp/.env.local"
+    ],
+    "loaded_keys": [
+      "BLUEPRINT_GTM_CONTACT_DISCOVERY_ALLOWED_HOSTS",
+      "BLUEPRINT_HUMAN_REPLY_GMAIL_WATCHER_ENABLED",
+      "BLUEPRINT_HUMAN_REPLY_INGEST_TOKEN",
+      "BLUEPRINT_PREVIEW_PROVIDER",
+      "GCS_ROOT",
+      "GOOGLE_GENAI_API_KEY",
+      "PIPELINE_ALPHA_EXPECT_HOSTED_RUNTIME",
+      "PIPELINE_BUCKET",
+      "PIPELINE_PROJECT_ID",
+      "PIPELINE_REGION",
+      "PIPELINE_SYNC_REQUIRED",
+      "PIPELINE_SYNC_TOKEN",
+      "PIPELINE_SYNC_WEBAPP_URL",
+      "PRIVACY_FAIL_CLOSED",
+      "PRIVACY_PIPELINE_ENABLED",
+      "WORLDLABS_API_KEY"
+    ],
+    "skipped_existing_keys": [
+      "GEMINI_API_KEY",
+      "SENDGRID_FROM_EMAIL",
+      "SENDGRID_FROM_NAME"
+    ],
+    "skipped_placeholder_keys": [
+      "PRIVACY_DEEPPRIVACY2_URL",
+      "PRIVACY_RUNNER_TOKEN",
+      "PRIVACY_SAM3_URL",
+      "PRIVACY_VIP_URL"
+    ]
+  },
+  "first_blocker": {
+    "actual": false,
+    "created_at": "2026-05-06T00:44:35.782070+00:00",
+    "expected": true,
+    "human_required": true,
+    "id": "missing_city_backend_supported",
+    "lane_id": "city_backend",
+    "message": "city is not proven supported",
+    "proof_field": "city.backend_supported",
+    "severity": "blocker"
+  },
+  "repos": {
+    "capture": "/Users/nijelhunt_1/workspace/BlueprintCapture",
+    "pipeline": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+    "webapp": "/Users/nijelhunt_1/workspace/Blueprint-WebApp"
+  },
+  "run_id": "2026-05-06T004342.138680Z0000-738c5244",
+  "schema_version": "city-launch-harness-run.v1",
+  "status": "blocked_repo_or_contract_failure"
+}

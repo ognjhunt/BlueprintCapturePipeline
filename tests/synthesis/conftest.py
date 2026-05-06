@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import io
 import json
-import struct
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -132,11 +132,11 @@ def synthetic_index_record(simple_intrinsics: dict) -> dict:
 
 @pytest.fixture
 def fake_storage_root(
-    tmp_path: "Path",  # type: ignore[name-defined]
+    tmp_path: Path,
     synthetic_depth_png_bytes: bytes,
     synthetic_rgb_jpg_bytes: bytes,
     synthetic_index_record: dict,
-) -> "Path":  # type: ignore[name-defined]
+) -> Path:
     """
     Writes a minimal fake GCS storage tree that synthesize_view() can resolve:
 

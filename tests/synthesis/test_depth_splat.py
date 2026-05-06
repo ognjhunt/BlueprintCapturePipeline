@@ -1,10 +1,8 @@
 """Tests for depth_splat.py — forward splatting reference → target viewpoint."""
 from __future__ import annotations
 
-import io
 
 import numpy as np
-import pytest
 
 from blueprint_pipeline.synthesis.depth_splat import depth_splat, load_depth_png
 

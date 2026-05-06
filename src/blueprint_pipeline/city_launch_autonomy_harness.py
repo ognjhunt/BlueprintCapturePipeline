@@ -6,16 +6,22 @@ import argparse
 import json
 import os
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from blueprint_pipeline.local_capture import resolve_local_capture_context
+from blueprint_pipeline.safe_env import contract_test_env, load_env_files
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CAPTURE_REPO = ROOT.parent / "BlueprintCapture"
 DEFAULT_WEBAPP_REPO = ROOT.parent / "Blueprint-WebApp"
+WEBAPP_STATUS_TIMEOUT_SECONDS = 30
 
 
 def utc_now_iso() -> str:
@@ -199,6 +205,16 @@ def build_work_packets(
                 str(capture_repo / "ops/launch-readiness"),
             ),
             commands=(
+                CommandSpec(
+                    id="release_config_validation",
+                    command=[
+                        "./scripts/archive_external_alpha.sh",
+                        "--validate-config-only",
+                    ],
+                    cwd=str(capture_repo),
+                    proof_on_pass=("release.config_validated_by_archive_script",),
+                    run_by_default=True,
+                ),
                 CommandSpec(
                     id="ios_targeted_launch_tests",
                     command=[
@@ -397,36 +413,278 @@ def build_blockers(proof: Mapping[str, Any]) -> list[dict[str, Any]]:
     for field_name, expected, lane_id, message, human_required in REQUIRED_LAUNCH_PROOF_FIELDS:
         if proof_field_satisfied(proof, field_name, expected):
             continue
+        diagnostic = ""
+        if field_name == "release.config_validated_by_archive_script":
+            validation = get_nested(proof, "harness.release_config_validation")
+            if isinstance(validation, Mapping):
+                diagnostic = str(validation.get("stderr_tail") or validation.get("stdout_tail") or "").strip()
+        blocker_message = f"{message}: {diagnostic}" if diagnostic else message
         blockers.append(
             {
                 "id": f"missing_{field_name.replace('.', '_')}",
                 "lane_id": lane_id,
                 "severity": "blocker",
-                "message": message,
+                "message": blocker_message,
                 "proof_field": field_name,
                 "expected": expected,
                 "actual": get_nested(proof, field_name),
                 "human_required": bool(human_required),
                 "created_at": utc_now_iso(),
+                **({"diagnostic": diagnostic} if diagnostic else {}),
             }
         )
     return blockers
 
 
-def determine_status(proof: Mapping[str, Any], blockers: Sequence[Mapping[str, Any]]) -> str:
+def _capture_root_retrieval_input_missing(lane_results: Sequence[Mapping[str, Any]]) -> bool:
+    input_shape_blockers = {
+        "capture_descriptor_missing_site_id_or_metadata_site_identity_site_id",
+        "privacy_safe_walkthrough_missing_for_retrieval_index",
+    }
+    for result in lane_results:
+        if result.get("lane_id") != "site_identity_dense_export":
+            continue
+        blockers = result.get("blockers") if isinstance(result.get("blockers"), list) else ()
+        if any(str(blocker) in input_shape_blockers for blocker in blockers):
+            return True
+    return False
+
+
+def _capture_paths_from_proof(proof: Mapping[str, Any]) -> set[str]:
+    capture_paths = proof.get("capture_paths")
+    if not isinstance(capture_paths, list):
+        return set()
+    return {str(capture_path).strip() for capture_path in capture_paths if str(capture_path).strip()}
+
+
+def determine_status(
+    proof: Mapping[str, Any],
+    blockers: Sequence[Mapping[str, Any]],
+    *,
+    capture_root_evidence: Sequence[Mapping[str, Any]] = (),
+) -> str:
     if not blockers:
         return "ready_to_market_iphone_city_beta"
+    capture_paths = _capture_paths_from_proof(proof)
+    includes_iphone = "iphone" in capture_paths
     repo_lanes = {"ios", "pipeline", "proof"}
-    if any(str(blocker.get("lane_id")) in repo_lanes and not blocker.get("human_required") for blocker in blockers):
+    capture_root_input_missing = _capture_root_retrieval_input_missing(capture_root_evidence)
+    for blocker in blockers:
+        lane_id = str(blocker.get("lane_id"))
+        if lane_id not in repo_lanes or blocker.get("human_required"):
+            continue
+        field_name = str(blocker.get("proof_field") or "")
+        if not includes_iphone and field_name.startswith(("release.", "capture.")):
+            continue
+        if capture_root_input_missing and field_name.startswith("retrieval."):
+            continue
         return "blocked_repo_or_contract_failure"
     meta_ready = (
-        get_nested(proof, "meta_glasses.physical_device_smoke_passed") is True
+        "meta_glasses" in capture_paths
+        and not includes_iphone
+        and get_nested(proof, "meta_glasses.physical_device_smoke_passed") is True
         and get_nested(proof, "meta_glasses.video_first_positioning_confirmed") is True
         and get_nested(proof, "meta_glasses.native_geometry_not_marketed") is True
     )
     if meta_ready:
-        return "ready_for_internal_glasses_pilot"
+        required_downstream_prefixes = (
+            "pipeline.",
+            "privacy_provider.",
+            "retrieval.",
+            "hosted_session.",
+            "meta_glasses.",
+        )
+        downstream_blockers = [
+            blocker
+            for blocker in blockers
+            if str(blocker.get("proof_field") or "").startswith(required_downstream_prefixes)
+        ]
+        if not downstream_blockers:
+            return "ready_for_internal_glasses_pilot"
     return "blocked_external_dependency"
+
+
+def _work_packet_for_proof_field(field_name: str) -> str:
+    if field_name.startswith(("release.", "capture.")):
+        return "ios_compile_and_real_device"
+    if field_name.startswith("city."):
+        return "city_backend_routes"
+    if field_name.startswith("privacy_provider."):
+        return "privacy_safe_provider"
+    if field_name.startswith("retrieval."):
+        return "site_identity_dense_export"
+    if field_name.startswith("hosted_session."):
+        return "runtime_webapp_buyer_access"
+    if field_name.startswith(("payouts.", "open_capture.")):
+        return "payments_payouts_marketing"
+    if field_name.startswith("ops."):
+        return "ops_monitors_recovery"
+    if field_name.startswith("meta_glasses."):
+        return "meta_glasses_physical_pilot"
+    if field_name.startswith("pipeline."):
+        return "pipeline_readiness_contracts"
+    return "proof"
+
+
+def _dependency_class(blocker: Mapping[str, Any]) -> str:
+    field_name = str(blocker.get("proof_field") or "")
+    lane_id = str(blocker.get("lane_id") or "")
+    if field_name.startswith("city."):
+        return "live_city_backend"
+    if field_name.startswith("capture."):
+        return "real_device_iphone_capture"
+    if field_name == "pipeline.pubsub_handoff_succeeded":
+        return "live_pipeline_handoff"
+    if field_name.startswith("privacy_provider."):
+        return "privacy_safe_provider_artifact"
+    if field_name.startswith("retrieval."):
+        return "capture_root_or_retrieval_export"
+    if field_name.startswith("hosted_session."):
+        return "hosted_buyer_access"
+    if field_name.startswith("payouts."):
+        return "payment_or_payout_ops"
+    if field_name.startswith("ops."):
+        return "launch_ops_monitoring"
+    if field_name.startswith("meta_glasses."):
+        return "internal_hardware_evidence"
+    if blocker.get("human_required") is True:
+        return "human_required_external_evidence"
+    if lane_id in {"ios", "pipeline", "proof"}:
+        return "repo_or_contract_gap"
+    return "launch_policy_gap"
+
+
+def _expected_evidence_for_blocker(blocker: Mapping[str, Any]) -> str:
+    field_name = str(blocker.get("proof_field") or "")
+    if field_name == "city.backend_supported":
+        return "WebApp public launch status returns ok=true, currentCity.citySlug matches, isSupported=true, status=live, and sourceStatus is available."
+    if field_name in {"city.live_approved_job_count", "city.live_capture_target_count"}:
+        return "Live city activation ledgers contain at least one approved job and one capture target for the requested city."
+    if field_name.startswith("capture."):
+        return "Real iPhone device upload evidence, capture submission document, and raw upload completion marker for the same capture/job id."
+    if field_name == "pipeline.pubsub_handoff_succeeded":
+        return "A real Pub/Sub or equivalent pipeline handoff result from the uploaded capture, not a local placeholder."
+    if field_name.startswith("privacy_provider."):
+        return "Privacy-safe walkthrough and provider input audit proving raw video bypass is disabled."
+    if field_name.startswith("retrieval."):
+        return "Capture root with site_id, privacy-safe walkthrough, world_model_export/dense_index.jsonl, and sites/<site_id>/reference_memory/site_reference_manifest.json."
+    if field_name.startswith("hosted_session."):
+        return "Hosted runtime URL, WebApp listing/attachment id, and authenticated buyer access check against a real configured route."
+    if field_name.startswith("payouts."):
+        return "Stripe/payment backend state and payout guardrails checked for the live marketplace flow."
+    if field_name.startswith("ops."):
+        return "Launch owner plus failed-upload, submission, device sync, pipeline, payout, session-event, and cloud-log monitors."
+    if field_name.startswith("meta_glasses."):
+        return "Physical Meta glasses smoke evidence and explicit internal-only marketing guardrails."
+    return str(blocker.get("message") or "").strip()
+
+
+def _lane_result_names_for_proof_field(field_name: str) -> tuple[str, ...]:
+    if field_name.startswith("city."):
+        return ("city_backend.webapp-status-route.json",)
+    if field_name.startswith("privacy_provider."):
+        return ("privacy_safe_provider.capture-root-evidence.json",)
+    if field_name.startswith("retrieval."):
+        return ("site_identity_dense_export.capture-root-evidence.json",)
+    if field_name.startswith("hosted_session."):
+        return ("runtime_webapp_buyer_access.capture-root-evidence.json",)
+    if field_name.startswith("pipeline."):
+        return ("pipeline.capture-root-evidence.json",)
+    return ()
+
+
+def build_launch_gap_report(
+    *,
+    city_slug: str,
+    status: str,
+    blockers: Sequence[Mapping[str, Any]],
+    packets: Sequence[WorkPacket],
+    capture_root: str,
+    run_root: Path,
+    work_packet_root: Path,
+    lane_results_root: Path,
+) -> dict[str, Any]:
+    packet_ids = {packet.lane_id for packet in packets}
+    gaps: list[dict[str, Any]] = []
+    for blocker in blockers:
+        field_name = str(blocker.get("proof_field") or "")
+        packet_id = _work_packet_for_proof_field(field_name)
+        gap: dict[str, Any] = {
+            "id": blocker.get("id"),
+            "proof_field": field_name,
+            "lane_id": blocker.get("lane_id"),
+            "dependency_class": _dependency_class(blocker),
+            "message": blocker.get("message"),
+            "actual": blocker.get("actual"),
+            "expected": blocker.get("expected"),
+            "human_required": blocker.get("human_required"),
+            "expected_evidence": _expected_evidence_for_blocker(blocker),
+        }
+        if packet_id in packet_ids:
+            gap["work_packet_path"] = str(work_packet_root / f"{packet_id}.json")
+        lane_result_paths = [
+            str(candidate)
+            for name in _lane_result_names_for_proof_field(field_name)
+            if (candidate := lane_results_root / name).is_file()
+        ]
+        if lane_result_paths:
+            gap["lane_result_paths"] = lane_result_paths
+        gaps.append(gap)
+    external_classes = {
+        "live_city_backend",
+        "real_device_iphone_capture",
+        "live_pipeline_handoff",
+        "privacy_safe_provider_artifact",
+        "hosted_buyer_access",
+        "payment_or_payout_ops",
+        "launch_ops_monitoring",
+        "internal_hardware_evidence",
+        "human_required_external_evidence",
+    }
+    repo_gap_classes = {"repo_or_contract_gap", "capture_root_or_retrieval_export"}
+    capture_root_shape = [
+        "capture_descriptor.json with site_id or metadata.site_identity.site_id",
+        "qa_report.json",
+        "pipeline/opportunity_handoff.json",
+        "pipeline/.qualification_pipeline_complete",
+        "privacy/final_walkthrough.mov or privacy/final_walkthrough.mp4 or pipeline/privacy_processing_manifest.json final_walkthrough_uri",
+        "world_model_export/dense_index.jsonl",
+        "sites/<site_id>/reference_memory/site_reference_manifest.json",
+        "pipeline/webapp_sync_result.json with status=succeeded, no placeholder flags, and buyer_access_check.buyer_accessible=true",
+    ]
+    return {
+        "schema_version": "city-launch-gap-report.v1",
+        "city_slug": city_slug,
+        "status": status,
+        "generated_at": utc_now_iso(),
+        "run_root": str(run_root),
+        "capture_root": capture_root,
+        "blocker_count": len(blockers),
+        "first_blocker": dict(blockers[0]) if blockers else None,
+        "repo_or_contract_gaps": [gap for gap in gaps if gap["dependency_class"] in repo_gap_classes],
+        "external_dependencies": [gap for gap in gaps if gap["dependency_class"] in external_classes],
+        "launch_policy_gaps": [
+            gap
+            for gap in gaps
+            if gap["dependency_class"] not in external_classes and gap["dependency_class"] not in repo_gap_classes
+        ],
+        "expected_capture_root_shape": capture_root_shape,
+        "rerun_command": [
+            "python",
+            "scripts/run_autonomous_city_launch_harness.py",
+            "--city-slug",
+            city_slug,
+            "--budget-cents",
+            "<budget-cents>",
+            "--capture-path",
+            "iphone",
+            "--execute-local",
+            "--include-pipeline-tests",
+            "--include-webapp-city-status",
+            "--capture-root",
+            "<capture-root>",
+        ],
+    }
 
 
 def apply_lane_results(proof: dict[str, Any], results_dir: Path) -> list[dict[str, Any]]:
@@ -434,7 +692,12 @@ def apply_lane_results(proof: dict[str, Any], results_dir: Path) -> list[dict[st
     if not results_dir.is_dir():
         return applied
     for path in sorted(results_dir.glob("*.json")):
+        if path.name.endswith(".not-executed.json"):
+            continue
         result = read_json(path)
+        status = str(result.get("status") or "").strip().lower()
+        if status == "contract_only" or result.get("contract_only") is True:
+            continue
         evidence = result.get("evidence") if isinstance(result.get("evidence"), Mapping) else {}
         for field_name, value in evidence.items():
             set_nested(proof, str(field_name), value)
@@ -453,12 +716,13 @@ def command_allowed(command: CommandSpec, *, args: argparse.Namespace) -> bool:
 
 
 def run_command(command: CommandSpec) -> dict[str, Any]:
+    command_env = contract_test_env() if command.command and command.command[0] == "pytest" else os.environ.copy()
     completed = subprocess.run(
         command.command,
         cwd=command.cwd,
         capture_output=True,
         text=True,
-        env=os.environ.copy(),
+        env=command_env,
     )
     return {
         "id": command.id,
@@ -495,6 +759,212 @@ def _write_lane_result(path: Path, *, lane_id: str, status: str, evidence: Mappi
     return result
 
 
+def _webapp_sync_has_placeholder(sync_result: Mapping[str, Any]) -> bool:
+    placeholder_flags = (
+        "placeholder_fallback_allowed",
+        "placeholder_sync_used",
+        "placeholder_request_created",
+        "placeholder_request",
+        "placeholder",
+    )
+    return any(bool(sync_result.get(flag)) for flag in placeholder_flags)
+
+
+def _lane_result_name_for_proof(path: Path) -> str:
+    return f"cross_repo_proof.{path.name}"
+
+
+def _capture_root_site_id(descriptor: Mapping[str, Any]) -> str:
+    metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+    site_identity = metadata.get("site_identity") if isinstance(metadata.get("site_identity"), Mapping) else {}
+    return str(site_identity.get("site_id") or descriptor.get("site_id") or "").strip()
+
+
+def _first_existing_path(paths: Iterable[Path]) -> Path | None:
+    for path in paths:
+        if path.is_file():
+            return path
+    return None
+
+
+def _capture_root_site_reference_candidates(*, capture_root: Path, descriptor: Mapping[str, Any]) -> list[Path]:
+    candidates: list[Path] = []
+    site_id = _capture_root_site_id(descriptor)
+    if site_id:
+        try:
+            ctx = resolve_local_capture_context(capture_root)
+            candidates.append(ctx.storage_root / ctx.bucket / "sites" / site_id / "reference_memory" / "site_reference_manifest.json")
+        except Exception:
+            pass
+    candidates.extend(capture_root.glob("sites/*/reference_memory/site_reference_manifest.json"))
+    return candidates
+
+
+def _has_privacy_safe_walkthrough(*, capture_root: Path, descriptor: Mapping[str, Any], privacy_manifest: Mapping[str, Any]) -> bool:
+    if (capture_root / "privacy" / "final_walkthrough.mov").is_file():
+        return True
+    if (capture_root / "privacy" / "final_walkthrough.mp4").is_file():
+        return True
+    return bool(
+        str(privacy_manifest.get("final_walkthrough_uri") or "").strip()
+        or str(descriptor.get("world_model_video_uri") or "").strip()
+        or str(descriptor.get("privacy_processed_video_uri") or "").strip()
+    )
+
+
+def _city_query_from_slug(city_slug: str) -> tuple[str, str | None]:
+    parts = [part for part in city_slug.strip().split("-") if part]
+    if len(parts) >= 2 and len(parts[-1]) == 2:
+        city = " ".join(part.capitalize() for part in parts[:-1])
+        return city, parts[-1].upper()
+    return " ".join(part.capitalize() for part in parts), None
+
+
+def _webapp_origin_from_configured_url(value: str) -> str:
+    parsed = urllib.parse.urlparse(value.strip())
+    if parsed.scheme and parsed.netloc:
+        return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+    return value.strip().rstrip("/")
+
+
+def _webapp_launch_status_url(*, base_url: str, city_slug: str) -> str:
+    origin = _webapp_origin_from_configured_url(base_url)
+    city, state_code = _city_query_from_slug(city_slug)
+    query = {"city": city}
+    if state_code:
+        query["state_code"] = state_code
+    return urllib.parse.urljoin(origin.rstrip("/") + "/", "api/public/launch/status") + "?" + urllib.parse.urlencode(query)
+
+
+def collect_webapp_city_status_evidence(
+    *,
+    city_slug: str,
+    lane_results_root: Path,
+) -> list[dict[str, Any]]:
+    base_url = str(os.environ.get("PIPELINE_SYNC_WEBAPP_URL") or "").strip()
+    blockers: list[str] = []
+    evidence: dict[str, Any] = {}
+    diagnostics: dict[str, Any] = {}
+    if not base_url:
+        blockers.append("PIPELINE_SYNC_WEBAPP_URL_missing")
+    else:
+        status_url = _webapp_launch_status_url(base_url=base_url, city_slug=city_slug)
+        diagnostics["status_url"] = status_url
+        try:
+            with urllib.request.urlopen(status_url, timeout=WEBAPP_STATUS_TIMEOUT_SECONDS) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            blockers.append(f"webapp_status_route_http_{exc.code}")
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+                error_payload = json.loads(error_body)
+                if isinstance(error_payload, Mapping):
+                    error_message = str(error_payload.get("error") or error_payload.get("message") or "").strip()
+                    if error_message:
+                        blockers.append(f"webapp_status_route_error:{error_message[:500]}")
+            except Exception:
+                pass
+            payload = {}
+        except Exception as exc:
+            blockers.append(f"webapp_status_route_unreachable:{type(exc).__name__}")
+            payload = {}
+        if isinstance(payload, Mapping):
+            current_city = payload.get("currentCity") if isinstance(payload.get("currentCity"), Mapping) else {}
+            supported_cities = payload.get("supportedCities") if isinstance(payload.get("supportedCities"), list) else []
+            supported_slugs = {
+                str(city.get("citySlug") or "").strip()
+                for city in supported_cities
+                if isinstance(city, Mapping)
+            }
+            source_status = payload.get("sourceStatus") if isinstance(payload.get("sourceStatus"), Mapping) else {}
+            source_unavailable = any(
+                str(source_status.get(key) or "").strip() == "unavailable"
+                for key in (
+                    "cityLaunchActivations",
+                    "cityLaunchProspects",
+                    "cityLaunchCandidateSignals",
+                )
+            )
+            route_supported = (
+                payload.get("ok") is True
+                and str(current_city.get("citySlug") or "").strip() == city_slug
+                and current_city.get("isSupported") is True
+                and current_city.get("status") == "live"
+                and city_slug in supported_slugs
+                and not source_unavailable
+            )
+            evidence["city.backend_supported"] = route_supported
+            diagnostics["current_city"] = {
+                "citySlug": current_city.get("citySlug"),
+                "isSupported": current_city.get("isSupported"),
+                "status": current_city.get("status"),
+            }
+            diagnostics["supported_city_count"] = len(supported_slugs)
+            if source_status:
+                diagnostics["source_status"] = {
+                    "cityLaunchActivations": source_status.get("cityLaunchActivations"),
+                    "cityLaunchProspects": source_status.get("cityLaunchProspects"),
+                    "cityLaunchCandidateSignals": source_status.get("cityLaunchCandidateSignals"),
+                    "warnings": source_status.get("warnings"),
+                }
+            if source_unavailable:
+                blockers.append("webapp_status_route_source_unavailable")
+            if not route_supported and not blockers:
+                blockers.append("webapp_status_route_city_not_live_supported")
+        elif not blockers:
+            blockers.append("webapp_status_route_invalid_json")
+    lane_blockers = list(blockers)
+    if lane_blockers:
+        lane_blockers.extend(f"{key}={value}" for key, value in diagnostics.items())
+    return [
+        _write_lane_result(
+            lane_results_root / "city_backend.webapp-status-route.json",
+            lane_id="city_backend",
+            status="succeeded" if evidence.get("city.backend_supported") is True and not blockers else "blocked",
+            evidence=evidence,
+            blockers=lane_blockers,
+        )
+    ]
+
+
+def collect_cross_repo_proof_evidence(
+    *,
+    city_slug: str,
+    proof_files: Sequence[Path],
+    lane_results_root: Path,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for proof_file in proof_files:
+        blockers: list[str] = []
+        evidence: dict[str, Any] = {}
+        if not proof_file.is_file():
+            blockers.append(f"proof_file_missing:{proof_file}")
+        else:
+            payload = _optional_json(proof_file)
+            proof_city_slug = str(payload.get("city_slug") or "").strip()
+            if payload.get("contract_only") is True:
+                blockers.append("contract_only_proof_rejected")
+            if proof_city_slug and proof_city_slug != city_slug:
+                blockers.append(f"city_slug_mismatch:{proof_city_slug}")
+            if not blockers:
+                for field_name, *_rest in REQUIRED_LAUNCH_PROOF_FIELDS:
+                    value = get_nested(payload, field_name)
+                    if value is not None:
+                        evidence[field_name] = value
+                if not evidence:
+                    blockers.append("proof_file_contains_no_required_evidence")
+        results.append(
+            _write_lane_result(
+                lane_results_root / _lane_result_name_for_proof(proof_file),
+                lane_id="cross_repo_proof",
+                status="succeeded" if evidence and not blockers else "blocked",
+                evidence=evidence if not blockers else {},
+                blockers=blockers,
+            )
+        )
+    return results
+
+
 def collect_capture_root_evidence(*, capture_root: Path, lane_results_root: Path) -> list[dict[str, Any]]:
     pipeline_root = capture_root / "pipeline"
     descriptor = _optional_json(capture_root / "capture_descriptor.json")
@@ -509,8 +979,16 @@ def collect_capture_root_evidence(*, capture_root: Path, lane_results_root: Path
     final_walkthrough = capture_root / "privacy" / "final_walkthrough.mov"
     if not final_walkthrough.is_file():
         final_walkthrough = capture_root / "privacy" / "final_walkthrough.mp4"
-    dense_index = pipeline_root / "world_model_export" / "dense_index.jsonl"
-    site_reference = next(capture_root.glob("sites/*/reference_memory/site_reference_manifest.json"), None)
+    dense_index_candidates = [
+        capture_root / "world_model_export" / "dense_index.jsonl",
+        pipeline_root / "world_model_export" / "dense_index.jsonl",
+    ]
+    dense_index = _first_existing_path(dense_index_candidates)
+    site_reference_candidates = _capture_root_site_reference_candidates(
+        capture_root=capture_root,
+        descriptor=descriptor,
+    )
+    site_reference = _first_existing_path(site_reference_candidates)
 
     results: list[dict[str, Any]] = []
     pipeline_evidence = {
@@ -557,35 +1035,59 @@ def collect_capture_root_evidence(*, capture_root: Path, lane_results_root: Path
     )
 
     retrieval_evidence = {
-        "retrieval.dense_index_exists": dense_index.is_file(),
+        "retrieval.dense_index_exists": bool(dense_index and dense_index.is_file()),
         "retrieval.site_reference_manifest_exists": bool(site_reference and site_reference.is_file()),
     }
+    retrieval_blockers = [key for key, value in retrieval_evidence.items() if not value]
+    if not _capture_root_site_id(descriptor):
+        retrieval_blockers.append("capture_descriptor_missing_site_id_or_metadata_site_identity_site_id")
+    if not _has_privacy_safe_walkthrough(
+        capture_root=capture_root,
+        descriptor=descriptor,
+        privacy_manifest=privacy_manifest,
+    ):
+        retrieval_blockers.append("privacy_safe_walkthrough_missing_for_retrieval_index")
     results.append(
         _write_lane_result(
             lane_results_root / "site_identity_dense_export.capture-root-evidence.json",
             lane_id="site_identity_dense_export",
-            status="succeeded" if all(retrieval_evidence.values()) else "blocked",
+            status="succeeded" if not retrieval_blockers else "blocked",
             evidence=retrieval_evidence,
-            blockers=[key for key, value in retrieval_evidence.items() if not value],
+            blockers=retrieval_blockers,
         )
     )
 
     response_ids = webapp_sync.get("webapp_response_ids") if isinstance(webapp_sync.get("webapp_response_ids"), Mapping) else {}
     buyer_access = webapp_sync.get("buyer_access_check") if isinstance(webapp_sync.get("buyer_access_check"), Mapping) else {}
+    webapp_sync_valid = (
+        webapp_sync.get("status") == "succeeded"
+        and not _webapp_sync_has_placeholder(webapp_sync)
+    )
     runtime_url = str(registration.get("runtime_base_url") or health.get("runtime_base_url") or "").strip()
-    webapp_listing_id = str(response_ids.get("listing_id") or response_ids.get("attachment_id") or response_ids.get("pipeline_attachment_id") or "").strip()
+    webapp_listing_id = (
+        str(response_ids.get("listing_id") or response_ids.get("attachment_id") or response_ids.get("pipeline_attachment_id") or "").strip()
+        if webapp_sync_valid
+        else ""
+    )
     hosted_evidence = {
         "hosted_session.runtime_url": runtime_url,
         "hosted_session.webapp_listing_id": webapp_listing_id,
-        "hosted_session.buyer_access_checked": bool(buyer_access.get("buyer_access_checked")),
+        "hosted_session.buyer_access_checked": (
+            webapp_sync_valid
+            and bool(buyer_access.get("buyer_access_checked"))
+            and bool(buyer_access.get("buyer_accessible"))
+        ),
     }
+    hosted_blockers = [key for key, value in hosted_evidence.items() if not value]
+    if webapp_sync and not webapp_sync_valid:
+        hosted_blockers.append("webapp_sync_placeholder_or_not_succeeded")
     results.append(
         _write_lane_result(
             lane_results_root / "runtime_webapp_buyer_access.capture-root-evidence.json",
             lane_id="runtime_webapp_buyer_access",
             status="succeeded" if all(bool(value) for value in hosted_evidence.values()) else "blocked",
             evidence=hosted_evidence,
-            blockers=[key for key, value in hosted_evidence.items() if not value],
+            blockers=hosted_blockers,
         )
     )
     return results
@@ -625,11 +1127,21 @@ def execute_local_packets(
                 continue
             result = run_command(command)
             result["lane_id"] = packet.lane_id
+            result_path = results_dir / f"{packet.lane_id}.{command.id}.json"
+            result["result_path"] = str(result_path)
             command_results.append(result)
-            write_json(results_dir / f"{packet.lane_id}.{command.id}.json", result)
             packet_evidence["harness.local_execution.executed_command_count"] = (
                 int(packet_evidence["harness.local_execution.executed_command_count"]) + 1
             )
+            write_json(result_path, result)
+            if command.id == "release_config_validation":
+                proof.setdefault("harness", {})["release_config_validation"] = {
+                    "status": result["status"],
+                    "exit_code": result["exit_code"],
+                    "stdout_tail": result["stdout_tail"],
+                    "stderr_tail": result["stderr_tail"],
+                    "command_result_path": str(result_path),
+                }
             if result["status"] == "passed":
                 packet_evidence["harness.local_execution.passed_command_count"] = (
                     int(packet_evidence["harness.local_execution.passed_command_count"]) + 1
@@ -663,6 +1175,7 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
     pipeline_repo = Path(args.pipeline_repo).expanduser().resolve()
     capture_repo = Path(args.capture_repo).expanduser().resolve()
     webapp_repo = Path(args.webapp_repo).expanduser().resolve()
+    env_summary = load_env_files([pipeline_repo, capture_repo, webapp_repo])
     capture_paths = tuple(args.capture_path or ("iphone",))
     run_id = args.run_id or f"{utc_now_iso().replace(':', '').replace('+', 'Z')}-{uuid.uuid4().hex[:8]}"
     output_root = Path(args.output_root).expanduser().resolve()
@@ -681,6 +1194,7 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
     proof["capture_paths"] = list(capture_paths)
     proof["harness"]["run_id"] = run_id
     proof["harness"]["run_root"] = str(run_root)
+    proof["harness"]["env_files_loaded"] = env_summary
 
     packets = build_work_packets(
         pipeline_repo=pipeline_repo,
@@ -694,7 +1208,29 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
 
     applied_lane_results = apply_lane_results(proof, lane_results_root)
     command_results = execute_local_packets(packets=packets, proof=proof, run_root=run_root, args=args)
-    applied_lane_results.extend(apply_lane_results(proof, lane_results_root))
+    webapp_city_status_results = (
+        collect_webapp_city_status_evidence(
+            city_slug=args.city_slug,
+            lane_results_root=lane_results_root,
+        )
+        if getattr(args, "include_webapp_city_status", False)
+        else []
+    )
+    explicit_proof_files = [
+        Path(path).expanduser().resolve()
+        for path in (getattr(args, "proof_file", None) or [])
+        if str(path).strip()
+    ]
+    auto_proof_files = [
+        capture_repo / "ops" / "launch-readiness" / f"{args.city_slug}.launch-proof.json",
+        webapp_repo / "ops" / "launch-readiness" / f"{args.city_slug}.launch-proof.json",
+    ]
+    proof_files = list(dict.fromkeys([*explicit_proof_files, *[path for path in auto_proof_files if path.is_file()]]))
+    cross_repo_proof_results = collect_cross_repo_proof_evidence(
+        city_slug=args.city_slug,
+        proof_files=proof_files,
+        lane_results_root=lane_results_root,
+    )
     capture_root_arg = str(getattr(args, "capture_root", "") or "").strip()
     capture_root_evidence: list[dict[str, Any]] = []
     if capture_root_arg:
@@ -705,13 +1241,31 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
         applied_lane_results.extend(apply_lane_results(proof, lane_results_root))
     elif not args.execute_local:
         applied_lane_results.extend(apply_lane_results(proof, lane_results_root))
+    elif cross_repo_proof_results or webapp_city_status_results:
+        applied_lane_results.extend(apply_lane_results(proof, lane_results_root))
+    elif args.execute_local:
+        applied_lane_results.extend(apply_lane_results(proof, lane_results_root))
     blockers = build_blockers(proof)
-    status = determine_status(proof, blockers)
+    status = determine_status(proof, blockers, capture_root_evidence=capture_root_evidence)
+    gap_report_path = run_root / "launch-gap-report.json"
+    gap_report = build_launch_gap_report(
+        city_slug=args.city_slug,
+        status=status,
+        blockers=blockers,
+        packets=packets,
+        capture_root=capture_root_arg,
+        run_root=run_root,
+        work_packet_root=work_packet_root,
+        lane_results_root=lane_results_root,
+    )
     proof["launch_proof_status"] = status
     proof["harness"]["applied_lane_results"] = applied_lane_results
     proof["harness"]["command_result_count"] = len(command_results)
     proof["harness"]["capture_root_evidence_result_count"] = len(capture_root_evidence)
+    proof["harness"]["cross_repo_proof_result_count"] = len(cross_repo_proof_results)
+    proof["harness"]["webapp_city_status_result_count"] = len(webapp_city_status_results)
     proof["harness"]["work_packet_count"] = len(packets)
+    proof["harness"]["launch_gap_report"] = str(gap_report_path)
     proof["harness"]["updated_at"] = utc_now_iso()
 
     manifest = {
@@ -732,7 +1286,9 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
             "blockers": str(run_root / "blockers.jsonl"),
             "work_packets": str(work_packet_root),
             "lane_results": str(lane_results_root),
+            "launch_gap_report": str(gap_report_path),
         },
+        "env_files_loaded": env_summary,
         "first_blocker": blockers[0] if blockers else None,
     }
     summary = {
@@ -742,12 +1298,14 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
         "blocker_count": len(blockers),
         "work_packet_count": len(packets),
         "proof_path": str(proof_path),
+        "launch_gap_report": str(gap_report_path),
     }
 
     write_json(proof_path, proof)
     write_json(run_root / "manifest.json", manifest)
     write_json(run_root / "summary.json", summary)
     write_jsonl(run_root / "blockers.jsonl", blockers)
+    write_json(gap_report_path, gap_report)
     return summary
 
 
@@ -766,6 +1324,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--webapp-repo", default=str(DEFAULT_WEBAPP_REPO))
     parser.add_argument("--output-root", default=str(ROOT / "ops/city-launch-runs"))
     parser.add_argument("--capture-root", help="Optional real capture root to scan for Pipeline lane evidence.")
+    parser.add_argument("--proof-file", action="append", help="Optional real cross-repo launch proof JSON to merge.")
+    parser.add_argument(
+        "--include-webapp-city-status",
+        action="store_true",
+        help="Check the configured WebApp public launch-status route for city backend support.",
+    )
     return parser
 
 

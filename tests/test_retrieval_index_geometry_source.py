@@ -11,9 +11,9 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
-from blueprint_pipeline.materialization import materialize_capture_bundle
-from blueprint_pipeline.retrieval_index_stage import run_retrieval_index_stage
+from blueprint_pipeline.geometry_stage import build_geometry_stage_contract  # noqa: E402
+from blueprint_pipeline.materialization import materialize_capture_bundle  # noqa: E402
+from blueprint_pipeline.retrieval_index_stage import run_retrieval_index_stage  # noqa: E402
 
 
 def _build_staged_glasses_capture(tmp_path: Path, *, with_privacy_video: bool = False) -> Path:

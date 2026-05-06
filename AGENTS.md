@@ -39,6 +39,7 @@ This repo must stay aligned with:
 - Preserve raw bundle truth and downstream compatibility with other Blueprint repos.
 - Do not hardwire the company to one model family, checkpoint, or provider.
 - Keep cross-repo contracts explicit when changing bundle, runtime, or sync behavior.
+- For Paperclip/autonomous-loop closeouts, use `/Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md` before claiming `done`, `blocked`, or `awaiting_human_decision`.
 
 ## Commands
 

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from autoresearch.common import REPO_ROOT, load_target_manifest, run_pytest, validate_target_manifest
 from autoresearch.runner import (
-    DiffSummary,
     compute_candidate_diff,
     rank_candidate_records,
     validate_diff_summary,

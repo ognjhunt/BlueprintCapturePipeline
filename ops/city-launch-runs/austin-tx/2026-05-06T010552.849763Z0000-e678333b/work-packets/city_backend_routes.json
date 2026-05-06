@@ -1,0 +1,26 @@
+{
+  "allowed_paths": [
+    "/Users/nijelhunt_1/workspace/Blueprint-WebApp/server",
+    "/Users/nijelhunt_1/workspace/BlueprintCapture/scripts/validate_launch_readiness.py"
+  ],
+  "blocking_conditions": [
+    "auth token missing",
+    "city is not live-supported",
+    "feed returns no capture jobs"
+  ],
+  "commands": [],
+  "description": "Prove city support, approved jobs, capture targets, and launch route truth.",
+  "expected_artifacts": [],
+  "lane_id": "city_backend_routes",
+  "owner_agent": "city-backend-agent",
+  "proof_fields": [
+    "city.backend_supported",
+    "city.live_approved_job_count",
+    "city.live_capture_target_count",
+    "city.mock_fallback_disabled",
+    "city.internal_test_space_disabled"
+  ],
+  "repo": "Blueprint-WebApp + BlueprintCapture",
+  "requires_live_service": true,
+  "requires_physical_hardware": false
+}

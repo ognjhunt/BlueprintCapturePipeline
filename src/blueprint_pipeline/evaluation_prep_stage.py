@@ -881,7 +881,6 @@ def _canonical_world_model_payload(
     capture_orientation: Mapping[str, Any],
 ) -> Dict[str, Any]:
     pipeline_root = context.pipeline_root
-    raw_root = context.raw_root
     authoritative_runtime_render_manifest_path = pipeline_root / "presentation_world" / "authoritative_runtime_render_manifest.json"
     if authoritative_runtime_render_manifest_path.is_file():
         manifest = _read_json_object(authoritative_runtime_render_manifest_path)
@@ -3591,7 +3590,6 @@ def run_evaluation_prep_stage(
         "runtime_registration_attempted": bool(site_world_registration.get("runtime_registration_attempted")),
         "runtime_registration_status": str(site_world_registration.get("runtime_registration_status") or "unknown"),
         "runtime_registration_attempt": runtime_registration_attempt,
-        "artifact_families": site_world_spec.get("artifact_families"),
         "artifacts": {
             "qualified_opportunity_handoff": _relative_to(eval_dir, rich_handoff_path),
             "scene_memory_bundle_manifest": _relative_to(eval_dir, scene_memory_bundle_manifest_path),

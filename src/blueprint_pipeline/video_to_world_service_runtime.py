@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Mapping
 
 import numpy as np
 
-from .common import ensure_dir, ensure_local_uri_path, is_gs_uri, parse_gs_uri, resolve_gs_uri_to_path
+from .common import ensure_dir, ensure_local_uri_path, is_gs_uri, resolve_gs_uri_to_path
 
 
 def _gcs_root() -> Path:
