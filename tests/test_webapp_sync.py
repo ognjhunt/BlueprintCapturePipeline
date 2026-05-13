@@ -10,6 +10,9 @@ from blueprint_pipeline.webapp_sync import WebappSyncError, sync_webapp_pipeline
 def _minimal_payload() -> dict[str, object]:
     return {
         "site_submission_id": "site-1",
+        "request_id": "request-1",
+        "buyer_request_id": "buyer-request-1",
+        "capture_job_id": "capture-job-1",
         "scene_id": "scene-1",
         "capture_id": "capture-1",
         "pipeline_prefix": "scenes/scene-1/captures/capture-1/pipeline",
@@ -30,6 +33,8 @@ def test_sync_webapp_pipeline_attachment_skips_when_not_configured(monkeypatch) 
     assert result["reason"] == "sync_not_configured"
     assert result["attempts"] == 0
     assert result["attachment_payload"]["qualification_state"] == "qualified_ready"
+    assert result["attachment_payload"]["placeholder_fallback_allowed"] is False
+    assert result["attachment_payload"]["upstream_links_verified"] is True
 
 
 def test_sync_webapp_pipeline_attachment_raises_when_required(monkeypatch) -> None:
@@ -39,6 +44,52 @@ def test_sync_webapp_pipeline_attachment_raises_when_required(monkeypatch) -> No
 
     with pytest.raises(WebappSyncError, match="sync_not_configured"):
         sync_webapp_pipeline_attachment(**_minimal_payload())
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["site_submission_id", "request_id", "buyer_request_id", "capture_job_id"],
+)
+def test_sync_payload_requires_upstream_request_job_and_bootstrap_records(monkeypatch, field: str) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.setenv("PIPELINE_SYNC_REQUIRED", "true")
+    payload = _minimal_payload()
+    payload[field] = ""
+
+    with pytest.raises(ValueError, match=field):
+        sync_webapp_pipeline_attachment(**payload)
+
+
+def test_sync_without_upstream_links_fails_closed_when_not_configured(monkeypatch) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_REQUIRED", raising=False)
+    payload = _minimal_payload()
+    payload["capture_job_id"] = ""
+
+    result = sync_webapp_pipeline_attachment(**payload)
+
+    assert result["status"] == "failed"
+    assert result["blocker"] == "missing_upstream_pipeline_records"
+    assert result["attempts"] == 0
+    assert result["attachment_payload"]["upstream_links_verified"] is False
+    assert result["attachment_payload"]["missing_upstream_links"] == ["capture_job_id"]
+    assert result["attachment_payload"]["placeholder_fallback_allowed"] is False
+    assert result["buyer_access_check"]["blocker"] == "missing_upstream_pipeline_records"
+
+
+def test_placeholder_request_fallback_requires_explicit_internal_flag(monkeypatch) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_REQUIRED", raising=False)
+    monkeypatch.setenv("PIPELINE_SYNC_ALLOW_PLACEHOLDER_REQUESTS", "true")
+
+    result = sync_webapp_pipeline_attachment(**_minimal_payload())
+
+    assert result["status"] == "skipped"
+    assert result["attachment_payload"]["placeholder_fallback_allowed"] is True
+    assert result["attachment_payload"]["upstream_links_verified"] is True
 
 
 def test_sync_webapp_pipeline_attachment_returns_buyer_access_and_checksums(monkeypatch) -> None:

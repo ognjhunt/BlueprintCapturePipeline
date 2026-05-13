@@ -86,6 +86,25 @@ def test_autonomous_city_launch_harness_writes_packets_proof_and_blockers(tmp_pa
     assert any("capture_descriptor.json with site_id" in item for item in gap_report["expected_capture_root_shape"])
 
 
+def test_default_launch_proof_separates_repo_safe_payout_guardrails_from_live_provider_evidence() -> None:
+    proof = harness.default_proof("durham-nc", 250000, ["iphone"])
+
+    assert proof["open_capture"]["review_gated"] is True
+    assert proof["open_capture"]["paid_anywhere_claim_disabled"] is True
+    assert proof["payouts"]["provider_name"] == "stripe"
+    assert proof["payouts"]["contract_readiness_not_live_readiness"] is True
+    assert proof["payouts"]["live_payout_execution_human_gate"] is True
+    assert proof["payouts"]["live_provider_ready"] is False
+    assert proof["ops"]["human_finance_review_gate"] is True
+    assert proof["ops"]["payout_exception_monitor_repo_contract"] is True
+
+    blockers = harness.build_blockers(proof)
+    live_provider_blocker = next(
+        blocker for blocker in blockers if blocker["proof_field"] == "payouts.live_provider_ready"
+    )
+    assert live_provider_blocker["human_required"] is True
+
+
 def test_autonomous_city_launch_harness_applies_lane_result_evidence_on_resume(tmp_path: Path) -> None:
     run_harness(_args(tmp_path))
     run_root = tmp_path / "ops" / "city-launch-runs" / "durham-nc" / "test-run"
@@ -327,12 +346,21 @@ def test_capture_root_input_shape_gap_reports_external_dependency_status(tmp_pat
                     "open_capture.paid_anywhere_claim_disabled": True,
                     "payouts.backend_configured": True,
                     "payouts.stripe_state_checked": True,
+                    "payouts.provider_name": "stripe",
+                    "payouts.provider_state_checked": True,
+                    "payouts.live_provider_ready": True,
+                    "payouts.contract_readiness_not_live_readiness": True,
+                    "payouts.live_payout_execution_human_gate": True,
+                    "payouts.identity_kyc_state_documented": True,
+                    "payouts.background_check_state_documented": True,
                     "payouts.marketing_claims_require_stripe_ready": True,
                     "ops.launch_owner": "launch-ops",
                     "ops.failed_upload_monitor": True,
                     "ops.submission_registration_monitor": True,
                     "ops.push_device_sync_monitor": True,
                     "ops.bridge_pipeline_monitor": True,
+                    "ops.payout_exception_monitor_repo_contract": True,
+                    "ops.human_finance_review_gate": True,
                     "ops.payout_exception_monitor": True,
                     "ops.session_events_queryable": True,
                     "ops.cloud_logging_handoff_alert": True,

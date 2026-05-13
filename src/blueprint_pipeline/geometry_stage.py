@@ -13,7 +13,7 @@ import numpy as np
 
 from .capture_bridge import CaptureDescriptor
 from .common import PipelineError, ensure_dir, utc_now_iso, write_json
-from .launch_proof_policy import fallback_geometry_launchable_allowed
+from .geometry_da3 import run_da3_provider
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
 from .video_to_world_client import run_video_to_world_provider
 
@@ -252,13 +252,33 @@ def _build_status_payload(
     status: str,
     ready_for_world_model: bool,
     blocking_issues: List[str],
+    geometry_source: str = "pending",
+    fallback_used: bool = False,
+    fallback_kind: Optional[str] = None,
+    provider_native_result: Optional[bool] = None,
+    contract_ready_for_world_model: bool = False,
+    internal_fallback_ready: bool = False,
+    geometry_live_ready: bool = False,
+    external_market_ready: bool = False,
+    site_faithful_market_ready: bool = False,
+    launch_blockers: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     return {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "stage": "geometry",
         "status": status,
+        "geometry_source": geometry_source,
+        "fallback_used": bool(fallback_used),
+        "fallback_kind": fallback_kind,
+        "provider_native_result": provider_native_result,
         "ready_for_world_model": ready_for_world_model,
+        "contract_ready_for_world_model": bool(contract_ready_for_world_model),
+        "internal_fallback_ready": bool(internal_fallback_ready),
+        "geometry_live_ready": bool(geometry_live_ready),
+        "external_market_ready": bool(external_market_ready),
+        "site_faithful_market_ready": bool(site_faithful_market_ready),
+        "launch_blockers": list(launch_blockers or []),
         "provider": provider,
         "model": model,
         "execution_mode": execution_mode,
@@ -289,6 +309,16 @@ def _build_manifest_payload(
     alignment_manifest_path: Optional[Path] = None,
     canonical_pointcloud_path: Optional[Path] = None,
     dynamic_mask_manifest_path: Optional[Path] = None,
+    geometry_source: str = "pending",
+    fallback_used: bool = False,
+    fallback_kind: Optional[str] = None,
+    provider_native_result: Optional[bool] = None,
+    contract_ready_for_world_model: bool = False,
+    internal_fallback_ready: bool = False,
+    geometry_live_ready: bool = False,
+    external_market_ready: bool = False,
+    site_faithful_market_ready: bool = False,
+    launch_blockers: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     return {
         "schema_version": "v1",
@@ -306,6 +336,10 @@ def _build_manifest_payload(
             "name": provider,
             "model": model,
             "execution_mode": execution_mode,
+            "geometry_source": geometry_source,
+            "provider_native_result": provider_native_result,
+            "fallback_used": bool(fallback_used),
+            "fallback_kind": fallback_kind,
         },
         "artifacts": {
             "geometry_summary": _json_pointer(summary_path, context=context),
@@ -327,13 +361,31 @@ def _build_manifest_payload(
         },
         "world_model_contract": {
             "authoritative": False,
+            "raw_capture_authoritative": True,
+            "truth_label": (
+                "internal_fallback_not_site_faithful"
+                if fallback_used
+                else "video_to_world_derived_geometry"
+                if geometry_live_ready
+                else "pending_or_incomplete_geometry"
+            ),
+            "geometry_source": geometry_source,
+            "provider_native_result": provider_native_result,
+            "fallback_used": bool(fallback_used),
+            "fallback_kind": fallback_kind,
+            "ready_for_world_model": bool(geometry_live_ready),
+            "contract_ready_for_world_model": bool(contract_ready_for_world_model),
+            "internal_fallback_ready": bool(internal_fallback_ready),
+            "geometry_live_ready": bool(geometry_live_ready),
+            "external_market_ready": bool(external_market_ready),
+            "site_faithful_market_ready": bool(site_faithful_market_ready),
             "intended_use": [
                 "retrieval grounding",
                 "scene_memory conditioning",
                 "world-model API input",
                 "pose-conditioned semantic processing",
             ],
-            "blocked_until": [],
+            "blocked_until": list(launch_blockers or []),
         },
     }
 
@@ -414,12 +466,58 @@ def _build_provider_request_payload(
     }
 
 
+def _run_geometry_provider(
+    *,
+    video_path: Path,
+    video_uri: str,
+    geometry_root: Path,
+    dynamic_mask_manifest_path: Path,
+    dynamic_mask_manifest_uri: str,
+    provider: str,
+    model: str,
+    execution_mode: str,
+    video_probe: Mapping[str, Any],
+) -> Dict[str, Any]:
+    provider_key = str(provider or "").strip().lower()
+    if provider_key in {"da3", "local_da3", "depth_anything_3"}:
+        result = run_da3_provider(
+            video_path=video_path,
+            geometry_root=geometry_root,
+            video_probe=video_probe,
+            provider=provider,
+            model=model,
+            execution_mode=execution_mode,
+        )
+        metrics = dict(result.get("provider_metrics") or {})
+        if bool(metrics.get("fallback_used")):
+            result["fallback_used"] = True
+            result["fallback_kind"] = "local_da3_synthetic_depth"
+            warnings = list(result.get("provider_warnings") or [])
+            result["provider_warnings"] = list(dict.fromkeys([*warnings, "local_da3_synthetic_depth_used"]))
+        return result
+    return run_video_to_world_provider(
+        video_path=video_path,
+        video_uri=video_uri,
+        geometry_root=geometry_root,
+        dynamic_mask_manifest_path=dynamic_mask_manifest_path,
+        dynamic_mask_manifest_uri=dynamic_mask_manifest_uri,
+        provider=provider,
+        model=model,
+        execution_mode=execution_mode,
+        video_probe=video_probe,
+    )
+
+
 def _provider_result_payload(
     *,
     provider: str,
     model: str,
     execution_mode: str,
     status: str,
+    geometry_source: str,
+    provider_native_result: bool,
+    fallback_used: bool,
+    fallback_kind: Optional[str],
     frame_count: int,
     depth_count: int,
     confidence_count: int,
@@ -434,6 +532,10 @@ def _provider_result_payload(
         "provider": provider,
         "model": model,
         "execution_mode": execution_mode,
+        "geometry_source": geometry_source,
+        "provider_native_result": bool(provider_native_result),
+        "fallback_used": bool(fallback_used),
+        "fallback_kind": fallback_kind,
         "artifacts_written": [
             f"frames:{frame_count}",
             f"depth:{depth_count}",
@@ -561,6 +663,7 @@ def _build_fallback_provider_result(
         "provider_errors": [str(provider_error)],
         "loop_closure_detected": False,
         "fallback_used": True,
+        "fallback_kind": "internal_synthetic_geometry",
     }
 
 
@@ -660,7 +763,15 @@ def _patch_descriptor_with_geometry(
     descriptor: CaptureDescriptor,
     geometry_source: str,
     ready_for_world_model: bool,
+    contract_ready_for_world_model: bool,
+    internal_fallback_ready: bool,
+    geometry_live_ready: bool,
+    external_market_ready: bool,
+    site_faithful_market_ready: bool,
+    provider_native_result: bool,
     fallback_used: bool,
+    fallback_kind: Optional[str],
+    launch_blockers: List[str],
     coordinate_frame_session_id: str,
     summary_path: Path,
     manifest_path: Path,
@@ -689,6 +800,7 @@ def _patch_descriptor_with_geometry(
     reasoning = [
         f"capture_mode_site_world_candidate:{requested_mode == 'site_world_candidate'}",
         f"geometry_ready:{ready_for_world_model}",
+        f"geometry_live_ready:{geometry_live_ready}",
         f"geometry_source:{geometry_source}",
         f"fallback_used:{fallback_used}",
         f"derived_scene_generation_allowed:{derived_allowed}",
@@ -696,23 +808,47 @@ def _patch_descriptor_with_geometry(
 
     descriptor_payload["geometry_source"] = geometry_source
     descriptor_payload["geometry_ready"] = ready_for_world_model
+    descriptor_payload["geometry_live_ready"] = geometry_live_ready
     descriptor_payload["coordinate_frame_session_id"] = coordinate_frame_session_id
     descriptor_payload["world_model_candidate"] = candidate
     quality["geometry_source"] = geometry_source
     quality["geometry_ready"] = ready_for_world_model
+    quality["contract_ready_for_world_model"] = contract_ready_for_world_model
+    quality["internal_fallback_ready"] = internal_fallback_ready
+    quality["geometry_live_ready"] = geometry_live_ready
+    quality["external_market_ready"] = external_market_ready
+    quality["site_faithful_market_ready"] = site_faithful_market_ready
+    quality["provider_native_result"] = provider_native_result
+    quality["fallback_used"] = fallback_used
+    quality["fallback_kind"] = fallback_kind
     quality["world_model_candidate"] = candidate
     descriptor_payload["quality"] = quality
 
     scene_memory_capture["geometry_source"] = geometry_source
     scene_memory_capture["geometry_ready"] = ready_for_world_model
+    scene_memory_capture["contract_ready_for_world_model"] = contract_ready_for_world_model
+    scene_memory_capture["internal_fallback_ready"] = internal_fallback_ready
+    scene_memory_capture["geometry_live_ready"] = geometry_live_ready
+    scene_memory_capture["provider_native_result"] = provider_native_result
+    scene_memory_capture["fallback_used"] = fallback_used
+    scene_memory_capture["fallback_kind"] = fallback_kind
     scene_memory_capture["world_model_candidate"] = candidate
     scene_memory_capture["world_model_candidate_reasoning"] = reasoning
     metadata["scene_memory_capture"] = scene_memory_capture
 
     metadata["geometry"] = {
         "geometry_source": geometry_source,
+        "ready_for_world_model": ready_for_world_model,
         "geometry_ready": ready_for_world_model,
+        "contract_ready_for_world_model": contract_ready_for_world_model,
+        "internal_fallback_ready": internal_fallback_ready,
+        "geometry_live_ready": geometry_live_ready,
+        "external_market_ready": external_market_ready,
+        "site_faithful_market_ready": site_faithful_market_ready,
+        "provider_native_result": provider_native_result,
         "fallback_used": fallback_used,
+        "fallback_kind": fallback_kind,
+        "launch_blockers": list(launch_blockers),
         "geometry_summary_uri": _geometry_gs_uri(context=context, path=summary_path),
         "geometry_manifest_uri": _geometry_gs_uri(context=context, path=manifest_path),
         "coordinate_frame_session_id": coordinate_frame_session_id,
@@ -720,7 +856,11 @@ def _patch_descriptor_with_geometry(
     metadata["capture_mode"] = {
         "requested_mode": requested_mode,
         "resolved_mode": "site_world_candidate" if candidate else "qualification_only",
-        "downgrade_reason": None if candidate else "geometry_not_ready",
+        "downgrade_reason": None
+        if candidate
+        else "fallback_geometry_not_live_video_to_world"
+        if fallback_used
+        else "geometry_not_ready",
     }
     topology = (
         dict(metadata.get("capture_topology"))
@@ -843,9 +983,8 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
 """
     implementation_notes_path.write_text(implementation_notes, encoding="utf-8")
 
-    provider_exc: Optional[Exception] = None
     try:
-        provider_result = run_video_to_world_provider(
+        provider_result = _run_geometry_provider(
             video_path=video_path,
             video_uri=descriptor.raw_video_uri or "",
             geometry_root=geometry_root,
@@ -857,7 +996,6 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             video_probe=video_probe,
         )
     except Exception as exc:
-        provider_exc = exc
         provider_result = _build_fallback_provider_result(
             video_path=video_path,
             geometry_root=geometry_root,
@@ -868,6 +1006,16 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     frame_records = list(provider_result.get("frames") or [])
     if not frame_records:
         raise PipelineError("Geometry stage produced no frame records.")
+    provider_key = str(provider or "").strip().lower()
+    local_da3_provider = provider_key in {"da3", "local_da3", "depth_anything_3"}
+    provider_result_fallback = bool(provider_result.get("fallback_used"))
+    frame_geometry_source = (
+        "fallback_geometry"
+        if provider_result_fallback
+        else "local_da3"
+        if local_da3_provider
+        else "video_to_world"
+    )
 
     intrinsics_payload = {
         "schema_version": "v1",
@@ -918,7 +1066,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "intrinsics_present": True,
                 "pose_confidence": pose_confidence,
                 "sharpness_score": 100.0,
-                "geometry_source": "fallback_geometry" if provider_result.get("fallback_used") else "video_to_world",
+                "geometry_source": frame_geometry_source,
             }
         )
         depth_artifacts.append(
@@ -995,10 +1143,22 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     }
     write_json(trajectory_summary_path, trajectory_summary)
 
+    provider_key = str(provider or "").strip().lower()
+    local_da3_provider = provider_key in {"da3", "local_da3", "depth_anything_3"}
     fallback_used = bool(provider_result.get("fallback_used"))
-    geometry_source = "fallback_geometry" if fallback_used else "video_to_world"
-    fallback_blocks_launch = fallback_used and not fallback_geometry_launchable_allowed()
-    launch_blockers = ["fallback_geometry_not_launchable"] if fallback_used else []
+    fallback_kind = (
+        str(provider_result.get("fallback_kind") or "internal_synthetic_geometry")
+        if fallback_used
+        else None
+    )
+    geometry_source = "fallback_geometry" if fallback_used else "local_da3" if local_da3_provider else "video_to_world"
+    provider_native_result = not fallback_used
+    status_label = "completed_with_fallback" if fallback_used else "completed"
+    launch_blockers = (
+        ["fallback_geometry_not_launchable", "fallback_geometry_not_live_video_to_world"]
+        if fallback_used
+        else []
+    )
     metadata_topology = (
         descriptor.metadata.get("capture_topology")
         if isinstance(descriptor.metadata.get("capture_topology"), Mapping)
@@ -1024,7 +1184,11 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         provider=provider,
         model=model,
         execution_mode=execution_mode,
-        status="completed",
+        status="provider_failed_fallback_generated" if fallback_used else "succeeded",
+        geometry_source=geometry_source,
+        provider_native_result=provider_native_result,
+        fallback_used=fallback_used,
+        fallback_kind=fallback_kind,
         frame_count=len(frame_records),
         depth_count=len(depth_artifacts),
         confidence_count=len(confidence_artifacts),
@@ -1038,12 +1202,19 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     confidence_coverage = round(len(confidence_artifacts) / float(len(frame_records) or 1), 6)
     depth_coverage = round(len(depth_artifacts) / float(len(frame_records) or 1), 6)
     contract_ready_for_world_model = bool(pose_records and depth_artifacts and confidence_artifacts)
-    geometry_live_ready = bool(contract_ready_for_world_model and not fallback_used)
-    ready_for_world_model = bool(contract_ready_for_world_model and not fallback_blocks_launch)
-    if fallback_blocks_launch:
-        launch_blockers.append("production_fallback_geometry_disabled")
+    internal_fallback_ready = bool(contract_ready_for_world_model and fallback_used)
+    geometry_live_ready = bool(
+        contract_ready_for_world_model
+        and provider_native_result
+        and geometry_source == "video_to_world"
+    )
+    ready_for_world_model = geometry_live_ready
     if not geometry_live_ready and not fallback_used:
-        launch_blockers.append("video_to_world_geometry_incomplete")
+        launch_blockers.append(
+            "local_da3_not_live_video_to_world"
+            if local_da3_provider
+            else "video_to_world_geometry_incomplete"
+        )
     external_market_ready = bool(geometry_live_ready and not launch_blockers)
     site_faithful_market_ready = bool(
         external_market_ready
@@ -1054,12 +1225,15 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "stage": "geometry",
-        "status": "completed",
+        "status": status_label,
         "geometry_source": geometry_source,
         "canonical_frame_id": pose_records[0]["frame_id"] if pose_records else None,
         "fallback_used": fallback_used,
+        "fallback_kind": fallback_kind,
+        "provider_native_result": provider_native_result,
         "ready_for_world_model": ready_for_world_model,
         "contract_ready_for_world_model": contract_ready_for_world_model,
+        "internal_fallback_ready": internal_fallback_ready,
         "geometry_live_ready": geometry_live_ready,
         "external_market_ready": external_market_ready,
         "site_faithful_market_ready": site_faithful_market_ready,
@@ -1117,8 +1291,18 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             provider=provider,
             model=model,
             execution_mode=execution_mode,
-            status="completed",
+            status=status_label,
             ready_for_world_model=ready_for_world_model,
+            geometry_source=geometry_source,
+            fallback_used=fallback_used,
+            fallback_kind=fallback_kind,
+            provider_native_result=provider_native_result,
+            contract_ready_for_world_model=contract_ready_for_world_model,
+            internal_fallback_ready=internal_fallback_ready,
+            geometry_live_ready=geometry_live_ready,
+            external_market_ready=external_market_ready,
+            site_faithful_market_ready=site_faithful_market_ready,
+            launch_blockers=list(dict.fromkeys(launch_blockers)),
             blocking_issues=list(dict.fromkeys([*list(provider_result_payload.get("errors") or []), *launch_blockers])),
         ),
     )
@@ -1129,7 +1313,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             provider=provider,
             model=model,
             execution_mode=execution_mode,
-            status="completed",
+            status=status_label,
             summary_path=summary_path,
             status_path=status_path,
             inputs_path=inputs_path,
@@ -1146,6 +1330,16 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             alignment_manifest_path=canonical_artifacts["alignment_manifest_path"],
             canonical_pointcloud_path=canonical_artifacts["canonical_pointcloud_path"],
             dynamic_mask_manifest_path=dynamic_mask_manifest_path,
+            geometry_source=geometry_source,
+            fallback_used=fallback_used,
+            fallback_kind=fallback_kind,
+            provider_native_result=provider_native_result,
+            contract_ready_for_world_model=contract_ready_for_world_model,
+            internal_fallback_ready=internal_fallback_ready,
+            geometry_live_ready=geometry_live_ready,
+            external_market_ready=external_market_ready,
+            site_faithful_market_ready=site_faithful_market_ready,
+            launch_blockers=list(dict.fromkeys(launch_blockers)),
         ),
     )
     _patch_descriptor_with_geometry(
@@ -1153,7 +1347,15 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         descriptor=descriptor,
         geometry_source=geometry_source,
         ready_for_world_model=ready_for_world_model,
+        contract_ready_for_world_model=contract_ready_for_world_model,
+        internal_fallback_ready=internal_fallback_ready,
+        geometry_live_ready=geometry_live_ready,
+        external_market_ready=external_market_ready,
+        site_faithful_market_ready=site_faithful_market_ready,
+        provider_native_result=provider_native_result,
         fallback_used=fallback_used,
+        fallback_kind=fallback_kind,
+        launch_blockers=list(dict.fromkeys(launch_blockers)),
         coordinate_frame_session_id=coordinate_frame_session_id,
         summary_path=summary_path,
         manifest_path=manifest_path,
@@ -1164,5 +1366,5 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         manifest_path=manifest_path,
         summary_path=summary_path,
         status_path=status_path,
-        status="completed" if provider_exc is None else "completed_with_fallback",
+        status=status_label,
     )

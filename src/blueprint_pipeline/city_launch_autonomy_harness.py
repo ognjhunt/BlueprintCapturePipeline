@@ -138,12 +138,21 @@ REQUIRED_LAUNCH_PROOF_FIELDS: tuple[tuple[str, Any, str, str, bool], ...] = (
     ("open_capture.paid_anywhere_claim_disabled", True, "marketing", "paid-anywhere claim not disabled", False),
     ("payouts.backend_configured", True, "payments", "payout backend not configured", True),
     ("payouts.stripe_state_checked", True, "payments", "Stripe state not checked", True),
+    ("payouts.provider_name", "non_empty", "payments", "payout provider not named", False),
+    ("payouts.provider_state_checked", True, "payments", "payout provider state not checked", True),
+    ("payouts.live_provider_ready", True, "payments", "live payout provider readiness not proven", True),
+    ("payouts.contract_readiness_not_live_readiness", True, "payments", "mock contract readiness not separated from live provider readiness", False),
+    ("payouts.live_payout_execution_human_gate", True, "payments", "live payout execution human gate missing", False),
+    ("payouts.identity_kyc_state_documented", True, "payments", "identity/KYC state not documented", False),
+    ("payouts.background_check_state_documented", True, "payments", "background-check state not documented", False),
     ("payouts.marketing_claims_require_stripe_ready", True, "payments", "Stripe claim guardrail missing", False),
     ("ops.launch_owner", "non_empty", "ops", "launch owner missing", False),
     ("ops.failed_upload_monitor", True, "ops", "failed upload monitor missing", True),
     ("ops.submission_registration_monitor", True, "ops", "submission registration monitor missing", True),
     ("ops.push_device_sync_monitor", True, "ops", "push/device sync monitor missing", True),
     ("ops.bridge_pipeline_monitor", True, "ops", "bridge pipeline monitor missing", True),
+    ("ops.payout_exception_monitor_repo_contract", True, "ops", "repo payout exception monitor contract missing", False),
+    ("ops.human_finance_review_gate", True, "ops", "human finance review gate missing", False),
     ("ops.payout_exception_monitor", True, "ops", "payout exception monitor missing", True),
     ("ops.session_events_queryable", True, "ops", "session events query missing", True),
     ("ops.cloud_logging_handoff_alert", True, "ops", "cloud logging handoff alert missing", True),
@@ -164,9 +173,23 @@ def default_proof(city_slug: str, budget_cents: int, capture_paths: Sequence[str
         "capture": {},
         "pipeline": {},
         "meta_glasses": {},
-        "open_capture": {"payout_cents": 0},
-        "payouts": {},
-        "ops": {},
+        "open_capture": {
+            "payout_cents": 0,
+            "review_gated": True,
+            "paid_anywhere_claim_disabled": True,
+        },
+        "payouts": {
+            "provider_name": "stripe",
+            "contract_readiness_not_live_readiness": True,
+            "live_payout_execution_human_gate": True,
+            "identity_kyc_state_documented": True,
+            "background_check_state_documented": True,
+            "marketing_claims_require_stripe_ready": True,
+        },
+        "ops": {
+            "payout_exception_monitor_repo_contract": True,
+            "human_finance_review_gate": True,
+        },
         "privacy_provider": {},
         "hosted_session": {},
         "retrieval": {},
@@ -353,6 +376,13 @@ def build_work_packets(
             proof_fields=(
                 "payouts.backend_configured",
                 "payouts.stripe_state_checked",
+                "payouts.provider_name",
+                "payouts.provider_state_checked",
+                "payouts.live_provider_ready",
+                "payouts.contract_readiness_not_live_readiness",
+                "payouts.live_payout_execution_human_gate",
+                "payouts.identity_kyc_state_documented",
+                "payouts.background_check_state_documented",
                 "payouts.marketing_claims_require_stripe_ready",
                 "open_capture.review_gated",
                 "open_capture.paid_anywhere_claim_disabled",
@@ -371,6 +401,8 @@ def build_work_packets(
                 "ops.submission_registration_monitor",
                 "ops.push_device_sync_monitor",
                 "ops.bridge_pipeline_monitor",
+                "ops.payout_exception_monitor_repo_contract",
+                "ops.human_finance_review_gate",
                 "ops.payout_exception_monitor",
                 "ops.session_events_queryable",
                 "ops.cloud_logging_handoff_alert",
@@ -570,8 +602,18 @@ def _expected_evidence_for_blocker(blocker: Mapping[str, Any]) -> str:
         return "Capture root with site_id, privacy-safe walkthrough, world_model_export/dense_index.jsonl, and sites/<site_id>/reference_memory/site_reference_manifest.json."
     if field_name.startswith("hosted_session."):
         return "Hosted runtime URL, WebApp listing/attachment id, and authenticated buyer access check against a real configured route."
+    if field_name in {"payouts.provider_name", "payouts.contract_readiness_not_live_readiness"}:
+        return "Launch proof names the current payout provider and separates mocked contract readiness from live provider readiness."
+    if field_name in {"payouts.live_payout_execution_human_gate", "payouts.identity_kyc_state_documented", "payouts.background_check_state_documented"}:
+        return "Repo-safe payment/KYC/background posture is documented without claiming live payout or screening readiness."
+    if field_name in {"payouts.stripe_state_checked", "payouts.provider_state_checked", "payouts.live_provider_ready"}:
+        return "Live backend Stripe account check returns provider_state_checked=true, provider_mode=live, live_provider_ready=true, and no blocking requirements."
+    if field_name == "payouts.backend_configured":
+        return "Live backend has configured Stripe secrets/routes; this is necessary but not sufficient for payout readiness."
     if field_name.startswith("payouts."):
-        return "Stripe/payment backend state and payout guardrails checked for the live marketplace flow."
+        return "Stripe/payment backend state and payout guardrails checked for the marketplace flow without converting mocks into live proof."
+    if field_name in {"ops.payout_exception_monitor_repo_contract", "ops.human_finance_review_gate"}:
+        return "Repo evidence shows payout exception monitoring and human finance review are fail-closed contracts."
     if field_name.startswith("ops."):
         return "Launch owner plus failed-upload, submission, device sync, pipeline, payout, session-event, and cloud-log monitors."
     if field_name.startswith("meta_glasses."):

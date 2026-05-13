@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -242,11 +242,33 @@ def _ensure_geometry_for_capture(
     if capture_modality == "iphone_arkit_lidar":
         return descriptor
     geometry_summary_path = ctx.pipeline_root / "geometry" / "geometry_summary.json"
-    geometry_ready = bool(descriptor.get("geometry_ready")) or bool((descriptor.get("quality") or {}).get("geometry_ready"))
+    geometry_summary = _read_optional_json(geometry_summary_path)
+    if geometry_summary:
+        _raise_if_geometry_not_live_video_to_world(geometry_summary)
+    geometry_ready = (
+        bool(descriptor.get("geometry_ready"))
+        or bool((descriptor.get("quality") or {}).get("geometry_ready"))
+        or bool(geometry_summary.get("ready_for_world_model"))
+    )
     if geometry_summary_path.is_file() and geometry_ready:
         return descriptor
     build_geometry_stage_contract(ctx.capture_root)
+    geometry_summary = _read_optional_json(geometry_summary_path)
+    _raise_if_geometry_not_live_video_to_world(geometry_summary)
     return _load_descriptor(ctx)
+
+
+def _raise_if_geometry_not_live_video_to_world(geometry_summary: Mapping[str, Any]) -> None:
+    if not geometry_summary:
+        return
+    geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
+    fallback_used = bool(geometry_summary.get("fallback_used"))
+    geometry_live_ready = bool(geometry_summary.get("geometry_live_ready"))
+    if fallback_used or geometry_source != "video_to_world" or not geometry_live_ready:
+        reason = geometry_source or "missing"
+        if fallback_used:
+            reason = "fallback_geometry"
+        raise PipelineError(f"geometry_not_live_video_to_world:{reason}")
 
 
 def _resolve_site_id(descriptor: Dict[str, Any]) -> Optional[str]:

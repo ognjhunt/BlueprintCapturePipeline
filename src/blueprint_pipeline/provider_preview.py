@@ -163,7 +163,13 @@ Requirements:
 
 
 class PreviewProvider(Protocol):
-    def submit(self, *, descriptor: Mapping[str, Any], capture_root: Path) -> Dict[str, Any]: ...
+    def submit(
+        self,
+        *,
+        descriptor: Mapping[str, Any],
+        capture_root: Path,
+        provider_adapter_input: Mapping[str, Any] | None = None,
+    ) -> Dict[str, Any]: ...
 
     def poll(self, *, run_id: str) -> Dict[str, Any]: ...
 
@@ -179,7 +185,14 @@ class StubPreviewProvider:
     provider_name: str = "stub_preview"
     provider_model: str = "stub-v1"
 
-    def submit(self, *, descriptor: Mapping[str, Any], capture_root: Path) -> Dict[str, Any]:
+    def submit(
+        self,
+        *,
+        descriptor: Mapping[str, Any],
+        capture_root: Path,
+        provider_adapter_input: Mapping[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        del provider_adapter_input
         run_id = f"stub-{descriptor.get('capture_id')}"
         return {
             "provider_name": self.provider_name,
@@ -292,26 +305,146 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             "candidates": candidates,
         }
 
+    def _adapter_prompt_candidates(
+        self,
+        provider_adapter_input: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        conditioning = (
+            provider_adapter_input.get("conditioning_inputs")
+            if isinstance(provider_adapter_input.get("conditioning_inputs"), Mapping)
+            else {}
+        )
+        rgb_video = (
+            conditioning.get("rgb_video") if isinstance(conditioning.get("rgb_video"), Mapping) else {}
+        )
+        uri = self._string(rgb_video.get("uri"))
+        selected = (
+            {
+                "source_id": self._string(rgb_video.get("source_id"))
+                or "privacy_safe_world_model_input",
+                "uri": uri,
+                "eligible": True,
+                "reason": "canonical ProviderAdapterInput privacy-safe RGB video",
+            }
+            if uri
+            else None
+        )
+        return {
+            "privacy_status": "verified" if bool(rgb_video.get("privacy_safe")) else None,
+            "selected": selected,
+            "candidates": [selected] if selected else [],
+        }
+
     def _build_request_manifest(
         self,
         *,
         descriptor: Mapping[str, Any],
         capture_root: Path,
+        provider_adapter_input: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         del capture_root
-        video_candidates = self._world_prompt_candidates(descriptor)
+        adapter_input = (
+            dict(provider_adapter_input)
+            if isinstance(provider_adapter_input, Mapping)
+            else {}
+        )
+        adapter_status = self._string(adapter_input.get("status")).lower()
+        adapter_blockers = [
+            str(item).strip()
+            for item in (adapter_input.get("blockers") or [])
+            if str(item).strip()
+        ]
+        adapter_source = (
+            adapter_input.get("source") if isinstance(adapter_input.get("source"), Mapping) else {}
+        )
+        canonical_site_package_uri = self._string(
+            adapter_source.get("canonical_site_package_uri")
+            or adapter_input.get("canonical_site_package_uri")
+        )
+        provider_adapter_input_uri = self._string(
+            adapter_source.get("provider_adapter_input_uri")
+            or adapter_input.get("provider_adapter_input_uri")
+        )
+        if adapter_input and adapter_status == "blocked":
+            return {
+                "schema_version": "v1",
+                "provider_name": self.provider_name,
+                "provider_model": self.provider_model,
+                "scene_id": descriptor.get("scene_id"),
+                "capture_id": descriptor.get("capture_id"),
+                "site_submission_id": descriptor.get("site_submission_id"),
+                "buyer_request_id": descriptor.get("buyer_request_id"),
+                "generated_at": utc_now_iso(),
+                "status": "blocked",
+                "display_name": None,
+                "generation_source_type": None,
+                "generation_request": {},
+                "selected_video_source_id": None,
+                "selected_video_uri": None,
+                "selected_input_checksum_sha256": None,
+                "source_input_checksum_sha256": None,
+                "source_manifest_uri": None,
+                "worldlabs_input_audit_uri": None,
+                "privacy_safe_input": False,
+                "video_candidates": [],
+                "input_labeling": {},
+                "input_audit": {},
+                "fallback_inputs": {},
+                "privacy": {"status": None, "raw_allowed": False},
+                "canonical_site_package_uri": canonical_site_package_uri or None,
+                "provider_adapter_input_uri": provider_adapter_input_uri or None,
+                "adapter_input_status": adapter_status,
+                "blockers": adapter_blockers,
+            }
+
+        video_candidates = (
+            self._adapter_prompt_candidates(adapter_input)
+            if adapter_input
+            else self._world_prompt_candidates(descriptor)
+        )
         metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+        adapter_conditioning = (
+            adapter_input.get("conditioning_inputs")
+            if isinstance(adapter_input.get("conditioning_inputs"), Mapping)
+            else {}
+        )
+        adapter_rgb_video = (
+            adapter_conditioning.get("rgb_video")
+            if isinstance(adapter_conditioning.get("rgb_video"), Mapping)
+            else {}
+        )
+        adapter_generation = (
+            adapter_input.get("generation")
+            if isinstance(adapter_input.get("generation"), Mapping)
+            else {}
+        )
         input_labeling = (
-            dict(metadata.get("worldlabs_input_labeling"))
+            dict(adapter_input.get("labeling") or {})
+            if adapter_input
+            else dict(metadata.get("worldlabs_input_labeling"))
             if isinstance(metadata.get("worldlabs_input_labeling"), Mapping)
             else {}
         )
+        if adapter_input and isinstance(adapter_rgb_video.get("labeling"), Mapping):
+            input_labeling.update(dict(adapter_rgb_video.get("labeling") or {}))
         input_audit = (
-            dict(metadata.get("worldlabs_input_audit"))
+            {
+                "privacy_safe_input": bool(adapter_rgb_video.get("privacy_safe")),
+                "raw_video_bypass_used": bool(input_labeling.get("raw_video_bypass_used")),
+                "source_manifest_uri": adapter_rgb_video.get("source_manifest_uri"),
+                "output_video_uri": adapter_rgb_video.get("uri"),
+                "output_checksum_sha256": adapter_rgb_video.get("checksum_sha256"),
+                "source_checksum_sha256": adapter_rgb_video.get("source_checksum_sha256"),
+            }
+            if adapter_input
+            else dict(metadata.get("worldlabs_input_audit"))
             if isinstance(metadata.get("worldlabs_input_audit"), Mapping)
             else {}
         )
-        input_audit_uri = self._string(metadata.get("worldlabs_input_audit_uri"))
+        input_audit_uri = self._string(
+            adapter_rgb_video.get("input_audit_uri")
+            or metadata.get("worldlabs_input_audit_uri")
+        )
         scene_summary = self._string(
             metadata.get("scene_summary")
             or metadata.get("site_summary")
@@ -322,12 +455,13 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         industry = self._string(metadata.get("industry"))
         task_lane = self._string(metadata.get("task_lane") or metadata.get("task_statement"))
         display_name = self._string(
-            metadata.get("display_name")
+            adapter_generation.get("display_name")
+            or metadata.get("display_name")
             or site_name
             or descriptor.get("capture_id")
             or descriptor.get("scene_id")
         )
-        prompt_text = scene_summary or _DEFAULT_WORLDLABS_TEXT_PROMPT
+        prompt_text = self._string(adapter_generation.get("text_prompt")) or scene_summary or _DEFAULT_WORLDLABS_TEXT_PROMPT
         tags = [
             value
             for value in [
@@ -340,6 +474,12 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             ]
             if value
         ]
+        adapter_tags = [
+            str(item).strip()
+            for item in (adapter_generation.get("tags") or [])
+            if str(item).strip()
+        ]
+        tags.extend(item for item in adapter_tags if item not in tags)
         if bool(input_labeling.get("non_production")):
             tags.append("non-production-preview")
         if bool(input_labeling.get("unredacted_input")):
@@ -423,6 +563,10 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "status": video_candidates.get("privacy_status") if isinstance(video_candidates, Mapping) else None,
                 "raw_allowed": False,
             },
+            "canonical_site_package_uri": canonical_site_package_uri or None,
+            "provider_adapter_input_uri": provider_adapter_input_uri or None,
+            "adapter_input_status": adapter_status or None,
+            "blockers": adapter_blockers,
         }
 
     def _upload_video_as_media_asset(
@@ -476,13 +620,31 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             "content_type": _mime_for_extension(ext),
         }
 
-    def submit(self, *, descriptor: Mapping[str, Any], capture_root: Path) -> Dict[str, Any]:
+    def submit(
+        self,
+        *,
+        descriptor: Mapping[str, Any],
+        capture_root: Path,
+        provider_adapter_input: Mapping[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         started_at = time.time()
-        request_manifest = self._build_request_manifest(descriptor=descriptor, capture_root=capture_root)
+        request_manifest = self._build_request_manifest(
+            descriptor=descriptor,
+            capture_root=capture_root,
+            provider_adapter_input=provider_adapter_input,
+        )
         selected_video_uri = str(request_manifest.get("selected_video_uri") or "").strip()
         generation_source_type = str(request_manifest.get("generation_source_type") or "").strip()
 
         if not selected_video_uri:
+            failure_reason = "no_eligible_video"
+            if str(request_manifest.get("adapter_input_status") or "").lower() == "blocked":
+                blockers = [
+                    str(item).strip()
+                    for item in (request_manifest.get("blockers") or [])
+                    if str(item).strip()
+                ]
+                failure_reason = "provider_adapter_input_blocked:" + ",".join(blockers or ["unknown"])
             return {
                 "provider_name": self.provider_name,
                 "provider_model": self.provider_model,
@@ -491,8 +653,12 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "artifact_uris": {},
                 "cost_usd": 0.0,
                 "latency_ms": int((time.time() - started_at) * 1000),
-                "failure_reason": "no_eligible_video",
+                "failure_reason": failure_reason,
                 "worldlabs_request_manifest": request_manifest,
+                "canonical_site_package_uri": request_manifest.get("canonical_site_package_uri"),
+                "provider_adapter_input_uri": request_manifest.get("provider_adapter_input_uri"),
+                "adapter_input_status": request_manifest.get("adapter_input_status"),
+                "adapter_input_blockers": request_manifest.get("blockers") or [],
                 "raw_response": None,
             }
 
@@ -555,6 +721,10 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "source_manifest_uri": request_manifest.get("source_manifest_uri"),
                 "worldlabs_input_audit_uri": request_manifest.get("worldlabs_input_audit_uri"),
                 "privacy_safe_input": request_manifest.get("privacy_safe_input"),
+                "canonical_site_package_uri": request_manifest.get("canonical_site_package_uri"),
+                "provider_adapter_input_uri": request_manifest.get("provider_adapter_input_uri"),
+                "adapter_input_status": request_manifest.get("adapter_input_status"),
+                "adapter_input_blockers": request_manifest.get("blockers") or [],
                 "raw_response": operation,
                 "labeling": request_manifest.get("input_labeling") or {},
             }
@@ -580,6 +750,10 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "source_manifest_uri": request_manifest.get("source_manifest_uri"),
                 "worldlabs_input_audit_uri": request_manifest.get("worldlabs_input_audit_uri"),
                 "privacy_safe_input": request_manifest.get("privacy_safe_input"),
+                "canonical_site_package_uri": request_manifest.get("canonical_site_package_uri"),
+                "provider_adapter_input_uri": request_manifest.get("provider_adapter_input_uri"),
+                "adapter_input_status": request_manifest.get("adapter_input_status"),
+                "adapter_input_blockers": request_manifest.get("blockers") or [],
                 "raw_response": None,
                 "labeling": request_manifest.get("input_labeling") or {},
             }
@@ -644,6 +818,7 @@ def run_preview_provider(
     descriptor: Mapping[str, Any],
     capture_root: Path,
     pipeline_dir: Path,
+    provider_adapter_input: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     manifest_path = pipeline_dir / "preview_manifest.json"
     worldlabs_request_manifest_path = pipeline_dir / "worldlabs_request_manifest.json"
@@ -652,7 +827,14 @@ def run_preview_provider(
     provider: PreviewProvider | None = None
     try:
         provider = resolve_preview_provider(provider_name)
-        submitted = provider.submit(descriptor=descriptor, capture_root=capture_root)
+        if provider_adapter_input is not None:
+            submitted = provider.submit(
+                descriptor=descriptor,
+                capture_root=capture_root,
+                provider_adapter_input=provider_adapter_input,
+            )
+        else:
+            submitted = provider.submit(descriptor=descriptor, capture_root=capture_root)
         normalized: Dict[str, Any] = dict(provider.normalize(submitted))
 
         # Write request manifest
@@ -725,6 +907,10 @@ def run_preview_provider(
             "source_manifest_uri": normalized.get("source_manifest_uri"),
             "worldlabs_input_audit_uri": normalized.get("worldlabs_input_audit_uri"),
             "privacy_safe_input": normalized.get("privacy_safe_input"),
+            "canonical_site_package_uri": normalized.get("canonical_site_package_uri"),
+            "provider_adapter_input_uri": normalized.get("provider_adapter_input_uri"),
+            "adapter_input_status": normalized.get("adapter_input_status"),
+            "adapter_input_blockers": normalized.get("adapter_input_blockers") or [],
             "artifact_uris": normalized.get("artifact_uris") or {},
             "cost_usd": normalized.get("cost_usd"),
             "latency_ms": normalized.get("latency_ms"),

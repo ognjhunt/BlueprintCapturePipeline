@@ -49,6 +49,31 @@ def _artifact_uri_checksums(artifacts: Mapping[str, Any]) -> Dict[str, str]:
     return checksums
 
 
+def _missing_upstream_links(payload: Mapping[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for key in ("site_submission_id", "request_id", "buyer_request_id", "capture_job_id"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip():
+            missing.append(key)
+    return missing
+
+
+def _upstream_links_error(missing: list[str]) -> ValueError:
+    joined = ", ".join(missing)
+    return ValueError(
+        "missing_upstream_pipeline_records: "
+        f"{joined}. WebApp sync requires real request, buyer request, site submission, "
+        "and capture job links before projecting hosted-review or buyer-access state."
+    )
+
+
+def _placeholder_sync_allowed() -> bool:
+    return (
+        production_forces_false("PIPELINE_SYNC_ALLOW_PLACEHOLDER_REQUESTS", default=False)
+        or production_forces_false("PIPELINE_SYNC_ALLOW_PLACEHOLDER_FALLBACK", default=False)
+    )
+
+
 def _extract_webapp_response_ids(response: Mapping[str, Any]) -> Dict[str, Any]:
     keys = (
         "id",
@@ -201,7 +226,7 @@ def sync_webapp_pipeline_attachment(
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
     sync_token = _string_env("PIPELINE_SYNC_TOKEN")
     sync_required = production_forces_true("PIPELINE_SYNC_REQUIRED", default=False)
-    placeholder_sync_allowed = production_forces_false("PIPELINE_SYNC_ALLOW_PLACEHOLDER_FALLBACK", default=True)
+    placeholder_sync_allowed = _placeholder_sync_allowed()
     max_attempts = max(1, _int_env("PIPELINE_SYNC_MAX_ATTEMPTS", 3))
     retry_delay_ms = max(0, _int_env("PIPELINE_SYNC_RETRY_DELAY_MS", 500))
     payload = build_webapp_pipeline_attachment_payload(
@@ -221,6 +246,33 @@ def sync_webapp_pipeline_attachment(
     )
     payload["artifact_uri_checksums"] = _artifact_uri_checksums(payload.get("artifacts") or {})
     payload["placeholder_fallback_allowed"] = bool(placeholder_sync_allowed)
+    missing_upstream_links = _missing_upstream_links(payload)
+    payload["upstream_links_verified"] = not bool(missing_upstream_links)
+    payload["missing_upstream_links"] = missing_upstream_links
+    if missing_upstream_links and (sync_required or bool(sync_url) or bool(sync_token)):
+        raise _upstream_links_error(missing_upstream_links)
+    if missing_upstream_links:
+        error = _upstream_links_error(missing_upstream_links)
+        return {
+            "status": "failed",
+            "reason": str(error),
+            "blocker": "missing_upstream_pipeline_records",
+            "attempts": 0,
+            "attachment_payload": payload,
+            "artifact_uri_checksums": payload["artifact_uri_checksums"],
+            "webapp_response_ids": {},
+            "buyer_access_check": {
+                "status": "blocked",
+                "buyer_access_checked": False,
+                "reason": "missing_upstream_pipeline_records",
+                "blocker": "missing_upstream_pipeline_records",
+            },
+            "deployment_readiness": (
+                {str(key): value for key, value in deployment_readiness.items()}
+                if isinstance(deployment_readiness, Mapping)
+                else None
+            ),
+        }
     if not sync_url or not sync_token:
         result = {
             "status": "failed" if sync_required else "skipped",

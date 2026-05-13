@@ -60,7 +60,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pipeline-lane",
         default="qualification",
-        choices=("qualification", "scene_memory"),
+        choices=(
+            "qualification",
+            "scene_memory",
+            "retrieval_index",
+            "frame_alignment",
+            "evaluation_prep",
+            "synthesis_coverage_validation",
+            "cosmos_single_capture_smoke",
+            "all",
+        ),
         help="Pipeline lane to request when --run-qualification is set",
     )
     parser.add_argument("--json-output", help="Optional path to write the full result payload as JSON")

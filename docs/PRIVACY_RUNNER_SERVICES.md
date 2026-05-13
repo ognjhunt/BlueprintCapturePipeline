@@ -107,6 +107,11 @@ Supported presets:
 - `full_fast`
 - `full_extensive`
 
+The normalized geometry contract treats this service boundary as the live proof
+path. If local development falls back to synthetic geometry or local DA3 helper
+outputs, the geometry artifacts must remain labeled fallback/internal and must not
+set `ready_for_world_model`, `geometry_live_ready`, or site-faithful launch flags.
+
 If `VIDEO_TO_WORLD_COMMAND_TEMPLATE` is set, it overrides the preset. Template substitutions:
 
 - `{INPUT_VIDEO}`

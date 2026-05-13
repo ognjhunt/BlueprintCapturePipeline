@@ -1,0 +1,232 @@
+{
+  "schema_version": "v1",
+  "generated_at": "2026-05-07T01:07:04.425312+00:00",
+  "repos": {
+    "BlueprintCapture": "/Users/nijelhunt_1/workspace/BlueprintCapture",
+    "BlueprintCapturePipeline": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+    "Blueprint-WebApp": "/Users/nijelhunt_1/workspace/Blueprint-WebApp"
+  },
+  "automated_checks": [
+    {
+      "id": "webapp_request_sync_contracts",
+      "label": "WebApp request, publication, inventory, and sync contracts",
+      "repo": "Blueprint-WebApp",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "server/tests/inbound-request.test.ts",
+        "server/tests/admin-capture-job-publication.test.ts",
+        "server/tests/marketplace-live-inventory.test.ts",
+        "server/tests/pipeline-routes.test.ts",
+        "server/tests/creator-mobile-parity.test.ts",
+        "server/tests/stripe-native-parity.test.ts",
+        "server/tests/stripe-treasury-funding.test.ts"
+      ],
+      "cwd": "/Users/nijelhunt_1/workspace/Blueprint-WebApp",
+      "status": "passed",
+      "blocking": true,
+      "source_tags": [
+        "iphone",
+        "glasses",
+        "android"
+      ],
+      "exit_code": 0,
+      "stdout_tail": "RUN  v3.1.4 /Users/nijelhunt_1/workspace/Blueprint-WebApp\n \u2713 server/tests/marketplace-live-inventory.test.ts (1 test) 803ms\n   \u2713 marketplace live inventory fallback > prefers published Firestore inventory over the static catalog when available  801ms\n \u2713 server/tests/stripe-treasury-funding.test.ts (4 tests) 574ms\n   \u2713 stripe treasury funding > blocks instant payouts when Stripe still has verification requirements  405ms\n \u2713 server/tests/creator-mobile-parity.test.ts (2 tests) 1307ms\n   \u2713 creator mobile parity routes > stores the current notification device registration  1251ms\nstdout | server/tests/stripe-native-parity.test.ts > stripe native parity routes > returns Stripe verification requirements for native payout readiness\nFirebase Admin SDK initialized successfully.\n \u2713 server/tests/stripe-native-parity.test.ts (4 tests) 1983ms\n   \u2713 stripe native parity routes > returns Stripe verification requirements for native payout readiness  1936ms\n[2026-05-06 21:06:01.847 -0400] \u001b[33mWARN\u001b[39m: \u001b[36mFirebase Admin SDK not initialized; saved inbound request to dev fallback log\u001b[39m\n    \u001b[35mservice\u001b[39m: \"blueprint-webapp\"\n    \u001b[35mversion\u001b[39m: \"1.0.0\"\n    \u001b[35menv\u001b[39m: \"development\"\n    \u001b[35mrequestId\u001b[39m: \"dev-1778115961786\"\n    \u001b[35mlogPath\u001b[39m: \"/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/blueprint-dev-inbound-requests.jsonl\"\n \u2713 server/tests/admin-capture-job-publication.test.ts (2 tests) 6049ms\n   \u2713 admin capture job publication > rejects marketplace publication when a request has no valid coordinates  6013ms\n \u2713 server/tests/pipeline-routes.test.ts (11 tests) 5630ms\n   \u2713 pipeline integration routes > upserts pipeline attachment metadata on the internal route  1322ms\n   \u2713 pipeline integration routes > returns a validated scene dashboard for an attached request  4123ms\n{\"level\":40,\"time\":\"2026-05-07T01:06:02.407Z\",\"service\":\"blueprint-webapp\",\"version\":\"1.0.0\",\"env\":\"production\",\"msg\":\"Redis rate limit client unavailable; using local inbound rate limit fallback\"}\n{\"level\":40,\"time\":\"2026-05-07T01:06:02.408Z\",\"service\":\"blueprint-webapp\",\"version\":\"1.0.0\",\"env\":\"production\",\"msg\":\"Redis rate limit client unavailable; using local inbound rate limit fallback\"}\n{\"level\":50,\"time\":\"2026-05-07T01:06:02.408Z\",\"service\":\"blueprint-webapp\",\"version\":\"1.0.0\",\"env\":\"production\",\"msg\":\"Firebase Admin SDK not initialized\"}\n[2026-05-06 21:06:02.837 -0400] \u001b[33mWARN\u001b[39m: \u001b[36mFirebase Admin SDK not initialized; saved inbound request to dev fallback log\u001b[39m\n    \u001b[35mservice\u001b[39m: \"blueprint-webapp\"\n    \u001b[35mversion\u001b[39m: \"1.0.0\"\n    \u001b[35menv\u001b[39m: \"development\"\n    \u001b[35mrequestId\u001b[39m: \"robot-1778115962833\"\n    \u001b[35mlogPath\u001b[39m: \"/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/blueprint-dev-inbound-requests.jsonl\"\n[2026-05-06 21:06:03.102 -0400] \u001b[33mWARN\u001b[39m: \u001b[36mFirebase Admin SDK not initialized; saved inbound request to dev fallback log\u001b[39m\n    \u001b[35mservice\u001b[39m: \"blueprint-webapp\"\n    \u001b[35mversion\u001b[39m: \"1.0.0\"\n    \u001b[35menv\u001b[39m: \"development\"\n    \u001b[35mrequestId\u001b[39m: \"robot-proof-ready-1778115963099\"\n    \u001b[35mlogPath\u001b[39m: \"/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/blueprint-dev-inbound-requests.jsonl\"\n[2026-05-06 21:06:03.433 -0400] \u001b[33mWARN\u001b[39m: \u001b[36mFirebase Admin SDK not initialized; saved inbound request to dev fallback log\u001b[39m\n    \u001b[35mservice\u001b[39m: \"blueprint-webapp\"\n    \u001b[35mversion\u001b[39m: \"1.0.0\"\n    \u001b[35menv\u001b[39m: \"development\"\n    \u001b[35mrequestId\u001b[39m: \"operator-rights-1778115963429\"\n    \u001b[35mlogPath\u001b[39m: \"/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/blueprint-dev-inbound-requests.jsonl\"\n \u2713 server/tests/inbound-request.test.ts (6 tests) 7429ms\n   \u2713 inbound request route > uses the dev fallback when Firebase Admin is unavailable outside production  5590ms\n   \u2713 inbound request route > still fails in production when Firebase Admin is unavailable  531ms\n   \u2713 inbound request route > accepts robot-team proof-path intake without a named site when site type is provided  427ms\n   \u2713 inbound request route > marks operator rights and privacy boundaries as requiring a calendar checkpoint before movement  328ms\n Test Files  7 passed (7)\n      Tests  30 passed (30)\n   Start at  21:05:52\n   Duration  10.81s (transform 4.20s, setup 4.36s, collect 5.29s, tests 23.78s, environment 24ms, prepare 3.75s)",
+      "stderr_tail": "",
+      "skip_reason": null
+    },
+    {
+      "id": "webapp_creator_payout_contracts",
+      "label": "WebApp creator payout-state transition contract",
+      "repo": "Blueprint-WebApp",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "server/tests/creator-payout-launch-gate.test.ts"
+      ],
+      "cwd": "/Users/nijelhunt_1/workspace/Blueprint-WebApp",
+      "status": "passed",
+      "blocking": true,
+      "source_tags": [
+        "iphone",
+        "glasses",
+        "android"
+      ],
+      "exit_code": 0,
+      "stdout_tail": "RUN  v3.1.4 /Users/nijelhunt_1/workspace/Blueprint-WebApp\n \u2713 server/tests/creator-payout-launch-gate.test.ts (1 test) 379ms\n   \u2713 creator payout launch gate > moves a capture from upload through approved payout-pending into paid ledger state  378ms\n Test Files  1 passed (1)\n      Tests  1 passed (1)\n   Start at  21:06:04\n   Duration  1.83s (transform 353ms, setup 192ms, collect 155ms, tests 379ms, environment 0ms, prepare 261ms)",
+      "stderr_tail": "",
+      "skip_reason": null
+    },
+    {
+      "id": "webapp_marketplace_fulfillment_contracts",
+      "label": "WebApp marketplace fulfillment checkout contract",
+      "repo": "Blueprint-WebApp",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "server/tests/marketplace-checkout-fulfillment.test.ts"
+      ],
+      "cwd": "/Users/nijelhunt_1/workspace/Blueprint-WebApp",
+      "status": "passed",
+      "blocking": true,
+      "source_tags": [
+        "iphone",
+        "glasses",
+        "android"
+      ],
+      "exit_code": 0,
+      "stdout_tail": "RUN  v3.1.4 /Users/nijelhunt_1/workspace/Blueprint-WebApp\nstdout | server/tests/marketplace-checkout-fulfillment.test.ts\nFirebase Admin SDK initialized successfully.\n \u2713 server/tests/marketplace-checkout-fulfillment.test.ts (1 test) 5ms\n Test Files  1 passed (1)\n      Tests  1 passed (1)\n   Start at  21:06:07\n   Duration  1.99s (transform 288ms, setup 168ms, collect 749ms, tests 5ms, environment 0ms, prepare 191ms)",
+      "stderr_tail": "",
+      "skip_reason": null
+    },
+    {
+      "id": "capture_bridge_contracts",
+      "label": "Capture cloud bridge source contracts",
+      "repo": "BlueprintCapture",
+      "command": [
+        "npm",
+        "test"
+      ],
+      "cwd": "/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames",
+      "status": "passed",
+      "blocking": true,
+      "source_tags": [
+        "iphone",
+        "glasses",
+        "android"
+      ],
+      "exit_code": 0,
+      "stdout_tail": "ok 18 - deriveRequestedRouting preserves outputs and expands preview simulation lane\n  ---\n  duration_ms: 0.250458\n  type: 'test'\n  ...\n# Subtest: buildTaskSiteContext lifts task and site metadata from manifest\nok 19 - buildTaskSiteContext lifts task and site metadata from manifest\n  ---\n  duration_ms: 0.235542\n  type: 'test'\n  ...\n# Subtest: buildWorldlabsPreviewFields reserves worldlabs uris when preview is requested\nok 20 - buildWorldlabsPreviewFields reserves worldlabs uris when preview is requested\n  ---\n  duration_ms: 0.539583\n  type: 'test'\n  ...\n# Subtest: mergeManifestWithSidecars lifts Android sidecar metadata into manifest shape\nok 21 - mergeManifestWithSidecars lifts Android sidecar metadata into manifest shape\n  ---\n  duration_ms: 0.5995\n  type: 'test'\n  ...\n# Subtest: canonicalWorldModelCandidate defers non-ARKit world model promotion until geometry stage\nok 22 - canonicalWorldModelCandidate defers non-ARKit world model promotion until geometry stage\n  ---\n  duration_ms: 0.244083\n  type: 'test'\n  ...\n# Subtest: parseStrictJsonLines rejects malformed JSONL\nok 23 - parseStrictJsonLines rejects malformed JSONL\n  ---\n  duration_ms: 1.64425\n  type: 'test'\n  ...\n# Subtest: validateRawCaptureBundleV3 accepts a coherent canonical bundle\nok 24 - validateRawCaptureBundleV3 accepts a coherent canonical bundle\n  ---\n  duration_ms: 3.907209\n  type: 'test'\n  ...\n# Subtest: validateRawCaptureBundleV3 rejects coordinate frame mismatches and missing references\nok 25 - validateRawCaptureBundleV3 rejects coordinate frame mismatches and missing references\n  ---\n  duration_ms: 0.682167\n  type: 'test'\n  ...\n# Subtest: validateRawCaptureBundleV3 rejects missing canonical V3 files\nok 26 - validateRawCaptureBundleV3 rejects missing canonical V3 files\n  ---\n  duration_ms: 3.191125\n  type: 'test'\n  ...\n# Subtest: validateRawCaptureBundleV3 rejects malformed motion.jsonl rows\nok 27 - validateRawCaptureBundleV3 rejects malformed motion.jsonl rows\n  ---\n  duration_ms: 0.571541\n  type: 'test'\n  ...\n# Subtest: validateRawCaptureBundleV3 rejects motion attitude with missing sub-fields\nok 28 - validateRawCaptureBundleV3 rejects motion attitude with missing sub-fields\n  ---\n  duration_ms: 1.202292\n  type: 'test'\n  ...\n# Subtest: validateRawCaptureBundleV3 rejects malformed semantic_anchor_observations rows\nok 29 - validateRawCaptureBundleV3 rejects malformed semantic_anchor_observations rows\n  ---\n  duration_ms: 0.269334\n  type: 'test'\n  ...\n1..29\n# tests 29\n# suites 0\n# pass 29\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 646.369333",
+      "stderr_tail": "",
+      "skip_reason": null
+    },
+    {
+      "id": "pipeline_launch_gate",
+      "label": "Pipeline source-specific launch gate and sync artifacts",
+      "repo": "BlueprintCapturePipeline",
+      "command": [
+        "pytest",
+        "tests/test_webapp_sync.py",
+        "tests/test_qualification_alpha.py",
+        "tests/test_alpha_readiness.py",
+        "tests/test_run_e2e.py"
+      ],
+      "cwd": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+      "status": "passed",
+      "blocking": true,
+      "source_tags": [
+        "iphone",
+        "glasses",
+        "android"
+      ],
+      "exit_code": 0,
+      "stdout_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.13.5, pytest-9.0.2, pluggy-1.6.0 -- /opt/homebrew/opt/python@3.13/bin/python3.13\ncachedir: .pytest_cache\nrootdir: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline\nconfigfile: pyproject.toml\nplugins: anyio-4.12.1\ncollecting ... collected 20 items\ntests/test_webapp_sync.py::test_sync_webapp_pipeline_attachment_skips_when_not_configured PASSED [  5%]\ntests/test_webapp_sync.py::test_sync_webapp_pipeline_attachment_raises_when_required PASSED [ 10%]\ntests/test_webapp_sync.py::test_sync_webapp_pipeline_attachment_returns_buyer_access_and_checksums PASSED [ 15%]\ntests/test_webapp_sync.py::test_production_sync_is_required_and_disables_placeholder_fallback PASSED [ 20%]\ntests/test_qualification_alpha.py::test_qualification_completes_without_downstream_artifacts PASSED [ 25%]\ntests/test_qualification_alpha.py::test_qualification_completes_when_preview_provider_fails PASSED [ 30%]\ntests/test_qualification_alpha.py::test_qualification_persists_worldlabs_manifest_uris_when_preview_requested PASSED [ 35%]\ntests/test_qualification_alpha.py::test_qualification_fail_closed_omits_buyer_safe_media PASSED [ 40%]\ntests/test_qualification_alpha.py::test_qualification_allows_labeled_raw_worldlabs_bypass PASSED [ 45%]\ntests/test_qualification_alpha.py::test_qualification_ingests_geometry_summary_as_advisory PASSED [ 50%]\ntests/test_qualification_alpha.py::test_resolve_requested_lanes_demotes_bridge_default_scene_memory PASSED [ 55%]\ntests/test_qualification_alpha.py::test_bad_video_review_forces_recapture_and_lower_world_model_fit PASSED [ 60%]\ntests/test_alpha_readiness.py::test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep PASSED [ 65%]\ntests/test_alpha_readiness.py::test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready PASSED [ 70%]\ntests/test_alpha_readiness.py::test_iphone_video_only_alpha_readiness_rejects_fallback_geometry PASSED [ 75%]\ntests/test_alpha_readiness.py::test_iphone_alpha_readiness_is_no_go_when_runtime_url_missing PASSED [ 80%]\ntests/test_alpha_readiness.py::test_meta_glasses_alpha_readiness_is_internal_until_operator_evidence PASSED [ 85%]\ntests/test_alpha_readiness.py::test_android_alpha_readiness_is_internal_until_operator_evidence PASSED [ 90%]\ntests/test_run_e2e.py::test_run_e2e_keeps_agent_review_and_evaluation_prep PASSED [ 95%]\ntests/test_run_e2e.py::test_run_e2e_supports_full_lane_and_optional_cosmos_validation PASSED [100%]\n============================= 20 passed in 40.74s ==============================",
+      "stderr_tail": "",
+      "skip_reason": null
+    },
+    {
+      "id": "android_bundle_contracts",
+      "label": "Android bundle contract",
+      "repo": "BlueprintCapture",
+      "command": [
+        "./gradlew",
+        "app:testDebugUnitTest",
+        "--tests",
+        "app.blueprint.capture.data.capture.AndroidCaptureBundleBuilderTest",
+        "--tests",
+        "app.blueprint.capture.data.config.LocalConfigTest"
+      ],
+      "cwd": "/Users/nijelhunt_1/workspace/BlueprintCapture/android",
+      "status": "passed",
+      "blocking": true,
+      "source_tags": [
+        "android"
+      ],
+      "exit_code": 0,
+      "stdout_tail": "> Task :app:preBuild UP-TO-DATE\n> Task :app:preDebugBuild UP-TO-DATE\n> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED\n> Task :app:generateDebugBuildConfig UP-TO-DATE\n> Task :app:checkDebugAarMetadata UP-TO-DATE\n> Task :app:generateDebugResValues UP-TO-DATE\n> Task :app:processDebugGoogleServices UP-TO-DATE\n> Task :app:mapDebugSourceSetPaths UP-TO-DATE\n> Task :app:generateDebugResources UP-TO-DATE\n> Task :app:mergeDebugResources UP-TO-DATE\n> Task :app:packageDebugResources UP-TO-DATE\n> Task :app:parseDebugLocalResources UP-TO-DATE\n> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE\n> Task :app:extractDeepLinksDebug UP-TO-DATE\n> Task :app:processDebugMainManifest UP-TO-DATE\n> Task :app:processDebugManifest UP-TO-DATE\n> Task :app:processDebugManifestForPackage UP-TO-DATE\n> Task :app:processDebugResources UP-TO-DATE\n> Task :app:kspDebugKotlin UP-TO-DATE\n> Task :app:compileDebugKotlin UP-TO-DATE\n> Task :app:javaPreCompileDebug UP-TO-DATE\n> Task :app:compileDebugJavaWithJavac UP-TO-DATE\n> Task :app:hiltAggregateDepsDebug UP-TO-DATE\n> Task :app:hiltJavaCompileDebug UP-TO-DATE\n> Task :app:transformDebugClassesWithAsm UP-TO-DATE\n> Task :app:bundleDebugClassesToRuntimeJar UP-TO-DATE\n> Task :app:mergeDebugShaders UP-TO-DATE\n> Task :app:compileDebugShaders NO-SOURCE\n> Task :app:generateDebugAssets UP-TO-DATE\n> Task :app:mergeDebugAssets UP-TO-DATE\n> Task :app:preDebugUnitTestBuild UP-TO-DATE\n> Task :app:packageDebugUnitTestForUnitTest UP-TO-DATE\n> Task :app:generateDebugUnitTestConfig UP-TO-DATE\n> Task :app:processDebugJavaRes UP-TO-DATE\n> Task :app:bundleDebugClassesToCompileJar UP-TO-DATE\n> Task :app:kspDebugUnitTestKotlin UP-TO-DATE\n> Task :app:compileDebugUnitTestKotlin UP-TO-DATE\n> Task :app:javaPreCompileDebugUnitTest UP-TO-DATE\n> Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE\n> Task :app:hiltAggregateDepsDebugUnitTest UP-TO-DATE\n> Task :app:hiltJavaCompileDebugUnitTest NO-SOURCE\n> Task :app:processDebugUnitTestJavaRes UP-TO-DATE\n> Task :app:transformDebugUnitTestClassesWithAsm UP-TO-DATE\n> Task :app:testDebugUnitTest\nBUILD SUCCESSFUL in 7s\n36 actionable tasks: 1 executed, 35 up-to-date",
+      "stderr_tail": "",
+      "skip_reason": null
+    }
+  ],
+  "source_status": [
+    {
+      "source": "iPhone",
+      "status": "external_beta_contract_ready_manual_device_confirmation_required",
+      "automated_claim": "External beta contract-ready path only when request, bridge, and pipeline suites all pass."
+    },
+    {
+      "source": "glasses",
+      "status": "internal_only_contract_ready_manual_device_confirmation_required",
+      "automated_claim": "Internal-only contract-ready; external site-faithful claims remain blocked."
+    },
+    {
+      "source": "Android",
+      "status": "internal_only_contract_ready",
+      "automated_claim": "Internal-only contract-ready; external site-faithful claims remain blocked."
+    }
+  ],
+  "manual_checks": [
+    {
+      "id": "iphone_real_device_claim_flow",
+      "required_evidence": "Screen recording showing discovery, reservation, upload completion, and the same capture_job_id on iPhone."
+    },
+    {
+      "id": "glasses_real_device_claim_flow",
+      "required_evidence": "Screen recording showing discovery, reservation, upload completion, and the same capture_job_id on glasses."
+    },
+    {
+      "id": "android_real_device_claim_flow",
+      "required_evidence": "Screen recording showing discovery, reservation, upload completion, and the same capture_job_id on Android."
+    },
+    {
+      "id": "buyer_payment_settlement",
+      "required_evidence": "Stripe checkout or payment-intent evidence for a live marketplace purchase."
+    },
+    {
+      "id": "capturer_payout_settlement",
+      "required_evidence": "Live Stripe connected account state, live payout evidence, webhook reconciliation, and matching creator capture ledger entry for the approved capture."
+    },
+    {
+      "id": "stripe_connected_account_live_readiness",
+      "required_evidence": "Backend /v1/stripe/account response showing provider_state_checked=true, provider_mode=live, live_provider_ready=true, payouts_enabled=true, and no blocking requirements."
+    },
+    {
+      "id": "payout_exception_monitor_live",
+      "required_evidence": "Live monitor or query evidence for payout.failed, payout.canceled, disbursement_failed, and overdue finance_review records."
+    },
+    {
+      "id": "identity_kyc_provider_decision",
+      "required_evidence": "Document whether Stripe Connect onboarding alone is the near-term KYC path or whether Persona/Stripe Identity is being added, with required env/account IDs."
+    },
+    {
+      "id": "background_check_provider_decision",
+      "required_evidence": "Document that no Checkr/background-check provider is integrated yet, or provide provider account/env proof before making screening claims."
+    },
+    {
+      "id": "human_finance_review_owner",
+      "required_evidence": "Named human finance owner and review queue/route for payout exceptions before any live payout execution flag is enabled."
+    },
+    {
+      "id": "buyer_artifact_access",
+      "required_evidence": "Authenticated buyer session proving artifact or fulfillment access after purchase."
+    }
+  ],
+  "launch_claims": {
+    "justified": [
+      "Inbound request intake, marketplace publication, pipeline sync, checkout fulfillment metadata, and creator payout transitions are covered at contract level.",
+      "Qualification remains authoritative and privacy-safe buyer media plus launchable export packaging are required before buyer-facing readiness is declared.",
+      "iPhone is externally marketable only at contract level; glasses and Android remain internal-only for site-faithful launch claims.",
+      "Repo-safe payout claim guardrails distinguish mocked contract coverage from live Stripe/provider readiness."
+    ],
+    "not_justified": [
+      "Do not claim live buyer payments or live capturer payouts are proven until the operator checklist is completed.",
+      "Do not claim Stripe, identity/KYC, background-check, instant-pay, or payout-timing readiness from backend URL, publishable key, or mocked tests.",
+      "Do not claim real-device production discovery and claim UX is proven until the operator checklist is completed.",
+      "Do not market glasses or Android as externally site-faithful world-model paths yet."
+    ]
+  },
+  "overall_status": "automated_contracts_passed_manual_ops_required"
+}

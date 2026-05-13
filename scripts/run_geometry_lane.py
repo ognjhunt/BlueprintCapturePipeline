@@ -22,10 +22,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description="Create a pipeline/geometry contract under a local staged capture."
     )
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
-    parser.add_argument("--provider", default="da3", help="Geometry provider label")
+    parser.add_argument("--provider", default="video_to_world", help="Geometry provider label")
     parser.add_argument(
         "--model",
-        default="DA3Nested-Giant-Large-1.1",
+        default="video_to_world-default",
         help="Provider model identifier",
     )
     parser.add_argument(

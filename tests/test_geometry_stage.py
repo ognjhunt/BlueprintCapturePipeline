@@ -203,16 +203,37 @@ def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_pa
     provider_result = json.loads(
         (capture_root / "pipeline" / "geometry" / "logs" / "provider_result.json").read_text(encoding="utf-8")
     )
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
 
     assert result.status == "completed_with_fallback"
-    assert manifest["status"] == "completed"
-    assert summary["status"] == "completed"
+    assert manifest["status"] == "completed_with_fallback"
+    assert summary["status"] == "completed_with_fallback"
     assert summary["fallback_used"] is True
+    assert summary["fallback_kind"] == "internal_synthetic_geometry"
     assert summary["geometry_source"] == "fallback_geometry"
-    assert status["status"] == "completed"
-    assert status["ready_for_world_model"] is True
-    assert provider_result["status"] == "completed"
+    assert summary["ready_for_world_model"] is False
+    assert summary["contract_ready_for_world_model"] is True
+    assert summary["internal_fallback_ready"] is True
+    assert summary["geometry_live_ready"] is False
+    assert summary["site_faithful_market_ready"] is False
+    assert "fallback_geometry_not_live_video_to_world" in summary["launch_blockers"]
+    assert status["status"] == "completed_with_fallback"
+    assert status["geometry_source"] == "fallback_geometry"
+    assert status["fallback_used"] is True
+    assert status["ready_for_world_model"] is False
+    assert status["geometry_live_ready"] is False
+    assert manifest["provider"]["fallback_used"] is True
+    assert manifest["provider"]["provider_native_result"] is False
+    assert manifest["world_model_contract"]["truth_label"] == "internal_fallback_not_site_faithful"
+    assert provider_result["status"] == "provider_failed_fallback_generated"
     assert "boom" in provider_result["errors"]
+    assert descriptor["geometry_ready"] is False
+    assert descriptor["quality"]["geometry_ready"] is False
+    assert descriptor["quality"]["geometry_live_ready"] is False
+    assert descriptor["quality"]["fallback_used"] is True
+    assert descriptor["world_model_candidate"] is False
+    assert descriptor["metadata"]["geometry"]["ready_for_world_model"] is False
+    assert descriptor["metadata"]["geometry"]["internal_fallback_ready"] is True
 
 
 def test_production_fallback_geometry_cannot_mark_launch_ready(monkeypatch, tmp_path: Path) -> None:

@@ -6,7 +6,9 @@ from pathlib import Path
 import numpy as np
 
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
+from blueprint_pipeline.alpha_readiness import build_alpha_readiness_summary
 from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
+from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
 
 
@@ -539,6 +541,36 @@ def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypa
     assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
     assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
     assert sync_calls[1]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
+
+
+def test_iphone_video_only_alpha_readiness_rejects_fallback_geometry(monkeypatch, tmp_path: Path) -> None:
+    capture_root, _descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="iphone",
+        capture_modality="iphone_video_only",
+        include_arkit=False,
+    )
+    _set_alpha_env(monkeypatch, tmp_path, include_runtime=True, include_video_to_world=True)
+
+    def _failing_provider(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("video_to_world_down")
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _failing_provider)
+    build_geometry_stage_contract(capture_root)
+
+    alpha_summary = build_alpha_readiness_summary(capture_root=capture_root)
+    geometry_checks = {
+        item["name"]: item
+        for item in alpha_summary["path_checks"]
+        if str(item.get("name") or "").startswith("geometry_")
+    }
+
+    assert alpha_summary["profile"] == "iphone_video_only"
+    assert alpha_summary["verdicts"]["external_alpha"]["status"] == "no_go"
+    assert geometry_checks["geometry_ready_for_world_model"]["passed"] is False
+    assert geometry_checks["geometry_uses_real_video_to_world"]["passed"] is False
+    assert alpha_summary["runtime_capability"]["geometry_ready"] is False
+    assert "geometry_not_ready" in alpha_summary["runtime_capability"]["blockers"]
 
 
 def test_iphone_alpha_readiness_is_no_go_when_runtime_url_missing(monkeypatch, tmp_path: Path) -> None:

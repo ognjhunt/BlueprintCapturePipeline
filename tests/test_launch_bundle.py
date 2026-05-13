@@ -235,6 +235,84 @@ def test_worldlabs_preview_provider_carries_privacy_audit_checksums(monkeypatch)
     assert payload["privacy_safe_input"] is True
 
 
+def test_worldlabs_preview_provider_consumes_provider_adapter_input() -> None:
+    provider = WorldLabsPreviewProvider()
+    input_uri = "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4"
+
+    payload = provider._build_request_manifest(
+        descriptor={
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "metadata": {
+                "worldlabs_input_video_uri": "gs://bucket/legacy/should-not-be-used.mp4",
+            },
+        },
+        capture_root=Path("/tmp/capture-root"),
+        provider_adapter_input={
+            "schema_version": "v1",
+            "adapter_input_type": "ProviderAdapterInput",
+            "provider": "world_labs",
+            "adapter": "marble",
+            "status": "ready",
+            "canonical_site_package_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/site_package/canonical_site_package.json",
+            "provider_adapter_input_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/site_package/provider_adapter_inputs/world_labs_marble.json",
+            "conditioning_inputs": {
+                "rgb_video": {
+                    "uri": input_uri,
+                    "source_id": "privacy_safe_world_model_input",
+                    "privacy_safe": True,
+                    "checksum_sha256": "abc123",
+                    "source_checksum_sha256": "def456",
+                    "source_manifest_uri": "gs://bucket/pipeline/privacy_processing_manifest.json",
+                }
+            },
+            "generation": {
+                "display_name": "Warehouse handoff lane",
+                "text_prompt": "Preserve the handoff lane, docks, doors, and route anchors.",
+                "tags": ["scene-1", "capture-1", "provider-adapter-input"],
+            },
+            "labeling": {"capture_grounded": True, "generated_output": False},
+        },
+    )
+
+    assert payload["status"] == "ready_for_generation"
+    assert payload["selected_video_uri"] == input_uri
+    assert payload["selected_video_source_id"] == "privacy_safe_world_model_input"
+    assert payload["canonical_site_package_uri"].endswith("/canonical_site_package.json")
+    assert payload["provider_adapter_input_uri"].endswith("/world_labs_marble.json")
+    assert payload["adapter_input_status"] == "ready"
+    assert payload["selected_input_checksum_sha256"] == "abc123"
+    assert payload["source_input_checksum_sha256"] == "def456"
+    assert payload["generation_request"]["display_name"] == "Warehouse handoff lane"
+    assert payload["generation_request"]["world_prompt"]["text_prompt"].startswith("Preserve")
+    assert "provider-adapter-input" in payload["generation_request"]["tags"]
+
+
+def test_worldlabs_preview_provider_blocks_blocked_provider_adapter_input() -> None:
+    provider = WorldLabsPreviewProvider()
+
+    payload = provider._build_request_manifest(
+        descriptor={"scene_id": "scene-1", "capture_id": "capture-1", "metadata": {}},
+        capture_root=Path("/tmp/capture-root"),
+        provider_adapter_input={
+            "schema_version": "v1",
+            "adapter_input_type": "ProviderAdapterInput",
+            "provider": "world_labs",
+            "adapter": "marble",
+            "status": "blocked",
+            "blockers": ["missing_privacy_safe_world_model_input"],
+            "canonical_site_package_uri": "gs://bucket/pipeline/site_package/canonical_site_package.json",
+            "provider_adapter_input_uri": "gs://bucket/pipeline/site_package/provider_adapter_inputs/world_labs_marble.json",
+        },
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["selected_video_uri"] is None
+    assert payload["adapter_input_status"] == "blocked"
+    assert "missing_privacy_safe_world_model_input" in payload["blockers"]
+    assert payload["generation_source_type"] is None
+
+
 def test_worldlabs_poll_reads_world_from_operation_response(monkeypatch) -> None:
     provider = WorldLabsPreviewProvider()
     launch_url = "https://marble.worldlabs.ai/worlds/world-1"

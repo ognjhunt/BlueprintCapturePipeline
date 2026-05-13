@@ -1,0 +1,10 @@
+{
+  "blockers": [],
+  "evidence": {
+    "city.backend_supported": true
+  },
+  "generated_at": "2026-05-11T23:37:05.344197+00:00",
+  "lane_id": "city_backend",
+  "schema_version": "lane-result.v1",
+  "status": "succeeded"
+}

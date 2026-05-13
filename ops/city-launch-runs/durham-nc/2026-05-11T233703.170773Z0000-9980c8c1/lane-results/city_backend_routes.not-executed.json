@@ -1,0 +1,10 @@
+{
+  "blockers": [
+    "local_execution_disabled"
+  ],
+  "evidence": {},
+  "generated_at": "2026-05-11T23:37:03.211479+00:00",
+  "lane_id": "city_backend_routes",
+  "schema_version": "lane-result.v1",
+  "status": "blocked"
+}

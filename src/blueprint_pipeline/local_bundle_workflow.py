@@ -32,6 +32,17 @@ _STALE_RAW_DERIVATIVES = (
     "object_index_artifacts",
 )
 
+_LOCAL_WORKFLOW_PIPELINE_LANES = {
+    "qualification",
+    "scene_memory",
+    "retrieval_index",
+    "frame_alignment",
+    "evaluation_prep",
+    "synthesis_coverage_validation",
+    "cosmos_single_capture_smoke",
+    "all",
+}
+
 
 def _read_json_object(path: Path) -> Dict[str, Any]:
     try:
@@ -161,6 +172,18 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
             f"PYTHONPATH=src python3 -m blueprint_pipeline.evaluation_prep_stage "
             f"--capture-root {resolved_capture} --provider manual"
         ),
+        "retrieval_index": (
+            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
+            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane retrieval_index"
+        ),
+        "frame_alignment": (
+            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
+            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane frame_alignment"
+        ),
+        "all": (
+            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
+            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane all"
+        ),
         "cosmos_single_capture_smoke": (
             f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
             f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} "
@@ -198,7 +221,7 @@ def run_local_bundle_workflow(
 ) -> Dict[str, Any]:
     if run_evaluation_prep and not run_qualification:
         raise PipelineError("--run-evaluation-prep requires --run-qualification")
-    if pipeline_lane not in {"qualification", "scene_memory"}:
+    if pipeline_lane not in _LOCAL_WORKFLOW_PIPELINE_LANES:
         raise PipelineError(f"Unsupported local workflow pipeline lane: {pipeline_lane}")
 
     capture_root = stage_local_bundle(

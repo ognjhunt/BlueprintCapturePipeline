@@ -90,6 +90,12 @@ def resolve_geometry_source(
 ) -> str:
     geometry_dir = context.pipeline_root / "geometry"
     geometry_pose_path = geometry_dir / "camera" / "poses.jsonl"
+    geometry_summary = read_json(geometry_dir / "geometry_summary.json") if (geometry_dir / "geometry_summary.json").is_file() else {}
+    summary_source = (
+        str(geometry_summary.get("geometry_source") or "").strip()
+        if isinstance(geometry_summary, Mapping)
+        else ""
+    )
     arkit_pose_path = context.raw_root / "arkit" / "poses.jsonl"
     arcore_pose_path = context.raw_root / "arcore" / "poses.jsonl"
 
@@ -97,7 +103,7 @@ def resolve_geometry_source(
     quality = descriptor.get("quality") if isinstance(descriptor.get("quality"), Mapping) else {}
     quality_source = str(quality.get("geometry_source") or "").strip()
     if geometry_pose_path.is_file():
-        return top_level or quality_source or "video_to_world"
+        return summary_source or top_level or quality_source or "video_to_world"
     if arkit_pose_path.is_file():
         return "arkit"
     if arcore_pose_path.is_file():
@@ -186,6 +192,7 @@ def _load_pipeline_geometry(
     source: str,
 ) -> Dict[str, Any]:
     geometry_root = context.pipeline_root / "geometry"
+    geometry_summary = read_json(geometry_root / "geometry_summary.json") if (geometry_root / "geometry_summary.json").is_file() else {}
     poses_raw = _load_jsonl(geometry_root / "camera" / "poses.jsonl")
     frames_raw = _load_jsonl(geometry_root / "frames" / "frame_index.jsonl")
     intrinsics = read_json(geometry_root / "camera" / "intrinsics.json") if (geometry_root / "camera" / "intrinsics.json").is_file() else {}
@@ -237,14 +244,25 @@ def _load_pipeline_geometry(
         or context.capture_id
     )
     quality = descriptor.get("quality") if isinstance(descriptor.get("quality"), Mapping) else {}
+    summary = geometry_summary if isinstance(geometry_summary, Mapping) else {}
     return {
         "source": source or "video_to_world",
+        "fallback_used": bool(summary.get("fallback_used")),
+        "fallback_kind": summary.get("fallback_kind"),
+        "provider_native_result": bool(summary.get("provider_native_result")),
+        "contract_ready_for_world_model": bool(summary.get("contract_ready_for_world_model")),
+        "internal_fallback_ready": bool(summary.get("internal_fallback_ready")),
+        "geometry_live_ready": bool(summary.get("geometry_live_ready")),
+        "external_market_ready": bool(summary.get("external_market_ready")),
+        "site_faithful_market_ready": bool(summary.get("site_faithful_market_ready")),
         "poses": poses,
         "frame_meta": frame_meta,
         "intrinsics": dict(intrinsics) if isinstance(intrinsics, Mapping) else {},
         "coordinate_frame_session_id": coordinate_frame_session_id,
         "ready_for_world_model": bool(
-            descriptor.get("geometry_ready")
+            summary.get("ready_for_world_model")
+            if summary
+            else descriptor.get("geometry_ready")
             or quality.get("geometry_ready")
             or quality.get("world_model_candidate")
         ),

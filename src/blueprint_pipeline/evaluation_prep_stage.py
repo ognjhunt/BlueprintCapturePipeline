@@ -686,13 +686,56 @@ def _build_scene_memory_bundle_manifest(*, pipeline_dir: Path, eval_dir: Path) -
     }
     status = "complete" if required.issubset(entries) else "partial" if available > 0 else "missing"
     missing = [key for key in sorted(required) if key not in entries]
-    return {
+    payload = {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "status": status,
         "missing_required_fields": missing,
         "available_fields": sorted(entries.keys()),
         **entries,
+    }
+    geometry_summary = _read_json_object(geometry_dir / "geometry_summary.json")
+    if geometry_summary:
+        payload["geometry_summary"] = geometry_summary
+        payload["geometry_truth"] = _geometry_conditioning_truth(payload)
+    return payload
+
+
+def _geometry_conditioning_truth(scene_memory_bundle_manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    geometry_summary = (
+        scene_memory_bundle_manifest.get("geometry_summary")
+        if isinstance(scene_memory_bundle_manifest.get("geometry_summary"), Mapping)
+        else {}
+    )
+    geometry_summary_path = str(scene_memory_bundle_manifest.get("geometry_summary_path") or "").strip()
+    geometry_source = str(geometry_summary.get("geometry_source") or "missing").strip()
+    fallback_used = bool(geometry_summary.get("fallback_used"))
+    ready_for_world_model = bool(geometry_summary.get("ready_for_world_model"))
+    geometry_live_ready = bool(
+        geometry_summary.get("geometry_live_ready")
+        if geometry_summary.get("geometry_live_ready") is not None
+        else ready_for_world_model and geometry_source == "video_to_world" and not fallback_used
+    )
+    blockers = list(geometry_summary.get("launch_blockers") or [])
+    if geometry_summary_path and fallback_used:
+        blockers.append("fallback_geometry_not_live_video_to_world")
+    if geometry_summary_path and geometry_source != "video_to_world":
+        blockers.append(f"geometry_source_not_video_to_world:{geometry_source or 'missing'}")
+    if geometry_summary_path and not geometry_live_ready:
+        blockers.append("geometry_not_live_video_to_world")
+    return {
+        "geometry_summary_path": geometry_summary_path,
+        "geometry_source": geometry_source,
+        "fallback_used": fallback_used,
+        "fallback_kind": geometry_summary.get("fallback_kind"),
+        "ready_for_world_model": ready_for_world_model,
+        "contract_ready_for_world_model": bool(geometry_summary.get("contract_ready_for_world_model")),
+        "internal_fallback_ready": bool(geometry_summary.get("internal_fallback_ready")),
+        "geometry_live_ready": geometry_live_ready,
+        "site_faithful_market_ready": bool(geometry_summary.get("site_faithful_market_ready")),
+        "provider_native_result": bool(geometry_summary.get("provider_native_result")),
+        "launchable": bool(geometry_summary_path and geometry_live_ready),
+        "blockers": list(dict.fromkeys(blockers)),
     }
 
 
@@ -2849,6 +2892,7 @@ def _build_launchable_export_bundle(
         else {}
     )
     demo_readiness = _presentation_demo_readiness(runtime_demo_manifest)
+    geometry_truth = _geometry_conditioning_truth(scene_memory_bundle_manifest)
     bundles = {
         "world_model_runtime": {
             "launchable": bool(site_world_health.get("launchable")),
@@ -2862,7 +2906,7 @@ def _build_launchable_export_bundle(
             "backend": "site_world_runtime",
         },
         "geometry_conditioning": {
-            "launchable": bool(scene_memory_bundle_manifest.get("geometry_summary_path")),
+            "launchable": bool(geometry_truth["launchable"]),
             "required_artifacts": [
                 "geometry_manifest",
                 "geometry_summary",
@@ -2871,6 +2915,16 @@ def _build_launchable_export_bundle(
                 "geometry_depth_manifest",
             ],
             "backend": "geometry_lane",
+            "geometry_source": geometry_truth["geometry_source"],
+            "fallback_used": geometry_truth["fallback_used"],
+            "fallback_kind": geometry_truth["fallback_kind"],
+            "ready_for_world_model": geometry_truth["ready_for_world_model"],
+            "contract_ready_for_world_model": geometry_truth["contract_ready_for_world_model"],
+            "internal_fallback_ready": geometry_truth["internal_fallback_ready"],
+            "geometry_live_ready": geometry_truth["geometry_live_ready"],
+            "site_faithful_market_ready": geometry_truth["site_faithful_market_ready"],
+            "provider_native_result": geometry_truth["provider_native_result"],
+            "blockers": geometry_truth["blockers"],
         },
         "isaac_sim": {
             "launchable": simready_prep_manifest_path is not None,
@@ -2964,7 +3018,8 @@ def _world_model_validation_summary(
         object_index_nonempty
         and str(geometry_bundle_manifest.get("status") or "") in {"complete", "partial"}
     )
-    geometry_conditioning_ready = bool(scene_memory_bundle_manifest.get("geometry_summary_path"))
+    geometry_truth = _geometry_conditioning_truth(scene_memory_bundle_manifest)
+    geometry_conditioning_ready = bool(geometry_truth["launchable"])
     task_ids = {
         target_id
         for task in task_anchor_manifest.get("tasks", [])
@@ -3006,9 +3061,12 @@ def _world_model_validation_summary(
         },
         "geometry_conditioning_ready": {
             "passed": geometry_conditioning_ready,
-            "detail": "Geometry-lane conditioning summary and camera/depth artifacts are available."
+            "detail": "Geometry-lane conditioning is backed by live video_to_world output."
             if geometry_conditioning_ready
-            else "Geometry-lane conditioning is missing or incomplete.",
+            else (
+                "Geometry-lane conditioning is missing, fallback-only, or not live video_to_world: "
+                + ", ".join(geometry_truth["blockers"] or ["unknown"])
+            ),
         },
         "task_representation_ready": {
             "passed": task_representation_ready,
@@ -3442,6 +3500,14 @@ def run_evaluation_prep_stage(
     mask_count = sum(1 for item in geometry_objects if isinstance(item, Mapping) and any(isinstance(mask, Mapping) and str(mask.get("mask_path") or "") for mask in item.get("visual_replacement_masks", [])))
     articulated_count = sum(1 for item in geometry_objects if isinstance(item, Mapping) and str(item.get("task_role") or "") == "required_fixture")
     downstream_risks = [str(item.get("kind") or "") for item in review_queue.get("items", []) if isinstance(item, Mapping)]
+    geometry_truth = _geometry_conditioning_truth(scene_memory_bundle_manifest)
+    geometry_conditioning_status = (
+        "live_video_to_world"
+        if geometry_truth["launchable"]
+        else "fallback_not_launchable"
+        if geometry_truth["fallback_used"]
+        else "missing_or_not_ready"
+    )
     summary = {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
@@ -3459,9 +3525,8 @@ def run_evaluation_prep_stage(
         "cosmos_lora_training_status": cosmos_training_run.get("status"),
         "export_bundle_status": launchable_export_bundle.get("status"),
         "site_world_status": site_world_health.get("status"),
-        "geometry_conditioning_status": "available"
-        if scene_memory_bundle_manifest.get("geometry_summary_path")
-        else "missing",
+        "geometry_conditioning_status": geometry_conditioning_status,
+        "geometry_truth": geometry_truth,
         "world_model_classification": validation_summary["world_model_classification"],
         "validation_gates": validation_summary["validation_gates"],
         "canonical_package_version": canonical_package_version,
@@ -3491,6 +3556,9 @@ def run_evaluation_prep_stage(
         _append_degradation("downstream_evaluation_eligibility:false")
     if scene_memory_bundle_manifest.get("status") != "complete":
         _append_degradation(f"scene_memory_bundle:{scene_memory_bundle_manifest.get('status')}")
+    if not geometry_truth["launchable"] and geometry_truth["geometry_summary_path"]:
+        for item in geometry_truth["blockers"]:
+            _append_degradation(f"geometry_conditioning:{item}")
     if (
         scene_memory_bundle_manifest.get("status") != "complete"
         and geometry_bundle_manifest.get("status") != "complete"
@@ -3555,9 +3623,8 @@ def run_evaluation_prep_stage(
         "provider_fallback_preview_status": site_world_spec.get("provider_fallback_preview_status"),
         "provider_fallback_only": site_world_spec.get("provider_fallback_only"),
         "artifact_families": site_world_spec.get("artifact_families"),
-        "geometry_conditioning_status": "available"
-        if scene_memory_bundle_manifest.get("geometry_summary_path")
-        else "missing",
+        "geometry_conditioning_status": geometry_conditioning_status,
+        "geometry_truth": geometry_truth,
         "grounding_status": protected_regions_manifest.get("grounding_status"),
         "ungrounded_reason": protected_regions_manifest.get("ungrounded_reason"),
         "empty_index_cause": object_geometry_manifest.get("empty_index_cause")

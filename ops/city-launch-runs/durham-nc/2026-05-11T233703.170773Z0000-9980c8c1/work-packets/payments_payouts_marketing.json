@@ -1,0 +1,33 @@
+{
+  "allowed_paths": [
+    "/Users/nijelhunt_1/workspace/Blueprint-WebApp/server",
+    "/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture"
+  ],
+  "blocking_conditions": [
+    "Stripe route unavailable",
+    "payout state unverified",
+    "marketing copy overclaims payout readiness"
+  ],
+  "commands": [],
+  "description": "Prove Stripe state and keep capturer marketing claims inside proven payout truth.",
+  "expected_artifacts": [],
+  "lane_id": "payments_payouts_marketing",
+  "owner_agent": "marketplace-payments-agent",
+  "proof_fields": [
+    "payouts.backend_configured",
+    "payouts.stripe_state_checked",
+    "payouts.provider_name",
+    "payouts.provider_state_checked",
+    "payouts.live_provider_ready",
+    "payouts.contract_readiness_not_live_readiness",
+    "payouts.live_payout_execution_human_gate",
+    "payouts.identity_kyc_state_documented",
+    "payouts.background_check_state_documented",
+    "payouts.marketing_claims_require_stripe_ready",
+    "open_capture.review_gated",
+    "open_capture.paid_anywhere_claim_disabled"
+  ],
+  "repo": "Blueprint-WebApp + BlueprintCapture",
+  "requires_live_service": true,
+  "requires_physical_hardware": false
+}

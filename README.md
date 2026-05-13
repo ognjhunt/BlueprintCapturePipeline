@@ -80,7 +80,8 @@ The production preview path expects URL-first privacy runners:
 
 For temporary internal demos, `BLUEPRINT_ALLOW_RAW_WORLDLABS_BYPASS=true` allows the World Labs preview path to fall back to the raw walkthrough video when privacy processing is unavailable. The bypass path is intentionally labeled as non-production and unredacted, and the input video is auto-trimmed/compressed to World Labs upload limits before submission.
 
-The non-ARKit geometry path expects a dedicated GPU `video_to_world` runner:
+The non-ARKit geometry path expects a dedicated GPU `video_to_world` runner. This
+is the only path that can mark non-ARKit geometry as live world-model-ready:
 
 - `VIDEO_TO_WORLD_URL`
 - `VIDEO_TO_WORLD_RUNNER_TOKEN`
@@ -100,9 +101,32 @@ Recommended `video_to_world` presets:
 - `full_fast` for the end-to-end upstream reconstruction path with the lighter preset
 - `full_extensive` for the full upstream path including global optimization and longer inverse-deformation / GS stages
 
+If the runner is missing or fails, the geometry stage may write an explicitly
+labeled internal fallback so local tests and contract-shape debugging can continue.
+Fallback geometry is machine-readable as `geometry_source=fallback_geometry` and
+`fallback_used=true`; it must remain `ready_for_world_model=false`,
+`geometry_live_ready=false`, and `site_faithful_market_ready=false`.
+
 `RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true` is now the default production expectation. Retrieval indexing fails closed unless it can resolve `world_model_video_uri`, `privacy_processed_video_uri`, or the concrete privacy artifact at `privacy/final_walkthrough.mov` / `privacy/final_walkthrough.mp4`.
 
 The main `blueprint-pipeline` job stays CPU-only. The concrete service contract, storage behavior, and model-path rules are documented in [docs/PRIVACY_RUNNER_SERVICES.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PRIVACY_RUNNER_SERVICES.md).
+
+Live geometry validation command:
+
+```bash
+VIDEO_TO_WORLD_URL=https://<video-to-world-runner> \
+VIDEO_TO_WORLD_RUNNER_TOKEN=<secret> \
+VIDEO_TO_WORLD_PIPELINE_PRESET=preprocess_plus_alignment \
+python3 scripts/run_geometry_lane.py \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --provider video_to_world \
+  --model video_to_world-default
+```
+
+Before claiming live proof, inspect `pipeline/geometry/geometry_summary.json` and
+`pipeline/geometry/logs/provider_result.json` for `geometry_source=video_to_world`,
+`fallback_used=false`, `provider_native_result=true`, `ready_for_world_model=true`,
+and `geometry_live_ready=true`.
 
 The privacy path now treats depth generation as a first-class step:
 
@@ -181,6 +205,12 @@ blueprint-capture-pipeline \
   --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json \
   --lane scene_memory
 ```
+
+Deeper local staging lanes can be requested through `scripts/stage_capture_bundle.py`
+with `--pipeline-lane retrieval_index`, `frame_alignment`, `evaluation_prep`,
+`synthesis_coverage_validation`, `cosmos_single_capture_smoke`, or `all` when
+`--run-qualification` is set. These lanes still honor geometry/provider truth
+and will not promote fallback geometry into live `video_to_world` proof.
 
 Object index build:
 

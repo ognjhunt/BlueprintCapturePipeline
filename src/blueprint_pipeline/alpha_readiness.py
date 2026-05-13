@@ -17,6 +17,7 @@ from .common import (
     write_json,
 )
 from .webapp_sync import (
+    WebappSyncError,
     derive_webapp_opportunity_state,
     derive_webapp_qualification_state,
     sync_webapp_pipeline_attachment,
@@ -125,6 +126,9 @@ def _runtime_capability_payload(
 ) -> Dict[str, Any]:
     has_site_world_bundle = bool(site_world_spec and site_world_registration and site_world_health)
     geometry_ready = bool(geometry_summary.get("ready_for_world_model"))
+    geometry_live_ready = bool(geometry_summary.get("geometry_live_ready"))
+    geometry_source = str(geometry_summary.get("geometry_source") or "missing").strip()
+    fallback_used = bool(geometry_summary.get("fallback_used"))
     runtime_launchable = bool(site_world_health.get("launchable"))
     runtime_status = str(site_world_health.get("status") or "missing").strip().lower()
     geometry_required = profile in {"meta_glasses", "android_video", "iphone_video_only"}
@@ -134,6 +138,8 @@ def _runtime_capability_payload(
         blockers.append("missing_site_world_bundle")
     if geometry_required and not geometry_ready:
         blockers.append("geometry_not_ready")
+    if geometry_required and (fallback_used or geometry_source != "video_to_world" or not geometry_live_ready):
+        blockers.append("geometry_not_live_video_to_world")
     if runtime_launch_expected and not runtime_launchable:
         blockers.append("runtime_not_launchable")
     if runtime_launch_expected and runtime_status in {"missing", "", "blocked", "failed"}:
@@ -145,6 +151,9 @@ def _runtime_capability_payload(
         "launchable": runtime_launchable,
         "geometry_required": geometry_required,
         "geometry_ready": geometry_ready,
+        "geometry_live_ready": geometry_live_ready,
+        "geometry_source": geometry_source,
+        "fallback_used": fallback_used,
         "site_world_bundle_ready": has_site_world_bundle,
         "runtime_health_status": runtime_status or "missing",
         "blockers": blockers,
@@ -824,7 +833,7 @@ def build_launch_gate_summary(
             [
                 "Inbound request linkage, marketplace job linkage, upload completion, qualification, privacy processing, and WebApp sync are all contract-verified.",
                 "Launchable export packaging exists for buyer fulfillment or buyer access flows.",
-                "Capturer payout readiness is contract-verified through the payout recommendation artifact.",
+                "Capturer payout recommendation is contract-present; live Stripe/provider readiness remains an operator payment checklist item.",
             ]
         )
     if source_status == "external_beta_contract_ready":
@@ -840,6 +849,7 @@ def build_launch_gate_summary(
         "Do not claim runtime or world-model outputs can override qualification truth.",
         "Do not claim strong site-faithful world-model quality; only native runtime capability and downstream packaging are proven here.",
         "Do not claim live buyer payments or live capturer payouts are proven until the operator payment checklist is completed.",
+        "Do not claim Stripe, identity/KYC, background-check, instant-pay, or payout-timing readiness from backend URL, publishable key, or mocked tests.",
         "Do not claim real-device discovery and claim UX is proven in production until the device checklist is completed.",
     ]
     if not external_alpha_go:
@@ -861,7 +871,32 @@ def build_launch_gate_summary(
         {
             "id": "capturer_payout_settlement",
             "scope": "payouts",
-            "required_evidence": "Stripe payout or transfer evidence matching the approved creator capture record.",
+            "required_evidence": "Live Stripe connected account state, live payout evidence, webhook reconciliation, and matching creator capture ledger entry for the approved capture.",
+        },
+        {
+            "id": "stripe_connected_account_live_readiness",
+            "scope": "payouts",
+            "required_evidence": "Backend /v1/stripe/account response showing provider_state_checked=true, provider_mode=live, live_provider_ready=true, payouts_enabled=true, and no blocking requirements.",
+        },
+        {
+            "id": "payout_exception_monitor_live",
+            "scope": "ops",
+            "required_evidence": "Live monitor or query evidence for payout.failed, payout.canceled, disbursement_failed, and overdue finance_review records.",
+        },
+        {
+            "id": "identity_kyc_provider_decision",
+            "scope": "identity",
+            "required_evidence": "Document whether Stripe Connect is the only near-term KYC path or provide account/env proof for Persona, Stripe Identity, or another identity provider.",
+        },
+        {
+            "id": "background_check_provider_decision",
+            "scope": "background_checks",
+            "required_evidence": "Document that no Checkr/background-check provider is integrated yet, or provide provider account/env proof before making screening claims.",
+        },
+        {
+            "id": "human_finance_review_owner",
+            "scope": "ops",
+            "required_evidence": "Named human finance owner and review queue/route for payout exceptions before any live payout execution flag is enabled.",
         },
         {
             "id": "buyer_artifact_access",
@@ -940,6 +975,18 @@ def sync_webapp_evaluation_prep(
     proof_path_status = optional_read_json(eval_root / "proof_path_status.json") or {}
     alpha_summary = write_alpha_readiness_summary(capture_root=capture_root, env=resolved_env)
     launch_gate_summary = write_launch_gate_summary(capture_root=capture_root, env=resolved_env)
+    site_submission_id = (
+        descriptor.site_submission_id
+        or str(opportunity_handoff.get("site_submission_id") or "").strip()
+    )
+    buyer_request_id = (
+        descriptor.buyer_request_id
+        or str(opportunity_handoff.get("buyer_request_id") or "").strip()
+    )
+    capture_job_id = (
+        descriptor.capture_job_id
+        or str(opportunity_handoff.get("capture_job_id") or "").strip()
+    )
 
     qualification_state = derive_webapp_qualification_state(
         readiness_state=qualification_record.get("readiness_state"),
@@ -1088,21 +1135,28 @@ def sync_webapp_evaluation_prep(
         "proof_path_events": proof_path_status.get("event_statuses", []),
     }
 
-    result = sync_webapp_pipeline_attachment(
-        site_submission_id=opportunity_handoff.get("site_submission_id") or descriptor.capture_id,
-        request_id=opportunity_handoff.get("site_submission_id") or descriptor.capture_id,
-        buyer_request_id=descriptor.buyer_request_id or opportunity_handoff.get("site_submission_id") or descriptor.capture_id,
-        capture_job_id=descriptor.capture_job_id or descriptor.capture_id,
-        scene_id=descriptor.scene_id,
-        capture_id=descriptor.capture_id,
-        pipeline_prefix=pipeline_prefix,
-        qualification_state=qualification_state,
-        opportunity_state=opportunity_state,
-        authoritative_state_update=True,
-        artifacts={str(key): value for key, value in artifacts.items() if value},
-        derived_assets=derived_assets,
-        deployment_readiness=deployment_readiness,
-    )
+    try:
+        result = sync_webapp_pipeline_attachment(
+            site_submission_id=site_submission_id,
+            request_id=site_submission_id,
+            buyer_request_id=buyer_request_id,
+            capture_job_id=capture_job_id,
+            scene_id=descriptor.scene_id,
+            capture_id=descriptor.capture_id,
+            pipeline_prefix=pipeline_prefix,
+            qualification_state=qualification_state,
+            opportunity_state=opportunity_state,
+            authoritative_state_update=True,
+            artifacts={str(key): value for key, value in artifacts.items() if value},
+            derived_assets=derived_assets,
+            deployment_readiness=deployment_readiness,
+        )
+    except (WebappSyncError, ValueError) as exc:
+        result = {
+            "status": "failed",
+            "reason": str(exc),
+            "blocker": "webapp_sync_requires_upstream_request_job_bootstrap",
+        }
     return write_pipeline_sync_result(
         pipeline_root=pipeline_root,
         stage="evaluation_prep",

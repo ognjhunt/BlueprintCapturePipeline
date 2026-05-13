@@ -361,6 +361,7 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
 def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_staged_capture(tmp_path, requested_outputs=["preview_simulation"])
     sync_calls: list[dict[str, object]] = []
+    worldlabs_input_uri = "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4"
 
     monkeypatch.setattr(
         "blueprint_pipeline.qualification.infer_capture_fidelity_review",
@@ -379,7 +380,22 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
         lambda **_kwargs: {
             "status": "ready",
             "manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input_manifest.json",
-            "output_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4",
+            "output_video_uri": worldlabs_input_uri,
+            "audit_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input_audit.json",
+            "input_labeling": {
+                "privacy_safe_input": True,
+                "capture_grounded": True,
+                "generated_output": False,
+                "review_state": "standard_privacy_safe_preview",
+            },
+            "audit_payload": {
+                "privacy_safe_input": True,
+                "raw_video_bypass_used": False,
+                "source_manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_processing_manifest.json",
+                "output_video_uri": worldlabs_input_uri,
+                "output_checksum_sha256": "worldlabs-output-sha",
+                "source_checksum_sha256": "privacy-source-sha",
+            },
         },
     )
     monkeypatch.setenv("BLUEPRINT_PREVIEW_PROVIDER", "world_labs")
@@ -393,20 +409,146 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
     descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
     metadata = descriptor["metadata"]
     pipeline_root = capture_root / "pipeline"
+    canonical_package = json.loads((pipeline_root / "site_package" / "canonical_site_package.json").read_text(encoding="utf-8"))
+    adapter_input = json.loads((pipeline_root / "site_package" / "provider_adapter_inputs" / "world_labs_marble.json").read_text(encoding="utf-8"))
+    worldlabs_request = json.loads((pipeline_root / "worldlabs_request_manifest.json").read_text(encoding="utf-8"))
 
     assert metadata["worldlabs_request_manifest_uri"].endswith("/pipeline/worldlabs_request_manifest.json")
     assert metadata["worldlabs_input_manifest_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input_manifest.json")
     assert metadata["worldlabs_input_video_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input.mp4")
+    assert metadata["canonical_site_package_uri"].endswith("/pipeline/site_package/canonical_site_package.json")
+    assert metadata["provider_adapter_inputs"]["world_labs_marble"].endswith(
+        "/pipeline/site_package/provider_adapter_inputs/world_labs_marble.json"
+    )
     assert descriptor["depth_conditioning"]["source"] == "depth_anything"
     assert metadata["privacy_processing"]["depth_conditioning"]["depth_manifest_uri"].endswith(
         "/pipeline/privacy_depth/depth_manifest.json"
     )
+    assert canonical_package["package_type"] == "BlueprintCanonicalSitePackage"
+    assert canonical_package["identity"]["scene_id"] == "scene-1"
+    assert canonical_package["conditioning"]["rgb_video"]["privacy_safe_world_model_input"]["uri"] == worldlabs_input_uri
+    assert canonical_package["conditioning"]["rgb_video"]["raw_walkthrough"]["uri"].endswith("/raw/walkthrough.mov")
+    assert canonical_package["conditioning"]["frames"]["frame_index_uri"].endswith("/frames/index.jsonl")
+    assert canonical_package["conditioning"]["temporal_alignment"]["arkit_frames_uri"] is None or canonical_package["conditioning"]["temporal_alignment"]["arkit_frames_uri"].endswith("/raw/arkit/frames.jsonl")
+    assert canonical_package["conditioning"]["camera"]["poses_uri"].endswith("/raw/arkit/poses.jsonl")
+    assert canonical_package["conditioning"]["camera"]["intrinsics_uri"].endswith("/raw/arkit/intrinsics.json")
+    assert canonical_package["conditioning"]["depth_confidence"]["capture_depth"]["depth_prefix_uri"].endswith("/raw/arkit/depth")
+    assert canonical_package["conditioning"]["depth_confidence"]["privacy_depth"]["depth_manifest_uri"].endswith(
+        "/pipeline/privacy_depth/depth_manifest.json"
+    )
+    assert canonical_package["semantic_task_context"]["task_statement"] == "Inspect tote handoff"
+    assert "handoff aisle" in json.dumps(canonical_package["semantic_task_context"])
+    assert canonical_package["device_modality"]["capture_modality"] == "iphone_arkit_lidar"
+    assert canonical_package["rights_privacy_provenance"]["rights"]["derived_scene_generation_allowed"] is True
+    assert canonical_package["rights_privacy_provenance"]["privacy"]["status"] == "person_removed"
+    assert canonical_package["source_checksums"]["worldlabs_input"]["output_checksum_sha256"] == "worldlabs-output-sha"
+    assert canonical_package["truth_labels"]["capture_grounded_inputs"]
+    assert canonical_package["truth_labels"]["generated_or_derived_outputs"]
+    assert canonical_package["provider_readiness"]["world_labs_marble"]["status"] in {"ready", "review_required"}
+    assert canonical_package["adapter_mappings"]["world_labs_marble"]["provider_adapter_input_uri"].endswith(
+        "/provider_adapter_inputs/world_labs_marble.json"
+    )
+    assert "cosmos_omniverse_isaac" in canonical_package["adapter_mappings"]
+    assert "runway" in canonical_package["adapter_mappings"]
+    assert "internal_viewer" in canonical_package["adapter_mappings"]
+    assert adapter_input["source"]["canonical_site_package_uri"].endswith("/canonical_site_package.json")
+    assert adapter_input["conditioning_inputs"]["rgb_video"]["uri"] == worldlabs_input_uri
+    assert adapter_input["conditioning_inputs"]["rgb_video"]["checksum_sha256"] == "worldlabs-output-sha"
+    assert worldlabs_request["canonical_site_package_uri"].endswith("/canonical_site_package.json")
+    assert worldlabs_request["provider_adapter_input_uri"].endswith("/world_labs_marble.json")
+    assert worldlabs_request["selected_video_uri"] == worldlabs_input_uri
     assert (pipeline_root / "worldlabs_request_manifest.json").is_file()
     assert sync_calls
     assert sync_calls[0]["artifacts"]["worldlabs_request_manifest_uri"].endswith("/pipeline/worldlabs_request_manifest.json")
     assert sync_calls[0]["artifacts"]["worldlabs_input_manifest_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input_manifest.json")
     assert sync_calls[0]["artifacts"]["worldlabs_input_video_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input.mp4")
+    assert sync_calls[0]["artifacts"]["canonical_site_package_uri"].endswith(
+        "/pipeline/site_package/canonical_site_package.json"
+    )
+    assert sync_calls[0]["artifacts"]["world_labs_marble_adapter_input_uri"].endswith(
+        "/pipeline/site_package/provider_adapter_inputs/world_labs_marble.json"
+    )
     assert sync_calls[0]["artifacts"]["privacy_depth_manifest_uri"].endswith("/pipeline/privacy_depth/depth_manifest.json")
+
+
+def test_canonical_site_package_records_missing_provider_inputs_and_fallback_geometry(monkeypatch, tmp_path: Path) -> None:
+    capture_root, descriptor_uri = _build_staged_capture(tmp_path, requested_outputs=["preview_simulation"])
+    pipeline_root = capture_root / "pipeline"
+    geometry_root = pipeline_root / "geometry"
+    geometry_root.mkdir(parents=True)
+    (geometry_root / "geometry_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "status": "completed_with_fallback",
+                "geometry_source": "fallback_geometry",
+                "fallback_used": True,
+                "fallback_kind": "internal_synthetic_geometry",
+                "ready_for_world_model": False,
+                "contract_ready_for_world_model": True,
+                "internal_fallback_ready": True,
+                "geometry_live_ready": False,
+                "site_faithful_market_ready": False,
+                "launch_blockers": ["fallback_geometry_not_live_video_to_world"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (geometry_root / "geometry_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "status": "completed_with_fallback",
+                "provider": {"fallback_used": True},
+                "world_model_contract": {
+                    "truth_label": "internal_fallback_not_site_faithful",
+                    "ready_for_world_model": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    sync_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        lambda **_kwargs: _successful_capture_review(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        lambda **kwargs: sync_calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: {
+            **_successful_privacy_processing(),
+            "status": "failed_closed",
+            "privacy_processed_video_uri": None,
+            "world_model_video_uri": None,
+            "depth_conditioning": {},
+        },
+    )
+
+    run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="qualification",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    canonical_package = json.loads((pipeline_root / "site_package" / "canonical_site_package.json").read_text(encoding="utf-8"))
+    adapter_input = json.loads((pipeline_root / "site_package" / "provider_adapter_inputs" / "world_labs_marble.json").read_text(encoding="utf-8"))
+    provider_run = json.loads((pipeline_root / "provider_run_manifest.json").read_text(encoding="utf-8"))
+
+    assert canonical_package["conditioning"]["geometry"]["summary"]["fallback_used"] is True
+    assert canonical_package["conditioning"]["geometry"]["site_faithful_provider_ready"] is False
+    assert "fallback_geometry_not_live_video_to_world" in canonical_package["provider_readiness"]["geometry"]["blockers"]
+    assert canonical_package["provider_readiness"]["world_labs_marble"]["status"] == "blocked"
+    assert "missing_privacy_safe_world_model_input" in canonical_package["provider_readiness"]["world_labs_marble"]["blockers"]
+    assert adapter_input["status"] == "blocked"
+    assert "missing_privacy_safe_world_model_input" in adapter_input["blockers"]
+    assert provider_run["status"] == "failed"
+    assert "worldlabs_input_status" in provider_run["failure_reason"]
+    assert sync_calls
 
 
 def test_qualification_fail_closed_omits_buyer_safe_media(monkeypatch, tmp_path: Path) -> None:
@@ -574,6 +716,9 @@ def test_qualification_ingests_geometry_summary_as_advisory(monkeypatch, tmp_pat
 
     assert world_model_fit["advisory_geometry"]["status"] == "completed"
     assert world_model_fit["advisory_geometry"]["ready_for_world_model"] is True
+    assert world_model_fit["advisory_geometry"]["geometry_source"] == "video_to_world"
+    assert world_model_fit["advisory_geometry"]["fallback_used"] is False
+    assert world_model_fit["advisory_geometry"]["geometry_live_ready"] is True
     assert world_model_fit["advisory_geometry"]["scale_status"] == "metric_trusted"
     assert completion["geometry_summary"].endswith("/geometry/geometry_summary.json")
     assert sync_calls

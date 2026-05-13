@@ -177,3 +177,51 @@ def test_run_local_bundle_workflow_can_request_scene_memory_lane(
 
     assert result["pipeline_lane"] == "scene_memory"
     assert captured["lane"] == "scene_memory"
+
+
+def test_run_local_bundle_workflow_can_request_deeper_pipeline_lanes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source"
+    raw_dir = source_root / "raw"
+    raw_dir.mkdir(parents=True)
+    payloads = {
+        "manifest.json": {"scene_id": "scene-1", "capture_id": "capture-1"},
+        "capture_context.json": {"scene_id": "scene-1", "capture_id": "capture-1"},
+        "capture_upload_complete.json": {"scene_id": "scene-1", "capture_id": "capture-1"},
+    }
+    for name, payload in payloads.items():
+        (raw_dir / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.local_bundle_workflow.build_capture_preflight_report",
+        lambda *_args, **_kwargs: {"status": "passed", "missing_required_inputs": []},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.local_bundle_workflow.materialize_capture_bundle",
+        lambda **_kwargs: {"status": "ok"},
+    )
+
+    captured: dict[str, object] = {}
+
+    def _run_capture_pipeline(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return {"status": "completed", "lanes": [kwargs.get("lane")]}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.local_bundle_workflow.run_capture_pipeline",
+        _run_capture_pipeline,
+    )
+
+    result = run_local_bundle_workflow(
+        source_bundle=source_root,
+        storage_root=tmp_path / "storage",
+        bucket="local-blueprint",
+        mode="copy",
+        run_qualification=True,
+        pipeline_lane="evaluation_prep",
+    )
+
+    assert result["pipeline_lane"] == "evaluation_prep"
+    assert captured["lane"] == "evaluation_prep"

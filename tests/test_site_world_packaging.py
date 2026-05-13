@@ -523,6 +523,35 @@ def test_production_launchable_export_requires_runtime_session_smoke(monkeypatch
     assert "runtime_required_for_buyer_launch" in bundle["launch_blockers"]
 
 
+def test_launchable_export_blocks_fallback_geometry_conditioning() -> None:
+    bundle = _build_launchable_export_bundle(
+        scene_memory_bundle_manifest={
+            "geometry_summary_path": "../geometry/geometry_summary.json",
+            "geometry_summary": {
+                "status": "completed_with_fallback",
+                "geometry_source": "fallback_geometry",
+                "fallback_used": True,
+                "ready_for_world_model": False,
+                "geometry_live_ready": False,
+                "site_faithful_market_ready": False,
+                "launch_blockers": ["fallback_geometry_not_live_video_to_world"],
+            },
+        },
+        geometry_bundle_manifest={"status": "missing"},
+        site_world_registration={"runtime_capabilities": {}},
+        site_world_health={"launchable": False, "status": "blocked", "blockers": []},
+        runtime_demo_manifest={},
+        simready_prep_manifest_path=None,
+    )
+
+    geometry_bundle = bundle["bundles"]["geometry_conditioning"]
+    assert geometry_bundle["launchable"] is False
+    assert geometry_bundle["geometry_source"] == "fallback_geometry"
+    assert geometry_bundle["fallback_used"] is True
+    assert "fallback_geometry_not_live_video_to_world" in geometry_bundle["blockers"]
+    assert bundle["status"] == "partial"
+
+
 def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_staged_capture(tmp_path)
     success_backend = tmp_path / "success_backend.py"

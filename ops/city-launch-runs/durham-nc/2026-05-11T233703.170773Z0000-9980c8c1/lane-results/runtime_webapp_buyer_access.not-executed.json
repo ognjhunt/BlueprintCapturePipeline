@@ -1,0 +1,10 @@
+{
+  "blockers": [
+    "local_execution_disabled"
+  ],
+  "evidence": {},
+  "generated_at": "2026-05-11T23:37:03.212945+00:00",
+  "lane_id": "runtime_webapp_buyer_access",
+  "schema_version": "lane-result.v1",
+  "status": "blocked"
+}

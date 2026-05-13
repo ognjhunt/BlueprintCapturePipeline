@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from .capture_bridge import CaptureDescriptor
 from .capture_enrichment_llm import build_capture_enrichment_runner
 from .alpha_readiness import write_alpha_readiness_summary, write_pipeline_sync_result
+from .canonical_site_package import write_blueprint_canonical_site_package
 from .common import (
     PipelineError,
     StageError,
@@ -2504,8 +2505,16 @@ def _geometry_artifacts(
         ),
         "status": str(summary.get("status") or "missing"),
         "ready_for_world_model": bool(summary.get("ready_for_world_model")),
+        "contract_ready_for_world_model": bool(summary.get("contract_ready_for_world_model")),
+        "internal_fallback_ready": bool(summary.get("internal_fallback_ready")),
+        "geometry_live_ready": bool(summary.get("geometry_live_ready")),
+        "external_market_ready": bool(summary.get("external_market_ready")),
+        "site_faithful_market_ready": bool(summary.get("site_faithful_market_ready")),
+        "provider_native_result": bool(summary.get("provider_native_result")),
         "geometry_source": str(summary.get("geometry_source") or "missing"),
         "fallback_used": bool(summary.get("fallback_used")),
+        "fallback_kind": summary.get("fallback_kind"),
+        "launch_blockers": list(summary.get("launch_blockers") or []),
         "canonical_frame_id": summary.get("canonical_frame_id"),
         "scale_status": str(
             ((summary.get("scale_assessment") or {}) if isinstance(summary.get("scale_assessment"), Mapping) else {}).get("status")
@@ -2533,8 +2542,16 @@ def _geometry_advisory_payload(geometry_artifacts: Mapping[str, Any]) -> Dict[st
     return {
         "status": str(geometry_artifacts.get("status") or "missing"),
         "ready_for_world_model": bool(geometry_artifacts.get("ready_for_world_model")),
+        "contract_ready_for_world_model": bool(geometry_artifacts.get("contract_ready_for_world_model")),
+        "internal_fallback_ready": bool(geometry_artifacts.get("internal_fallback_ready")),
+        "geometry_live_ready": bool(geometry_artifacts.get("geometry_live_ready")),
+        "external_market_ready": bool(geometry_artifacts.get("external_market_ready")),
+        "site_faithful_market_ready": bool(geometry_artifacts.get("site_faithful_market_ready")),
+        "provider_native_result": bool(geometry_artifacts.get("provider_native_result")),
         "geometry_source": str(geometry_artifacts.get("geometry_source") or "missing"),
         "fallback_used": bool(geometry_artifacts.get("fallback_used")),
+        "fallback_kind": geometry_artifacts.get("fallback_kind"),
+        "launch_blockers": list(geometry_artifacts.get("launch_blockers") or []),
         "scale_status": str(geometry_artifacts.get("scale_status") or "missing"),
         "pose_coverage": float(geometry_artifacts.get("pose_coverage") or 0.0),
         "confidence_coverage": float(geometry_artifacts.get("confidence_coverage") or 0.0),
@@ -3084,6 +3101,16 @@ def _build_world_model_fit_summary(
     advisory_geometry = {
         "status": str(geometry.get("status") or "missing"),
         "ready_for_world_model": bool(geometry.get("ready_for_world_model")),
+        "contract_ready_for_world_model": bool(geometry.get("contract_ready_for_world_model")),
+        "internal_fallback_ready": bool(geometry.get("internal_fallback_ready")),
+        "geometry_live_ready": bool(geometry.get("geometry_live_ready")),
+        "external_market_ready": bool(geometry.get("external_market_ready")),
+        "site_faithful_market_ready": bool(geometry.get("site_faithful_market_ready")),
+        "provider_native_result": bool(geometry.get("provider_native_result")),
+        "geometry_source": str(geometry.get("geometry_source") or "missing"),
+        "fallback_used": bool(geometry.get("fallback_used")),
+        "fallback_kind": geometry.get("fallback_kind"),
+        "launch_blockers": list(geometry.get("launch_blockers") or []),
         "scale_status": str(geometry_scale.get("status") or "missing"),
         "pose_coverage": float(geometry_deliverables.get("pose_coverage") or 0.0),
         "confidence_coverage": float(geometry_deliverables.get("confidence_coverage") or 0.0),
@@ -4772,6 +4799,59 @@ def run_qualification_pipeline(
         }
         write_json(pipeline_dir / "qualification_quality_report.json", quality_report)
         write_json(pipeline_dir / "swap_quality_report.json", quality_report)
+        rights_provenance_review = build_rights_provenance_review(
+            rights_summary=site_intake.get("capture_rights")
+            if isinstance(site_intake.get("capture_rights"), Mapping)
+            else {},
+            privacy_processing=privacy_processing,
+            provenance_summary=provenance_summary,
+            site_identity=(
+                effective_metadata.get("site_identity")
+                if isinstance(effective_metadata, Mapping)
+                and isinstance(effective_metadata.get("site_identity"), Mapping)
+                else {}
+            ),
+            adjacent_systems=_string_list(
+                effective_metadata.get("adjacent_systems")
+                if isinstance(effective_metadata, Mapping)
+                else None
+            ),
+            artifact_uris={
+                "rights_and_compliance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/rights_and_compliance_summary.json",
+                "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
+                "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
+            },
+        )
+        write_json(pipeline_dir / "rights_provenance_review.json", rights_provenance_review)
+        site_package_result = write_blueprint_canonical_site_package(
+            descriptor=descriptor.to_dict(),
+            capture_root=capture_root,
+            pipeline_dir=pipeline_dir,
+            bucket=bucket,
+            storage_root=storage_root,
+            pipeline_prefix=pipeline_prefix,
+            descriptor_uri=descriptor_gcs_uri,
+            qa_report_uri=qa_report_uri,
+            qa_report=qa_report,
+            privacy_processing=privacy_processing,
+            worldlabs_input=worldlabs_input,
+            geometry_artifacts=geometry_artifacts,
+            provenance_summary=provenance_summary,
+            rights_provenance_review=rights_provenance_review,
+            site_intake=site_intake,
+            scorecard=scorecard,
+            qualification_record=qualification_record,
+            task_targets_payload=task_targets_with_index,
+            task_hypothesis_report=task_hypothesis_report,
+            object_index_entries=object_index_entries,
+        )
+        descriptor_payload = descriptor.to_dict()
+        metadata_payload = dict(descriptor_payload.get("metadata") or {})
+        metadata_payload["canonical_site_package_uri"] = site_package_result["canonical_site_package_uri"]
+        metadata_payload["provider_adapter_inputs"] = dict(site_package_result["provider_adapter_input_uris"])
+        descriptor_payload["metadata"] = metadata_payload
+        write_json(descriptor_path, descriptor_payload)
+        descriptor = CaptureDescriptor.from_dict(descriptor_payload)
 
         qualification_state = derive_webapp_qualification_state(
             readiness_state=qualification_record.get("readiness_state"),
@@ -4791,6 +4871,9 @@ def run_qualification_pipeline(
                 descriptor=descriptor.to_dict(),
                 capture_root=capture_root,
                 pipeline_dir=pipeline_dir,
+                provider_adapter_input=site_package_result["provider_adapter_inputs"].get(
+                    "world_labs_marble"
+                ),
             )
             if preview_requested and preview_input_ready
             else {
@@ -4813,6 +4896,16 @@ def run_qualification_pipeline(
                     if preview_requested and not preview_input_ready
                     else None
                 ),
+                "canonical_site_package_uri": site_package_result["canonical_site_package_uri"],
+                "provider_adapter_input_uri": site_package_result["provider_adapter_input_uris"].get(
+                    "world_labs_marble"
+                ),
+                "adapter_input_status": site_package_result["provider_adapter_inputs"]
+                .get("world_labs_marble", {})
+                .get("status"),
+                "adapter_input_blockers": site_package_result["provider_adapter_inputs"]
+                .get("world_labs_marble", {})
+                .get("blockers", []),
                 "provenance": {"canonical": False, "derived": True},
             }
         )
@@ -4944,6 +5037,10 @@ def run_qualification_pipeline(
             "worldlabs_input_manifest": worldlabs_input.get("manifest_uri"),
             "worldlabs_input_audit": worldlabs_input.get("audit_uri"),
             "worldlabs_input_video": worldlabs_input.get("output_video_uri"),
+            "canonical_site_package": site_package_result["canonical_site_package_uri"],
+            "world_labs_marble_adapter_input": site_package_result["provider_adapter_input_uris"].get(
+                "world_labs_marble"
+            ),
             **(
                 {"privacy_processed_video": str(privacy_processing.get("privacy_processed_video_uri"))}
                 if privacy_processing.get("privacy_processed_video_uri")
@@ -4977,6 +5074,10 @@ def run_qualification_pipeline(
             "worldlabs_input_manifest_uri": worldlabs_input.get("manifest_uri"),
             "worldlabs_input_audit_uri": worldlabs_input.get("audit_uri"),
             "worldlabs_input_video_uri": worldlabs_input.get("output_video_uri"),
+            "canonical_site_package_uri": site_package_result["canonical_site_package_uri"],
+            "world_labs_marble_adapter_input_uri": site_package_result["provider_adapter_input_uris"].get(
+                "world_labs_marble"
+            ),
             "privacy_depth_manifest_uri": (
                 (privacy_processing.get("depth_conditioning") or {}).get("depth_manifest_uri")
                 if isinstance(privacy_processing.get("depth_conditioning"), Mapping)
@@ -5040,18 +5141,35 @@ def run_qualification_pipeline(
             "capturer_payout_recommendation": capturer_payout_recommendation,
             "provenance_summary": provenance_summary,
             "rights_provenance_review": rights_provenance_review,
+            "canonical_site_package": site_package_result["canonical_site_package"],
+            "provider_adapter_inputs": site_package_result["provider_adapter_inputs"],
             "advisory_geometry": _geometry_advisory_payload(geometry_artifacts),
         }
         webapp_sync_result_path = pipeline_dir / "webapp_sync_result.json"
         try:
+            site_submission_id = str(
+                descriptor.site_submission_id
+                or opportunity_handoff.get("site_submission_id")
+                or ""
+            ).strip()
+            buyer_request_id = str(
+                descriptor.buyer_request_id
+                or opportunity_handoff.get("buyer_request_id")
+                or ""
+            ).strip()
+            capture_job_id = str(
+                descriptor.capture_job_id
+                or opportunity_handoff.get("capture_job_id")
+                or ""
+            ).strip()
             # Project package, proof-path, and review readiness truth back into the
             # WebApp control plane. This module still carries legacy "qualification"
             # naming, but the sync is part of the capture-first package lifecycle.
             webapp_sync_result = sync_webapp_pipeline_attachment(
-                site_submission_id=opportunity_handoff.get("site_submission_id"),
-                request_id=opportunity_handoff.get("site_submission_id"),
-                buyer_request_id=descriptor.buyer_request_id or opportunity_handoff.get("site_submission_id"),
-                capture_job_id=descriptor.capture_job_id or descriptor.capture_id,
+                site_submission_id=site_submission_id,
+                request_id=site_submission_id,
+                buyer_request_id=buyer_request_id,
+                capture_job_id=capture_job_id,
                 scene_id=descriptor.scene_id,
                 capture_id=descriptor.capture_id,
                 pipeline_prefix=pipeline_prefix,
@@ -5062,8 +5180,12 @@ def run_qualification_pipeline(
                 derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
                 deployment_readiness=webapp_deployment_readiness,
             )
-        except WebappSyncError as exc:
-            webapp_sync_result = {"status": "failed", "reason": str(exc)}
+        except (WebappSyncError, ValueError) as exc:
+            webapp_sync_result = {
+                "status": "failed",
+                "reason": str(exc),
+                "blocker": "webapp_sync_requires_upstream_request_job_bootstrap",
+            }
             write_json(webapp_sync_result_path, webapp_sync_result)
             raise StageError("webapp_sync", str(exc)) from exc
         if webapp_sync_result is None:

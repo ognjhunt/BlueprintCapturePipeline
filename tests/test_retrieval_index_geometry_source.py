@@ -204,6 +204,30 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
     assert (site_root / "retrieval_validation.json").is_file()
 
 
+def test_retrieval_index_rejects_fallback_geometry_even_if_descriptor_is_stale(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=True)
+
+    def _failing_provider(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("video_to_world_down")
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _failing_provider)
+    build_geometry_stage_contract(capture_root)
+
+    descriptor_path = capture_root / "capture_descriptor.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["world_model_candidate"] = True
+    descriptor["geometry_ready"] = True
+    descriptor["quality"] = {
+        **dict(descriptor.get("quality") or {}),
+        "world_model_candidate": True,
+        "geometry_ready": True,
+    }
+    descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+
+    with pytest.raises(Exception, match="geometry_not_live_video_to_world"):
+        run_retrieval_index_stage(capture_root=capture_root, embedding_model=object())
+
+
 def test_retrieval_index_requires_privacy_safe_video_by_default(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=False)
     monkeypatch.setenv("RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO", "true")

@@ -105,6 +105,19 @@ Status values:
 - `running`
 - `failed`
 - `completed`
+- `completed_with_fallback`
+
+Provider truth fields are required:
+
+- `geometry_source`
+- `provider.provider_native_result`
+- `provider.fallback_used`
+- `provider.fallback_kind`
+- `world_model_contract.truth_label`
+- `world_model_contract.ready_for_world_model`
+- `world_model_contract.internal_fallback_ready`
+- `world_model_contract.geometry_live_ready`
+- `world_model_contract.site_faithful_market_ready`
 
 ### `geometry_summary.json`
 
@@ -113,13 +126,29 @@ Compact summary for qualification / scene-memory / downstream routing.
 Required fields:
 
 - `status`
+- `geometry_source`
+- `provider_native_result`
+- `fallback_used`
+- `fallback_kind`
 - `ready_for_world_model`
+- `contract_ready_for_world_model`
+- `internal_fallback_ready`
+- `geometry_live_ready`
+- `external_market_ready`
+- `site_faithful_market_ready`
+- `launch_blockers`
 - `source_video`
 - `provider`
 - `scale_assessment`
 - `deliverables`
 
 This is the file later stages should read first.
+
+`ready_for_world_model=true` means the artifacts came from the live `video_to_world`
+provider boundary and are not fallback or synthetic. A fallback may still set
+`contract_ready_for_world_model=true` and `internal_fallback_ready=true` when it wrote
+well-formed diagnostic artifacts, but that is not enough for retrieval indexing,
+alpha readiness, launchable export packaging, or site-faithful claims.
 
 ### `geometry_run_status.json`
 
@@ -128,7 +157,17 @@ Mutable heartbeat during execution.
 Required fields:
 
 - `status`
+- `geometry_source`
+- `provider_native_result`
+- `fallback_used`
+- `fallback_kind`
 - `ready_for_world_model`
+- `contract_ready_for_world_model`
+- `internal_fallback_ready`
+- `geometry_live_ready`
+- `external_market_ready`
+- `site_faithful_market_ready`
+- `launch_blockers`
 - `blocking_issues`
 - `provider`
 - `model`
@@ -310,8 +349,8 @@ The minimal runner is:
 ```bash
 python3 scripts/run_geometry_lane.py \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
-  --provider da3 \
-  --model DA3Nested-Giant-Large-1.1
+  --provider video_to_world \
+  --model video_to_world-default
 ```
 
 Current behavior:
@@ -319,32 +358,41 @@ Current behavior:
 - resolves the staged capture root
 - validates that a walkthrough video exists in `raw/`
 - creates `pipeline/geometry/`
-- writes placeholder manifests and status files
+- writes `geometry_inputs.json` and frozen provider request metadata
+- calls the swappable `video_to_world` runner service by default
+- writes normalized poses, intrinsics, depth, confidence, alignment, status, summary, and manifest files when the provider succeeds
+- writes an explicitly labeled internal fallback only when provider execution fails
 
-Future full behavior:
+Fallback behavior:
 
-1. probe the video
-2. sample keyframes or define streaming windows
-3. run `DA3Nested` or `DA3-Streaming`
-4. write poses, intrinsics, depth, and confidence outputs
-5. compute readiness / scale / coverage summaries
-6. update `geometry_run_status.json` and `geometry_manifest.json` to `completed`
+- fallback source is `geometry_source=fallback_geometry`
+- fallback kind is `internal_synthetic_geometry` or `local_da3_synthetic_depth`
+- fallback may be useful for local contract tests and downstream shape debugging
+- fallback must set `ready_for_world_model=false`
+- fallback must set `geometry_live_ready=false`
+- fallback must set `site_faithful_market_ready=false`
+- fallback must not satisfy retrieval indexing, alpha readiness, launchable export packaging, or buyer/runtime launch proof
 
 ## Model Selection
 
 Current recommendation:
 
-- default provider label: `da3`
-- default model: `DA3Nested-Giant-Large-1.1`
-- execution mode:
-  - `standard` for shorter clips / pre-sampled windows
-  - `streaming` for long clips or lower-memory GPUs
+- default provider label: `video_to_world`
+- default model: `video_to_world-default`
+- service preset: configure `VIDEO_TO_WORLD_PIPELINE_PRESET` or
+  `VIDEO_TO_WORLD_COMMAND_TEMPLATE` on the runner service
+- local helper provider: `--provider local_da3` or `--provider da3` may exercise the
+  local Depth Anything 3 helper path, but local DA3 outputs are not live
+  `video_to_world` proof and cannot mark the geometry lane world-model ready
 
 Interpretation:
 
-- `DA3Nested` is the main reconstruction model
-- `DA3-Streaming` is the execution strategy for long videos
-- `MapAnything` is optional later as a unified evaluation / model-swap framework
+- `video_to_world` is the stable service boundary for production proof.
+- DA3 is an implementation helper behind that boundary or an explicitly local
+  development surface.
+- Better providers can replace the service internals as long as they preserve this
+  normalized geometry contract and provider-truth labels.
+- MapAnything remains optional later as a unified evaluation / model-swap framework.
 
 ## Integration Points
 
@@ -358,6 +406,8 @@ Consume `pipeline/geometry/geometry_summary.json` for advisory signals only:
 - confidence coverage
 - scale confidence
 - world-model conditioning readiness
+- provider truth: `geometry_source`, `provider_native_result`, `fallback_used`,
+  `geometry_live_ready`, and `site_faithful_market_ready`
 
 Do not let these fields override deterministic qualification truth.
 
@@ -387,6 +437,10 @@ World-model-facing bundle should point to:
 - intrinsics
 - semantic/privacy masks if present
 
+The bundle must not treat a geometry path as launchable unless
+`geometry_summary.json` proves `geometry_source=video_to_world`,
+`fallback_used=false`, and `geometry_live_ready=true`.
+
 ## Acceptance Criteria For Full Implementation
 
 The full implementation is complete when:
@@ -397,6 +451,37 @@ The full implementation is complete when:
 4. `depth_manifest.json` and `confidence_manifest.json` index real files.
 5. `geometry_summary.json` exposes machine-readable readiness / scale / coverage fields.
 6. Qualification and downstream consumers can ingest `geometry_summary.json` without guessing.
+7. Fallback geometry cannot satisfy retrieval indexing, alpha readiness, launchable export
+   packaging, or site-faithful world-model claims.
+
+## Live GPU Validation Checklist
+
+Local tests do not require GPU credentials. Operator validation for the live
+`video_to_world` path requires:
+
+```bash
+export VIDEO_TO_WORLD_URL=https://<video-to-world-runner>
+export VIDEO_TO_WORLD_RUNNER_TOKEN=<secret>
+export VIDEO_TO_WORLD_PIPELINE_PRESET=preprocess_plus_alignment
+python3 scripts/run_geometry_lane.py \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --provider video_to_world \
+  --model video_to_world-default
+```
+
+Evidence to capture before claiming live geometry proof:
+
+- `pipeline/geometry/geometry_summary.json` has `geometry_source=video_to_world`
+- `fallback_used=false`
+- `provider.provider_native_result=true`
+- `ready_for_world_model=true`
+- `geometry_live_ready=true`
+- `logs/provider_request.json` records the runner request
+- `logs/provider_result.json` has `status=succeeded`
+- `camera/poses.jsonl`, `camera/intrinsics.json`, `depth/depth_manifest.json`,
+  and `confidence/confidence_manifest.json` are present
+- alpha readiness or the external alpha gate still reports any separate runtime,
+  Cosmos, or operator proof blockers truthfully
 
 ## Non-Goals
 
