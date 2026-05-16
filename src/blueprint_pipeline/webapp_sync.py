@@ -17,6 +17,19 @@ class WebappSyncError(RuntimeError):
     """Raised when pipeline-to-webapp sync is configured as required and fails."""
 
 
+_PLACEHOLDER_ID_MARKERS = (
+    "example",
+    "placeholder",
+    "replace_me",
+    "sample",
+    "todo",
+    "tbd",
+    "<",
+    ">",
+    "your-",
+)
+
+
 def _string_env(name: str) -> str:
     value = os.getenv(name)
     return value.strip() if isinstance(value, str) else ""
@@ -49,21 +62,54 @@ def _artifact_uri_checksums(artifacts: Mapping[str, Any]) -> Dict[str, str]:
     return checksums
 
 
-def _missing_upstream_links(payload: Mapping[str, Any]) -> list[str]:
-    missing: list[str] = []
+def _contains_placeholder_id(value: str) -> bool:
+    normalized = value.strip().lower()
+    return any(marker in normalized for marker in _PLACEHOLDER_ID_MARKERS)
+
+
+def _is_generated_capture_id(value: str, payload: Mapping[str, Any]) -> bool:
+    scene_id = str(payload.get("scene_id") or "").strip()
+    capture_id = str(payload.get("capture_id") or "").strip()
+    generated_values = {capture_id}
+    if scene_id and capture_id:
+        generated_values.update(
+            {
+                f"{scene_id}:{capture_id}",
+                f"{scene_id}/{capture_id}",
+                f"{scene_id}/captures/{capture_id}",
+            }
+        )
+    return bool(value.strip() and value.strip() in generated_values)
+
+
+def _upstream_link_failures(payload: Mapping[str, Any]) -> dict[str, str]:
+    failures: dict[str, str] = {}
     for key in ("site_submission_id", "request_id", "buyer_request_id", "capture_job_id"):
         value = payload.get(key)
         if not isinstance(value, str) or not value.strip():
-            missing.append(key)
-    return missing
+            failures[key] = "missing"
+            continue
+        if _contains_placeholder_id(value):
+            failures[key] = "placeholder upstream ids"
+            continue
+        if _is_generated_capture_id(value, payload):
+            failures[key] = "generated capture ids"
+    return failures
 
 
-def _upstream_links_error(missing: list[str]) -> ValueError:
-    joined = ", ".join(missing)
+def _upstream_links_error(failures: Mapping[str, str]) -> ValueError:
+    grouped: dict[str, list[str]] = {}
+    for key, reason in failures.items():
+        grouped.setdefault(reason, []).append(key)
+    joined = ", ".join(failures.keys())
+    reason_detail = "; ".join(
+        f"{reason}: {', '.join(fields)}"
+        for reason, fields in grouped.items()
+    )
     return ValueError(
         "missing_upstream_pipeline_records: "
-        f"{joined}. WebApp sync requires real request, buyer request, site submission, "
-        "and capture job links before projecting hosted-review or buyer-access state."
+        f"{joined}. {reason_detail}. WebApp sync requires real WebApp request, buyer request, "
+        "site submission, and capture job links before projecting hosted-review or buyer-access state."
     )
 
 
@@ -246,13 +292,20 @@ def sync_webapp_pipeline_attachment(
     )
     payload["artifact_uri_checksums"] = _artifact_uri_checksums(payload.get("artifacts") or {})
     payload["placeholder_fallback_allowed"] = bool(placeholder_sync_allowed)
-    missing_upstream_links = _missing_upstream_links(payload)
-    payload["upstream_links_verified"] = not bool(missing_upstream_links)
+    upstream_link_failures = _upstream_link_failures(payload)
+    missing_upstream_links = list(upstream_link_failures.keys())
+    payload["upstream_links_verified"] = not bool(upstream_link_failures)
     payload["missing_upstream_links"] = missing_upstream_links
-    if missing_upstream_links and (sync_required or bool(sync_url) or bool(sync_token)):
-        raise _upstream_links_error(missing_upstream_links)
-    if missing_upstream_links:
-        error = _upstream_links_error(missing_upstream_links)
+    payload["upstream_link_failures"] = upstream_link_failures
+    payload["upstream_link_next_input"] = (
+        None
+        if not upstream_link_failures
+        else "Provide real WebApp request, buyer_request_id, site_submission_id, and capture_job_id values from upstream bootstrap."
+    )
+    if upstream_link_failures and (sync_required or bool(sync_url) or bool(sync_token)):
+        raise _upstream_links_error(upstream_link_failures)
+    if upstream_link_failures:
+        error = _upstream_links_error(upstream_link_failures)
         return {
             "status": "failed",
             "reason": str(error),

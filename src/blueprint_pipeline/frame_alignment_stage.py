@@ -44,6 +44,7 @@ from .retrieval_index_stage import (
     _write_retrieval_validation,
     _write_site_manifest,
     _write_site_memory_indices,
+    _write_site_reference_summary_projection,
     _update_coverage_map,
 )
 from .site_memory_utils import (
@@ -211,6 +212,12 @@ def run_frame_alignment_stage(
         site_index_path=site_index_path,
         site_id=site_id,
         aligned_sessions=aligned_sessions,
+    )
+    _write_site_reference_summary_projection(
+        site_root=site_root,
+        site_index_path=site_index_path,
+        site_id=site_id,
+        storage_root=ctx.storage_root,
     )
 
     return {

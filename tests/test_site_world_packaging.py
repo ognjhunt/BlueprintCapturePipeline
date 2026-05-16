@@ -13,6 +13,25 @@ from blueprint_pipeline.materialization import build_capture_bundle_records, mat
 from blueprint_pipeline.qualification import _presentation_bundle_status, _presentation_primary_asset
 
 
+_PACKAGING_UPSTREAM_IDS = {
+    "site_submission_id": "site-submission-packaging-office-001",
+    "buyer_request_id": "buyer-request-packaging-office-001",
+    "capture_job_id": "capture-job-packaging-office-001",
+}
+
+
+def _use_offline_webapp_sync(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    for name in (
+        "BLUEPRINT_LAUNCH_PROOF_MODE",
+        "PIPELINE_SYNC_WEBAPP_URL",
+        "PIPELINE_SYNC_TOKEN",
+        "PIPELINE_SYNC_REQUIRED",
+        "PIPELINE_BUYER_ACCESS_CHECK_URL",
+        "PIPELINE_BUYER_ACCESS_CHECK_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _successful_capture_review() -> dict[str, object]:
     return {
         "schema_version": "v1",
@@ -330,6 +349,8 @@ def _build_staged_capture(
         "width": 1920,
         "height": 1080,
         "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
+        **_PACKAGING_UPSTREAM_IDS,
+        "upstream_handoff": dict(_PACKAGING_UPSTREAM_IDS),
     }
     if manifest_overrides:
         manifest_payload.update(manifest_overrides)
@@ -409,6 +430,7 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     _write_backend_script(success_backend, mode="success")
     _write_backend_script(sam3_backend, mode="sam3-skip")
 
+    _use_offline_webapp_sync(monkeypatch)
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
@@ -431,8 +453,28 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     manifest = json.loads((eval_root / "evaluation_prep_manifest.json").read_text(encoding="utf-8"))
     health = json.loads((eval_root / "site_world_health.json").read_text(encoding="utf-8"))
     geometry = json.loads((eval_root / "object_geometry_manifest.json").read_text(encoding="utf-8"))
+    webapp_sync = json.loads(
+        (pipeline_root / "webapp_sync_result.json").read_text(encoding="utf-8")
+    )
 
     assert evaluation["manifest_path"] == str(eval_root / "evaluation_prep_manifest.json")
+    assert webapp_sync["status"] == "skipped"
+    assert webapp_sync["latest_stage"] == "evaluation_prep"
+    qualification_sync = webapp_sync["syncs"]["qualification"]
+    assert qualification_sync["reason"] == "sync_not_configured"
+    assert qualification_sync["attachment_payload"]["upstream_links_verified"] is True
+    assert (
+        qualification_sync["attachment_payload"]["site_submission_id"]
+        == _PACKAGING_UPSTREAM_IDS["site_submission_id"]
+    )
+    assert (
+        qualification_sync["attachment_payload"]["buyer_request_id"]
+        == _PACKAGING_UPSTREAM_IDS["buyer_request_id"]
+    )
+    assert (
+        qualification_sync["attachment_payload"]["capture_job_id"]
+        == _PACKAGING_UPSTREAM_IDS["capture_job_id"]
+    )
     assert evaluation["proof_path_status"]["event_statuses"][0]["event_name"] == "proof_pack_delivered"
     assert len(evaluation["proof_path_status"]["event_statuses"]) == 4
     assert (eval_root / "site_world_spec.json").is_file()
@@ -560,6 +602,7 @@ def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_pat
     _write_backend_script(sam3_backend, mode="sam3-skip")
     _write_geometry_lane(monkeypatch, capture_root)
 
+    _use_offline_webapp_sync(monkeypatch)
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
@@ -600,6 +643,7 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     _write_backend_script(missing_backend, mode="runtime-missing")
     _write_backend_script(sam3_backend, mode="sam3-skip")
 
+    _use_offline_webapp_sync(monkeypatch)
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {missing_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {missing_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
@@ -661,6 +705,7 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     _write_backend_script(success_backend, mode="success")
     _write_backend_script(sam3_backend, mode="sam3-skip")
 
+    _use_offline_webapp_sync(monkeypatch)
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")

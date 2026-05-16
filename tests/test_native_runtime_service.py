@@ -161,6 +161,7 @@ def test_native_runtime_step_session_runs_live_synthesis_when_site_index_exists(
                 "scene_id": "scene-1",
                 "site_id": "site-1",
                 "frame_id": "000001",
+                "geometry_source": "local_sfm",
                 "frame_uri": "gs://bucket/frames/000001.jpg",
                 "depth_uri": "gs://bucket/depth/000001.png",
                 "T_world_camera": [
@@ -238,6 +239,78 @@ def test_native_runtime_step_session_runs_live_synthesis_when_site_index_exists(
     assert state["observation"]["worldSnapshot"]["step"] == 1
     assert state["latest_render_source"] == "live_synthesis"
     assert store.render_bytes(session["session_id"], "head_rgb").startswith(b"\x89PNG")
+
+
+def test_native_runtime_session_loads_site_reference_manifest_and_adapter_readiness(tmp_path: Path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    capture_root = storage_root / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    site_root = storage_root / "bucket" / "sites" / "site-1" / "reference_memory"
+    site_root.mkdir(parents=True, exist_ok=True)
+    capture_root.mkdir(parents=True, exist_ok=True)
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps({"metadata": {"site_identity": {"site_id": "site-1"}}}),
+        encoding="utf-8",
+    )
+    (site_root / "site_reference_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "site_reference_database.v1",
+                "site_id": "site-1",
+                "total_reference_frames": 1,
+                "capture_count": 1,
+                "chunk_count": 1,
+                "readiness": {"state": "ready", "blockers": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (site_root / "site_reference_index.jsonl").write_text(
+        json.dumps(
+            {
+                "reference_id": "ref-1",
+                "capture_id": "capture-1",
+                "scene_id": "scene-1",
+                "site_id": "site-1",
+                "frame_id": "000001",
+                "geometry_source": "local_sfm",
+                "frame_uri": "gs://bucket/frames/000001.jpg",
+                "depth_uri": "gs://bucket/depth/000001.png",
+                "T_world_camera": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                "intrinsics": {"fx": 1000.0, "fy": 1000.0, "cx": 320.0, "cy": 240.0, "width": 640, "height": 480},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GCS_ROOT", str(storage_root))
+    monkeypatch.setattr("blueprint_pipeline.native_runtime_backend._runtime_readiness", lambda: {"ready": False, "notes": ["native_model_not_provisioned"]})
+
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    payload = _site_world_payload()
+    payload["spec"]["canonical_package_uri"] = "gs://bucket/site-worlds/site-1/canonical.json"
+    store.register_site_world_package(**payload)
+
+    session = store.create_session("siteworld-1", robot_profile_id="robot-1")
+
+    readiness = session["site_reference_runtime_adapter"]
+    assert readiness["local_contract_ready"] is True
+    assert readiness["runtime_adapter_ready"] is True
+    assert readiness["non_arkit_geometry_state"] == "degraded"
+    assert readiness["world_model_ready"] is False
+    assert readiness["selected_runtime_path"] == "splat_only"
+    assert "native_model_not_provisioned" in readiness["backend_blockers"]
+    assert Path(session["site_reference_runtime_artifact_path"]).is_file()
 
 
 def test_native_runtime_step_endpoint_accepts_dict_actions(tmp_path: Path) -> None:

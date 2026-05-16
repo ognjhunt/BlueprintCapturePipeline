@@ -331,47 +331,80 @@ def manual_checks() -> list[dict[str, str]]:
     return [
         {
             "id": "iphone_real_device_claim_flow",
+            "category": "real_device_capture",
+            "status": "manual_live_evidence_required",
             "required_evidence": "Screen recording showing discovery, reservation, upload completion, and the same capture_job_id on iPhone.",
+            "not_proven_by_automation": "Automated WebApp, Capture bridge, and Pipeline contracts do not prove a real iPhone completed the paid capture workflow.",
         },
         {
             "id": "glasses_real_device_claim_flow",
+            "category": "real_device_capture",
+            "status": "manual_live_evidence_required",
             "required_evidence": "Screen recording showing discovery, reservation, upload completion, and the same capture_job_id on glasses.",
+            "not_proven_by_automation": "Automated bridge and pipeline fixtures do not prove glasses capture is externally site-faithful or ready for public paid launch.",
         },
         {
             "id": "android_real_device_claim_flow",
+            "category": "real_device_capture",
+            "status": "manual_live_evidence_required",
             "required_evidence": "Screen recording showing discovery, reservation, upload completion, and the same capture_job_id on Android.",
+            "not_proven_by_automation": "The Android SDK/unit-test gap is operator-toolchain evidence; it is separate from real Android device proof.",
         },
         {
             "id": "buyer_payment_settlement",
+            "category": "live_payment",
+            "status": "manual_live_evidence_required",
             "required_evidence": "Stripe checkout or payment-intent evidence for a live marketplace purchase.",
+            "not_proven_by_automation": "Checkout metadata and mocked webhook contract tests do not prove live Stripe money movement.",
         },
         {
             "id": "capturer_payout_settlement",
+            "category": "live_payout",
+            "status": "manual_live_evidence_required",
             "required_evidence": "Live Stripe connected account state, live payout evidence, webhook reconciliation, and matching creator capture ledger entry for the approved capture.",
+            "not_proven_by_automation": "Creator payout-state transitions in tests do not prove live Stripe payout settlement.",
         },
         {
             "id": "stripe_connected_account_live_readiness",
+            "category": "live_payout",
+            "status": "manual_live_evidence_required",
             "required_evidence": "Backend /v1/stripe/account response showing provider_state_checked=true, provider_mode=live, live_provider_ready=true, payouts_enabled=true, and no blocking requirements.",
+            "not_proven_by_automation": "Backend route shape, publishable keys, and mocked Stripe fixtures do not prove live Connect readiness.",
         },
         {
             "id": "payout_exception_monitor_live",
+            "category": "ops_monitoring",
+            "status": "manual_live_evidence_required",
             "required_evidence": "Live monitor or query evidence for payout.failed, payout.canceled, disbursement_failed, and overdue finance_review records.",
+            "not_proven_by_automation": "Repo tests do not prove the live payout exception monitor is configured, running, or watched.",
         },
         {
             "id": "identity_kyc_provider_decision",
+            "category": "identity_kyc",
+            "status": "manual_decision_required",
             "required_evidence": "Document whether Stripe Connect onboarding alone is the near-term KYC path or whether Persona/Stripe Identity is being added, with required env/account IDs.",
+            "not_proven_by_automation": "No automated contract chooses or proves a live identity/KYC provider decision.",
         },
         {
             "id": "background_check_provider_decision",
+            "category": "identity_kyc",
+            "status": "manual_decision_required",
             "required_evidence": "Document that no Checkr/background-check provider is integrated yet, or provide provider account/env proof before making screening claims.",
+            "not_proven_by_automation": "No automated contract proves background-check provider readiness.",
         },
         {
             "id": "human_finance_review_owner",
+            "category": "finance_ops",
+            "status": "manual_owner_required",
             "required_evidence": "Named human finance owner and review queue/route for payout exceptions before any live payout execution flag is enabled.",
+            "not_proven_by_automation": "Automation cannot substitute for a named finance owner and live review route.",
         },
         {
             "id": "buyer_artifact_access",
+            "category": "buyer_access",
+            "status": "manual_live_evidence_required",
             "required_evidence": "Authenticated buyer session proving artifact or fulfillment access after purchase.",
+            "not_proven_by_automation": "Checkout fulfillment metadata does not prove that a real buyer can access the artifact after purchase.",
         },
     ]
 
@@ -388,7 +421,7 @@ def build_claims(results: Sequence[CommandResult]) -> dict[str, list[str]]:
     return {
         "justified": [
             "Inbound request intake, marketplace publication, pipeline sync, checkout fulfillment metadata, and creator payout transitions are covered at contract level.",
-            "Qualification remains authoritative and privacy-safe buyer media plus launchable export packaging are required before buyer-facing readiness is declared.",
+            "Qualification and readiness records remain enforced support artifacts, and privacy-safe buyer media plus launchable export packaging are required before buyer-facing readiness is declared.",
             "iPhone is externally marketable only at contract level; glasses and Android remain internal-only for site-faithful launch claims.",
             "Repo-safe payout claim guardrails distinguish mocked contract coverage from live Stripe/provider readiness.",
         ],
@@ -428,15 +461,71 @@ def evidence_boundary(results: Sequence[CommandResult]) -> dict[str, object]:
     }
 
 
+def closeout_summary(report: dict) -> dict[str, object]:
+    automated_passed = [
+        result["label"]
+        for result in report["automated_checks"]
+        if result["status"] == "passed"
+    ]
+    manual_required = [
+        item["id"]
+        for item in report["manual_checks"]
+        if item["status"].startswith("manual_")
+    ]
+    return {
+        "operator_readout": (
+            "Automated repository contracts passed, with Android unit evidence marked as "
+            "operator-toolchain-required in this shell. This is a manual-ops closeout, "
+            "not Operational Launch Ready proof."
+        ),
+        "automated_contracts_prove": automated_passed,
+        "automated_contracts_do_not_prove": [
+            "live Stripe buyer payment completion",
+            "live Stripe Connect payout settlement",
+            "identity/KYC or background-check provider readiness",
+            "real-device discovery, reservation, upload, or capture_job_id continuity",
+            "authenticated buyer artifact access after purchase",
+            "human finance ownership or live payout exception monitoring",
+        ],
+        "remaining_manual_evidence_ids": manual_required,
+    }
+
+
 def render_markdown(report: dict) -> str:
     lines = [
         "# Paid Marketplace Beta Launch Gate",
         "",
         f"Generated: {report['generated_at']}",
         "",
-        "## Automated Checks",
+        f"Overall status: `{report['overall_status']}`",
+        "",
+        "## Operator Closeout",
         "",
     ]
+    closeout = report.get("closeout_summary") or {}
+    if closeout.get("operator_readout"):
+        lines.append(str(closeout["operator_readout"]))
+        lines.append("")
+    if closeout.get("automated_contracts_prove"):
+        lines.append("Automated contracts prove:")
+        for item in closeout["automated_contracts_prove"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    if closeout.get("automated_contracts_do_not_prove"):
+        lines.append("Automated contracts do not prove:")
+        for item in closeout["automated_contracts_do_not_prove"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    if closeout.get("remaining_manual_evidence_ids"):
+        lines.append("Remaining manual/live evidence ids:")
+        for item in closeout["remaining_manual_evidence_ids"]:
+            lines.append(f"- `{item}`")
+        lines.append("")
+    lines.extend([
+        "",
+        "## Automated Checks",
+        "",
+    ])
     for result in report["automated_checks"]:
         status = result["status"]
         lines.append(f"- {result['label']}: `{status}`")
@@ -461,7 +550,9 @@ def render_markdown(report: dict) -> str:
         lines.append(f"  {source['automated_claim']}")
     lines.extend(["", "## Manual Checks", ""])
     for item in report["manual_checks"]:
-        lines.append(f"- {item['id']}: {item['required_evidence']}")
+        lines.append(f"- {item['id']}: `{item['status']}` / `{item['category']}`")
+        lines.append(f"  Required evidence: {item['required_evidence']}")
+        lines.append(f"  Not proven by automation: {item['not_proven_by_automation']}")
     lines.extend(["", "## Truthful Claims", ""])
     for claim in report["launch_claims"]["justified"]:
         lines.append(f"- Justified: {claim}")
@@ -520,6 +611,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         if blocking_failed
         else "automated_contracts_passed_manual_ops_required"
     )
+    report["closeout_summary"] = closeout_summary(report)
 
     json_out = Path(args.json_out).expanduser() if args.json_out else pipeline_repo / "output" / "paid_marketplace_launch_gate.json"
     markdown_out = Path(args.markdown_out).expanduser() if args.markdown_out else pipeline_repo / "output" / "paid_marketplace_launch_gate.md"

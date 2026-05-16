@@ -61,6 +61,29 @@ def test_sync_payload_requires_upstream_request_job_and_bootstrap_records(monkey
         sync_webapp_pipeline_attachment(**payload)
 
 
+def test_sync_rejects_generated_capture_ids_as_upstream_links(monkeypatch) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.setenv("PIPELINE_SYNC_REQUIRED", "true")
+    payload = _minimal_payload()
+    payload["site_submission_id"] = "scene-1:capture-1"
+    payload["request_id"] = "scene-1:capture-1"
+
+    with pytest.raises(ValueError, match="generated capture ids"):
+        sync_webapp_pipeline_attachment(**payload)
+
+
+def test_sync_rejects_placeholder_upstream_links(monkeypatch) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.setenv("PIPELINE_SYNC_REQUIRED", "true")
+    payload = _minimal_payload()
+    payload["buyer_request_id"] = "example-buyer-request"
+
+    with pytest.raises(ValueError, match="placeholder upstream ids"):
+        sync_webapp_pipeline_attachment(**payload)
+
+
 def test_sync_without_upstream_links_fails_closed_when_not_configured(monkeypatch) -> None:
     monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
     monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)

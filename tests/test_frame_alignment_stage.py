@@ -171,6 +171,7 @@ def test_frame_alignment_stage_writes_alignment_and_static_map_artifacts(tmp_pat
     assert (site_root / "site_transforms.json").is_file()
     assert (site_root / "alignment_validation.json").is_file()
     assert (site_root / "site_static_map_manifest.json").is_file()
+    assert (site_root / "site_reference_summary_projection.json").is_file()
     assert (site_root / "static_memory" / "static_pointcloud.ply").is_file()
 
     graph = json.loads((site_root / "site_overlap_graph.json").read_text(encoding="utf-8"))
@@ -181,3 +182,7 @@ def test_frame_alignment_stage_writes_alignment_and_static_map_artifacts(tmp_pat
     assert query_records
     assert all(row["site_frame_transform"] is not None for row in query_records)
     assert all(row["T_site_camera"] is not None for row in query_records)
+
+    projection = json.loads((site_root / "site_reference_summary_projection.json").read_text(encoding="utf-8"))
+    assert projection["storage_class"] == "firestore_summary_safe"
+    assert projection["scores"]["aligned_fraction"] == 1.0

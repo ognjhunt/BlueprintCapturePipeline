@@ -25,6 +25,15 @@ from .common import (
 from .geometry_sources import load_capture_geometry
 from .geometry_stage import build_geometry_stage_contract
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
+from .site_reference_database import (
+    assert_summary_projection_safe,
+    build_site_reference_summary_projection,
+    build_reference_record_lineage,
+    build_site_reference_manifest_payload,
+    validate_site_reference_manifest,
+    validate_site_reference_record,
+    write_site_reference_summary_projection,
+)
 from .site_memory_utils import (
     aggregate_chunk_summary,
     clamp01 as _sm_clamp01,
@@ -79,7 +88,11 @@ def run_retrieval_index_stage(
     descriptor = _load_descriptor(ctx)
 
     quality = descriptor.get("quality") or {}
-    if not (descriptor.get("world_model_candidate") or quality.get("world_model_candidate")):
+    if not (
+        descriptor.get("world_model_candidate")
+        or quality.get("world_model_candidate")
+        or _reference_media_indexable(descriptor)
+    ):
         return {
             "status": "skipped",
             "reason": "world_model_candidate=false",
@@ -209,6 +222,12 @@ def run_retrieval_index_stage(
     _write_site_memory_indices(site_root=site_root, site_index_path=site_index_path, site_id=site_id, storage_root=ctx.storage_root)
     _write_overlap_graph(site_root=site_root, site_index_path=site_index_path, site_id=site_id, storage_root=ctx.storage_root)
     _write_retrieval_validation(site_root=site_root, site_index_path=site_index_path, site_id=site_id)
+    _write_site_reference_summary_projection(
+        site_root=site_root,
+        site_index_path=site_index_path,
+        site_id=site_id,
+        storage_root=ctx.storage_root,
+    )
 
     return {
         "status": "completed",
@@ -244,31 +263,95 @@ def _ensure_geometry_for_capture(
     geometry_summary_path = ctx.pipeline_root / "geometry" / "geometry_summary.json"
     geometry_summary = _read_optional_json(geometry_summary_path)
     if geometry_summary:
-        _raise_if_geometry_not_live_video_to_world(geometry_summary)
+        _raise_if_geometry_not_reference_indexable(geometry_summary)
     geometry_ready = (
         bool(descriptor.get("geometry_ready"))
         or bool((descriptor.get("quality") or {}).get("geometry_ready"))
-        or bool(geometry_summary.get("ready_for_world_model"))
+        or _geometry_summary_reference_indexable(geometry_summary)
     )
     if geometry_summary_path.is_file() and geometry_ready:
         return descriptor
-    build_geometry_stage_contract(ctx.capture_root)
+    build_geometry_stage_contract(ctx.capture_root, provider="local_sfm", model="local-sfm-offline")
     geometry_summary = _read_optional_json(geometry_summary_path)
-    _raise_if_geometry_not_live_video_to_world(geometry_summary)
+    _raise_if_geometry_not_reference_indexable(geometry_summary)
     return _load_descriptor(ctx)
 
 
-def _raise_if_geometry_not_live_video_to_world(geometry_summary: Mapping[str, Any]) -> None:
+def _raise_if_geometry_not_reference_indexable(geometry_summary: Mapping[str, Any]) -> None:
     if not geometry_summary:
         return
     geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
     fallback_used = bool(geometry_summary.get("fallback_used"))
     geometry_live_ready = bool(geometry_summary.get("geometry_live_ready"))
-    if fallback_used or geometry_source != "video_to_world" or not geometry_live_ready:
+    local_reference_ready = _geometry_summary_reference_indexable(geometry_summary)
+    if fallback_used or not (geometry_live_ready or local_reference_ready):
         reason = geometry_source or "missing"
         if fallback_used:
             reason = "fallback_geometry"
         raise PipelineError(f"geometry_not_live_video_to_world:{reason}")
+
+
+def _geometry_summary_reference_indexable(geometry_summary: Mapping[str, Any]) -> bool:
+    if not geometry_summary or bool(geometry_summary.get("fallback_used")):
+        return False
+    geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
+    if geometry_source == "video_to_world":
+        return bool(geometry_summary.get("geometry_live_ready") or geometry_summary.get("ready_for_world_model"))
+    if geometry_source != "local_sfm":
+        return False
+    return bool(
+        geometry_summary.get("contract_ready_for_world_model")
+        and geometry_summary.get("intrinsics_available")
+        and int(geometry_summary.get("pose_track_count") or 0) > 0
+    )
+
+
+def _reference_media_indexable(descriptor: Mapping[str, Any]) -> bool:
+    metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+    site_identity = metadata.get("site_identity") if isinstance(metadata.get("site_identity"), Mapping) else {}
+    capture_mode = metadata.get("capture_mode") if isinstance(metadata.get("capture_mode"), Mapping) else {}
+    rights = metadata.get("rights_lineage") if isinstance(metadata.get("rights_lineage"), Mapping) else {}
+    media_metadata = metadata.get("media_metadata") if isinstance(metadata.get("media_metadata"), Mapping) else {}
+    capture_rights = metadata.get("capture_rights") if isinstance(metadata.get("capture_rights"), Mapping) else {}
+    source = str(descriptor.get("capture_source") or descriptor.get("source_device") or "").strip().lower()
+    source_device = str(
+        descriptor.get("source_device")
+        or metadata.get("source_device")
+        or media_metadata.get("source_device")
+        or ""
+    ).strip().lower()
+    modality = str(descriptor.get("capture_modality") or "").strip().lower()
+    non_arkit = (
+        source in {"glasses", "android", "meta_glasses", "non_arkit_video"}
+        or source_device in {"meta_glasses", "non_arkit_video"}
+        or "video" in modality
+        or "glasses" in modality
+    )
+    requested_output = str(
+        descriptor.get("requested_output")
+        or capture_mode.get("requested_output")
+        or capture_mode.get("requestedOutput")
+        or capture_mode.get("requested_mode")
+        or capture_mode.get("requestedMode")
+        or ""
+    ).strip()
+    derived_allowed = bool(
+        rights.get("derived_generation_allowed")
+        or rights.get("derivedGenerationAllowed")
+        or rights.get("derived_scene_generation_allowed")
+        or rights.get("derivedSceneGenerationAllowed")
+        or capture_rights.get("derived_scene_generation_allowed")
+        or metadata.get("derived_generation_allowed")
+    )
+    raw_video_uri = str(descriptor.get("raw_video_uri") or "").strip()
+    site_id = str(descriptor.get("site_id") or site_identity.get("site_id") or "").strip()
+    return bool(
+        non_arkit
+        and site_id
+        and requested_output == "site_world_candidate"
+        and derived_allowed
+        and raw_video_uri
+    )
 
 
 def _resolve_site_id(descriptor: Dict[str, Any]) -> Optional[str]:
@@ -802,7 +885,7 @@ def _select_frames(
         else:
             frame_id = str(frame_id).zfill(6)
 
-        frame_index_int = pose.get("frameIndex", 0)
+        frame_index_int = pose.get("frame_index", pose.get("frameIndex", 0))
         t = float(pose.get("timestamp", 0))
         T = pose.get("T_world_camera")
         if T is None:
@@ -1303,14 +1386,25 @@ def _append_to_site_reference_index(
         or (descriptor.get("quality") or {}).get("geometry_source")
         or "arkit"
     )
+    capture_prefix_uri = _capture_prefix_uri(ctx)
+    descriptor_uri = f"{capture_prefix_uri}/capture_descriptor.json" if capture_prefix_uri else None
 
     with site_index_path.open("a", encoding="utf-8") as f:
         for record in records:
+            lineage = build_reference_record_lineage(
+                capture_prefix_uri=capture_prefix_uri,
+                descriptor_uri=descriptor_uri,
+                geometry_source=str(record.get("geometry_source") or geometry_source),
+                privacy_source=str(record.get("privacy_source", "raw_video")),
+                descriptor=descriptor,
+            )
             index_record = {
                 "reference_id": record["reference_id"],
                 "site_id": site_id,
                 "capture_id": ctx.capture_id,
                 "scene_id": ctx.scene_id,
+                "authority_level": "derived_reference_record",
+                "storage_class": "jsonl_reference_record",
                 "pass_id": pass_id,
                 "pass_index": pass_index,
                 "capture_session_id": capture_session_id,
@@ -1332,6 +1426,7 @@ def _append_to_site_reference_index(
                 "thumbnail_uri": record.get("thumbnail_uri"),
                 "privacy_source": record.get("privacy_source", "raw_video"),
                 "geometry_source": record.get("geometry_source") or geometry_source,
+                **lineage,
                 "quality": record.get("quality"),
                 "anchor_observations": record.get("anchor_observations") or [],
                 "retrieval_signals": record.get("retrieval_signals") or {},
@@ -1342,6 +1437,7 @@ def _append_to_site_reference_index(
                 "captured_at": captured_at,
                 "indexed_at": now,
             }
+            validate_site_reference_record(index_record)
             f.write(json.dumps(index_record, separators=(",", ":")) + "\n")
 
 
@@ -1520,19 +1616,74 @@ def _write_site_manifest(
         except Exception:
             pass
 
-    write_json(site_root / "site_reference_manifest.json", {
-        "schema_version": "v2",
-        "site_id": site_id,
-        "total_reference_frames": len(records),
-        "capture_count": len(captures_seen),
-        "chunk_count": len({str(r.get("chunk_id") or "") for r in records if str(r.get("chunk_id") or "").strip()}),
-        "captures": list(captures_seen.values()),
-        "coverage_summary": coverage_summary,
-        "last_updated": utc_now_iso(),
-        "site_frame_established": any(
-            r.get("site_frame_transform") is not None for r in records
-        ),
-    })
+    site_frame_established = any(r.get("site_frame_transform") is not None for r in records)
+    readiness_blockers: List[str] = []
+    if not records:
+        readiness_blockers.append("no_reference_frames")
+    if not site_frame_established:
+        readiness_blockers.append("site_frame_not_established")
+    artifact_uris = _site_reference_artifact_uris(site_root=site_root, site_index_path=site_index_path)
+    manifest_payload = build_site_reference_manifest_payload(
+        site_id=site_id,
+        total_reference_frames=len(records),
+        capture_count=len(captures_seen),
+        chunk_count=len({str(r.get("chunk_id") or "") for r in records if str(r.get("chunk_id") or "").strip()}),
+        captures=list(captures_seen.values()),
+        coverage_summary=coverage_summary,
+        artifact_uris=artifact_uris,
+        readiness={
+            "state": "ready" if not readiness_blockers else "degraded",
+            "blockers": readiness_blockers,
+            "operational_launch_ready": False,
+            "claim_policy": "local_site_reference_readiness_only",
+        },
+        site_frame_established=site_frame_established,
+    )
+    write_json(site_root / "site_reference_manifest.json", manifest_payload)
+
+
+def _site_reference_artifact_uris(*, site_root: Path, site_index_path: Path) -> Dict[str, Optional[str]]:
+    storage_root = site_root.parents[3] if len(site_root.parents) > 3 else site_root
+    return {
+        "site_reference_manifest_uri": _site_reference_path_to_gs_uri(site_root / "site_reference_manifest.json", storage_root=storage_root),
+        "site_reference_index_uri": _site_reference_path_to_gs_uri(site_index_path, storage_root=storage_root),
+        "retrieval_validation_uri": _site_reference_path_to_gs_uri(site_root / "retrieval_validation.json", storage_root=storage_root),
+        "coverage_map_uri": _site_reference_path_to_gs_uri(site_root / "coverage" / "coverage_map.json", storage_root=storage_root),
+        "indices_manifest_uri": _site_reference_path_to_gs_uri(site_root / "indices" / "manifest.json", storage_root=storage_root),
+        "site_overlap_graph_uri": _site_reference_path_to_gs_uri(site_root / "site_overlap_graph.json", storage_root=storage_root),
+    }
+
+
+def _write_site_reference_summary_projection(
+    *,
+    site_root: Path,
+    site_index_path: Path,
+    site_id: str,
+    storage_root: Path,
+) -> None:
+    write_site_reference_summary_projection(
+        site_id=site_id,
+        site_root=site_root,
+        site_index_path=site_index_path,
+        storage_root=storage_root,
+    )
+
+
+def _capture_prefix_uri(ctx: LocalCaptureContext) -> Optional[str]:
+    return f"gs://{ctx.bucket}/scenes/{ctx.scene_id}/captures/{ctx.capture_id}"
+
+
+def _site_reference_path_to_gs_uri(path: Path, *, storage_root: Path) -> Optional[str]:
+    try:
+        rel = path.resolve().relative_to(storage_root.resolve())
+    except ValueError:
+        return str(path)
+    parts = rel.parts
+    if len(parts) < 2:
+        return None
+    bucket = parts[0]
+    key = "/".join(parts[1:])
+    return f"gs://{bucket}/{key}"
 
 
 def _write_site_memory_indices(
@@ -1725,22 +1876,214 @@ def _write_retrieval_validation(
     chunk_groups = iter_groups(records, "chunk_id")
     staticness_scores = [float(record.get("staticness_score") or 0.0) for record in records]
     geometry_available = sum(1 for record in records if (record.get("geometry_fingerprint") or {}).get("available"))
+    aligned_fraction = round(
+        sum(1 for record in records if record.get("site_frame_transform") is not None) / float(len(records) or 1),
+        4,
+    )
+    record_schema_errors = _site_reference_record_schema_errors(records)
+    manifest_payload = _read_optional_json(site_root / "site_reference_manifest.json")
+    manifest_schema_error = _site_reference_manifest_schema_error(manifest_payload)
+    summary_projection_safe = _summary_projection_is_safe(
+        site_root=site_root,
+        site_index_path=site_index_path,
+        site_id=site_id,
+        manifest_payload=manifest_payload,
+    )
+    retrieval_query_count = _retrieval_query_count(site_index_path=site_index_path, records=records, site_root=site_root)
+    privacy_safe_source_available = all(
+        str(record.get("privacy_source") or "").startswith("privacy/") for record in records
+    )
+    rights_lineage_present = all(isinstance(record.get("rights_lineage"), Mapping) for record in records)
+    provenance_lineage_present = all(isinstance(record.get("provenance_lineage"), Mapping) for record in records)
+    anchor_ids = {
+        str(anchor)
+        for record in records
+        for anchor in _anchor_ids(record.get("anchor_observations"))
+        if str(anchor).strip()
+    }
+    non_arkit_records = [
+        record
+        for record in records
+        if str(record.get("geometry_source") or "") not in {"arkit", "arcore"}
+    ]
+    non_arkit_sources = {
+        str(record.get("geometry_source") or "").strip()
+        for record in non_arkit_records
+        if str(record.get("geometry_source") or "").strip()
+    }
+    non_arkit_ready = bool(non_arkit_records) and all(source == "video_to_world" for source in non_arkit_sources)
+    non_arkit_degraded = bool(non_arkit_records) and not non_arkit_ready and non_arkit_sources.issubset({"local_sfm"})
+    non_arkit_state = (
+        "not_applicable"
+        if not non_arkit_records
+        else "ready"
+        if non_arkit_ready
+        else "degraded"
+        if non_arkit_degraded
+        else "blocked"
+    )
+    non_arkit_blockers = (
+        []
+        if not non_arkit_records or non_arkit_ready
+        else ["provider_native_geometry_missing", "swm_world_model_geometry_not_ready"]
+        if non_arkit_degraded
+        else ["non_arkit_geometry_not_live_video_to_world"]
+    )
+    local_contract_ready = not record_schema_errors and not manifest_schema_error and summary_projection_safe
+    retrieval_ready = local_contract_ready and retrieval_query_count > 0
+    runtime_adapter_ready = retrieval_ready and privacy_safe_source_available and rights_lineage_present and provenance_lineage_present
+    alignment_state = "ready" if aligned_fraction >= 0.8 else "degraded" if aligned_fraction > 0 else "blocked"
+    swm_world_model_ready = retrieval_ready and (not non_arkit_records or non_arkit_ready)
+    swm_world_model_blockers = [] if swm_world_model_ready else list(non_arkit_blockers or ["retrieval_query_not_ready"])
+    runtime_blockers: List[str] = []
+    if not local_contract_ready:
+        runtime_blockers.append("local_contract_invalid")
+    if not retrieval_ready:
+        runtime_blockers.append("retrieval_query_not_ready")
+    if not privacy_safe_source_available:
+        runtime_blockers.append("privacy_safe_source_missing")
+    if not rights_lineage_present:
+        runtime_blockers.append("rights_lineage_missing")
+    if not provenance_lineage_present:
+        runtime_blockers.append("provenance_lineage_missing")
     write_json(
         site_root / "retrieval_validation.json",
         {
             "schema_version": "v1",
             "site_id": site_id,
             "generated_at": utc_now_iso(),
+            "record_schema_valid": not record_schema_errors,
+            "record_schema_error_count": len(record_schema_errors),
+            "record_schema_errors": record_schema_errors[:20],
+            "manifest_schema_valid": manifest_schema_error is None,
+            "manifest_schema_error": manifest_schema_error,
+            "summary_projection_safe": summary_projection_safe,
+            "privacy_safe_source_available": privacy_safe_source_available,
+            "rights_lineage_present": rights_lineage_present,
+            "provenance_lineage_present": provenance_lineage_present,
+            "retrieval_query_ready": retrieval_query_count > 0,
+            "retrieval_query_reference_count": retrieval_query_count,
             "reference_frame_count": len(records),
             "chunk_count": len(chunk_groups),
+            "anchor_count": len(anchor_ids),
+            "capture_count": len({str(record.get("capture_id") or "") for record in records if record.get("capture_id")}),
             "geometry_fingerprint_coverage": round(geometry_available / float(len(records) or 1), 4),
             "mean_staticness_score": round(sum(staticness_scores) / float(len(staticness_scores) or 1), 4),
-            "aligned_fraction": round(
-                sum(1 for record in records if record.get("site_frame_transform") is not None) / float(len(records) or 1),
-                4,
-            ),
+            "aligned_fraction": aligned_fraction,
+            "coverage": {
+                "reference_frame_count": len(records),
+                "chunk_count": len(chunk_groups),
+                "anchor_count": len(anchor_ids),
+                "geometry_fingerprint_coverage": round(geometry_available / float(len(records) or 1), 4),
+            },
+            "runtime_adapter_consumption": {
+                "local_contract_ready": local_contract_ready,
+                "retrieval_ready": retrieval_ready,
+                "alignment_state": alignment_state,
+                "non_arkit_geometry_state": non_arkit_state,
+                "swm_world_model_ready": swm_world_model_ready,
+                "runtime_adapter_ready": runtime_adapter_ready,
+                "operational_launch_ready": False,
+                "live_provider_ready": False,
+                "hosted_session_ready": False,
+                "blockers": runtime_blockers,
+            },
+            "readiness": {
+                "local_contract": {
+                    "state": "ready" if local_contract_ready else "blocked",
+                    "blockers": [] if local_contract_ready else ["local_contract_invalid"],
+                },
+                "retrieval": {
+                    "state": "ready" if retrieval_ready else "blocked",
+                    "blockers": [] if retrieval_ready else ["retrieval_query_not_ready"],
+                },
+                "alignment": {
+                    "state": alignment_state,
+                    "aligned_fraction": aligned_fraction,
+                    "blockers": [] if alignment_state == "ready" else ["site_frame_alignment_degraded"],
+                },
+                "non_arkit_geometry": {
+                    "state": non_arkit_state,
+                    "sources": sorted(non_arkit_sources),
+                    "blockers": non_arkit_blockers,
+                },
+                "swm_world_model": {
+                    "state": "ready" if swm_world_model_ready else "blocked",
+                    "blockers": swm_world_model_blockers,
+                },
+                "runtime_adapter": {
+                    "state": "ready" if runtime_adapter_ready else "blocked",
+                    "blockers": runtime_blockers,
+                },
+                "operational_live_provider_hosted": {
+                    "state": "blocked",
+                    "blockers": ["live_provider_runtime_and_hosted_session_not_validated_in_local_backfill"],
+                },
+            },
         },
     )
+
+
+def _site_reference_record_schema_errors(records: List[Dict[str, Any]]) -> List[str]:
+    errors: List[str] = []
+    for index, record in enumerate(records):
+        try:
+            validate_site_reference_record(record)
+        except Exception as exc:
+            errors.append(f"record_{index}:{exc}")
+    return errors
+
+
+def _site_reference_manifest_schema_error(payload: Mapping[str, Any]) -> Optional[str]:
+    try:
+        validate_site_reference_manifest(payload)
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def _summary_projection_is_safe(
+    *,
+    site_root: Path,
+    site_index_path: Path,
+    site_id: str,
+    manifest_payload: Mapping[str, Any],
+) -> bool:
+    try:
+        storage_root = site_root.parents[3] if len(site_root.parents) > 3 else site_root
+        payload = build_site_reference_summary_projection(
+            site_id=site_id,
+            site_root=site_root,
+            site_index_path=site_index_path,
+            storage_root=storage_root,
+            manifest_payload=manifest_payload,
+            validation_payload={},
+        )
+        assert_summary_projection_safe(payload)
+        return True
+    except Exception:
+        return False
+
+
+def _retrieval_query_count(*, site_index_path: Path, records: List[Dict[str, Any]], site_root: Path) -> int:
+    try:
+        from .synthesis.retrieval_query import query_site
+
+        target = effective_pose(records[0])
+        if target is None:
+            return 0
+        storage_root = site_root.parents[3] if len(site_root.parents) > 3 else site_root
+        results = query_site(
+            site_index_path=site_index_path,
+            target_T_world_camera=target,
+            k=3,
+            mode="spatial",
+            storage_root=storage_root,
+            bucket=site_root.parents[2].name if len(site_root.parents) > 2 else None,
+        )
+        return len(results)
+    except Exception:
+        return 0
 
 
 # ---------------------------------------------------------------------------

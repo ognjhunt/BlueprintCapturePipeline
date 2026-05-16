@@ -111,6 +111,24 @@ def _build_staged_capture(
     return capture_root, str(materialized["descriptor_uri"])
 
 
+def test_materialization_does_not_fabricate_missing_upstream_ids(tmp_path: Path) -> None:
+    capture_root, _descriptor_uri = _build_staged_capture(tmp_path)
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+
+    assert descriptor["site_submission_id"] is None
+    assert descriptor["buyer_request_id"] is None
+    assert descriptor["capture_job_id"] is None
+    assert descriptor["upstream_link_truth_state"] == "blocked_missing_upstream_ids"
+    assert descriptor["upstream_link_blockers"] == [
+        "missing_site_submission_id",
+        "missing_buyer_request_id",
+        "missing_capture_job_id",
+    ]
+    assert descriptor["metadata"]["site_submission_id"] is None
+    assert descriptor["metadata"]["buyer_request_id"] is None
+    assert descriptor["metadata"]["capture_job_id"] is None
+
+
 def _successful_capture_review() -> dict[str, object]:
     return {
         "schema_version": "v1",

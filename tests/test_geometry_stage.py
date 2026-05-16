@@ -134,6 +134,8 @@ def _write_frame_artifacts(base_dir: Path, *, frame_count: int = 3) -> list[dict
 
 def test_build_geometry_stage_contract_writes_completed_outputs(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_capture(tmp_path)
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
 
     def _fake_provider(**kwargs):  # type: ignore[no-untyped-def]
         geometry_root = Path(kwargs["geometry_root"])
@@ -153,6 +155,10 @@ def test_build_geometry_stage_contract_writes_completed_outputs(monkeypatch, tmp
             "provider_warnings": [],
             "provider_errors": [],
             "loop_closure_detected": False,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_match_rate": 0.92,
+            "p95_pose_delta_sec": 0.033,
         }
 
     monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
@@ -177,6 +183,13 @@ def test_build_geometry_stage_contract_writes_completed_outputs(monkeypatch, tmp
     assert summary["ready_for_world_model"] is True
     assert summary["geometry_source"] == "video_to_world"
     assert summary["fallback_used"] is False
+    assert summary["provider_native_result"] is True
+    assert summary["geometry_live_ready"] is True
+    assert summary["site_frame_available"] is True
+    assert summary["scale_resolved"] is True
+    assert summary["pose_track_count"] == 3
+    assert summary["pose_match_rate"] == 0.92
+    assert summary["p95_pose_delta_sec"] == 0.033
     assert summary["deliverables"]["pose_count"] == 3
     assert summary["deliverables"]["depth_frame_count"] == 3
     assert depth_manifest["frame_count"] == 3
@@ -189,6 +202,8 @@ def test_build_geometry_stage_contract_writes_completed_outputs(monkeypatch, tmp
 
 def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_capture(tmp_path)
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
 
     def _failing_provider(**_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
@@ -236,9 +251,65 @@ def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_pa
     assert descriptor["metadata"]["geometry"]["internal_fallback_ready"] is True
 
 
+def test_local_sfm_writes_degraded_geometry_summary(tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={"capture_source": "meta_glasses", "capture_profile_id": "glasses_pov"},
+        context_overrides={"captureSource": "meta_glasses", "captureModality": "glasses_video_only"},
+    )
+
+    result = build_geometry_stage_contract(capture_root, provider="local_sfm", model="local-sfm-offline")
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    provider_result = json.loads(
+        (capture_root / "pipeline" / "geometry" / "logs" / "provider_result.json").read_text(encoding="utf-8")
+    )
+
+    assert result.status == "completed_degraded"
+    assert summary["geometry_source"] == "local_sfm"
+    assert summary["capture_source"] == "meta_glasses"
+    assert summary["fallback_used"] is False
+    assert summary["provider_native_result"] is False
+    assert summary["ready_for_world_model"] is False
+    assert summary["geometry_live_ready"] is False
+    assert summary["intrinsics_available"] is True
+    assert summary["site_frame_available"] is False
+    assert summary["scale_resolved"] is False
+    assert summary["pose_track_count"] > 0
+    assert "provider_native_geometry_missing" in summary["blockers"]
+    assert "scale_not_proven" in summary["blockers"]
+    assert provider_result["geometry_source"] == "local_sfm"
+    assert provider_result["provider_native_result"] is False
+
+
+def test_video_to_world_missing_env_writes_provider_blocker_without_live_call(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(tmp_path)
+    monkeypatch.delenv("VIDEO_TO_WORLD_URL", raising=False)
+    monkeypatch.delenv("VIDEO_TO_WORLD_RUNNER_TOKEN", raising=False)
+
+    def _provider_should_not_run(**_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("video_to_world provider should be gated before live call")
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _provider_should_not_run)
+
+    result = build_geometry_stage_contract(capture_root, provider="video_to_world")
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+
+    assert result.status == "completed_degraded"
+    assert summary["geometry_source"] == "local_sfm"
+    assert summary["provider_native_result"] is False
+    assert summary["geometry_live_ready"] is False
+    assert "provider_native_geometry_missing" in summary["blockers"]
+    assert "video_to_world_runner_not_configured" in summary["blockers"]
+    assert summary["provider_blocker"]["required_env"] == ["VIDEO_TO_WORLD_URL", "VIDEO_TO_WORLD_RUNNER_TOKEN"]
+    assert "scripts/run_geometry_lane.py" in summary["provider_blocker"]["command"]
+
+
 def test_production_fallback_geometry_cannot_mark_launch_ready(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_capture(tmp_path)
     monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
 
     def _failing_provider(**_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")

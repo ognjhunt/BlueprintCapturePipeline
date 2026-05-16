@@ -2265,10 +2265,31 @@ def _build_opportunity_handoff(
         if completeness_status == "sufficient"
         else "qualification"
     )
-    site_submission_id = str(metadata.get("site_submission_id") or "").strip() or (
-        f"{descriptor.scene_id}:{descriptor.capture_id}"
-    )
-    opportunity_id = str(metadata.get("opportunity_id") or "").strip() or site_submission_id
+    site_submission_id = str(
+        metadata.get("site_submission_id")
+        or getattr(descriptor, "site_submission_id", "")
+        or ""
+    ).strip()
+    buyer_request_id = str(
+        metadata.get("buyer_request_id")
+        or getattr(descriptor, "buyer_request_id", "")
+        or ""
+    ).strip()
+    capture_job_id = str(
+        metadata.get("capture_job_id")
+        or getattr(descriptor, "capture_job_id", "")
+        or ""
+    ).strip()
+    upstream_link_blockers = [
+        blocker
+        for blocker, value in (
+            ("missing_site_submission_id", site_submission_id),
+            ("missing_buyer_request_id", buyer_request_id),
+            ("missing_capture_job_id", capture_job_id),
+        )
+        if not value
+    ]
+    opportunity_id = str(metadata.get("opportunity_id") or "").strip() or site_submission_id or descriptor.scene_id
     task_statement = (
         str(metadata.get("task_statement") or "").strip()
         or str(metadata.get("workflow_context") or "").strip()
@@ -2320,6 +2341,10 @@ def _build_opportunity_handoff(
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
         "site_submission_id": site_submission_id,
+        "buyer_request_id": buyer_request_id,
+        "capture_job_id": capture_job_id,
+        "upstream_link_truth_state": "verified" if not upstream_link_blockers else "blocked_missing_upstream_ids",
+        "upstream_link_blockers": upstream_link_blockers,
         "opportunity_id": opportunity_id,
         "qualification_state": readiness_state,
         "downstream_evaluation_eligibility": readiness_state == "ready",

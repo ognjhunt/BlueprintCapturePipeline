@@ -59,7 +59,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"geometry_root={payload['geometry_root']} "
         f"manifest={payload['manifest_path']}"
     )
-    return 0 if payload["status"] == "completed" else 1
+    return 0 if payload["status"] in {"completed", "completed_degraded"} else 1
 
 
 if __name__ == "__main__":

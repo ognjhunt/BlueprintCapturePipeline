@@ -2,7 +2,14 @@
 
 `BlueprintCapturePipeline` is the packaging, trust, and runtime service that turns raw Blueprint captures into site-specific world-model products with provenance, privacy, and rights safety.
 
-For non-ARKit captures, the canonical world-model packaging path remains internal: `BlueprintCapture` evidence -> qualification -> privacy-aware geometry staging -> retrieval memory -> alignment -> synthesis/Cosmos conditioning. The default hosted preview path is now World Labs Marble from the privacy-safe walkthrough, while scene-memory, presentation, evaluation-prep, and runtime registration remain downstream derived lanes.
+For non-ARKit captures, the canonical world-model packaging path remains internal: `BlueprintCapture` evidence -> support/trust analysis -> privacy-aware geometry staging -> retrieval memory -> alignment -> synthesis/Cosmos conditioning. The default hosted preview path is now World Labs Marble from the privacy-safe walkthrough, while scene-memory, presentation, evaluation-prep, and runtime registration remain downstream derived lanes.
+
+AI and engineer orientation maps live under [`docs/architecture/`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture):
+
+- [`ai-onboarding-map.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/ai-onboarding-map.md)
+- [`source-of-truth-map.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/source-of-truth-map.md)
+- [`command-safety-matrix.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/command-safety-matrix.md)
+- [`refactor-hotspots.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/refactor-hotspots.md)
 
 ## Scope
 
@@ -22,7 +29,7 @@ Primary product path:
 - optional evaluation-prep packaging
 - optional runtime registration support for the built site-world package
 
-Authoritative alpha artifacts:
+Support / trust alpha artifacts:
 
 - `qualification_summary.json`
 - `capture_quality_summary.json`

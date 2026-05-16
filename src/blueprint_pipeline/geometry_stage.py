@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,25 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _frame_id(frame_index: int) -> str:
     return str(int(frame_index)).zfill(6)
+
+
+def _summary_capture_source(descriptor: CaptureDescriptor) -> str:
+    media_metadata = (
+        descriptor.metadata.get("media_metadata")
+        if isinstance(descriptor.metadata.get("media_metadata"), Mapping)
+        else {}
+    )
+    source_device = str(
+        descriptor.metadata.get("source_device")
+        or media_metadata.get("source_device")
+        or ""
+    ).strip()
+    capture_source = str(descriptor.capture_source or "unknown").strip() or "unknown"
+    if capture_source == "glasses" and source_device == "meta_glasses":
+        return "meta_glasses"
+    if capture_source == "glasses":
+        return "non_arkit_video"
+    return capture_source
 
 
 @dataclass(frozen=True)
@@ -466,6 +486,28 @@ def _build_provider_request_payload(
     }
 
 
+def _video_to_world_provider_blocker() -> Optional[Dict[str, Any]]:
+    missing = [
+        name
+        for name in ("VIDEO_TO_WORLD_URL", "VIDEO_TO_WORLD_RUNNER_TOKEN")
+        if not str(os.getenv(name) or "").strip()
+    ]
+    if not missing:
+        return None
+    return {
+        "id": "provider_native_geometry_missing",
+        "reason": "video_to_world_runner_not_configured",
+        "required_env": ["VIDEO_TO_WORLD_URL", "VIDEO_TO_WORLD_RUNNER_TOKEN"],
+        "missing_env": missing,
+        "command": (
+            "VIDEO_TO_WORLD_URL=https://<video-to-world-runner> "
+            "VIDEO_TO_WORLD_RUNNER_TOKEN=<secret> "
+            "python3 scripts/run_geometry_lane.py --capture-root <capture-root> "
+            "--provider video_to_world --model video_to_world-default"
+        ),
+    }
+
+
 def _run_geometry_provider(
     *,
     video_path: Path,
@@ -479,6 +521,13 @@ def _run_geometry_provider(
     video_probe: Mapping[str, Any],
 ) -> Dict[str, Any]:
     provider_key = str(provider or "").strip().lower()
+    if provider_key in {"local_sfm", "sfm", "offline_sfm", "non_arkit_local"}:
+        return _build_local_sfm_provider_result(
+            video_path=video_path,
+            geometry_root=geometry_root,
+            video_probe=video_probe,
+            provider_blocker=None,
+        )
     if provider_key in {"da3", "local_da3", "depth_anything_3"}:
         result = run_da3_provider(
             video_path=video_path,
@@ -495,6 +544,14 @@ def _run_geometry_provider(
             warnings = list(result.get("provider_warnings") or [])
             result["provider_warnings"] = list(dict.fromkeys([*warnings, "local_da3_synthetic_depth_used"]))
         return result
+    provider_blocker = _video_to_world_provider_blocker()
+    if provider_blocker is not None:
+        return _build_local_sfm_provider_result(
+            video_path=video_path,
+            geometry_root=geometry_root,
+            video_probe=video_probe,
+            provider_blocker=provider_blocker,
+        )
     return run_video_to_world_provider(
         video_path=video_path,
         video_uri=video_uri,
@@ -665,6 +722,60 @@ def _build_fallback_provider_result(
         "fallback_used": True,
         "fallback_kind": "internal_synthetic_geometry",
     }
+
+
+def _build_local_sfm_provider_result(
+    *,
+    video_path: Path,
+    geometry_root: Path,
+    video_probe: Mapping[str, Any],
+    provider_blocker: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    local = _build_fallback_provider_result(
+        video_path=video_path,
+        geometry_root=geometry_root,
+        video_probe=video_probe,
+        provider_error=RuntimeError(
+            str(provider_blocker.get("reason"))
+            if isinstance(provider_blocker, Mapping)
+            else "local_sfm_relative_geometry"
+        ),
+    )
+    warnings = [
+        warning
+        for warning in list(local.get("provider_warnings") or [])
+        if not str(warning).startswith("provider_failed:")
+        and warning != "fallback_geometry_used"
+    ]
+    warnings.extend(
+        [
+            "local_sfm_relative_geometry_only",
+            "scale_not_proven",
+            "site_frame_not_proven",
+        ]
+    )
+    if provider_blocker is not None:
+        warnings.append(str(provider_blocker.get("reason") or "video_to_world_runner_not_configured"))
+    local["geometry_source"] = "local_sfm"
+    local["provider_native_result"] = False
+    local["fallback_used"] = False
+    local["fallback_kind"] = None
+    local["provider_metrics"] = {
+        **dict(local.get("provider_metrics") or {}),
+        "backend": "local_sfm_offline",
+        "provider_native_result": False,
+        "scale_resolved": False,
+        "site_frame_available": False,
+        "provider_blocker": dict(provider_blocker) if isinstance(provider_blocker, Mapping) else None,
+    }
+    local["provider_warnings"] = list(dict.fromkeys(warnings))
+    local["provider_errors"] = []
+    local["provider_blocker"] = dict(provider_blocker) if isinstance(provider_blocker, Mapping) else None
+    local["site_frame_available"] = False
+    local["scale_resolved"] = False
+    local["pose_match_rate"] = 0.0
+    local["p95_pose_delta_sec"] = None
+    return local
 
 
 def _build_dynamic_mask_manifest(
@@ -860,6 +971,8 @@ def _patch_descriptor_with_geometry(
         if candidate
         else "fallback_geometry_not_live_video_to_world"
         if fallback_used
+        else "provider_native_geometry_missing"
+        if geometry_source == "local_sfm"
         else "geometry_not_ready",
     }
     topology = (
@@ -1009,9 +1122,18 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     provider_key = str(provider or "").strip().lower()
     local_da3_provider = provider_key in {"da3", "local_da3", "depth_anything_3"}
     provider_result_fallback = bool(provider_result.get("fallback_used"))
+    provider_result_source = str(provider_result.get("geometry_source") or "").strip()
+    local_sfm_provider = provider_result_source == "local_sfm" or provider_key in {
+        "local_sfm",
+        "sfm",
+        "offline_sfm",
+        "non_arkit_local",
+    }
     frame_geometry_source = (
         "fallback_geometry"
         if provider_result_fallback
+        else "local_sfm"
+        if local_sfm_provider
         else "local_da3"
         if local_da3_provider
         else "video_to_world"
@@ -1145,20 +1267,46 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
 
     provider_key = str(provider or "").strip().lower()
     local_da3_provider = provider_key in {"da3", "local_da3", "depth_anything_3"}
+    local_sfm_provider = str(provider_result.get("geometry_source") or "").strip() == "local_sfm" or provider_key in {
+        "local_sfm",
+        "sfm",
+        "offline_sfm",
+        "non_arkit_local",
+    }
     fallback_used = bool(provider_result.get("fallback_used"))
     fallback_kind = (
         str(provider_result.get("fallback_kind") or "internal_synthetic_geometry")
         if fallback_used
         else None
     )
-    geometry_source = "fallback_geometry" if fallback_used else "local_da3" if local_da3_provider else "video_to_world"
-    provider_native_result = not fallback_used
-    status_label = "completed_with_fallback" if fallback_used else "completed"
+    geometry_source = (
+        "fallback_geometry"
+        if fallback_used
+        else "local_sfm"
+        if local_sfm_provider
+        else "local_da3"
+        if local_da3_provider
+        else "video_to_world"
+    )
+    provider_native_result = bool(
+        provider_result.get(
+            "provider_native_result",
+            (not fallback_used and geometry_source == "video_to_world"),
+        )
+    )
     launch_blockers = (
         ["fallback_geometry_not_launchable", "fallback_geometry_not_live_video_to_world"]
         if fallback_used
         else []
     )
+    provider_blocker = (
+        dict(provider_result.get("provider_blocker"))
+        if isinstance(provider_result.get("provider_blocker"), Mapping)
+        else None
+    )
+    if provider_blocker is not None:
+        launch_blockers.append(str(provider_blocker.get("reason") or "video_to_world_runner_not_configured"))
+        launch_blockers.append("provider_native_geometry_missing")
     metadata_topology = (
         descriptor.metadata.get("capture_topology")
         if isinstance(descriptor.metadata.get("capture_topology"), Mapping)
@@ -1201,32 +1349,83 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     pose_coverage = round(len(pose_records) / float(len(frame_records) or 1), 6)
     confidence_coverage = round(len(confidence_artifacts) / float(len(frame_records) or 1), 6)
     depth_coverage = round(len(depth_artifacts) / float(len(frame_records) or 1), 6)
-    contract_ready_for_world_model = bool(pose_records and depth_artifacts and confidence_artifacts)
+    intrinsics_available = bool(
+        intrinsics_payload.get("fx")
+        and intrinsics_payload.get("fy")
+        and intrinsics_payload.get("image_width")
+        and intrinsics_payload.get("image_height")
+    )
+    pose_track_count = len(pose_records)
+    pose_match_rate = _safe_float(provider_result.get("pose_match_rate"), pose_coverage)
+    p95_pose_delta_raw = provider_result.get("p95_pose_delta_sec")
+    p95_pose_delta_sec = (
+        _safe_float(p95_pose_delta_raw)
+        if p95_pose_delta_raw is not None
+        else None
+    )
+    site_frame_available = bool(provider_result.get("site_frame_available"))
+    scale_resolved = bool(provider_result.get("scale_resolved")) or bool(
+        scale_assessment.get("metric_trusted")
+    )
+    contract_ready_for_world_model = bool(
+        pose_records and depth_artifacts and confidence_artifacts and intrinsics_available
+    )
     internal_fallback_ready = bool(contract_ready_for_world_model and fallback_used)
     geometry_live_ready = bool(
         contract_ready_for_world_model
         and provider_native_result
         and geometry_source == "video_to_world"
+        and site_frame_available
+        and scale_resolved
+        and pose_match_rate >= 0.65
+        and (p95_pose_delta_sec is not None and p95_pose_delta_sec <= 0.2)
     )
     ready_for_world_model = geometry_live_ready
-    if not geometry_live_ready and not fallback_used:
+    if local_sfm_provider:
+        launch_blockers.extend(
+            [
+                "provider_native_geometry_missing",
+                "scale_not_proven",
+                "site_frame_not_proven",
+            ]
+        )
+    elif not geometry_live_ready and not fallback_used:
         launch_blockers.append(
             "local_da3_not_live_video_to_world"
             if local_da3_provider
             else "video_to_world_geometry_incomplete"
         )
+    if not intrinsics_available:
+        launch_blockers.append("intrinsics_missing")
+    if not site_frame_available:
+        launch_blockers.append("site_frame_not_proven")
+    if not scale_resolved:
+        launch_blockers.append("scale_not_proven")
+    if not provider_native_result:
+        launch_blockers.append("provider_native_geometry_missing")
+    if p95_pose_delta_sec is None:
+        launch_blockers.append("pose_timing_not_proven")
     external_market_ready = bool(geometry_live_ready and not launch_blockers)
     site_faithful_market_ready = bool(
         external_market_ready
         and str(scale_assessment.get("status") or "") in {"metric_trusted", "estimated_scale"}
     )
 
+    status_label = (
+        "completed_with_fallback"
+        if fallback_used
+        else "completed"
+        if ready_for_world_model
+        else "completed_degraded"
+    )
+    blockers = list(dict.fromkeys(launch_blockers))
     summary_payload = {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
         "stage": "geometry",
         "status": status_label,
         "geometry_source": geometry_source,
+        "capture_source": _summary_capture_source(descriptor),
         "canonical_frame_id": pose_records[0]["frame_id"] if pose_records else None,
         "fallback_used": fallback_used,
         "fallback_kind": fallback_kind,
@@ -1237,7 +1436,15 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "geometry_live_ready": geometry_live_ready,
         "external_market_ready": external_market_ready,
         "site_faithful_market_ready": site_faithful_market_ready,
-        "launch_blockers": list(dict.fromkeys(launch_blockers)),
+        "launch_blockers": blockers,
+        "blockers": blockers,
+        "provider_blocker": provider_blocker,
+        "pose_track_count": pose_track_count,
+        "pose_match_rate": round(float(pose_match_rate), 6),
+        "p95_pose_delta_sec": p95_pose_delta_sec,
+        "intrinsics_available": intrinsics_available,
+        "site_frame_available": site_frame_available,
+        "scale_resolved": scale_resolved,
         "scale_trust_classification": str(scale_assessment.get("status") or "conditioning_only"),
         "source_video": {
             "path": str(video_path),
@@ -1249,7 +1456,8 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             "name": provider,
             "model": model,
             "execution_mode": execution_mode,
-            "provider_native_result": not fallback_used,
+            "provider_native_result": provider_native_result,
+            "provider_blocker": provider_blocker,
             "non_fallback_pose_count": len(pose_records) if not fallback_used else 0,
             "non_fallback_depth_count": len(depth_artifacts) if not fallback_used else 0,
             "warnings": list(provider_result_payload.get("warnings") or []),

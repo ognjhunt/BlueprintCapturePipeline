@@ -129,6 +129,9 @@ def _runtime_capability_payload(
     geometry_live_ready = bool(geometry_summary.get("geometry_live_ready"))
     geometry_source = str(geometry_summary.get("geometry_source") or "missing").strip()
     fallback_used = bool(geometry_summary.get("fallback_used"))
+    provider_native_result = bool(geometry_summary.get("provider_native_result"))
+    site_frame_available = bool(geometry_summary.get("site_frame_available"))
+    scale_resolved = bool(geometry_summary.get("scale_resolved"))
     runtime_launchable = bool(site_world_health.get("launchable"))
     runtime_status = str(site_world_health.get("status") or "missing").strip().lower()
     geometry_required = profile in {"meta_glasses", "android_video", "iphone_video_only"}
@@ -138,7 +141,14 @@ def _runtime_capability_payload(
         blockers.append("missing_site_world_bundle")
     if geometry_required and not geometry_ready:
         blockers.append("geometry_not_ready")
-    if geometry_required and (fallback_used or geometry_source != "video_to_world" or not geometry_live_ready):
+    if geometry_required and (
+        fallback_used
+        or geometry_source != "video_to_world"
+        or not geometry_live_ready
+        or not provider_native_result
+        or not site_frame_available
+        or not scale_resolved
+    ):
         blockers.append("geometry_not_live_video_to_world")
     if runtime_launch_expected and not runtime_launchable:
         blockers.append("runtime_not_launchable")
@@ -154,6 +164,23 @@ def _runtime_capability_payload(
         "geometry_live_ready": geometry_live_ready,
         "geometry_source": geometry_source,
         "fallback_used": fallback_used,
+        "provider_native_result": provider_native_result,
+        "site_frame_available": site_frame_available,
+        "scale_resolved": scale_resolved,
+        "non_arkit_geometry_state": (
+            "ready"
+            if geometry_required
+            and geometry_live_ready
+            and provider_native_result
+            and geometry_source == "video_to_world"
+            else "degraded"
+            if geometry_required
+            and geometry_source == "local_sfm"
+            and bool(geometry_summary.get("contract_ready_for_world_model"))
+            else "not_applicable"
+            if not geometry_required
+            else "blocked"
+        ),
         "site_world_bundle_ready": has_site_world_bundle,
         "runtime_health_status": runtime_status or "missing",
         "blockers": blockers,
@@ -702,6 +729,10 @@ def build_launch_gate_summary(
         descriptor.site_submission_id
         or str(opportunity_handoff.get("site_submission_id") or "").strip()
     )
+    buyer_request_id = (
+        descriptor.buyer_request_id
+        or str(opportunity_handoff.get("buyer_request_id") or "").strip()
+    )
     capture_job_id = (
         descriptor.capture_job_id
         or str(opportunity_handoff.get("capture_job_id") or "").strip()
@@ -744,6 +775,14 @@ def build_launch_gate_summary(
             category="launch_gate",
         ),
         _check(
+            "buyer_request_linked",
+            bool(buyer_request_id),
+            f"buyer_request_id is {buyer_request_id}"
+            if buyer_request_id
+            else "buyer_request_id is missing from the buyer request linkage",
+            category="launch_gate",
+        ),
+        _check(
             "mobile_claim_context_captured",
             bool(descriptor.capture_source and descriptor.quoted_payout_cents is not None),
             (
@@ -765,7 +804,7 @@ def build_launch_gate_summary(
             or external_alpha_go
             or internal_alpha_go,
             (
-                f"qualification_state is {authoritative_qualification_state or 'not_ready_yet'} and alpha verdict is authoritative"
+                f"qualification_state is {authoritative_qualification_state or 'not_ready_yet'} and alpha verdict is enforced"
                 if authoritative_qualification_state in {"qualified_ready", "qualified_risky"}
                 or external_alpha_go
                 or internal_alpha_go
@@ -825,7 +864,7 @@ def build_launch_gate_summary(
         source_status = "blocked"
 
     justified_claims = [
-        "Qualification and readiness remain the authoritative launch gate.",
+        "Qualification and readiness remain enforced support gates; raw capture and package provenance remain authoritative.",
         "Privacy-safe walkthrough media is the buyer-facing artifact; runtime or world-model outputs stay downstream.",
     ]
     if all_stage_checks_passed:
@@ -846,7 +885,7 @@ def build_launch_gate_summary(
         )
 
     not_justified_claims = [
-        "Do not claim runtime or world-model outputs can override qualification truth.",
+        "Do not claim runtime or world-model outputs can override raw capture, rights, privacy, provenance, or package truth.",
         "Do not claim strong site-faithful world-model quality; only native runtime capability and downstream packaging are proven here.",
         "Do not claim live buyer payments or live capturer payouts are proven until the operator payment checklist is completed.",
         "Do not claim Stripe, identity/KYC, background-check, instant-pay, or payout-timing readiness from backend URL, publishable key, or mocked tests.",
@@ -921,7 +960,7 @@ def build_launch_gate_summary(
         "runtime_capability": runtime_capability,
         "qualification_policy": {
             "authoritative_truth": True,
-            "detail": "Qualification and readiness are authoritative; runtime and world-model outputs are derived only.",
+            "detail": "Raw capture, rights, privacy, provenance, and package artifacts are authoritative; qualification and readiness are enforced support gates.",
         },
         "stage_checks": stage_checks,
         "source_acceptance": {

@@ -321,6 +321,21 @@ def _resolve_site_index_path(
     return p2 if p2.is_file() else None
 
 
+def _resolve_site_reference_manifest_path(
+    site_id: str,
+    storage_root: Path,
+    bucket: str,
+) -> Optional[Path]:
+    candidates = [
+        storage_root / bucket / "sites" / site_id / "reference_memory" / "site_reference_manifest.json",
+        storage_root / "sites" / site_id / "reference_memory" / "site_reference_manifest.json",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
 def _resolve_site_id(site_world: Mapping[str, Any], scene_id: str, capture_id: str, storage_root: Path, bucket: str) -> str:
     """Best-effort site_id resolution from site_world metadata or capture_descriptor."""
     site_id = str(site_world.get("site_id") or "").strip()
@@ -335,6 +350,169 @@ def _resolve_site_id(site_world: Mapping[str, Any], scene_id: str, capture_id: s
         return str(identity.get("site_id") or "").strip()
     except Exception:
         return ""
+
+
+def _site_reference_runtime_adapter(
+    *,
+    site_id: str,
+    manifest_path: Optional[Path],
+    site_index_path: Optional[Path],
+    storage_root: Path,
+    bucket: str,
+    runtime_readiness: Mapping[str, Any],
+) -> Dict[str, Any]:
+    blockers: list[str] = []
+    manifest = _json_read(manifest_path) if manifest_path and manifest_path.is_file() else {}
+    if not site_id:
+        blockers.append("missing_site_id")
+    if not manifest_path:
+        blockers.append("missing_site_reference_manifest")
+    if manifest and manifest.get("schema_version") != "site_reference_database.v1":
+        blockers.append("site_reference_manifest_schema_invalid")
+    if not site_index_path:
+        blockers.append("missing_site_reference_index")
+    query_reference_count = _site_reference_query_count(
+        site_index_path=site_index_path,
+        storage_root=storage_root,
+        bucket=bucket,
+    )
+    geometry_state = _site_reference_geometry_state(site_index_path)
+    if site_index_path and query_reference_count <= 0:
+        blockers.append("site_reference_query_empty")
+    blockers.extend(geometry_state["blockers"])
+    backend_blockers = [str(item) for item in list(runtime_readiness.get("notes") or []) if str(item)]
+    local_contract_ready = bool(site_id and manifest_path and site_index_path) and not any(
+        blocker in blockers
+        for blocker in (
+            "missing_site_id",
+            "missing_site_reference_manifest",
+            "site_reference_manifest_schema_invalid",
+            "missing_site_reference_index",
+        )
+    )
+    retrieval_ready = local_contract_ready and query_reference_count > 0
+    return {
+        "schema_version": "site_reference_runtime_adapter.v1",
+        "site_id": site_id or None,
+        "generated_at": _utc_now_iso(),
+        "site_reference_manifest_path": str(manifest_path) if manifest_path else None,
+        "site_reference_index_path": str(site_index_path) if site_index_path else None,
+        "manifest_schema_version": manifest.get("schema_version"),
+        "total_reference_frames": manifest.get("total_reference_frames"),
+        "capture_count": manifest.get("capture_count"),
+        "chunk_count": manifest.get("chunk_count"),
+        "local_contract_ready": local_contract_ready,
+        "retrieval_ready": retrieval_ready,
+        "query_reference_count": query_reference_count,
+        "non_arkit_geometry_state": geometry_state["state"],
+        "non_arkit_geometry_sources": geometry_state["sources"],
+        "provider_native_geometry_ready": geometry_state["provider_native_geometry_ready"],
+        "world_model_ready": bool(retrieval_ready and geometry_state["swm_world_model_ready"]),
+        "selected_runtime_path": "cosmos_i2w" if runtime_readiness.get("ready") else "splat_only",
+        "runtime_adapter_ready": retrieval_ready,
+        "backend_ready": bool(runtime_readiness.get("ready")),
+        "backend_blockers": backend_blockers,
+        "blockers": blockers,
+        "claim_policy": "local_adapter_only_no_live_provider_or_hosted_success_claim",
+    }
+
+
+def _site_reference_geometry_state(site_index_path: Optional[Path]) -> Dict[str, Any]:
+    if site_index_path is None or not site_index_path.is_file():
+        return {
+            "state": "blocked",
+            "sources": [],
+            "provider_native_geometry_ready": False,
+            "swm_world_model_ready": False,
+            "blockers": [],
+        }
+    rows: list[Dict[str, Any]] = []
+    try:
+        with site_index_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                payload = json.loads(line)
+                if isinstance(payload, Mapping):
+                    rows.append(dict(payload))
+    except Exception:
+        return {
+            "state": "blocked",
+            "sources": [],
+            "provider_native_geometry_ready": False,
+            "swm_world_model_ready": False,
+            "blockers": ["site_reference_index_unreadable"],
+        }
+
+    geometry_sources = [
+        str(row.get("geometry_source") or "").strip() or "unknown"
+        for row in rows
+    ]
+    non_arkit_sources = {
+        source
+        for source in geometry_sources
+        if source not in {"arkit", "arcore"}
+    }
+    if not non_arkit_sources:
+        return {
+            "state": "not_applicable",
+            "sources": [],
+            "provider_native_geometry_ready": True,
+            "swm_world_model_ready": True,
+            "blockers": [],
+        }
+    if non_arkit_sources == {"video_to_world"}:
+        return {
+            "state": "ready",
+            "sources": sorted(non_arkit_sources),
+            "provider_native_geometry_ready": True,
+            "swm_world_model_ready": True,
+            "blockers": [],
+        }
+    if non_arkit_sources.issubset({"local_sfm"}):
+        return {
+            "state": "degraded",
+            "sources": sorted(non_arkit_sources),
+            "provider_native_geometry_ready": False,
+            "swm_world_model_ready": False,
+            "blockers": ["provider_native_geometry_missing"],
+        }
+    return {
+        "state": "blocked",
+        "sources": sorted(non_arkit_sources),
+        "provider_native_geometry_ready": False,
+        "swm_world_model_ready": False,
+        "blockers": ["non_arkit_geometry_not_live_video_to_world"],
+    }
+
+
+def _site_reference_query_count(
+    *,
+    site_index_path: Optional[Path],
+    storage_root: Path,
+    bucket: str,
+) -> int:
+    if site_index_path is None:
+        return 0
+    try:
+        from .synthesis.retrieval_query import query_site
+
+        target = _pose_from_site_index(site_index_path)
+        if target is None:
+            return 0
+        return len(
+            query_site(
+                site_index_path=site_index_path,
+                target_T_world_camera=target,
+                k=3,
+                mode="spatial",
+                storage_root=storage_root,
+                bucket=bucket,
+            )
+        )
+    except Exception:
+        return 0
 
 
 def _pose_summary_from_matrix(T_world_camera: Any) -> Dict[str, float]:
@@ -420,6 +598,9 @@ class NativeWorldModelRuntimeStore:
 
     def _session_state_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "session_state.json"
+
+    def _site_reference_runtime_artifact_path(self, session_id: str) -> Path:
+        return self._session_dir(session_id) / "site_reference_runtime_readiness.json"
 
     def _cosmos_dir(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "cosmos"
@@ -1832,6 +2013,21 @@ class NativeWorldModelRuntimeStore:
             if site_id
             else None
         )
+        site_reference_manifest_path = (
+            _resolve_site_reference_manifest_path(site_id, storage_root, bucket)
+            if site_id
+            else None
+        )
+        runtime_readiness = _runtime_readiness()
+        site_reference_runtime_adapter = _site_reference_runtime_adapter(
+            site_id=site_id,
+            manifest_path=site_reference_manifest_path,
+            site_index_path=site_index_path,
+            storage_root=storage_root,
+            bucket=bucket,
+            runtime_readiness=runtime_readiness,
+        )
+        site_reference_runtime_artifact_path = self._site_reference_runtime_artifact_path(session_id)
 
         # Initial camera pose — taken from first record of the site reference index
         initial_T: Optional[list] = None
@@ -1849,6 +2045,11 @@ class NativeWorldModelRuntimeStore:
             "storage_root": str(storage_root),
             "storage_bucket": bucket,
             "site_index_path": str(site_index_path) if site_index_path else None,
+            "site_reference_manifest_path": (
+                str(site_reference_manifest_path) if site_reference_manifest_path else None
+            ),
+            "site_reference_runtime_adapter": site_reference_runtime_adapter,
+            "site_reference_runtime_artifact_path": str(site_reference_runtime_artifact_path),
             "status": "ready",
             "runtime_kind": "native_world_model",
             "runtime_base_url": self.base_url,
@@ -1882,6 +2083,7 @@ class NativeWorldModelRuntimeStore:
             "observation": self._make_observation(session_id, 0, render_source="bootstrap_prebuilt"),
             "rollout": self._rollout_defaults(),
         }
+        _json_write(site_reference_runtime_artifact_path, site_reference_runtime_adapter)
         stored = self._store_session_state(session_id, state)
         # Kick off background Cosmos prep so frames are ready for first render
         threading.Thread(

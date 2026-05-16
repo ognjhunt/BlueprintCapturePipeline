@@ -711,30 +711,67 @@ def _geometry_conditioning_truth(scene_memory_bundle_manifest: Mapping[str, Any]
     geometry_source = str(geometry_summary.get("geometry_source") or "missing").strip()
     fallback_used = bool(geometry_summary.get("fallback_used"))
     ready_for_world_model = bool(geometry_summary.get("ready_for_world_model"))
+    provider_native_result = bool(geometry_summary.get("provider_native_result"))
+    site_frame_available = bool(geometry_summary.get("site_frame_available"))
+    scale_resolved = bool(geometry_summary.get("scale_resolved"))
+    contract_ready_for_world_model = bool(geometry_summary.get("contract_ready_for_world_model"))
     geometry_live_ready = bool(
         geometry_summary.get("geometry_live_ready")
         if geometry_summary.get("geometry_live_ready") is not None
-        else ready_for_world_model and geometry_source == "video_to_world" and not fallback_used
+        else (
+            ready_for_world_model
+            and geometry_source == "video_to_world"
+            and not fallback_used
+            and provider_native_result
+            and site_frame_available
+            and scale_resolved
+        )
     )
     blockers = list(geometry_summary.get("launch_blockers") or [])
     if geometry_summary_path and fallback_used:
         blockers.append("fallback_geometry_not_live_video_to_world")
     if geometry_summary_path and geometry_source != "video_to_world":
         blockers.append(f"geometry_source_not_video_to_world:{geometry_source or 'missing'}")
+    if geometry_summary_path and not provider_native_result:
+        blockers.append("provider_native_geometry_missing")
+    if geometry_summary_path and not site_frame_available:
+        blockers.append("site_frame_not_proven")
+    if geometry_summary_path and not scale_resolved:
+        blockers.append("scale_not_proven")
     if geometry_summary_path and not geometry_live_ready:
         blockers.append("geometry_not_live_video_to_world")
+    local_reference_ready = bool(
+        geometry_summary_path
+        and geometry_source == "local_sfm"
+        and not fallback_used
+        and contract_ready_for_world_model
+    )
+    non_arkit_geometry_state = (
+        "ready"
+        if geometry_live_ready and provider_native_result and geometry_source == "video_to_world"
+        else "degraded"
+        if local_reference_ready
+        else "blocked"
+    )
     return {
         "geometry_summary_path": geometry_summary_path,
         "geometry_source": geometry_source,
         "fallback_used": fallback_used,
         "fallback_kind": geometry_summary.get("fallback_kind"),
         "ready_for_world_model": ready_for_world_model,
-        "contract_ready_for_world_model": bool(geometry_summary.get("contract_ready_for_world_model")),
+        "contract_ready_for_world_model": contract_ready_for_world_model,
         "internal_fallback_ready": bool(geometry_summary.get("internal_fallback_ready")),
         "geometry_live_ready": geometry_live_ready,
         "site_faithful_market_ready": bool(geometry_summary.get("site_faithful_market_ready")),
-        "provider_native_result": bool(geometry_summary.get("provider_native_result")),
-        "launchable": bool(geometry_summary_path and geometry_live_ready),
+        "provider_native_result": provider_native_result,
+        "site_frame_available": site_frame_available,
+        "scale_resolved": scale_resolved,
+        "pose_match_rate": geometry_summary.get("pose_match_rate"),
+        "p95_pose_delta_sec": geometry_summary.get("p95_pose_delta_sec"),
+        "local_reference_ready": local_reference_ready,
+        "provider_native_geometry_ready": bool(geometry_live_ready and provider_native_result),
+        "non_arkit_geometry_state": non_arkit_geometry_state,
+        "launchable": bool(geometry_summary_path and geometry_live_ready and provider_native_result),
         "blockers": list(dict.fromkeys(blockers)),
     }
 
@@ -771,10 +808,25 @@ def _normalize_rich_handoff(
             "privacy_security_constraints": ["Not provided in intake metadata"],
             "known_blockers": _string_list(scope_record.get("blockers")) or ["No known blockers supplied"],
         }
+    site_submission_id = str(payload.get("site_submission_id") or "").strip()
+    buyer_request_id = str(payload.get("buyer_request_id") or "").strip()
+    capture_job_id = str(payload.get("capture_job_id") or "").strip()
+    upstream_link_blockers = _string_list(payload.get("upstream_link_blockers"))
+    for blocker, value in (
+        ("missing_site_submission_id", site_submission_id),
+        ("missing_buyer_request_id", buyer_request_id),
+        ("missing_capture_job_id", capture_job_id),
+    ):
+        if not value and blocker not in upstream_link_blockers:
+            upstream_link_blockers.append(blocker)
     payload.update(
         {
             "schema_version": "v1",
-            "site_submission_id": str(payload.get("site_submission_id") or capture_root.name),
+            "site_submission_id": site_submission_id,
+            "buyer_request_id": buyer_request_id,
+            "capture_job_id": capture_job_id,
+            "upstream_link_truth_state": "verified" if not upstream_link_blockers else "blocked_missing_upstream_ids",
+            "upstream_link_blockers": upstream_link_blockers,
             "opportunity_id": str(payload.get("opportunity_id") or capture_root.parts[-3]),
             "qualification_state": qualification_state,
             "downstream_evaluation_eligibility": eligibility,
@@ -1618,7 +1670,7 @@ def _build_site_world_spec(
         "site_world_id": _site_world_id(context.scene_id, context.capture_id),
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
-        "site_submission_id": str(normalized_handoff.get("site_submission_id") or context.capture_id),
+        "site_submission_id": str(normalized_handoff.get("site_submission_id") or ""),
         "canonical_package_uri": _gs_uri(context, "evaluation_prep/site_world_spec.json"),
         "canonical_package_version": canonical_package_version,
         "qualification_state": normalized_handoff.get("qualification_state"),
@@ -2464,9 +2516,7 @@ def _build_hosted_session_runtime_manifest(
         "schema_version": "v1",
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
-        "site_submission_id": str(
-            normalized_handoff.get("site_submission_id") or context.capture_id
-        ),
+        "site_submission_id": str(normalized_handoff.get("site_submission_id") or ""),
         "pipeline_prefix": f"{context.capture_prefix}/pipeline",
         "scene_memory_manifest_uri": _gs_uri(
             context, "scene_memory/scene_memory_manifest.json"
@@ -2605,7 +2655,7 @@ def _build_site_normalization_package(
     return {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
-        "site_submission_id": str(normalized_handoff.get("site_submission_id") or context.capture_id),
+        "site_submission_id": str(normalized_handoff.get("site_submission_id") or ""),
         "opportunity_id": str(normalized_handoff.get("opportunity_id") or context.scene_id),
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
@@ -2924,6 +2974,11 @@ def _build_launchable_export_bundle(
             "geometry_live_ready": geometry_truth["geometry_live_ready"],
             "site_faithful_market_ready": geometry_truth["site_faithful_market_ready"],
             "provider_native_result": geometry_truth["provider_native_result"],
+            "site_frame_available": geometry_truth["site_frame_available"],
+            "scale_resolved": geometry_truth["scale_resolved"],
+            "local_reference_ready": geometry_truth["local_reference_ready"],
+            "provider_native_geometry_ready": geometry_truth["provider_native_geometry_ready"],
+            "non_arkit_geometry_state": geometry_truth["non_arkit_geometry_state"],
             "blockers": geometry_truth["blockers"],
         },
         "isaac_sim": {

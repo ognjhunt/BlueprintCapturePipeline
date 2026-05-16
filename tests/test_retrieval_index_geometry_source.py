@@ -68,6 +68,8 @@ def _build_staged_glasses_capture(tmp_path: Path, *, with_privacy_video: bool = 
 
 def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=True)
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
     raw_root = capture_root / "raw"
     (raw_root / "route_anchors.json").write_text(
         json.dumps(
@@ -170,6 +172,10 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
             "provider_warnings": [],
             "provider_errors": [],
             "loop_closure_detected": False,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_match_rate": 0.92,
+            "p95_pose_delta_sec": 0.033,
         }
 
     monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
@@ -202,10 +208,51 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
     assert (site_root / "site_overlap_graph.json").is_file()
     assert (site_root / "indices" / "manifest.json").is_file()
     assert (site_root / "retrieval_validation.json").is_file()
+    validation = json.loads((site_root / "retrieval_validation.json").read_text(encoding="utf-8"))
+    assert validation["record_schema_valid"] is True
+    assert validation["manifest_schema_valid"] is True
+    assert validation["summary_projection_safe"] is True
+    assert validation["privacy_safe_source_available"] is True
+    assert validation["rights_lineage_present"] is True
+    assert validation["provenance_lineage_present"] is True
+    assert validation["retrieval_query_ready"] is True
+    assert validation["runtime_adapter_consumption"]["local_contract_ready"] is True
+    assert validation["readiness"]["retrieval"]["state"] == "ready"
+    assert validation["readiness"]["non_arkit_geometry"]["state"] == "ready"
+    assert validation["readiness"]["swm_world_model"]["state"] == "ready"
+    assert validation["readiness"]["operational_live_provider_hosted"]["state"] == "blocked"
+
+
+def test_retrieval_index_allows_local_sfm_as_degraded_reference_media(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=True)
+    monkeypatch.setattr(
+        "blueprint_pipeline.retrieval_index_stage._generate_embeddings",
+        lambda **_kwargs: [np.ones(1024, dtype=np.float32) for _ in _kwargs["image_paths"]],
+    )
+
+    build_geometry_stage_contract(capture_root, provider="local_sfm", model="local-sfm-offline")
+    result = run_retrieval_index_stage(capture_root=capture_root, embedding_model=object())
+
+    assert result["status"] == "completed"
+    rows = [
+        json.loads(line)
+        for line in (capture_root / "world_model_export" / "dense_index.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert rows
+    assert all(row["geometry_source"] == "local_sfm" for row in rows)
+    site_root = capture_root.parents[3] / "sites" / "site-1" / "reference_memory"
+    validation = json.loads((site_root / "retrieval_validation.json").read_text(encoding="utf-8"))
+    assert validation["readiness"]["retrieval"]["state"] == "ready"
+    assert validation["readiness"]["non_arkit_geometry"]["state"] == "degraded"
+    assert "provider_native_geometry_missing" in validation["readiness"]["non_arkit_geometry"]["blockers"]
+    assert validation["readiness"]["swm_world_model"]["state"] == "blocked"
 
 
 def test_retrieval_index_rejects_fallback_geometry_even_if_descriptor_is_stale(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=True)
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
 
     def _failing_provider(**_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("video_to_world_down")
@@ -230,6 +277,8 @@ def test_retrieval_index_rejects_fallback_geometry_even_if_descriptor_is_stale(m
 
 def test_retrieval_index_requires_privacy_safe_video_by_default(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=False)
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
     monkeypatch.setenv("RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO", "true")
 
     def _fake_provider(**kwargs):  # type: ignore[no-untyped-def]
@@ -294,6 +343,10 @@ def test_retrieval_index_requires_privacy_safe_video_by_default(monkeypatch, tmp
             "provider_warnings": [],
             "provider_errors": [],
             "loop_closure_detected": False,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_match_rate": 0.92,
+            "p95_pose_delta_sec": 0.033,
         }
 
     monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)

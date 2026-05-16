@@ -2,6 +2,11 @@
 
 This document defines the kept product boundary for `BlueprintCapturePipeline`.
 
+`BlueprintCapturePipeline` is capture-first and world-model-product-first. It
+preserves raw capture truth, emits canonical site packages and hosted/provider
+support artifacts, and keeps qualification/readiness outputs as compatibility
+and trust layers rather than the product center.
+
 ## Input Trigger
 
 Raw-upload materialization trigger:
@@ -12,13 +17,22 @@ Descriptor trigger:
 
 `scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json`
 
-## Primary Outputs
+## Output Families
 
 All pipeline artifacts are emitted under:
 
 `scenes/<scene_id>/captures/<capture_id>/pipeline/`
 
-Authoritative alpha outputs:
+Canonical package outputs:
+
+- `site_package/canonical_site_package.json`
+- `site_package/provider_adapter_inputs/world_labs_marble.json`
+
+These are the current provider-agnostic product package and provider-specific
+adapter projection. The canonical package is derived from raw capture and
+descriptor truth; it must not invent or overwrite raw capture evidence.
+
+Support / trust outputs:
 
 - `qualification_summary.json`
 - `capture_quality_summary.json`
@@ -35,9 +49,12 @@ Authoritative alpha outputs:
 - `task_targets.json`
 - `agent_review_bundle.json`
 
-These artifacts are the qualification-first record consumed by `Blueprint-WebApp`.
+These artifacts are consumed by `Blueprint-WebApp` for trust, review, pricing,
+readiness, and compatibility with existing `qualification` naming. They are
+support records, not the product center. They must stay grounded in raw capture
+truth and canonical package truth.
 
-Legacy downstream derived output families:
+Downstream derived output families:
 
 - `scene_memory/scene_memory_manifest.json`
 - `scene_memory/scene_memory_readiness.json`
@@ -52,7 +69,10 @@ Legacy downstream derived output families:
 - `evaluation_prep/site_world_health.json`
 - `evaluation_prep/evaluation_prep_manifest.json`
 
-Downstream artifacts are derived only. They do not define qualification success and they do not rewrite qualification truth. They are not required for `preview_simulation` success, which currently means the World Labs preview path only.
+Downstream artifacts are derived only. They do not define raw capture success,
+and they do not rewrite capture, rights, privacy, provenance, or canonical
+package truth. They are not required for `preview_simulation` success, which
+currently means the World Labs preview path only.
 
 ## Presentation Bundle Contract
 
@@ -79,13 +99,13 @@ Capture orientation is preserved from raw capture metadata when available, then 
 
 ## Default Flow
 
-The supported modern flow is:
+The supported modern package flow is:
 
-`BlueprintCapture raw bundle -> qualification analysis -> Gemini-backed fidelity review -> privacy-safe walkthrough -> World Labs preview -> WebApp sync`
+`BlueprintCapture raw bundle -> materialized descriptor -> optional trust/qualification analysis -> privacy-safe walkthrough -> canonical site package -> provider adapter input -> optional World Labs preview -> WebApp sync`
 
 Optional follow-on lanes:
 
-`qualification -> scene_memory -> presentation_world -> evaluation_prep -> site_world runtime`
+`canonical site package -> scene_memory -> presentation_world -> evaluation_prep -> site_world runtime`
 
 ## Shared Contracts
 

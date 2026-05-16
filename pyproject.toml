@@ -1,7 +1,7 @@
 [project]
 name = "blueprint-capture-pipeline"
 version = "2.0.0"
-description = "Qualification and privacy-safe preview pipeline for Blueprint captures"
+description = "Site package and privacy-safe preview pipeline for Blueprint captures"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -74,6 +74,7 @@ blueprint-build-object-geometry = "blueprint_pipeline.object_geometry_stage:main
 blueprint-build-evaluation-prep = "blueprint_pipeline.evaluation_prep_stage:main"
 blueprint-video-to-world-runner = "blueprint_pipeline.video_to_world_runner_service:main"
 blueprint-native-runtime-service = "blueprint_pipeline.native_runtime_service:main"
+blueprint-backfill-site-reference-db = "blueprint_pipeline.site_reference_backfill:main"
 blueprint-cosmos-vast-train = "blueprint_pipeline.synthesis.cosmos_vast_training_wrapper:main"
 blueprint-run-city-launch-harness = "blueprint_pipeline.city_launch_autonomy_harness:main"
 

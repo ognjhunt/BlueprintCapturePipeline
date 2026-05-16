@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
-from blueprint_pipeline.alpha_readiness import build_alpha_readiness_summary
+from blueprint_pipeline.alpha_readiness import build_alpha_readiness_summary, build_launch_gate_summary
 from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
@@ -309,6 +309,11 @@ def _write_geometry_lane(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             },
             "frames": frames,
             "provider_metrics": {"backend": "test"},
+            "provider_native_result": True,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_match_rate": 0.9,
+            "p95_pose_delta_sec": 0.033,
             "provider_warnings": [],
             "provider_errors": [],
             "loop_closure_detected": False,
@@ -417,6 +422,36 @@ def _build_capture(
     )
     descriptor_path.write_text(json.dumps(descriptor_payload), encoding="utf-8")
     return capture_root, str(materialized["descriptor_uri"])
+
+
+def test_launch_gate_requires_buyer_request_id(tmp_path: Path) -> None:
+    capture_root, _descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="iphone",
+        capture_modality="iphone_arkit_lidar",
+    )
+    descriptor_path = capture_root / "capture_descriptor.json"
+    descriptor_payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor_payload["buyer_request_id"] = ""
+    descriptor_path.write_text(json.dumps(descriptor_payload), encoding="utf-8")
+    pipeline_root = capture_root / "pipeline"
+    pipeline_root.mkdir(parents=True, exist_ok=True)
+    (pipeline_root / "opportunity_handoff.json").write_text(
+        json.dumps(
+            {
+                "site_submission_id": "site-submission-iphone",
+                "capture_job_id": "capture-job-iphone",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = build_launch_gate_summary(capture_root=capture_root, env={})
+    checks = {check["name"]: check for check in summary["stage_checks"]}
+
+    assert summary["overall_status"] == "blocked"
+    assert checks["buyer_request_linked"]["passed"] is False
+    assert checks["buyer_request_linked"]["detail"] == "buyer_request_id is missing from the buyer request linkage"
 
 
 def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(monkeypatch, tmp_path: Path) -> None:

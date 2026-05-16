@@ -15,19 +15,21 @@ The emphasis is iOS only for now.
 
 Blueprint is not trying to build a generic unconstrained world model that invents arbitrary worlds.
 
-Blueprint is building a qualification-first marketplace and operating system around real sites:
+Blueprint is building a capture-first, world-model-product-first system around real sites:
 
 - `BlueprintCapture` captures raw evidence from real facilities.
-- `BlueprintCapturePipeline` is the authoritative middle layer for qualification, privacy, provenance, downstream routing, preview generation, and deeper hosted-runtime preparation.
-- `Blueprint-WebApp` is the operational and buyer-facing surface where those outputs appear.
+- `BlueprintCapturePipeline` turns that evidence into site-specific world-model packages, hosted-session artifacts, provider adapter inputs, and optional trust / review outputs.
+- `Blueprint-WebApp` is the operational and buyer-facing surface where packages, hosted access, licensing, and support artifacts appear.
 
 The product doctrine is:
 
-- qualification and readiness are authoritative truth
-- generated previews and world artifacts are downstream derivatives
-- derived outputs must never overwrite qualification truth
+- raw capture, rights, privacy, provenance, timestamps, poses, and device metadata are authoritative evidence
+- canonical site packages are the primary downstream product contract
+- qualification and readiness records are support artifacts for trust, review, pricing, and launch gating
+- generated previews, hosted-review surfaces, and provider worlds are downstream projections
+- derived outputs must never overwrite capture truth or package truth
 
-That matters because the target system is not “train a cool model from videos.” The target system is:
+That matters because the target system is not "train a cool model from videos." The target system is:
 
 1. capture a real site
 2. preserve trustworthy sensor evidence
@@ -42,7 +44,7 @@ This is already conceptually aligned with Seoul World Model:
 The key difference is:
 
 - SWM is a generative model architecture built on top of Cosmos Predict
-- Blueprint today is primarily the capture, qualification, and packaging pipeline around grounded world generation
+- Blueprint today is primarily the capture, packaging, and support-trust pipeline around grounded world generation
 
 ## Why This Spec Exists
 
@@ -58,7 +60,7 @@ The current iPhone pipeline already captures much more than plain video:
 
 That is already enough to support a prototype site-grounded retrieval world model workflow.
 
-However, the current contract was designed for qualification-first capture and preview generation, not specifically for:
+However, the current contract still carries qualification-era naming and preview-generation assumptions. Those records remain compatibility and support artifacts; they were not designed specifically for:
 
 - repeated same-site capture over time
 - site-local retrieval databases
@@ -66,11 +68,11 @@ However, the current contract was designed for qualification-first capture and p
 - lookahead-anchor selection
 - training-ready aligned datasets
 
-So the question is not “do we have enough raw signal?” The answer there is mostly yes.
+So the question is not "do we have enough raw signal?" The answer there is mostly yes.
 
 The real question is:
 
-“What minimum contract changes are needed so these captures become a reliable, reusable site-memory substrate for a retrieval-grounded world model?”
+"What minimum contract changes are needed so these captures become a reliable, reusable site-memory substrate for a retrieval-grounded world model?"
 
 This spec answers that question.
 
@@ -186,7 +188,7 @@ Why this matters:
 - repeated captures of the same facility can become separate unrelated scenes
 - cross-temporal pairing becomes weak
 - a same-site retrieval database becomes fragmented
-- “open capture” becomes much less useful for building site memory
+- "open capture" becomes much less useful for building site memory
 
 Minimum change:
 
@@ -220,8 +222,8 @@ Problem:
 
 Why this matters:
 
-- production path says “not world-model-ready” even when raw ARKit evidence is strong
-- iOS app and cloud bridge disagree on what “candidate” means
+- production path says "not world-model-ready" even when raw ARKit evidence is strong
+- iOS app and cloud bridge disagree on what "candidate" means
 
 Minimum change:
 
@@ -253,7 +255,7 @@ Problem:
 Why this matters:
 
 - SWM-style conditioning depends on reliable pose and geometry
-- “graceful fallback” is fine for qualification-only uploads
+- "graceful fallback" is fine for qualification-only uploads
 - it is not fine for a site-grounded retrieval world model lane
 
 Minimum change:
@@ -721,4 +723,4 @@ Minimum conclusion:
   - privacy-safe site retrieval index
   - dense aligned export separate from QA frames
 
-If those changes are made, Blueprint iPhone captures become a credible substrate for an indoor SWM-like approach rather than just a qualification-first walkthrough pipeline.
+If those changes are made, Blueprint iPhone captures become a credible substrate for an indoor SWM-like approach rather than only a support/trust walkthrough pipeline.
