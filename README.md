@@ -4,6 +4,8 @@
 
 For non-ARKit captures, the canonical world-model packaging path remains internal: `BlueprintCapture` evidence -> support/trust analysis -> privacy-aware geometry staging -> retrieval memory -> alignment -> synthesis/Cosmos conditioning. The default hosted preview path is now World Labs Marble from the privacy-safe walkthrough, while scene-memory, presentation, evaluation-prep, and runtime registration remain downstream derived lanes.
 
+For public language, Google/Meta smart glasses are supported only for approved repeat walkthroughs where the assignment, hardware, launch proof, and downstream capture/package proof exist. This repo treats glasses outputs as partial/internal until that proof chain exists.
+
 AI and engineer orientation maps live under [`docs/architecture/`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture):
 
 - [`ai-onboarding-map.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/ai-onboarding-map.md)

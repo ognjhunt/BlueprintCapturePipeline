@@ -26,6 +26,8 @@ _SUPPORTED_LANES = {
     "cosmos_single_capture_smoke",
     "all",
 }
+_ANDROID_XR_VIDEO_ONLY_PROFILE = "android_xr_glasses"
+_ANDROID_XR_VIDEO_ONLY_MODALITY = "android_xr_video_only"
 
 
 @dataclass(frozen=True)
@@ -91,7 +93,30 @@ def _normalize_requested_lanes(values: Any) -> List[str]:
     return ordered
 
 
+def _mapping_value(payload: Mapping[str, Any], key: str) -> Any:
+    value = payload.get(key)
+    if value is not None:
+        return value
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+    if key in metadata:
+        return metadata.get(key)
+    capture_bundle = payload.get("capture_bundle") if isinstance(payload.get("capture_bundle"), Mapping) else {}
+    return capture_bundle.get(key)
+
+
+def _descriptor_is_android_xr_video_only(raw_payload: Mapping[str, Any]) -> bool:
+    capture_profile_id = str(_mapping_value(raw_payload, "capture_profile_id") or "").strip().lower()
+    capture_modality = str(_mapping_value(raw_payload, "capture_modality") or "").strip().lower()
+    return (
+        capture_profile_id == _ANDROID_XR_VIDEO_ONLY_PROFILE
+        or capture_profile_id.startswith("android_xr_")
+        or capture_modality == _ANDROID_XR_VIDEO_ONLY_MODALITY
+    )
+
+
 def _descriptor_is_native_default_candidate(raw_payload: Mapping[str, Any]) -> bool:
+    if _descriptor_is_android_xr_video_only(raw_payload):
+        return False
     capture_mode = raw_payload.get("capture_mode")
     metadata = raw_payload.get("metadata") if isinstance(raw_payload.get("metadata"), Mapping) else {}
     if not isinstance(capture_mode, Mapping) and isinstance(metadata.get("capture_mode"), Mapping):
@@ -121,6 +146,8 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
     else:
         requested_outputs = []
     normalized_outputs = {str(value).strip().lower() for value in requested_outputs if str(value).strip()}
+    if isinstance(raw_payload, Mapping) and _descriptor_is_android_xr_video_only(raw_payload):
+        return ["qualification"]
     descriptor_requested_lanes = _normalize_requested_lanes(
         raw_payload.get("requested_lanes") or raw_payload.get("requestedLanes")
     )
@@ -168,6 +195,26 @@ def resolve_requested_lanes(
     return descriptor_requested or ["qualification"]
 
 
+def _build_derived_lane_result(
+    *,
+    lane: str,
+    source: str,
+    qualification_result: Mapping[str, Any],
+    extra_fields: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "status": "completed",
+        "lane": lane,
+        "scene_id": qualification_result.get("scene_id"),
+        "capture_id": qualification_result.get("capture_id"),
+        "pipeline_prefix": qualification_result.get("pipeline_prefix"),
+        "source": source,
+    }
+    if extra_fields:
+        result.update(dict(extra_fields))
+    return result
+
+
 def run_capture_pipeline(
     *,
     descriptor_gcs_uri: str,
@@ -197,14 +244,11 @@ def run_capture_pipeline(
                 results.append(qualification_result)
             else:
                 results.append(
-                    {
-                        "status": "completed",
-                        "lane": "scene_memory",
-                        "scene_id": qualification_result.get("scene_id"),
-                        "capture_id": qualification_result.get("capture_id"),
-                        "pipeline_prefix": qualification_result.get("pipeline_prefix"),
-                        "source": "qualification_artifacts",
-                    }
+                    _build_derived_lane_result(
+                        lane="scene_memory",
+                        source="qualification_artifacts",
+                        qualification_result=qualification_result,
+                    )
                 )
             continue
         if selected_lane == "evaluation_prep":
@@ -218,15 +262,12 @@ def run_capture_pipeline(
                 capture_root=resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent,
                 provider_name="manual",
             )
-            lane_result = {
-                "status": "completed",
-                "lane": "evaluation_prep",
-                "scene_id": qualification_result.get("scene_id"),
-                "capture_id": qualification_result.get("capture_id"),
-                "pipeline_prefix": qualification_result.get("pipeline_prefix"),
-                "source": "evaluation_prep_artifacts",
-                "manifest_path": evaluation_prep_result.get("manifest_path"),
-            }
+            lane_result = _build_derived_lane_result(
+                lane="evaluation_prep",
+                source="evaluation_prep_artifacts",
+                qualification_result=qualification_result,
+                extra_fields={"manifest_path": evaluation_prep_result.get("manifest_path")},
+            )
             results.append(lane_result)
             continue
         if selected_lane == "retrieval_index":

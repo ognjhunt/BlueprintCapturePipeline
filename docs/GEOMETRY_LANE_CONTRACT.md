@@ -14,6 +14,7 @@ The target is a grounded geometry bundle that can be consumed by:
 - later TSDF / occupancy / site-world packaging
 
 This lane is **derived** and **non-authoritative**. It does not rewrite qualification truth.
+It also does not make Google/Meta smart glasses public-launch ready; public support language still requires an approved repeat-walk assignment, hardware proof, launch proof, and downstream capture/package proof.
 
 ## Primary Decision
 

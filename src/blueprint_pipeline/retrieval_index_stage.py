@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import shutil
 import subprocess
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -61,6 +61,8 @@ _PAN_DEDUP_STRIDE = 4
 _CELL_SIZE_M = 0.5          # coverage map cell size
 _CHUNK_GAP_SEC = 1.5
 _CHUNK_JUMP_M = 1.25
+_ANDROID_XR_VIDEO_ONLY_PROFILE = "android_xr_glasses"
+_ANDROID_XR_VIDEO_ONLY_MODALITY = "android_xr_video_only"
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +88,12 @@ def run_retrieval_index_stage(
     """
     ctx = resolve_local_capture_context(capture_root)
     descriptor = _load_descriptor(ctx)
+    if _descriptor_is_android_xr_video_only(descriptor):
+        return {
+            "status": "skipped",
+            "reason": "android_xr_video_only_requires_explicit_geometry_contract",
+            "capture_id": ctx.capture_id,
+        }
 
     quality = descriptor.get("quality") or {}
     if not (
@@ -194,7 +202,11 @@ def run_retrieval_index_stage(
     # Assign reference_ids (needed for thumbnails and site index)
     for record in included:
         if not record.get("reference_id"):
-            record["reference_id"] = str(uuid.uuid4())
+            record["reference_id"] = _deterministic_reference_id(
+                site_id=site_id,
+                ctx=ctx,
+                record=record,
+            )
 
     # Write thumbnails to site root (requires reference_id)
     thumbnails_dir = site_root / "thumbnails"
@@ -252,6 +264,27 @@ def _load_descriptor(ctx: LocalCaptureContext) -> Dict[str, Any]:
     return read_json(ctx.descriptor_path)
 
 
+def _descriptor_value(descriptor: Mapping[str, Any], key: str) -> Any:
+    value = descriptor.get(key)
+    if value is not None:
+        return value
+    metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+    if key in metadata:
+        return metadata.get(key)
+    capture_bundle = descriptor.get("capture_bundle") if isinstance(descriptor.get("capture_bundle"), Mapping) else {}
+    return capture_bundle.get(key)
+
+
+def _descriptor_is_android_xr_video_only(descriptor: Mapping[str, Any]) -> bool:
+    capture_profile_id = str(_descriptor_value(descriptor, "capture_profile_id") or "").strip().lower()
+    capture_modality = str(_descriptor_value(descriptor, "capture_modality") or "").strip().lower()
+    return (
+        capture_profile_id == _ANDROID_XR_VIDEO_ONLY_PROFILE
+        or capture_profile_id.startswith("android_xr_")
+        or capture_modality == _ANDROID_XR_VIDEO_ONLY_MODALITY
+    )
+
+
 def _ensure_geometry_for_capture(
     *,
     ctx: LocalCaptureContext,
@@ -307,6 +340,8 @@ def _geometry_summary_reference_indexable(geometry_summary: Mapping[str, Any]) -
 
 
 def _reference_media_indexable(descriptor: Mapping[str, Any]) -> bool:
+    if _descriptor_is_android_xr_video_only(descriptor):
+        return False
     metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
     site_identity = metadata.get("site_identity") if isinstance(metadata.get("site_identity"), Mapping) else {}
     capture_mode = metadata.get("capture_mode") if isinstance(metadata.get("capture_mode"), Mapping) else {}
@@ -371,6 +406,25 @@ def _capture_already_indexed(site_index_path: Path, capture_id: str) -> bool:
             except json.JSONDecodeError:
                 continue
     return False
+
+
+def _deterministic_reference_id(
+    *,
+    site_id: str,
+    ctx: LocalCaptureContext,
+    record: Mapping[str, Any],
+) -> str:
+    parts = [
+        site_id,
+        ctx.scene_id,
+        ctx.capture_id,
+        str(record.get("chunk_id") or ""),
+        str(record.get("frame_id") or ""),
+        str(record.get("frame_index") or ""),
+        str(record.get("t_capture_sec") or ""),
+    ]
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:20]
+    return f"ref_{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -1187,6 +1241,12 @@ def _generate_embeddings(*, model: Any, image_paths: List[Path]) -> List[Any]:
     SWM uses pose-based retrieval, not DINO; these embeddings serve Blueprint-specific
     cross-session visual similarity retrieval before ARKit frame alignment is available.
     """
+    encoder = getattr(model, "encode", None)
+    if callable(encoder):
+        return list(encoder(image_paths))
+    if callable(model) and not isinstance(model, tuple):
+        return list(model(image_paths))
+
     try:
         import torch
         from PIL import Image

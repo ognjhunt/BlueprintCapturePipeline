@@ -8,6 +8,18 @@ This matrix is intentionally strict. A row is only `ready` when the capability i
 - `partial`: substantial implementation exists, but external runtime, deployment, or production-faithfulness proof is still missing
 - `blocked`: the repos do not currently provide this capability as a truthful shipped path
 
+## Blocker Class Rules
+
+Use the same blocker classes as the paid-marketplace gate when converting this
+matrix into closeout work:
+
+- `repo`: failing or missing in-repo contract implementation
+- `toolchain`: missing local/CI SDK, package, binary, or runner needed to verify
+- `human/operator`: missing decision, owner, review, or authenticated operator action
+- `live-provider`: missing non-payment provider execution or provider account proof
+- `hardware`: missing real-device capture, upload, or hardware proof
+- `payment`: missing Stripe/payment/payout/finance-provider proof
+
 ## Matrix
 
 | Surface | Status | What is true in repo | Blocking gap |
@@ -16,8 +28,9 @@ This matrix is intentionally strict. A row is only `ready` when the capability i
 | `BlueprintCapturePipeline` | `partial` | Runs qualification, privacy preparation, geometry staging, retrieval memory, presentation/evaluation-prep packaging, and WebApp sync. | Live `video_to_world`, live Cosmos, and production runtime deployment still require real GPU services and credentials. |
 | `Blueprint-WebApp` | `partial` | Ingests qualification and site-world artifacts and can display/runtime-launch them when truthful artifacts exist. | It is a consumer and operating layer, not the producer of SWM-style synthesis or canonical site-world generation. |
 | `iPhone` | `partial` | Canonical `iphone` capture source, ARKit-backed `iphone_arkit_lidar`, and the strongest path into metric evidence and site-world candidacy exist. | Repo evidence still does not prove production captures remain site-faithful through zero-shot Cosmos or downstream synthesis. |
-| `glasses` | `partial` | Canonical `glasses` source, `glasses_video_only`, and scaffolded-video promotion into validated metric evidence are implemented. | Still depends on video-to-world/runtime availability for live downstream world-model execution. |
-| `Android` | `partial` | Canonical `android` source is now aligned across producer and pipeline. Android now shares the same video-only and scaffolded-video readiness semantics as glasses. | Still depends on live video-to-world/runtime services; no in-repo proof of production site-faithful synthesis. |
+| `glasses` | `partial` | Canonical `glasses` source, `glasses_video_only`, and scaffolded-video promotion into validated metric evidence are implemented. This is not a public Google/Meta hardware promise. | Public Google/Meta smart-glasses support still requires an approved repeat-walk assignment, hardware proof, launch proof, downstream capture/package proof, and live video-to-world/runtime availability. |
+| `Android` | `partial` | Canonical `android` source is now aligned across producer and pipeline. Android now shares the same video-only and scaffolded-video readiness semantics as glasses. | Still depends on live video-to-world/runtime services; no in-repo proof of production site-faithful synthesis or public Google/Meta smart-glasses support. |
+| `Android XR video-only` | `partial` | Pipeline preserves `capture_profile_id=android_xr_glasses` and `capture_modality=android_xr_video_only` as glasses/video provenance, strips geometry/provider/hosted/payout readiness claims, resolves default downstream lanes to qualification only, and skips retrieval geometry with `android_xr_video_only_requires_explicit_geometry_contract`. | Physical Android XR hardware proof, bridge handoff proof, same-capture Pipeline proof, WebApp upstream ids, and a new explicit XR geometry profile are still required before any pose/depth/geospatial/world-model/provider/payout/hosted/launch readiness claim. |
 | `qualification` | `ready` | Qualification artifacts, readiness decisions, provenance/trust outputs, and WebApp sync are implemented and covered by local tests. | None inside these repos. |
 | `site-world packaging` | `ready` | `evaluation_prep/site_world_spec.json`, `site_world_registration.json`, and `site_world_health.json` are produced and validated in local tests. | None for packaging itself. Live runtime registration remains a separate deployment concern. |
 | `SWM-style synthesis` | `partial` | Retrieval memory, geometry conditioning, Plucker-ray conditioning hooks, splat-first synthesis, and Cosmos adapter surfaces exist. | The repos do not yet prove end-to-end SWM-style, site-faithful output on production captures. |
@@ -36,5 +49,11 @@ For non-ARKit video capture, the readiness classes are now shared:
 
 - video-only capture stays `pre_screen_video`
 - scaffolded video with validated scale and pose coverage promotes to `video_with_validated_scaffolding`
+
+Android XR projected glasses are the current exception to generic non-ARKit promotion. The current
+contract is `capture_profile_id=android_xr_glasses` plus
+`capture_modality=android_xr_video_only`; it remains video-first even when requested outputs ask for
+scene memory or preview simulation. A future XR geometry lane must use a new explicit
+profile/modality and bridge sidecar contract rather than reusing `android_xr_video_only`.
 
 The remaining Android-versus-glasses differences are producer provenance and eventual hardware quality, not downstream contract shape.

@@ -274,11 +274,18 @@ def _write_geometry_lane(monkeypatch, capture_root: Path) -> None:  # type: igno
             },
             "frames": frames,
             "provider_metrics": {"backend": "test"},
+            "provider_native_result": True,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_match_rate": 0.92,
+            "p95_pose_delta_sec": 0.033,
             "provider_warnings": [],
             "provider_errors": [],
             "loop_closure_detected": False,
         }
 
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
     monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
     build_geometry_stage_contract(capture_root)
 
@@ -731,7 +738,14 @@ def test_qualification_ingests_geometry_summary_as_advisory(monkeypatch, tmp_pat
     pipeline_root = capture_root / "pipeline"
     world_model_fit = json.loads((pipeline_root / "world_model_fit_summary.json").read_text(encoding="utf-8"))
     completion = json.loads((pipeline_root / ".qualification_pipeline_complete").read_text(encoding="utf-8"))
+    geometry_summary = json.loads((pipeline_root / "geometry" / "geometry_summary.json").read_text(encoding="utf-8"))
 
+    assert geometry_summary["status"] == "completed"
+    assert geometry_summary["provider_native_result"] is True
+    assert geometry_summary["site_frame_available"] is True
+    assert geometry_summary["scale_resolved"] is True
+    assert geometry_summary["p95_pose_delta_sec"] == 0.033
+    assert geometry_summary["launch_blockers"] == []
     assert world_model_fit["advisory_geometry"]["status"] == "completed"
     assert world_model_fit["advisory_geometry"]["ready_for_world_model"] is True
     assert world_model_fit["advisory_geometry"]["geometry_source"] == "video_to_world"

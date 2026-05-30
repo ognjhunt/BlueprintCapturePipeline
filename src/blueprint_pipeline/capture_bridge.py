@@ -34,6 +34,7 @@ _ALLOWED_CAPTURE_MODALITIES = {
     "glasses_plus_scaffolding",
     "android_video_only",
     "android_plus_scaffolding",
+    "android_xr_video_only",
 }
 _ALLOWED_EVIDENCE_TIERS = {
     "pre_screen_video",
@@ -41,6 +42,35 @@ _ALLOWED_EVIDENCE_TIERS = {
     "video_with_validated_scaffolding",
 }
 _ALLOWED_DISPLAY_ORIENTATIONS = {"portrait", "landscape", "square", "unknown"}
+_ANDROID_XR_VIDEO_ONLY_PROFILE = "android_xr_glasses"
+_ANDROID_XR_VIDEO_ONLY_MODALITY = "android_xr_video_only"
+_ANDROID_XR_FALSE_CAPABILITY_KEYS = (
+    "camera_pose",
+    "camera_intrinsics",
+    "depth",
+    "depth_confidence",
+    "point_cloud",
+    "planes",
+    "tracking_state",
+    "light_estimate",
+    "geospatial",
+    "motion_authoritative",
+    "geometry_expected_downstream",
+    "world_model_ready",
+    "provider_ready",
+    "hosted_session_ready",
+    "payout_ready",
+)
+_ANDROID_XR_ZERO_CAPABILITY_KEYS = (
+    "pose_rows",
+    "depth_frames",
+    "confidence_frames",
+    "point_cloud_samples",
+    "plane_rows",
+    "tracking_state_rows",
+    "light_estimate_rows",
+    "geospatial_rows",
+)
 
 
 def _optional_str(value: Any) -> Optional[str]:
@@ -54,6 +84,52 @@ def _dict_list(value: Any) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _normalize_mapping(raw_value: Any) -> Dict[str, Any]:
+    return dict(raw_value) if isinstance(raw_value, Mapping) else {}
+
+
+def _is_android_xr_video_only(*, capture_profile_id: Any, capture_modality: Any) -> bool:
+    profile = str(capture_profile_id or "").strip().lower()
+    modality = str(capture_modality or "").strip().lower()
+    return profile.startswith("android_xr") or modality == _ANDROID_XR_VIDEO_ONLY_MODALITY
+
+
+def _sanitize_android_xr_video_only_capabilities(raw_value: Any) -> Dict[str, Any]:
+    capabilities = _normalize_mapping(raw_value)
+    for key in _ANDROID_XR_FALSE_CAPABILITY_KEYS:
+        capabilities[key] = False
+    for key in _ANDROID_XR_ZERO_CAPABILITY_KEYS:
+        capabilities[key] = 0
+    return capabilities
+
+
+def _sanitize_android_xr_video_only_metadata(metadata: Mapping[str, Any]) -> Dict[str, Any]:
+    sanitized = dict(metadata)
+    scene_memory = _normalize_mapping(sanitized.get("scene_memory_capture"))
+    scene_memory["world_model_candidate"] = False
+    scene_memory["geometry_expected_downstream"] = False
+    scene_memory["geometry_ready"] = False
+    scene_memory["geometry_source"] = None
+    sanitized["scene_memory_capture"] = scene_memory
+
+    capture_rights = _normalize_mapping(sanitized.get("capture_rights"))
+    capture_rights["capture_contributor_payout_eligible"] = False
+    sanitized["capture_rights"] = capture_rights
+    return sanitized
+
+
+def _sanitize_android_xr_video_only_quality(quality: Mapping[str, Any]) -> Dict[str, Any]:
+    sanitized = dict(quality)
+    sanitized["world_model_candidate"] = False
+    sanitized["geometry_ready"] = False
+    sanitized["provider_ready"] = False
+    sanitized["hosted_session_ready"] = False
+    sanitized["payout_ready"] = False
+    sanitized["world_model_ready"] = False
+    sanitized["geometry_source"] = None
+    return sanitized
 
 
 def _normalize_environment_hint(raw_environment: Any) -> Optional[str]:
@@ -441,6 +517,8 @@ class CaptureDescriptor:
     motion_log_uri: Optional[str] = None
     arkit_frames_uri: Optional[str] = None
     environment_type_hint: Optional[str] = None
+    capture_profile_id: Optional[str] = None
+    capture_capabilities: Dict[str, Any] = field(default_factory=dict)
     capture_modality: str = "iphone_arkit_lidar"
     evidence_tier: str = "pre_screen_video"
     scaffolding_used: List[str] = field(default_factory=list)
@@ -508,6 +586,16 @@ class CaptureDescriptor:
         capture_bundle = (
             data.get("capture_bundle") if isinstance(data.get("capture_bundle"), Mapping) else {}
         )
+        capture_profile_id = _optional_str(
+            data.get("capture_profile_id")
+            or capture_bundle.get("capture_profile_id")
+            or metadata.get("capture_profile_id")
+        )
+        capture_capabilities = _normalize_mapping(
+            data.get("capture_capabilities")
+            or capture_bundle.get("capture_capabilities")
+            or metadata.get("capture_capabilities")
+        )
         scaffolding_used = _normalize_string_list(
             data.get("scaffolding_used") or capture_bundle.get("scaffolding_used")
         )
@@ -542,18 +630,57 @@ class CaptureDescriptor:
             _optional_str(data.get("environment_type_hint"))
             or _optional_str(data.get("intended_space_type"))
         )
+        raw_capture_modality = data.get("capture_modality") or capture_bundle.get("capture_modality")
+        if _optional_str(raw_capture_modality) is None and capture_profile_id == _ANDROID_XR_VIDEO_ONLY_PROFILE:
+            raw_capture_modality = _ANDROID_XR_VIDEO_ONLY_MODALITY
+
         capture_modality = _resolve_capture_modality(
-            raw_modality=data.get("capture_modality") or capture_bundle.get("capture_modality"),
+            raw_modality=raw_capture_modality,
             capture_source=capture_source,
             quality=quality,
             scaffolding_used=scaffolding_used,
             has_metric_arkit_bundle=has_metric_arkit_bundle,
             evidence_tier_hint=evidence_tier_hint,
         )
+        android_xr_video_only = _is_android_xr_video_only(
+            capture_profile_id=capture_profile_id,
+            capture_modality=capture_modality,
+        )
+        if android_xr_video_only:
+            capture_profile_id = capture_profile_id or _ANDROID_XR_VIDEO_ONLY_PROFILE
+            capture_modality = _ANDROID_XR_VIDEO_ONLY_MODALITY
+            capture_capabilities = _sanitize_android_xr_video_only_capabilities(capture_capabilities)
+            quality = _sanitize_android_xr_video_only_quality(quality)
+            metadata = _sanitize_android_xr_video_only_metadata(metadata)
+            metadata["capture_profile_id"] = capture_profile_id
+            metadata["capture_capabilities"] = dict(capture_capabilities)
+            scaffolding_used = []
+        elif capture_profile_id:
+            metadata.setdefault("capture_profile_id", capture_profile_id)
+            if capture_capabilities:
+                metadata.setdefault("capture_capabilities", dict(capture_capabilities))
         evidence_tier = _resolve_evidence_tier(
             evidence_tier_hint,
             capture_modality,
             quality,
+        )
+        if android_xr_video_only:
+            evidence_tier = "pre_screen_video"
+
+        raw_geometry_source = _optional_str(
+            data.get("geometry_source")
+            or quality.get("geometry_source")
+            or ((metadata.get("scene_memory_capture") or {}) if isinstance(metadata.get("scene_memory_capture"), Mapping) else {}).get("geometry_source")
+        )
+        raw_geometry_ready = bool(
+            data.get("geometry_ready")
+            or quality.get("geometry_ready")
+            or ((metadata.get("scene_memory_capture") or {}) if isinstance(metadata.get("scene_memory_capture"), Mapping) else {}).get("geometry_ready")
+        )
+        raw_quoted_payout_cents = (
+            int(data.get("quoted_payout_cents") or capture_bundle.get("quoted_payout_cents"))
+            if (data.get("quoted_payout_cents") or capture_bundle.get("quoted_payout_cents")) is not None
+            else None
         )
 
         return cls(
@@ -581,16 +708,8 @@ class CaptureDescriptor:
                 if isinstance(data.get("depth_conditioning"), Mapping)
                 else {}
             ),
-            geometry_source=_optional_str(
-                data.get("geometry_source")
-                or quality.get("geometry_source")
-                or ((metadata.get("scene_memory_capture") or {}) if isinstance(metadata.get("scene_memory_capture"), Mapping) else {}).get("geometry_source")
-            ),
-            geometry_ready=bool(
-                data.get("geometry_ready")
-                or quality.get("geometry_ready")
-                or ((metadata.get("scene_memory_capture") or {}) if isinstance(metadata.get("scene_memory_capture"), Mapping) else {}).get("geometry_ready")
-            ),
+            geometry_source=None if android_xr_video_only else raw_geometry_source,
+            geometry_ready=False if android_xr_video_only else raw_geometry_ready,
             coordinate_frame_session_id=_optional_str(
                 data.get("coordinate_frame_session_id")
                 or ((metadata.get("capture_topology") or {}) if isinstance(metadata.get("capture_topology"), Mapping) else {}).get("capture_session_id")
@@ -602,6 +721,8 @@ class CaptureDescriptor:
             motion_log_uri=_optional_str(data.get("motion_log_uri")),
             arkit_frames_uri=_optional_str(data.get("arkit_frames_uri")),
             environment_type_hint=environment_type_hint,
+            capture_profile_id=capture_profile_id,
+            capture_capabilities=dict(capture_capabilities),
             capture_modality=capture_modality,
             evidence_tier=evidence_tier,
             scaffolding_used=scaffolding_used,
@@ -643,11 +764,7 @@ class CaptureDescriptor:
                 if (data.get("priority_weight") or capture_bundle.get("priority_weight")) is not None
                 else None
             ),
-            quoted_payout_cents=(
-                int(data.get("quoted_payout_cents") or capture_bundle.get("quoted_payout_cents"))
-                if (data.get("quoted_payout_cents") or capture_bundle.get("quoted_payout_cents")) is not None
-                else None
-            ),
+            quoted_payout_cents=None if android_xr_video_only else raw_quoted_payout_cents,
             rights_profile=_optional_str(data.get("rights_profile") or capture_bundle.get("rights_profile")),
             requested_outputs=_normalize_string_list(
                 data.get("requested_outputs") or capture_bundle.get("requested_outputs")
@@ -713,6 +830,7 @@ class CaptureDescriptor:
             "motion_log_uri": self.motion_log_uri,
             "arkit_frames_uri": self.arkit_frames_uri,
             "environment_type_hint": self.environment_type_hint,
+            "capture_profile_id": self.capture_profile_id,
             "capture_modality": self.capture_modality,
             "evidence_tier": self.evidence_tier,
             "intake_packet_uri": self.intake_packet_uri,
@@ -726,6 +844,8 @@ class CaptureDescriptor:
         payload["calibration_assets"] = list(self.calibration_assets)
         payload["scaffolding_validation"] = dict(self.scaffolding_validation)
         payload["uncertainty_priors"] = dict(self.uncertainty_priors)
+        if self.capture_capabilities:
+            payload["capture_capabilities"] = dict(self.capture_capabilities)
         if self.depth_conditioning:
             payload["depth_conditioning"] = dict(self.depth_conditioning)
         if self.capture_orientation:
@@ -777,6 +897,7 @@ def build_capture_bundle_constraints(
         "swap_focus": list(descriptor.swap_focus),
         "quality": dict(descriptor.quality),
         "environment_type_hint": descriptor.environment_type_hint,
+        "capture_profile_id": descriptor.capture_profile_id,
         "capture_modality": descriptor.capture_modality,
         "evidence_tier": descriptor.evidence_tier,
         "scaffolding_used": list(descriptor.scaffolding_used),
@@ -806,6 +927,8 @@ def build_capture_bundle_constraints(
 
     if qa_report is not None:
         bundle["qa"] = dict(qa_report)
+    if descriptor.capture_capabilities:
+        bundle["capture_capabilities"] = dict(descriptor.capture_capabilities)
 
     return {k: v for k, v in bundle.items() if v is not None}
 

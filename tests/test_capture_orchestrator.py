@@ -3,7 +3,37 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
-from blueprint_pipeline.capture_orchestrator import PipelineConfig, resolve_requested_lanes, run_capture_pipeline
+from blueprint_pipeline.capture_orchestrator import (
+    PipelineConfig,
+    _build_derived_lane_result,
+    resolve_requested_lanes,
+    run_capture_pipeline,
+)
+
+
+def test_build_derived_lane_result_preserves_current_orchestration_shape() -> None:
+    result = _build_derived_lane_result(
+        lane="evaluation_prep",
+        source="evaluation_prep_artifacts",
+        qualification_result={
+            "status": "completed",
+            "lane": "qualification",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "pipeline_prefix": "scenes/scene-1/captures/capture-1/pipeline",
+        },
+        extra_fields={"manifest_path": "pipeline/evaluation_prep/evaluation_prep_manifest.json"},
+    )
+
+    assert result == {
+        "status": "completed",
+        "lane": "evaluation_prep",
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "pipeline_prefix": "scenes/scene-1/captures/capture-1/pipeline",
+        "source": "evaluation_prep_artifacts",
+        "manifest_path": "pipeline/evaluation_prep/evaluation_prep_manifest.json",
+    }
 
 
 def test_capture_orchestrator_keeps_supported_lanes(monkeypatch, tmp_path: Path) -> None:
