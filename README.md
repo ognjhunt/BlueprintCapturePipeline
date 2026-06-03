@@ -54,6 +54,12 @@ Optional legacy downstream artifacts:
 - `evaluation_prep/site_world_registration.json`
 - `evaluation_prep/site_world_health.json`
 - `evaluation_prep/evaluation_prep_manifest.json`
+- `simready/simready_scene_manifest.json`
+- `simready/isaac_sim/site_scene.usda`
+- `simready/mujoco/site_scene.xml`
+- `simready/pybullet/site_scene.urdf`
+- `marble_sim_assets/marble_asset_manifest.json`
+- `marble_sim_assets/marble_simready_bridge.json`
 
 ## Local Development
 
@@ -235,6 +241,33 @@ blueprint-build-evaluation-prep \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
   --provider manual
 ```
+
+Optional local simulator-review artifact build:
+
+```bash
+blueprint-build-simready-assets \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+The simready asset lane is documented in
+[`docs/SIMREADY_ASSET_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SIMREADY_ASSET_LANE.md).
+It writes review artifacts only; it does not run Isaac Sim, MuJoCo, PyBullet,
+live providers, model downloads, or robot-readiness trials.
+
+Optional local Marble sim-asset handoff build:
+
+```bash
+blueprint-build-marble-sim-assets \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+Use `--world-manifest /path/to/worldlabs_world_manifest.json` to review an
+explicit local World Labs world manifest. The Marble handoff lane is documented
+in
+[`docs/MARBLE_SIM_ASSET_HANDOFF.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/MARBLE_SIM_ASSET_HANDOFF.md).
+It reads persisted World Labs manifests and emits Isaac Sim, MuJoCo, and
+PyBullet review packets without downloading remote assets, calling World Labs,
+running simulators, or claiming robot readiness.
 
 ## Contract Boundary
 

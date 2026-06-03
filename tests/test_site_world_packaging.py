@@ -446,6 +446,53 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
         lane="scene_memory",
         config=PipelineConfig(gcs_root=tmp_path),
     )
+    pipeline_root_for_marble = capture_root / "pipeline"
+    (pipeline_root_for_marble / "worldlabs_request_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "provider_name": "world_labs",
+                "provider_model": "marble-1.1",
+                "status": "ready_for_generation",
+                "selected_video_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/privacy/final_walkthrough.mov",
+                "source_manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/privacy_processing_manifest.json",
+                "worldlabs_input_audit_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input_audit.json",
+                "selected_input_checksum_sha256": "selected-sha",
+                "privacy_safe_input": True,
+                "generation_request": {"model": "marble-1.1"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (pipeline_root_for_marble / "worldlabs_operation_manifest.json").write_text(
+        json.dumps({"operation_id": "op-fixture", "done": True, "status": "ready"}),
+        encoding="utf-8",
+    )
+    (pipeline_root_for_marble / "worldlabs_world_manifest.json").write_text(
+        json.dumps(
+            {
+                "world_id": "world-fixture",
+                "world_marble_url": "https://marble.worldlabs.ai/worlds/world-fixture",
+                "model": "marble-1.1",
+                "updated_at": "2026-06-02T00:00:00Z",
+                "assets": {
+                    "mesh": {
+                        "collider_mesh_url": "https://cdn.worldlabs.ai/world-fixture/collider.glb"
+                    },
+                    "splats": {
+                        "spz_urls": {
+                            "full": "https://cdn.worldlabs.ai/world-fixture/full.spz"
+                        },
+                        "semantics_metadata": {
+                            "metric_scale_factor": 0.5,
+                            "ground_plane_offset": 1.0,
+                        },
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     evaluation = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     pipeline_root = capture_root / "pipeline"
@@ -538,8 +585,46 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert spec["presentation"]["orientation"]["display_orientation"] == "portrait"
     summary = json.loads((eval_root / "evaluation_prep_summary.json").read_text(encoding="utf-8"))
     launchable_export = json.loads((eval_root / "launchable_export_bundle.json").read_text(encoding="utf-8"))
+    simready_scene_manifest = json.loads(
+        (pipeline_root / "simready" / "simready_scene_manifest.json").read_text(encoding="utf-8")
+    )
+    simready_validation = json.loads(
+        (pipeline_root / "simready" / "simready_validation.json").read_text(encoding="utf-8")
+    )
+    simready_prep_manifest = json.loads(
+        (eval_root / "simready_prep_manifest.json").read_text(encoding="utf-8")
+    )
+    marble_bridge = json.loads(
+        (pipeline_root / "marble_sim_assets" / "marble_simready_bridge.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    marble_validation = json.loads(
+        (pipeline_root / "marble_sim_assets" / "marble_asset_validation.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is False
     assert launchable_export["bundles"]["presentation_demo_ui"]["launchable"] is False
+    assert manifest["artifacts"]["simready_prep_manifest"] == "simready_prep_manifest.json"
+    assert manifest["artifacts"]["marble_simready_bridge"] == "../marble_sim_assets/marble_simready_bridge.json"
+    assert manifest["artifacts"]["marble_asset_validation"] == "../marble_sim_assets/marble_asset_validation.json"
+    assert simready_prep_manifest["scene_manifest_path"] == "../simready/simready_scene_manifest.json"
+    assert simready_scene_manifest["framework_artifacts"]["isaac_sim"]["path"].endswith(
+        "isaac_sim/site_scene.usda"
+    )
+    assert simready_scene_manifest["framework_artifacts"]["mujoco"]["path"].endswith(
+        "mujoco/site_scene.xml"
+    )
+    assert simready_scene_manifest["framework_artifacts"]["pybullet"]["path"].endswith(
+        "pybullet/site_scene.urdf"
+    )
+    assert simready_validation["claim_boundary"]["simulator_execution_proven"] is False
+    assert simready_validation["claim_boundary"]["robot_readiness_proven"] is False
+    assert summary["marble_sim_asset_lane_status"] == "review_ready_with_conversion_required"
+    assert marble_bridge["evaluation_prep_summary"]["isaac_visual_conversion_required"] is True
+    assert marble_validation["claim_boundary"]["robot_readiness_proven"] is False
+    assert evaluation["marble_sim_assets"]["status"] == "review_ready_with_conversion_required"
     assert health["runtime_smoke"]["status"] == "succeeded"
     assert health["runtime_smoke"]["session_created"] is True
 
@@ -632,8 +717,13 @@ def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_pat
     assert site_world_spec["conditioning"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
     assert site_world_spec["geometry"]["geometry_summary_path"].endswith("/pipeline/geometry/geometry_summary.json")
     assert eval_manifest["artifacts"]["geometry_summary"].startswith("../geometry/")
-    assert launchable_export["bundles"]["geometry_conditioning"]["launchable"] is True
-    assert eval_manifest["validation_gates"]["geometry_conditioning_ready"]["passed"] is True
+    geometry_conditioning = launchable_export["bundles"]["geometry_conditioning"]
+    assert geometry_conditioning["launchable"] is False
+    assert geometry_conditioning["geometry_source"] == "local_sfm"
+    assert geometry_conditioning["local_reference_ready"] is True
+    assert geometry_conditioning["non_arkit_geometry_state"] == "degraded"
+    assert "geometry_source_not_video_to_world:local_sfm" in geometry_conditioning["blockers"]
+    assert eval_manifest["validation_gates"]["geometry_conditioning_ready"]["passed"] is False
 
 
 def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp_path: Path) -> None:

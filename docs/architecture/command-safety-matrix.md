@@ -16,6 +16,8 @@ approval.
 | `pytest tests/test_geometry_stage.py tests/test_retrieval_index_geometry_source.py -q` | Geometry and retrieval fail-closed checks | Local fixture tests |
 | `pytest tests/test_launch_bundle.py tests/test_qualification_alpha.py -q` | Provider preview and qualification contract checks | Local fixture tests |
 | `ruff check <touched-files>` | Lint touched Python files | Read-only analysis |
+| `blueprint-build-simready-assets --capture-root <path>` | Build local simulator-review artifacts | Local artifact writer; no simulator/provider execution |
+| `blueprint-build-marble-sim-assets --capture-root <path>` | Build local Marble simulator-review handoff artifacts | Local artifact writer; no World Labs call, asset download, or simulator execution |
 
 Use `PYTHONDONTWRITEBYTECODE=1` for verification commands when the goal is to
 avoid `__pycache__` churn.
@@ -58,6 +60,8 @@ git diff -- output/paid_marketplace_launch_gate.md output/paid_marketplace_launc
 | `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run_external_alpha_launch_gate.py` | Cross-repo alpha launch gate | May inspect adjacent repos and write gate artifacts |
 | `python -m blueprint_pipeline.run_e2e` | Local e2e pipeline entrypoint | Can run multiple stages and write staged artifacts |
 | `python -m blueprint_pipeline.capture_orchestrator` | Lane orchestrator | Can run package/runtime lanes and write artifacts |
+| `blueprint-build-simready-assets --capture-root <path>` | Local simready asset review lane | Writes `pipeline/simready/*`; does not run Isaac Sim, MuJoCo, PyBullet, providers, or model downloads |
+| `blueprint-build-marble-sim-assets --capture-root <path>` | Local Marble sim-asset handoff lane | Writes `pipeline/marble_sim_assets/*`; does not call World Labs, download remote assets, run Isaac Sim, MuJoCo, or PyBullet |
 
 Run these only when broad gate refresh is requested or when docs/code changes
 touch launch contracts enough to justify it. Always inspect worktree and output

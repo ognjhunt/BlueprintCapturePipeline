@@ -3475,6 +3475,17 @@ def run_evaluation_prep_stage(
     compatibility_matrix_path = eval_dir / "compatibility_matrix.json"
     _copy_json(compatibility_matrix_path, compatibility_matrix)
 
+    from .simready_assets import build_simready_assets
+
+    simready_assets = build_simready_assets(
+        capture_root=context.capture_root,
+        object_geometry_manifest=object_geometry_manifest
+        if isinstance(object_geometry_manifest, Mapping)
+        else {},
+        task_anchor_manifest=task_anchor_manifest,
+        site_world_spec=site_world_spec,
+        hosted_session_runtime_manifest=hosted_session_runtime_manifest,
+    )
     simready_prep_manifest_path = None
     simready_scene_manifest = _read_optional_json_any(pipeline_dir / "simready" / "simready_scene_manifest.json")
     simready_validation = _read_optional_json_any(pipeline_dir / "simready" / "simready_validation.json")
@@ -3488,6 +3499,32 @@ def run_evaluation_prep_stage(
         }
         simready_prep_manifest_path = eval_dir / "simready_prep_manifest.json"
         _copy_json(simready_prep_manifest_path, simready_prep_manifest)
+
+    from .marble_sim_assets import build_marble_sim_assets
+
+    marble_sim_assets: Dict[str, Any] = {}
+    marble_dir = pipeline_dir / "marble_sim_assets"
+    marble_world_manifest_path = pipeline_dir / "worldlabs_world_manifest.json"
+    if marble_world_manifest_path.is_file():
+        marble_sim_assets = build_marble_sim_assets(capture_root=context.capture_root)
+    marble_simready_bridge_path = marble_dir / "marble_simready_bridge.json"
+    marble_asset_validation_path = marble_dir / "marble_asset_validation.json"
+    marble_simready_bridge = _read_optional_json_any(marble_simready_bridge_path)
+    marble_asset_validation = _read_optional_json_any(marble_asset_validation_path)
+    marble_asset_validation_status = (
+        str(marble_asset_validation.get("overall_status") or "")
+        if isinstance(marble_asset_validation, Mapping)
+        else ""
+    )
+    if not marble_sim_assets and isinstance(marble_simready_bridge, Mapping):
+        marble_sim_assets = {
+            "schema_version": "marble_sim_assets_result.v1",
+            "status": str(marble_simready_bridge.get("status") or "unknown"),
+            "bridge_path": str(marble_simready_bridge_path.resolve()),
+            "validation_path": str(marble_asset_validation_path.resolve())
+            if marble_asset_validation_path.is_file()
+            else "",
+        }
 
     recapture_diff = _build_recapture_diff(
         capture_root=context.capture_root,
@@ -3574,6 +3611,9 @@ def run_evaluation_prep_stage(
         "known_downstream_risks": downstream_risks,
         "benchmark_suite_status": benchmark_suite_manifest.get("status"),
         "compatibility_matrix_status": compatibility_matrix.get("status"),
+        "simready_asset_lane_status": simready_assets.get("status"),
+        "marble_sim_asset_lane_status": marble_sim_assets.get("status"),
+        "marble_asset_validation_status": marble_asset_validation_status or None,
         "recapture_diff_status": recapture_diff.get("status"),
         "cosmos_zero_shot_benchmark_status": cosmos_zero_shot_benchmark.get("status"),
         "cosmos_training_export_status": cosmos_training_export.get("status"),
@@ -3677,6 +3717,8 @@ def run_evaluation_prep_stage(
         "native_world_model_primary": site_world_spec.get("native_world_model_primary"),
         "provider_fallback_preview_status": site_world_spec.get("provider_fallback_preview_status"),
         "provider_fallback_only": site_world_spec.get("provider_fallback_only"),
+        "marble_sim_asset_lane_status": marble_sim_assets.get("status"),
+        "simready_asset_lane_status": simready_assets.get("status"),
         "artifact_families": site_world_spec.get("artifact_families"),
         "geometry_conditioning_status": geometry_conditioning_status,
         "geometry_truth": geometry_truth,
@@ -3748,6 +3790,16 @@ def run_evaluation_prep_stage(
             "object_geometry_manifest": _relative_to(eval_dir, object_geometry_target_path),
             "evaluation_prep_summary": _relative_to(eval_dir, summary_path),
             "review_queue": _relative_to(eval_dir, review_queue_path),
+            **(
+                {"marble_simready_bridge": _relative_to(eval_dir, marble_simready_bridge_path)}
+                if marble_simready_bridge_path.is_file()
+                else {}
+            ),
+            **(
+                {"marble_asset_validation": _relative_to(eval_dir, marble_asset_validation_path)}
+                if marble_asset_validation_path.is_file()
+                else {}
+            ),
             **(
                 {"authoritative_runtime_render_manifest": _relative_to(eval_dir, pipeline_dir / "presentation_world" / "authoritative_runtime_render_manifest.json")}
                 if (pipeline_dir / "presentation_world" / "authoritative_runtime_render_manifest.json").is_file()
@@ -3823,6 +3875,12 @@ def run_evaluation_prep_stage(
         if (pipeline_dir / "preview_manifest.json").is_file()
         else None,
         "worldlabs_launch_url": worldlabs_launch_url,
+        "marble_simready_bridge_uri": _gs_uri(context, "marble_sim_assets/marble_simready_bridge.json")
+        if marble_simready_bridge_path.is_file()
+        else None,
+        "marble_asset_validation_uri": _gs_uri(context, "marble_sim_assets/marble_asset_validation.json")
+        if marble_asset_validation_path.is_file()
+        else None,
     }
     site_package_manifest = build_site_package_manifest(
         scene_id=context.scene_id,
@@ -3910,6 +3968,8 @@ def run_evaluation_prep_stage(
         "hosted_review_readiness": hosted_review_readiness,
         "proof_pack_manifest": proof_pack_manifest,
         "proof_path_status": proof_path_status,
+        "simready_assets": simready_assets,
+        "marble_sim_assets": marble_sim_assets,
         "webapp_sync_result": webapp_sync_result,
         "alpha_readiness_summary": alpha_summary,
     }

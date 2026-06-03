@@ -884,6 +884,45 @@ def run_preview_provider(
                 normalized["worldlabs_world_manifest_uri"] = str(worldlabs_world_manifest_path)
             normalized["operation_terminal_status"] = poll_result.get("operation_terminal_status") or poll_result.get("status")
 
+        marble_sim_asset_handoff: Dict[str, Any] | None = None
+        if (
+            isinstance(provider, WorldLabsPreviewProvider)
+            and worldlabs_world_manifest_path.is_file()
+            and normalized.get("world_id")
+        ):
+            from .marble_sim_assets import build_marble_sim_assets
+
+            try:
+                marble_sim_asset_handoff = build_marble_sim_assets(
+                    capture_root=capture_root,
+                    world_manifest=worldlabs_world_manifest_path,
+                )
+                artifact_uris = dict(normalized.get("artifact_uris") or {})
+                artifact_uris.update(
+                    {
+                        "marble_asset_manifest_uri": marble_sim_asset_handoff.get("manifest_path"),
+                        "marble_asset_validation_uri": marble_sim_asset_handoff.get("validation_path"),
+                        "marble_simready_bridge_uri": marble_sim_asset_handoff.get("bridge_path"),
+                    }
+                )
+                for framework, path in dict(
+                    marble_sim_asset_handoff.get("simulator_review_manifests") or {}
+                ).items():
+                    artifact_uris[f"marble_{framework}_review_manifest_uri"] = path
+                normalized["artifact_uris"] = artifact_uris
+                normalized["marble_sim_asset_handoff"] = marble_sim_asset_handoff
+            except Exception as exc:
+                normalized["marble_sim_asset_handoff"] = {
+                    "schema_version": "marble_sim_assets_result.v1",
+                    "status": "failed",
+                    "failure_reason": str(exc),
+                    "claim_boundary": {
+                        "artifact_purpose": "marble_sim_asset_review_packaging_only",
+                        "simulator_execution_proven": False,
+                        "robot_readiness_proven": False,
+                    },
+                }
+
         provider.emit_preview_manifest(normalized=normalized, output_path=manifest_path)
         provenance = provider.emit_provenance(descriptor=descriptor, normalized=normalized)
         run_manifest: Dict[str, Any] = {
@@ -919,6 +958,7 @@ def run_preview_provider(
             "launch_url": normalized.get("launch_url"),
             "worldlabs_launch_url": normalized.get("worldlabs_launch_url") or normalized.get("launch_url"),
             "preview_launch_url": normalized.get("preview_launch_url") or normalized.get("launch_url"),
+            "marble_sim_asset_handoff": normalized.get("marble_sim_asset_handoff") or {},
             "labeling": dict(normalized.get("labeling") or {}),
             "provenance": provenance,
         }

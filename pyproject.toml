@@ -77,6 +77,8 @@ blueprint-native-runtime-service = "blueprint_pipeline.native_runtime_service:ma
 blueprint-backfill-site-reference-db = "blueprint_pipeline.site_reference_backfill:main"
 blueprint-cosmos-vast-train = "blueprint_pipeline.synthesis.cosmos_vast_training_wrapper:main"
 blueprint-run-city-launch-harness = "blueprint_pipeline.city_launch_autonomy_harness:main"
+blueprint-build-simready-assets = "blueprint_pipeline.simready_assets:main"
+blueprint-build-marble-sim-assets = "blueprint_pipeline.marble_sim_assets:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"
