@@ -19,7 +19,7 @@ import subprocess
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .local_capture import resolve_local_capture_context
