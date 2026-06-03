@@ -69,6 +69,13 @@ Optional legacy downstream artifacts:
 - `robot_eval_dataset/annotation_backlog.json`
 - `robot_eval_dataset/proof_boundaries.json`
 - `robot_eval_dataset/prediction_outcome_ledger.json`
+- `simulation_automation/simulation_automation_plan.json`
+- `simulation_automation/simulation_automation_run_manifest.json`
+- `simulation_automation/asset_conversion_plan.json`
+- `simulation_automation/simulator_execution_manifest.json`
+- `simulation_automation/training_orchestration_manifest.json`
+- `simulation_automation/proof_boundary.json`
+- `simulation_automation/agent_decision_ledger.json`
 
 ## Local Development
 
@@ -277,6 +284,19 @@ in
 It reads persisted World Labs manifests and emits Isaac Sim, MuJoCo, and
 PyBullet review packets without downloading remote assets, calling World Labs,
 running simulators, or claiming robot readiness.
+
+Optional fail-closed simulation automation plan:
+
+```bash
+blueprint-run-simulation-automation \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+The simulation automation lane is documented in
+[`docs/SIMULATION_AUTOMATION_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SIMULATION_AUTOMATION_LANE.md).
+It writes local orchestration manifests only. It does not run simulators,
+download assets, start training, call providers, or prove robot readiness unless
+explicit per-run approvals and dependencies are present.
 
 ## Contract Boundary
 

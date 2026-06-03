@@ -19,6 +19,7 @@ approval.
 | `blueprint-build-simready-assets --capture-root <path>` | Build local simulator-review artifacts | Local artifact writer; no simulator/provider execution |
 | `blueprint-build-marble-sim-assets --capture-root <path>` | Build local Marble simulator-review handoff artifacts | Local artifact writer; no World Labs call, asset download, or simulator execution |
 | `blueprint-build-robot-eval-dataset --capture-root <path>` | Build local real-site robot eval dataset artifacts | Local artifact writer; no providers, simulators, model downloads, sends, payments, or deploys |
+| `blueprint-run-simulation-automation --capture-root <path>` | Build fail-closed simulation automation manifests | Local artifact writer; no providers, asset downloads, simulator execution, GPU training, sends, payments, or deploys |
 
 Use `PYTHONDONTWRITEBYTECODE=1` for verification commands when the goal is to
 avoid `__pycache__` churn.
@@ -64,6 +65,7 @@ git diff -- output/paid_marketplace_launch_gate.md output/paid_marketplace_launc
 | `blueprint-build-simready-assets --capture-root <path>` | Local simready asset review lane | Writes `pipeline/simready/*`; does not run Isaac Sim, MuJoCo, PyBullet, providers, or model downloads |
 | `blueprint-build-marble-sim-assets --capture-root <path>` | Local Marble sim-asset handoff lane | Writes `pipeline/marble_sim_assets/*`; does not call World Labs, download remote assets, run Isaac Sim, MuJoCo, or PyBullet |
 | `blueprint-build-robot-eval-dataset --capture-root <path>` | Local robot eval dataset contract lane | Writes `pipeline/robot_eval_dataset/*`; does not prove robot readiness, simulator execution, or actual outcomes |
+| `blueprint-run-simulation-automation --capture-root <path>` | Local simulation automation orchestration lane | Writes `pipeline/simulation_automation/*`; simulator/training execution remains blocked unless explicit env and CLI gates are provided |
 
 Run these only when broad gate refresh is requested or when docs/code changes
 touch launch contracts enough to justify it. Always inspect worktree and output
@@ -88,9 +90,13 @@ Fallback geometry is not live proof.
 | `blueprint-agent-review --capture-root <path> --provider openai` | Optional LLM-backed review | Calls external provider when configured |
 | `blueprint-run-e2e --capture-root <path> --provider openai` | Optional e2e wrapper with provider review | Calls external provider when configured |
 | `BLUEPRINT_PREVIEW_PROVIDER=world_labs ...` | World Labs preview path | Can submit live provider job when key/env are present |
+| `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true blueprint-run-simulation-automation --allow-simulator-execution --allow-simulator <framework> --simulator-command <framework>=<command> ...` | Explicit simulator execution request/result lane | Can run Isaac Sim, MuJoCo, PyBullet, or Newton command; capture stdout/stderr/exit code and inspect blocked/result manifests |
+| `BLUEPRINT_ALLOW_COSMOS_TRAINING=true blueprint-run-simulation-automation --allow-training ...` | Explicit Cosmos training orchestration lane | Can call the Cosmos LoRA training runner and GPU training command when configured |
 
 Do not run live provider jobs without explicit approval. A present provider key
 does not mean the user approved spend or external API mutation.
+Do not run simulator or training approvals unless the user explicitly requests
+that proof-producing run and the dependency/cost/GPU boundary is understood.
 
 ## Deploy Scripts And Live-Risk Commands
 

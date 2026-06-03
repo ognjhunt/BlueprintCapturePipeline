@@ -46,6 +46,9 @@ llm = [
     "google-genai>=1.0.0",
     "openai>=1.0.0",
 ]
+simulation-agents = [
+    "openai-agents>=0.3.0",
+]
 retrieval = [
     "torch>=2.2.0",
     "torchvision>=0.17.0",
@@ -80,6 +83,7 @@ blueprint-run-city-launch-harness = "blueprint_pipeline.city_launch_autonomy_har
 blueprint-build-simready-assets = "blueprint_pipeline.simready_assets:main"
 blueprint-build-marble-sim-assets = "blueprint_pipeline.marble_sim_assets:main"
 blueprint-build-robot-eval-dataset = "blueprint_pipeline.robot_eval_dataset:main"
+blueprint-run-simulation-automation = "blueprint_pipeline.simulation_automation:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

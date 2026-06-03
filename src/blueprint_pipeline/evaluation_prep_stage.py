@@ -927,6 +927,60 @@ def _gs_uri(context, relative_path: str) -> str:
     return f"gs://{context.bucket}/{context.capture_prefix}/pipeline/{relative_path}"
 
 
+def simulation_automation_evaluation_prep_surface(
+    *,
+    capture_root: str | Path,
+    eval_dir: Path,
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    automation_dir = context.pipeline_root / "simulation_automation"
+    artifact_paths = {
+        "simulation_automation_plan": automation_dir / "simulation_automation_plan.json",
+        "simulation_automation_run_manifest": (
+            automation_dir / "simulation_automation_run_manifest.json"
+        ),
+        "asset_conversion_plan": automation_dir / "asset_conversion_plan.json",
+        "simulator_execution_manifest": automation_dir / "simulator_execution_manifest.json",
+        "training_orchestration_manifest": (
+            automation_dir / "training_orchestration_manifest.json"
+        ),
+        "simulation_automation_proof_boundary": automation_dir / "proof_boundary.json",
+        "simulation_automation_agent_decision_ledger": (
+            automation_dir / "agent_decision_ledger.json"
+        ),
+    }
+    artifacts = {
+        key: _relative_to(eval_dir, path)
+        for key, path in artifact_paths.items()
+        if path.is_file()
+    }
+    artifact_uris = {
+        f"{key}_uri": _gs_uri(context, f"simulation_automation/{path.name}")
+        for key, path in artifact_paths.items()
+        if path.is_file()
+    }
+    run_manifest = _read_optional_mapping(automation_dir / "simulation_automation_run_manifest.json")
+    proof_boundary = _read_optional_mapping(automation_dir / "proof_boundary.json")
+    return {
+        "schema_version": "simulation_automation_evaluation_prep_surface.v1",
+        "status": str(run_manifest.get("status") or "missing"),
+        "artifacts": artifacts,
+        "artifact_uris": artifact_uris,
+        "simulator_execution_proven": bool(
+            proof_boundary.get("simulator_execution_proven")
+            or run_manifest.get("simulator_execution_proven")
+        ),
+        "robot_readiness_proven": bool(
+            proof_boundary.get("robot_readiness_proven")
+            or run_manifest.get("robot_readiness_proven")
+        ),
+        "public_claim_upgrade_allowed": bool(
+            proof_boundary.get("public_claim_upgrade_allowed")
+            or run_manifest.get("public_claim_upgrade_allowed")
+        ),
+    }
+
+
 def _real_path_from_eval_dir(eval_dir: Path, relative_path: str) -> Optional[Path]:
     text = str(relative_path or "").strip()
     if not text:
@@ -3573,6 +3627,10 @@ def run_evaluation_prep_stage(
     cosmos_zero_shot_benchmark = _read_optional_mapping(
         pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json"
     )
+    simulation_automation_surface = simulation_automation_evaluation_prep_surface(
+        capture_root=context.capture_root,
+        eval_dir=eval_dir,
+    )
 
     launchable_export_bundle = _build_launchable_export_bundle(
         scene_memory_bundle_manifest=scene_memory_bundle_manifest,
@@ -3650,6 +3708,13 @@ def run_evaluation_prep_stage(
         "cosmos_zero_shot_benchmark_status": cosmos_zero_shot_benchmark.get("status"),
         "cosmos_training_export_status": cosmos_training_export.get("status"),
         "cosmos_lora_training_status": cosmos_training_run.get("status"),
+        "simulation_automation_status": simulation_automation_surface.get("status"),
+        "simulation_automation_simulator_execution_proven": simulation_automation_surface.get(
+            "simulator_execution_proven"
+        ),
+        "simulation_automation_robot_readiness_proven": simulation_automation_surface.get(
+            "robot_readiness_proven"
+        ),
         "export_bundle_status": launchable_export_bundle.get("status"),
         "site_world_status": site_world_health.get("status"),
         "geometry_conditioning_status": geometry_conditioning_status,
@@ -3978,6 +4043,7 @@ def run_evaluation_prep_stage(
                 else {}
             ),
             **({"simready_prep_manifest": _relative_to(eval_dir, simready_prep_manifest_path)} if simready_prep_manifest_path is not None else {}),
+            **dict(simulation_automation_surface.get("artifacts") or {}),
         },
     }
     descriptor_payload = _read_optional_json_any(context.descriptor_path)
@@ -4106,6 +4172,7 @@ def run_evaluation_prep_stage(
         )
         if eval_methodology_summary_path.is_file()
         else None,
+        **dict(simulation_automation_surface.get("artifact_uris") or {}),
     }
     site_package_manifest = build_site_package_manifest(
         scene_id=context.scene_id,

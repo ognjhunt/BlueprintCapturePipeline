@@ -7,6 +7,7 @@ from blueprint_pipeline.simulation_automation import (
     FakeSimulationAutomationAgentAdapter,
     build_simulation_automation,
 )
+from blueprint_pipeline.evaluation_prep_stage import simulation_automation_evaluation_prep_surface
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -240,3 +241,37 @@ def test_fake_agent_adapter_can_plan_and_diagnose_without_network(tmp_path: Path
     )
     assert ledger["diagnostics"][0]["status"] == "blocked"
     assert "approval_required" in ledger["diagnostics"][0]["blockers"]
+
+
+def test_evaluation_prep_surfaces_simulation_automation_artifacts_without_overclaiming(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_worldlabs_and_marble_artifacts(capture_root)
+    build_simulation_automation(capture_root=capture_root)
+
+    eval_dir = capture_root / "pipeline" / "evaluation_prep"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    surface = simulation_automation_evaluation_prep_surface(
+        capture_root=capture_root,
+        eval_dir=eval_dir,
+    )
+
+    assert surface["status"] == "blocked"
+    assert surface["simulator_execution_proven"] is False
+    assert surface["robot_readiness_proven"] is False
+    assert surface["artifacts"] == {
+        "simulation_automation_plan": "../simulation_automation/simulation_automation_plan.json",
+        "simulation_automation_run_manifest": "../simulation_automation/simulation_automation_run_manifest.json",
+        "asset_conversion_plan": "../simulation_automation/asset_conversion_plan.json",
+        "simulator_execution_manifest": "../simulation_automation/simulator_execution_manifest.json",
+        "training_orchestration_manifest": "../simulation_automation/training_orchestration_manifest.json",
+        "simulation_automation_proof_boundary": "../simulation_automation/proof_boundary.json",
+        "simulation_automation_agent_decision_ledger": "../simulation_automation/agent_decision_ledger.json",
+    }
+    assert surface["artifact_uris"]["simulation_automation_run_manifest_uri"].endswith(
+        "/pipeline/simulation_automation/simulation_automation_run_manifest.json"
+    )
+    assert surface["artifact_uris"]["simulation_automation_proof_boundary_uri"].endswith(
+        "/pipeline/simulation_automation/proof_boundary.json"
+    )
