@@ -60,6 +60,15 @@ Optional legacy downstream artifacts:
 - `simready/pybullet/site_scene.urdf`
 - `marble_sim_assets/marble_asset_manifest.json`
 - `marble_sim_assets/marble_simready_bridge.json`
+- `robot_eval_dataset/robot_eval_dataset_manifest.json`
+- `robot_eval_dataset/real_site_robot_eval_dataset_manifest.json`
+- `robot_eval_dataset/site_card.json`
+- `robot_eval_dataset/task_cards.json`
+- `robot_eval_dataset/scenario_cards.json`
+- `robot_eval_dataset/eval_cards.json`
+- `robot_eval_dataset/annotation_backlog.json`
+- `robot_eval_dataset/proof_boundaries.json`
+- `robot_eval_dataset/prediction_outcome_ledger.json`
 
 ## Local Development
 

@@ -604,11 +604,33 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
             encoding="utf-8"
         )
     )
+    robot_eval_root = pipeline_root / "robot_eval_dataset"
+    robot_eval_manifest = json.loads(
+        (robot_eval_root / "robot_eval_dataset_manifest.json").read_text(encoding="utf-8")
+    )
+    robot_eval_site_card = json.loads(
+        (robot_eval_root / "site_card.json").read_text(encoding="utf-8")
+    )
+    robot_eval_proof_boundaries = json.loads(
+        (robot_eval_root / "proof_boundaries.json").read_text(encoding="utf-8")
+    )
     assert summary["validation_gates"]["presentation_demo_ui_ready"]["passed"] is False
     assert launchable_export["bundles"]["presentation_demo_ui"]["launchable"] is False
     assert manifest["artifacts"]["simready_prep_manifest"] == "simready_prep_manifest.json"
     assert manifest["artifacts"]["marble_simready_bridge"] == "../marble_sim_assets/marble_simready_bridge.json"
     assert manifest["artifacts"]["marble_asset_validation"] == "../marble_sim_assets/marble_asset_validation.json"
+    assert (
+        manifest["artifacts"]["robot_eval_dataset_manifest"]
+        == "../robot_eval_dataset/robot_eval_dataset_manifest.json"
+    )
+    assert manifest["artifacts"]["robot_eval_site_card"] == "../robot_eval_dataset/site_card.json"
+    assert manifest["artifacts"]["robot_eval_task_cards"] == "../robot_eval_dataset/task_cards.json"
+    assert manifest["artifacts"]["robot_eval_scenario_cards"] == "../robot_eval_dataset/scenario_cards.json"
+    assert manifest["artifacts"]["robot_eval_cards"] == "../robot_eval_dataset/eval_cards.json"
+    assert (
+        manifest["artifacts"]["robot_eval_proof_boundaries"]
+        == "../robot_eval_dataset/proof_boundaries.json"
+    )
     assert simready_prep_manifest["scene_manifest_path"] == "../simready/simready_scene_manifest.json"
     assert simready_scene_manifest["framework_artifacts"]["isaac_sim"]["path"].endswith(
         "isaac_sim/site_scene.usda"
@@ -625,6 +647,20 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     assert marble_bridge["evaluation_prep_summary"]["isaac_visual_conversion_required"] is True
     assert marble_validation["claim_boundary"]["robot_readiness_proven"] is False
     assert evaluation["marble_sim_assets"]["status"] == "review_ready_with_conversion_required"
+    assert summary["robot_eval_dataset_status"] in {
+        "capture_grounded_review_ready",
+        "blocked",
+    }
+    assert robot_eval_manifest["schema_version"] == "real_site_robot_eval_dataset_manifest.v0.1"
+    assert robot_eval_manifest["dataset_version"] == "0.1"
+    assert robot_eval_manifest["claim_boundary"]["robot_readiness_proven"] is False
+    assert robot_eval_manifest["claim_boundary"]["simulator_execution_proven"] is False
+    assert robot_eval_site_card["schema_version"] == "real_site_robot_eval_site_card.v0.1"
+    assert robot_eval_proof_boundaries["robot_policy_execution_proven"] is False
+    assert robot_eval_proof_boundaries["safety_validation_proven"] is False
+    assert evaluation["robot_eval_dataset"]["manifest_path"].endswith(
+        "/robot_eval_dataset/robot_eval_dataset_manifest.json"
+    )
     assert health["runtime_smoke"]["status"] == "succeeded"
     assert health["runtime_smoke"]["session_created"] is True
 

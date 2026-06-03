@@ -3526,6 +3526,36 @@ def run_evaluation_prep_stage(
             else "",
         }
 
+    from .robot_eval_dataset import build_real_site_robot_eval_dataset
+
+    robot_eval_dataset = build_real_site_robot_eval_dataset(
+        capture_root=context.capture_root,
+        object_geometry_manifest=object_geometry_manifest
+        if isinstance(object_geometry_manifest, Mapping)
+        else {},
+        task_anchor_manifest=task_anchor_manifest,
+        site_world_spec=site_world_spec,
+        hosted_session_runtime_manifest=hosted_session_runtime_manifest,
+    )
+    robot_eval_dir = pipeline_dir / "robot_eval_dataset"
+    robot_eval_dataset_manifest_path = robot_eval_dir / "robot_eval_dataset_manifest.json"
+    robot_eval_legacy_manifest_path = (
+        robot_eval_dir / "real_site_robot_eval_dataset_manifest.json"
+    )
+    robot_site_card_path = robot_eval_dir / "site_card.json"
+    robot_task_cards_path = robot_eval_dir / "task_cards.json"
+    robot_scenario_cards_path = robot_eval_dir / "scenario_cards.json"
+    robot_eval_cards_path = robot_eval_dir / "eval_cards.json"
+    robot_annotation_backlog_path = robot_eval_dir / "annotation_backlog.json"
+    robot_proof_boundaries_path = robot_eval_dir / "proof_boundaries.json"
+    robot_task_library_path = robot_eval_dir / "robot_task_library.json"
+    robot_scenario_library_path = robot_eval_dir / "scenario_library.json"
+    robot_pov_requirements_path = robot_eval_dir / "robot_pov_evidence_requirements.json"
+    human_demo_requirements_path = robot_eval_dir / "human_demo_evidence_requirements.json"
+    robot_failure_taxonomy_path = robot_eval_dir / "failure_taxonomy.json"
+    prediction_outcome_ledger_path = robot_eval_dir / "prediction_outcome_ledger.json"
+    eval_methodology_summary_path = robot_eval_dir / "eval_methodology_summary.md"
+
     recapture_diff = _build_recapture_diff(
         capture_root=context.capture_root,
         current_capture_id=context.capture_id,
@@ -3614,6 +3644,8 @@ def run_evaluation_prep_stage(
         "simready_asset_lane_status": simready_assets.get("status"),
         "marble_sim_asset_lane_status": marble_sim_assets.get("status"),
         "marble_asset_validation_status": marble_asset_validation_status or None,
+        "robot_eval_dataset_status": robot_eval_dataset.get("status"),
+        "robot_eval_dataset_statuses": robot_eval_dataset.get("dataset_statuses"),
         "recapture_diff_status": recapture_diff.get("status"),
         "cosmos_zero_shot_benchmark_status": cosmos_zero_shot_benchmark.get("status"),
         "cosmos_training_export_status": cosmos_training_export.get("status"),
@@ -3801,6 +3833,121 @@ def run_evaluation_prep_stage(
                 else {}
             ),
             **(
+                {
+                    "robot_eval_dataset_manifest": _relative_to(
+                        eval_dir,
+                        robot_eval_dataset_manifest_path,
+                    )
+                }
+                if robot_eval_dataset_manifest_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "robot_eval_legacy_manifest": _relative_to(
+                        eval_dir,
+                        robot_eval_legacy_manifest_path,
+                    )
+                }
+                if robot_eval_legacy_manifest_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_eval_site_card": _relative_to(eval_dir, robot_site_card_path)}
+                if robot_site_card_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_eval_task_cards": _relative_to(eval_dir, robot_task_cards_path)}
+                if robot_task_cards_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_eval_scenario_cards": _relative_to(eval_dir, robot_scenario_cards_path)}
+                if robot_scenario_cards_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_eval_cards": _relative_to(eval_dir, robot_eval_cards_path)}
+                if robot_eval_cards_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "robot_eval_annotation_backlog": _relative_to(
+                        eval_dir,
+                        robot_annotation_backlog_path,
+                    )
+                }
+                if robot_annotation_backlog_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "robot_eval_proof_boundaries": _relative_to(
+                        eval_dir,
+                        robot_proof_boundaries_path,
+                    )
+                }
+                if robot_proof_boundaries_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_task_library": _relative_to(eval_dir, robot_task_library_path)}
+                if robot_task_library_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_scenario_library": _relative_to(eval_dir, robot_scenario_library_path)}
+                if robot_scenario_library_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "robot_pov_evidence_requirements": _relative_to(
+                        eval_dir,
+                        robot_pov_requirements_path,
+                    )
+                }
+                if robot_pov_requirements_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "human_demo_evidence_requirements": _relative_to(
+                        eval_dir,
+                        human_demo_requirements_path,
+                    )
+                }
+                if human_demo_requirements_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_failure_taxonomy": _relative_to(eval_dir, robot_failure_taxonomy_path)}
+                if robot_failure_taxonomy_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "prediction_outcome_ledger": _relative_to(
+                        eval_dir,
+                        prediction_outcome_ledger_path,
+                    )
+                }
+                if prediction_outcome_ledger_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "robot_eval_methodology_summary": _relative_to(
+                        eval_dir,
+                        eval_methodology_summary_path,
+                    )
+                }
+                if eval_methodology_summary_path.is_file()
+                else {}
+            ),
+            **(
                 {"authoritative_runtime_render_manifest": _relative_to(eval_dir, pipeline_dir / "presentation_world" / "authoritative_runtime_render_manifest.json")}
                 if (pipeline_dir / "presentation_world" / "authoritative_runtime_render_manifest.json").is_file()
                 else {}
@@ -3880,6 +4027,84 @@ def run_evaluation_prep_stage(
         else None,
         "marble_asset_validation_uri": _gs_uri(context, "marble_sim_assets/marble_asset_validation.json")
         if marble_asset_validation_path.is_file()
+        else None,
+        "robot_eval_dataset_manifest_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/robot_eval_dataset_manifest.json",
+        )
+        if robot_eval_dataset_manifest_path.is_file()
+        else None,
+        "robot_eval_legacy_manifest_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/real_site_robot_eval_dataset_manifest.json",
+        )
+        if robot_eval_legacy_manifest_path.is_file()
+        else None,
+        "robot_eval_site_card_uri": _gs_uri(context, "robot_eval_dataset/site_card.json")
+        if robot_site_card_path.is_file()
+        else None,
+        "robot_eval_task_cards_uri": _gs_uri(context, "robot_eval_dataset/task_cards.json")
+        if robot_task_cards_path.is_file()
+        else None,
+        "robot_eval_scenario_cards_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/scenario_cards.json",
+        )
+        if robot_scenario_cards_path.is_file()
+        else None,
+        "robot_eval_cards_uri": _gs_uri(context, "robot_eval_dataset/eval_cards.json")
+        if robot_eval_cards_path.is_file()
+        else None,
+        "robot_eval_annotation_backlog_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/annotation_backlog.json",
+        )
+        if robot_annotation_backlog_path.is_file()
+        else None,
+        "robot_eval_proof_boundaries_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/proof_boundaries.json",
+        )
+        if robot_proof_boundaries_path.is_file()
+        else None,
+        "robot_task_library_uri": _gs_uri(context, "robot_eval_dataset/robot_task_library.json")
+        if robot_task_library_path.is_file()
+        else None,
+        "robot_scenario_library_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/scenario_library.json",
+        )
+        if robot_scenario_library_path.is_file()
+        else None,
+        "robot_pov_evidence_requirements_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/robot_pov_evidence_requirements.json",
+        )
+        if robot_pov_requirements_path.is_file()
+        else None,
+        "human_demo_evidence_requirements_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/human_demo_evidence_requirements.json",
+        )
+        if human_demo_requirements_path.is_file()
+        else None,
+        "robot_failure_taxonomy_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/failure_taxonomy.json",
+        )
+        if robot_failure_taxonomy_path.is_file()
+        else None,
+        "prediction_outcome_ledger_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/prediction_outcome_ledger.json",
+        )
+        if prediction_outcome_ledger_path.is_file()
+        else None,
+        "robot_eval_methodology_summary_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/eval_methodology_summary.md",
+        )
+        if eval_methodology_summary_path.is_file()
         else None,
     }
     site_package_manifest = build_site_package_manifest(
@@ -3970,6 +4195,7 @@ def run_evaluation_prep_stage(
         "proof_path_status": proof_path_status,
         "simready_assets": simready_assets,
         "marble_sim_assets": marble_sim_assets,
+        "robot_eval_dataset": robot_eval_dataset,
         "webapp_sync_result": webapp_sync_result,
         "alpha_readiness_summary": alpha_summary,
     }

@@ -79,6 +79,7 @@ blueprint-cosmos-vast-train = "blueprint_pipeline.synthesis.cosmos_vast_training
 blueprint-run-city-launch-harness = "blueprint_pipeline.city_launch_autonomy_harness:main"
 blueprint-build-simready-assets = "blueprint_pipeline.simready_assets:main"
 blueprint-build-marble-sim-assets = "blueprint_pipeline.marble_sim_assets:main"
+blueprint-build-robot-eval-dataset = "blueprint_pipeline.robot_eval_dataset:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

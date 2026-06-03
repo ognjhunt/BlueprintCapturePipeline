@@ -18,6 +18,7 @@ approval.
 | `ruff check <touched-files>` | Lint touched Python files | Read-only analysis |
 | `blueprint-build-simready-assets --capture-root <path>` | Build local simulator-review artifacts | Local artifact writer; no simulator/provider execution |
 | `blueprint-build-marble-sim-assets --capture-root <path>` | Build local Marble simulator-review handoff artifacts | Local artifact writer; no World Labs call, asset download, or simulator execution |
+| `blueprint-build-robot-eval-dataset --capture-root <path>` | Build local real-site robot eval dataset artifacts | Local artifact writer; no providers, simulators, model downloads, sends, payments, or deploys |
 
 Use `PYTHONDONTWRITEBYTECODE=1` for verification commands when the goal is to
 avoid `__pycache__` churn.
@@ -62,6 +63,7 @@ git diff -- output/paid_marketplace_launch_gate.md output/paid_marketplace_launc
 | `python -m blueprint_pipeline.capture_orchestrator` | Lane orchestrator | Can run package/runtime lanes and write artifacts |
 | `blueprint-build-simready-assets --capture-root <path>` | Local simready asset review lane | Writes `pipeline/simready/*`; does not run Isaac Sim, MuJoCo, PyBullet, providers, or model downloads |
 | `blueprint-build-marble-sim-assets --capture-root <path>` | Local Marble sim-asset handoff lane | Writes `pipeline/marble_sim_assets/*`; does not call World Labs, download remote assets, run Isaac Sim, MuJoCo, or PyBullet |
+| `blueprint-build-robot-eval-dataset --capture-root <path>` | Local robot eval dataset contract lane | Writes `pipeline/robot_eval_dataset/*`; does not prove robot readiness, simulator execution, or actual outcomes |
 
 Run these only when broad gate refresh is requested or when docs/code changes
 touch launch contracts enough to justify it. Always inspect worktree and output
