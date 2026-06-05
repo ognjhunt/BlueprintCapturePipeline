@@ -30,6 +30,17 @@ PROOF_BOUNDARIES_SCHEMA_VERSION = "real_site_robot_eval_proof_boundaries.v0.1"
 ROBOT_TASK_LIBRARY_SCHEMA_VERSION = "robot_task_library.v1"
 SCENARIO_LIBRARY_SCHEMA_VERSION = "robot_eval_scenario_library.v1"
 PREDICTION_OUTCOME_LEDGER_SCHEMA_VERSION = "prediction_outcome_ledger.v1"
+ROBOT_TEAM_TEST_SUBMISSION_MODALITIES_SCHEMA_VERSION = (
+    "robot_team_test_submission_modalities.v0.1"
+)
+ROBOT_EVAL_INPUTS_EVIDENCE_CONTRACT_SCHEMA_VERSION = "robot_eval_inputs_evidence_contract.v1"
+RIGHTS_PACKET_SCHEMA_VERSION = "real_site_robot_eval_rights_packet.v1"
+RIGHTS_LEDGER_SCHEMA_VERSION = "real_site_robot_eval_rights_ledger.v1"
+TASK_ONTOLOGY_SCHEMA_VERSION = "real_site_robot_eval_task_ontology.v1"
+SCENARIO_FAMILY_LIBRARY_SCHEMA_VERSION = "real_site_robot_eval_scenario_family_library.v1"
+SCORING_METHODOLOGY_SCHEMA_VERSION = "real_site_robot_eval_scoring_methodology.v1"
+RECORDED_TRACE_EVAL_REPORT_SCHEMA_VERSION = "recorded_action_trace_eval_report.v1"
+PREDICTION_VS_ACTUAL_SUMMARY_SCHEMA_VERSION = "prediction_vs_actual_summary.v1"
 
 DETERMINISTIC_DEFAULT_GENERATED_AT = "1970-01-01T00:00:00+00:00"
 
@@ -39,8 +50,328 @@ FAIL_CLOSED_STATUSES = [
     "needs_human_demo",
     "needs_action_logs",
     "needs_actual_outcome",
+    "needs_policy_api_endpoint_ref",
+    "needs_docker_container_ref",
+    "needs_recorded_action_trace_ref",
+    "needs_high_level_skill_trace_ref",
+    "needs_teleop_demo_ref",
+    "needs_sim_controller_plugin_ref",
     "blocked_rights_privacy",
     "review_only_no_robot_readiness",
+]
+
+ROBOT_TEAM_TEST_MODALITY_REQUIREMENTS: List[Dict[str, Any]] = [
+    {
+        "modality_id": "policy_api_endpoint",
+        "label": "Policy API endpoint",
+        "missing_evidence_status": "needs_policy_api_endpoint_ref",
+        "required_reference_fields": [
+            "endpointUrl",
+            "authHandling",
+            "observationSchemaRef",
+            "actionSchemaRef",
+            "runtimeConstraints",
+            "callbackLogUri",
+            "ownerContact",
+        ],
+    },
+    {
+        "modality_id": "docker_container",
+        "label": "Docker container",
+        "missing_evidence_status": "needs_docker_container_ref",
+        "required_reference_fields": [
+            "imageRef",
+            "digestChecksum",
+            "entrypoint",
+            "environmentContract",
+            "hardwareNeeds",
+            "ioSchemaRef",
+            "runtimeNotes",
+        ],
+    },
+    {
+        "modality_id": "recorded_action_trace",
+        "label": "Recorded action traces",
+        "missing_evidence_status": "needs_recorded_action_trace_ref",
+        "required_reference_fields": [
+            "traceManifestUri",
+            "format",
+            "taskScenarioMapping",
+            "timestampAlignment",
+            "observationActionAlignment",
+            "successFailureLabels",
+            "checksum",
+        ],
+    },
+    {
+        "modality_id": "high_level_skill_trace",
+        "label": "High-level skill traces",
+        "missing_evidence_status": "needs_high_level_skill_trace_ref",
+        "required_reference_fields": [
+            "skillTaxonomyVersion",
+            "orderedSkillSequence",
+            "preconditionsPostconditions",
+            "failureLabels",
+            "sourceType",
+            "confidenceCoverageNote",
+        ],
+    },
+    {
+        "modality_id": "teleop_demo",
+        "label": "Teleop demos",
+        "missing_evidence_status": "needs_teleop_demo_ref",
+        "required_reference_fields": [
+            "demoArtifactUri",
+            "operatorDevice",
+            "controlMapping",
+            "timeSync",
+            "taskScenarioMapping",
+            "rightsPrivacyAttestation",
+            "labels",
+        ],
+    },
+    {
+        "modality_id": "sim_controller_plugin",
+        "label": "Sim controller plugin",
+        "missing_evidence_status": "needs_sim_controller_plugin_ref",
+        "required_reference_fields": [
+            "simulatorFramework",
+            "pluginUri",
+            "supportedControlModes",
+            "observationActionSpaces",
+            "replayExportPath",
+            "compatibilityNotes",
+        ],
+    },
+]
+
+TASK_ONTOLOGY_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "task_id": "navigate_to_station",
+        "task_family": "navigation",
+        "aliases": ["navigate", "go_to_station", "station approach", "route to station"],
+        "parameters": ["start_zone", "goal_station_id", "route_constraints"],
+        "success_criteria": [
+            "robot reaches the goal station",
+            "cycle time stays under the buyer threshold",
+            "no unsafe proximity, collision, or blocked-zone violation is recorded",
+        ],
+    },
+    {
+        "task_id": "inspect_shelf",
+        "task_family": "inspection",
+        "aliases": ["shelf inspection", "scan shelf", "inventory shelf"],
+        "parameters": ["shelf_id", "inspection_targets", "required_viewpoints"],
+        "success_criteria": [
+            "required shelf faces are observed",
+            "inspection labels are linked to the scenario and evidence refs",
+            "missed-label and occlusion failures are recorded",
+        ],
+    },
+    {
+        "task_id": "move_tote",
+        "task_family": "material_handling",
+        "aliases": ["tote move", "move bin", "transport tote"],
+        "parameters": ["source_zone", "destination_zone", "tote_id", "load_limit"],
+        "success_criteria": [
+            "target tote reaches the destination zone",
+            "no object drop or wrong-object event is recorded",
+            "intervention count and cycle time are recorded",
+        ],
+    },
+    {
+        "task_id": "cart_to_conveyor_transfer",
+        "task_family": "transfer",
+        "aliases": ["cart conveyor transfer", "cart to conveyor", "load conveyor"],
+        "parameters": ["cart_id", "conveyor_id", "handoff_pose", "object_type"],
+        "success_criteria": [
+            "item transfers from cart to conveyor",
+            "collision and drop metrics remain within threshold",
+            "handoff timing and recovery attempts are recorded",
+        ],
+    },
+    {
+        "task_id": "line_side_delivery",
+        "task_family": "delivery",
+        "aliases": ["line side delivery", "deliver parts", "station delivery"],
+        "parameters": ["pickup_zone", "line_station_id", "delivery_window_seconds"],
+        "success_criteria": [
+            "payload is delivered to the requested line station",
+            "human crossing and blocked-path events are labeled",
+            "operator intervention count is recorded",
+        ],
+    },
+    {
+        "task_id": "pick_known_object",
+        "task_family": "manipulation",
+        "aliases": ["pick object", "pick known item", "grasp known object"],
+        "parameters": ["object_id", "source_container_id", "grasp_constraints"],
+        "success_criteria": [
+            "known object is selected",
+            "wrong-object and object-drop metrics remain zero",
+            "grasp/contact evidence is linked",
+        ],
+    },
+    {
+        "task_id": "place_object_into_bin",
+        "task_family": "pick_place",
+        "aliases": ["place in bin", "bin placement", "place item"],
+        "parameters": ["object_id", "target_bin_id", "placement_tolerance"],
+        "success_criteria": [
+            "object is placed inside the target bin",
+            "placement, drop, and wrong-object outcomes are labeled",
+            "cycle time and interventions are recorded",
+        ],
+    },
+    {
+        "task_id": "blocked_path_recovery",
+        "task_family": "recovery",
+        "aliases": ["blocked path", "route recovery", "obstacle recovery"],
+        "parameters": ["route_id", "blocker_type", "recovery_policy"],
+        "success_criteria": [
+            "robot chooses a safe recovery path or holds",
+            "unsafe proximity and intervention events are labeled",
+            "recovery success is recorded",
+        ],
+    },
+    {
+        "task_id": "human_crossing_safety_response",
+        "task_family": "safety_response",
+        "aliases": ["human crossing", "pedestrian crossing", "people safety response"],
+        "parameters": ["crossing_zone", "minimum_distance_m", "stop_or_yield_policy"],
+        "success_criteria": [
+            "robot yields, stops, or reroutes per policy",
+            "unsafe proximity stays under threshold",
+            "safety response timing is recorded",
+        ],
+    },
+    {
+        "task_id": "open_door_enter_room",
+        "task_family": "articulation_navigation",
+        "aliases": ["open door", "enter room", "doorway entry"],
+        "parameters": ["door_id", "handle_type", "entry_zone", "clearance_width_m"],
+        "success_criteria": [
+            "door interaction reaches the required state",
+            "robot enters the target room without contact violation",
+            "articulation, recovery, and timeout metrics are recorded",
+        ],
+    },
+]
+
+SCENARIO_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "variation_id": "lighting_variation",
+        "label": "Lighting variation",
+        "default_status": "representative-mock",
+    },
+    {
+        "variation_id": "object_rotation",
+        "label": "Object rotation",
+        "default_status": "representative-mock",
+    },
+    {
+        "variation_id": "cart_shifted",
+        "label": "Cart shifted",
+        "default_status": "representative-mock",
+    },
+    {
+        "variation_id": "blocked_path",
+        "label": "Blocked path",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "human_crossing",
+        "label": "Human crossing",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "forklift_nearby",
+        "label": "Forklift nearby",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "occlusion",
+        "label": "Occlusion",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "glare",
+        "label": "Glare",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "missing_label",
+        "label": "Missing label",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "wrong_object_nearby",
+        "label": "Wrong object nearby",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "narrow_approach_angle",
+        "label": "Narrow approach angle",
+        "default_status": "agent-inferred-needs-review",
+    },
+]
+
+SCORING_METRIC_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "metric_id": "success_rate",
+        "aggregation": "successful_attempts / attempt_count",
+        "higher_is_better": True,
+    },
+    {
+        "metric_id": "cycle_time",
+        "aggregation": "mean cycle_time_seconds",
+        "higher_is_better": False,
+    },
+    {
+        "metric_id": "intervention_rate",
+        "aggregation": "total interventions / attempt_count",
+        "higher_is_better": False,
+    },
+    {
+        "metric_id": "unsafe_proximity",
+        "aggregation": "unsafe proximity event count",
+        "higher_is_better": False,
+    },
+    {
+        "metric_id": "collision_risk",
+        "aggregation": "collision or contact event count",
+        "higher_is_better": False,
+    },
+    {
+        "metric_id": "object_drop",
+        "aggregation": "object drop event count",
+        "higher_is_better": False,
+    },
+    {
+        "metric_id": "wrong_object",
+        "aggregation": "wrong object event count",
+        "higher_is_better": False,
+    },
+    {
+        "metric_id": "timeout",
+        "aggregation": "timeout event count",
+        "higher_is_better": False,
+    },
+    {
+        "metric_id": "recovery_success",
+        "aggregation": "successful recovery attempts / recovery attempt count",
+        "higher_is_better": True,
+    },
+    {
+        "metric_id": "uncertainty",
+        "aggregation": "proof and label completeness bucket",
+        "higher_is_better": False,
+    },
+    {
+        "metric_id": "sim_vs_real_calibration_placeholder",
+        "aggregation": "reserved until simulator and real-world actuals are paired",
+        "higher_is_better": False,
+    },
 ]
 
 PREDICTION_SOURCES = [
@@ -153,6 +484,28 @@ def _float_triplet(value: Any, *, fallback: Sequence[float]) -> List[float]:
     return out[:3]
 
 
+def _number(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return _string(value).lower() in {"1", "true", "yes", "y", "success", "succeeded"}
+
+
 def _stable_slug(value: Any, *, fallback: str) -> str:
     text = re.sub(r"[^a-z0-9]+", "_", _string(value).lower()).strip("_")
     return (text or fallback)[:96]
@@ -213,8 +566,14 @@ def _source_artifacts(*, pipeline_dir: Path, eval_dir: Path, robot_eval_dir: Pat
         "action_log_input_manifest": (
             pipeline_dir / "robot_eval_inputs" / "action_log_manifest.json"
         ),
+        "recorded_action_trace_manifest": (
+            pipeline_dir / "robot_eval_inputs" / "recorded_action_trace_manifest.json"
+        ),
         "actual_outcome_input_manifest": (
             pipeline_dir / "robot_eval_inputs" / "actual_outcome_manifest.json"
+        ),
+        "robot_team_test_submission_manifest": (
+            pipeline_dir / "robot_eval_inputs" / "robot_team_test_submission_manifest.json"
         ),
     }
     return {
@@ -288,6 +647,98 @@ def _success_criteria(task_category: str) -> List[str]:
     ]
 
 
+def _task_ontology_v1(*, generated_at: str) -> Dict[str, Any]:
+    tasks: List[Dict[str, Any]] = []
+    for item in TASK_ONTOLOGY_DEFINITIONS:
+        task_id = _string(item.get("task_id"))
+        task_family = _string(item.get("task_family"))
+        tasks.append(
+            {
+                "task_id": task_id,
+                "task_family": task_family,
+                "aliases": _string_list(item.get("aliases")),
+                "parameters": _string_list(item.get("parameters")),
+                "success_criteria": _string_list(item.get("success_criteria")),
+                "required_evidence": [
+                    "capture_backed_site_card",
+                    "task_card",
+                    "scenario_card",
+                    "robot_pov_or_recorded_trace",
+                    "action_log_or_teleop_demo",
+                    "actual_outcome_manifest",
+                    "rights_packet",
+                ],
+                "supported_metrics": [
+                    "success_rate",
+                    "cycle_time",
+                    "intervention_rate",
+                    "unsafe_proximity",
+                    "collision_risk",
+                    "object_drop",
+                    "wrong_object",
+                    "timeout",
+                    "recovery_success",
+                    "uncertainty",
+                ],
+                "cross_site_query_fields": [
+                    "task_id",
+                    "task_family",
+                    "site_type",
+                    "robot_embodiment",
+                    "object_class",
+                    "fixture_type",
+                    "route_constraint",
+                    "safety_constraint",
+                    "variation_id",
+                    "scenario_status",
+                ],
+                "claim_boundary": "ontology_task_definition_only_no_execution_or_readiness_claim",
+            }
+        )
+    return {
+        "schema_version": TASK_ONTOLOGY_SCHEMA_VERSION,
+        "ontology_version": "1.0",
+        "generated_at": generated_at,
+        "task_count": len(tasks),
+        "tasks": sorted(tasks, key=lambda task: task["task_id"]),
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _ontology_by_id() -> Dict[str, Dict[str, Any]]:
+    return {item["task_id"]: dict(item) for item in TASK_ONTOLOGY_DEFINITIONS}
+
+
+def _canonical_task_id_for_task(*, task_id: str, task_text: str, task_category: str) -> str:
+    haystack = " ".join([task_id, task_text, task_category]).lower()
+    ontology = _ontology_by_id()
+    for candidate_id, entry in ontology.items():
+        aliases = [candidate_id, *_string_list(entry.get("aliases"))]
+        if any(alias.replace("_", " ") in haystack for alias in aliases):
+            return candidate_id
+    if "conveyor" in haystack and "cart" in haystack:
+        return "cart_to_conveyor_transfer"
+    if "line" in haystack and "deliver" in haystack:
+        return "line_side_delivery"
+    if "door" in haystack:
+        return "open_door_enter_room"
+    if "human" in haystack and ("cross" in haystack or "yield" in haystack):
+        return "human_crossing_safety_response"
+    if "blocked" in haystack or "obstacle" in haystack:
+        return "blocked_path_recovery"
+    if "inspect" in haystack or "shelf" in haystack:
+        return "inspect_shelf"
+    if "tote" in haystack or "cart" in haystack:
+        return "move_tote"
+    if "place" in haystack or "bin" in haystack:
+        return "place_object_into_bin"
+    if "pick" in haystack or "grasp" in haystack:
+        return "pick_known_object"
+    if "navigate" in haystack or "route" in haystack or "station" in haystack:
+        return "navigate_to_station"
+    return "navigate_to_station" if task_category in {"navigation", "route"} else "pick_known_object"
+
+
 def _task_library(
     *,
     task_anchor_manifest: Mapping[str, Any],
@@ -306,11 +757,29 @@ def _task_library(
                 continue
             target_ids = _string_list(task.get("target_object_ids"))
             task_category = _string(task.get("task_category") or "generic")
+            task_text = _string(task.get("task_text") or task.get("name") or task_id)
+            ontology_task_id = _canonical_task_id_for_task(
+                task_id=task_id,
+                task_text=task_text,
+                task_category=task_category,
+            )
+            ontology_entry = _ontology_by_id().get(ontology_task_id, {})
             tasks.append(
                 {
                     "task_id": task_id,
-                    "task_text": _string(task.get("task_text") or task.get("name") or task_id),
+                    "task_text": task_text,
                     "task_category": task_category,
+                    "ontology_task_id": ontology_task_id,
+                    "ontology_version": "1.0",
+                    "task_family_aliases": _string_list(ontology_entry.get("aliases")),
+                    "cross_site_query_fields": [
+                        "site_type",
+                        "robot_embodiment",
+                        "target_object_ids",
+                        "scenario_variation_id",
+                        "rights_status",
+                        "failure_mode_ids",
+                    ],
                     "target_object_ids": target_ids,
                     "target_objects": [
                         objects[object_id] for object_id in target_ids if object_id in objects
@@ -463,6 +932,93 @@ def _scenario_library(
     }
 
 
+def _scenario_family_library(
+    *,
+    scenario_library: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    allowed_statuses = [
+        "capture-grounded",
+        "representative-mock",
+        "agent-inferred-needs-review",
+        "accepted",
+        "rejected",
+        "review-only",
+    ]
+    families: List[Dict[str, Any]] = []
+    scenarios = [
+        dict(scenario)
+        for scenario in scenario_library.get("scenarios", [])
+        if isinstance(scenario, Mapping)
+    ]
+    for scenario in scenarios:
+        scenario_id = _string(scenario.get("scenario_id"))
+        task_id = _string(scenario.get("task_id"))
+        family_id = f"family_{_stable_slug(scenario_id, fallback='scenario')}"
+        variations = [
+            {
+                "variation_id": "capture_observed_layout",
+                "label": "Capture-observed layout",
+                "scenario_status": "capture-grounded",
+                "evidence_source": "capture_package_and_task_anchor",
+                "requires_review": False,
+                "sim_or_cosmos_proof_claim_allowed": False,
+                "claim_boundary": "capture_layout_is_context_not_robot_outcome",
+            }
+        ]
+        for definition in SCENARIO_VARIATION_DEFINITIONS:
+            status = _string(definition.get("default_status")) or "review-only"
+            variations.append(
+                {
+                    "variation_id": _string(definition.get("variation_id")),
+                    "label": _string(definition.get("label")),
+                    "scenario_status": status,
+                    "evidence_source": "scenario_family_generator_template",
+                    "requires_review": status not in {"capture-grounded", "accepted"},
+                    "sim_or_cosmos_proof_claim_allowed": False,
+                    "claim_boundary": "variation_is_mock_or_review_input_until_owner_system_proof_exists",
+                }
+            )
+        families.append(
+            {
+                "family_id": family_id,
+                "scenario_id": scenario_id,
+                "task_id": task_id,
+                "robot_profile_id": _string(scenario.get("robot_profile_id")),
+                "status": "review_required",
+                "variation_count": len(variations),
+                "variations": variations,
+                "allowed_statuses": allowed_statuses,
+                "review_loop": {
+                    "review_queue_status": "required_for_generated_or_mock_variations",
+                    "accepted_status_requires": [
+                        "operator_or_buyer_review_ref",
+                        "evidence_uri",
+                        "reviewer",
+                        "reviewed_at",
+                    ],
+                    "rejected_status_records": [
+                        "reason",
+                        "reviewer",
+                        "reviewed_at",
+                    ],
+                },
+                "claim_boundary": "scenario_family_generation_does_not_prove_simulation_or_robot_outcomes",
+            }
+        )
+    return {
+        "schema_version": SCENARIO_FAMILY_LIBRARY_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "family_count": len(families),
+        "variation_names_required": [
+            definition["variation_id"] for definition in SCENARIO_VARIATION_DEFINITIONS
+        ],
+        "families": sorted(families, key=lambda item: item["family_id"]),
+        "cosmos_or_simulator_proof_claim_allowed": False,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
 def _robot_pov_requirements(*, generated_at: str) -> Dict[str, Any]:
     return {
         "schema_version": "robot_pov_evidence_requirements.v1",
@@ -529,6 +1085,206 @@ def _human_demo_requirements(*, generated_at: str) -> Dict[str, Any]:
             "failed_or_ambiguous_steps",
         ],
         "claim_boundary": "human_demo_is_support_evidence_not_robot_trial",
+    }
+
+
+def _robot_eval_inputs_evidence_contract(*, generated_at: str) -> Dict[str, Any]:
+    shared_required = [
+        "schema_version",
+        "scenario_id",
+        "task_id",
+        "timestamp_alignment",
+        "owner_system",
+        "provenance",
+        "rights_privacy_scope",
+    ]
+    contracts = {
+        "robot_pov": {
+            "path": "pipeline/robot_eval_inputs/robot_pov_evidence_manifest.json",
+            "required_fields": [
+                *shared_required,
+                "attempt_id",
+                "robot_profile_id",
+                "robot_pov_video_uri",
+                "robot_pose_or_odometry_uri",
+            ],
+        },
+        "human_demo": {
+            "path": "pipeline/robot_eval_inputs/human_demo_evidence_manifest.json",
+            "required_fields": [
+                *shared_required,
+                "demo_id",
+                "human_demo_video_uri",
+                "demo_step_annotations_uri",
+                "success_label",
+            ],
+        },
+        "action_logs": {
+            "path": "pipeline/robot_eval_inputs/action_log_manifest.json",
+            "required_fields": [
+                *shared_required,
+                "attempt_id",
+                "action_log_uri",
+                "observation_action_alignment",
+                "policy_or_operator_ref",
+            ],
+        },
+        "recorded_action_traces": {
+            "path": "pipeline/robot_eval_inputs/recorded_action_trace_manifest.json",
+            "required_fields": [
+                "schema_version",
+                "attempts",
+                "owner_system",
+                "provenance",
+                "rights_privacy_scope",
+            ],
+            "attempt_required_fields": [
+                "attempt_id",
+                "scenario_id",
+                "task_id",
+                "success",
+                "cycle_time_seconds",
+                "intervention_count",
+                "failure_mode_ids",
+            ],
+        },
+        "simulator_traces": {
+            "path": "pipeline/robot_eval_inputs/simulator_trace_manifest.json",
+            "required_fields": [
+                *shared_required,
+                "attempt_id",
+                "simulator_framework",
+                "scenario_attempt_trace_uri",
+                "contact_trace_uri",
+                "timing_metrics_uri",
+                "safety_event_log_uri",
+            ],
+        },
+        "policy_submissions": {
+            "path": "pipeline/robot_eval_inputs/robot_team_test_submission_manifest.json",
+            "required_fields": [
+                "schema_version",
+                "modalities",
+                "owner_system",
+                "provenance",
+                "rights_privacy_scope",
+            ],
+        },
+        "actual_outcomes": {
+            "path": "pipeline/robot_eval_inputs/actual_outcome_manifest.json",
+            "required_fields": [
+                *shared_required,
+                "attempt_id",
+                "actual_source",
+                "actual_success",
+                "cycle_time_seconds",
+                "intervention_count",
+                "failure_mode_ids",
+            ],
+        },
+    }
+    return {
+        "schema_version": ROBOT_EVAL_INPUTS_EVIDENCE_CONTRACT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "contract_only",
+        "contracts": contracts,
+        "required_cross_cutting_fields": {
+            "rights_privacy_scope": [
+                "allowed_use",
+                "privacy_processed",
+                "external_display_allowed",
+                "operator_or_owner_approval_ref",
+            ],
+            "timestamp_alignment": [
+                "clock_source",
+                "alignment_method",
+                "start_timestamp",
+                "end_timestamp",
+                "max_offset_ms",
+            ],
+            "owner_system": [
+                "system_id",
+                "system_type",
+                "contact_or_team_ref",
+                "evidence_authority",
+            ],
+            "provenance": [
+                "created_at",
+                "source_artifact_uri",
+                "checksum",
+                "chain_of_custody",
+            ],
+        },
+        "claim_boundary": "input_contract_only_missing_inputs_remain_blocked_until_owner_system_evidence_exists",
+    }
+
+
+def _robot_team_submission_modality_statuses(
+    robot_team_submission_input: Mapping[str, Any],
+) -> List[str]:
+    if not robot_team_submission_input:
+        return [
+            _string(item.get("missing_evidence_status"))
+            for item in ROBOT_TEAM_TEST_MODALITY_REQUIREMENTS
+        ]
+    raw_modalities = robot_team_submission_input.get("modalities")
+    if isinstance(raw_modalities, Mapping):
+        present = {
+            _string(key)
+            for key, value in raw_modalities.items()
+            if isinstance(value, Mapping) and bool(value.get("selected") or value.get("enabled") or value.get("fields"))
+        }
+    elif isinstance(raw_modalities, list):
+        present = {
+            _string(item.get("modality") or item.get("id"))
+            for item in raw_modalities
+            if isinstance(item, Mapping) and bool(item.get("selected") or item.get("enabled") or item.get("fields"))
+        }
+    else:
+        present = set()
+    return [
+        _string(item.get("missing_evidence_status"))
+        for item in ROBOT_TEAM_TEST_MODALITY_REQUIREMENTS
+        if _string(item.get("modality_id")) not in present
+    ]
+
+
+def _robot_team_submission_modalities(
+    *,
+    robot_team_submission_input: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    missing_statuses = _robot_team_submission_modality_statuses(robot_team_submission_input)
+    return {
+        "schema_version": ROBOT_TEAM_TEST_SUBMISSION_MODALITIES_SCHEMA_VERSION,
+        "dataset_version": ROBOT_EVAL_DATASET_VERSION,
+        "generated_at": generated_at,
+        "source_input_present": bool(robot_team_submission_input),
+        "modality_count": len(ROBOT_TEAM_TEST_MODALITY_REQUIREMENTS),
+        "modalities": [
+            {
+                **item,
+                "accepted_reference_policy": "artifact_references_first_no_raw_upload_required",
+                "review_status": (
+                    "missing_evidence"
+                    if _string(item.get("missing_evidence_status")) in missing_statuses
+                    else "reference_present_requires_owner_system_review"
+                ),
+                "claim_boundary": "submission_reference_only_no_policy_execution_or_robot_readiness_claim",
+            }
+            for item in ROBOT_TEAM_TEST_MODALITY_REQUIREMENTS
+        ],
+        "missing_evidence_statuses": missing_statuses,
+        "blocked_claim_upgrades": [
+            "ready_to_deploy_claim",
+            "safety_validated_claim",
+            "simulator_completed_claim",
+            "robot_trial_passed_claim",
+            "policy_execution_passed_claim",
+            "guaranteed_threshold_claim",
+        ],
+        "webapp_policy_field": "policy.robotTeamTestSubmission",
+        "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
 
@@ -629,6 +1385,356 @@ def _prediction_outcome_ledger(
             "owner_system",
             "claim_boundary",
         ],
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _scoring_methodology(*, generated_at: str) -> Dict[str, Any]:
+    return {
+        "schema_version": SCORING_METHODOLOGY_SCHEMA_VERSION,
+        "methodology_version": "robot_eval_scoring.v1",
+        "generated_at": generated_at,
+        "status": "versioned_advisory_methodology",
+        "metrics": list(SCORING_METRIC_DEFINITIONS),
+        "failure_taxonomy_source": "failure_taxonomy.json",
+        "deterministic_scorer": {
+            "runner": "recorded_action_trace_fixture",
+            "input": "pipeline/robot_eval_inputs/recorded_action_trace_manifest.json",
+            "output": "pipeline/robot_eval_dataset/recorded_trace_eval_report.json",
+            "live_simulator_required": False,
+            "docker_required": False,
+            "policy_api_required": False,
+            "provider_credentials_required": False,
+        },
+        "proof_boundary": {
+            "simulator_execution_proven": False,
+            "robot_policy_execution_proven": False,
+            "safety_validated": False,
+            "public_claim_upgrade_allowed": False,
+        },
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _raw_records(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    for key in ("attempts", "records", "outcomes", "traces"):
+        raw = payload.get(key)
+        if isinstance(raw, list):
+            return [dict(item) for item in raw if isinstance(item, Mapping)]
+    return []
+
+
+def _record_metric(attempt: Mapping[str, Any], *keys: str, default: float = 0.0) -> float:
+    metrics = _mapping(attempt.get("metrics"))
+    for key in keys:
+        if key in metrics:
+            return _number(metrics.get(key), default=default)
+        if key in attempt:
+            return _number(attempt.get(key), default=default)
+    return default
+
+
+def _record_int_metric(attempt: Mapping[str, Any], *keys: str, default: int = 0) -> int:
+    return _int(_record_metric(attempt, *keys, default=float(default)), default=default)
+
+
+def _infer_recorded_failure_modes(
+    *,
+    success: bool,
+    intervention_count: int,
+    unsafe_proximity_count: int,
+    collision_count: int,
+    object_drop_count: int,
+    wrong_object_count: int,
+    timeout_count: int,
+) -> List[str]:
+    if success:
+        return []
+    modes: List[str] = []
+    if intervention_count:
+        modes.append("failure_intervention_required")
+    if unsafe_proximity_count:
+        modes.append("failure_safety_threshold_violation")
+    if collision_count:
+        modes.append("failure_contact_collision")
+    if object_drop_count or wrong_object_count:
+        modes.append("failure_manipulation_miss")
+    if timeout_count:
+        modes.append("failure_cycle_time_exceeded")
+    return modes or ["failure_task_not_attempted"]
+
+
+def _recorded_trace_eval_report(
+    *,
+    scenario_library: Mapping[str, Any],
+    scoring_methodology: Mapping[str, Any],
+    recorded_trace_input: Mapping[str, Any],
+    source_artifacts: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    scenarios = {
+        _string(scenario.get("scenario_id")): dict(scenario)
+        for scenario in scenario_library.get("scenarios", [])
+        if isinstance(scenario, Mapping)
+    }
+    raw_attempts = _raw_records(recorded_trace_input)
+    attempts: List[Dict[str, Any]] = []
+    for index, raw in enumerate(raw_attempts):
+        scenario_id = _string(raw.get("scenario_id"))
+        task_id = _string(raw.get("task_id")) or _string(
+            _mapping(scenarios.get(scenario_id)).get("task_id")
+        )
+        success = _bool(raw.get("success") if raw.get("success") is not None else raw.get("actual_success"))
+        intervention_count = _record_int_metric(raw, "intervention_count", "interventions")
+        unsafe_proximity_count = _record_int_metric(
+            raw,
+            "unsafe_proximity_count",
+            "unsafe_proximity_event_count",
+            "safety_event_count",
+        )
+        collision_count = _record_int_metric(
+            raw,
+            "collision_risk_event_count",
+            "collision_event_count",
+            "contact_event_count",
+        )
+        object_drop_count = _record_int_metric(raw, "object_drop_count", "drop_count")
+        wrong_object_count = _record_int_metric(raw, "wrong_object_count")
+        timeout_count = _record_int_metric(raw, "timeout_count")
+        recovery_attempt_count = _record_int_metric(raw, "recovery_attempt_count")
+        recovery_success_count = _record_int_metric(raw, "recovery_success_count")
+        failure_modes = _string_list(raw.get("failure_mode_ids")) or _infer_recorded_failure_modes(
+            success=success,
+            intervention_count=intervention_count,
+            unsafe_proximity_count=unsafe_proximity_count,
+            collision_count=collision_count,
+            object_drop_count=object_drop_count,
+            wrong_object_count=wrong_object_count,
+            timeout_count=timeout_count,
+        )
+        attempts.append(
+            {
+                "attempt_id": _string(raw.get("attempt_id")) or f"recorded_trace_attempt_{index + 1}",
+                "scenario_id": scenario_id,
+                "task_id": task_id,
+                "trace_id": _string(raw.get("trace_id")) or _string(raw.get("attempt_id")),
+                "status": "scored",
+                "success": success,
+                "cycle_time_seconds": _record_metric(raw, "cycle_time_seconds"),
+                "intervention_count": intervention_count,
+                "unsafe_proximity_event_count": unsafe_proximity_count,
+                "collision_risk_event_count": collision_count,
+                "object_drop_count": object_drop_count,
+                "wrong_object_count": wrong_object_count,
+                "timeout_count": timeout_count,
+                "recovery_attempt_count": recovery_attempt_count,
+                "recovery_success_count": recovery_success_count,
+                "failure_mode_ids": failure_modes,
+                "evidence_refs": _mapping(raw.get("evidence_refs")) or _mapping(raw.get("artifact_paths")),
+                "claim_boundary": "recorded_trace_fixture_score_is_advisory_not_live_policy_execution",
+            }
+        )
+    attempt_count = len(attempts)
+    success_count = sum(1 for attempt in attempts if bool(attempt.get("success")))
+    cycle_values = [
+        float(attempt["cycle_time_seconds"])
+        for attempt in attempts
+        if isinstance(attempt.get("cycle_time_seconds"), (int, float))
+    ]
+    recovery_attempts = sum(_int(attempt.get("recovery_attempt_count")) for attempt in attempts)
+    recovery_successes = sum(_int(attempt.get("recovery_success_count")) for attempt in attempts)
+    report_status = "scored_advisory" if attempts else "blocked_missing_recorded_trace"
+    blockers = [] if attempts else ["missing_recorded_action_trace_manifest"]
+    return {
+        "schema_version": RECORDED_TRACE_EVAL_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": report_status,
+        "blockers": blockers,
+        "runner": "recorded_action_trace_fixture",
+        "methodology_version": scoring_methodology.get("methodology_version"),
+        "attempt_count": attempt_count,
+        "scenario_count": len({attempt["scenario_id"] for attempt in attempts}),
+        "metrics": {
+            "success_rate": round(success_count / float(attempt_count), 6)
+            if attempt_count
+            else None,
+            "mean_cycle_time_seconds": round(sum(cycle_values) / len(cycle_values), 6)
+            if cycle_values
+            else None,
+            "intervention_rate": round(
+                sum(_int(attempt.get("intervention_count")) for attempt in attempts)
+                / float(attempt_count),
+                6,
+            )
+            if attempt_count
+            else None,
+            "unsafe_proximity_event_count": sum(
+                _int(attempt.get("unsafe_proximity_event_count")) for attempt in attempts
+            ),
+            "collision_risk_event_count": sum(
+                _int(attempt.get("collision_risk_event_count")) for attempt in attempts
+            ),
+            "object_drop_count": sum(_int(attempt.get("object_drop_count")) for attempt in attempts),
+            "wrong_object_count": sum(_int(attempt.get("wrong_object_count")) for attempt in attempts),
+            "timeout_count": sum(_int(attempt.get("timeout_count")) for attempt in attempts),
+            "recovery_success_rate": round(recovery_successes / float(recovery_attempts), 6)
+            if recovery_attempts
+            else None,
+            "uncertainty": "medium_recorded_trace_fixture" if attempts else "blocked_missing_trace",
+            "sim_vs_real_calibration_placeholder": "blocked_until_paired_real_outcomes",
+        },
+        "failure_taxonomy": sorted(
+            {
+                failure_id
+                for attempt in attempts
+                for failure_id in _string_list(attempt.get("failure_mode_ids"))
+            }
+        ),
+        "attempts": sorted(attempts, key=lambda item: item["attempt_id"]),
+        "evidence_refs": {
+            "recorded_action_trace_manifest": source_artifacts.get(
+                "recorded_action_trace_manifest"
+            ),
+            "scenario_library": "scenario_library.json",
+            "scoring_methodology": "scoring_methodology.json",
+        },
+        "proof_boundary": {
+            "live_simulator_required": False,
+            "docker_required": False,
+            "policy_api_required": False,
+            "provider_credentials_required": False,
+            "simulator_execution_proven": False,
+            "robot_policy_execution_proven": False,
+            "safety_validated": False,
+            "public_claim_upgrade_allowed": False,
+        },
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _actual_outcome_records(
+    *,
+    actual_outcome_input: Mapping[str, Any],
+    recorded_trace_eval_report: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for index, raw in enumerate(_raw_records(actual_outcome_input)):
+        records.append(
+            {
+                "outcome_id": _string(raw.get("outcome_id"))
+                or _string(raw.get("attempt_id"))
+                or f"actual_outcome_{index + 1}",
+                "scenario_id": _string(raw.get("scenario_id")),
+                "task_id": _string(raw.get("task_id")),
+                "actual_source": _string(raw.get("actual_source")) or "operator_report",
+                "actual_success": _bool(raw.get("actual_success") if raw.get("actual_success") is not None else raw.get("success")),
+                "cycle_time_seconds": _record_metric(raw, "cycle_time_seconds"),
+                "intervention_count": _record_int_metric(raw, "intervention_count", "interventions"),
+                "failure_mode_ids": _string_list(raw.get("failure_mode_ids")),
+                "tuning_notes": _string_list(raw.get("tuning_notes")),
+                "evidence_refs": _mapping(raw.get("evidence_refs")) or _mapping(raw.get("artifact_paths")),
+                "claim_boundary": "actual_outcome_record_requires_owner_system_review_for_claim_upgrade",
+            }
+        )
+    if records:
+        return records
+    for attempt in recorded_trace_eval_report.get("attempts", []) or []:
+        if not isinstance(attempt, Mapping):
+            continue
+        records.append(
+            {
+                "outcome_id": _string(attempt.get("attempt_id")),
+                "scenario_id": _string(attempt.get("scenario_id")),
+                "task_id": _string(attempt.get("task_id")),
+                "actual_source": "recorded_action_trace",
+                "actual_success": bool(attempt.get("success")),
+                "cycle_time_seconds": attempt.get("cycle_time_seconds"),
+                "intervention_count": _int(attempt.get("intervention_count")),
+                "failure_mode_ids": _string_list(attempt.get("failure_mode_ids")),
+                "tuning_notes": [],
+                "evidence_refs": _mapping(attempt.get("evidence_refs")),
+                "claim_boundary": "recorded_trace_actual_is_advisory_until_owner_system_review",
+            }
+        )
+    return records
+
+
+def _prediction_vs_actual_summary(
+    *,
+    ledger: Mapping[str, Any],
+    actual_outcome_input: Mapping[str, Any],
+    recorded_trace_eval_report: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    actuals = _actual_outcome_records(
+        actual_outcome_input=actual_outcome_input,
+        recorded_trace_eval_report=recorded_trace_eval_report,
+    )
+    prediction_records = [
+        dict(record) for record in ledger.get("records", []) if isinstance(record, Mapping)
+    ]
+    matched_rows: List[Dict[str, Any]] = []
+    for actual in actuals:
+        matching_predictions = [
+            record
+            for record in prediction_records
+            if _string(record.get("scenario_id")) == _string(actual.get("scenario_id"))
+            and _string(record.get("task_id")) == _string(actual.get("task_id"))
+        ]
+        predicted_failures = sorted(
+            {
+                failure_id
+                for record in matching_predictions
+                for failure_id in _string_list(record.get("failure_mode_ids"))
+            }
+        )
+        actual_failures = _string_list(actual.get("failure_mode_ids"))
+        missed_failures = sorted(set(actual_failures) - set(predicted_failures))
+        matched_rows.append(
+            {
+                "outcome_id": actual.get("outcome_id"),
+                "scenario_id": actual.get("scenario_id"),
+                "task_id": actual.get("task_id"),
+                "actual_source": actual.get("actual_source"),
+                "matching_prediction_count": len(matching_predictions),
+                "predicted_failures": predicted_failures,
+                "actual_failures": actual_failures,
+                "missed_failures": missed_failures,
+                "actual_success": actual.get("actual_success"),
+                "tuning_notes": actual.get("tuning_notes") or [],
+                "calibration_status": "matched_prediction"
+                if matching_predictions
+                else "missing_prediction_for_actual",
+                "claim_boundary": actual.get("claim_boundary"),
+            }
+        )
+    status = "advisory_actuals_ingested" if matched_rows else "blocked_missing_actuals"
+    actual_successes = [
+        bool(row.get("actual_success")) for row in matched_rows if row.get("actual_success") is not None
+    ]
+    return {
+        "schema_version": PREDICTION_VS_ACTUAL_SUMMARY_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "missing_actuals_remain_blocked": not bool(matched_rows),
+        "actual_record_count": len(matched_rows),
+        "matched_prediction_count": sum(
+            _int(row.get("matching_prediction_count")) for row in matched_rows
+        ),
+        "missed_failure_count": sum(len(_string_list(row.get("missed_failures"))) for row in matched_rows),
+        "records": sorted(matched_rows, key=lambda row: _string(row.get("outcome_id"))),
+        "calibration_summary": {
+            "actual_success_rate": round(
+                sum(1 for success in actual_successes if success) / float(len(actual_successes)),
+                6,
+            )
+            if actual_successes
+            else None,
+            "source_types": sorted({_string(row.get("actual_source")) for row in matched_rows}),
+            "calibration_status": status,
+            "sim_vs_real_calibration_placeholder": "blocked_until_sim_and_real_pairs_exist",
+        },
+        "blockers": [] if matched_rows else ["missing_actual_outcome_manifest"],
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -920,6 +2026,10 @@ def _task_cards(*, task_library: Mapping[str, Any], generated_at: str) -> Dict[s
                 "task_id": task_id,
                 "task_statement": _first_text(task.get("task_text"), fallback=task_id),
                 "task_category": _string(task.get("task_category") or "generic"),
+                "ontology_task_id": _string(task.get("ontology_task_id")),
+                "ontology_version": _string(task.get("ontology_version") or "1.0"),
+                "task_family_aliases": _string_list(task.get("task_family_aliases")),
+                "cross_site_query_fields": _string_list(task.get("cross_site_query_fields")),
                 "start_state": {
                     "start_zone": task.get("start_zone"),
                     "label_source": "task_anchor_manifest",
@@ -989,12 +2099,15 @@ def _scenario_cards(
         if not isinstance(scenario, Mapping):
             continue
         scenario_id = _string(scenario.get("scenario_id"))
+        scenario_family_id = f"family_{_stable_slug(scenario_id, fallback='scenario')}"
         cards.append(
             {
                 "schema_version": "real_site_robot_eval_scenario_card.v0.1",
                 "dataset_version": ROBOT_EVAL_DATASET_VERSION,
                 "scenario_card_id": f"scenario_card_{_stable_slug(scenario_id, fallback='scenario')}",
                 "scenario_id": scenario_id,
+                "scenario_family_id": scenario_family_id,
+                "scenario_family_artifact": "scenario_family_library.json",
                 "task_id": _string(scenario.get("task_id")),
                 "robot_profile_id": _string(scenario.get("robot_profile_id")),
                 "normal_scenario": {
@@ -1022,6 +2135,13 @@ def _scenario_cards(
                     "variation": "agent_inferred",
                     "edge_case": "agent_inferred",
                 },
+                "scenario_family_variation_ids": [
+                    "capture_observed_layout",
+                    *[
+                        _string(definition.get("variation_id"))
+                        for definition in SCENARIO_VARIATION_DEFINITIONS
+                    ],
+                ],
                 "required_missing_annotations": scenario.get("missing_evidence_statuses") or [],
                 "claim_boundary": "scenario_card_is_review_scope_not_simulator_or_pilot_result",
             }
@@ -1136,6 +2256,13 @@ def _annotation_backlog(
             add("needs_action_logs", "eval_cards", "action_or_teleop_log_link", "Action/policy evaluation is blocked without action logs.")
         if status == "needs_actual_outcome":
             add("needs_actual_outcome", "eval_cards", "actual_outcome_record", "Predicted-vs-actual validation is blocked.")
+        if status.startswith("needs_") and status.endswith("_ref"):
+            add(
+                status,
+                "robot_team_test_submission_modalities",
+                status.replace("needs_", "").replace("_ref", "_reference"),
+                "Robot-team submission modality reference is missing or not selected.",
+            )
         if status == "blocked_rights_privacy":
             add("blocked_rights_privacy", "site_card", "rights_privacy_clearance", "External licensing and public-use claims are blocked.")
 
@@ -1173,6 +2300,7 @@ def _proof_boundaries(
     collider_present: bool,
     action_log_input: Mapping[str, Any],
     actual_outcome_input: Mapping[str, Any],
+    robot_team_submission_input: Mapping[str, Any],
     generated_at: str,
 ) -> Dict[str, Any]:
     return {
@@ -1190,6 +2318,7 @@ def _proof_boundaries(
         "generated_scenarios_are_real_world_proof": False,
         "collider_review_input_present": collider_present,
         "action_logs_present": bool(action_log_input),
+        "robot_team_test_submission_refs_present": bool(robot_team_submission_input),
         "rights_privacy_status": dict(rights_privacy),
         "blocked_upgrades": [
             "collision_ready_claim"
@@ -1245,6 +2374,172 @@ def _rights_privacy_status(
     }
 
 
+def _rights_field(*payloads: Mapping[str, Any], key: str, fallback: Any = None) -> Any:
+    for payload in payloads:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return fallback
+
+
+def _rights_records(
+    *,
+    rights_summary: Mapping[str, Any],
+    rights_review: Mapping[str, Any],
+    privacy_manifest: Mapping[str, Any],
+    rights_privacy: Mapping[str, Any],
+    source_artifacts: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    evidence_uri = _rights_field(
+        rights_review,
+        rights_summary,
+        key="evidence_uri",
+        fallback=source_artifacts.get("rights_provenance_review")
+        or source_artifacts.get("rights_and_compliance_summary"),
+    )
+    approver = _rights_field(
+        rights_review,
+        rights_summary,
+        key="approver",
+        fallback=_rights_field(rights_review, rights_summary, key="approved_by", fallback=None),
+    )
+    expiration = _rights_field(
+        rights_review,
+        rights_summary,
+        key="expiration_at",
+        fallback=_rights_field(rights_review, rights_summary, key="expires_at", fallback=None),
+    )
+    blocked = bool(rights_privacy.get("blocked"))
+    blocker_status = "blocked_rights_privacy" if blocked else "needs_use_specific_approval"
+    categories = [
+        {
+            "rights_scope": "raw_confidential_data",
+            "allowed_uses": ["internal_quality_review", "secure_pipeline_processing"],
+            "disallowed_uses": ["public_display", "external_robot_team_distribution"],
+        },
+        {
+            "rights_scope": "derived_deidentified_environment",
+            "allowed_uses": ["advisory_site_card_generation", "hosted_review_when_approved"],
+            "disallowed_uses": ["unrestricted_resale", "identity_reconstruction"],
+        },
+        {
+            "rights_scope": "synthetic_variant_rights",
+            "allowed_uses": ["representative_mock_scenario_review"],
+            "disallowed_uses": ["claiming_generated_variants_as_capture_truth"],
+        },
+        {
+            "rights_scope": "robot_eval_rights",
+            "allowed_uses": ["task_scenario_eval_dataset_review"],
+            "disallowed_uses": ["robot_readiness_claim_without_owner_system_proof"],
+        },
+        {
+            "rights_scope": "commercial_licensing",
+            "allowed_uses": ["request_scoped_license_review"],
+            "disallowed_uses": ["blanket_commercial_license_claim"],
+        },
+        {
+            "rights_scope": "revenue_share",
+            "allowed_uses": ["request_scoped_revenue_share_review"],
+            "disallowed_uses": ["payout_or_revenue_share_commitment_without_owner_record"],
+        },
+        {
+            "rights_scope": "exclusivity_limits",
+            "allowed_uses": ["record_non_exclusive_default_or_review_needed"],
+            "disallowed_uses": ["early_exclusivity_claim_without_signed_approval"],
+        },
+    ]
+    records: List[Dict[str, Any]] = []
+    for category in categories:
+        scope = _string(category.get("rights_scope"))
+        records.append(
+            {
+                "rights_record_id": f"rights_{scope}",
+                "rights_scope": scope,
+                "status": "blocked" if blocked else "review_required",
+                "blocker_status": blocker_status,
+                "raw_confidential_data": scope == "raw_confidential_data",
+                "derived_deidentified_environment": (
+                    scope == "derived_deidentified_environment"
+                ),
+                "synthetic_variant_rights": scope == "synthetic_variant_rights",
+                "robot_eval_rights": scope == "robot_eval_rights",
+                "commercial_licensing": scope == "commercial_licensing",
+                "revenue_share": scope == "revenue_share",
+                "exclusivity_limits": scope == "exclusivity_limits",
+                "expiration_at": expiration,
+                "approver": approver,
+                "evidence_uri": evidence_uri,
+                "allowed_uses": list(category["allowed_uses"]),
+                "disallowed_uses": list(category["disallowed_uses"]),
+                "source_status": {
+                    "rights_status": rights_privacy.get("rights_status"),
+                    "privacy_status": rights_privacy.get("privacy_status"),
+                    "privacy_processing_status": privacy_manifest.get("status"),
+                },
+                "claim_boundary": "rights_record_is_review_packet_not_blanket_clearance",
+            }
+        )
+    return records
+
+
+def _rights_packet(
+    *,
+    rights_summary: Mapping[str, Any],
+    rights_review: Mapping[str, Any],
+    privacy_manifest: Mapping[str, Any],
+    rights_privacy: Mapping[str, Any],
+    source_artifacts: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    records = _rights_records(
+        rights_summary=rights_summary,
+        rights_review=rights_review,
+        privacy_manifest=privacy_manifest,
+        rights_privacy=rights_privacy,
+        source_artifacts=source_artifacts,
+    )
+    return {
+        "schema_version": RIGHTS_PACKET_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "blocked" if rights_privacy.get("blocked") else "review_required",
+        "record_count": len(records),
+        "records": records,
+        "source_artifacts": dict(source_artifacts),
+        "commercial_use_claim_allowed": False,
+        "external_licensing_claim_allowed": False,
+        "blocker_status": "blocked_rights_privacy"
+        if rights_privacy.get("blocked")
+        else "needs_use_specific_approval",
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _rights_ledger(*, rights_packet: Mapping[str, Any], generated_at: str) -> Dict[str, Any]:
+    records = [
+        dict(record)
+        for record in rights_packet.get("records", [])
+        if isinstance(record, Mapping)
+    ]
+    return {
+        "schema_version": RIGHTS_LEDGER_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "ledger_status": "blocked"
+        if rights_packet.get("status") == "blocked"
+        else "review_required",
+        "record_count": len(records),
+        "records": records,
+        "allowed_disallowed_use_matrix": {
+            _string(record.get("rights_scope")): {
+                "allowed_uses": _string_list(record.get("allowed_uses")),
+                "disallowed_uses": _string_list(record.get("disallowed_uses")),
+                "blocker_status": record.get("blocker_status"),
+            }
+            for record in records
+        },
+        "claim_boundary": "rights_ledger_does_not_clear_public_or_commercial_use_by_itself",
+    }
+
+
 def _dataset_statuses(
     *,
     task_count: int,
@@ -1253,6 +2548,7 @@ def _dataset_statuses(
     human_demo_input: Mapping[str, Any],
     action_log_input: Mapping[str, Any],
     actual_outcome_input: Mapping[str, Any],
+    robot_team_submission_input: Mapping[str, Any],
     rights_privacy: Mapping[str, Any],
 ) -> List[str]:
     statuses: List[str] = []
@@ -1266,6 +2562,7 @@ def _dataset_statuses(
         statuses.append("needs_action_logs")
     if not actual_outcome_input:
         statuses.append("needs_actual_outcome")
+    statuses.extend(_robot_team_submission_modality_statuses(robot_team_submission_input))
     if bool(rights_privacy.get("blocked")):
         statuses.append("blocked_rights_privacy")
     statuses.append("review_only_no_robot_readiness")
@@ -1378,8 +2675,14 @@ def build_real_site_robot_eval_dataset(
     action_log_input = _read_optional_mapping(
         pipeline_dir / "robot_eval_inputs" / "action_log_manifest.json"
     )
+    recorded_trace_input = _read_optional_mapping(
+        pipeline_dir / "robot_eval_inputs" / "recorded_action_trace_manifest.json"
+    )
     actual_outcome_input = _read_optional_mapping(
         pipeline_dir / "robot_eval_inputs" / "actual_outcome_manifest.json"
+    )
+    robot_team_submission_input = _read_optional_mapping(
+        pipeline_dir / "robot_eval_inputs" / "robot_team_test_submission_manifest.json"
     )
 
     generated_at = _deterministic_generated_at(
@@ -1390,8 +2693,12 @@ def build_real_site_robot_eval_dataset(
         marble_validation,
         worldlabs_world_manifest,
         cosmos3_readiness,
+        robot_team_submission_input,
+        recorded_trace_input,
+        actual_outcome_input,
         descriptor,
     )
+    task_ontology = _task_ontology_v1(generated_at=generated_at)
     task_library = _task_library(
         task_anchor_manifest=task_anchor,
         object_geometry_manifest=object_geometry,
@@ -1412,6 +2719,10 @@ def build_real_site_robot_eval_dataset(
         prediction_sources=prediction_sources,
         generated_at=generated_at,
     )
+    scenario_family_library = _scenario_family_library(
+        scenario_library=scenario_library,
+        generated_at=generated_at,
+    )
     source_artifacts = _source_artifacts(
         pipeline_dir=pipeline_dir,
         eval_dir=eval_dir,
@@ -1419,6 +2730,11 @@ def build_real_site_robot_eval_dataset(
     )
     robot_pov_requirements = _robot_pov_requirements(generated_at=generated_at)
     human_demo_requirements = _human_demo_requirements(generated_at=generated_at)
+    evidence_contract = _robot_eval_inputs_evidence_contract(generated_at=generated_at)
+    robot_team_submission_modalities = _robot_team_submission_modalities(
+        robot_team_submission_input=robot_team_submission_input,
+        generated_at=generated_at,
+    )
     failure_taxonomy = _failure_taxonomy(generated_at=generated_at)
     ledger = _prediction_outcome_ledger(
         scenario_library=scenario_library,
@@ -1426,18 +2742,45 @@ def build_real_site_robot_eval_dataset(
         source_artifacts=source_artifacts,
         generated_at=generated_at,
     )
+    scoring_methodology = _scoring_methodology(generated_at=generated_at)
+    recorded_trace_eval_report = _recorded_trace_eval_report(
+        scenario_library=scenario_library,
+        scoring_methodology=scoring_methodology,
+        recorded_trace_input=recorded_trace_input,
+        source_artifacts=source_artifacts,
+        generated_at=generated_at,
+    )
+    prediction_vs_actual_summary = _prediction_vs_actual_summary(
+        ledger=ledger,
+        actual_outcome_input=actual_outcome_input,
+        recorded_trace_eval_report=recorded_trace_eval_report,
+        generated_at=generated_at,
+    )
     rights_privacy = _rights_privacy_status(
         rights_summary=rights_summary,
         rights_review=rights_review,
         privacy_manifest=privacy_manifest,
+    )
+    rights_packet = _rights_packet(
+        rights_summary=rights_summary,
+        rights_review=rights_review,
+        privacy_manifest=privacy_manifest,
+        rights_privacy=rights_privacy,
+        source_artifacts=source_artifacts,
+        generated_at=generated_at,
+    )
+    rights_ledger = _rights_ledger(
+        rights_packet=rights_packet,
+        generated_at=generated_at,
     )
     dataset_statuses = _dataset_statuses(
         task_count=int(task_library["task_count"]),
         scenario_count=int(scenario_library["scenario_count"]),
         robot_pov_input=robot_pov_input,
         human_demo_input=human_demo_input,
-        action_log_input=action_log_input,
+        action_log_input=action_log_input or recorded_trace_input,
         actual_outcome_input=actual_outcome_input,
+        robot_team_submission_input=robot_team_submission_input,
         rights_privacy=rights_privacy,
     )
     dataset_state = (
@@ -1483,8 +2826,9 @@ def build_real_site_robot_eval_dataset(
     proof_boundaries = _proof_boundaries(
         rights_privacy=rights_privacy,
         collider_present=collider_present,
-        action_log_input=action_log_input,
+        action_log_input=action_log_input or recorded_trace_input,
         actual_outcome_input=actual_outcome_input,
+        robot_team_submission_input=robot_team_submission_input,
         generated_at=generated_at,
     )
 
@@ -1498,11 +2842,21 @@ def build_real_site_robot_eval_dataset(
         "proof_boundaries": "proof_boundaries.json",
         "legacy_real_site_robot_eval_dataset_manifest": "real_site_robot_eval_dataset_manifest.json",
         "robot_task_library": "robot_task_library.json",
+        "task_ontology_v1": "task_ontology_v1.json",
         "scenario_library": "scenario_library.json",
+        "scenario_family_library": "scenario_family_library.json",
         "robot_pov_evidence_requirements": "robot_pov_evidence_requirements.json",
         "human_demo_evidence_requirements": "human_demo_evidence_requirements.json",
+        "robot_eval_inputs_evidence_contract": "robot_eval_inputs_evidence_contract.json",
+        "robot_team_test_submission_modalities": "robot_team_test_submission_modalities.json",
         "failure_taxonomy": "failure_taxonomy.json",
         "prediction_outcome_ledger": "prediction_outcome_ledger.json",
+        "prediction_vs_actual_summary": "prediction_vs_actual_summary.json",
+        "scoring_methodology": "scoring_methodology.json",
+        "recorded_trace_eval_report": "recorded_trace_eval_report.json",
+        "policy_eval_report": "policy_eval_report.json",
+        "rights_packet": "rights_packet.json",
+        "rights_ledger": "rights_ledger.json",
         "eval_methodology_summary": "eval_methodology_summary.md",
     }
     manifest: Dict[str, Any] = {
@@ -1523,7 +2877,18 @@ def build_real_site_robot_eval_dataset(
         "eval_card_count": eval_cards["eval_card_count"],
         "annotation_backlog_count": annotation_backlog["backlog_count"],
         "robot_profile_count": len(robot_profiles),
+        "task_ontology_count": task_ontology["task_count"],
+        "scenario_family_count": scenario_family_library["family_count"],
+        "robot_team_test_submission_modality_count": robot_team_submission_modalities[
+            "modality_count"
+        ],
+        "robot_team_test_submission_missing_evidence_statuses": robot_team_submission_modalities[
+            "missing_evidence_statuses"
+        ],
         "prediction_record_count": ledger["record_count"],
+        "recorded_trace_eval_status": recorded_trace_eval_report["status"],
+        "prediction_vs_actual_status": prediction_vs_actual_summary["status"],
+        "rights_packet_status": rights_packet["status"],
         "prediction_sources_available": prediction_sources,
         "rights_privacy": rights_privacy,
         "source_artifacts": source_artifacts,
@@ -1542,7 +2907,15 @@ def build_real_site_robot_eval_dataset(
                 "eval_card_count",
                 "evidence_requirements",
                 "failure_taxonomy",
+                "robot_team_test_submission_modalities",
                 "prediction_outcome_ledger_schema",
+                "prediction_vs_actual_summary",
+                "rights_packet",
+                "rights_ledger",
+                "task_ontology_v1",
+                "scenario_family_library",
+                "scoring_methodology",
+                "recorded_trace_eval_report",
                 "missing_proof_statuses",
                 "Site/Task/Scenario/Eval Card summaries",
             ],
@@ -1563,14 +2936,23 @@ def build_real_site_robot_eval_dataset(
             "dataset_state": manifest["dataset_state"],
             "dataset_statuses": manifest["dataset_statuses"],
             "task_library": task_library,
+            "task_ontology": task_ontology,
             "scenario_library": scenario_library,
+            "scenario_family_library": scenario_family_library,
             "ledger_records": ledger["records"],
+            "prediction_vs_actual_summary": prediction_vs_actual_summary,
+            "recorded_trace_eval_report": recorded_trace_eval_report,
             "site_card": site_card,
             "task_cards": task_cards,
             "scenario_cards": scenario_cards,
             "eval_cards": eval_cards,
             "annotation_backlog": annotation_backlog,
             "proof_boundaries": proof_boundaries,
+            "robot_team_submission_modalities": robot_team_submission_modalities,
+            "evidence_contract": evidence_contract,
+            "scoring_methodology": scoring_methodology,
+            "rights_packet": rights_packet,
+            "rights_ledger": rights_ledger,
             "rights_privacy": rights_privacy,
         }
     )
@@ -1590,11 +2972,24 @@ def build_real_site_robot_eval_dataset(
     write_json(robot_eval_dir / "annotation_backlog.json", annotation_backlog)
     write_json(robot_eval_dir / "proof_boundaries.json", proof_boundaries)
     write_json(robot_eval_dir / "robot_task_library.json", task_library)
+    write_json(robot_eval_dir / "task_ontology_v1.json", task_ontology)
     write_json(robot_eval_dir / "scenario_library.json", scenario_library)
+    write_json(robot_eval_dir / "scenario_family_library.json", scenario_family_library)
     write_json(robot_eval_dir / "robot_pov_evidence_requirements.json", robot_pov_requirements)
     write_json(robot_eval_dir / "human_demo_evidence_requirements.json", human_demo_requirements)
+    write_json(robot_eval_dir / "robot_eval_inputs_evidence_contract.json", evidence_contract)
+    write_json(
+        robot_eval_dir / "robot_team_test_submission_modalities.json",
+        robot_team_submission_modalities,
+    )
     write_json(robot_eval_dir / "failure_taxonomy.json", failure_taxonomy)
     write_json(robot_eval_dir / "prediction_outcome_ledger.json", ledger)
+    write_json(robot_eval_dir / "prediction_vs_actual_summary.json", prediction_vs_actual_summary)
+    write_json(robot_eval_dir / "scoring_methodology.json", scoring_methodology)
+    write_json(robot_eval_dir / "recorded_trace_eval_report.json", recorded_trace_eval_report)
+    write_json(robot_eval_dir / "policy_eval_report.json", recorded_trace_eval_report)
+    write_json(robot_eval_dir / "rights_packet.json", rights_packet)
+    write_json(robot_eval_dir / "rights_ledger.json", rights_ledger)
     write_text(robot_eval_dir / "eval_methodology_summary.md", methodology_summary)
     write_json(manifest_path, manifest)
     write_json(legacy_manifest_path, manifest)
@@ -1604,6 +2999,9 @@ def build_real_site_robot_eval_dataset(
         "capture_root": str(context.capture_root),
         "status": dataset_state,
         "dataset_statuses": dataset_statuses,
+        "recorded_trace_eval_status": recorded_trace_eval_report["status"],
+        "prediction_vs_actual_status": prediction_vs_actual_summary["status"],
+        "rights_packet_status": rights_packet["status"],
         "manifest_path": str(manifest_path.resolve()),
         "legacy_manifest_path": str(legacy_manifest_path.resolve()),
         "site_card_path": str((robot_eval_dir / "site_card.json").resolve()),
@@ -1615,6 +3013,17 @@ def build_real_site_robot_eval_dataset(
         "methodology_path": str((robot_eval_dir / "eval_methodology_summary.md").resolve()),
         "prediction_outcome_ledger_path": str(
             (robot_eval_dir / "prediction_outcome_ledger.json").resolve()
+        ),
+        "prediction_vs_actual_summary_path": str(
+            (robot_eval_dir / "prediction_vs_actual_summary.json").resolve()
+        ),
+        "recorded_trace_eval_report_path": str(
+            (robot_eval_dir / "recorded_trace_eval_report.json").resolve()
+        ),
+        "rights_packet_path": str((robot_eval_dir / "rights_packet.json").resolve()),
+        "rights_ledger_path": str((robot_eval_dir / "rights_ledger.json").resolve()),
+        "robot_team_test_submission_modalities_path": str(
+            (robot_eval_dir / "robot_team_test_submission_modalities.json").resolve()
         ),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

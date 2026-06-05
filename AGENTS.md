@@ -2,7 +2,7 @@
 
 ## Mission
 
-`BlueprintCapturePipeline` turns raw capture bundles into site-specific world-model packages, hosted-session artifacts, and optional trust or review outputs.
+`BlueprintCapturePipeline` turns raw capture bundles into site/task/scenario/eval artifacts, Task Evaluation Run artifacts, Post-Training Data Package artifacts, hosted-session artifacts, generated/model-derived support assets, and optional trust or review outputs.
 
 This repo must stay aligned with:
 
@@ -18,8 +18,8 @@ This repo must stay aligned with:
 
 ## Product Rules
 
-- Keep model backends replaceable behind stable capture and packaging contracts.
-- Optimize for site-specific world-model products and hosted outputs, not one permanent provider.
+- Keep model backends replaceable behind stable capture, evaluation, and data-package contracts.
+- Optimize for Task Evaluation Runs, Post-Training Data Packages, hosted outputs, and support artifacts, not one permanent provider or world-model product.
 - Preserve rights, privacy, provenance, and capture truth through the pipeline.
 - Treat readiness and review outputs as optional support layers.
 - Do not make downstream generated artifacts appear more authoritative than raw capture evidence.

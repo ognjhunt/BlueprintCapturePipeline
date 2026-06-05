@@ -2,7 +2,7 @@
 
 This document defines the kept product boundary for `BlueprintCapturePipeline`.
 
-`BlueprintCapturePipeline` is capture-first and world-model-product-first. It
+`BlueprintCapturePipeline` is capture-first and real-site robot-evaluation/data-package first. It
 preserves raw capture truth, emits canonical site packages and hosted/provider
 support artifacts, and keeps qualification/readiness outputs as compatibility
 and trust layers rather than the product center.

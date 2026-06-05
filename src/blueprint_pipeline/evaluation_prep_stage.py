@@ -981,6 +981,185 @@ def simulation_automation_evaluation_prep_surface(
     }
 
 
+def site_eval_director_evaluation_prep_surface(
+    *,
+    capture_root: str | Path,
+    eval_dir: Path,
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    automation_dir = context.pipeline_root / "simulation_automation"
+    artifact_paths = {
+        "scenario_execution_plan": automation_dir / "scenario_execution_plan.json",
+        "task_simulation_requests": automation_dir / "task_simulation_requests.json",
+        "scenario_simulator_matrix": automation_dir / "scenario_simulator_matrix.json",
+        "agent_review_queue": automation_dir / "agent_review_queue.json",
+        "site_eval_director_run_manifest": (
+            automation_dir / "site_eval_director_run_manifest.json"
+        ),
+        "site_eval_director_proof_boundary": (
+            automation_dir / "site_eval_director_proof_boundary.json"
+        ),
+        "site_eval_director_blocked_manifest": (
+            automation_dir / "site_eval_director_blocked_manifest.json"
+        ),
+        "agents_sdk_site_eval_director_request": (
+            automation_dir / "agents_sdk_site_eval_director_request.json"
+        ),
+        "codex_sdk_code_maintainer_request": (
+            automation_dir / "codex_sdk_code_maintainer_request.json"
+        ),
+        "normalized_simulator_attempt_trace": (
+            automation_dir / "normalized_simulator_attempt_trace.json"
+        ),
+        "failure_labels": automation_dir / "failure_labels.json",
+        "site_eval_prediction_outcome_ledger": (
+            automation_dir / "site_eval_prediction_outcome_ledger.json"
+        ),
+        "site_eval_calibration_report": (
+            automation_dir / "site_eval_calibration_report.json"
+        ),
+        "learned_facility_breakage_library": (
+            automation_dir / "learned_facility_breakage_library.json"
+        ),
+        "updated_eval_cards": automation_dir / "updated_eval_cards.json",
+        "cosmos_orchestration_exports": (
+            automation_dir / "cosmos_orchestration_exports.json"
+        ),
+        "site_eval_real_evidence_blocked_manifest": (
+            automation_dir / "site_eval_real_evidence_blocked_manifest.json"
+        ),
+        "site_eval_fixture_runner_blocked_manifest": (
+            automation_dir / "site_eval_fixture_runner_blocked_manifest.json"
+        ),
+    }
+    artifacts = {
+        key: _relative_to(eval_dir, path)
+        for key, path in artifact_paths.items()
+        if path.is_file()
+    }
+    artifact_uris = {
+        f"{key}_uri": _gs_uri(context, f"simulation_automation/{path.name}")
+        for key, path in artifact_paths.items()
+        if path.is_file()
+    }
+    run_manifest = _read_optional_mapping(
+        automation_dir / "site_eval_director_run_manifest.json"
+    )
+    proof_boundary = _read_optional_mapping(
+        automation_dir / "site_eval_director_proof_boundary.json"
+    )
+    blocked_manifest = _read_optional_mapping(
+        automation_dir / "site_eval_director_blocked_manifest.json"
+    )
+    return {
+        "schema_version": "site_eval_director_evaluation_prep_surface.v1",
+        "status": str(
+            run_manifest.get("status")
+            or blocked_manifest.get("status")
+            or "missing"
+        ),
+        "artifacts": artifacts,
+        "artifact_uris": artifact_uris,
+        "simulator_execution_proven": bool(
+            proof_boundary.get("simulator_execution_proven")
+            or run_manifest.get("simulator_execution_proven")
+        ),
+        "robot_readiness_proven": bool(
+            proof_boundary.get("robot_readiness_proven")
+            or run_manifest.get("robot_readiness_proven")
+        ),
+        "public_claim_upgrade_allowed": bool(
+            proof_boundary.get("public_claim_upgrade_allowed")
+            or run_manifest.get("public_claim_upgrade_allowed")
+        ),
+    }
+
+
+def robot_eval_job_evaluation_prep_surface(
+    *,
+    capture_root: str | Path,
+    eval_dir: Path,
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    jobs_dir = context.pipeline_root / "robot_eval_jobs"
+    artifact_names = {
+        "run_manifest": "job_run_manifest.json",
+        "proof_boundary": "proof_boundary.json",
+        "blocked_manifest": "blocked_manifest.json",
+        "job_validation": "job_validation.json",
+        "policy_package_manifest": "policy_package_manifest.json",
+        "simulator_service_result": "simulator_service_result.json",
+        "training_result": "training_result.json",
+        "evaluation_result": "evaluation_result.json",
+    }
+    artifacts: Dict[str, str] = {}
+    artifact_uris: Dict[str, str] = {}
+    jobs: List[Dict[str, Any]] = []
+    if jobs_dir.is_dir():
+        for job_dir in sorted(path for path in jobs_dir.iterdir() if path.is_dir()):
+            job_id = job_dir.name
+            run_manifest = _read_optional_mapping(job_dir / "job_run_manifest.json")
+            proof_boundary = _read_optional_mapping(job_dir / "proof_boundary.json")
+            job_artifacts: Dict[str, str] = {}
+            job_artifact_uris: Dict[str, str] = {}
+            for key, filename in artifact_names.items():
+                path = job_dir / filename
+                if not path.is_file():
+                    continue
+                artifact_key = f"robot_eval_job_{job_id}_{key}"
+                relative_path = _relative_to(eval_dir, path)
+                artifacts[artifact_key] = relative_path
+                artifact_uris[f"{artifact_key}_uri"] = _gs_uri(
+                    context,
+                    f"robot_eval_jobs/{job_id}/{filename}",
+                )
+                job_artifacts[key] = relative_path
+                job_artifact_uris[f"{key}_uri"] = _gs_uri(
+                    context,
+                    f"robot_eval_jobs/{job_id}/{filename}",
+                )
+            jobs.append(
+                {
+                    "job_id": job_id,
+                    "status": str(run_manifest.get("status") or "missing"),
+                    "state": str(run_manifest.get("state") or "missing"),
+                    "artifacts": job_artifacts,
+                    "artifact_uris": job_artifact_uris,
+                    "simulator_execution_proven": bool(
+                        proof_boundary.get("simulator_execution_proven")
+                        or run_manifest.get("simulator_execution_proven")
+                    ),
+                    "robot_readiness_proven": bool(
+                        proof_boundary.get("robot_readiness_proven")
+                        or run_manifest.get("robot_readiness_proven")
+                    ),
+                    "public_claim_upgrade_allowed": False,
+                }
+            )
+    status = "missing"
+    if jobs:
+        status = next(
+            (
+                str(job.get("status"))
+                for job in jobs
+                if str(job.get("status")) not in {"blocked", "missing", ""}
+            ),
+            str(jobs[0].get("status") or "blocked"),
+        )
+    return {
+        "schema_version": "robot_eval_job_evaluation_prep_surface.v1",
+        "status": status,
+        "job_count": len(jobs),
+        "jobs": jobs,
+        "artifacts": artifacts,
+        "artifact_uris": artifact_uris,
+        "simulator_execution_proven": False,
+        "robot_readiness_proven": False,
+        "public_claim_upgrade_allowed": False,
+        "claim_boundary": "robot_eval_job_artifacts_are_advisory_and_do_not_upgrade_public_claims",
+    }
+
+
 def _real_path_from_eval_dir(eval_dir: Path, relative_path: str) -> Optional[Path]:
     text = str(relative_path or "").strip()
     if not text:
@@ -3603,11 +3782,25 @@ def run_evaluation_prep_stage(
     robot_annotation_backlog_path = robot_eval_dir / "annotation_backlog.json"
     robot_proof_boundaries_path = robot_eval_dir / "proof_boundaries.json"
     robot_task_library_path = robot_eval_dir / "robot_task_library.json"
+    robot_task_ontology_path = robot_eval_dir / "task_ontology_v1.json"
     robot_scenario_library_path = robot_eval_dir / "scenario_library.json"
+    robot_scenario_family_library_path = robot_eval_dir / "scenario_family_library.json"
     robot_pov_requirements_path = robot_eval_dir / "robot_pov_evidence_requirements.json"
     human_demo_requirements_path = robot_eval_dir / "human_demo_evidence_requirements.json"
+    robot_eval_inputs_evidence_contract_path = (
+        robot_eval_dir / "robot_eval_inputs_evidence_contract.json"
+    )
+    robot_team_test_submission_modalities_path = (
+        robot_eval_dir / "robot_team_test_submission_modalities.json"
+    )
     robot_failure_taxonomy_path = robot_eval_dir / "failure_taxonomy.json"
     prediction_outcome_ledger_path = robot_eval_dir / "prediction_outcome_ledger.json"
+    prediction_vs_actual_summary_path = robot_eval_dir / "prediction_vs_actual_summary.json"
+    robot_scoring_methodology_path = robot_eval_dir / "scoring_methodology.json"
+    recorded_trace_eval_report_path = robot_eval_dir / "recorded_trace_eval_report.json"
+    policy_eval_report_path = robot_eval_dir / "policy_eval_report.json"
+    robot_rights_packet_path = robot_eval_dir / "rights_packet.json"
+    robot_rights_ledger_path = robot_eval_dir / "rights_ledger.json"
     eval_methodology_summary_path = robot_eval_dir / "eval_methodology_summary.md"
 
     recapture_diff = _build_recapture_diff(
@@ -3628,6 +3821,14 @@ def run_evaluation_prep_stage(
         pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json"
     )
     simulation_automation_surface = simulation_automation_evaluation_prep_surface(
+        capture_root=context.capture_root,
+        eval_dir=eval_dir,
+    )
+    site_eval_director_surface = site_eval_director_evaluation_prep_surface(
+        capture_root=context.capture_root,
+        eval_dir=eval_dir,
+    )
+    robot_eval_job_surface = robot_eval_job_evaluation_prep_surface(
         capture_root=context.capture_root,
         eval_dir=eval_dir,
     )
@@ -3704,6 +3905,13 @@ def run_evaluation_prep_stage(
         "marble_asset_validation_status": marble_asset_validation_status or None,
         "robot_eval_dataset_status": robot_eval_dataset.get("status"),
         "robot_eval_dataset_statuses": robot_eval_dataset.get("dataset_statuses"),
+        "robot_eval_recorded_trace_eval_status": robot_eval_dataset.get(
+            "recorded_trace_eval_status"
+        ),
+        "robot_eval_prediction_vs_actual_status": robot_eval_dataset.get(
+            "prediction_vs_actual_status"
+        ),
+        "robot_eval_rights_packet_status": robot_eval_dataset.get("rights_packet_status"),
         "recapture_diff_status": recapture_diff.get("status"),
         "cosmos_zero_shot_benchmark_status": cosmos_zero_shot_benchmark.get("status"),
         "cosmos_training_export_status": cosmos_training_export.get("status"),
@@ -3713,6 +3921,21 @@ def run_evaluation_prep_stage(
             "simulator_execution_proven"
         ),
         "simulation_automation_robot_readiness_proven": simulation_automation_surface.get(
+            "robot_readiness_proven"
+        ),
+        "site_eval_director_status": site_eval_director_surface.get("status"),
+        "site_eval_director_simulator_execution_proven": site_eval_director_surface.get(
+            "simulator_execution_proven"
+        ),
+        "site_eval_director_robot_readiness_proven": site_eval_director_surface.get(
+            "robot_readiness_proven"
+        ),
+        "robot_eval_job_status": robot_eval_job_surface.get("status"),
+        "robot_eval_job_count": robot_eval_job_surface.get("job_count"),
+        "robot_eval_job_simulator_execution_proven": robot_eval_job_surface.get(
+            "simulator_execution_proven"
+        ),
+        "robot_eval_job_robot_readiness_proven": robot_eval_job_surface.get(
             "robot_readiness_proven"
         ),
         "export_bundle_status": launchable_export_bundle.get("status"),
@@ -3963,8 +4186,23 @@ def run_evaluation_prep_stage(
                 else {}
             ),
             **(
+                {"robot_task_ontology_v1": _relative_to(eval_dir, robot_task_ontology_path)}
+                if robot_task_ontology_path.is_file()
+                else {}
+            ),
+            **(
                 {"robot_scenario_library": _relative_to(eval_dir, robot_scenario_library_path)}
                 if robot_scenario_library_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "robot_scenario_family_library": _relative_to(
+                        eval_dir,
+                        robot_scenario_family_library_path,
+                    )
+                }
+                if robot_scenario_family_library_path.is_file()
                 else {}
             ),
             **(
@@ -3988,6 +4226,26 @@ def run_evaluation_prep_stage(
                 else {}
             ),
             **(
+                {
+                    "robot_eval_inputs_evidence_contract": _relative_to(
+                        eval_dir,
+                        robot_eval_inputs_evidence_contract_path,
+                    )
+                }
+                if robot_eval_inputs_evidence_contract_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "robot_team_test_submission_modalities": _relative_to(
+                        eval_dir,
+                        robot_team_test_submission_modalities_path,
+                    )
+                }
+                if robot_team_test_submission_modalities_path.is_file()
+                else {}
+            ),
+            **(
                 {"robot_failure_taxonomy": _relative_to(eval_dir, robot_failure_taxonomy_path)}
                 if robot_failure_taxonomy_path.is_file()
                 else {}
@@ -4000,6 +4258,46 @@ def run_evaluation_prep_stage(
                     )
                 }
                 if prediction_outcome_ledger_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "prediction_vs_actual_summary": _relative_to(
+                        eval_dir,
+                        prediction_vs_actual_summary_path,
+                    )
+                }
+                if prediction_vs_actual_summary_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_scoring_methodology": _relative_to(eval_dir, robot_scoring_methodology_path)}
+                if robot_scoring_methodology_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "recorded_trace_eval_report": _relative_to(
+                        eval_dir,
+                        recorded_trace_eval_report_path,
+                    )
+                }
+                if recorded_trace_eval_report_path.is_file()
+                else {}
+            ),
+            **(
+                {"policy_eval_report": _relative_to(eval_dir, policy_eval_report_path)}
+                if policy_eval_report_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_rights_packet": _relative_to(eval_dir, robot_rights_packet_path)}
+                if robot_rights_packet_path.is_file()
+                else {}
+            ),
+            **(
+                {"robot_rights_ledger": _relative_to(eval_dir, robot_rights_ledger_path)}
+                if robot_rights_ledger_path.is_file()
                 else {}
             ),
             **(
@@ -4044,6 +4342,8 @@ def run_evaluation_prep_stage(
             ),
             **({"simready_prep_manifest": _relative_to(eval_dir, simready_prep_manifest_path)} if simready_prep_manifest_path is not None else {}),
             **dict(simulation_automation_surface.get("artifacts") or {}),
+            **dict(site_eval_director_surface.get("artifacts") or {}),
+            **dict(robot_eval_job_surface.get("artifacts") or {}),
         },
     }
     descriptor_payload = _read_optional_json_any(context.descriptor_path)
@@ -4136,11 +4436,23 @@ def run_evaluation_prep_stage(
         "robot_task_library_uri": _gs_uri(context, "robot_eval_dataset/robot_task_library.json")
         if robot_task_library_path.is_file()
         else None,
+        "robot_task_ontology_v1_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/task_ontology_v1.json",
+        )
+        if robot_task_ontology_path.is_file()
+        else None,
         "robot_scenario_library_uri": _gs_uri(
             context,
             "robot_eval_dataset/scenario_library.json",
         )
         if robot_scenario_library_path.is_file()
+        else None,
+        "robot_scenario_family_library_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/scenario_family_library.json",
+        )
+        if robot_scenario_family_library_path.is_file()
         else None,
         "robot_pov_evidence_requirements_uri": _gs_uri(
             context,
@@ -4154,6 +4466,18 @@ def run_evaluation_prep_stage(
         )
         if human_demo_requirements_path.is_file()
         else None,
+        "robot_eval_inputs_evidence_contract_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/robot_eval_inputs_evidence_contract.json",
+        )
+        if robot_eval_inputs_evidence_contract_path.is_file()
+        else None,
+        "robot_team_test_submission_modalities_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/robot_team_test_submission_modalities.json",
+        )
+        if robot_team_test_submission_modalities_path.is_file()
+        else None,
         "robot_failure_taxonomy_uri": _gs_uri(
             context,
             "robot_eval_dataset/failure_taxonomy.json",
@@ -4166,6 +4490,42 @@ def run_evaluation_prep_stage(
         )
         if prediction_outcome_ledger_path.is_file()
         else None,
+        "prediction_vs_actual_summary_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/prediction_vs_actual_summary.json",
+        )
+        if prediction_vs_actual_summary_path.is_file()
+        else None,
+        "robot_scoring_methodology_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/scoring_methodology.json",
+        )
+        if robot_scoring_methodology_path.is_file()
+        else None,
+        "recorded_trace_eval_report_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/recorded_trace_eval_report.json",
+        )
+        if recorded_trace_eval_report_path.is_file()
+        else None,
+        "policy_eval_report_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/policy_eval_report.json",
+        )
+        if policy_eval_report_path.is_file()
+        else None,
+        "robot_rights_packet_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/rights_packet.json",
+        )
+        if robot_rights_packet_path.is_file()
+        else None,
+        "robot_rights_ledger_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/rights_ledger.json",
+        )
+        if robot_rights_ledger_path.is_file()
+        else None,
         "robot_eval_methodology_summary_uri": _gs_uri(
             context,
             "robot_eval_dataset/eval_methodology_summary.md",
@@ -4173,6 +4533,8 @@ def run_evaluation_prep_stage(
         if eval_methodology_summary_path.is_file()
         else None,
         **dict(simulation_automation_surface.get("artifact_uris") or {}),
+        **dict(site_eval_director_surface.get("artifact_uris") or {}),
+        **dict(robot_eval_job_surface.get("artifact_uris") or {}),
     }
     site_package_manifest = build_site_package_manifest(
         scene_id=context.scene_id,

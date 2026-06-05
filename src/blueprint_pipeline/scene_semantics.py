@@ -590,7 +590,7 @@ def _gemini_capture_review_prompt(
         "You are reviewing a real-world capture for Blueprint qualification.\n"
         "Use the raw walkthrough video as the primary evidence source and the structured capture context as supporting evidence.\n"
         "Use the visual evidence conservatively. Do not invent measurements or certainty.\n"
-        "Assess whether this capture is good enough to support a downstream site-specific world model.\n"
+        "Assess whether this capture is good enough to support real-site robot evaluation artifacts and Post-Training Data Package support artifacts.\n"
         "Also assess whether the capture quality supports a stronger capturer payout recommendation.\n\n"
         "Return only a JSON object with this shape:\n"
         "{\n"
@@ -629,7 +629,7 @@ def _gemini_capture_review_prompt(
         '  "payout_recommendation": "bonus|baseline|discount|review_required",\n'
         '  "confidence": 0.0\n'
         "}\n\n"
-        "Review the actual walkthrough quality from the video. Pay special attention to blur, lighting changes, camera speed, doubling back/rescans, whether all of the scene is covered, task-zone completeness, hidden zones, and whether the depth/spatial evidence is sufficient for a site-specific world model.\n"
+        "Review the actual walkthrough quality from the video. Pay special attention to blur, lighting changes, camera speed, doubling back/rescans, whether all of the scene is covered, task-zone completeness, hidden zones, and whether the depth/spatial evidence is sufficient for evaluation and data-package support artifacts.\n"
         "If quality is poor, recommend recapture and explain why.\n\n"
         f"Descriptor:\n{json.dumps(dict(descriptor), indent=2, sort_keys=True)}\n\n"
         f"QA report:\n{json.dumps(dict(qa_report), indent=2, sort_keys=True)}\n\n"
@@ -818,14 +818,14 @@ def infer_capture_fidelity_review(
             default_score=_bounded_score(scores_raw.get("visual_clarity"), 0.0),
             default_status="good" if _bounded_score(scores_raw.get("visual_clarity"), 0.0) >= 0.7 else "review_required",
             default_summary="Gemini assessed image sharpness and blur from the walkthrough.",
-            default_impact="Blur affects the visual quality of the world model.",
+            default_impact="Blur affects the visual quality of evaluation and data-package support artifacts.",
         ),
         "lighting": _normalize_assessment(
             review.get("lighting_assessment"),
             default_score=_bounded_score(scores_raw.get("lighting_stability"), 0.0),
             default_status="good" if _bounded_score(scores_raw.get("lighting_stability"), 0.0) >= 0.7 else "review_required",
             default_summary="Gemini assessed lighting stability through the walkthrough.",
-            default_impact="Lighting instability can reduce downstream world-model quality.",
+            default_impact="Lighting instability can reduce downstream evaluation and data-package support quality.",
         ),
         "motion_speed": _normalize_assessment(
             review.get("motion_speed_assessment"),
@@ -860,14 +860,14 @@ def infer_capture_fidelity_review(
             default_score=1.0 if not findings["occlusion_observations"] else 0.4,
             default_status="good" if not findings["occlusion_observations"] else "review_required",
             default_summary="Gemini assessed occlusions and hidden zones in the walkthrough.",
-            default_impact="Hidden or occluded areas can block qualification and world-model quality.",
+            default_impact="Hidden or occluded areas can block evaluation and data-package support quality.",
         ),
         "depth_and_spatial_conditioning": _normalize_assessment(
             review.get("depth_and_spatial_conditioning_assessment"),
             default_score=_bounded_score((bonus_signals_raw.get("lidar_depth") or {}).get("score") if isinstance(bonus_signals_raw.get("lidar_depth"), Mapping) else None, default=0.0),
             default_status="good" if str(descriptor.get("capture_modality") or "").strip() == "iphone_arkit_lidar" else "review_required",
-            default_summary="Gemini assessed whether depth and spatial evidence are strong enough for downstream world-model work.",
-            default_impact="Weak spatial conditioning can block high-quality site-specific world models.",
+            default_summary="Gemini assessed whether depth and spatial evidence are strong enough for downstream evaluation and data-package support work.",
+            default_impact="Weak spatial conditioning can block high-quality evaluation and data-package support artifacts.",
         ),
     }
     return {

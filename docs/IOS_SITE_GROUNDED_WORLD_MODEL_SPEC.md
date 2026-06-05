@@ -1,8 +1,8 @@
-# iOS Site-Grounded World Model Capture Spec
+# iOS Site-Grounded Data Package Support Capture Spec
 
 ## Purpose
 
-This document explains, in one place, what Blueprint is building, how the current iPhone capture path works today, why that is already close to a Seoul World Model style setup, and what minimum contract changes are required to make Blueprint iPhone captures usable for a site-grounded retrieval world model.
+This document explains, in one place, what Blueprint is building, how the current iPhone capture path works today, why that capture path can support Seoul World Model style generated assets, and what minimum contract changes are required to make Blueprint iPhone captures usable for real-site robot evaluation runs and Post-Training Data Packages.
 
 This is written as a handoff document for a new agent or engineer. It assumes no prior context beyond access to:
 
@@ -15,16 +15,17 @@ The emphasis is iOS only for now.
 
 Blueprint is not trying to build a generic unconstrained world model that invents arbitrary worlds.
 
-Blueprint is building a capture-first, world-model-product-first system around real sites:
+Blueprint is building a capture-first, real-site robot-evaluation/data-package-first system around real sites:
 
 - `BlueprintCapture` captures raw evidence from real facilities.
-- `BlueprintCapturePipeline` turns that evidence into site-specific world-model packages, hosted-session artifacts, provider adapter inputs, and optional trust / review outputs.
+- `BlueprintCapturePipeline` turns that evidence into Task Evaluation Run artifacts, Post-Training Data Package artifacts, hosted-session artifacts, provider adapter inputs, generated/model-derived support assets, and optional trust / review outputs.
 - `Blueprint-WebApp` is the operational and buyer-facing surface where packages, hosted access, licensing, and support artifacts appear.
 
 The product doctrine is:
 
 - raw capture, rights, privacy, provenance, timestamps, poses, and device metadata are authoritative evidence
-- canonical site packages are the primary downstream product contract
+- Task Evaluation Runs and Post-Training Data Packages are the primary downstream product contracts
+- canonical site packages, site-world records, generated worlds, and provider assets are support artifacts inside those contracts
 - qualification and readiness records are support artifacts for trust, review, pricing, and launch gating
 - generated previews, hosted-review surfaces, and provider worlds are downstream projections
 - derived outputs must never overwrite capture truth or package truth
@@ -33,18 +34,18 @@ That matters because the target system is not "train a cool model from videos." 
 
 1. capture a real site
 2. preserve trustworthy sensor evidence
-3. derive a site-grounded memory / world representation
-4. support preview, simulation, runtime prep, and eventually stronger interactive site worlds
+3. derive site-grounded memory and support representations
+4. package evaluation artifacts, curated training data, generated/model-derived variations, and proof boundaries
 
-This is already conceptually aligned with Seoul World Model:
+This support layer is conceptually aligned with Seoul World Model:
 
 - SWM grounds generation in a real city using a retrieval database, camera trajectory, and geometry
-- Blueprint wants to ground world artifacts in a real facility using walkthrough video, poses, depth, and repeated captures
+- Blueprint can ground generated support artifacts in a real facility using walkthrough video, poses, depth, and repeated captures
 
 The key difference is:
 
 - SWM is a generative model architecture built on top of Cosmos Predict
-- Blueprint today is primarily the capture, packaging, and support-trust pipeline around grounded world generation
+- Blueprint today is primarily the capture, evaluation, packaging, and trust pipeline; grounded world generation is a support mechanism inside the package
 
 ## Why This Spec Exists
 
@@ -58,7 +59,7 @@ The current iPhone pipeline already captures much more than plain video:
 - mesh exports
 - IMU / motion logs
 
-That is already enough to support a prototype site-grounded retrieval world model workflow.
+That is already enough to support prototype site-grounded retrieval and generated support assets inside a Post-Training Data Package.
 
 However, the current contract still carries qualification-era naming and preview-generation assumptions. Those records remain compatibility and support artifacts; they were not designed specifically for:
 
@@ -72,7 +73,7 @@ So the question is not "do we have enough raw signal?" The answer there is mostl
 
 The real question is:
 
-"What minimum contract changes are needed so these captures become a reliable, reusable site-memory substrate for a retrieval-grounded world model?"
+"What minimum contract changes are needed so these captures become a reliable, reusable site-memory substrate for real-site robot evaluation and Post-Training Data Package support?"
 
 This spec answers that question.
 
@@ -246,7 +247,7 @@ Minimum change:
 
 - define one canonical eligibility rule and use it in both bridge and local pipeline code
 
-### 5. ARKit Is Still Best-Effort Instead Of Required For The World-Model Lane
+### 5. ARKit Is Still Best-Effort Instead Of Required For The Data-Package Support Lane
 
 Problem:
 
@@ -256,7 +257,7 @@ Why this matters:
 
 - SWM-style conditioning depends on reliable pose and geometry
 - "graceful fallback" is fine for qualification-only uploads
-- it is not fine for a site-grounded retrieval world model lane
+- it is not fine for an evaluation/data-package support lane that promises retrieval-grounded generated assets
 
 Minimum change:
 
@@ -711,7 +712,7 @@ Add to descriptor:
 
 Minimum conclusion:
 
-- Blueprint iPhone capture already has the raw sensor foundation for a site-grounded retrieval world model.
+- Blueprint iPhone capture already has the raw sensor foundation for real-site robot evaluation artifacts and retrieval-grounded data-package support assets.
 - The current blockers are mostly contract and workflow structure, not lack of core data.
 - The minimum viable changes are:
   - stable `site_id`

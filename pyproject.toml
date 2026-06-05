@@ -84,6 +84,8 @@ blueprint-build-simready-assets = "blueprint_pipeline.simready_assets:main"
 blueprint-build-marble-sim-assets = "blueprint_pipeline.marble_sim_assets:main"
 blueprint-build-robot-eval-dataset = "blueprint_pipeline.robot_eval_dataset:main"
 blueprint-run-simulation-automation = "blueprint_pipeline.simulation_automation:main"
+blueprint-run-site-eval-director = "blueprint_pipeline.site_eval_director:main"
+blueprint-run-robot-eval-job = "blueprint_pipeline.robot_eval_job_orchestrator:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

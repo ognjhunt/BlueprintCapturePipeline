@@ -631,6 +631,26 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
         manifest["artifacts"]["robot_eval_proof_boundaries"]
         == "../robot_eval_dataset/proof_boundaries.json"
     )
+    assert (
+        manifest["artifacts"]["robot_task_ontology_v1"]
+        == "../robot_eval_dataset/task_ontology_v1.json"
+    )
+    assert (
+        manifest["artifacts"]["robot_scenario_family_library"]
+        == "../robot_eval_dataset/scenario_family_library.json"
+    )
+    assert (
+        manifest["artifacts"]["robot_rights_packet"]
+        == "../robot_eval_dataset/rights_packet.json"
+    )
+    assert (
+        manifest["artifacts"]["recorded_trace_eval_report"]
+        == "../robot_eval_dataset/recorded_trace_eval_report.json"
+    )
+    assert (
+        manifest["artifacts"]["robot_team_test_submission_modalities"]
+        == "../robot_eval_dataset/robot_team_test_submission_modalities.json"
+    )
     assert simready_prep_manifest["scene_manifest_path"] == "../simready/simready_scene_manifest.json"
     assert simready_scene_manifest["framework_artifacts"]["isaac_sim"]["path"].endswith(
         "isaac_sim/site_scene.usda"
@@ -653,6 +673,24 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     }
     assert robot_eval_manifest["schema_version"] == "real_site_robot_eval_dataset_manifest.v0.1"
     assert robot_eval_manifest["dataset_version"] == "0.1"
+    assert (
+        evaluation["site_package_manifest"]["artifacts"][
+            "robot_team_test_submission_modalities_uri"
+        ]
+        == "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/robot_eval_dataset/robot_team_test_submission_modalities.json"
+    )
+    assert (
+        evaluation["site_package_manifest"]["artifacts"]["robot_task_ontology_v1_uri"]
+        == "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/robot_eval_dataset/task_ontology_v1.json"
+    )
+    assert (
+        evaluation["site_package_manifest"]["artifacts"]["robot_rights_packet_uri"]
+        == "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/robot_eval_dataset/rights_packet.json"
+    )
+    assert (
+        evaluation["site_package_manifest"]["artifacts"]["recorded_trace_eval_report_uri"]
+        == "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/robot_eval_dataset/recorded_trace_eval_report.json"
+    )
     assert robot_eval_manifest["claim_boundary"]["robot_readiness_proven"] is False
     assert robot_eval_manifest["claim_boundary"]["simulator_execution_proven"] is False
     assert robot_eval_site_card["schema_version"] == "real_site_robot_eval_site_card.v0.1"

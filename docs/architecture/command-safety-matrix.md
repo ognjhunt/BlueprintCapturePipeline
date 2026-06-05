@@ -20,6 +20,8 @@ approval.
 | `blueprint-build-marble-sim-assets --capture-root <path>` | Build local Marble simulator-review handoff artifacts | Local artifact writer; no World Labs call, asset download, or simulator execution |
 | `blueprint-build-robot-eval-dataset --capture-root <path>` | Build local real-site robot eval dataset artifacts | Local artifact writer; no providers, simulators, model downloads, sends, payments, or deploys |
 | `blueprint-run-simulation-automation --capture-root <path>` | Build fail-closed simulation automation manifests | Local artifact writer; no providers, asset downloads, simulator execution, GPU training, sends, payments, or deploys |
+| `blueprint-run-site-eval-director --capture-root <path>` | Build deterministic site-eval director manifests | Local artifact writer; optional SDK flags only write advisory request/blocked manifests |
+| `blueprint-run-robot-eval-job --capture-root <path> --job-request <json> --job-id <id> --provisioner fixture_local --simulator fixture` | Run fixture-backed robot-eval job orchestration | Local artifact writer under `pipeline/robot_eval_jobs/<job_id>`; fixture proof only, no live provider, real simulator, GPU training, sends, payments, or deploys |
 
 Use `PYTHONDONTWRITEBYTECODE=1` for verification commands when the goal is to
 avoid `__pycache__` churn.
@@ -66,6 +68,8 @@ git diff -- output/paid_marketplace_launch_gate.md output/paid_marketplace_launc
 | `blueprint-build-marble-sim-assets --capture-root <path>` | Local Marble sim-asset handoff lane | Writes `pipeline/marble_sim_assets/*`; does not call World Labs, download remote assets, run Isaac Sim, MuJoCo, or PyBullet |
 | `blueprint-build-robot-eval-dataset --capture-root <path>` | Local robot eval dataset contract lane | Writes `pipeline/robot_eval_dataset/*`; does not prove robot readiness, simulator execution, or actual outcomes |
 | `blueprint-run-simulation-automation --capture-root <path>` | Local simulation automation orchestration lane | Writes `pipeline/simulation_automation/*`; simulator/training execution remains blocked unless explicit env and CLI gates are provided |
+| `blueprint-run-site-eval-director --capture-root <path>` | Local site-eval director lane | Writes scenario/task/matrix/fixture-attempt/label/calibration/breakage/review/proof manifests under `pipeline/simulation_automation/*`; fixture attempts are local-only, and real engines/training stay blocked without explicit env and CLI gates |
+| `blueprint-run-robot-eval-job --capture-root <path> --job-request <json> --job-id <id> ...` | Headless robot-eval job orchestration lane | Writes request/validation/plan/provisioning/simulator/training/evaluation/proof/job manifests under `pipeline/robot_eval_jobs/<job_id>/*`; fixture paths are local-only, and real provisioning/simulator/training/agent paths stay blocked without explicit env and CLI gates |
 
 Run these only when broad gate refresh is requested or when docs/code changes
 touch launch contracts enough to justify it. Always inspect worktree and output
@@ -90,6 +94,11 @@ Fallback geometry is not live proof.
 | `blueprint-agent-review --capture-root <path> --provider openai` | Optional LLM-backed review | Calls external provider when configured |
 | `blueprint-run-e2e --capture-root <path> --provider openai` | Optional e2e wrapper with provider review | Calls external provider when configured |
 | `BLUEPRINT_PREVIEW_PROVIDER=world_labs ...` | World Labs preview path | Can submit live provider job when key/env are present |
+| `blueprint-run-site-eval-director --agents-sdk-site-eval --codex-sdk-code-maintainer ...` | Optional site-eval/Codex advisory request manifest lane | Writes request or blocked manifests; does not execute SDK agents or Codex MCP by itself |
+| `blueprint-run-robot-eval-job --agent-mode agents-sdk ...` | Optional robot-eval job Agents SDK advisory request manifest lane | Writes advisory request or blocked manifests; does not execute a live agent unless `OPENAI_API_KEY`, `BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION=true`, and `--agent-mode agents-sdk` are intentionally provided |
+| `BLUEPRINT_ALLOW_GPU_PROVISIONING=true blueprint-run-robot-eval-job --allow-gpu-provisioning --provisioner <vast|runpod|gcp|local_process|docker_local> ...` | Explicit non-fixture provisioning request lane | Can prepare gated provisioning request/result manifests; fixture local remains the only default local proof path |
+| `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true blueprint-run-robot-eval-job --allow-simulator-execution --allow-simulator <framework> --simulator <framework> --simulator-command <framework>=<command> ...` | Explicit job-level simulator command lane | Can run a local MuJoCo, PyBullet, Newton, or Isaac Sim command and record stdout/stderr/exit code; public/readiness proof remains false without owner-system evidence |
+| `BLUEPRINT_ALLOW_COSMOS_TRAINING=true blueprint-run-robot-eval-job --allow-training --training-command <command> ...` | Explicit job-level training command lane | Can run a gated training command; training proof requires completed command plus checkpoint/run manifest evidence |
 | `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true blueprint-run-simulation-automation --allow-simulator-execution --allow-simulator <framework> --simulator-command <framework>=<command> ...` | Explicit simulator execution request/result lane | Can run Isaac Sim, MuJoCo, PyBullet, or Newton command; capture stdout/stderr/exit code and inspect blocked/result manifests |
 | `BLUEPRINT_ALLOW_COSMOS_TRAINING=true blueprint-run-simulation-automation --allow-training ...` | Explicit Cosmos training orchestration lane | Can call the Cosmos LoRA training runner and GPU training command when configured |
 

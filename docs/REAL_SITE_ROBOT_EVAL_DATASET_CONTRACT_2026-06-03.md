@@ -38,6 +38,23 @@ Optional actual evidence inputs may be staged under
 `pipeline/robot_eval_inputs/`, but the current lane treats missing robot POV,
 human demo, action logs, and actual outcomes as explicit missing-proof statuses.
 
+Robot-team submission references may also be staged as:
+
+- `pipeline/robot_eval_inputs/robot_team_test_submission_manifest.json`
+
+That optional input mirrors the WebApp hosted-session policy field
+`policy.robotTeamTestSubmission` and uses schema version
+`blueprint.robot_team_test_submission.v1`.
+
+Robot-team headless evaluation or training jobs may be staged as local request
+manifests and run through `blueprint-run-robot-eval-job`. The job request
+represents customer, site/package, task/scenario, robot profile, the six
+robot-team submission modalities, requested operation, simulator preference,
+Cosmos/training preference, budget/time limits, rights/privacy scope, owner
+system, provenance, and timestamp alignment. The job layer validates and
+orchestrates around this dataset contract; it does not replace Site, Task,
+Scenario, or Eval Cards as the deterministic evidence surface.
+
 ## Outputs
 
 The writer emits:
@@ -52,13 +69,46 @@ pipeline/robot_eval_dataset/
   eval_cards.json
   annotation_backlog.json
   proof_boundaries.json
+  rights_packet.json
+  rights_ledger.json
   robot_task_library.json
+  task_ontology_v1.json
   scenario_library.json
+  scenario_family_library.json
   robot_pov_evidence_requirements.json
   human_demo_evidence_requirements.json
+  robot_eval_inputs_evidence_contract.json
+  robot_team_test_submission_modalities.json
   failure_taxonomy.json
+  scoring_methodology.json
+  recorded_trace_eval_report.json
+  policy_eval_report.json
   prediction_outcome_ledger.json
+  prediction_vs_actual_summary.json
   eval_methodology_summary.md
+
+pipeline/robot_eval_jobs/<job_id>/
+  job_request.json
+  job_validation.json
+  job_plan.json
+  agent_orchestration_plan.json
+  gpu_provisioning_request.json
+  gpu_provisioning_result.json
+  simulator_service_request.json
+  simulator_service_result.json
+  policy_package_manifest.json
+  training_request.json
+  training_result.json
+  evaluation_request.json
+  evaluation_result.json
+  normalized_attempt_trace.json
+  failure_labels.json
+  prediction_outcome_ledger.json
+  calibration_report.json
+  breakage_library.json
+  proof_boundary.json
+  job_run_manifest.json
+  blocked_manifest.json
 ```
 
 Evaluation prep includes these paths in
@@ -73,13 +123,26 @@ URI fields for WebApp sync:
 - `robot_eval_cards_uri`
 - `robot_eval_annotation_backlog_uri`
 - `robot_eval_proof_boundaries_uri`
+- `robot_rights_packet_uri`
+- `robot_rights_ledger_uri`
 - `robot_task_library_uri`
+- `robot_task_ontology_v1_uri`
 - `robot_scenario_library_uri`
+- `robot_scenario_family_library_uri`
 - `robot_pov_evidence_requirements_uri`
 - `human_demo_evidence_requirements_uri`
+- `robot_eval_inputs_evidence_contract_uri`
+- `robot_team_test_submission_modalities_uri`
 - `robot_failure_taxonomy_uri`
+- `robot_scoring_methodology_uri`
+- `recorded_trace_eval_report_uri`
+- `policy_eval_report_uri`
 - `prediction_outcome_ledger_uri`
+- `prediction_vs_actual_summary_uri`
 - `robot_eval_methodology_summary_uri`
+- `robot_eval_job_<job_id>_run_manifest_uri`
+- `robot_eval_job_<job_id>_proof_boundary_uri`
+- `robot_eval_job_<job_id>_blocked_manifest_uri` when blocked
 
 ## Fail-Closed Statuses
 
@@ -90,6 +153,12 @@ The dataset manifest uses these machine-readable statuses:
 - `needs_human_demo`
 - `needs_action_logs`
 - `needs_actual_outcome`
+- `needs_policy_api_endpoint_ref`
+- `needs_docker_container_ref`
+- `needs_recorded_action_trace_ref`
+- `needs_high_level_skill_trace_ref`
+- `needs_teleop_demo_ref`
+- `needs_sim_controller_plugin_ref`
 - `blocked_rights_privacy`
 - `review_only_no_robot_readiness`
 
@@ -116,6 +185,60 @@ ran, or the site is operationally deployment-ready.
 - `proof_boundaries.json`: fail-closed booleans for simulator execution,
   physics/contact validation, robot policy execution, safety validation,
   external licensing, real pilot outcomes, and generated-scenario proof.
+- `rights_packet.json` and `rights_ledger.json`: raw confidential data,
+  derived/de-identified environment, synthetic variant, robot-eval, commercial
+  licensing, revenue-share, exclusivity, expiration, approver, evidence URI,
+  blocker, allowed-use, and disallowed-use review records. These records are
+  packets and ledgers only; they do not clear public or commercial use by
+  themselves.
+- `task_ontology_v1.json`: canonical cross-site task IDs, aliases, parameters,
+  success criteria, evidence requirements, supported metrics, and query fields.
+- `scenario_family_library.json`: capture-grounded, representative-mock,
+  agent-inferred-needs-review, accepted, rejected, and review-only scenario
+  family records for lighting variation, object rotation, cart shifted, blocked
+  path, human crossing, forklift nearby, occlusion, glare, missing label, wrong
+  object nearby, and narrow approach angle. It never treats generated scenarios
+  as simulator or real-world proof.
+- `scoring_methodology.json`: versioned deterministic scoring methodology for
+  success rate, cycle time, intervention rate, unsafe proximity, collision risk,
+  object drop, wrong object, timeout, recovery success, uncertainty, and a
+  sim-vs-real calibration placeholder.
+- `recorded_trace_eval_report.json` / `policy_eval_report.json`: local
+  recorded-action-trace fixture runner output. It scores recorded traces without
+  Docker, policy API, simulator, live provider, or credential requirements, and
+  remains advisory.
+- `prediction_vs_actual_summary.json`: deterministic ingestion summary for
+  pilot, teleop, operator, or recorded-trace outcome manifests. Missing actuals
+  remain blocked/advisory.
+- `robot_team_test_submission_modalities.json`: schema version
+  `robot_team_test_submission_modalities.v0.1`, the six accepted WebApp
+  submission modalities, their required camelCase policy field keys, missing
+  evidence statuses, accepted artifact-reference policy, and blocked claim
+  upgrades.
+
+## Structured Robot-Team Submission Modalities
+
+The Pipeline modality artifact is the schema source for the WebApp structured
+test interface. It currently names these modalities:
+
+- `policy_api_endpoint`
+- `docker_container`
+- `recorded_action_trace`
+- `high_level_skill_trace`
+- `teleop_demo`
+- `sim_controller_plugin`
+
+The required reference fields intentionally match the WebApp
+`policy.robotTeamTestSubmission` payload keys. Missing references are tracked as
+fail-closed statuses; present references only move a modality to
+`reference_present_requires_owner_system_review`. They do not prove a policy
+ran, a simulator completed, a real robot trial passed, or a deployment threshold
+was met.
+
+The job orchestrator validates the same six modalities before provisioning or
+execution. Missing or weak references write exact `needs_*_ref` statuses into
+`policy_package_manifest.json`, `job_validation.json`, and
+`blocked_manifest.json`.
 
 ## Ledger Methodology
 
@@ -150,6 +273,7 @@ remain `needs_actual_outcome`.
 - an advisory dataset contract
 - task/scenario library summary
 - evidence requirements
+- robot-team submission modality requirements
 - failure taxonomy
 - prediction-vs-actual ledger schema
 - missing-proof labels
@@ -160,6 +284,9 @@ WebApp must not use these artifacts alone to claim:
 - safety validation
 - simulator execution completed
 - actual robot trial passed
+- submitted policy/container/trace/demo/plugin passed evaluation
+- headless robot-eval job success as real simulator, real training, or real
+  robot proof
 - guaranteed success, cycle-time, or intervention thresholds
 
 Those claims require owner-system proof from simulator traces, robot trials,

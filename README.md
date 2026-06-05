@@ -1,8 +1,8 @@
 # BlueprintCapturePipeline
 
-`BlueprintCapturePipeline` is the packaging, trust, and runtime service that turns raw Blueprint captures into site-specific world-model products with provenance, privacy, and rights safety.
+`BlueprintCapturePipeline` is the packaging, trust, and runtime service that turns raw Blueprint captures into real-site robot evaluation artifacts and Post-Training Data Package artifacts with provenance, privacy, and rights safety. World-model, site-world, generated, simulation, editing, and augmentation outputs remain support artifacts inside those packages unless a downstream contract explicitly labels them otherwise.
 
-For non-ARKit captures, the canonical world-model packaging path remains internal: `BlueprintCapture` evidence -> support/trust analysis -> privacy-aware geometry staging -> retrieval memory -> alignment -> synthesis/Cosmos conditioning. The default hosted preview path is now World Labs Marble from the privacy-safe walkthrough, while scene-memory, presentation, evaluation-prep, and runtime registration remain downstream derived lanes.
+For non-ARKit captures, the canonical support-artifact path remains internal: `BlueprintCapture` evidence -> support/trust analysis -> privacy-aware geometry staging -> retrieval memory -> alignment -> synthesis/Cosmos conditioning. The default hosted preview path is now World Labs Marble from the privacy-safe walkthrough, while scene-memory, presentation, evaluation-prep, generated-data, and runtime registration remain downstream derived lanes.
 
 For public language, Google/Meta smart glasses are supported only for approved repeat walkthroughs where the assignment, hardware, launch proof, and downstream capture/package proof exist. This repo treats glasses outputs as partial/internal until that proof chain exists.
 
@@ -21,10 +21,12 @@ Primary product path:
 - Gemini-backed multimodal capture review
 - capture evidence analysis and agent review
 - deterministic QA aggregation and trust/provenance assembly
-- world-model fit scoring and capturer payout recommendation
+- robot-evaluation/data-package fit scoring and capturer payout recommendation
 - optional provider preview routing
 - privacy-safe World Labs input preparation
 - webapp sync for buyer-review surfaces
+- Site Cards, Task Cards, Scenario Cards, Eval Cards, rights packets, and proof boundaries
+- Post-Training Data Package artifacts such as curated clip/label/export support
 - deterministic object indexing and scene semantics when deeper work is requested
 - optional scene-memory assembly
 - optional presentation-world assembly
@@ -68,7 +70,15 @@ Optional legacy downstream artifacts:
 - `robot_eval_dataset/eval_cards.json`
 - `robot_eval_dataset/annotation_backlog.json`
 - `robot_eval_dataset/proof_boundaries.json`
+- `robot_eval_dataset/rights_packet.json`
+- `robot_eval_dataset/rights_ledger.json`
+- `robot_eval_dataset/task_ontology_v1.json`
+- `robot_eval_dataset/scenario_family_library.json`
+- `robot_eval_dataset/scoring_methodology.json`
+- `robot_eval_dataset/recorded_trace_eval_report.json`
+- `robot_eval_dataset/policy_eval_report.json`
 - `robot_eval_dataset/prediction_outcome_ledger.json`
+- `robot_eval_dataset/prediction_vs_actual_summary.json`
 - `simulation_automation/simulation_automation_plan.json`
 - `simulation_automation/simulation_automation_run_manifest.json`
 - `simulation_automation/asset_conversion_plan.json`
@@ -76,6 +86,33 @@ Optional legacy downstream artifacts:
 - `simulation_automation/training_orchestration_manifest.json`
 - `simulation_automation/proof_boundary.json`
 - `simulation_automation/agent_decision_ledger.json`
+- `simulation_automation/scenario_execution_plan.json`
+- `simulation_automation/task_simulation_requests.json`
+- `simulation_automation/scenario_simulator_matrix.json`
+- `simulation_automation/agent_review_queue.json`
+- `simulation_automation/site_eval_director_run_manifest.json`
+- `simulation_automation/site_eval_director_proof_boundary.json`
+- `robot_eval_jobs/<job_id>/job_request.json`
+- `robot_eval_jobs/<job_id>/job_validation.json`
+- `robot_eval_jobs/<job_id>/job_plan.json`
+- `robot_eval_jobs/<job_id>/agent_orchestration_plan.json`
+- `robot_eval_jobs/<job_id>/gpu_provisioning_request.json`
+- `robot_eval_jobs/<job_id>/gpu_provisioning_result.json`
+- `robot_eval_jobs/<job_id>/simulator_service_request.json`
+- `robot_eval_jobs/<job_id>/simulator_service_result.json`
+- `robot_eval_jobs/<job_id>/policy_package_manifest.json`
+- `robot_eval_jobs/<job_id>/training_request.json`
+- `robot_eval_jobs/<job_id>/training_result.json`
+- `robot_eval_jobs/<job_id>/evaluation_request.json`
+- `robot_eval_jobs/<job_id>/evaluation_result.json`
+- `robot_eval_jobs/<job_id>/normalized_attempt_trace.json`
+- `robot_eval_jobs/<job_id>/failure_labels.json`
+- `robot_eval_jobs/<job_id>/prediction_outcome_ledger.json`
+- `robot_eval_jobs/<job_id>/calibration_report.json`
+- `robot_eval_jobs/<job_id>/breakage_library.json`
+- `robot_eval_jobs/<job_id>/proof_boundary.json`
+- `robot_eval_jobs/<job_id>/job_run_manifest.json`
+- `robot_eval_jobs/<job_id>/blocked_manifest.json` when blocked
 
 ## Local Development
 
@@ -297,6 +334,50 @@ The simulation automation lane is documented in
 It writes local orchestration manifests only. It does not run simulators,
 download assets, start training, call providers, or prove robot readiness unless
 explicit per-run approvals and dependencies are present.
+
+Optional deterministic site-eval director plan:
+
+```bash
+blueprint-run-site-eval-director \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+The site-eval director reads the local robot-eval Site, Task, Scenario, Eval,
+and proof-boundary cards plus existing World Labs, Marble, simready, and
+simulation automation manifests. It writes local scenario execution plans, task
+simulation request manifests, simulator matrices, fixture-backed normalized
+attempt traces, failure labels, updated Eval Card views, prediction/outcome
+ledgers, calibration reports, breakage libraries, Cosmos export/request
+manifests, review queues, and proof boundaries under
+`pipeline/simulation_automation/`. Fixture attempts prove only the local
+deterministic loop; real simulator, robot, safety, training, and public-claim
+upgrades remain blocked without owner-system proof and explicit gates. Optional
+`--agents-sdk-site-eval` and `--codex-sdk-code-maintainer` flags only write
+advisory SDK request or blocked manifests; they do not run agents, simulators,
+providers, downloads, training, deployments, payments, or proof upgrades.
+
+Optional headless robot-eval job orchestration:
+
+```bash
+blueprint-run-robot-eval-job \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --job-request /path/to/robot-eval-job-request.json \
+  --job-id <job_id> \
+  --agent-mode fake \
+  --provisioner fixture_local \
+  --simulator fixture
+```
+
+The job orchestrator reads a robot-team request for policy/container/trace/demo
+references, robot profile, task/scenario scope, rights/privacy scope, operation,
+simulator preference, training preference, budget, owner system, provenance, and
+timestamp alignment. It validates the request, writes a deterministic state
+machine under `pipeline/robot_eval_jobs/<job_id>/`, invokes fixture/local
+surfaces when allowed, and writes exact blocked manifests for missing evidence
+or denied gates. Fixture provisioner and fixture simulator paths prove only the
+repo-local orchestration loop. Vast, RunPod, GCP, local process, Docker,
+MuJoCo, PyBullet, Newton, Isaac Sim, Agents SDK, and Cosmos training paths stay
+blocked unless their explicit environment and CLI gates are present.
 
 ## Contract Boundary
 
