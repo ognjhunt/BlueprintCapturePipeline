@@ -219,6 +219,10 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     )
     rights_packet = json.loads((robot_eval_root / "rights_packet.json").read_text())
     rights_ledger = json.loads((robot_eval_root / "rights_ledger.json").read_text())
+    task_thresholds = json.loads((robot_eval_root / "task_thresholds.json").read_text())
+    publication_readiness = json.loads(
+        (robot_eval_root / "publication_readiness.json").read_text()
+    )
     methodology = (robot_eval_root / "eval_methodology_summary.md").read_text(encoding="utf-8")
 
     assert result["status"] == "capture_grounded_review_ready"
@@ -261,6 +265,14 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert manifest["output_artifacts"]["recorded_trace_eval_report"] == (
         "recorded_trace_eval_report.json"
     )
+    assert manifest["output_artifacts"]["task_thresholds"] == "task_thresholds.json"
+    assert manifest["output_artifacts"]["publication_readiness"] == (
+        "publication_readiness.json"
+    )
+    assert manifest["publication_readiness"]["ready_to_evaluate_publishable"] is True
+    assert manifest["publication_readiness"]["publication_label"] == "Ready to evaluate"
+    assert manifest["publication_readiness"]["required_artifact_status"] == "complete"
+    assert manifest["publication_readiness"]["task_thresholds_uri"] == "task_thresholds.json"
     assert manifest["robot_team_test_submission_missing_evidence_statuses"] == [
         "needs_policy_api_endpoint_ref",
         "needs_docker_container_ref",
@@ -464,6 +476,38 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
         "exclusivity_limits",
     }
     assert rights_ledger["record_count"] == rights_packet["record_count"]
+    assert task_thresholds["schema_version"] == "real_site_robot_eval_task_thresholds.v1"
+    assert task_thresholds["task_threshold_count"] == 1
+    threshold = task_thresholds["task_thresholds"][0]
+    assert threshold["task_id"] == "place_return_in_bin"
+    assert threshold["thresholds"]["min_success_rate"] == 0.0
+    assert threshold["thresholds"]["max_safety_event_count"] == 0
+    assert threshold["thresholds"]["max_collision_event_count"] == 0
+    assert threshold["claim_boundary"] == (
+        "thresholds_are_eval_gates_not_robot_readiness_or_safety_validation"
+    )
+    assert publication_readiness["schema_version"] == (
+        "real_site_robot_eval_publication_readiness.v1"
+    )
+    assert publication_readiness["ready_to_evaluate_publishable"] is True
+    assert publication_readiness["publication_label"] == "Ready to evaluate"
+    assert publication_readiness["required_artifact_status"] == "complete"
+    assert publication_readiness["missing_required_artifacts"] == []
+    assert publication_readiness["task_threshold_summary"]["task_threshold_count"] == 1
+    assert publication_readiness["missing_proof_labels"] == [
+        "needs_robot_pov",
+        "needs_human_demo",
+        "needs_action_logs",
+        "needs_actual_outcome",
+        "needs_policy_api_endpoint_ref",
+        "needs_docker_container_ref",
+        "needs_recorded_action_trace_ref",
+        "needs_high_level_skill_trace_ref",
+        "needs_teleop_demo_ref",
+        "needs_sim_controller_plugin_ref",
+        "review_only_no_robot_readiness",
+    ]
+    assert publication_readiness["claim_boundary"]["robot_readiness_proven"] is False
     assert "No live provider jobs" in methodology
 
 
@@ -511,6 +555,65 @@ def test_robot_eval_dataset_blocks_missing_rights_privacy_and_keeps_ledger_empty
     ]
     assert "robot_pov_video_uri" in robot_pov["required_fields"]
     assert human_demo["claim_boundary"] == "human_demo_is_support_evidence_not_robot_trial"
+
+
+def test_robot_eval_dataset_publication_readiness_names_worldlabs_simready_blocker(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_eval_inputs(capture_root)
+    _write_review_sources(capture_root)
+    _write_json(
+        capture_root / "pipeline" / "worldlabs_world_manifest.json",
+        {
+            "schema_version": "worldlabs_world_manifest.v1",
+            "status": "asset_ready",
+            "asset_format": "spz",
+            "outputs": [{"kind": "3dgs", "uri": "gs://worldlabs/site-static.spz"}],
+            "metric_scale_proven": False,
+            "ground_plane_proven": False,
+            "collider_glb_uri": "",
+            "usd_scene_uri": "",
+            "ply_scene_uri": "",
+            "articulated_assets_ready": False,
+            "physics_ready": False,
+        },
+    )
+    _write_json(
+        capture_root / "pipeline" / "marble_sim_assets" / "marble_asset_validation.json",
+        {
+            "schema_version": "marble_asset_validation.v1",
+            "overall_status": "static_review_only",
+            "physics_collision_review_ready": False,
+            "collider_mesh_available": False,
+            "collider_mesh_glb_url": "",
+        },
+    )
+
+    build_real_site_robot_eval_dataset(capture_root=capture_root)
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    publication_readiness = json.loads(
+        (robot_eval_root / "publication_readiness.json").read_text()
+    )
+
+    assert publication_readiness["ready_to_evaluate_publishable"] is True
+    assert publication_readiness["repo_owned_automation_complete"] is True
+    assert publication_readiness["external_blockers"] == [
+        {
+            "blocker_id": "external_worldlabs_simready_asset_quality_blocked",
+            "source": "worldlabs_world_manifest",
+            "missing": [
+                "collider_glb",
+                "metric_scale",
+                "ground_plane",
+                "usd_or_ply_conversion",
+                "articulated_or_physics_ready_assets",
+            ],
+            "claim_boundary": (
+                "external_asset_quality_blocker_only_blueprint_owned_publication_package_is_complete"
+            ),
+        }
+    ]
 
 
 def test_robot_eval_dataset_scores_recorded_action_trace_fixture_without_claim_upgrade(

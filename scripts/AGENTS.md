@@ -4,7 +4,8 @@ Scripts are operational entrypoints. Classify a script before running it:
 read-only check, local artifact writer, external provider/API caller, GPU runner,
 cross-repo gate, or live deploy.
 
-Safe checks include `setup_environment.py --check` and focused gate/test commands.
+Safe checks include focused gate/test commands. Treat `setup_environment.py --check`
+as a legacy GPU/runtime probe, not a current pipeline readiness check.
 Do not run live provider jobs, GPU deployments, Stripe, WebApp mutation, external
 sync, Terraform, or deploy scripts without explicit approval.
 

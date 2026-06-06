@@ -9,6 +9,7 @@ from blueprint_pipeline.robot_eval_job_orchestrator import (
     AgentsSdkRobotEvalJobAdapter,
     FakeRobotEvalJobAgentAdapter,
     build_robot_eval_job,
+    run_robot_eval_job_request_inbox,
 )
 
 
@@ -309,6 +310,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "prediction_outcome_ledger.json",
         "calibration_report.json",
         "breakage_library.json",
+        "post_training_data_package_export_manifest.json",
         "proof_boundary.json",
         "job_run_manifest.json",
     }
@@ -324,6 +326,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     evaluation = _read_json(job_dir / "evaluation_result.json")
     proof_boundary = _read_json(job_dir / "proof_boundary.json")
     trace = _read_json(job_dir / "normalized_attempt_trace.json")
+    data_package_export = _read_json(job_dir / "post_training_data_package_export_manifest.json")
 
     assert validation["status"] == "passed"
     assert provisioning["status"] == "allocated"
@@ -334,10 +337,74 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert evaluation["status"] == "completed"
     assert trace["attempts"][0]["success"] is True
     assert run_manifest["state"] == "completed"
+    assert run_manifest["scene_asset_preflight_status"] == "blocked"
+    assert run_manifest["episode_spec_status"] == "compiled_review_required"
+    assert run_manifest["cpu_simulator_preflight_status"] == (
+        "ready_blocked_optional_dependencies_or_gates"
+    )
+    assert run_manifest["cpu_preflight_artifacts"]["episode_spec"] == (
+        "../simulation_automation/episode_spec.v1.json"
+    )
     assert run_manifest["public_claim_upgrade_allowed"] is False
     assert proof_boundary["robot_readiness_proven"] is False
     assert proof_boundary["public_claim_upgrade_allowed"] is False
     assert proof_boundary["fixture_only_proof"] is True
+    assert data_package_export["status"] == "export_ready_review_required"
+    assert data_package_export["package_type"] == "post_training_data_package"
+    assert data_package_export["included_artifacts"]["normalized_attempt_trace"] == (
+        "normalized_attempt_trace.json"
+    )
+    assert data_package_export["claim_boundary"]["robot_readiness_proven"] is False
+
+
+def test_robot_eval_job_request_inbox_runs_webapp_job_request_automatically(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    request = _full_job_request(capture_root)
+    request["job_id"] = "webapp-job-1"
+    request["source"] = {
+        "system": "Blueprint-WebApp",
+        "route": "/sites/sw-chi-01",
+        "selection_state": {
+            "site_slug": "sw-chi-01",
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "policy_id": "policy-fixture-a",
+        },
+    }
+    _write_json(inbox_dir / "webapp-job-1.json", request)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    queue_root = capture_root / "pipeline" / "robot_eval_job_requests"
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "webapp-job-1"
+    queue_manifest = _read_json(queue_root / "inbox_run_manifest.json")
+    queued_request = _read_json(queue_root / "webapp-job-1" / "job_request.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert result["schema_version"] == "robot_eval_job_request_inbox_run.v1"
+    assert result["status"] == "completed"
+    assert result["processed_count"] == 1
+    assert result["jobs"][0]["job_id"] == "webapp-job-1"
+    assert result["jobs"][0]["status"] == "fixture_evaluation_completed"
+    assert queued_request["schema_version"] == "robot_eval_job_request.v1"
+    assert queued_request["source"]["system"] == "Blueprint-WebApp"
+    assert queue_manifest["processed_count"] == 1
+    assert queue_manifest["jobs"][0]["job_run_manifest_uri"].endswith(
+        "/pipeline/robot_eval_jobs/webapp-job-1/job_run_manifest.json"
+    )
+    assert run_manifest["status"] == "fixture_evaluation_completed"
+    assert run_manifest["public_claim_upgrade_allowed"] is False
 
 
 def test_robot_eval_job_rights_privacy_block_prevents_execution(

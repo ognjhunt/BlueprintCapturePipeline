@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
+from urllib import parse as urllib_parse
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -107,12 +108,27 @@ def _http_runner_headers() -> Dict[str, str]:
     return headers
 
 
+def _runner_url_invalid_reason(url: str) -> str | None:
+    text = str(url or "").strip()
+    if not text:
+        return "runner_url_missing"
+    parsed = urllib_parse.urlsplit(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "runner_url_invalid_or_placeholder"
+    if "REPLACE_ME" in text or "replace_me" in text.lower():
+        return "runner_url_invalid_or_placeholder"
+    return None
+
+
 def _run_http_json(
     *,
     url: str,
     body: Mapping[str, object],
     timeout_seconds: int,
 ) -> Dict[str, Any]:
+    invalid_reason = _runner_url_invalid_reason(url)
+    if invalid_reason:
+        return {"status": "failed", "reason": invalid_reason}
     request = urllib_request.Request(
         url,
         data=json.dumps(dict(body)).encode("utf-8"),
@@ -183,7 +199,7 @@ def _sam3_runner_url() -> str:
 
 
 def _vip_command_template() -> str:
-    return str(os.getenv("VIP_COMMAND") or "").strip()
+    return str(os.getenv("PRIVACY_VIP_COMMAND") or os.getenv("VIP_COMMAND") or "").strip()
 
 
 def _vip_runner_url() -> str:
@@ -199,7 +215,9 @@ def _depth_anything_runner_url() -> str:
 
 
 def _deepprivacy_command_template() -> str:
-    return str(os.getenv("DEEPPRIVACY2_COMMAND") or "").strip()
+    return str(
+        os.getenv("PRIVACY_DEEPPRIVACY2_COMMAND") or os.getenv("DEEPPRIVACY2_COMMAND") or ""
+    ).strip()
 
 
 def _deepprivacy_runner_url() -> str:

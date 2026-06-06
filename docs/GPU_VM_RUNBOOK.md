@@ -1,10 +1,12 @@
-# GPU VM Runbook
+# Legacy GPU VM Runbook
 
-This is the supported bring-up path for the narrowed site-world workflow on one Linux GPU VM.
+This is legacy reference material for the older single-VM site-world/Cosmos
+workflow. It is not the supported path for the current Capture App -> World Labs
+API -> upload -> CPU preflight -> simulation-manifest flow.
 
 ## Scope
 
-Supported path:
+Historical path:
 
 - stage a fresh raw Blueprint capture bundle
 - run qualification
@@ -94,7 +96,7 @@ export COSMOS_TRAINER_ENTRYPOINT="/opt/cosmos/train_lora.py"
 export COSMOS_TRAINER_ENTRYPOINT_MODE="script"
 export COSMOS_TRAINER_LAUNCHER="accelerate"
 export COSMOS_TRAINER_NUM_PROCESSES="1"
-export COSMOS_TRAINING_COMMAND="blueprint-cosmos-vast-train --trainer-config {trainer_config_path} --output-dir {output_dir} --export-manifest {export_manifest_path} --capture-root {capture_root} --paired-reference-target {paired_reference_target_path} --k-reference-conditioning {k_reference_conditioning_path} --train-val-split {train_val_split_path}"
+export COSMOS_TRAINING_COMMAND="python -m blueprint_pipeline.synthesis.cosmos_vast_training_wrapper --trainer-config {trainer_config_path} --output-dir {output_dir} --export-manifest {export_manifest_path} --capture-root {capture_root} --paired-reference-target {paired_reference_target_path} --k-reference-conditioning {k_reference_conditioning_path} --train-val-split {train_val_split_path}"
 export BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL=""
 export BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL=""
 ```
@@ -198,13 +200,12 @@ blueprint-validate session export \
   --session-work-dir data/session-validation
 ```
 
-Smoke-only runtime branch:
+Retired smoke-only runtime branch:
 
-```bash
-blueprint-neoverse-smoke-runtime
-```
-
-This branch is for interface smoke checks only. It must not be treated as production-grade acceptance for the narrowed workflow.
+The old smoke-only runtime command has been removed from the supported workflow.
+Use the current capture -> World Labs -> CPU preflight -> simulation automation
+manifest path instead, and treat this runbook as legacy GPU/runtime reference
+material only.
 
 ## Failure diagnosis
 

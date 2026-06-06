@@ -16,9 +16,11 @@ approval.
 | `pytest tests/test_geometry_stage.py tests/test_retrieval_index_geometry_source.py -q` | Geometry and retrieval fail-closed checks | Local fixture tests |
 | `pytest tests/test_launch_bundle.py tests/test_qualification_alpha.py -q` | Provider preview and qualification contract checks | Local fixture tests |
 | `ruff check <touched-files>` | Lint touched Python files | Read-only analysis |
-| `blueprint-build-simready-assets --capture-root <path>` | Build local simulator-review artifacts | Local artifact writer; no simulator/provider execution |
-| `blueprint-build-marble-sim-assets --capture-root <path>` | Build local Marble simulator-review handoff artifacts | Local artifact writer; no World Labs call, asset download, or simulator execution |
+| `blueprint-capture-pipeline --lane current --descriptor-gcs-uri <gs://.../capture_descriptor.json>` | Run the active capture package flow | Expands to qualification, evaluation prep, and simulation automation; World Labs call only occurs if preview output is requested and input is ready; no simulator/GPU proof upgrades |
 | `blueprint-build-robot-eval-dataset --capture-root <path>` | Build local real-site robot eval dataset artifacts | Local artifact writer; no providers, simulators, model downloads, sends, payments, or deploys |
+| `blueprint-build-scene-asset-preflight --capture-root <path>` | Inspect local PLY/USD scene assets for CPU preflight | Local artifact writer; no provider calls, downloads, simulator execution, or proof upgrades |
+| `blueprint-build-episode-specs --capture-root <path>` | Compile `episode_spec.v1` setup manifests | Local artifact writer; agents are advisory only and cannot set proof booleans |
+| `blueprint-run-cpu-simulator-preflight --capture-root <path>` | Generate CPU MuJoCo/PyBullet setup manifests | Local artifact writer by default; optional smoke requires `BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT=true` plus `--allow-cpu-simulator-preflight` and remains local CPU preflight only |
 | `blueprint-run-simulation-automation --capture-root <path>` | Build fail-closed simulation automation manifests | Local artifact writer; no providers, asset downloads, simulator execution, GPU training, sends, payments, or deploys |
 | `blueprint-run-site-eval-director --capture-root <path>` | Build deterministic site-eval director manifests | Local artifact writer; optional SDK flags only write advisory request/blocked manifests |
 | `blueprint-run-robot-eval-job --capture-root <path> --job-request <json> --job-id <id> --provisioner fixture_local --simulator fixture` | Run fixture-backed robot-eval job orchestration | Local artifact writer under `pipeline/robot_eval_jobs/<job_id>`; fixture proof only, no live provider, real simulator, GPU training, sends, payments, or deploys |
@@ -26,16 +28,16 @@ approval.
 Use `PYTHONDONTWRITEBYTECODE=1` for verification commands when the goal is to
 avoid `__pycache__` churn.
 
-## Setup And Runtime Env Checks
+## Legacy Setup And Runtime Env Checks
 
 | Command | Use | Risk |
 | --- | --- | --- |
-| `python3 scripts/setup_environment.py --check` | Reports local Python/ML/runtime gaps | Read-only-ish local environment probe |
+| `python3 scripts/setup_environment.py --check` | Reports legacy Python/ML/runtime gaps | Read-only-ish legacy environment probe; not current pipeline readiness proof |
 | `python3 -m pip install -e .[dev]` | Installs repo in editable mode | Mutates local Python environment |
 | `uv sync --extra dev` | Syncs development dependencies | Mutates local virtual environment |
-| `./scripts/install_ml_stack.sh` | Installs ML/runtime stack | Heavy local mutation, may download large packages |
+| `./scripts/install_ml_stack.sh` | Installs legacy ML/runtime stack | Heavy local mutation, may download large packages |
 
-`setup_environment.py --check` is safe to run for blocker discovery. Treat
+`setup_environment.py --check` is safe to run for legacy blocker discovery. Treat
 missing ML stack, ffmpeg, CUDA, Android SDK, model packages, or provider keys as
 blockers when the requested proof depends on them.
 
@@ -64,12 +66,18 @@ git diff -- output/paid_marketplace_launch_gate.md output/paid_marketplace_launc
 | `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run_external_alpha_launch_gate.py` | Cross-repo alpha launch gate | May inspect adjacent repos and write gate artifacts |
 | `python -m blueprint_pipeline.run_e2e` | Local e2e pipeline entrypoint | Can run multiple stages and write staged artifacts |
 | `python -m blueprint_pipeline.capture_orchestrator` | Lane orchestrator | Can run package/runtime lanes and write artifacts |
-| `blueprint-build-simready-assets --capture-root <path>` | Local simready asset review lane | Writes `pipeline/simready/*`; does not run Isaac Sim, MuJoCo, PyBullet, providers, or model downloads |
-| `blueprint-build-marble-sim-assets --capture-root <path>` | Local Marble sim-asset handoff lane | Writes `pipeline/marble_sim_assets/*`; does not call World Labs, download remote assets, run Isaac Sim, MuJoCo, or PyBullet |
+| `PYTHONPATH=src python -m blueprint_pipeline.simready_assets --capture-root <path>` | Legacy local simready asset review lane | Writes `pipeline/simready/*`; does not run Isaac Sim, MuJoCo, PyBullet, providers, or model downloads |
+| `PYTHONPATH=src python -m blueprint_pipeline.marble_sim_assets --capture-root <path>` | Legacy local Marble sim-asset handoff lane | Writes `pipeline/marble_sim_assets/*`; does not call World Labs, download remote assets, run Isaac Sim, MuJoCo, or PyBullet |
 | `blueprint-build-robot-eval-dataset --capture-root <path>` | Local robot eval dataset contract lane | Writes `pipeline/robot_eval_dataset/*`; does not prove robot readiness, simulator execution, or actual outcomes |
-| `blueprint-run-simulation-automation --capture-root <path>` | Local simulation automation orchestration lane | Writes `pipeline/simulation_automation/*`; simulator/training execution remains blocked unless explicit env and CLI gates are provided |
+| `blueprint-build-scene-asset-preflight --capture-root <path>` | Local CPU scene asset inspection | Writes inventory, dependency audit, scene preflight, collider/proxy, frame, and scorecard manifests; labels PLY/USD/GLB/GLTF/OBJ/URDF/MJCF evidence without collision/contact proof |
+| `blueprint-build-episode-specs --capture-root <path>` | Local episode-spec compiler | Writes `task_anchor_proposal_manifest.json`, `episode_spec.v1.json`, `episode_specs.json`, `episode_spec_manifest.json`, and advisory agent proposals; specs remain review-required unless accepted anchors, scale, profile, and collision proof exist |
+| `blueprint-run-cpu-simulator-preflight --capture-root <path>` | Local CPU MuJoCo/PyBullet setup lane | Writes spawn validation, CPU preflight, pre-GPU readiness, CPU fixture files, and `cpu_simulator_preflight_manifest.json`; optional CPU smoke is gated and never proves robot readiness, policy success, safety, contact, or owner-system simulator execution |
+| `blueprint-run-simulation-automation --capture-root <path>` | Local simulation automation orchestration lane | Writes `pipeline/simulation_automation/*`, including `gpu_handoff_packet.json`, proof schema, checklist, and owner-GPU blocked manifest; simulator/training execution remains blocked unless explicit env and CLI gates are provided |
 | `blueprint-run-site-eval-director --capture-root <path>` | Local site-eval director lane | Writes scenario/task/matrix/fixture-attempt/label/calibration/breakage/review/proof manifests under `pipeline/simulation_automation/*`; fixture attempts are local-only, and real engines/training stay blocked without explicit env and CLI gates |
 | `blueprint-run-robot-eval-job --capture-root <path> --job-request <json> --job-id <id> ...` | Headless robot-eval job orchestration lane | Writes request/validation/plan/provisioning/simulator/training/evaluation/proof/job manifests under `pipeline/robot_eval_jobs/<job_id>/*`; fixture paths are local-only, and real provisioning/simulator/training/agent paths stay blocked without explicit env and CLI gates |
+| `blueprint-run-robot-eval-job --capture-root <path> --job-request-inbox <dir> ...` | WebApp robot-eval job request inbox lane | Copies each `robot_eval_job_request.v1` to `pipeline/robot_eval_job_requests/<job_id>/job_request.json`, runs the same fail-closed job orchestrator, and writes `pipeline/robot_eval_job_requests/inbox_run_manifest.json`; fixture paths remain local-only |
+| `blueprint-validate-provider-preview-packet --capture-root <path> --mode production --require-webapp-sync` | Validate privacy-safe World Labs input lineage before provider submission | Local artifact validator; writes `pipeline/provider_preview_qa_manifest.json`; exits nonzero when production raw bypass, missing privacy proof, checksum mismatch, missing/placeholder WebApp upstream ids, or adapter/canonical mismatch is present; no provider calls |
+| `blueprint-build-production-handoff-readiness --capture-root <path> --mode production` | Summarize whether the repo-local World Labs/materialization/CPU/GPU handoff is ready except owner GPU | Local artifact validator; writes `pipeline/production_handoff_readiness_manifest.json`; production mode requires WebApp upstream-link truth; no provider calls, downloads, simulators, training, sends, payments, or deploys |
 
 Run these only when broad gate refresh is requested or when docs/code changes
 touch launch contracts enough to justify it. Always inspect worktree and output
@@ -80,8 +88,6 @@ drift afterward.
 | Command | Use | Risk |
 | --- | --- | --- |
 | `python3 scripts/run_geometry_lane.py --capture-root <path> --provider video_to_world --model video_to_world-default` | Runs geometry lane against a capture | Calls configured runner when env is present; writes `pipeline/geometry/*` |
-| `blueprint-video-to-world-runner` | Starts runner service entrypoint | Service runtime, may use GPU/model paths |
-| `python3 scripts/run_site_world_runtime_local.py` | Starts/validates local runtime | Local runtime side effects |
 | `python3 scripts/start_native_runtime_vast.sh` | Starts native runtime on Vast-style host | Live/runtime risk |
 
 Do not run GPU/privacy runner deployment or live inference without approval.
@@ -94,6 +100,7 @@ Fallback geometry is not live proof.
 | `blueprint-agent-review --capture-root <path> --provider openai` | Optional LLM-backed review | Calls external provider when configured |
 | `blueprint-run-e2e --capture-root <path> --provider openai` | Optional e2e wrapper with provider review | Calls external provider when configured |
 | `BLUEPRINT_PREVIEW_PROVIDER=world_labs ...` | World Labs preview path | Can submit live provider job when key/env are present |
+| `blueprint-materialize-worldlabs-assets --capture-root <path>` | Download already-generated World Labs/Marble output assets into local checksum-backed files | Downloads remote CDN assets but does not start a new generation, run simulators, or prove robot readiness |
 | `blueprint-run-site-eval-director --agents-sdk-site-eval --codex-sdk-code-maintainer ...` | Optional site-eval/Codex advisory request manifest lane | Writes request or blocked manifests; does not execute SDK agents or Codex MCP by itself |
 | `blueprint-run-robot-eval-job --agent-mode agents-sdk ...` | Optional robot-eval job Agents SDK advisory request manifest lane | Writes advisory request or blocked manifests; does not execute a live agent unless `OPENAI_API_KEY`, `BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION=true`, and `--agent-mode agents-sdk` are intentionally provided |
 | `BLUEPRINT_ALLOW_GPU_PROVISIONING=true blueprint-run-robot-eval-job --allow-gpu-provisioning --provisioner <vast|runpod|gcp|local_process|docker_local> ...` | Explicit non-fixture provisioning request lane | Can prepare gated provisioning request/result manifests; fixture local remains the only default local proof path |

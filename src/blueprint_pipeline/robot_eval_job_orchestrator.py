@@ -20,8 +20,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
+from .episode_spec import build_episode_specs
 from .local_capture import resolve_local_capture_context
+from .post_training_data_package import build_post_training_data_package_export
 from .robot_eval_dataset import build_real_site_robot_eval_dataset
+from .scene_asset_preflight import build_scene_asset_preflight
+from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
 
 
@@ -46,6 +51,7 @@ BREAKAGE_LIBRARY_SCHEMA_VERSION = "robot_eval_job_breakage_library.v1"
 PROOF_BOUNDARY_SCHEMA_VERSION = "robot_eval_job_proof_boundary.v1"
 JOB_RUN_MANIFEST_SCHEMA_VERSION = "robot_eval_job_run_manifest.v1"
 BLOCKED_MANIFEST_SCHEMA_VERSION = "robot_eval_job_blocked_manifest.v1"
+JOB_REQUEST_INBOX_RUN_SCHEMA_VERSION = "robot_eval_job_request_inbox_run.v1"
 
 PROVISIONERS = (
     "fixture_local",
@@ -1254,6 +1260,7 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "prediction_outcome_ledger.json",
         "calibration_report.json",
         "breakage_library.json",
+        "post_training_data_package_export_manifest.json",
         "proof_boundary.json",
         "job_run_manifest.json",
         "blocked_manifest.json",
@@ -1273,6 +1280,10 @@ def build_robot_eval_job(
     allow_simulator_execution: bool = False,
     allowed_simulators: Sequence[str] = (),
     simulator_commands: Mapping[str, str] | None = None,
+    allow_cpu_simulator_preflight: bool = False,
+    cpu_preflight_backends: Sequence[str] = CPU_BACKENDS,
+    cpu_preflight_smoke_steps: int = 10,
+    allow_cpu_preflight_render: bool = False,
     allow_training: bool = False,
     training_command: str | None = None,
     timeout_seconds: int = 120,
@@ -1298,6 +1309,22 @@ def build_robot_eval_job(
         capture_root=context.capture_root,
         pipeline_dir=pipeline_dir,
     )
+    scene_preflight = build_scene_asset_preflight(capture_root=context.capture_root)
+    episode_specs = build_episode_specs(capture_root=context.capture_root)
+    cpu_preflight = build_cpu_simulator_preflight(
+        capture_root=context.capture_root,
+        allow_cpu_simulator_preflight=allow_cpu_simulator_preflight,
+        backends=cpu_preflight_backends,
+        smoke_steps=cpu_preflight_smoke_steps,
+        allow_render=allow_cpu_preflight_render,
+    )
+    simulation_automation = build_simulation_automation(
+        capture_root=context.capture_root,
+        allow_cpu_simulator_preflight=allow_cpu_simulator_preflight,
+        cpu_preflight_backends=cpu_preflight_backends,
+        cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
+        allow_cpu_preflight_render=allow_cpu_preflight_render,
+    )
     policy_manifest, policy_missing_inputs, policy_missing_statuses = _policy_package_manifest(
         request=request,
         generated_at=generated_at,
@@ -1321,6 +1348,10 @@ def build_robot_eval_job(
         "validation": validation,
         "provisioner": provisioner,
         "simulator": simulator,
+        "scene_preflight": scene_preflight,
+        "episode_specs": episode_specs,
+        "cpu_preflight": cpu_preflight,
+        "simulation_automation": simulation_automation,
     }
     agent_plan = _agent_plan(
         adapter=agent_adapter,
@@ -1412,6 +1443,10 @@ def build_robot_eval_job(
         generated_at=generated_at,
     )
     _write_job_json(job_dir, "proof_boundary.json", proof_boundary)
+    data_package_export = build_post_training_data_package_export(
+        capture_root=context.capture_root,
+        job_dir=job_dir,
+    )
 
     blockers: List[str] = []
     missing_inputs: List[str] = []
@@ -1463,16 +1498,67 @@ def build_robot_eval_job(
         "provisioner": provisioner,
         "simulator": simulator,
         "agent_orchestration_status": agent_plan.get("status"),
+        "scene_asset_preflight_status": scene_preflight.get("status"),
+        "episode_spec_status": episode_specs.get("status"),
+        "episode_count": episode_specs.get("episode_count"),
+        "cpu_simulator_preflight_status": cpu_preflight.get("status"),
+        "simulation_automation_status": simulation_automation.get("status"),
         "validation_status": validation.get("status"),
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
         "training_status": training_res.get("status"),
         "evaluation_status": eval_result.get("status"),
+        "post_training_data_package_export_status": data_package_export.get("status"),
         "blockers": _dedupe(blockers),
         "missing_inputs": _dedupe(missing_inputs),
         "artifacts": {},
+        "cpu_preflight_artifacts": {
+            "scene_asset_inventory": "../simulation_automation/scene_asset_inventory.json",
+            "scene_asset_dependency_audit": (
+                "../simulation_automation/scene_asset_dependency_audit.json"
+            ),
+            "scene_asset_preflight": "../simulation_automation/scene_asset_preflight.json",
+            "scene_asset_inspection": "../simulation_automation/scene_asset_inspection.json",
+            "scene_frame_estimate": "../simulation_automation/scene_frame_estimate.json",
+            "collider_proxy_plan": "../simulation_automation/collider_proxy_plan.json",
+            "cpu_scene_proxy_manifest": "../simulation_automation/cpu_scene_proxy_manifest.json",
+            "cpu_preflight_scorecard": "../simulation_automation/cpu_preflight_scorecard.json",
+            "task_anchor_proposal_manifest": (
+                "../simulation_automation/task_anchor_proposal_manifest.json"
+            ),
+            "episode_spec_manifest": "../simulation_automation/episode_spec_manifest.json",
+            "episode_spec": "../simulation_automation/episode_spec.v1.json",
+            "episode_specs": "../simulation_automation/episode_specs.json",
+            "episode_setup_manifest": "../simulation_automation/episode_setup_manifest.json",
+            "spawn_pose_validation_manifest": (
+                "../simulation_automation/spawn_pose_validation_manifest.json"
+            ),
+            "cpu_simulator_preflight_manifest": (
+                "../simulation_automation/cpu_simulator_preflight_manifest.json"
+            ),
+            "cpu_preflight_manifest": "../simulation_automation/cpu_preflight_manifest.json",
+            "pre_gpu_readiness_summary": (
+                "../simulation_automation/pre_gpu_readiness_summary.json"
+            ),
+            "gpu_handoff_packet": "../simulation_automation/gpu_handoff_packet.json",
+            "gpu_owner_system_proof_schema": (
+                "../simulation_automation/gpu_owner_system_proof_schema.json"
+            ),
+            "gpu_run_checklist": "../simulation_automation/gpu_run_checklist.md",
+            "owner_gpu_simulator_execution_blocked_manifest": (
+                "../simulation_automation/owner_gpu_simulator_execution_blocked_manifest.json"
+            ),
+            "post_training_data_package_export_manifest": (
+                "post_training_data_package_export_manifest.json"
+            ),
+        },
         "live_provider_calls_performed": False,
         "remote_asset_downloads_performed": False,
+        "local_cpu_preflight_smoke_ran": bool(
+            _read_optional_mapping(
+                pipeline_dir / "simulation_automation" / "cpu_simulator_preflight_manifest.json"
+            ).get("local_cpu_smoke_ran")
+        ),
         "simulators_run": bool(sim_result.get("simulators_run")),
         "gpu_training_run": bool(training_res.get("gpu_training_run")),
         "messages_sent": False,
@@ -1508,6 +1594,100 @@ def build_robot_eval_job(
     }
 
 
+def _job_id_from_request(path: Path, request: Mapping[str, Any]) -> str:
+    raw = _string(
+        request.get("job_id")
+        or request.get("jobId")
+        or _mapping(request.get("owner_system")).get("request_id")
+        or path.stem
+    )
+    cleaned = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in raw)
+    return cleaned.strip("-_") or path.stem
+
+
+def run_robot_eval_job_request_inbox(
+    *,
+    capture_root: str | Path,
+    inbox_dir: str | Path,
+    agent_adapter: RobotEvalJobAgentAdapter | None = None,
+    provisioner: str = "fixture_local",
+    simulator: str = "fixture",
+    allow_gpu_provisioning: bool = False,
+    allow_simulator_execution: bool = False,
+    allowed_simulators: Sequence[str] = (),
+    simulator_commands: Mapping[str, str] | None = None,
+    allow_cpu_simulator_preflight: bool = False,
+    cpu_preflight_backends: Sequence[str] = CPU_BACKENDS,
+    cpu_preflight_smoke_steps: int = 10,
+    allow_cpu_preflight_render: bool = False,
+    allow_training: bool = False,
+    training_command: str | None = None,
+    timeout_seconds: int = 120,
+    budget_usd: float | None = None,
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    inbox_path = Path(inbox_dir)
+    queue_root = context.pipeline_root / "robot_eval_job_requests"
+    ensure_dir(queue_root)
+    generated_at = utc_now_iso()
+    request_paths = sorted(path for path in inbox_path.glob("*.json") if path.is_file())
+    jobs: List[Dict[str, Any]] = []
+    for request_path in request_paths:
+        request = _read_job_request(request_path)
+        request.setdefault("schema_version", JOB_REQUEST_SCHEMA_VERSION)
+        job_id = _job_id_from_request(request_path, request)
+        request["job_id"] = job_id
+        request["capture_root"] = str(context.capture_root)
+        queued_dir = queue_root / job_id
+        ensure_dir(queued_dir)
+        write_json(queued_dir / "job_request.json", request)
+        result = build_robot_eval_job(
+            capture_root=context.capture_root,
+            job_request=request,
+            job_id=job_id,
+            agent_adapter=agent_adapter,
+            provisioner=provisioner,
+            simulator=simulator,
+            allow_gpu_provisioning=allow_gpu_provisioning,
+            allow_simulator_execution=allow_simulator_execution,
+            allowed_simulators=allowed_simulators,
+            simulator_commands=simulator_commands or {},
+            allow_cpu_simulator_preflight=allow_cpu_simulator_preflight,
+            cpu_preflight_backends=cpu_preflight_backends,
+            cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
+            allow_cpu_preflight_render=allow_cpu_preflight_render,
+            allow_training=allow_training,
+            training_command=training_command,
+            timeout_seconds=timeout_seconds,
+            budget_usd=budget_usd,
+        )
+        jobs.append(
+            {
+                "job_id": job_id,
+                "status": result["status"],
+                "source_request_path": str(request_path),
+                "queued_request_path": str((queued_dir / "job_request.json").resolve()),
+                "job_dir": result["job_dir"],
+                "job_run_manifest_uri": result["manifest_path"],
+                "public_claim_upgrade_allowed": False,
+            }
+        )
+    status = "completed" if jobs else "empty"
+    manifest = {
+        "schema_version": JOB_REQUEST_INBOX_RUN_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "capture_root": str(context.capture_root),
+        "inbox_dir": str(inbox_path),
+        "queue_root": str(queue_root),
+        "processed_count": len(jobs),
+        "jobs": jobs,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    write_json(queue_root / "inbox_run_manifest.json", manifest)
+    return manifest
+
+
 def _parse_simulator_commands(values: Sequence[str] | None) -> Dict[str, str]:
     commands: Dict[str, str] = {}
     for value in values or []:
@@ -1534,8 +1714,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Run a fail-closed headless robot-eval job from a local request manifest"
     )
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
-    parser.add_argument("--job-request", required=True, help="Robot eval job request JSON")
-    parser.add_argument("--job-id", required=True, help="Deterministic job id")
+    parser.add_argument("--job-request", default=None, help="Robot eval job request JSON")
+    parser.add_argument("--job-id", default=None, help="Deterministic job id")
+    parser.add_argument(
+        "--job-request-inbox",
+        default=None,
+        help="Directory of robot_eval_job_request.v1 JSON files to run automatically",
+    )
     parser.add_argument(
         "--agent-mode",
         choices=("none", "fake", "agents-sdk"),
@@ -1553,6 +1738,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--allow-simulator-execution",
         action="store_true",
         help="Permit non-fixture simulator command execution only with matching env approval",
+    )
+    parser.add_argument(
+        "--allow-cpu-simulator-preflight",
+        action="store_true",
+        help="Permit optional CPU MuJoCo/PyBullet smoke only with matching env approval",
+    )
+    parser.add_argument(
+        "--cpu-preflight-backend",
+        action="append",
+        choices=CPU_BACKENDS,
+        default=[],
+        help="CPU preflight backend to include; repeatable. Defaults to MuJoCo and PyBullet.",
+    )
+    parser.add_argument("--cpu-preflight-smoke-steps", type=int, default=10)
+    parser.add_argument(
+        "--allow-cpu-preflight-render",
+        action="store_true",
+        help="Allow optional TinyRenderer path for PyBullet CPU preflight.",
     )
     parser.add_argument(
         "--allow-simulator",
@@ -1577,6 +1780,36 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--budget-usd", type=float, default=None)
     args = parser.parse_args(argv)
     try:
+        simulator_commands = _parse_simulator_commands(args.simulator_command)
+        if args.job_request_inbox:
+            result = run_robot_eval_job_request_inbox(
+                capture_root=args.capture_root,
+                inbox_dir=args.job_request_inbox,
+                agent_adapter=_agent_adapter_from_mode(args.agent_mode),
+                provisioner=args.provisioner,
+                simulator=args.simulator,
+                allow_gpu_provisioning=args.allow_gpu_provisioning,
+                allow_simulator_execution=args.allow_simulator_execution,
+                allowed_simulators=args.allow_simulator,
+                simulator_commands=simulator_commands,
+                allow_cpu_simulator_preflight=args.allow_cpu_simulator_preflight,
+                cpu_preflight_backends=args.cpu_preflight_backend or CPU_BACKENDS,
+                cpu_preflight_smoke_steps=args.cpu_preflight_smoke_steps,
+                allow_cpu_preflight_render=args.allow_cpu_preflight_render,
+                allow_training=args.allow_training,
+                training_command=args.training_command,
+                timeout_seconds=args.timeout_seconds,
+                budget_usd=args.budget_usd,
+            )
+            print(
+                "[robot-eval-job] inbox_manifest="
+                f"{Path(args.capture_root) / 'pipeline' / 'robot_eval_job_requests' / 'inbox_run_manifest.json'}"
+            )
+            print(f"[robot-eval-job] status={result['status']}")
+            print(f"[robot-eval-job] processed_count={result['processed_count']}")
+            return 0
+        if not args.job_request or not args.job_id:
+            raise ValueError("--job-request and --job-id are required unless --job-request-inbox is provided")
         result = build_robot_eval_job(
             capture_root=args.capture_root,
             job_request=args.job_request,
@@ -1587,7 +1820,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             allow_gpu_provisioning=args.allow_gpu_provisioning,
             allow_simulator_execution=args.allow_simulator_execution,
             allowed_simulators=args.allow_simulator,
-            simulator_commands=_parse_simulator_commands(args.simulator_command),
+            simulator_commands=simulator_commands,
+            allow_cpu_simulator_preflight=args.allow_cpu_simulator_preflight,
+            cpu_preflight_backends=args.cpu_preflight_backend or CPU_BACKENDS,
+            cpu_preflight_smoke_steps=args.cpu_preflight_smoke_steps,
+            allow_cpu_preflight_render=args.allow_cpu_preflight_render,
             allow_training=args.allow_training,
             training_command=args.training_command,
             timeout_seconds=args.timeout_seconds,

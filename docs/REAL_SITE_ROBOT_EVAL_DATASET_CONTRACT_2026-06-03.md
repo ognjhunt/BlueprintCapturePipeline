@@ -31,6 +31,25 @@ The writer reads local artifacts only:
 - `pipeline/simready/simready_validation.json`
 - `pipeline/marble_sim_assets/marble_simready_bridge.json`
 - `pipeline/marble_sim_assets/marble_asset_validation.json`
+- `pipeline/simulation_automation/scene_asset_inventory.json`
+- `pipeline/simulation_automation/scene_asset_dependency_audit.json`
+- `pipeline/simulation_automation/scene_asset_preflight.json`
+- `pipeline/simulation_automation/scene_asset_inspection.json`
+- `pipeline/simulation_automation/scene_frame_estimate.json`
+- `pipeline/simulation_automation/collider_proxy_plan.json`
+- `pipeline/simulation_automation/cpu_scene_proxy_manifest.json`
+- `pipeline/simulation_automation/cpu_preflight_scorecard.json`
+- `pipeline/simulation_automation/task_anchor_proposal_manifest.json`
+- `pipeline/simulation_automation/episode_spec_manifest.json`
+- `pipeline/simulation_automation/episode_specs.json`
+- `pipeline/simulation_automation/spawn_pose_validation_manifest.json`
+- `pipeline/simulation_automation/cpu_preflight_manifest.json`
+- `pipeline/simulation_automation/pre_gpu_readiness_summary.json`
+- `pipeline/simulation_automation/cpu_simulator_preflight_manifest.json`
+- `pipeline/simulation_automation/gpu_handoff_packet.json`
+- `pipeline/simulation_automation/gpu_owner_system_proof_schema.json`
+- `pipeline/simulation_automation/gpu_run_checklist.md`
+- `pipeline/simulation_automation/owner_gpu_simulator_execution_blocked_manifest.json`
 - `pipeline/cosmos3_readiness/cosmos3_capture_grounded_readiness.json`
 - rights/privacy review artifacts when present
 
@@ -81,11 +100,32 @@ pipeline/robot_eval_dataset/
   robot_team_test_submission_modalities.json
   failure_taxonomy.json
   scoring_methodology.json
+  task_thresholds.json
+  publication_readiness.json
   recorded_trace_eval_report.json
   policy_eval_report.json
   prediction_outcome_ledger.json
   prediction_vs_actual_summary.json
   eval_methodology_summary.md
+
+pipeline/simulation_automation/ (advisory references only)
+  scene_asset_inventory.json
+  scene_asset_dependency_audit.json
+  scene_asset_preflight.json
+  collider_proxy_plan.json
+  cpu_scene_proxy_manifest.json
+  cpu_preflight_scorecard.json
+  task_anchor_proposal_manifest.json
+  episode_spec_manifest.json
+  episode_specs.json
+  spawn_pose_validation_manifest.json
+  cpu_preflight_manifest.json
+  pre_gpu_readiness_summary.json
+  cpu_simulator_preflight_manifest.json
+  gpu_handoff_packet.json
+  gpu_owner_system_proof_schema.json
+  gpu_run_checklist.md
+  owner_gpu_simulator_execution_blocked_manifest.json
 
 pipeline/robot_eval_jobs/<job_id>/
   job_request.json
@@ -109,7 +149,19 @@ pipeline/robot_eval_jobs/<job_id>/
   proof_boundary.json
   job_run_manifest.json
   blocked_manifest.json
+
+pipeline/robot_eval_job_requests/
+  <job_id>/job_request.json
+  inbox_run_manifest.json
 ```
+
+`publication_readiness.json` is the pre-publication gate for WebApp. A site may
+be shown as `Ready to evaluate` only when the required Site/Task/Scenario/Eval
+Card family, proof boundaries, task ontology, scenario family library, scoring
+methodology, `task_thresholds.json`, and `publication_readiness.json` are
+present. Missing robot POV, action logs, actual outcomes, policy references, or
+owner-system proof stay as missing-proof labels and must not become readiness
+claims.
 
 Evaluation prep includes these paths in
 `pipeline/evaluation_prep/evaluation_prep_manifest.json.artifacts` and exposes
@@ -135,6 +187,8 @@ URI fields for WebApp sync:
 - `robot_team_test_submission_modalities_uri`
 - `robot_failure_taxonomy_uri`
 - `robot_scoring_methodology_uri`
+- `robot_eval_task_thresholds_uri`
+- `robot_eval_publication_readiness_uri`
 - `recorded_trace_eval_report_uri`
 - `policy_eval_report_uri`
 - `prediction_outcome_ledger_uri`
@@ -143,6 +197,10 @@ URI fields for WebApp sync:
 - `robot_eval_job_<job_id>_run_manifest_uri`
 - `robot_eval_job_<job_id>_proof_boundary_uri`
 - `robot_eval_job_<job_id>_blocked_manifest_uri` when blocked
+- stable latest-job aliases:
+  `robot_eval_job_request_uri`, `robot_eval_job_run_manifest_uri`,
+  `robot_eval_job_proof_boundary_uri`, and
+  `robot_eval_job_blocked_manifest_uri`
 
 ## Fail-Closed Statuses
 
@@ -277,12 +335,19 @@ remain `needs_actual_outcome`.
 - failure taxonomy
 - prediction-vs-actual ledger schema
 - missing-proof labels
+- CPU preflight scorecard status
+- episode spec summary
+- CPU simulator preflight status
+- backend-specific collider blockers such as `isaac_usd_collision_unverified`,
+  `portable_collider_glb_missing`, `cpu_proxy_collision_estimated`, and
+  `simulator_execution_not_run`
 
 WebApp must not use these artifacts alone to claim:
 
 - robot-ready or deployment-ready status
 - safety validation
 - simulator execution completed
+- local CPU preflight smoke as accepted simulator execution
 - actual robot trial passed
 - submitted policy/container/trace/demo/plugin passed evaluation
 - headless robot-eval job success as real simulator, real training, or real

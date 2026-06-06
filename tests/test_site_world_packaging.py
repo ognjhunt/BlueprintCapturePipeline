@@ -437,6 +437,8 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LEGACY_SIMREADY_EVAL_PREP", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LEGACY_MARBLE_EVAL_PREP", "true")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
     monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
     monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())

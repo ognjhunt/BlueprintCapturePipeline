@@ -11,6 +11,7 @@ from blueprint_pipeline.launch_bundle import (
 )
 from blueprint_pipeline.provider_preview import (
     _DEFAULT_WORLDLABS_TEXT_PROMPT,
+    _worldlabs_api_request,
     WorldLabsPreviewProvider,
     run_preview_provider,
 )
@@ -341,6 +342,37 @@ def test_worldlabs_poll_reads_world_from_operation_response(monkeypatch) -> None
     assert result["status"] == "ready"
     assert result["world_id"] == "world-1"
     assert result["launch_url"] == launch_url
+
+
+def test_worldlabs_api_request_preserves_slash_after_base_url(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"ok": true}'
+
+    def _fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setenv("WORLDLABS_API_KEY", "test-key")
+    monkeypatch.setattr("blueprint_pipeline.provider_preview._urllib_request.urlopen", _fake_urlopen)
+
+    result = _worldlabs_api_request(
+        "/marble/v1/media-assets:prepare_upload",
+        method="POST",
+        body={"file_name": "clip.mp4", "extension": "mp4", "kind": "video"},
+    )
+
+    assert result == {"ok": True}
+    assert captured["url"] == "https://api.worldlabs.ai/marble/v1/media-assets:prepare_upload"
 
 
 def test_run_preview_provider_persists_worldlabs_launch_url_aliases(tmp_path: Path, monkeypatch) -> None:

@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from blueprint_pipeline.privacy_processing import run_privacy_postprocess
+from blueprint_pipeline.privacy_processing import (
+    _deepprivacy_command_template,
+    _vip_command_template,
+    run_privacy_postprocess,
+)
 
 
 def _write_video(path: Path, payload: bytes = b"fake-video") -> None:
@@ -25,6 +29,19 @@ def _depth_anything_result() -> dict[str, object]:
         "confidence_manifest_path": "/tmp/confidence_manifest.json",
         "frame_count": 12,
     }
+
+
+def test_privacy_command_templates_accept_privacy_prefixed_env(monkeypatch) -> None:
+    monkeypatch.delenv("VIP_COMMAND", raising=False)
+    monkeypatch.delenv("DEEPPRIVACY2_COMMAND", raising=False)
+    monkeypatch.setenv("PRIVACY_VIP_COMMAND", "vip-runner --input {INPUT_VIDEO}")
+    monkeypatch.setenv(
+        "PRIVACY_DEEPPRIVACY2_COMMAND",
+        "deepprivacy2-runner --input {INPUT_VIDEO}",
+    )
+
+    assert _vip_command_template() == "vip-runner --input {INPUT_VIDEO}"
+    assert _deepprivacy_command_template() == "deepprivacy2-runner --input {INPUT_VIDEO}"
 
 
 def test_privacy_postprocess_non_arkit_passthrough_still_generates_depth(monkeypatch, tmp_path: Path) -> None:
@@ -67,6 +84,35 @@ def test_privacy_postprocess_non_arkit_passthrough_still_generates_depth(monkeyp
     manifest = json.loads((pipeline_dir / "privacy_processing_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "no_people_detected"
     assert manifest["depth_source"] == "depth_anything"
+
+
+def test_privacy_postprocess_placeholder_runner_url_fails_closed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "cap-1"
+    pipeline_dir = capture_root / "pipeline"
+    raw_video = capture_root / "raw" / "walkthrough.mov"
+    _write_video(raw_video)
+
+    monkeypatch.setenv("PRIVACY_PIPELINE_ENABLED", "true")
+    monkeypatch.setenv("PRIVACY_SAM3_URL", "REPLACE_ME_PRIVACY_SAM3_URL")
+
+    result = run_privacy_postprocess(
+        bucket="bucket",
+        scene_id="scene-1",
+        capture_id="cap-1",
+        capture_root=capture_root,
+        pipeline_dir=pipeline_dir,
+        raw_video_path=raw_video,
+    )
+    manifest = json.loads((pipeline_dir / "privacy_processing_manifest.json").read_text(encoding="utf-8"))
+    verification = json.loads((pipeline_dir / "privacy_verification_report.json").read_text(encoding="utf-8"))
+
+    assert result["status"] == "failed_closed"
+    assert result["reason"] == "runner_url_invalid_or_placeholder"
+    assert manifest["status"] == "failed_closed"
+    assert verification["initial_detection"]["reason"] == "runner_url_invalid_or_placeholder"
 
 
 def test_privacy_postprocess_uses_anonymized_fallback(monkeypatch, tmp_path: Path) -> None:

@@ -989,16 +989,11 @@ def _default_requested_lanes(
         str((raw_capture_mode or {}).get("resolved_mode") or (capture_mode or {}).get("resolved_mode") or "").strip().lower() == "site_world_candidate"
         and bool(scene_memory_capture.get("world_model_candidate"))
     )
-    native_default_lanes = [
-        "qualification",
-        "scene_memory",
-        "retrieval_index",
-        "frame_alignment",
-        "evaluation_prep",
-    ]
+    current_default_lanes = ["qualification", "evaluation_prep", "simulation_automation"]
+    legacy_scene_memory_lanes = ["qualification", "scene_memory"]
     requested_outputs = _normalized_requested_outputs(manifest, context)
     if not requested_outputs:
-        return native_default_lanes if native_default_candidate else ["qualification", "scene_memory"]
+        return current_default_lanes if native_default_candidate else ["qualification"]
 
     lanes: List[str] = []
     for output in requested_outputs:
@@ -1006,22 +1001,22 @@ def _default_requested_lanes(
         if lowered == "qualification":
             if "qualification" not in lanes:
                 lanes.append("qualification")
-        elif lowered in {"scene_memory", "preview_simulation", "managed_tuning", "data_licensing"}:
-            for lane in (native_default_lanes if native_default_candidate else ("qualification", "scene_memory")):
+        elif lowered in {"preview", "preview_simulation", "managed_tuning", "data_licensing"}:
+            for lane in current_default_lanes:
+                if lane not in lanes:
+                    lanes.append(lane)
+        elif lowered == "scene_memory":
+            for lane in legacy_scene_memory_lanes:
                 if lane not in lanes:
                     lanes.append(lane)
         elif lowered in {"deeper_evaluation", "evaluation_prep"}:
-            for lane in (
-                native_default_lanes
-                if native_default_candidate
-                else ("qualification", "scene_memory", "evaluation_prep")
-            ):
+            for lane in current_default_lanes:
                 if lane not in lanes:
                     lanes.append(lane)
         elif lowered == "review_intake":
             if "qualification" not in lanes:
                 lanes.append("qualification")
-    return lanes or ["qualification", "scene_memory"]
+    return lanes or ["qualification"]
 
 
 def _requested_lanes_override(
@@ -1827,6 +1822,14 @@ def build_capture_bundle_records(
     else:
         status = "degraded"
 
+    recommended_lane = (
+        "current"
+        if "simulation_automation" in descriptor["requested_lanes"]
+        else "scene_memory"
+        if "scene_memory" in descriptor["requested_lanes"]
+        else "qualification"
+    )
+
     qa_report = {
         "schema_version": "v1",
         "scene_id": scene_id,
@@ -1841,7 +1844,7 @@ def build_capture_bundle_records(
         "scaffolding_validation": scaffolding_validation,
         "checks": checks,
         "escalation_recommendation": {
-            "recommended_lane": "scene_memory" if status == "passed" and "scene_memory" in descriptor["requested_lanes"] else "qualification",
+            "recommended_lane": recommended_lane if status == "passed" else "qualification",
             "human_review_required": evidence_tier != "qualified_metric_capture" or uncertainty_score >= 0.3,
             "reason": (
                 "validated metric capture supports scene-memory derivation and explicit geometry conditioning"
@@ -1858,7 +1861,7 @@ def build_capture_bundle_records(
                 intake_complete=intake_complete,
                 evidence_tier=evidence_tier,
             ),
-            "recommended_lane": "scene_memory" if "scene_memory" in descriptor["requested_lanes"] else "qualification",
+            "recommended_lane": recommended_lane,
             "derived_only": True,
         },
     }

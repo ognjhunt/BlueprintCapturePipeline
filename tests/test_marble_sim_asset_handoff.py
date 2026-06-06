@@ -254,8 +254,48 @@ def test_run_preview_provider_persists_marble_sim_asset_handoff(tmp_path: Path, 
             "worldlabs_world": _world_manifest(),
         }
 
+    def _fake_materialize_assets(
+        *,
+        capture_root,
+        world_manifest=None,
+        include_visual_assets=False,
+        max_asset_bytes=500_000_000,
+    ):  # type: ignore[no-untyped-def]
+        del world_manifest, include_visual_assets, max_asset_bytes
+        materialized_dir = Path(capture_root) / "pipeline" / "worldlabs_assets"
+        materialized_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = materialized_dir / "materialized_assets_manifest.json"
+        export_path = Path(capture_root) / "pipeline" / "worldlabs_export_manifest.json"
+        _write_json(
+            manifest_path,
+            {
+                "schema_version": "worldlabs_asset_materialization.v1",
+                "status": "complete",
+                "downloads": [],
+            },
+        )
+        _write_json(
+            export_path,
+            {
+                "schema_version": "worldlabs_export_manifest.v1",
+                "source": "test_fixture",
+            },
+        )
+        return {
+            "schema_version": "worldlabs_asset_materialization_result.v1",
+            "status": "complete",
+            "manifest_path": str(manifest_path),
+            "export_manifest_path": str(export_path),
+            "download_count": 0,
+            "failure_count": 0,
+        }
+
     monkeypatch.setattr(WorldLabsPreviewProvider, "submit", _fake_submit)
     monkeypatch.setattr(WorldLabsPreviewProvider, "poll", _fake_poll)
+    monkeypatch.setattr(
+        "blueprint_pipeline.worldlabs_asset_materialization.materialize_worldlabs_assets",
+        _fake_materialize_assets,
+    )
 
     result = run_preview_provider(
         provider_name="world_labs",
@@ -265,6 +305,10 @@ def test_run_preview_provider_persists_marble_sim_asset_handoff(tmp_path: Path, 
     )
 
     assert result["marble_sim_asset_handoff"]["status"] == "review_ready_with_conversion_required"
+    assert result["worldlabs_asset_materialization"]["status"] == "complete"
+    assert result["artifact_uris"]["worldlabs_asset_materialization_manifest_uri"].endswith(
+        "/worldlabs_assets/materialized_assets_manifest.json"
+    )
     assert result["artifact_uris"]["marble_simready_bridge_uri"].endswith(
         "/marble_sim_assets/marble_simready_bridge.json"
     )

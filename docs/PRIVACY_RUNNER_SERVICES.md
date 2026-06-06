@@ -4,7 +4,13 @@ The production default preview path is:
 
 `BlueprintCapture upload -> storage trigger -> materialize -> qualification -> privacy/final_walkthrough.mov -> World Labs generate/poll -> WebApp sync -> catalog launch`
 
-Only the privacy-safe walkthrough may be used for World Labs. Raw-video fallback is not allowed.
+Only the privacy-safe walkthrough, or an audited derivative of it, may be used
+for World Labs in production. Raw-video fallback is not allowed.
+
+SAM3, VIP/depth, and DeepPrivacy2 are optional implementations for producing or
+checking that privacy-safe walkthrough. They are not required for a production
+handoff when `privacy/final_walkthrough.*` already exists with an audit manifest
+that proves the World Labs input derives from it.
 
 Exception for temporary internal demos only:
 
@@ -12,9 +18,9 @@ Exception for temporary internal demos only:
 - This bypass path must be treated as non-production and unredacted.
 - The prepared input is auto-trimmed/compressed to World Labs upload limits before submission.
 
-## Services
+## Optional Services
 
-Deploy four GPU-backed Cloud Run services:
+Deploy only the GPU-backed services needed by the current privacy strategy:
 
 - `sam3-detect`
 - `vip-inpaint`
@@ -31,6 +37,14 @@ Shared input fields:
 
 - `input_video_uri` or `input_video_path`
 - `output_json_uri` or `output_json_path`
+
+For local or owner-managed deployments, each privacy runner also has a command
+template hook. The command must write the requested output JSON path.
+
+- `PRIVACY_SAM3_COMMAND` or legacy `SAM3_COMMAND`
+- `PRIVACY_VIP_COMMAND` or legacy `VIP_COMMAND`
+- `PRIVACY_DEPTH_ANYTHING_COMMAND` or legacy `DEPTH_ANYTHING_COMMAND`
+- `PRIVACY_DEEPPRIVACY2_COMMAND` or legacy `DEEPPRIVACY2_COMMAND`
 
 `sam3-detect` request fields:
 
@@ -122,15 +136,20 @@ If `VIDEO_TO_WORLD_COMMAND_TEMPLATE` is set, it overrides the preset. Template s
 
 ## Depth Behavior
 
-Depth behavior is now mandatory and persistent:
+Depth artifacts are optional but persistent when they are available:
 
 - use ARKit depth and confidence when present
-- otherwise run Depth Anything 3 for every non-ARKit capture, even when SAM3 finds no people
+- otherwise run Depth Anything 3 only when the depth runner is configured for
+  the lane
 - persist `depth_manifest.json` and `confidence_manifest.json` plus the per-frame artifact prefixes
 - reuse those manifests during VIP inpainting for non-ARKit captures
-- always return `depth_source = "arkit"` or `depth_source = "depth_anything"`
+- return `depth_source = "arkit"` or `depth_source = "depth_anything"` when
+  depth artifacts are produced
 
-No separate service is required. `vip-inpaint` accepts a `depth_generation_only` request mode for DA3 artifact generation, and standard VIP requests can consume the resulting manifests.
+No separate service is required. `vip-inpaint` accepts a `depth_generation_only`
+request mode for DA3 artifact generation, and standard VIP requests can consume
+the resulting manifests. If no depth runner is configured, production must rely
+on the existing privacy audit rather than inventing depth proof.
 
 ## Model Paths
 
@@ -151,16 +170,22 @@ The services materialize remote weights locally at request time when necessary. 
 
 ## Runtime Notes
 
-- `sam3-detect` installs Meta's `sam3` package and expects either `SAM3_WEIGHTS_PATH` or Hugging Face access to `facebook/sam3`.
-- `vip-inpaint` uses the repo-managed depth-guided inpainting backend, bundles Depth Anything 3, and supports both depth-only generation and depth-guided inpainting.
-- `deepprivacy2-anonymize` shells into a checked-out `deep_privacy2` repo and uses `configs/anonymizers/face.py`.
+- `sam3-detect` installs Meta's `sam3` package and expects either
+  `SAM3_WEIGHTS_PATH` or Hugging Face access to `facebook/sam3`.
+- `vip-inpaint` uses the repo-managed depth-guided inpainting backend, bundles
+  Depth Anything 3 when configured, and supports both depth-only generation and
+  depth-guided inpainting.
+- `deepprivacy2-anonymize` shells into a checked-out `deep_privacy2` repo and
+  uses `configs/anonymizers/face.py`.
 
 ## Deployment Caveats
 
-Local tests validate the service contract and storage behavior, not live GPU inference.
+Local tests validate the service/command contract and storage behavior, not live
+GPU inference.
 
 External deployment validation is still required for:
 
-- actual SAM3 checkpoint access and GPU memory sizing
-- the final Cloud Run build/install compatibility of DeepPrivacy2 plus DensePose dependencies
+- actual SAM3 checkpoint access and GPU memory sizing, when SAM3 is used
+- the final Cloud Run build/install compatibility of DeepPrivacy2 plus DensePose
+  dependencies, when DeepPrivacy2 is used
 - any optional proprietary VIP model drop referenced by `VIP_MODEL_PATH`

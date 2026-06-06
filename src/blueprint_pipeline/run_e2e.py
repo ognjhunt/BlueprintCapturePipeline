@@ -1,4 +1,4 @@
-"""Run local preflight, qualification, and agent review end to end, with downstream evaluation optional."""
+"""Run local preflight, current package pipeline, and agent review end to end."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def run_end_to_end(
     capture_root: str,
     provider: str,
     openai_phase2_config: Optional[OpenAIPhase2Config] = None,
-    pipeline_lane: str = "qualification",
+    pipeline_lane: str = "current",
     run_evaluation_prep: bool = False,
     evaluation_prep_provider: str = "manual",
     run_cosmos_validation: bool = False,
@@ -117,13 +117,26 @@ def run_end_to_end(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run a local capture through the capture-to-package review path")
+    parser = argparse.ArgumentParser(
+        description="Run a local capture through the current capture-to-package review path"
+    )
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
     parser.add_argument("--provider", required=True, choices=("claude", "openai"))
     parser.add_argument(
         "--pipeline-lane",
-        default="qualification",
-        choices=("qualification", "scene_memory", "evaluation_prep", "retrieval_index", "frame_alignment", "synthesis_coverage_validation", "cosmos_single_capture_smoke", "all"),
+        default="current",
+        choices=(
+            "current",
+            "qualification",
+            "evaluation_prep",
+            "simulation_automation",
+            "scene_memory",
+            "retrieval_index",
+            "frame_alignment",
+            "synthesis_coverage_validation",
+            "cosmos_single_capture_smoke",
+            "all",
+        ),
     )
     parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))
     parser.add_argument("--openai-phase2-model")
@@ -132,7 +145,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--openai-phase2-reasoning-effort")
     parser.add_argument("--run-evaluation-prep", action="store_true")
     parser.add_argument("--evaluation-prep-provider", default="manual")
-    parser.add_argument("--run-cosmos-validation", action="store_true")
+    parser.add_argument(
+        "--run-cosmos-validation",
+        action="store_true",
+        help="Legacy optional Cosmos validation path; not part of the current default pipeline.",
+    )
     args = parser.parse_args(argv)
 
     openai_phase2_config = None

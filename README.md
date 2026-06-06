@@ -1,8 +1,8 @@
 # BlueprintCapturePipeline
 
-`BlueprintCapturePipeline` is the packaging, trust, and runtime service that turns raw Blueprint captures into real-site robot evaluation artifacts and Post-Training Data Package artifacts with provenance, privacy, and rights safety. World-model, site-world, generated, simulation, editing, and augmentation outputs remain support artifacts inside those packages unless a downstream contract explicitly labels them otherwise.
+`BlueprintCapturePipeline` is the packaging, trust, and runtime service that turns raw Blueprint captures into real-site robot evaluation artifacts and Post-Training Data Package artifacts with provenance, privacy, and rights safety. World-model, generated, simulation, editing, and augmentation outputs remain support artifacts inside those packages unless a downstream contract explicitly labels them otherwise.
 
-For non-ARKit captures, the canonical support-artifact path remains internal: `BlueprintCapture` evidence -> support/trust analysis -> privacy-aware geometry staging -> retrieval memory -> alignment -> synthesis/Cosmos conditioning. The default hosted preview path is now World Labs Marble from the privacy-safe walkthrough, while scene-memory, presentation, evaluation-prep, generated-data, and runtime registration remain downstream derived lanes.
+The current active process is: `BlueprintCapture` output -> privacy-safe World Labs input prep -> World Labs API upload/request -> persisted provider manifests -> materialized World Labs output assets with checksums -> CPU/pre-GPU scene and episode preflight -> simulation automation manifest -> explicitly gated simulator runs. Older scene-memory, retrieval/alignment, Cosmos, single-VM GPU, SimReady, and Marble bridge lanes are legacy/advisory support paths unless a command or artifact explicitly requests them.
 
 For public language, Google/Meta smart glasses are supported only for approved repeat walkthroughs where the assignment, hardware, launch proof, and downstream capture/package proof exist. This repo treats glasses outputs as partial/internal until that proof chain exists.
 
@@ -24,14 +24,18 @@ Primary product path:
 - robot-evaluation/data-package fit scoring and capturer payout recommendation
 - optional provider preview routing
 - privacy-safe World Labs input preparation
+- World Labs upload/request/operation/world manifest persistence
+- World Labs output asset materialization into local checksum/provenance manifests
 - webapp sync for buyer-review surfaces
 - Site Cards, Task Cards, Scenario Cards, Eval Cards, rights packets, and proof boundaries
 - Post-Training Data Package artifacts such as curated clip/label/export support
+- CPU/pre-GPU scene asset inspection, episode specs, and simulator preflight setup
+- fail-closed simulation automation manifests
 - deterministic object indexing and scene semantics when deeper work is requested
-- optional scene-memory assembly
-- optional presentation-world assembly
+- optional legacy scene-memory assembly
+- optional legacy presentation-world assembly
 - optional evaluation-prep packaging
-- optional runtime registration support for the built site-world package
+- optional legacy runtime registration support for the built site-world package
 
 Support / trust alpha artifacts:
 
@@ -45,8 +49,10 @@ Support / trust alpha artifacts:
 - `provider_preview_status.json`
 - `provenance_summary.json`
 - `gemini_capture_fidelity_review.json`
+- `provider_preview_qa_manifest.json`
+- `production_handoff_readiness_manifest.json`
 
-Optional legacy downstream artifacts:
+Artifact families and advisory downstream outputs:
 
 - `scene_memory/*`
 - `presentation_world/presentation_bundle.json`
@@ -75,12 +81,40 @@ Optional legacy downstream artifacts:
 - `robot_eval_dataset/task_ontology_v1.json`
 - `robot_eval_dataset/scenario_family_library.json`
 - `robot_eval_dataset/scoring_methodology.json`
+- `robot_eval_dataset/task_thresholds.json`
+- `robot_eval_dataset/publication_readiness.json`
 - `robot_eval_dataset/recorded_trace_eval_report.json`
 - `robot_eval_dataset/policy_eval_report.json`
 - `robot_eval_dataset/prediction_outcome_ledger.json`
 - `robot_eval_dataset/prediction_vs_actual_summary.json`
 - `simulation_automation/simulation_automation_plan.json`
 - `simulation_automation/simulation_automation_run_manifest.json`
+- `simulation_automation/scene_asset_inventory.json`
+- `simulation_automation/scene_asset_dependency_audit.json`
+- `simulation_automation/scene_asset_preflight.json`
+- `simulation_automation/scene_asset_inspection.json`
+- `simulation_automation/scene_frame_estimate.json`
+- `simulation_automation/collider_proxy_plan.json`
+- `simulation_automation/cpu_scene_proxy_manifest.json`
+- `simulation_automation/cpu_preflight_scorecard.json`
+- `simulation_automation/task_anchor_proposal_manifest.json`
+- `simulation_automation/episode_spec.v1.json`
+- `simulation_automation/episode_specs.json`
+- `simulation_automation/episode_spec_manifest.json`
+- `simulation_automation/agent_episode_spec_proposals.json`
+- `simulation_automation/episode_setup_manifest.json`
+- `simulation_automation/spawn_pose_validation_manifest.json`
+- `simulation_automation/cpu_preflight_manifest.json`
+- `simulation_automation/pre_gpu_readiness_summary.json`
+- `simulation_automation/cpu_simulator_preflight_manifest.json`
+- `simulation_automation/gpu_handoff_packet.json`
+- `simulation_automation/gpu_owner_system_proof_schema.json`
+- `simulation_automation/owner_gpu_simulator_execution_proof_manifest.json` when
+  owner proof is supplied and accepted
+- `simulation_automation/gpu_run_checklist.md`
+- `simulation_automation/owner_gpu_simulator_execution_blocked_manifest.json`
+- `simulation_automation/mujoco_cpu_preflight/*`
+- `simulation_automation/pybullet_cpu_preflight/*`
 - `simulation_automation/asset_conversion_plan.json`
 - `simulation_automation/simulator_execution_manifest.json`
 - `simulation_automation/training_orchestration_manifest.json`
@@ -110,9 +144,13 @@ Optional legacy downstream artifacts:
 - `robot_eval_jobs/<job_id>/prediction_outcome_ledger.json`
 - `robot_eval_jobs/<job_id>/calibration_report.json`
 - `robot_eval_jobs/<job_id>/breakage_library.json`
+- `robot_eval_jobs/<job_id>/post_training_data_package_export_manifest.json`
 - `robot_eval_jobs/<job_id>/proof_boundary.json`
 - `robot_eval_jobs/<job_id>/job_run_manifest.json`
 - `robot_eval_jobs/<job_id>/blocked_manifest.json` when blocked
+- `robot_eval_job_requests/inbox_run_manifest.json` when a request inbox is consumed
+- `site_capture_batch_registry.json` when the capture batch registry command is
+  pointed at a registry path
 
 ## Local Development
 
@@ -136,86 +174,87 @@ Cross-repo external alpha gate:
 python scripts/run_external_alpha_launch_gate.py
 ```
 
-## Privacy Runner Services
+## Privacy And World Labs Input
 
-The production preview path expects URL-first privacy runners:
+The current World Labs preview path requires a production-audited
+`privacy/final_walkthrough.*` or audited derivative before provider upload.
+SAM3, VIP/depth, and DeepPrivacy2 can be configured as optional HTTP or command
+runner hooks, but the production gate is the final walkthrough audit rather than
+proof that those exact model backends ran.
 
 - `PRIVACY_SAM3_URL`
 - `PRIVACY_VIP_URL`
 - `PRIVACY_DEPTH_ANYTHING_URL` (optional; otherwise `vip-inpaint` handles depth-only requests)
 - `PRIVACY_DEEPPRIVACY2_URL`
 - `PRIVACY_RUNNER_TOKEN`
+- `PRIVACY_SAM3_COMMAND`
+- `PRIVACY_VIP_COMMAND`
+- `PRIVACY_DEPTH_ANYTHING_COMMAND`
+- `PRIVACY_DEEPPRIVACY2_COMMAND`
+
+Production preview packets can be checked locally before provider submission:
+
+```bash
+blueprint-validate-provider-preview-packet \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --mode production \
+  --require-webapp-sync
+```
+
+The validator writes `pipeline/provider_preview_qa_manifest.json`. In production
+mode, raw-video bypass, missing privacy verification, missing input checksums,
+missing or placeholder WebApp upstream ids, or mismatched
+canonical/provider-adapter input URIs block provider-ready status.
+
+After World Labs manifests, materialized assets, Marble handoff, CPU preflight,
+and GPU handoff artifacts exist, build the final handoff summary:
+
+```bash
+blueprint-build-production-handoff-readiness \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --mode production
+```
+
+That command writes `pipeline/production_handoff_readiness_manifest.json`.
+`ready_except_owner_gpu_simulator_execution` means the repo-local handoff packet
+is complete, production WebApp upstream-link truth is present, and the only
+remaining unproven step is owner-system simulator execution. It still does not
+prove robot readiness.
 
 For temporary internal demos, `BLUEPRINT_ALLOW_RAW_WORLDLABS_BYPASS=true` allows the World Labs preview path to fall back to the raw walkthrough video when privacy processing is unavailable. The bypass path is intentionally labeled as non-production and unredacted, and the input video is auto-trimmed/compressed to World Labs upload limits before submission.
 
-The non-ARKit geometry path expects a dedicated GPU `video_to_world` runner. This
-is the only path that can mark non-ARKit geometry as live world-model-ready:
-
-- `VIDEO_TO_WORLD_URL`
-- `VIDEO_TO_WORLD_RUNNER_TOKEN`
-- `VIDEO_TO_WORLD_PIPELINE_PRESET` or `VIDEO_TO_WORLD_COMMAND_TEMPLATE`
-
-The production deployment should use four GPU Cloud Run services:
+The production privacy deployment may use the privacy runner services:
 
 - `sam3-detect`
 - `vip-inpaint`
 - `deepprivacy2-anonymize`
-- `video-to-world`
 
-Recommended `video_to_world` presets:
-
-- `preprocess_only` for DA3-only geometry bootstrap
-- `preprocess_plus_alignment` for DA3 + non-rigid alignment outputs. This is the default deployment preset.
-- `full_fast` for the end-to-end upstream reconstruction path with the lighter preset
-- `full_extensive` for the full upstream path including global optimization and longer inverse-deformation / GS stages
-
-If the runner is missing or fails, the geometry stage may write an explicitly
-labeled internal fallback so local tests and contract-shape debugging can continue.
-Fallback geometry is machine-readable as `geometry_source=fallback_geometry` and
-`fallback_used=true`; it must remain `ready_for_world_model=false`,
-`geometry_live_ready=false`, and `site_faithful_market_ready=false`.
-
-`RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true` is now the default production expectation. Retrieval indexing fails closed unless it can resolve `world_model_video_uri`, `privacy_processed_video_uri`, or the concrete privacy artifact at `privacy/final_walkthrough.mov` / `privacy/final_walkthrough.mp4`.
+Legacy `video_to_world`, retrieval-index, and live-geometry validation material
+remains in older docs for compatibility, but those paths are not part of the
+active Capture App -> World Labs -> CPU preflight -> simulation-manifest flow.
 
 The main `blueprint-pipeline` job stays CPU-only. The concrete service contract, storage behavior, and model-path rules are documented in [docs/PRIVACY_RUNNER_SERVICES.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PRIVACY_RUNNER_SERVICES.md).
 
-Live geometry validation command:
-
-```bash
-VIDEO_TO_WORLD_URL=https://<video-to-world-runner> \
-VIDEO_TO_WORLD_RUNNER_TOKEN=<secret> \
-VIDEO_TO_WORLD_PIPELINE_PRESET=preprocess_plus_alignment \
-python3 scripts/run_geometry_lane.py \
-  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
-  --provider video_to_world \
-  --model video_to_world-default
-```
-
-Before claiming live proof, inspect `pipeline/geometry/geometry_summary.json` and
-`pipeline/geometry/logs/provider_result.json` for `geometry_source=video_to_world`,
-`fallback_used=false`, `provider_native_result=true`, `ready_for_world_model=true`,
-and `geometry_live_ready=true`.
-
-The privacy path now treats depth generation as a first-class step:
+The privacy path treats depth generation as a first-class optional artifact when
+depth evidence is available or a depth runner is configured:
 
 - use ARKit depth/confidence when available
-- otherwise run Depth Anything 3 for every non-ARKit capture, including glasses captures, even if no humans are detected
+- otherwise run Depth Anything 3 only when the depth runner is configured for the lane
 - persist the resulting depth and confidence manifests for downstream grounding
 - pass those manifests into VIP so non-ARKit inpainting reuses the generated depth artifacts
 
-## Local GPU Bring-Up
+## Legacy GPU Bring-Up
 
-The older single-VM GPU runbook is still available for legacy downstream world-model work in [docs/GPU_VM_RUNBOOK.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/GPU_VM_RUNBOOK.md), but it is not the active preview path.
+The older single-VM GPU runbook is still available for legacy downstream world-model work in [docs/GPU_VM_RUNBOOK.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/GPU_VM_RUNBOOK.md), but it is not the active preview, upload, CPU-preflight, or simulation-manifest path.
 
 For privacy-service bring-up, use the service images under [`deploy/docker/`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/docker) and the Terraform stack under [`deploy/terraform/main.tf`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/terraform/main.tf).
 
-The local repo bootstrap remains:
+The normal local repo bootstrap is:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-./scripts/install_ml_stack.sh
-python3 scripts/setup_environment.py --check
+python -m pip install -e .[dev]
 ```
 
 Then stage and run:
@@ -226,18 +265,24 @@ python3 scripts/stage_capture_bundle.py \
   --storage-root /data/blueprint-storage \
   --bucket local-blueprint \
   --copy \
-  --run-qualification
+  --run-qualification \
+  --pipeline-lane current
 ```
 
 ## Entry Points
 
-Pipeline lanes:
+Current pipeline:
 
 ```bash
 blueprint-capture-pipeline \
   --descriptor-gcs-uri gs://<bucket>/scenes/<scene_id>/captures/<capture_id>/capture_descriptor.json \
-  --lane qualification
+  --lane current
 ```
+
+`current` and `all` expand to qualification, evaluation prep, and simulation
+automation. World Labs API submission happens inside qualification only when the
+descriptor requests `preview_simulation` or `preview` and the privacy-safe World
+Labs input is ready.
 
 Raw bundle staging:
 
@@ -247,7 +292,8 @@ python3 scripts/stage_capture_bundle.py \
   --storage-root /mnt/blueprint-storage \
   --bucket local-blueprint \
   --link \
-  --run-qualification
+  --run-qualification \
+  --pipeline-lane current
 ```
 
 Qualification agent review:
@@ -266,7 +312,7 @@ blueprint-run-e2e \
   --provider openai
 ```
 
-Optional legacy scene-memory build:
+Explicit legacy scene-memory build:
 
 ```bash
 blueprint-capture-pipeline \
@@ -274,11 +320,12 @@ blueprint-capture-pipeline \
   --lane scene_memory
 ```
 
-Deeper local staging lanes can be requested through `scripts/stage_capture_bundle.py`
-with `--pipeline-lane retrieval_index`, `frame_alignment`, `evaluation_prep`,
-`synthesis_coverage_validation`, `cosmos_single_capture_smoke`, or `all` when
-`--run-qualification` is set. These lanes still honor geometry/provider truth
-and will not promote fallback geometry into live `video_to_world` proof.
+Legacy local staging lanes can still be requested explicitly through
+`scripts/stage_capture_bundle.py` with `--pipeline-lane scene_memory`,
+`retrieval_index`, `frame_alignment`, `synthesis_coverage_validation`, or
+`cosmos_single_capture_smoke` when `--run-qualification` is set. These lanes
+still honor geometry/provider truth and will not promote fallback geometry into
+live `video_to_world`, simulator, or robot-readiness proof.
 
 Object index build:
 
@@ -295,10 +342,10 @@ blueprint-build-evaluation-prep \
   --provider manual
 ```
 
-Optional local simulator-review artifact build:
+Legacy local simulator-review artifact module:
 
 ```bash
-blueprint-build-simready-assets \
+PYTHONPATH=src python -m blueprint_pipeline.simready_assets \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
 ```
 
@@ -306,11 +353,13 @@ The simready asset lane is documented in
 [`docs/SIMREADY_ASSET_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SIMREADY_ASSET_LANE.md).
 It writes review artifacts only; it does not run Isaac Sim, MuJoCo, PyBullet,
 live providers, model downloads, or robot-readiness trials.
+Evaluation prep surfaces existing SimReady artifacts but does not auto-build
+them unless `BLUEPRINT_ALLOW_LEGACY_SIMREADY_EVAL_PREP=true` is set.
 
-Optional local Marble sim-asset handoff build:
+Legacy local Marble sim-asset handoff module:
 
 ```bash
-blueprint-build-marble-sim-assets \
+PYTHONPATH=src python -m blueprint_pipeline.marble_sim_assets \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
 ```
 
@@ -321,8 +370,23 @@ in
 It reads persisted World Labs manifests and emits Isaac Sim, MuJoCo, and
 PyBullet review packets without downloading remote assets, calling World Labs,
 running simulators, or claiming robot readiness.
+Evaluation prep surfaces existing Marble bridge artifacts but does not
+auto-build them unless `BLUEPRINT_ALLOW_LEGACY_MARBLE_EVAL_PREP=true` is set.
 
-Optional fail-closed simulation automation plan:
+World Labs output asset materialization:
+
+```bash
+blueprint-materialize-worldlabs-assets \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+This downloads already-generated Marble asset URLs, by default only the
+collider GLB needed for CPU/pre-GPU handoff, into `pipeline/worldlabs_assets/`
+and writes `pipeline/worldlabs_export_manifest.json` with checksums and source
+URLs. It does not start a new World Labs generation, run simulators, or prove
+robot readiness.
+
+Fail-closed simulation automation plan:
 
 ```bash
 blueprint-run-simulation-automation \
@@ -368,16 +432,50 @@ blueprint-run-robot-eval-job \
   --simulator fixture
 ```
 
+To consume WebApp-exported request JSON files, point the same entrypoint at an
+inbox:
+
+```bash
+blueprint-run-robot-eval-job \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --job-request-inbox /path/to/robot-eval-job-request-inbox \
+  --provisioner fixture_local \
+  --simulator fixture
+```
+
 The job orchestrator reads a robot-team request for policy/container/trace/demo
 references, robot profile, task/scenario scope, rights/privacy scope, operation,
 simulator preference, training preference, budget, owner system, provenance, and
 timestamp alignment. It validates the request, writes a deterministic state
 machine under `pipeline/robot_eval_jobs/<job_id>/`, invokes fixture/local
 surfaces when allowed, and writes exact blocked manifests for missing evidence
-or denied gates. Fixture provisioner and fixture simulator paths prove only the
-repo-local orchestration loop. Vast, RunPod, GCP, local process, Docker,
+or denied gates. The inbox runner also copies each accepted request under
+`pipeline/robot_eval_job_requests/<job_id>/job_request.json` and writes
+`pipeline/robot_eval_job_requests/inbox_run_manifest.json`. Fixture provisioner
+and fixture simulator paths prove only the repo-local orchestration loop. Vast, RunPod, GCP, local process, Docker,
 MuJoCo, PyBullet, Newton, Isaac Sim, Agents SDK, and Cosmos training paths stay
 blocked unless their explicit environment and CLI gates are present.
+
+Post-Training Data Package export manifest:
+
+```bash
+blueprint-build-post-training-data-package \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id>
+```
+
+Site/capture batch registry with retry/resume status:
+
+```bash
+blueprint-build-capture-batch-registry \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --registry-path /path/to/site_capture_batch_registry.json \
+  --retry-stage gpu_handoff
+```
+
+The registry tracks privacy, World Labs, materialization, CPU preflight, GPU
+handoff, eval result, and data-package export status per site/capture. It does
+not perform the stages itself or upgrade readiness booleans.
 
 ## Contract Boundary
 

@@ -158,6 +158,23 @@ def _merge_url_sources(*sources: Dict[str, str]) -> Dict[str, str]:
     return merged
 
 
+def _is_remote_ref(value: str) -> bool:
+    return value.lower().startswith(("http://", "https://", "gs://", "s3://", "omniverse://"))
+
+
+def _first_value(values: Mapping[str, str], *, remote: bool | None = None) -> str:
+    for value in values.values():
+        text = _string(value)
+        if not text:
+            continue
+        if remote is True and not _is_remote_ref(text):
+            continue
+        if remote is False and _is_remote_ref(text):
+            continue
+        return text
+    return ""
+
+
 def _conversion_manifest_paths(pipeline_dir: Path, marble_dir: Path) -> List[Path]:
     return [
         marble_dir / "conversion_manifest.json",
@@ -296,11 +313,19 @@ def _normalize_mesh_assets(
     )
     if not collider and exported_colliders:
         collider = next(iter(exported_colliders.values()), "")
+    local_collider = _first_value(exported_colliders, remote=False)
+    remote_collider = collider if _is_remote_ref(collider) else ""
+    if local_collider:
+        collider = local_collider
     return {
         "collider_mesh_glb_url": collider or None,
+        "remote_collider_mesh_glb_url": remote_collider or None,
+        "local_collider_mesh_glb_path": local_collider or None,
         "collider_mesh_available": bool(collider),
         "collider_mesh_purpose": "physics_collision_review_input",
-        "collider_mesh_source": "world_manifest"
+        "collider_mesh_source": "materialized_worldlabs_asset"
+        if local_collider
+        else "world_manifest"
         if collider and not exported_colliders
         else "explicit_marble_export_or_conversion_manifest"
         if collider

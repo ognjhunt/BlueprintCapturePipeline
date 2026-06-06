@@ -41,6 +41,8 @@ SCENARIO_FAMILY_LIBRARY_SCHEMA_VERSION = "real_site_robot_eval_scenario_family_l
 SCORING_METHODOLOGY_SCHEMA_VERSION = "real_site_robot_eval_scoring_methodology.v1"
 RECORDED_TRACE_EVAL_REPORT_SCHEMA_VERSION = "recorded_action_trace_eval_report.v1"
 PREDICTION_VS_ACTUAL_SUMMARY_SCHEMA_VERSION = "prediction_vs_actual_summary.v1"
+TASK_THRESHOLDS_SCHEMA_VERSION = "real_site_robot_eval_task_thresholds.v1"
+PUBLICATION_READINESS_SCHEMA_VERSION = "real_site_robot_eval_publication_readiness.v1"
 
 DETERMINISTIC_DEFAULT_GENERATED_AT = "1970-01-01T00:00:00+00:00"
 
@@ -143,6 +145,19 @@ ROBOT_TEAM_TEST_MODALITY_REQUIREMENTS: List[Dict[str, Any]] = [
             "compatibilityNotes",
         ],
     },
+]
+
+PUBLICATION_REQUIRED_ARTIFACTS = [
+    "site_card",
+    "task_cards",
+    "scenario_cards",
+    "eval_cards",
+    "task_ontology_v1",
+    "scenario_family_library",
+    "scoring_methodology",
+    "proof_boundaries",
+    "task_thresholds",
+    "publication_readiness",
 ]
 
 TASK_ONTOLOGY_DEFINITIONS: List[Dict[str, Any]] = [
@@ -547,6 +562,17 @@ def _source_artifacts(*, pipeline_dir: Path, eval_dir: Path, robot_eval_dir: Pat
         "simready_validation": pipeline_dir / "simready" / "simready_validation.json",
         "marble_simready_bridge": pipeline_dir / "marble_sim_assets" / "marble_simready_bridge.json",
         "marble_asset_validation": pipeline_dir / "marble_sim_assets" / "marble_asset_validation.json",
+        "scene_asset_inspection": pipeline_dir
+        / "simulation_automation"
+        / "scene_asset_inspection.json",
+        "scene_frame_estimate": pipeline_dir / "simulation_automation" / "scene_frame_estimate.json",
+        "cpu_preflight_scorecard": pipeline_dir
+        / "simulation_automation"
+        / "cpu_preflight_scorecard.json",
+        "episode_spec_manifest": pipeline_dir / "simulation_automation" / "episode_spec_manifest.json",
+        "cpu_simulator_preflight_manifest": pipeline_dir
+        / "simulation_automation"
+        / "cpu_simulator_preflight_manifest.json",
         "worldlabs_world_manifest": pipeline_dir / "worldlabs_world_manifest.json",
         "cosmos3_readiness": (
             pipeline_dir
@@ -1416,6 +1442,179 @@ def _scoring_methodology(*, generated_at: str) -> Dict[str, Any]:
     }
 
 
+def _task_thresholds(
+    *,
+    task_library: Mapping[str, Any],
+    scoring_methodology: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    tasks = [
+        item
+        for item in task_library.get("tasks", []) or []
+        if isinstance(item, Mapping)
+    ]
+    metric_ids = [
+        _string(metric.get("metric_id"))
+        for metric in scoring_methodology.get("metrics", []) or []
+        if isinstance(metric, Mapping)
+    ]
+    thresholds: List[Dict[str, Any]] = []
+    for task in tasks:
+        task_id = _string(task.get("task_id"))
+        if not task_id:
+            continue
+        thresholds.append(
+            {
+                "task_id": task_id,
+                "ontology_task_id": _string(task.get("ontology_task_id")),
+                "task_category": _string(task.get("task_category")),
+                "threshold_source": "repo_default_publication_gate_requires_buyer_confirmation",
+                "supported_metric_ids": metric_ids,
+                "thresholds": {
+                    "min_success_rate": 0.0,
+                    "max_cycle_time_seconds": None,
+                    "max_intervention_count": None,
+                    "max_safety_event_count": 0,
+                    "max_collision_event_count": 0,
+                    "max_object_drop_count": 0,
+                    "max_wrong_object_count": 0,
+                    "max_timeout_count": 0,
+                },
+                "missing_before_claim_upgrade": [
+                    "buyer_confirmed_task_thresholds",
+                    "owner_system_action_traces",
+                    "actual_outcome_manifest",
+                    "safety_validation_evidence",
+                ],
+                "claim_boundary": (
+                    "thresholds_are_eval_gates_not_robot_readiness_or_safety_validation"
+                ),
+            }
+        )
+    return {
+        "schema_version": TASK_THRESHOLDS_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "task_threshold_count": len(thresholds),
+        "task_thresholds": thresholds,
+        "threshold_policy": (
+            "default thresholds make task packs comparable; buyer- or operator-approved "
+            "thresholds are required before stronger claims"
+        ),
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _worldlabs_simready_asset_quality_blockers(
+    *,
+    worldlabs_world_manifest: Mapping[str, Any],
+    marble_validation: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    if not worldlabs_world_manifest:
+        return []
+    missing: List[str] = []
+    if not (
+        _string(worldlabs_world_manifest.get("collider_glb_uri"))
+        or _string(worldlabs_world_manifest.get("collider_mesh_glb_url"))
+        or _string(marble_validation.get("collider_mesh_glb_url"))
+    ):
+        missing.append("collider_glb")
+    if not _bool(worldlabs_world_manifest.get("metric_scale_proven")):
+        missing.append("metric_scale")
+    if not _bool(worldlabs_world_manifest.get("ground_plane_proven")):
+        missing.append("ground_plane")
+    if not (
+        _string(worldlabs_world_manifest.get("usd_scene_uri"))
+        or _string(worldlabs_world_manifest.get("ply_scene_uri"))
+    ):
+        missing.append("usd_or_ply_conversion")
+    if not (
+        _bool(worldlabs_world_manifest.get("articulated_assets_ready"))
+        or _bool(worldlabs_world_manifest.get("physics_ready"))
+    ):
+        missing.append("articulated_or_physics_ready_assets")
+    if not missing:
+        return []
+    return [
+        {
+            "blocker_id": "external_worldlabs_simready_asset_quality_blocked",
+            "source": "worldlabs_world_manifest",
+            "missing": missing,
+            "claim_boundary": (
+                "external_asset_quality_blocker_only_blueprint_owned_publication_package_is_complete"
+            ),
+        }
+    ]
+
+
+def _publication_readiness(
+    *,
+    dataset_state: str,
+    dataset_statuses: Sequence[str],
+    output_paths: Mapping[str, str],
+    task_thresholds: Mapping[str, Any],
+    rights_privacy: Mapping[str, Any],
+    worldlabs_world_manifest: Mapping[str, Any],
+    marble_validation: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    required_status = {
+        artifact: bool(_string(output_paths.get(artifact)))
+        for artifact in PUBLICATION_REQUIRED_ARTIFACTS
+    }
+    missing_required = [
+        artifact for artifact, present in required_status.items() if not present
+    ]
+    if int(task_thresholds.get("task_threshold_count") or 0) <= 0:
+        missing_required.append("task_thresholds")
+    missing_required = list(dict.fromkeys(missing_required))
+    missing_proof_labels = [
+        status
+        for status in dataset_statuses
+        if status not in {"capture_grounded_ready", "blocked_rights_privacy"}
+    ]
+    rights_blocked = _string(rights_privacy.get("rights_status")).lower() in {
+        "missing",
+        "blocked",
+        "denied",
+        "failed",
+    }
+    package_complete = not missing_required and not rights_blocked
+    ready = package_complete and dataset_state != "blocked"
+    return {
+        "schema_version": PUBLICATION_READINESS_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "ready_to_evaluate_publishable": ready,
+        "publication_label": "Ready to evaluate" if ready else "Needs review",
+        "repo_owned_automation_complete": package_complete,
+        "required_artifact_status": "complete" if package_complete else "missing",
+        "required_artifacts": list(PUBLICATION_REQUIRED_ARTIFACTS),
+        "required_artifacts_present": required_status,
+        "missing_required_artifacts": missing_required,
+        "task_thresholds_uri": output_paths.get("task_thresholds"),
+        "publication_readiness_uri": output_paths.get("publication_readiness"),
+        "task_threshold_summary": {
+            "task_threshold_count": int(task_thresholds.get("task_threshold_count") or 0),
+            "threshold_policy": task_thresholds.get("threshold_policy"),
+        },
+        "missing_proof_labels": missing_proof_labels,
+        "external_blockers": _worldlabs_simready_asset_quality_blockers(
+            worldlabs_world_manifest=worldlabs_world_manifest,
+            marble_validation=marble_validation,
+        ),
+        "webapp_gate": {
+            "may_label_ready_to_evaluate": ready,
+            "must_display_missing_proof_labels": True,
+            "must_not_display_as": [
+                "robot_ready",
+                "deployment_ready",
+                "safety_validated",
+                "simulator_completed",
+            ],
+        },
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
 def _raw_records(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
     for key in ("attempts", "records", "outcomes", "traces"):
         raw = payload.get(key)
@@ -1870,6 +2069,101 @@ def _collider_available(
     return False
 
 
+def _portable_collider_glb_present(
+    *,
+    marble_validation: Mapping[str, Any],
+    marble_bridge: Mapping[str, Any],
+    worldlabs_world_manifest: Mapping[str, Any],
+) -> bool:
+    for payload in (marble_validation, marble_bridge, worldlabs_world_manifest):
+        mesh = payload.get("mesh")
+        assets = payload.get("assets")
+        candidates = [payload]
+        if isinstance(mesh, Mapping):
+            candidates.append(mesh)
+        if isinstance(assets, Mapping):
+            candidates.append(assets)
+            asset_mesh = assets.get("mesh")
+            if isinstance(asset_mesh, Mapping):
+                candidates.append(asset_mesh)
+        for candidate in candidates:
+            if _first_text(
+                candidate.get("collider_glb_uri"),
+                candidate.get("collider_mesh_glb_url"),
+                candidate.get("collider_mesh_url"),
+                candidate.get("collider_url"),
+            ):
+                return True
+    return False
+
+
+def _collision_backend_labels(
+    *,
+    simready_scene_manifest: Mapping[str, Any],
+    marble_validation: Mapping[str, Any],
+    marble_bridge: Mapping[str, Any],
+    worldlabs_world_manifest: Mapping[str, Any],
+    cpu_preflight_scorecard: Mapping[str, Any],
+) -> Dict[str, Any]:
+    portable_collider_present = _portable_collider_glb_present(
+        marble_validation=marble_validation,
+        marble_bridge=marble_bridge,
+        worldlabs_world_manifest=worldlabs_world_manifest,
+    )
+    worldlabs_assets = _mapping(worldlabs_world_manifest.get("assets"))
+    worldlabs_splats = _mapping(worldlabs_assets.get("splats"))
+    isaac_import_candidate = bool(
+        cpu_preflight_scorecard.get("isaac_usd_import_candidate")
+        or simready_scene_manifest
+        or _string(worldlabs_world_manifest.get("usd_scene_uri"))
+        or _mapping(worldlabs_splats.get("usd_urls"))
+        or worldlabs_splats.get("usd_url")
+    )
+    isaac_collision_verified = bool(cpu_preflight_scorecard.get("isaac_usd_collision_verified"))
+    isaac_collision_unverified = bool(
+        cpu_preflight_scorecard.get("isaac_usd_collision_unverified")
+        or (isaac_import_candidate and not isaac_collision_verified)
+    )
+    cpu_proxy_estimated = bool(cpu_preflight_scorecard.get("cpu_proxy_collision_estimated"))
+    labels: List[str] = []
+    if isaac_import_candidate:
+        labels.append("isaac_usd_import_candidate")
+    if isaac_collision_verified:
+        labels.append("isaac_usd_collision_verified")
+    if isaac_collision_unverified:
+        labels.append("isaac_usd_collision_unverified")
+    if portable_collider_present:
+        labels.append("portable_collider_glb_present")
+    else:
+        labels.append("portable_collider_glb_missing")
+    if cpu_proxy_estimated:
+        labels.append("cpu_proxy_collision_estimated")
+    labels.append("simulator_execution_not_run")
+    blockers = [
+        label
+        for label in labels
+        if label
+        in {
+            "isaac_usd_collision_unverified",
+            "portable_collider_glb_missing",
+            "simulator_execution_not_run",
+        }
+    ]
+    if not cpu_proxy_estimated and not portable_collider_present:
+        blockers.append("cpu_collision_proxy_missing")
+    return {
+        "labels": list(dict.fromkeys(labels)),
+        "blockers": list(dict.fromkeys(blockers)),
+        "isaac_usd_import_candidate": isaac_import_candidate,
+        "isaac_usd_collision_verified": isaac_collision_verified,
+        "isaac_usd_collision_unverified": isaac_collision_unverified,
+        "portable_collider_glb_present": portable_collider_present,
+        "portable_collider_glb_missing": not portable_collider_present,
+        "cpu_proxy_collision_estimated": cpu_proxy_estimated,
+        "simulator_execution_not_run": True,
+    }
+
+
 def _site_card(
     *,
     context: Any,
@@ -1883,6 +2177,7 @@ def _site_card(
     marble_validation: Mapping[str, Any],
     marble_bridge: Mapping[str, Any],
     worldlabs_world_manifest: Mapping[str, Any],
+    cpu_preflight_scorecard: Mapping[str, Any],
     protected_regions_manifest: Mapping[str, Any],
     rights_privacy: Mapping[str, Any],
     generated_at: str,
@@ -1901,6 +2196,13 @@ def _site_card(
         marble_validation=marble_validation,
         marble_bridge=marble_bridge,
         worldlabs_world_manifest=worldlabs_world_manifest,
+    )
+    collision_backend_labels = _collision_backend_labels(
+        simready_scene_manifest=simready_scene_manifest,
+        marble_validation=marble_validation,
+        marble_bridge=marble_bridge,
+        worldlabs_world_manifest=worldlabs_world_manifest,
+        cpu_preflight_scorecard=cpu_preflight_scorecard,
     )
     geometry_summary = {
         "splat": {
@@ -1926,8 +2228,27 @@ def _site_card(
             "status": "review_input_present" if collider_ready else "blocked_missing_collider",
             "collision_ready_claim_allowed": False,
             "evidence": source_artifacts.get("marble_asset_validation")
-            or source_artifacts.get("marble_simready_bridge"),
+            or source_artifacts.get("marble_simready_bridge")
+            or source_artifacts.get("cpu_preflight_scorecard"),
             "label_source": "marble_asset_validation",
+            "backend_labels": collision_backend_labels["labels"],
+            "backend_blockers": collision_backend_labels["blockers"],
+            "isaac_usd_import_candidate": collision_backend_labels[
+                "isaac_usd_import_candidate"
+            ],
+            "isaac_usd_collision_verified": collision_backend_labels[
+                "isaac_usd_collision_verified"
+            ],
+            "isaac_usd_collision_unverified": collision_backend_labels[
+                "isaac_usd_collision_unverified"
+            ],
+            "portable_collider_glb_missing": collision_backend_labels[
+                "portable_collider_glb_missing"
+            ],
+            "cpu_proxy_collision_estimated": collision_backend_labels[
+                "cpu_proxy_collision_estimated"
+            ],
+            "simulator_execution_not_run": True,
         },
         "scale": {
             "metric_scale_factor": _mapping(
@@ -2240,12 +2561,13 @@ def _annotation_backlog(
                 }
             )
 
-    if _mapping(_mapping(site_card.get("geometry")).get("collider")).get("status") == "blocked_missing_collider":
+    collider = _mapping(_mapping(site_card.get("geometry")).get("collider"))
+    for backend_blocker in _string_list(collider.get("backend_blockers")):
         add(
-            "missing_collider_blocks_collision_ready_claim",
+            backend_blocker,
             "site_card",
-            "collider_mesh_or_collision_proxy_review",
-            "No collider evidence is present; collision-ready and physics/contact claims must remain blocked.",
+            backend_blocker,
+            "Backend-specific collision or simulator proof remains missing; collision-ready and physics/contact claims must remain blocked.",
         )
     for status in dataset_statuses:
         if status == "needs_robot_pov":
@@ -2298,6 +2620,8 @@ def _proof_boundaries(
     *,
     rights_privacy: Mapping[str, Any],
     collider_present: bool,
+    collider_backend_labels: Sequence[str],
+    collider_backend_blockers: Sequence[str],
     action_log_input: Mapping[str, Any],
     actual_outcome_input: Mapping[str, Any],
     robot_team_submission_input: Mapping[str, Any],
@@ -2317,6 +2641,8 @@ def _proof_boundaries(
         and bool(actual_outcome_input.get("owner_system_proof_uri")),
         "generated_scenarios_are_real_world_proof": False,
         "collider_review_input_present": collider_present,
+        "collider_backend_labels": list(collider_backend_labels),
+        "collider_backend_blockers": list(collider_backend_blockers),
         "action_logs_present": bool(action_log_input),
         "robot_team_test_submission_refs_present": bool(robot_team_submission_input),
         "rights_privacy_status": dict(rights_privacy),
@@ -2330,6 +2656,7 @@ def _proof_boundaries(
             "external_licensing_claim",
             "safety_validated_claim",
             "ready_to_deploy_claim",
+            *list(collider_backend_blockers),
         ],
         "allowed_public_display": [
             "real-site robot evaluation dataset and workflow",
@@ -2659,6 +2986,9 @@ def build_real_site_robot_eval_dataset(
         pipeline_dir / "marble_sim_assets" / "marble_asset_validation.json"
     )
     worldlabs_world_manifest = _read_optional_mapping(pipeline_dir / "worldlabs_world_manifest.json")
+    cpu_preflight_scorecard = _read_optional_mapping(
+        pipeline_dir / "simulation_automation" / "cpu_preflight_scorecard.json"
+    )
     cosmos3_readiness = _read_optional_mapping(
         pipeline_dir / "cosmos3_readiness" / "cosmos3_capture_grounded_readiness.json"
     )
@@ -2692,6 +3022,7 @@ def build_real_site_robot_eval_dataset(
         marble_bridge,
         marble_validation,
         worldlabs_world_manifest,
+        cpu_preflight_scorecard,
         cosmos3_readiness,
         robot_team_submission_input,
         recorded_trace_input,
@@ -2743,6 +3074,11 @@ def build_real_site_robot_eval_dataset(
         generated_at=generated_at,
     )
     scoring_methodology = _scoring_methodology(generated_at=generated_at)
+    task_thresholds = _task_thresholds(
+        task_library=task_library,
+        scoring_methodology=scoring_methodology,
+        generated_at=generated_at,
+    )
     recorded_trace_eval_report = _recorded_trace_eval_report(
         scenario_library=scenario_library,
         scoring_methodology=scoring_methodology,
@@ -2802,6 +3138,7 @@ def build_real_site_robot_eval_dataset(
         marble_validation=marble_validation,
         marble_bridge=marble_bridge,
         worldlabs_world_manifest=worldlabs_world_manifest,
+        cpu_preflight_scorecard=cpu_preflight_scorecard,
         protected_regions_manifest=protected_regions_manifest,
         rights_privacy=rights_privacy,
         generated_at=generated_at,
@@ -2816,6 +3153,7 @@ def build_real_site_robot_eval_dataset(
         _mapping(_mapping(site_card.get("geometry")).get("collider")).get("status")
         == "review_input_present"
     )
+    collider_backend = _mapping(_mapping(site_card.get("geometry")).get("collider"))
     annotation_backlog = _annotation_backlog(
         site_card=site_card,
         task_cards=task_cards,
@@ -2826,6 +3164,8 @@ def build_real_site_robot_eval_dataset(
     proof_boundaries = _proof_boundaries(
         rights_privacy=rights_privacy,
         collider_present=collider_present,
+        collider_backend_labels=_string_list(collider_backend.get("backend_labels")),
+        collider_backend_blockers=_string_list(collider_backend.get("backend_blockers")),
         action_log_input=action_log_input or recorded_trace_input,
         actual_outcome_input=actual_outcome_input,
         robot_team_submission_input=robot_team_submission_input,
@@ -2853,12 +3193,29 @@ def build_real_site_robot_eval_dataset(
         "prediction_outcome_ledger": "prediction_outcome_ledger.json",
         "prediction_vs_actual_summary": "prediction_vs_actual_summary.json",
         "scoring_methodology": "scoring_methodology.json",
+        "task_thresholds": "task_thresholds.json",
+        "publication_readiness": "publication_readiness.json",
         "recorded_trace_eval_report": "recorded_trace_eval_report.json",
         "policy_eval_report": "policy_eval_report.json",
         "rights_packet": "rights_packet.json",
         "rights_ledger": "rights_ledger.json",
         "eval_methodology_summary": "eval_methodology_summary.md",
+        "cpu_preflight_scorecard": "../simulation_automation/cpu_preflight_scorecard.json",
+        "episode_spec_manifest": "../simulation_automation/episode_spec_manifest.json",
+        "cpu_simulator_preflight_manifest": (
+            "../simulation_automation/cpu_simulator_preflight_manifest.json"
+        ),
     }
+    publication_readiness = _publication_readiness(
+        dataset_state=dataset_state,
+        dataset_statuses=dataset_statuses,
+        output_paths=output_paths,
+        task_thresholds=task_thresholds,
+        rights_privacy=rights_privacy,
+        worldlabs_world_manifest=worldlabs_world_manifest,
+        marble_validation=marble_validation,
+        generated_at=generated_at,
+    )
     manifest: Dict[str, Any] = {
         "schema_version": ROBOT_EVAL_DATASET_V01_SCHEMA_VERSION,
         "compatibility_schema_version": ROBOT_EVAL_DATASET_SCHEMA_VERSION,
@@ -2889,6 +3246,22 @@ def build_real_site_robot_eval_dataset(
         "recorded_trace_eval_status": recorded_trace_eval_report["status"],
         "prediction_vs_actual_status": prediction_vs_actual_summary["status"],
         "rights_packet_status": rights_packet["status"],
+        "publication_readiness": {
+            "ready_to_evaluate_publishable": publication_readiness[
+                "ready_to_evaluate_publishable"
+            ],
+            "publication_label": publication_readiness["publication_label"],
+            "required_artifact_status": publication_readiness["required_artifact_status"],
+            "task_thresholds_uri": publication_readiness["task_thresholds_uri"],
+            "publication_readiness_uri": publication_readiness[
+                "publication_readiness_uri"
+            ],
+            "missing_required_artifacts": publication_readiness[
+                "missing_required_artifacts"
+            ],
+            "missing_proof_labels": publication_readiness["missing_proof_labels"],
+            "external_blockers": publication_readiness["external_blockers"],
+        },
         "prediction_sources_available": prediction_sources,
         "rights_privacy": rights_privacy,
         "source_artifacts": source_artifacts,
@@ -2914,8 +3287,14 @@ def build_real_site_robot_eval_dataset(
                 "rights_ledger",
                 "task_ontology_v1",
                 "scenario_family_library",
-                "scoring_methodology",
+            "scoring_methodology",
+                "task_thresholds",
+                "publication_readiness",
                 "recorded_trace_eval_report",
+                "cpu_preflight_scorecard",
+                "episode_spec summary",
+                "cpu_simulator_preflight status",
+                "collider_backend_blockers",
                 "missing_proof_statuses",
                 "Site/Task/Scenario/Eval Card summaries",
             ],
@@ -2951,6 +3330,8 @@ def build_real_site_robot_eval_dataset(
             "robot_team_submission_modalities": robot_team_submission_modalities,
             "evidence_contract": evidence_contract,
             "scoring_methodology": scoring_methodology,
+            "task_thresholds": task_thresholds,
+            "publication_readiness": publication_readiness,
             "rights_packet": rights_packet,
             "rights_ledger": rights_ledger,
             "rights_privacy": rights_privacy,
@@ -2986,6 +3367,8 @@ def build_real_site_robot_eval_dataset(
     write_json(robot_eval_dir / "prediction_outcome_ledger.json", ledger)
     write_json(robot_eval_dir / "prediction_vs_actual_summary.json", prediction_vs_actual_summary)
     write_json(robot_eval_dir / "scoring_methodology.json", scoring_methodology)
+    write_json(robot_eval_dir / "task_thresholds.json", task_thresholds)
+    write_json(robot_eval_dir / "publication_readiness.json", publication_readiness)
     write_json(robot_eval_dir / "recorded_trace_eval_report.json", recorded_trace_eval_report)
     write_json(robot_eval_dir / "policy_eval_report.json", recorded_trace_eval_report)
     write_json(robot_eval_dir / "rights_packet.json", rights_packet)
@@ -3019,6 +3402,10 @@ def build_real_site_robot_eval_dataset(
         ),
         "recorded_trace_eval_report_path": str(
             (robot_eval_dir / "recorded_trace_eval_report.json").resolve()
+        ),
+        "task_thresholds_path": str((robot_eval_dir / "task_thresholds.json").resolve()),
+        "publication_readiness_path": str(
+            (robot_eval_dir / "publication_readiness.json").resolve()
         ),
         "rights_packet_path": str((robot_eval_dir / "rights_packet.json").resolve()),
         "rights_ledger_path": str((robot_eval_dir / "rights_ledger.json").resolve()),

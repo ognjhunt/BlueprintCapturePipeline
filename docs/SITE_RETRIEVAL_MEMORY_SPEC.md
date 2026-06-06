@@ -440,15 +440,18 @@ retrieval_index_stage.py
   _write_site_manifest()                 ← overwrites manifest with updated counts
 ```
 
-### Integration: New Lane
+### Integration: Legacy Explicit Lane
 
-Add `retrieval_index` as a new lane in `capture_orchestrator.py`:
+`retrieval_index` remains an explicit legacy/advisory lane. The current default
+pipeline is `qualification -> evaluation_prep -> simulation_automation`.
+Historical integration shape:
 
 ```python
 _SUPPORTED_LANES = {
-    "qualification", "scene_memory", "evaluation_prep",
-    "retrieval_index",   # ← NEW
-    "all"
+    "qualification",
+    "evaluation_prep",
+    "simulation_automation",
+    "retrieval_index",
 }
 ```
 

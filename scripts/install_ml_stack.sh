@@ -61,7 +61,7 @@ COSMOS_DISABLE_GUARDRAILS="${COSMOS_DISABLE_GUARDRAILS:-1}"
 NATIVE_WORLD_MODEL_SYNTHESIS_MODE="${NATIVE_WORLD_MODEL_SYNTHESIS_MODE:-cosmos_i2w}"
 SITE_WORLD_RUNTIME_SERVICE_PORT="${SITE_WORLD_RUNTIME_SERVICE_PORT:-8791}"
 COSMOS_TRAINER_LAUNCHER="${COSMOS_TRAINER_LAUNCHER:-accelerate}"
-COSMOS_TRAINING_COMMAND_DEFAULT="blueprint-cosmos-vast-train --trainer-config {trainer_config_path} --output-dir {output_dir} --export-manifest {export_manifest_path} --capture-root {capture_root} --paired-reference-target {paired_reference_target_path} --k-reference-conditioning {k_reference_conditioning_path} --train-val-split {train_val_split_path}"
+COSMOS_TRAINING_COMMAND_DEFAULT="python -m blueprint_pipeline.synthesis.cosmos_vast_training_wrapper --trainer-config {trainer_config_path} --output-dir {output_dir} --export-manifest {export_manifest_path} --capture-root {capture_root} --paired-reference-target {paired_reference_target_path} --k-reference-conditioning {k_reference_conditioning_path} --train-val-split {train_val_split_path}"
 
 if [ "$(id -u)" -eq 0 ]; then
   SUDO=""

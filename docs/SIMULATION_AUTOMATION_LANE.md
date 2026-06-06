@@ -6,9 +6,9 @@ Owner repo: `BlueprintCapturePipeline`
 
 ## Purpose
 
-The simulation automation lane turns persisted capture/package/World Labs/Marble
-artifacts into deterministic manifests that plan asset conversion, simulator
-execution, training orchestration, evaluation, and proof collection.
+The simulation automation lane turns persisted capture/package/World Labs and
+CPU-preflight artifacts into deterministic manifests that plan asset conversion,
+simulator execution, training orchestration, evaluation, and proof collection.
 
 It does not call live providers, download remote assets, run simulators, run GPU
 training, deploy, send messages, touch payments, or upgrade public claims by
@@ -24,9 +24,20 @@ The lane reads existing local artifacts when present:
 
 - `capture_descriptor.json`
 - `raw/manifest.json`
+- optional local `PLY`, `USD`, `USDA`, or `USDC` scene assets supplied with `--scene-asset`
 - `pipeline/worldlabs_request_manifest.json`
 - `pipeline/worldlabs_operation_manifest.json`
 - `pipeline/worldlabs_world_manifest.json`
+- `pipeline/simulation_automation/scene_asset_inspection.json`
+- `pipeline/simulation_automation/scene_frame_estimate.json`
+- `pipeline/simulation_automation/cpu_preflight_scorecard.json`
+- `pipeline/simulation_automation/episode_spec_manifest.json`
+- `pipeline/simulation_automation/cpu_simulator_preflight_manifest.json`
+- optional `pipeline/simulation_automation/gpu_owner_system_proof.json`
+
+Legacy/advisory artifacts are read when present, but are not part of the active
+default process:
+
 - `pipeline/marble_sim_assets/marble_simready_bridge.json`
 - `pipeline/marble_sim_assets/marble_asset_validation.json`
 - `pipeline/simready/simready_scene_manifest.json`
@@ -34,9 +45,11 @@ The lane reads existing local artifacts when present:
 - `pipeline/robot_eval_dataset/robot_eval_dataset_manifest.json`
 - `pipeline/cosmos_training_export/manifest.json`
 
-No new World Labs request is made. Marble assets are treated as references until
-an explicit local export/conversion manifest or approved simulator run proves
-more.
+No new World Labs request is made. Already-generated Marble CDN assets may be
+materialized before this lane through `blueprint-materialize-worldlabs-assets`,
+which writes local checksum/provenance files and `pipeline/worldlabs_export_manifest.json`.
+Those local GLB/PLY/USD files are still review inputs until an approved
+simulator run proves more.
 
 ## Outputs
 
@@ -46,6 +59,30 @@ The command writes:
 pipeline/simulation_automation/
   simulation_automation_plan.json
   simulation_automation_run_manifest.json
+  scene_asset_inventory.json
+  scene_asset_dependency_audit.json
+  scene_asset_preflight.json
+  scene_asset_inspection.json
+  scene_frame_estimate.json
+  collider_proxy_plan.json
+  cpu_scene_proxy_manifest.json
+  cpu_preflight_scorecard.json
+  task_anchor_proposal_manifest.json
+  episode_spec.v1.json
+  episode_specs.json
+  episode_spec_manifest.json
+  agent_episode_spec_proposals.json
+  episode_setup_manifest.json
+  spawn_pose_validation_manifest.json
+  cpu_preflight_manifest.json
+  pre_gpu_readiness_summary.json
+  cpu_simulator_preflight_manifest.json
+  cpu_simulator_preflight_README.txt
+  gpu_handoff_packet.json
+  gpu_owner_system_proof_schema.json
+  owner_gpu_simulator_execution_proof_manifest.json
+  gpu_run_checklist.md
+  owner_gpu_simulator_execution_blocked_manifest.json
   asset_conversion_plan.json
   simulator_execution_manifest.json
   training_orchestration_manifest.json
@@ -78,6 +115,14 @@ pipeline/simulation_automation/
     pybullet_result.json
     newton_request.json
     newton_result.json
+  mujoco_cpu_preflight/
+    episode_scene.xml
+    smoke_result.json
+    blocked_manifest.json
+  pybullet_cpu_preflight/
+    episode_scene.urdf
+    smoke_result.json
+    blocked_manifest.json
 ```
 
 Evaluation prep surfaces these artifacts when they already exist. It does not
@@ -106,6 +151,7 @@ pipeline/robot_eval_jobs/<job_id>/
   prediction_outcome_ledger.json
   calibration_report.json
   breakage_library.json
+  post_training_data_package_export_manifest.json
   proof_boundary.json
   job_run_manifest.json
   blocked_manifest.json
@@ -114,6 +160,87 @@ pipeline/robot_eval_jobs/<job_id>/
 Evaluation prep surfaces these job artifacts as advisory URIs when they already
 exist. It does not use them to upgrade simulator, training, robot-readiness, or
 public proof fields.
+
+## CPU Pre-GPU Lane
+
+The CPU/pre-GPU lane runs before any GPU/provider execution. It writes
+deterministic manifests that are safe to sync to WebApp as advisory status:
+
+- `scene_asset_inventory.json` records local PLY, USD/USDA/USDC, GLB/GLTF, OBJ,
+  URDF, and MJCF/XML assets with size and checksum.
+- `scene_asset_dependency_audit.json` records USD sublayers, references,
+  payloads, textures/material paths, GLTF buffers/images, OBJ material libs, and
+  URDF/MJCF mesh refs. Missing local files and remote refs are warnings or
+  blockers; the lane never downloads them.
+- `scene_asset_inspection.json` parses local PLY headers/bounds, USD metadata,
+  GLTF/GLB metadata, OBJ vertex bounds, and URDF/MJCF collision metadata.
+- `scene_frame_estimate.json` estimates bounds, centroid, floor, and up-axis when
+  enough local evidence exists.
+- `collider_proxy_plan.json` labels `real_collider_proven`,
+  `proxy_estimated`, `missing_collider`, and `review_required`.
+- `cpu_scene_proxy_manifest.json` records conservative floor/bounds/object proxy
+  geometry for CPU spawn sanity checks only.
+- `cpu_preflight_scorecard.json` splits backend proof labels such as
+  `isaac_usd_import_candidate`, `isaac_usd_collision_unverified`,
+  `portable_collider_glb_missing`, `cpu_proxy_collision_estimated`, and
+  `simulator_execution_not_run`.
+- `task_anchor_proposal_manifest.json` proposes review-required task anchors from
+  task cards, capture metadata, task hypotheses, scene class hints, object
+  labels, and scene asset semantic names.
+- `episode_spec.v1.json` compiles scene/task/scenario/robot-profile inputs into
+  review-required episode setup specs.
+- `episode_specs.json` is a compatibility alias for the compiled episode specs.
+- `agent_episode_spec_proposals.json` is advisory only. Agents may propose
+  missing anchors, spawn fields, or task fields with confidence/provenance, but
+  cannot set proof booleans.
+- `episode_setup_manifest.json` and `cpu_simulator_preflight_manifest.json`
+  describe generated CPU MuJoCo/PyBullet fixtures and optional smoke status.
+- `spawn_pose_validation_manifest.json` checks multiple spawn candidates for
+  finite coordinates, floor consistency, scene bounds, suspicious scale, and
+  overlap with known/proxy geometry where metadata exists.
+- `cpu_preflight_manifest.json` and `pre_gpu_readiness_summary.json` summarize
+  `ready_for_owner_gpu_preflight_handoff`. That phrase means local CPU checks
+  and deterministic handoff artifacts are ready for an owner GPU run. It does
+  not mean robot evaluation is ready.
+- `gpu_handoff_packet.json`, `gpu_owner_system_proof_schema.json`, and
+  `gpu_run_checklist.md` tell the owner system what backend to run, what env vars
+  and commands to use, what logs to capture, and what pass/fail criteria apply.
+- If `gpu_owner_system_proof.json` is supplied, the lane validates simulator
+  logs, scene load trace, spawn trace, action/policy trace, artifact manifest,
+  pass/fail criteria, and owner attestation before writing
+  `owner_gpu_simulator_execution_proof_manifest.json`.
+- `owner_gpu_simulator_execution_blocked_manifest.json` is intentionally present
+  until owner-system GPU simulator proof is supplied.
+
+Generated default robot profiles are review fixtures only:
+
+- `mobile_manipulator_rgbd_fixture`
+- `differential_drive_rgbd_fixture`
+- `humanoid_rgbd_fixture`
+
+Missing optional CPU simulator packages do not block deterministic manifest
+generation. They write exact blocker/install/run instructions:
+
+```bash
+python -m pip install mujoco pybullet
+
+BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT=true \
+blueprint-run-cpu-simulator-preflight \
+  --capture-root /path/to/capture-root \
+  --allow-cpu-simulator-preflight
+```
+
+The optional smoke runner uses only local CPU paths: PyBullet `DIRECT` and
+MuJoCo compile/step. A passing local CPU smoke may be displayed only as
+`local CPU preflight smoke`; it is not owner-system simulator execution, robot
+readiness, policy success, physics/contact validation, or safety proof.
+
+The GPU handoff packet generally recommends Isaac Sim first when rich USD or
+OpenUSD-like scene assets exist. MuJoCo and PyBullet are recommended only for
+compatible MJCF/URDF assets or generated/proxy fixtures. The owner system must
+provide simulator stdout, stderr, exit code, scene load trace, spawn trace,
+artifact manifest, action or policy trace when applicable, and an owner
+attestation before any simulator execution proof can be upgraded.
 
 ## Site-Eval Director
 
@@ -192,6 +319,14 @@ Real simulator execution requires both:
 - one or more `--allow-simulator <isaac_sim|mujoco|pybullet|newton>`
 - explicit `--simulator-command <framework>=<command>`
 
+Optional local CPU preflight smoke requires both:
+
+- `BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT=true`
+- `--allow-cpu-simulator-preflight`
+
+Rendering is not required. PyBullet TinyRenderer is attempted only with
+`--allow-cpu-preflight-render`; MuJoCo rendering is not attempted by this lane.
+
 Cosmos training requires both:
 
 - `BLUEPRINT_ALLOW_COSMOS_TRAINING=true`
@@ -225,9 +360,11 @@ success, safety validation, training completion, or public deployment readiness.
 
 ### Simulator Execution Proof
 
-Simulator execution proof requires a successful result manifest with command,
-stdout, stderr, exit code, artifact paths, and a simulator load/action trace from
-the owner simulator.
+Simulator execution proof requires a successful owner proof package with command,
+stdout, stderr, exit code, scene load trace, spawn trace, action/policy trace,
+artifact manifest, pass/fail criteria, and owner attestation from the owner
+simulator. The validator rejects proof packages that try to mark robot readiness,
+policy success, safety, public claim upgrades, or real robot contact as proven.
 
 The lane supports request/result records for Isaac Sim, MuJoCo, PyBullet, and
 Newton while keeping each backend replaceable.
@@ -261,6 +398,25 @@ upgrade public claims by itself.
 ```bash
 blueprint-run-simulation-automation \
   --capture-root /path/to/capture-root
+```
+
+CPU/pre-GPU setup from an explicit local scene asset:
+
+```bash
+blueprint-run-simulation-automation \
+  --capture-root /path/to/capture-root \
+  --scene-asset /path/to/local-scene.ply
+```
+
+Optional local CPU smoke, if dependencies are installed:
+
+```bash
+BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT=true \
+blueprint-run-cpu-simulator-preflight \
+  --capture-root /path/to/capture-root \
+  --allow-cpu-simulator-preflight \
+  --backend pybullet \
+  --backend mujoco
 ```
 
 Optional advisory fake-agent ledger:
@@ -297,6 +453,23 @@ blueprint-run-robot-eval-job \
   --agent-mode fake \
   --provisioner fixture_local \
   --simulator fixture
+```
+
+Post-Training Data Package export manifest:
+
+```bash
+blueprint-build-post-training-data-package \
+  --capture-root /path/to/capture-root \
+  --job-dir /path/to/capture-root/pipeline/robot_eval_jobs/<job_id>
+```
+
+Site/capture batch registry with retry/resume status:
+
+```bash
+blueprint-build-capture-batch-registry \
+  --capture-root /path/to/capture-root \
+  --registry-path /path/to/site_capture_batch_registry.json \
+  --retry-stage gpu_handoff
 ```
 
 Blocked-by-default command simulator job:

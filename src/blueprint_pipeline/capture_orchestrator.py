@@ -17,15 +17,28 @@ from .materialization import materialize_capture_bundle
 from .qualification import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
 from .retrieval_index_stage import run_retrieval_index_stage
+from .simulation_automation import build_simulation_automation
 from .synthesis.synthesize import synthesize_view
 
-_SUPPORTED_LANES = {
-    "qualification", "scene_memory", "evaluation_prep",
-    "retrieval_index", "frame_alignment",
+_CURRENT_PIPELINE_LANES = ("qualification", "evaluation_prep", "simulation_automation")
+_LEGACY_PIPELINE_LANES = (
+    "scene_memory",
+    "retrieval_index",
+    "frame_alignment",
     "synthesis_coverage_validation",
     "cosmos_single_capture_smoke",
-    "all",
-}
+)
+_LANE_ORDER = (
+    "qualification",
+    "scene_memory",
+    "retrieval_index",
+    "frame_alignment",
+    "evaluation_prep",
+    "simulation_automation",
+    "synthesis_coverage_validation",
+    "cosmos_single_capture_smoke",
+)
+_SUPPORTED_LANES = {*_CURRENT_PIPELINE_LANES, *_LEGACY_PIPELINE_LANES, "current", "all"}
 _ANDROID_XR_VIDEO_ONLY_PROFILE = "android_xr_glasses"
 _ANDROID_XR_VIDEO_ONLY_MODALITY = "android_xr_video_only"
 
@@ -61,33 +74,22 @@ def _normalize_requested_lanes(values: Any) -> List[str]:
         lane = _normalize_lane_value(value)
         if lane is None:
             continue
-        if lane == "all":
-            for expanded in (
-                "qualification",
-                "scene_memory",
-                "retrieval_index",
-                "frame_alignment",
-                "evaluation_prep",
-                "synthesis_coverage_validation",
-                "cosmos_single_capture_smoke",
-            ):
+        if lane in {"all", "current"}:
+            for expanded in _CURRENT_PIPELINE_LANES:
                 if expanded not in normalized:
                     normalized.append(expanded)
             continue
         if lane in {"retrieval_index", "frame_alignment", "evaluation_prep"} and "qualification" not in normalized:
             normalized.append("qualification")
+        if lane == "simulation_automation":
+            if "qualification" not in normalized:
+                normalized.append("qualification")
+            if "evaluation_prep" not in normalized:
+                normalized.append("evaluation_prep")
         if lane not in normalized:
             normalized.append(lane)
     ordered: List[str] = []
-    for lane in (
-        "qualification",
-        "scene_memory",
-        "retrieval_index",
-        "frame_alignment",
-        "evaluation_prep",
-        "synthesis_coverage_validation",
-        "cosmos_single_capture_smoke",
-    ):
+    for lane in _LANE_ORDER:
         if lane in normalized and lane not in ordered:
             ordered.append(lane)
     return ordered
@@ -156,19 +158,18 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
             return ["qualification"]
         return descriptor_requested_lanes
     if isinstance(raw_payload, Mapping) and _descriptor_is_native_default_candidate(raw_payload):
-        return [
-            "qualification",
-            "scene_memory",
-            "retrieval_index",
-            "frame_alignment",
-            "evaluation_prep",
-        ]
-    if "deeper_evaluation" in normalized_outputs:
-        return ["qualification", "scene_memory", "retrieval_index", "frame_alignment", "evaluation_prep"]
-    if normalized_outputs & {"managed_tuning", "data_licensing"}:
-        return ["qualification", "scene_memory", "retrieval_index", "frame_alignment", "evaluation_prep"]
-    if normalized_outputs & {"scene_memory", "preview_simulation", "evaluation_prep"}:
-        return ["qualification", "scene_memory", "retrieval_index", "frame_alignment", "evaluation_prep"]
+        return list(_CURRENT_PIPELINE_LANES)
+    if normalized_outputs & {
+        "preview",
+        "preview_simulation",
+        "evaluation_prep",
+        "deeper_evaluation",
+        "managed_tuning",
+        "data_licensing",
+    }:
+        return list(_CURRENT_PIPELINE_LANES)
+    if "scene_memory" in normalized_outputs:
+        return ["qualification", "scene_memory"]
     return ["qualification"]
 
 
@@ -267,6 +268,21 @@ def run_capture_pipeline(
                 source="evaluation_prep_artifacts",
                 qualification_result=qualification_result,
                 extra_fields={"manifest_path": evaluation_prep_result.get("manifest_path")},
+            )
+            results.append(lane_result)
+            continue
+        if selected_lane == "simulation_automation":
+            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            automation_result = build_simulation_automation(capture_root=capture_root)
+            lane_result = _build_derived_lane_result(
+                lane="simulation_automation",
+                source="simulation_automation_artifacts",
+                qualification_result=qualification_result or {},
+                extra_fields={
+                    "manifest_path": automation_result.get("manifest_path"),
+                    "plan_path": automation_result.get("plan_path"),
+                    "automation_status": automation_result.get("status"),
+                },
             )
             results.append(lane_result)
             continue
@@ -508,7 +524,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--lane",
         default=None,
-        help="qualification, scene_memory, evaluation_prep, retrieval_index, frame_alignment, synthesis_coverage_validation, or all",
+        help=(
+            "current/all, qualification, evaluation_prep, simulation_automation, "
+            "or explicit legacy lanes: scene_memory, retrieval_index, frame_alignment, "
+            "synthesis_coverage_validation, cosmos_single_capture_smoke"
+        ),
     )
     args = parser.parse_args(argv)
 

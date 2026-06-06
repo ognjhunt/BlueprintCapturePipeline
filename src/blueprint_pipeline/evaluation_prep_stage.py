@@ -35,13 +35,16 @@ from .world_model_policy import (
     build_presentation_derivation_policy,
     build_provenance_record,
 )
-from .synthesis.cosmos_training_export import export_cosmos_training_substrate
 
 
 def _read_optional_json_any(path: Path) -> Any:
     if not path.is_file():
         return None
     return read_json_any(path)
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _string_list(*values: Any) -> List[str]:
@@ -939,6 +942,39 @@ def simulation_automation_evaluation_prep_surface(
         "simulation_automation_run_manifest": (
             automation_dir / "simulation_automation_run_manifest.json"
         ),
+        "robot_eval_scene_asset_inventory": automation_dir / "scene_asset_inventory.json",
+        "robot_eval_scene_asset_dependency_audit": (
+            automation_dir / "scene_asset_dependency_audit.json"
+        ),
+        "robot_eval_scene_asset_preflight": automation_dir / "scene_asset_preflight.json",
+        "robot_eval_scene_asset_inspection": automation_dir / "scene_asset_inspection.json",
+        "robot_eval_scene_frame_estimate": automation_dir / "scene_frame_estimate.json",
+        "robot_eval_collider_proxy_plan": automation_dir / "collider_proxy_plan.json",
+        "robot_eval_cpu_scene_proxy_manifest": automation_dir / "cpu_scene_proxy_manifest.json",
+        "robot_eval_cpu_preflight_scorecard": automation_dir / "cpu_preflight_scorecard.json",
+        "robot_eval_task_anchor_proposal_manifest": (
+            automation_dir / "task_anchor_proposal_manifest.json"
+        ),
+        "robot_eval_episode_spec_manifest": automation_dir / "episode_spec_manifest.json",
+        "robot_eval_episode_specs": automation_dir / "episode_specs.json",
+        "robot_eval_spawn_pose_validation_manifest": (
+            automation_dir / "spawn_pose_validation_manifest.json"
+        ),
+        "robot_eval_cpu_preflight_manifest": automation_dir / "cpu_preflight_manifest.json",
+        "robot_eval_pre_gpu_readiness_summary": (
+            automation_dir / "pre_gpu_readiness_summary.json"
+        ),
+        "robot_eval_cpu_simulator_preflight_manifest": (
+            automation_dir / "cpu_simulator_preflight_manifest.json"
+        ),
+        "robot_eval_gpu_handoff_packet": automation_dir / "gpu_handoff_packet.json",
+        "robot_eval_gpu_owner_system_proof_schema": (
+            automation_dir / "gpu_owner_system_proof_schema.json"
+        ),
+        "robot_eval_gpu_run_checklist": automation_dir / "gpu_run_checklist.md",
+        "robot_eval_owner_gpu_simulator_execution_blocked_manifest": (
+            automation_dir / "owner_gpu_simulator_execution_blocked_manifest.json"
+        ),
         "asset_conversion_plan": automation_dir / "asset_conversion_plan.json",
         "simulator_execution_manifest": automation_dir / "simulator_execution_manifest.json",
         "training_orchestration_manifest": (
@@ -1083,6 +1119,7 @@ def robot_eval_job_evaluation_prep_surface(
     context = resolve_local_capture_context(capture_root)
     jobs_dir = context.pipeline_root / "robot_eval_jobs"
     artifact_names = {
+        "job_request": "job_request.json",
         "run_manifest": "job_run_manifest.json",
         "proof_boundary": "proof_boundary.json",
         "blocked_manifest": "blocked_manifest.json",
@@ -1146,6 +1183,22 @@ def robot_eval_job_evaluation_prep_surface(
             ),
             str(jobs[0].get("status") or "blocked"),
         )
+        latest_job = jobs[-1]
+        latest_artifact_uris = (
+            latest_job.get("artifact_uris")
+            if isinstance(latest_job.get("artifact_uris"), Mapping)
+            else {}
+        )
+        alias_map = {
+            "job_request_uri": "robot_eval_job_request_uri",
+            "run_manifest_uri": "robot_eval_job_run_manifest_uri",
+            "proof_boundary_uri": "robot_eval_job_proof_boundary_uri",
+            "blocked_manifest_uri": "robot_eval_job_blocked_manifest_uri",
+        }
+        for source_key, alias_key in alias_map.items():
+            value = latest_artifact_uris.get(source_key)
+            if isinstance(value, str) and value:
+                artifact_uris[alias_key] = value
     return {
         "schema_version": "robot_eval_job_evaluation_prep_surface.v1",
         "status": status,
@@ -3708,17 +3761,23 @@ def run_evaluation_prep_stage(
     compatibility_matrix_path = eval_dir / "compatibility_matrix.json"
     _copy_json(compatibility_matrix_path, compatibility_matrix)
 
-    from .simready_assets import build_simready_assets
+    simready_assets: Dict[str, Any] = {
+        "schema_version": "simready_assets_result.v1",
+        "status": "not_requested",
+        "reason": "legacy_simready_eval_prep_auto_build_disabled",
+    }
+    if _env_truthy("BLUEPRINT_ALLOW_LEGACY_SIMREADY_EVAL_PREP"):
+        from .simready_assets import build_simready_assets
 
-    simready_assets = build_simready_assets(
-        capture_root=context.capture_root,
-        object_geometry_manifest=object_geometry_manifest
-        if isinstance(object_geometry_manifest, Mapping)
-        else {},
-        task_anchor_manifest=task_anchor_manifest,
-        site_world_spec=site_world_spec,
-        hosted_session_runtime_manifest=hosted_session_runtime_manifest,
-    )
+        simready_assets = build_simready_assets(
+            capture_root=context.capture_root,
+            object_geometry_manifest=object_geometry_manifest
+            if isinstance(object_geometry_manifest, Mapping)
+            else {},
+            task_anchor_manifest=task_anchor_manifest,
+            site_world_spec=site_world_spec,
+            hosted_session_runtime_manifest=hosted_session_runtime_manifest,
+        )
     simready_prep_manifest_path = None
     simready_scene_manifest = _read_optional_json_any(pipeline_dir / "simready" / "simready_scene_manifest.json")
     simready_validation = _read_optional_json_any(pipeline_dir / "simready" / "simready_validation.json")
@@ -3733,12 +3792,12 @@ def run_evaluation_prep_stage(
         simready_prep_manifest_path = eval_dir / "simready_prep_manifest.json"
         _copy_json(simready_prep_manifest_path, simready_prep_manifest)
 
-    from .marble_sim_assets import build_marble_sim_assets
-
     marble_sim_assets: Dict[str, Any] = {}
     marble_dir = pipeline_dir / "marble_sim_assets"
     marble_world_manifest_path = pipeline_dir / "worldlabs_world_manifest.json"
-    if marble_world_manifest_path.is_file():
+    if marble_world_manifest_path.is_file() and _env_truthy("BLUEPRINT_ALLOW_LEGACY_MARBLE_EVAL_PREP"):
+        from .marble_sim_assets import build_marble_sim_assets
+
         marble_sim_assets = build_marble_sim_assets(capture_root=context.capture_root)
     marble_simready_bridge_path = marble_dir / "marble_simready_bridge.json"
     marble_asset_validation_path = marble_dir / "marble_asset_validation.json"
@@ -3757,6 +3816,12 @@ def run_evaluation_prep_stage(
             "validation_path": str(marble_asset_validation_path.resolve())
             if marble_asset_validation_path.is_file()
             else "",
+        }
+    if not marble_sim_assets:
+        marble_sim_assets = {
+            "schema_version": "marble_sim_assets_result.v1",
+            "status": "not_requested",
+            "reason": "legacy_marble_eval_prep_auto_build_disabled",
         }
 
     from .robot_eval_dataset import build_real_site_robot_eval_dataset
@@ -3797,6 +3862,8 @@ def run_evaluation_prep_stage(
     prediction_outcome_ledger_path = robot_eval_dir / "prediction_outcome_ledger.json"
     prediction_vs_actual_summary_path = robot_eval_dir / "prediction_vs_actual_summary.json"
     robot_scoring_methodology_path = robot_eval_dir / "scoring_methodology.json"
+    robot_task_thresholds_path = robot_eval_dir / "task_thresholds.json"
+    robot_publication_readiness_path = robot_eval_dir / "publication_readiness.json"
     recorded_trace_eval_report_path = robot_eval_dir / "recorded_trace_eval_report.json"
     policy_eval_report_path = robot_eval_dir / "policy_eval_report.json"
     robot_rights_packet_path = robot_eval_dir / "rights_packet.json"
@@ -3812,10 +3879,19 @@ def run_evaluation_prep_stage(
     recapture_diff_path = eval_dir / "recapture_diff.json"
     _copy_json(recapture_diff_path, recapture_diff)
 
-    cosmos_training_export = export_cosmos_training_substrate(
-        capture_root=context.capture_root,
-    )
     cosmos_training_export_path = pipeline_dir / "cosmos_training_export" / "manifest.json"
+    if _env_truthy("BLUEPRINT_ALLOW_LEGACY_COSMOS_EVAL_PREP_EXPORT"):
+        from .synthesis.cosmos_training_export import export_cosmos_training_substrate
+
+        cosmos_training_export = export_cosmos_training_substrate(
+            capture_root=context.capture_root,
+        )
+    else:
+        cosmos_training_export = _read_optional_mapping(cosmos_training_export_path) or {
+            "schema_version": "cosmos_training_export_result.v1",
+            "status": "not_requested",
+            "reason": "legacy_cosmos_eval_prep_auto_export_disabled",
+        }
     cosmos_training_run = _read_optional_mapping(pipeline_dir / "cosmos_training_export" / "training_run_manifest.json")
     cosmos_zero_shot_benchmark = _read_optional_mapping(
         pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json"
@@ -4276,6 +4352,21 @@ def run_evaluation_prep_stage(
                 else {}
             ),
             **(
+                {"robot_eval_task_thresholds": _relative_to(eval_dir, robot_task_thresholds_path)}
+                if robot_task_thresholds_path.is_file()
+                else {}
+            ),
+            **(
+                {
+                    "robot_eval_publication_readiness": _relative_to(
+                        eval_dir,
+                        robot_publication_readiness_path,
+                    )
+                }
+                if robot_publication_readiness_path.is_file()
+                else {}
+            ),
+            **(
                 {
                     "recorded_trace_eval_report": _relative_to(
                         eval_dir,
@@ -4501,6 +4592,18 @@ def run_evaluation_prep_stage(
             "robot_eval_dataset/scoring_methodology.json",
         )
         if robot_scoring_methodology_path.is_file()
+        else None,
+        "robot_eval_task_thresholds_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/task_thresholds.json",
+        )
+        if robot_task_thresholds_path.is_file()
+        else None,
+        "robot_eval_publication_readiness_uri": _gs_uri(
+            context,
+            "robot_eval_dataset/publication_readiness.json",
+        )
+        if robot_publication_readiness_path.is_file()
         else None,
         "recorded_trace_eval_report_uri": _gs_uri(
             context,

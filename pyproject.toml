@@ -1,16 +1,16 @@
 [project]
 name = "blueprint-capture-pipeline"
 version = "2.0.0"
-description = "Site package and privacy-safe preview pipeline for Blueprint captures"
+description = "Robot-eval package, World Labs preview, and simulation preflight pipeline for Blueprint captures"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Blueprint Team"}]
 keywords = [
-    "site-world",
-    "scene-memory",
     "capture",
     "robotics",
+    "simulation-preflight",
+    "world-labs",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -75,17 +75,20 @@ blueprint-build-object-index = "blueprint_pipeline.object_index_stage:main"
 blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"
 blueprint-build-object-geometry = "blueprint_pipeline.object_geometry_stage:main"
 blueprint-build-evaluation-prep = "blueprint_pipeline.evaluation_prep_stage:main"
-blueprint-video-to-world-runner = "blueprint_pipeline.video_to_world_runner_service:main"
-blueprint-native-runtime-service = "blueprint_pipeline.native_runtime_service:main"
 blueprint-backfill-site-reference-db = "blueprint_pipeline.site_reference_backfill:main"
-blueprint-cosmos-vast-train = "blueprint_pipeline.synthesis.cosmos_vast_training_wrapper:main"
 blueprint-run-city-launch-harness = "blueprint_pipeline.city_launch_autonomy_harness:main"
-blueprint-build-simready-assets = "blueprint_pipeline.simready_assets:main"
-blueprint-build-marble-sim-assets = "blueprint_pipeline.marble_sim_assets:main"
 blueprint-build-robot-eval-dataset = "blueprint_pipeline.robot_eval_dataset:main"
 blueprint-run-simulation-automation = "blueprint_pipeline.simulation_automation:main"
 blueprint-run-site-eval-director = "blueprint_pipeline.site_eval_director:main"
 blueprint-run-robot-eval-job = "blueprint_pipeline.robot_eval_job_orchestrator:main"
+blueprint-build-post-training-data-package = "blueprint_pipeline.post_training_data_package:main"
+blueprint-build-capture-batch-registry = "blueprint_pipeline.capture_batch_registry:main"
+blueprint-build-scene-asset-preflight = "blueprint_pipeline.scene_asset_preflight:main"
+blueprint-build-episode-specs = "blueprint_pipeline.episode_spec:main"
+blueprint-run-cpu-simulator-preflight = "blueprint_pipeline.cpu_simulator_preflight:main"
+blueprint-materialize-worldlabs-assets = "blueprint_pipeline.worldlabs_asset_materialization:main"
+blueprint-validate-provider-preview-packet = "blueprint_pipeline.provider_preview_qa:main"
+blueprint-build-production-handoff-readiness = "blueprint_pipeline.production_handoff_readiness:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

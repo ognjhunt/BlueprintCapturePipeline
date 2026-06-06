@@ -46,7 +46,10 @@ def _print_summary(result: dict[str, object]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Stage a raw bundle into <storage_root>/<bucket>/scenes/<scene>/captures/<capture> and optionally run qualification/evaluation-prep"
+        description=(
+            "Stage a raw Capture App bundle and optionally run the current "
+            "World Labs/package/CPU-preflight pipeline"
+        )
     )
     parser.add_argument("--source-bundle", required=True, help="Path to the raw download folder that contains raw/")
     parser.add_argument("--storage-root", required=True, help="Parent directory that will contain the bucket root")
@@ -59,18 +62,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-evaluation-prep", action="store_true", help="Run evaluation-prep after qualification")
     parser.add_argument(
         "--pipeline-lane",
-        default="qualification",
+        default="current",
         choices=(
+            "current",
             "qualification",
+            "evaluation_prep",
+            "simulation_automation",
             "scene_memory",
             "retrieval_index",
             "frame_alignment",
-            "evaluation_prep",
             "synthesis_coverage_validation",
             "cosmos_single_capture_smoke",
             "all",
         ),
-        help="Pipeline lane to request when --run-qualification is set",
+        help=(
+            "Pipeline lane to request when --run-qualification is set. "
+            "current/all expands to qualification, evaluation_prep, and simulation_automation."
+        ),
     )
     parser.add_argument("--json-output", help="Optional path to write the full result payload as JSON")
     args = parser.parse_args(argv)

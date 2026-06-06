@@ -10,8 +10,9 @@ The Marble sim-asset handoff turns a persisted World Labs / Marble world
 manifest into local simulator-review packets for Isaac Sim, MuJoCo, and
 PyBullet.
 
-It does not call World Labs, download Marble assets, run Isaac Sim, run MuJoCo,
-run PyBullet, convert SPZ/PLY/USD files, or claim robot readiness.
+It does not call World Labs, run Isaac Sim, run MuJoCo, run PyBullet, convert
+SPZ/PLY/USD files, or claim robot readiness. Remote asset downloads live in the
+separate World Labs materialization lane described below.
 
 ## Inputs
 
@@ -25,27 +26,52 @@ The lane reads persisted local artifacts:
   `pipeline/marble_sim_assets/conversion_manifest.json` or
   `pipeline/worldlabs_export_manifest.json`
 
-`pipeline/worldlabs_export_manifest.json` may describe assets downloaded or
-generated from Marble outside the API response, including:
+`pipeline/worldlabs_export_manifest.json` may describe assets downloaded from a
+persisted API world manifest or generated from Marble outside the API response,
+including:
 
 - exported splat PLY URLs or local paths
 - exported collider mesh GLB URLs or local paths
 - exported high-quality mesh GLB URLs or local paths
 
-The default CLI is:
+The active provider hook now materializes the already-generated collider GLB
+after a successful World Labs run and writes:
+
+```text
+pipeline/worldlabs_assets/materialized_assets_manifest.json
+pipeline/worldlabs_export_manifest.json
+```
+
+The CLI equivalent is:
 
 ```bash
-blueprint-build-marble-sim-assets \
+blueprint-materialize-worldlabs-assets \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+By default the materializer downloads the collider GLB only. Use
+`--include-visual-assets` when SPZ/PLY/USD/high-quality visual downloads are
+needed for review and the storage/cost budget is explicit.
+
+The legacy module command is:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.marble_sim_assets \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
 ```
 
 Use this when reviewing an explicit local world manifest:
 
 ```bash
-blueprint-build-marble-sim-assets \
+PYTHONPATH=src python -m blueprint_pipeline.marble_sim_assets \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
   --world-manifest /path/to/worldlabs_world_manifest.json
 ```
+
+The package no longer installs a top-level
+`blueprint-build-marble-sim-assets` console script because this is a legacy
+advisory path outside the current Capture App -> World Labs -> CPU preflight ->
+simulation-manifest flow.
 
 ## Outputs
 
@@ -62,9 +88,8 @@ pipeline/marble_sim_assets/
     pybullet_review_manifest.json
 ```
 
-When evaluation prep sees `pipeline/worldlabs_world_manifest.json`, it builds
-the handoff and includes `marble_simready_bridge` and
-`marble_asset_validation` in `evaluation_prep_manifest.json.artifacts`.
+Evaluation prep surfaces existing handoff artifacts and only auto-builds this
+legacy handoff when `BLUEPRINT_ALLOW_LEGACY_MARBLE_EVAL_PREP=true` is set.
 
 ## World Labs Boundary
 
@@ -79,7 +104,9 @@ valid only when an explicit Marble export or local conversion manifest provides
 them. Otherwise the Isaac Sim review manifest marks
 `needs_conversion: spz_to_ply_or_usd`.
 
-Collider mesh GLB is treated as a physics/collision review input. Missing
+Collider mesh GLB is treated as a physics/collision review input. The CPU
+preflight lane can derive scene bounds from GLB accessor metadata for spawn
+sanity checks, but this is still not simulator load or contact proof. Missing
 collider mesh blocks physics/collision readiness.
 
 The robotics workflow described by World Labs and NVIDIA is:
@@ -115,9 +142,11 @@ simulator or real-robot trial evidence.
 
 ## Automatic Hook
 
-`run_preview_provider()` builds the handoff after a World Labs provider run
-persists a terminal `worldlabs_world_manifest.json` with a `world_id`.
+`run_preview_provider()` materializes World Labs output assets and then builds
+the handoff after a World Labs provider run persists a terminal
+`worldlabs_world_manifest.json` with a `world_id`.
 
-The hook is local-only. It reads the just-written manifests and adds the
-handoff paths into `provider_run_manifest.json.artifact_uris` without making a
-new World Labs request.
+The hook reads the just-written manifests, downloads already-generated CDN
+assets into local checksum-backed files, and adds materialization plus handoff
+paths into `provider_run_manifest.json.artifact_uris` without making a new
+World Labs generation request.

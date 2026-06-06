@@ -83,12 +83,12 @@ Robot readiness requires real simulator load traces, action logs, physics/contac
 validation logs, robot-team-owned robot assets, and accepted simulator or robot
 trial evidence.
 
-## Commands
+## Legacy Module Command
 
 Direct local build:
 
 ```bash
-blueprint-build-simready-assets --capture-root /path/to/capture-root
+PYTHONPATH=src python -m blueprint_pipeline.simready_assets --capture-root /path/to/capture-root
 ```
 
 Evaluation prep build:
@@ -99,7 +99,10 @@ blueprint-build-evaluation-prep \
   --provider manual
 ```
 
-Both commands are local artifact writers. They should not be treated as live
+Both commands are local artifact writers. The package no longer installs a
+top-level `blueprint-build-simready-assets` console script because this is a
+legacy advisory path outside the current Capture App -> World Labs -> CPU
+preflight -> simulation-manifest flow. They should not be treated as live
 provider, simulator-execution, or robot-readiness proof.
 
 ## Review Notes

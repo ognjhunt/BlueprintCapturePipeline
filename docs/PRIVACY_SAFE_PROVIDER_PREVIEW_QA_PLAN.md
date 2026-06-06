@@ -122,7 +122,7 @@ readiness.
 
 ## Deterministic Manifest Validator
 
-Add a future local validator as:
+Run the local validator as:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/validate_provider_preview_packet.py \
@@ -130,7 +130,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/validate_provider_preview_packet.py \
   --mode production
 ```
 
-The validator should write:
+The validator writes:
 
 ```text
 pipeline/provider_preview_qa_manifest.json
@@ -168,8 +168,9 @@ Required deterministic checks:
    canonical package and request manifest.
 6. Any raw bypass label forces `status = blocked` in production mode.
 7. Fallback or local geometry labels never set live world-model readiness.
-8. WebApp sync is blocked unless upstream ids are real and non-placeholder when
-   sync is required.
+8. WebApp sync is blocked unless the required sync stage succeeded and upstream
+   ids are real and non-placeholder. A skipped sync with locally present ids is
+   advisory only.
 9. Missing provider operation/world manifests keep live provider proof pending.
 10. Missing hosted/runtime/access evidence keeps hosted proof pending.
 
@@ -252,7 +253,7 @@ side effect.
 
 ## Acceptance Criteria
 
-This plan is complete when the future validator can:
+This plan is complete when the validator can:
 
 - pass a privacy-safe fixture that routes World Labs input from
   `privacy/final_walkthrough.*`

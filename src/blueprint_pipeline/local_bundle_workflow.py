@@ -33,11 +33,13 @@ _STALE_RAW_DERIVATIVES = (
 )
 
 _LOCAL_WORKFLOW_PIPELINE_LANES = {
+    "current",
     "qualification",
+    "evaluation_prep",
+    "simulation_automation",
     "scene_memory",
     "retrieval_index",
     "frame_alignment",
-    "evaluation_prep",
     "synthesis_coverage_validation",
     "cosmos_single_capture_smoke",
     "all",
@@ -160,34 +162,34 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
             f"PYTHONPATH=src python3 -m blueprint_pipeline.preflight_capture "
             f"--capture-root {resolved_capture}"
         ),
+        "current_pipeline": (
+            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
+            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane current"
+        ),
         "qualification": (
             f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
             f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane qualification"
-        ),
-        "scene_memory": (
-            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
-            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane scene_memory"
         ),
         "evaluation_prep": (
             f"PYTHONPATH=src python3 -m blueprint_pipeline.evaluation_prep_stage "
             f"--capture-root {resolved_capture} --provider manual"
         ),
-        "retrieval_index": (
-            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
-            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane retrieval_index"
+        "simulation_automation": (
+            f"PYTHONPATH=src python3 -m blueprint_pipeline.simulation_automation "
+            f"--capture-root {resolved_capture}"
         ),
-        "frame_alignment": (
-            f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
-            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane frame_alignment"
+        "cpu_simulator_preflight": (
+            f"PYTHONPATH=src python3 -m blueprint_pipeline.cpu_simulator_preflight "
+            f"--capture-root {resolved_capture}"
         ),
-        "all": (
+        "legacy_scene_memory": (
             f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
-            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane all"
+            f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} --lane scene_memory"
         ),
-        "cosmos_single_capture_smoke": (
+        "legacy_retrieval_index": (
             f"GCS_ROOT={resolved_storage} PYTHONPATH=src python3 -m blueprint_pipeline.capture_orchestrator "
             f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} "
-            f"--lane cosmos_single_capture_smoke"
+            f"--lane retrieval_index"
         ),
         "agent_review_openai": (
             f"PYTHONPATH=src python3 -m blueprint_pipeline.run_e2e "
@@ -198,7 +200,15 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
 
 def remaining_runtime_requirements() -> Dict[str, list[str]]:
     return {
-        "optional_site_world_runtime": ["SITE_WORLD_RUNTIME_SERVICE_URL"],
+        "world_labs_preview": [
+            "WORLDLABS_API_KEY",
+            "privacy-safe World Labs input from qualification",
+        ],
+        "optional_cpu_smoke": [
+            "mujoco and/or pybullet installed",
+            "BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT=true",
+            "--allow-cpu-simulator-preflight",
+        ],
         "agent_review_openai": [
             "codex CLI installed",
             "Codex login via local OAuth/session",
@@ -217,7 +227,7 @@ def run_local_bundle_workflow(
     force: bool = False,
     run_qualification: bool = False,
     run_evaluation_prep: bool = False,
-    pipeline_lane: str = "qualification",
+    pipeline_lane: str = "current",
 ) -> Dict[str, Any]:
     if run_evaluation_prep and not run_qualification:
         raise PipelineError("--run-evaluation-prep requires --run-qualification")

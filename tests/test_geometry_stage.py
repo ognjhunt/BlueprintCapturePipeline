@@ -473,10 +473,26 @@ def test_materialization_attaches_route_anchor_sidecars(tmp_path: Path) -> None:
     assert metadata["checkpoint_events"]["checkpoint_events"][0]["anchor_id"] == "anchor_entry"
 
 
-def test_materialization_maps_preview_simulation_to_scene_memory_requested_lanes(tmp_path: Path) -> None:
+def test_materialization_maps_preview_simulation_to_current_requested_lanes(tmp_path: Path) -> None:
     capture_root = _build_staged_capture(
         tmp_path,
         manifest_overrides={"requested_outputs": ["preview_simulation"]},
+    )
+
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    assert descriptor["requested_lanes"] == [
+        "qualification",
+        "evaluation_prep",
+        "simulation_automation",
+    ]
+
+
+def test_materialization_keeps_explicit_scene_memory_as_legacy_requested_lane(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={"requested_outputs": ["scene_memory"]},
     )
 
     descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
@@ -494,7 +510,11 @@ def test_materialization_defaults_preview_simulation_for_plain_uploads(tmp_path:
 
     descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
     assert descriptor["requested_outputs"] == ["qualification", "preview_simulation"]
-    assert descriptor["requested_lanes"] == ["qualification", "scene_memory"]
+    assert descriptor["requested_lanes"] == [
+        "qualification",
+        "evaluation_prep",
+        "simulation_automation",
+    ]
 
 
 def test_materialization_promotes_android_scaffolding_to_metric_ready_video(tmp_path: Path) -> None:

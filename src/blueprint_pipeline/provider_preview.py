@@ -6,6 +6,7 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request as _urllib_request
 from dataclasses import dataclass
 from hashlib import sha256
@@ -36,7 +37,7 @@ def _worldlabs_api_request(
     method: str = "GET",
     body: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    url = _WORLDLABS_BASE_URL.rstrip("/") + ("" if path.startswith("/") else "/") + path.lstrip("/")
+    url = f"{_WORLDLABS_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
     headers: Dict[str, str] = {
         "WLT-Api-Key": _worldlabs_api_key(),
         "Content-Type": "application/json",
@@ -61,16 +62,22 @@ def _presigned_upload(
     data: bytes,
     required_headers: Optional[Dict[str, str]] = None,
 ) -> None:
+    parsed_url = urllib.parse.urlsplit(upload_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise RuntimeError("worldlabs_upload_url_invalid")
     headers: Dict[str, str] = {"Content-Type": content_type}
     if required_headers:
-        headers.update(required_headers)
-    req = _urllib_request.Request(upload_url, data=data, headers=headers, method=method)
+        headers.update({str(key): str(value) for key, value in required_headers.items()})
+    upload_method = str(method or "PUT").strip().upper()
+    req = _urllib_request.Request(upload_url, data=data, headers=headers, method=upload_method)
     try:
         with _urllib_request.urlopen(req, timeout=600) as resp:
             resp.read()
     except urllib.error.HTTPError as exc:
         raw_err = (exc.read().decode("utf-8") if exc.fp else "") or ""
         raise RuntimeError(f"worldlabs_upload_failed:{exc.code}:{raw_err}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"worldlabs_upload_failed:url_error:{exc.reason}") from exc
 
 
 def _read_uri_bytes(uri: str) -> bytes:
@@ -884,6 +891,44 @@ def run_preview_provider(
                 normalized["worldlabs_world_manifest_uri"] = str(worldlabs_world_manifest_path)
             normalized["operation_terminal_status"] = poll_result.get("operation_terminal_status") or poll_result.get("status")
 
+        worldlabs_asset_materialization: Dict[str, Any] | None = None
+        if (
+            isinstance(provider, WorldLabsPreviewProvider)
+            and worldlabs_world_manifest_path.is_file()
+            and normalized.get("world_id")
+        ):
+            from .worldlabs_asset_materialization import materialize_worldlabs_assets
+
+            try:
+                worldlabs_asset_materialization = materialize_worldlabs_assets(
+                    capture_root=capture_root,
+                    world_manifest=worldlabs_world_manifest_path,
+                )
+                artifact_uris = dict(normalized.get("artifact_uris") or {})
+                artifact_uris.update(
+                    {
+                        "worldlabs_asset_materialization_manifest_uri": (
+                            worldlabs_asset_materialization.get("manifest_path")
+                        ),
+                        "worldlabs_export_manifest_uri": (
+                            worldlabs_asset_materialization.get("export_manifest_path")
+                        ),
+                    }
+                )
+                normalized["artifact_uris"] = artifact_uris
+                normalized["worldlabs_asset_materialization"] = worldlabs_asset_materialization
+            except Exception as exc:
+                normalized["worldlabs_asset_materialization"] = {
+                    "schema_version": "worldlabs_asset_materialization_result.v1",
+                    "status": "failed",
+                    "failure_reason": str(exc),
+                    "claim_boundary": {
+                        "artifact_purpose": "worldlabs_remote_asset_materialization_for_pre_gpu_handoff",
+                        "simulator_execution_proven": False,
+                        "robot_readiness_proven": False,
+                    },
+                }
+
         marble_sim_asset_handoff: Dict[str, Any] | None = None
         if (
             isinstance(provider, WorldLabsPreviewProvider)
@@ -958,6 +1003,9 @@ def run_preview_provider(
             "launch_url": normalized.get("launch_url"),
             "worldlabs_launch_url": normalized.get("worldlabs_launch_url") or normalized.get("launch_url"),
             "preview_launch_url": normalized.get("preview_launch_url") or normalized.get("launch_url"),
+            "worldlabs_asset_materialization": (
+                normalized.get("worldlabs_asset_materialization") or {}
+            ),
             "marble_sim_asset_handoff": normalized.get("marble_sim_asset_handoff") or {},
             "labeling": dict(normalized.get("labeling") or {}),
             "provenance": provenance,

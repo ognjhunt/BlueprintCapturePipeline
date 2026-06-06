@@ -1,4 +1,4 @@
-"""Capture descriptor contracts for site-world orchestration."""
+"""Capture descriptor contracts for capture-to-package orchestration."""
 
 from __future__ import annotations
 
@@ -21,12 +21,23 @@ _ALLOWED_SWAP_FOCUS = {
 _ALLOWED_ENVIRONMENT_HINTS = set(_ALLOWED_SWAP_FOCUS)
 _ALLOWED_REQUESTED_LANES = {
     "qualification",
+    "evaluation_prep",
+    "simulation_automation",
+    "scene_memory",
+    "retrieval_index",
+    "frame_alignment",
+    "synthesis_coverage_validation",
+}
+_CURRENT_REQUESTED_LANES = ("qualification", "evaluation_prep", "simulation_automation")
+_REQUESTED_LANE_ORDER = (
+    "qualification",
     "scene_memory",
     "retrieval_index",
     "frame_alignment",
     "evaluation_prep",
+    "simulation_automation",
     "synthesis_coverage_validation",
-}
+)
 _ALLOWED_CAPTURE_MODALITIES = {
     "iphone_arkit_lidar",
     "iphone_video_only",
@@ -189,36 +200,35 @@ def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
         lowered = value.strip().lower()
         if not lowered:
             continue
-        if lowered == "all":
-            for lane in (
-                "qualification",
-                "scene_memory",
-                "retrieval_index",
-                "frame_alignment",
-                "evaluation_prep",
-                "synthesis_coverage_validation",
-            ):
+        if lowered in {"all", "current"}:
+            for lane in _CURRENT_REQUESTED_LANES:
                 if lane not in normalized:
                     normalized.append(lane)
             continue
         if lowered in _ALLOWED_REQUESTED_LANES and lowered not in normalized:
             normalized.append(lowered)
-            if lowered in {"retrieval_index", "frame_alignment", "evaluation_prep"} and "qualification" not in normalized:
+            if (
+                lowered in {"retrieval_index", "frame_alignment", "evaluation_prep"}
+                and "qualification" not in normalized
+            ):
                 normalized.append("qualification")
+            if lowered == "simulation_automation":
+                if "qualification" not in normalized:
+                    normalized.append("qualification")
+                if "evaluation_prep" not in normalized:
+                    normalized.append("evaluation_prep")
     if (
         {"retrieval_index", "frame_alignment", "evaluation_prep"} & set(normalized)
         and "qualification" not in normalized
     ):
         normalized.append("qualification")
+    if "simulation_automation" in normalized:
+        if "qualification" not in normalized:
+            normalized.append("qualification")
+        if "evaluation_prep" not in normalized:
+            normalized.append("evaluation_prep")
     ordered: List[str] = []
-    for lane in (
-        "qualification",
-        "scene_memory",
-        "retrieval_index",
-        "frame_alignment",
-        "evaluation_prep",
-        "synthesis_coverage_validation",
-    ):
+    for lane in _REQUESTED_LANE_ORDER:
         if lane in normalized and lane not in ordered:
             ordered.append(lane)
     return ordered or ["qualification"]
@@ -529,7 +539,7 @@ class CaptureDescriptor:
     scaffolding_validation: Dict[str, Any] = field(default_factory=dict)
     uncertainty_priors: Dict[str, float] = field(default_factory=dict)
     capture_orientation: Dict[str, Any] = field(default_factory=dict)
-    requested_lanes: List[str] = field(default_factory=lambda: ["qualification"])
+    requested_lanes: List[str] = field(default_factory=lambda: list(_CURRENT_REQUESTED_LANES))
     site_submission_id: Optional[str] = None
     buyer_request_id: Optional[str] = None
     capture_job_id: Optional[str] = None
