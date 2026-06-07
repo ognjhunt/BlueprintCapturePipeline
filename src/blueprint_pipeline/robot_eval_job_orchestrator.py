@@ -1883,7 +1883,9 @@ def run_robot_eval_job_request_inbox(
     queue_root = context.pipeline_root / "robot_eval_job_requests"
     ensure_dir(queue_root)
     generated_at = utc_now_iso()
-    request_paths = sorted(path for path in inbox_path.glob("*.json") if path.is_file())
+    request_paths = sorted(
+        path for path in inbox_path.glob("*.json") if path.is_file() and not path.name.startswith(".")
+    )
     jobs: List[Dict[str, Any]] = []
     for request_path in request_paths:
         request = _read_job_request(request_path)

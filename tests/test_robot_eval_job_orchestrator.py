@@ -428,6 +428,7 @@ def test_robot_eval_job_request_inbox_accepts_webapp_queue_envelope(
         "job_request": request,
     }
     _write_json(inbox_dir / "webapp-envelope-job-1.json", envelope)
+    (inbox_dir / "._webapp-envelope-job-1.json").write_text("not json", encoding="utf-8")
 
     result = run_robot_eval_job_request_inbox(
         capture_root=capture_root,
