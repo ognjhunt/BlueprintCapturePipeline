@@ -14,9 +14,14 @@ It does not call live providers, download remote assets, run simulators, run GPU
 training, deploy, send messages, touch payments, or upgrade public claims by
 default.
 
-Optional Codex SDK or OpenAI Agents SDK assistance is advisory only. Agents may
-propose commands, diagnose failures, summarize traces, and update next-action
-plans. Deterministic code owns statuses, gates, manifests, and claim boundaries.
+Optional Codex SDK or OpenAI Agents SDK assistance is a gated live-operator
+surface, not a request-manifest-only surface. When the SDK, credential, CLI, and
+environment gates are open, Agents SDK operators may inspect manifests/logs,
+choose next deterministic commands, trigger allowed reruns, route review,
+summarize blockers, and maintain progress ledgers. Codex SDK operators may
+diagnose failures, patch code, run tests, and produce diffs when pipeline
+failures require code changes. Deterministic code owns statuses, validation,
+packaging, checksums, rerun policy, manifests, and claim boundaries.
 
 ## Inputs
 
@@ -33,6 +38,7 @@ The lane reads existing local artifacts when present:
 - `pipeline/simulation_automation/cpu_preflight_scorecard.json`
 - `pipeline/simulation_automation/episode_spec_manifest.json`
 - `pipeline/simulation_automation/cpu_simulator_preflight_manifest.json`
+- `pipeline/simulation_automation/arena_environment_packet.json`
 - optional `pipeline/simulation_automation/gpu_owner_system_proof.json`
 
 Legacy/advisory artifacts are read when present, but are not part of the active
@@ -78,6 +84,7 @@ pipeline/simulation_automation/
   pre_gpu_readiness_summary.json
   cpu_simulator_preflight_manifest.json
   cpu_simulator_preflight_README.txt
+  arena_environment_packet.json
   gpu_handoff_packet.json
   gpu_owner_system_proof_schema.json
   owner_gpu_simulator_execution_proof_manifest.json
@@ -109,6 +116,8 @@ pipeline/simulation_automation/
   simulators/
     isaac_sim_request.json
     isaac_sim_result.json
+    isaac_lab_arena_request.json
+    isaac_lab_arena_result.json
     mujoco_request.json
     mujoco_result.json
     pybullet_request.json
@@ -142,15 +151,39 @@ pipeline/robot_eval_jobs/<job_id>/
   simulator_service_request.json
   simulator_service_result.json
   policy_package_manifest.json
+  policy_adapter_manifest.json
   training_request.json
   training_result.json
   evaluation_request.json
   evaluation_result.json
+  arena_eval_schedule.json
+  arena_eval_retry_queue.json
+  arena_eval_cost_ledger.json
+  arena_eval_resume_manifest.json
+  arena_result_ingest_ledger.json
+  arena_artifact_checksums.json
+  arena_eval_metrics.json
   normalized_attempt_trace.json
   failure_labels.json
+  clips_manifest.json
+  rollout_vision_labels.json
+  review_resolution_ledger.json
+  accepted_failure_labels.json
   prediction_outcome_ledger.json
   calibration_report.json
   breakage_library.json
+  arena_rerun_plan.json
+  arena_rerun_lineage.json
+  customer_handoff_report.md
+  customer_handoff_report.json
+  delivery_manifest.json
+  signed_access_manifest.json
+  live_operator_ledger.json
+  dataset_card.json
+  license_manifest.json
+  package_index.json
+  checksums.json
+  archive_manifest.json
   post_training_data_package_export_manifest.json
   proof_boundary.json
   job_run_manifest.json
@@ -160,6 +193,14 @@ pipeline/robot_eval_jobs/<job_id>/
 Evaluation prep surfaces these job artifacts as advisory URIs when they already
 exist. It does not use them to upgrade simulator, training, robot-readiness, or
 public proof fields.
+
+When `blueprint-run-robot-eval-job` is run with `--simulator isaac_lab_arena`
+or `--arena-results-dir`, the job also runs the Arena result ingest/package
+lane. Existing rollout artifacts can feed `evaluation_result.json` through
+`normalized_attempt_trace.json` and `failure_labels.json`, while
+`simulator_execution_proven`, `robot_policy_execution_proven`,
+`robot_readiness_proven`, safety/contact proof, and public-claim upgrades remain
+false unless accepted owner evidence separately proves those claims.
 
 ## CPU Pre-GPU Lane
 
@@ -190,14 +231,20 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
 - `episode_spec.v1.json` compiles scene/task/scenario/robot-profile inputs into
   review-required episode setup specs.
 - `episode_specs.json` is a compatibility alias for the compiled episode specs.
-- `agent_episode_spec_proposals.json` is advisory only. Agents may propose
-  missing anchors, spawn fields, or task fields with confidence/provenance, but
-  cannot set proof booleans.
+- `agent_episode_spec_proposals.json` is a review-input proposal surface. Agents
+  may propose missing anchors, spawn fields, or task fields with
+  confidence/provenance, but cannot set proof booleans.
 - `episode_setup_manifest.json` and `cpu_simulator_preflight_manifest.json`
   describe generated CPU MuJoCo/PyBullet fixtures and optional smoke status.
 - `spawn_pose_validation_manifest.json` checks multiple spawn candidates for
   finite coordinates, floor consistency, scene bounds, suspicious scale, and
   overlap with known/proxy geometry where metadata exists.
+- `arena_environment_packet.json` translates Site, Task, Scenario, and Eval
+  Cards plus `episode_spec.v1.json` into a proof-bounded Isaac Lab-Arena review
+  package with Scene, Embodiment, Task, scenario, metric/eval, and episode
+  bindings. It is a package/spec artifact only; it does not prove Isaac
+  Lab-Arena imported the scene, ran a policy, validated contact, or proved robot
+  readiness.
 - `cpu_preflight_manifest.json` and `pre_gpu_readiness_summary.json` summarize
   `ready_for_owner_gpu_preflight_handoff`. That phrase means local CPU checks
   and deterministic handoff artifacts are ready for an owner GPU run. It does
@@ -236,11 +283,14 @@ MuJoCo compile/step. A passing local CPU smoke may be displayed only as
 readiness, policy success, physics/contact validation, or safety proof.
 
 The GPU handoff packet generally recommends Isaac Sim first when rich USD or
-OpenUSD-like scene assets exist. MuJoCo and PyBullet are recommended only for
-compatible MJCF/URDF assets or generated/proxy fixtures. The owner system must
-provide simulator stdout, stderr, exit code, scene load trace, spawn trace,
-artifact manifest, action or policy trace when applicable, and an owner
-attestation before any simulator execution proof can be upgraded.
+OpenUSD-like scene assets exist. `isaac_lab_arena` appears as an optional
+composable policy-eval package lane alongside Isaac Sim when an Arena packet can
+bind the Blueprint scene, embodiment, task, scenario, and eval components.
+MuJoCo and PyBullet are recommended only for compatible MJCF/URDF assets or
+generated/proxy fixtures. The owner system must provide simulator stdout,
+stderr, exit code, scene load trace, spawn trace, artifact manifest, action or
+policy trace when applicable, and an owner attestation before any simulator
+execution proof can be upgraded.
 
 ## Site-Eval Director
 
@@ -272,11 +322,14 @@ manifests with `schema_version`, `status=blocked`, `blockers`,
 `missing_inputs`, `attempted_commands`, `evidence`, and `claim_boundary`.
 
 Optional `--agents-sdk-site-eval` and `--codex-sdk-code-maintainer` flags write
-advisory request manifests only. Missing `openai-agents`, missing Codex SDK,
-missing `OPENAI_API_KEY`, or missing `codex mcp-server` are recorded as blocked
-advisory manifests. They are not hard failures for deterministic local outputs.
-The Codex SDK lane is scoped to implementation diagnosis and code-fix request
-manifests only.
+SDK operator manifests. With `OPENAI_API_KEY`, the matching SDK dependency,
+`--allow-live-agents-sdk-operator` or `--allow-live-codex-sdk-operator`, and the
+matching environment gate, they execute as live operators and log decisions,
+tool-call summaries, chosen commands, refusals, blockers, and proof effect.
+Missing SDKs, credentials, CLI gates, or environment gates are recorded as
+blocked operator manifests. They are not hard failures for deterministic local
+outputs. The Codex SDK lane is scoped to implementation diagnosis, code patches,
+focused tests, and diff summaries.
 
 ## Robot-Eval Job Orchestrator
 
@@ -287,15 +340,16 @@ modalities, operation, simulator preference, Cosmos/training preference, budget,
 rights/privacy scope, owner system, provenance, and timestamp alignment.
 
 The orchestrator validates rights/privacy and policy evidence, builds or
-requires robot-eval dataset cards, requests advisory agent planning, writes GPU
+requires robot-eval dataset cards, runs gated SDK operator planning, writes GPU
 provisioning request/result manifests, runs only allowed fixture or command
 simulator paths, writes training request/result manifests, copies Site Eval
 Director normalization/calibration/breakage artifacts when fixture evaluation is
 used, and writes a final job run manifest plus blocked manifest when any gate or
 proof requirement fails.
 
-Agents can choose next deterministic commands, inspect manifests/logs, retry
-safe failures, request provisioning, summarize blockers, and route human review.
+Agents can choose next deterministic commands, inspect manifests/logs, trigger
+allowed deterministic reruns, request provisioning, summarize blockers, and
+route human review.
 Agents cannot override rights/privacy blockers, mark simulator/training proof
 complete without result/checkpoint manifests, mark robot readiness proven, spend
 money, call live providers, or upgrade public claims.
@@ -316,7 +370,7 @@ Real simulator execution requires both:
 
 - `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true`
 - `--allow-simulator-execution`
-- one or more `--allow-simulator <isaac_sim|mujoco|pybullet|newton>`
+- one or more `--allow-simulator <isaac_sim|isaac_lab_arena|mujoco|pybullet|newton>`
 - explicit `--simulator-command <framework>=<command>`
 
 Optional local CPU preflight smoke requires both:
@@ -342,11 +396,29 @@ Non-fixture GPU provisioning requires both:
 - `BLUEPRINT_ALLOW_GPU_PROVISIONING=true`
 - `--allow-gpu-provisioning`
 
-Agents SDK robot-eval job orchestration requires:
+Live Agents SDK operators require:
 
 - `OPENAI_API_KEY`
-- `BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION=true`
-- `--agent-mode agents-sdk`
+- `BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true`
+- `--allow-live-agent-operator` for `blueprint-run-simulation-automation` and
+  `blueprint-run-robot-eval-job`
+- `--allow-live-agents-sdk-operator` for `blueprint-run-site-eval-director`
+- `--agent-mode agents-sdk` where the command uses an agent mode switch
+- optional `BLUEPRINT_ALLOW_AGENT_EXTERNAL_ACTIONS=true` for external actions
+- optional `BLUEPRINT_ALLOW_AGENT_SPEND_ACTIONS=true` for spend-bearing actions
+
+Live Codex SDK code-maintainer operators require:
+
+- `OPENAI_API_KEY`
+- `BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS=true`
+- `--allow-live-agent-operator` for `blueprint-run-simulation-automation --agent-mode codex-sdk`
+- `--allow-live-codex-sdk-operator` for `blueprint-run-site-eval-director --codex-sdk-code-maintainer`
+- optional `BLUEPRINT_ALLOW_AGENT_EXTERNAL_ACTIONS=true` for external actions
+- optional `BLUEPRINT_ALLOW_AGENT_SPEND_ACTIONS=true` for spend-bearing actions
+
+All live SDK operator manifests record decisions, tool-call summaries, commands
+chosen, refusals, blockers, and proof effect. Agents may never directly set
+proof booleans true without deterministic accepted artifacts.
 
 ## Proof Boundaries
 
@@ -434,13 +506,20 @@ blueprint-run-site-eval-director \
   --capture-root /path/to/capture-root
 ```
 
-Optional advisory request manifests:
+Optional gated live SDK operators:
 
 ```bash
+BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true \
 blueprint-run-site-eval-director \
   --capture-root /path/to/capture-root \
   --agents-sdk-site-eval \
-  --codex-sdk-code-maintainer
+  --allow-live-agents-sdk-operator
+
+BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS=true \
+blueprint-run-site-eval-director \
+  --capture-root /path/to/capture-root \
+  --codex-sdk-code-maintainer \
+  --allow-live-codex-sdk-operator
 ```
 
 Headless robot-eval job with fixture provisioner and fixture simulator:
@@ -455,13 +534,39 @@ blueprint-run-robot-eval-job \
   --simulator fixture
 ```
 
-Post-Training Data Package export manifest:
+Post-Training Data Package export and archive:
 
 ```bash
 blueprint-build-post-training-data-package \
   --capture-root /path/to/capture-root \
   --job-dir /path/to/capture-root/pipeline/robot_eval_jobs/<job_id>
 ```
+
+Arena result ingest and package lane:
+
+```bash
+blueprint-ingest-arena-results \
+  --capture-root /path/to/capture-root \
+  --arena-results-dir /path/to/isaac-lab-arena-results \
+  --scenario-count 500 \
+  --shard-size 50
+```
+
+Arena package proof-boundary audit:
+
+```bash
+blueprint-audit-arena-package \
+  --capture-root /path/to/capture-root \
+  --package-dir /path/to/capture-root/pipeline/robot_eval_jobs/<job_id> \
+  --expected-scenario-count 500 \
+  --require-job-artifacts
+```
+
+`--allow-rollout-vision-labeling`, `--allow-delivery-upload`,
+`--operator-mode agents-sdk`, `--allow-live-agents-sdk`, and
+`--allow-live-codex-sdk` still require their matching environment gates. The
+local `--operator-mode fake` path requires `BLUEPRINT_ALLOW_FAKE_LIVE_OPERATORS`
+and only proves local operator-control code paths.
 
 Site/capture batch registry with retry/resume status:
 

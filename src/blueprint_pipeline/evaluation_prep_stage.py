@@ -967,6 +967,7 @@ def simulation_automation_evaluation_prep_surface(
         "robot_eval_cpu_simulator_preflight_manifest": (
             automation_dir / "cpu_simulator_preflight_manifest.json"
         ),
+        "robot_eval_arena_environment_packet": automation_dir / "arena_environment_packet.json",
         "robot_eval_gpu_handoff_packet": automation_dir / "gpu_handoff_packet.json",
         "robot_eval_gpu_owner_system_proof_schema": (
             automation_dir / "gpu_owner_system_proof_schema.json"

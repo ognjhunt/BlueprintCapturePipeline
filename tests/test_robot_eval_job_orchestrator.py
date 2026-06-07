@@ -593,6 +593,50 @@ def test_command_simulator_blocks_without_env_gate(tmp_path: Path) -> None:
     assert result["blockers"] == ["missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"]
 
 
+def test_isaac_lab_arena_simulator_surfaces_packet_and_blocks_without_env_gate(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, _full_job_request(capture_root))
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-arena-missing-env",
+        provisioner="fixture_local",
+        simulator="isaac_lab_arena",
+        allow_simulator_execution=True,
+        allowed_simulators=["isaac_lab_arena"],
+        simulator_commands={
+            "isaac_lab_arena": f"{sys.executable} -c \"print('arena sim ok')\""
+        },
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-arena-missing-env"
+    request = _read_json(job_dir / "simulator_service_request.json")
+    result = _read_json(job_dir / "simulator_service_result.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    arena_packet = _read_json(
+        capture_root / "pipeline" / "simulation_automation" / "arena_environment_packet.json"
+    )
+
+    assert request["framework"] == "isaac_lab_arena"
+    assert request["arena_environment_packet_path"] == (
+        "../simulation_automation/arena_environment_packet.json"
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"]
+    assert run_manifest["cpu_preflight_artifacts"]["arena_environment_packet"] == (
+        "../simulation_automation/arena_environment_packet.json"
+    )
+    assert arena_packet["backend"] == "isaac_lab_arena"
+    assert arena_packet["simulator_execution_proven"] is False
+    assert run_manifest["simulator_execution_proven"] is False
+    assert run_manifest["robot_readiness_proven"] is False
+
+
 def test_command_simulator_blocks_without_cli_gate(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
     capture_root = _build_capture_root(tmp_path)
@@ -740,7 +784,8 @@ def test_fake_and_agents_sdk_agent_adapters_write_advisory_plans(
         agent_adapter=AgentsSdkRobotEvalJobAdapter(
             agents_sdk_available=False,
             openai_api_key="",
-            env_gate_allowed=False,
+            live_env_allowed=False,
+            allow_live_operator=False,
         ),
         provisioner="fixture_local",
         simulator="fixture",
@@ -767,9 +812,66 @@ def test_fake_and_agents_sdk_agent_adapters_write_advisory_plans(
     assert agents_plan["blockers"] == [
         "missing_openai_agents_sdk",
         "missing_openai_api_key",
-        "missing_env_BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION",
+        "missing_cli_allow_live_agent_operator",
+        "missing_env_BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS",
     ]
-    assert agents_plan["agent_authority"] == "advisory_only"
+    assert agents_plan["agent_authority"] == "live_operator_when_gated"
+    assert agents_plan["proof_booleans_mutable_by_agent"] is False
+
+
+def test_agents_sdk_robot_eval_live_operator_logs_decisions_without_proof_upgrade(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, _full_job_request(capture_root))
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-agents-sdk-live",
+        agent_adapter=AgentsSdkRobotEvalJobAdapter(
+            agents_sdk_available=True,
+            openai_api_key="sk-test",
+            live_env_allowed=True,
+            allow_live_operator=True,
+            executor=lambda _prompt, _context: {
+                "final_output": "Validation passed; run fixture evaluator, then summarize.",
+                "commands_chosen": ["run_fixture_evaluation"],
+                "tool_call_summaries": [
+                    {"tool_name": "read_manifest", "summary": "checked job_validation.json"}
+                ],
+                "decisions": [
+                    {
+                        "decision": "run_fixture_evaluation",
+                        "summary": "Deterministic validation already passed.",
+                    }
+                ],
+            },
+        ),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-agents-sdk-live"
+    agents_plan = _read_json(job_dir / "agent_orchestration_plan.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert agents_plan["status"] == "operator_completed"
+    assert agents_plan["execution_performed"] is True
+    assert agents_plan["operator_mode"] == "live_operator"
+    assert agents_plan["operator_ledger"]["commands_chosen"] == [
+        "choose_next_deterministic_robot_eval_command",
+        "run_fixture_evaluation",
+    ]
+    assert agents_plan["operator_ledger"]["tool_call_summaries"][0]["tool_name"] == (
+        "read_manifest"
+    )
+    assert agents_plan["proof_effect"]["direct_proof_booleans_set_true"] == []
+    assert run_manifest["agent_operator_mode"] == "live_operator"
+    assert run_manifest["robot_readiness_proven"] is False
 
 
 def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
@@ -806,3 +908,126 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
     assert surface["artifact_uris"][
         "robot_eval_job_job-surfaced_run_manifest_uri"
     ].endswith("/pipeline/robot_eval_jobs/job-surfaced/job_run_manifest.json")
+
+
+def _write_arena_rollout_results(results_dir: Path, *, count: int = 500) -> None:
+    video_dir = results_dir / "videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    (video_dir / "episode.mp4").write_bytes(b"fake arena video bytes")
+    (results_dir / "stdout.txt").write_text("arena rollout completed\n", encoding="utf-8")
+    (results_dir / "stderr.txt").write_text("", encoding="utf-8")
+    episodes = []
+    for index in range(count):
+        success = (index + 1) % 10 != 0
+        episodes.append(
+            {
+                "episode_id": f"episode-{index + 1:04d}",
+                "scenario_id": "scenario_place_return_in_bin_mobile",
+                "scenario_run_id": f"scenario_place_return_in_bin_mobile__arena_run_{index + 1:04d}",
+                "task_id": "place_return_in_bin",
+                "shard_id": f"arena_shard_{(index // 125) + 1:04d}",
+                "status": "completed" if success else "failed",
+                "success": success,
+                "failure_reason": None if success else "threshold_miss_timeout",
+                "metrics": {
+                    "cycle_time_seconds": 12.0 + (index % 7),
+                    "placement_accuracy": 1.0 if success else 0.2,
+                },
+                "start_time_seconds": float(index),
+                "end_time_seconds": float(index + 1),
+                "video_path": "videos/episode.mp4",
+                "stdout_path": "stdout.txt",
+                "stderr_path": "stderr.txt",
+            }
+        )
+    _write_json(
+        results_dir / "rollout_manifest.json",
+        {
+            "schema_version": "isaac_lab_arena_rollout_manifest.fixture.v1",
+            "episodes": episodes,
+        },
+    )
+    _write_json(
+        results_dir / "review_resolutions.json",
+        {
+            "schema_version": "arena_review_resolutions.fixture.v1",
+            "resolutions": [
+                {
+                    "label_id": "label_arena_attempt_0010",
+                    "decision": "accepted",
+                    "reviewer": "fixture-reviewer",
+                    "evidence_uri": "review://accepted/0010",
+                }
+            ],
+        },
+    )
+
+
+def test_isaac_lab_arena_results_feed_eval_package_and_delivery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_FAKE_LIVE_OPERATORS", "true")
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    results_dir = tmp_path / "arena-results"
+    _write_arena_rollout_results(results_dir)
+    request_path = tmp_path / "job-request.json"
+    request = _full_job_request(capture_root)
+    request["simulator_preference"] = "isaac_lab_arena"
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-arena-ingest",
+        provisioner="fixture_local",
+        simulator="isaac_lab_arena",
+        arena_results_dir=results_dir,
+        arena_scenario_count=500,
+        arena_shard_size=125,
+        arena_num_envs=32,
+        arena_retry_budget=3,
+        arena_operator_mode="fake",
+    )
+
+    job_dir = Path(result["job_dir"])
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    simulator_result = _read_json(job_dir / "simulator_service_result.json")
+    eval_result = _read_json(job_dir / "evaluation_result.json")
+    schedule = _read_json(job_dir / "arena_eval_schedule.json")
+    trace = _read_json(job_dir / "normalized_attempt_trace.json")
+    labels = _read_json(job_dir / "failure_labels.json")
+    clips = _read_json(job_dir / "clips_manifest.json")
+    package = _read_json(job_dir / "post_training_data_package_export_manifest.json")
+    archive = _read_json(job_dir / "archive_manifest.json")
+    delivery = _read_json(job_dir / "delivery_manifest.json")
+    operators = _read_json(job_dir / "live_operator_ledger.json")
+
+    assert result["status"] == "completed_with_failures"
+    assert simulator_result["status"] == "completed_from_supplied_arena_results"
+    assert simulator_result["simulator_execution_proven"] is False
+    assert eval_result["status"] == "completed_with_failures"
+    assert run_manifest["arena_result_ingest_status"] == "completed"
+    assert run_manifest["simulator_execution_proven"] is False
+    assert run_manifest["robot_readiness_proven"] is False
+
+    assert schedule["scenario_count"] == 500
+    assert schedule["shard_count"] == 4
+    assert schedule["num_envs"] == 32
+    assert trace["attempt_count"] == 500
+    assert labels["label_count"] == 50
+    assert clips["clip_count"] == 500
+
+    assert (job_dir / "arena_eval_metrics.json").is_file()
+    assert (job_dir / "dataset_card.json").is_file()
+    assert (job_dir / "license_manifest.json").is_file()
+    assert (job_dir / "checksums.json").is_file()
+    assert package["status"] == "export_ready_review_required"
+    assert package["archive_manifest_path"] == "archive_manifest.json"
+    assert archive["archive"]["exists"] is True
+    assert delivery["status"] == "local_delivery_bundle_ready"
+    assert operators["status"] == "completed"
+    assert operators["agents_sdk_operator_performed"] is True
+    assert operators["codex_sdk_operator_performed"] is True
+    assert operators["public_claim_upgrade_allowed"] is False

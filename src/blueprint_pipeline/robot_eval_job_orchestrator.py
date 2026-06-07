@@ -1,9 +1,12 @@
-"""Headless robot-eval job orchestration lane.
+"""Headless robot-eval job orchestration lane with gated live SDK operators.
 
 This module coordinates a repo-local robot-team evaluation or training request
 through deterministic validation, provisioning, simulator, training, and
 evaluation manifests. Provider, GPU, simulator, training, and agent execution
-paths fail closed unless explicit environment and CLI gates are present.
+paths run only when explicit environment and CLI gates are present. Agents may
+coordinate messy failures, retries, review routing, summaries, and next-command
+selection, while deterministic artifacts own validation, packaging, rerun policy,
+checksums, and proof booleans.
 """
 
 from __future__ import annotations
@@ -19,6 +22,18 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 
+from .agent_operator_runtime import (
+    LIVE_AGENTS_SDK_ENV,
+    OperatorExecutor,
+    OperatorRunConfig,
+    blocked_operator_ledger,
+    completed_operator_ledger,
+    env_truthy,
+    external_action_gates,
+    proof_effect,
+    run_agents_sdk_operator,
+)
+from .arena_result_ingest import build_arena_result_ingest
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
@@ -61,7 +76,7 @@ PROVISIONERS = (
     "runpod",
     "gcp",
 )
-SIMULATORS = ("fixture", "mujoco", "pybullet", "newton", "isaac_sim")
+SIMULATORS = ("fixture", "mujoco", "pybullet", "newton", "isaac_sim", "isaac_lab_arena")
 OPERATIONS = ("evaluate_only", "train_only", "train_then_evaluate")
 
 REQUIRED_ROBOT_EVAL_INPUTS = {
@@ -93,7 +108,8 @@ POLICY_MODALITY_STATUSES = {
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "robot_eval_job_orchestration_only",
     "repo_local_only_by_default": True,
-    "agents_advisory_only": True,
+    "agent_operator_mode_allowed": True,
+    "agents_may_mutate_proof_booleans": False,
     "live_provider_calls_performed": False,
     "remote_asset_downloads_performed": False,
     "gpu_provisioning_performed": False,
@@ -137,7 +153,7 @@ class RobotEvalJobAgentAdapter(Protocol):
 
 @dataclass(frozen=True)
 class FakeRobotEvalJobAgentAdapter:
-    """Network-free advisory agent adapter for local state-machine tests."""
+    """Network-free deterministic agent adapter for local state-machine tests."""
 
     adapter_name: str = "fake"
 
@@ -146,7 +162,9 @@ class FakeRobotEvalJobAgentAdapter:
             "schema_version": AGENT_ORCHESTRATION_PLAN_SCHEMA_VERSION,
             "adapter": self.adapter_name,
             "status": "completed",
-            "agent_authority": "advisory_only",
+            "operator_mode": "deterministic_test_operator",
+            "agent_authority": "deterministic_test_operator",
+            "proof_booleans_mutable_by_agent": False,
             "network_required": False,
             "live_provider_calls_performed": False,
             "decisions": [
@@ -166,6 +184,15 @@ class FakeRobotEvalJobAgentAdapter:
                     "reason": "Collect result manifests without upgrading proof claims.",
                 },
             ],
+            "operator_ledger": completed_operator_ledger(
+                adapter=self.adapter_name,
+                output={
+                    "final_output": "Local fake adapter selected the deterministic validation-first path.",
+                    "commands_chosen": ["validate_job_request"],
+                },
+                default_command="validate_job_request",
+                proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+            ),
             "diagnostics": [
                 {
                     "status": "review_only",
@@ -182,22 +209,20 @@ class FakeRobotEvalJobAgentAdapter:
 
 @dataclass(frozen=True)
 class AgentsSdkRobotEvalJobAdapter:
-    """Optional OpenAI Agents SDK request-manifest adapter.
-
-    The adapter deliberately fails closed unless the SDK, API key, and explicit
-    environment gate are present. It does not execute a live agent here.
-    """
+    """Optional OpenAI Agents SDK live robot-eval operator."""
 
     agents_sdk_available: bool | None = None
     openai_api_key: str | None = None
-    env_gate_allowed: bool | None = None
+    live_env_allowed: bool | None = None
+    allow_live_operator: bool = False
     model: str = "gpt-4.1"
+    executor: OperatorExecutor | None = None
 
     def build_plan(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
         agents_available = (
             self.agents_sdk_available
             if self.agents_sdk_available is not None
-            else _module_available(("agents", "openai_agents"))
+            else bool(self.executor is not None) or _module_available(("agents", "openai_agents"))
         )
         api_key_present = bool(
             _string(self.openai_api_key)
@@ -205,38 +230,89 @@ class AgentsSdkRobotEvalJobAdapter:
             else _string(os.getenv("OPENAI_API_KEY"))
         )
         env_allowed = (
-            bool(self.env_gate_allowed)
-            if self.env_gate_allowed is not None
-            else _env_truthy("BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION")
+            bool(self.live_env_allowed)
+            if self.live_env_allowed is not None
+            else env_truthy(LIVE_AGENTS_SDK_ENV)
+            or _env_truthy("BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION")
         )
         blockers: List[str] = []
         if not agents_available:
             blockers.append("missing_openai_agents_sdk")
         if not api_key_present:
             blockers.append("missing_openai_api_key")
+        if not self.allow_live_operator:
+            blockers.append("missing_cli_allow_live_agent_operator")
         if not env_allowed:
-            blockers.append("missing_env_BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION")
+            blockers.append(f"missing_env_{LIVE_AGENTS_SDK_ENV}")
+        command = "choose_next_deterministic_robot_eval_command"
+        live_output: Dict[str, Any] | None = None
+        execution_performed = False
+        execution_failed = False
+        if not blockers:
+            try:
+                live_output = run_agents_sdk_operator(
+                    OperatorRunConfig(
+                        adapter="openai_agents_sdk_robot_eval_job",
+                        model=self.model,
+                        prompt=_agents_sdk_robot_eval_job_prompt(plan_context),
+                        plan_context=plan_context,
+                        executor=self.executor,
+                    )
+                )
+                execution_performed = True
+            except RuntimeError as exc:
+                blockers.append(str(exc))
+                execution_failed = True
+            except Exception as exc:
+                blockers.append(f"agents_sdk_operator_execution_failed:{type(exc).__name__}")
+                execution_failed = True
+        status = (
+            "operator_completed"
+            if execution_performed and not blockers
+            else "operator_failed"
+            if execution_failed
+            else "blocked"
+        )
+        operator_ledger = (
+            completed_operator_ledger(
+                adapter="openai_agents_sdk_robot_eval_job",
+                output=live_output or {},
+                default_command=command,
+                proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+            )
+            if execution_performed and not blockers
+            else blocked_operator_ledger(
+                adapter="openai_agents_sdk_robot_eval_job",
+                blockers=blockers,
+                command_chosen=command if not blockers else None,
+                proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+            )
+        )
         return {
             "schema_version": AGENT_ORCHESTRATION_PLAN_SCHEMA_VERSION,
             "adapter": "openai_agents_sdk_robot_eval_job",
-            "status": "blocked" if blockers else "request_manifest_ready",
+            "status": status,
             "blockers": blockers,
             "missing_inputs": list(blockers),
-            "agent_authority": "advisory_only",
-            "execution_performed": False,
+            "operator_mode": "live_operator" if execution_performed else "live_operator_blocked",
+            "agent_authority": "live_operator_when_gated",
+            "proof_booleans_mutable_by_agent": False,
+            "execution_performed": execution_performed,
             "network_required_if_executed": True,
+            "operator_ledger": operator_ledger,
             "request": {
-                "purpose": "headless_robot_eval_job_orchestration_advisory_only",
+                "purpose": "headless_robot_eval_job_orchestration_live_operator",
                 "model": self.model,
                 "job_id": _string(plan_context.get("job_id")),
                 "capture_root": _string(plan_context.get("capture_root")),
                 "allowed_actions": [
                     "choose_next_deterministic_command",
                     "inspect_manifests_and_logs",
-                    "retry_safe_failures",
+                    "trigger_allowed_deterministic_reruns",
                     "request_gpu_or_simulator_provisioning",
                     "summarize_blockers",
                     "route_for_human_review",
+                    "maintain_progress_ledger",
                 ],
                 "prohibited_actions": [
                     "override_rights_privacy_blockers",
@@ -250,14 +326,33 @@ class AgentsSdkRobotEvalJobAdapter:
             "evidence": {
                 "openai_agents_sdk_available": bool(agents_available),
                 "openai_api_key_present": api_key_present,
-                "env_BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION": env_allowed,
+                "cli_allow_live_operator": self.allow_live_operator,
+                LIVE_AGENTS_SDK_ENV: env_allowed,
+                "legacy_env_BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION": _env_truthy(
+                    "BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION"
+                ),
+                **external_action_gates(),
             },
+            "proof_effect": proof_effect(
+                deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+            ),
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
 
 
 def _module_available(candidates: Sequence[str]) -> bool:
     return any(importlib.util.find_spec(candidate) is not None for candidate in candidates)
+
+
+def _agents_sdk_robot_eval_job_prompt(plan_context: Mapping[str, Any]) -> str:
+    return (
+        "Act as the Blueprint Agents SDK robot-eval pipeline operator. Inspect the "
+        "request, validation, preflight, simulation, and job context. Choose the next "
+        "safe deterministic command or allowed rerun, summarize blockers, route human "
+        "review when needed, and maintain a progress ledger. Do not set proof booleans "
+        "directly; proof can only come from deterministic accepted artifacts.\n\n"
+        f"{json.dumps(plan_context, sort_keys=True, default=str)[:12000]}"
+    )
 
 
 def _env_truthy(name: str) -> bool:
@@ -562,9 +657,23 @@ def _agent_plan(
             "generated_at": generated_at,
             "adapter": "none",
             "status": "not_requested",
-            "agent_authority": "advisory_only",
+            "operator_mode": "not_requested",
+            "agent_authority": "not_requested",
+            "proof_booleans_mutable_by_agent": False,
             "decisions": [],
             "diagnostics": [],
+            "operator_ledger": {
+                "generated_at": generated_at,
+                "operator_mode": "not_requested",
+                "decisions": [],
+                "tool_call_summaries": [],
+                "commands_chosen": [],
+                "refusals": [],
+                "blockers": [],
+                "proof_effect": proof_effect(
+                    deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+                ),
+            },
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
     plan = adapter.build_plan(plan_context=plan_context)
@@ -670,6 +779,11 @@ def _simulator_request(
         "timeout_seconds": timeout_seconds,
         "execution_allowed_by_default": False,
         "fixture_backend_proves_local_loop_only": simulator == "fixture",
+        "arena_environment_packet_path": (
+            "../simulation_automation/arena_environment_packet.json"
+            if simulator == "isaac_lab_arena"
+            else None
+        ),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -1106,17 +1220,30 @@ def _evaluation_result(
         attempts = [
             item for item in trace.get("attempts", []) or [] if isinstance(item, Mapping)
         ]
-        if attempts and any(not bool(item.get("success")) for item in attempts):
+        trace_status = _string(trace.get("status"))
+        if trace_status.startswith("blocked") or trace_status in {"not_available", "missing"}:
+            status = "blocked"
+            blockers = _string_list(trace.get("blockers")) or ["normalized_attempt_trace_missing"]
+        elif attempts and any(not bool(item.get("success")) for item in attempts):
             status = "completed_with_failures"
+            blockers = []
         else:
             status = "completed"
-        blockers = []
+            blockers = []
     return {
         "schema_version": EVALUATION_RESULT_SCHEMA_VERSION,
         "generated_at": generated_at,
         "status": status,
         "blockers": blockers,
         "simulator_result_status": simulator_result.get("status"),
+        "arena_result_ingest_status": _mapping(
+            copied_artifacts.get("normalized_attempt_trace")
+        ).get("status"),
+        "arena_metrics_path": (
+            "arena_eval_metrics.json"
+            if _mapping(copied_artifacts.get("arena_eval_metrics"))
+            else None
+        ),
         "normalized_attempt_trace_path": "normalized_attempt_trace.json",
         "failure_labels_path": "failure_labels.json",
         "prediction_outcome_ledger_path": "prediction_outcome_ledger.json",
@@ -1255,11 +1382,35 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "training_result.json",
         "evaluation_request.json",
         "evaluation_result.json",
+        "arena_eval_schedule.json",
+        "arena_eval_retry_queue.json",
+        "arena_eval_cost_ledger.json",
+        "arena_eval_resume_manifest.json",
+        "policy_adapter_manifest.json",
+        "arena_result_ingest_ledger.json",
+        "arena_artifact_checksums.json",
+        "arena_eval_metrics.json",
         "normalized_attempt_trace.json",
         "failure_labels.json",
+        "clips_manifest.json",
+        "rollout_vision_labels.json",
+        "review_resolution_ledger.json",
+        "accepted_failure_labels.json",
         "prediction_outcome_ledger.json",
         "calibration_report.json",
         "breakage_library.json",
+        "arena_rerun_plan.json",
+        "arena_rerun_lineage.json",
+        "customer_handoff_report.json",
+        "customer_handoff_report.md",
+        "delivery_manifest.json",
+        "signed_access_manifest.json",
+        "live_operator_ledger.json",
+        "dataset_card.json",
+        "license_manifest.json",
+        "package_index.json",
+        "checksums.json",
+        "archive_manifest.json",
         "post_training_data_package_export_manifest.json",
         "proof_boundary.json",
         "job_run_manifest.json",
@@ -1288,6 +1439,18 @@ def build_robot_eval_job(
     training_command: str | None = None,
     timeout_seconds: int = 120,
     budget_usd: float | None = None,
+    arena_results_dir: str | Path | None = None,
+    arena_scenario_count: int = 500,
+    arena_shard_size: int = 50,
+    arena_num_envs: int = 16,
+    arena_retry_budget: int = 2,
+    allow_rollout_vision_labeling: bool = False,
+    vision_labeling_command: str | None = None,
+    allow_delivery_upload: bool = False,
+    delivery_command: str | None = None,
+    arena_operator_mode: str = "none",
+    allow_live_agents_sdk: bool = False,
+    allow_live_codex_sdk: bool = False,
 ) -> Dict[str, Any]:
     if provisioner not in PROVISIONERS:
         raise ValueError(f"Unsupported provisioner: {provisioner}")
@@ -1411,6 +1574,58 @@ def build_robot_eval_job(
     )
     _write_job_json(job_dir, "simulator_service_result.json", sim_result)
 
+    arena_ingest: Dict[str, Any] = {}
+    if simulator == "isaac_lab_arena" or arena_results_dir:
+        arena_ingest = build_arena_result_ingest(
+            capture_root=context.capture_root,
+            job_dir=job_dir,
+            arena_results_dir=arena_results_dir
+            or request.get("arena_results_dir")
+            or request.get("arenaResultsDir"),
+            output_dir=job_dir,
+            job_request=request,
+            scenario_count=arena_scenario_count,
+            shard_size=arena_shard_size,
+            num_envs=arena_num_envs,
+            timeout_seconds=timeout_seconds,
+            retry_budget=arena_retry_budget,
+            cost_budget_usd=budget_usd,
+            allow_rollout_vision_labeling=allow_rollout_vision_labeling,
+            vision_labeling_command=vision_labeling_command,
+            allow_delivery_upload=allow_delivery_upload,
+            delivery_command=delivery_command,
+            operator_mode=arena_operator_mode,
+            allow_live_agents_sdk=allow_live_agents_sdk,
+            allow_live_codex_sdk=allow_live_codex_sdk,
+        )
+        copied_artifacts["normalized_attempt_trace"] = _mapping(
+            arena_ingest.get("attempt_trace")
+        )
+        copied_artifacts["failure_labels"] = _mapping(arena_ingest.get("failure_labels"))
+        copied_artifacts["arena_eval_metrics"] = _mapping(arena_ingest.get("metrics"))
+        if (
+            _mapping(arena_ingest.get("run_manifest")).get("status") == "completed"
+            and sim_result.get("status") == "blocked"
+        ):
+            sim_result = {
+                **dict(sim_result),
+                "status": "completed_from_supplied_arena_results",
+                "reason": "arena_results_dir_ingested_without_running_simulator_command",
+                "blockers": [],
+                "artifact_paths": {
+                    **_mapping(sim_result.get("artifact_paths")),
+                    "arena_result_ingest_run_manifest": "arena_result_ingest_run_manifest.json",
+                    "normalized_attempt_trace": "normalized_attempt_trace.json",
+                    "failure_labels": "failure_labels.json",
+                },
+                "execution_performed": False,
+                "simulators_run": False,
+                "simulator_execution_proven": False,
+                "robot_policy_execution_proven": False,
+            }
+            simulator_blockers = []
+            _write_job_json(job_dir, "simulator_service_result.json", sim_result)
+
     training_req = _training_request(request=request, generated_at=generated_at)
     _write_job_json(job_dir, "training_request.json", training_req)
     training_res = _training_result(
@@ -1469,6 +1684,10 @@ def build_robot_eval_job(
     if training_res.get("status") == "blocked":
         blockers.append("training_blocked")
         missing_inputs.extend(_string_list(training_res.get("blockers")))
+    if eval_result.get("status") == "blocked" and validation.get("status") != "blocked":
+        blockers.append("evaluation_blocked")
+        missing_inputs.extend(_string_list(eval_result.get("blockers")))
+        evidence["evaluation_blockers"] = _string_list(eval_result.get("blockers"))
 
     status = _job_status(
         blockers=blockers,
@@ -1498,6 +1717,8 @@ def build_robot_eval_job(
         "provisioner": provisioner,
         "simulator": simulator,
         "agent_orchestration_status": agent_plan.get("status"),
+        "agent_operator_mode": agent_plan.get("operator_mode"),
+        "agent_operator_ledger": "agent_orchestration_plan.json",
         "scene_asset_preflight_status": scene_preflight.get("status"),
         "episode_spec_status": episode_specs.get("status"),
         "episode_count": episode_specs.get("episode_count"),
@@ -1506,6 +1727,9 @@ def build_robot_eval_job(
         "validation_status": validation.get("status"),
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
+        "arena_result_ingest_status": _mapping(arena_ingest.get("run_manifest")).get("status")
+        if arena_ingest
+        else None,
         "training_status": training_res.get("status"),
         "evaluation_status": eval_result.get("status"),
         "post_training_data_package_export_status": data_package_export.get("status"),
@@ -1540,6 +1764,7 @@ def build_robot_eval_job(
             "pre_gpu_readiness_summary": (
                 "../simulation_automation/pre_gpu_readiness_summary.json"
             ),
+            "arena_environment_packet": "../simulation_automation/arena_environment_packet.json",
             "gpu_handoff_packet": "../simulation_automation/gpu_handoff_packet.json",
             "gpu_owner_system_proof_schema": (
                 "../simulation_automation/gpu_owner_system_proof_schema.json"
@@ -1551,6 +1776,16 @@ def build_robot_eval_job(
             "post_training_data_package_export_manifest": (
                 "post_training_data_package_export_manifest.json"
             ),
+            "arena_eval_schedule": "arena_eval_schedule.json",
+            "arena_result_ingest_ledger": "arena_result_ingest_ledger.json",
+            "arena_eval_metrics": "arena_eval_metrics.json",
+            "clips_manifest": "clips_manifest.json",
+            "review_resolution_ledger": "review_resolution_ledger.json",
+            "accepted_failure_labels": "accepted_failure_labels.json",
+            "customer_handoff_report": "customer_handoff_report.json",
+            "delivery_manifest": "delivery_manifest.json",
+            "arena_rerun_plan": "arena_rerun_plan.json",
+            "live_operator_ledger": "live_operator_ledger.json",
         },
         "live_provider_calls_performed": False,
         "remote_asset_downloads_performed": False,
@@ -1624,6 +1859,18 @@ def run_robot_eval_job_request_inbox(
     training_command: str | None = None,
     timeout_seconds: int = 120,
     budget_usd: float | None = None,
+    arena_results_dir: str | Path | None = None,
+    arena_scenario_count: int = 500,
+    arena_shard_size: int = 50,
+    arena_num_envs: int = 16,
+    arena_retry_budget: int = 2,
+    allow_rollout_vision_labeling: bool = False,
+    vision_labeling_command: str | None = None,
+    allow_delivery_upload: bool = False,
+    delivery_command: str | None = None,
+    arena_operator_mode: str = "none",
+    allow_live_agents_sdk: bool = False,
+    allow_live_codex_sdk: bool = False,
 ) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     inbox_path = Path(inbox_dir)
@@ -1660,6 +1907,18 @@ def run_robot_eval_job_request_inbox(
             training_command=training_command,
             timeout_seconds=timeout_seconds,
             budget_usd=budget_usd,
+            arena_results_dir=arena_results_dir,
+            arena_scenario_count=arena_scenario_count,
+            arena_shard_size=arena_shard_size,
+            arena_num_envs=arena_num_envs,
+            arena_retry_budget=arena_retry_budget,
+            allow_rollout_vision_labeling=allow_rollout_vision_labeling,
+            vision_labeling_command=vision_labeling_command,
+            allow_delivery_upload=allow_delivery_upload,
+            delivery_command=delivery_command,
+            arena_operator_mode=arena_operator_mode,
+            allow_live_agents_sdk=allow_live_agents_sdk,
+            allow_live_codex_sdk=allow_live_codex_sdk,
         )
         jobs.append(
             {
@@ -1695,17 +1954,17 @@ def _parse_simulator_commands(values: Sequence[str] | None) -> Dict[str, str]:
         if not sep or framework not in SIMULATORS or framework == "fixture" or not command.strip():
             raise ValueError(
                 "--simulator-command must be formatted as "
-                "<mujoco|pybullet|newton|isaac_sim>=<command>"
+                "<mujoco|pybullet|newton|isaac_sim|isaac_lab_arena>=<command>"
             )
         commands[framework] = command.strip()
     return commands
 
 
-def _agent_adapter_from_mode(mode: str) -> RobotEvalJobAgentAdapter | None:
+def _agent_adapter_from_mode(mode: str, *, allow_live_operator: bool) -> RobotEvalJobAgentAdapter | None:
     if mode == "fake":
         return FakeRobotEvalJobAgentAdapter()
     if mode == "agents-sdk":
-        return AgentsSdkRobotEvalJobAdapter()
+        return AgentsSdkRobotEvalJobAdapter(allow_live_operator=allow_live_operator)
     return None
 
 
@@ -1725,7 +1984,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--agent-mode",
         choices=("none", "fake", "agents-sdk"),
         default="none",
-        help="Optional advisory agent adapter; deterministic manifests remain authoritative",
+        help="Optional agent operator adapter; deterministic manifests remain authoritative",
+    )
+    parser.add_argument(
+        "--allow-live-agent-operator",
+        action="store_true",
+        help=f"Allow live Agents SDK execution when {LIVE_AGENTS_SDK_ENV}=true and credentials exist",
     )
     parser.add_argument("--provisioner", choices=PROVISIONERS, default="fixture_local")
     parser.add_argument("--simulator", choices=SIMULATORS, default="fixture")
@@ -1778,6 +2042,35 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--training-command", default=None)
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--budget-usd", type=float, default=None)
+    parser.add_argument(
+        "--arena-results-dir",
+        default=None,
+        help="Existing local Isaac Lab-Arena rollout result directory to ingest",
+    )
+    parser.add_argument("--arena-scenario-count", type=int, default=500)
+    parser.add_argument("--arena-shard-size", type=int, default=50)
+    parser.add_argument("--arena-num-envs", type=int, default=16)
+    parser.add_argument("--arena-retry-budget", type=int, default=2)
+    parser.add_argument(
+        "--allow-rollout-vision-labeling",
+        action="store_true",
+        help="Allow gated rollout vision labeling command with matching env approval",
+    )
+    parser.add_argument("--vision-labeling-command", default=None)
+    parser.add_argument(
+        "--allow-delivery-upload",
+        action="store_true",
+        help="Allow gated package upload/signed-access command with matching env approval",
+    )
+    parser.add_argument("--delivery-command", default=None)
+    parser.add_argument(
+        "--arena-operator-mode",
+        choices=("none", "fake", "agents-sdk"),
+        default="none",
+        help="Arena package operator mode. Fake is local-only and gated by env.",
+    )
+    parser.add_argument("--allow-live-agents-sdk", action="store_true")
+    parser.add_argument("--allow-live-codex-sdk", action="store_true")
     args = parser.parse_args(argv)
     try:
         simulator_commands = _parse_simulator_commands(args.simulator_command)
@@ -1785,7 +2078,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = run_robot_eval_job_request_inbox(
                 capture_root=args.capture_root,
                 inbox_dir=args.job_request_inbox,
-                agent_adapter=_agent_adapter_from_mode(args.agent_mode),
+                agent_adapter=_agent_adapter_from_mode(
+                    args.agent_mode,
+                    allow_live_operator=args.allow_live_agent_operator,
+                ),
                 provisioner=args.provisioner,
                 simulator=args.simulator,
                 allow_gpu_provisioning=args.allow_gpu_provisioning,
@@ -1800,6 +2096,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 training_command=args.training_command,
                 timeout_seconds=args.timeout_seconds,
                 budget_usd=args.budget_usd,
+                arena_results_dir=args.arena_results_dir,
+                arena_scenario_count=args.arena_scenario_count,
+                arena_shard_size=args.arena_shard_size,
+                arena_num_envs=args.arena_num_envs,
+                arena_retry_budget=args.arena_retry_budget,
+                allow_rollout_vision_labeling=args.allow_rollout_vision_labeling,
+                vision_labeling_command=args.vision_labeling_command,
+                allow_delivery_upload=args.allow_delivery_upload,
+                delivery_command=args.delivery_command,
+                arena_operator_mode=args.arena_operator_mode,
+                allow_live_agents_sdk=args.allow_live_agents_sdk,
+                allow_live_codex_sdk=args.allow_live_codex_sdk,
             )
             print(
                 "[robot-eval-job] inbox_manifest="
@@ -1814,7 +2122,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             capture_root=args.capture_root,
             job_request=args.job_request,
             job_id=args.job_id,
-            agent_adapter=_agent_adapter_from_mode(args.agent_mode),
+            agent_adapter=_agent_adapter_from_mode(
+                args.agent_mode,
+                allow_live_operator=args.allow_live_agent_operator,
+            ),
             provisioner=args.provisioner,
             simulator=args.simulator,
             allow_gpu_provisioning=args.allow_gpu_provisioning,
@@ -1829,6 +2140,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             training_command=args.training_command,
             timeout_seconds=args.timeout_seconds,
             budget_usd=args.budget_usd,
+            arena_results_dir=args.arena_results_dir,
+            arena_scenario_count=args.arena_scenario_count,
+            arena_shard_size=args.arena_shard_size,
+            arena_num_envs=args.arena_num_envs,
+            arena_retry_budget=args.arena_retry_budget,
+            allow_rollout_vision_labeling=args.allow_rollout_vision_labeling,
+            vision_labeling_command=args.vision_labeling_command,
+            allow_delivery_upload=args.allow_delivery_upload,
+            delivery_command=args.delivery_command,
+            arena_operator_mode=args.arena_operator_mode,
+            allow_live_agents_sdk=args.allow_live_agents_sdk,
+            allow_live_codex_sdk=args.allow_live_codex_sdk,
         )
     except (OSError, ValueError) as exc:
         print(f"[robot-eval-job] FAILED: {exc}")

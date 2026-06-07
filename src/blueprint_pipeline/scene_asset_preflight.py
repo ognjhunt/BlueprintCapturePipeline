@@ -763,7 +763,10 @@ def _inspect_usd_with_pxr(path: Path) -> Dict[str, Any] | None:
         from pxr import Usd, UsdGeom, UsdPhysics
     except Exception:
         return None
-    stage = Usd.Stage.Open(str(path))
+    try:
+        stage = Usd.Stage.Open(str(path))
+    except Exception:
+        return None
     if stage is None:
         return {
             "asset_type": "usd",

@@ -254,7 +254,9 @@ def test_production_handoff_readiness_is_ready_except_owner_gpu(tmp_path: Path) 
     assert result["proof_summary"]["webapp_upstream_links_verified"] is True
     assert result["proof_summary"]["worldlabs_generation_manifested"] is True
     assert result["proof_summary"]["cpu_preflight_ready_for_owner_gpu"] is True
+    assert result["proof_summary"]["arena_environment_packet_manifested"] is True
     assert result["proof_summary"]["robot_readiness_proven"] is False
+    assert result["artifacts"]["arena_environment_packet"]["exists"] is True
     assert manifest["status"] == result["status"]
 
 

@@ -262,6 +262,10 @@ def _write_existing_simulation_sources(capture_root: Path) -> None:
             "status": "planned",
             "frameworks": {
                 "isaac_sim": {"status": "planned_requires_conversion", "blockers": []},
+                "isaac_lab_arena": {
+                    "status": "planned_requires_owner_asset_mapping",
+                    "blockers": ["arena_scene_asset_mapping_required"],
+                },
                 "mujoco": {"status": "planned_requires_conversion", "blockers": []},
                 "pybullet": {"status": "planned_requires_conversion", "blockers": []},
                 "newton": {"status": "blocked", "blockers": ["missing_collider_mesh_glb"]},
@@ -316,13 +320,20 @@ def test_site_eval_director_builds_card_to_scenario_manifests(tmp_path: Path) ->
     assert requests["task_request_count"] == 1
     assert requests["requests"][0]["task_id"] == "place_return_in_bin"
     assert requests["requests"][0]["scenario_ids"] == ["scenario_place_return_in_bin_mobile"]
-    assert matrix["frameworks"] == ["isaac_sim", "mujoco", "pybullet", "newton"]
+    assert matrix["frameworks"] == [
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    ]
     assert {
         row["framework"]: row["conversion_status"]
         for row in matrix["matrix"]
         if row["scenario_id"] == "scenario_place_return_in_bin_mobile"
     } == {
         "isaac_sim": "planned_requires_conversion",
+        "isaac_lab_arena": "planned_requires_owner_asset_mapping",
         "mujoco": "planned_requires_conversion",
         "pybullet": "planned_requires_conversion",
         "newton": "blocked",
@@ -386,7 +397,7 @@ def test_agent_inferred_scenarios_stay_review_only(tmp_path: Path) -> None:
     )
 
 
-def test_missing_agents_sdk_codex_sdk_api_and_mcp_write_blocked_advisory_manifests(
+def test_missing_agents_sdk_codex_sdk_api_and_live_gates_write_blocked_operator_manifests(
     tmp_path: Path,
 ) -> None:
     capture_root = _build_capture_root(tmp_path)
@@ -420,17 +431,25 @@ def test_missing_agents_sdk_codex_sdk_api_and_mcp_write_blocked_advisory_manifes
     assert agents_manifest["status"] == "blocked"
     assert "missing_openai_agents_sdk" in agents_manifest["blockers"]
     assert "missing_openai_api_key" in agents_manifest["blockers"]
+    assert "missing_cli_allow_live_agents_sdk_operator" in agents_manifest["blockers"]
+    assert "missing_env_BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS" in agents_manifest["blockers"]
+    assert agents_manifest["agent_authority"] == "live_operator_when_gated"
+    assert agents_manifest["proof_booleans_mutable_by_agent"] is False
     assert codex_manifest["status"] == "blocked"
     assert "missing_codex_sdk" in codex_manifest["blockers"]
     assert "missing_openai_api_key" in codex_manifest["blockers"]
-    assert "missing_codex_mcp_server" in codex_manifest["blockers"]
+    assert "missing_cli_allow_live_codex_sdk_operator" in codex_manifest["blockers"]
+    assert "missing_env_BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS" in codex_manifest["blockers"]
+    assert codex_manifest["evidence"]["codex_mcp_server_required_for_live_operator"] is False
+    assert codex_manifest["proof_effect"]["proof_booleans_mutable_by_agent"] is False
     assert run_manifest["agent_request_manifests"] == {
         "agents_sdk_site_eval_director": "agents_sdk_site_eval_director_request.json",
         "codex_sdk_code_maintainer": "codex_sdk_code_maintainer_request.json",
     }
+    assert run_manifest["agent_operator_manifests"] == run_manifest["agent_request_manifests"]
 
 
-def test_codex_code_maintainer_manifest_limits_subagent_to_code_fix_requests(
+def test_codex_code_maintainer_live_operator_can_patch_and_test_without_proof_mutation(
     tmp_path: Path,
 ) -> None:
     capture_root = _build_capture_root(tmp_path)
@@ -444,6 +463,22 @@ def test_codex_code_maintainer_manifest_limits_subagent_to_code_fix_requests(
             openai_api_key="sk-test",
             codex_mcp_server_available=True,
             codex_cli_path="/usr/local/bin/codex",
+            live_env_allowed=True,
+            allow_live_operator=True,
+            executor=lambda _prompt, _context: {
+                "final_output": "Patched the parser and ran the focused site-eval tests.",
+                "commands_chosen": ["pytest tests/test_site_eval_director.py"],
+                "tool_call_summaries": [
+                    {"tool_name": "apply_patch", "summary": "parser fix"},
+                    {"tool_name": "shell", "summary": "focused pytest"},
+                ],
+                "decisions": [
+                    {
+                        "decision": "patch_and_test",
+                        "summary": "Code fix was required before rerun.",
+                    }
+                ],
+            },
         ),
     )
 
@@ -454,15 +489,25 @@ def test_codex_code_maintainer_manifest_limits_subagent_to_code_fix_requests(
         / "codex_sdk_code_maintainer_request.json"
     )
 
-    assert manifest["status"] == "request_manifest_ready"
-    assert manifest["execution_performed"] is False
-    assert manifest["agent_authority"] == "advisory_only"
+    assert manifest["status"] == "operator_completed"
+    assert manifest["execution_performed"] is True
+    assert manifest["operator_mode"] == "live_operator"
+    assert manifest["agent_authority"] == "live_code_maintainer_when_gated"
     assert manifest["request"]["allowed_request_types"] == [
         "implementation_diagnosis",
-        "code_fix_patch_plan",
+        "code_fix_patch",
+        "test_execution",
+        "diff_summary",
     ]
     assert manifest["request"]["mcp_server_command"] == ["codex", "mcp-server"]
     assert "proof_or_readiness_claim_upgrade" in manifest["request"]["prohibited_request_types"]
+    assert manifest["operator_ledger"]["commands_chosen"] == [
+        "diagnose_patch_and_test_pipeline_failure",
+        "pytest tests/test_site_eval_director.py",
+    ]
+    assert manifest["operator_ledger"]["tool_call_summaries"][0]["tool_name"] == "apply_patch"
+    assert manifest["proof_effect"]["proof_booleans_mutable_by_agent"] is False
+    assert manifest["proof_effect"]["direct_proof_booleans_set_true"] == []
 
 
 def test_evaluation_prep_surfaces_site_eval_director_artifacts_without_overclaiming(
@@ -649,6 +694,7 @@ def test_site_eval_director_real_engines_fail_closed_even_with_fixture_success(
 
     assert {item["framework"] for item in run_manifest["real_engine_execution_requests"]} == {
         "isaac_sim",
+        "isaac_lab_arena",
         "mujoco",
         "pybullet",
         "newton",

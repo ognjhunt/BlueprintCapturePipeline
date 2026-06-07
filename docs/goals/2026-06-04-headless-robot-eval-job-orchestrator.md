@@ -63,7 +63,7 @@ route review, but they cannot become proof.
 - [x] Add robot eval job request and policy package validation contract.
 - [x] Add deterministic job orchestrator module and CLI.
 - [x] Write per-job state machine artifacts under `pipeline/robot_eval_jobs/<job_id>/`.
-- [x] Add fake/local agent orchestrator and fail-closed Agents SDK adapter.
+- [x] Add fake/local agent orchestrator and gated live Agents SDK operator adapter.
 - [x] Add fixture provisioner and fail-closed real provider request/result manifests.
 - [x] Add fixture simulator path and gated command simulator path for MuJoCo,
       PyBullet, Newton, and Isaac Sim.

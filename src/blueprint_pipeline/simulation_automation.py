@@ -1,10 +1,12 @@
-"""Fail-closed simulation automation orchestration lane.
+"""Fail-closed simulation automation orchestration lane with gated live SDK operators.
 
 This module turns existing capture/package/World Labs/Marble artifacts into a
 deterministic simulation automation package. It plans conversion, simulator
 execution, training, evaluation, and proof collection without calling providers,
 downloading assets, running simulators, or running GPU training unless explicit
-run-time approvals are present.
+run-time approvals are present. Agents SDK and Codex SDK adapters may execute as
+live operators under explicit gates to coordinate failures, retries, summaries,
+and code fixes, but deterministic artifacts own proof state.
 """
 
 from __future__ import annotations
@@ -19,8 +21,21 @@ import subprocess
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 
+from .agent_operator_runtime import (
+    LIVE_AGENTS_SDK_ENV,
+    LIVE_CODEX_SDK_ENV,
+    OperatorExecutor,
+    OperatorRunConfig,
+    blocked_operator_ledger,
+    completed_operator_ledger,
+    env_truthy,
+    external_action_gates,
+    proof_effect,
+    run_agents_sdk_operator,
+    run_codex_sdk_operator,
+)
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import EpisodeSpecAgentAdapter, FakeEpisodeSpecAgentAdapter, build_episode_specs
@@ -41,13 +56,16 @@ GPU_HANDOFF_PACKET_SCHEMA_VERSION = "gpu_handoff_packet.v1"
 GPU_OWNER_SYSTEM_PROOF_SCHEMA_VERSION = "gpu_owner_system_proof_schema.v1"
 OWNER_GPU_BLOCKED_MANIFEST_SCHEMA_VERSION = "owner_gpu_simulator_execution_blocked_manifest.v1"
 OWNER_GPU_PROOF_MANIFEST_SCHEMA_VERSION = "owner_gpu_simulator_execution_proof_manifest.v1"
+ARENA_ENVIRONMENT_PACKET_SCHEMA_VERSION = "arena_environment_packet.v1"
 
-SIMULATOR_FRAMEWORKS = ("isaac_sim", "mujoco", "pybullet", "newton")
+SIMULATOR_FRAMEWORKS = ("isaac_sim", "isaac_lab_arena", "mujoco", "pybullet", "newton")
 TRAINING_RUNNER = "blueprint_pipeline.synthesis.cosmos_lora_training.run_cosmos_lora_training"
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "simulation_automation_orchestration_only",
     "repo_local_only_by_default": True,
+    "agent_operator_mode_allowed": True,
+    "agents_may_mutate_proof_booleans": False,
     "live_provider_calls_performed": False,
     "remote_asset_downloads_performed": False,
     "simulators_run": False,
@@ -84,10 +102,11 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
 
 
 class SimulationAutomationAgentAdapter(Protocol):
-    """Optional agent helper interface.
+    """Optional agent operator interface.
 
     The deterministic orchestration code owns manifest status and claim
-    boundaries. Agent adapters can only add advisory planning and diagnostics.
+    boundaries. Agent adapters may execute live work under gates, but cannot set
+    proof booleans directly.
     """
 
     def build_ledger(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]: ...
@@ -105,8 +124,10 @@ class FakeSimulationAutomationAgentAdapter:
             "schema_version": AGENT_LEDGER_SCHEMA_VERSION,
             "adapter": self.adapter_name,
             "status": "completed",
+            "operator_mode": "deterministic_test_operator",
             "network_required": False,
             "live_provider_calls_performed": False,
+            "proof_booleans_mutable_by_agent": False,
             "decisions": [
                 {
                     "decision": "plan_next_actions",
@@ -123,78 +144,200 @@ class FakeSimulationAutomationAgentAdapter:
                     "summary": "Simulator execution and training are intentionally blocked by default.",
                 }
             ],
+            "operator_ledger": completed_operator_ledger(
+                adapter=self.adapter_name,
+                output={
+                    "final_output": "Local fake adapter selected deterministic manifest-first work.",
+                    "commands_chosen": ["build_simulation_automation"],
+                },
+                default_command="build_simulation_automation",
+                proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+            ),
+            "proof_effect": proof_effect(
+                deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+            ),
         }
 
 
 @dataclass(frozen=True)
 class CodexSdkSimulationAutomationAgentAdapter:
-    """Optional Codex SDK planning adapter.
-
-    The package name and API have changed over time, so the adapter is
-    deliberately best-effort and fail-closed. When an SDK is available, this
-    class records the intended start/resume request metadata for a Codex thread;
-    it never mutates deterministic status or proof booleans.
-    """
+    """Optional Codex SDK live code-maintainer operator."""
 
     thread_id: str | None = None
-    sandbox: str = "read-only"
+    sandbox: str = "workspace-write"
+    codex_sdk_available: bool | None = None
+    openai_api_key: str | None = None
+    live_env_allowed: bool | None = None
+    allow_live_operator: bool = False
+    model: str = "gpt-4.1"
+    executor: OperatorExecutor | None = None
 
     def build_ledger(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
         packages = ["openai_codex", "openai_codex_sdk", "codex_sdk"]
         installed = next((name for name in packages if importlib.util.find_spec(name)), None)
+        sdk_available = (
+            self.codex_sdk_available
+            if self.codex_sdk_available is not None
+            else bool(self.executor is not None) or bool(installed)
+        )
+        api_key_present = bool(
+            _string(self.openai_api_key)
+            if self.openai_api_key is not None
+            else _string(os.getenv("OPENAI_API_KEY"))
+        )
+        env_allowed = (
+            bool(self.live_env_allowed)
+            if self.live_env_allowed is not None
+            else env_truthy(LIVE_CODEX_SDK_ENV)
+        )
         request = {
             "action": "resume_thread" if self.thread_id else "start_thread",
             "thread_id": self.thread_id,
             "sandbox": self.sandbox if self.sandbox in {"read-only", "workspace-write"} else "read-only",
             "workspace": str(plan_context.get("repo_root") or ""),
-            "prompt_purpose": "simulation_automation_advisory_planning_only",
+            "prompt_purpose": "simulation_automation_live_code_maintenance",
+            "allowed_actions": [
+                "diagnose_pipeline_failure",
+                "patch_code",
+                "run_focused_tests",
+                "produce_diff_summary",
+                "summarize_remaining_blockers",
+            ],
+            "prohibited_actions": [
+                "set_proof_booleans_true_without_deterministic_artifacts",
+                "call_live_providers_without_explicit_gates",
+                "spend_money_without_explicit_gates",
+            ],
         }
-        if not installed:
+        blockers: List[str] = []
+        if not sdk_available:
+            blockers.append("missing_codex_sdk")
+        if not api_key_present:
+            blockers.append("missing_openai_api_key")
+        if not self.allow_live_operator:
+            blockers.append("missing_cli_allow_live_codex_sdk_operator")
+        if not env_allowed:
+            blockers.append(f"missing_env_{LIVE_CODEX_SDK_ENV}")
+        live_output: Dict[str, Any] | None = None
+        execution_performed = False
+        execution_failed = False
+        if not blockers:
+            try:
+                live_output = run_codex_sdk_operator(
+                    OperatorRunConfig(
+                        adapter="codex_sdk_simulation_code_maintainer",
+                        model=self.model,
+                        prompt=_codex_simulation_operator_prompt(plan_context),
+                        plan_context=plan_context,
+                        executor=self.executor,
+                        sandbox=_string(request["sandbox"]),
+                    )
+                )
+                execution_performed = True
+            except RuntimeError as exc:
+                blockers.append(str(exc))
+                execution_failed = True
+            except Exception as exc:
+                blockers.append(f"codex_sdk_operator_execution_failed:{type(exc).__name__}")
+                execution_failed = True
+        if blockers:
             return {
                 "schema_version": AGENT_LEDGER_SCHEMA_VERSION,
                 "adapter": "codex_sdk",
-                "status": "blocked",
+                "status": "operator_failed" if execution_failed else "blocked",
+                "operator_mode": "live_operator_blocked",
                 "network_required": True,
-                "optional_dependency": "openai-codex-sdk/openai-codex",
-                "reason": "missing_optional_dependency",
+                "optional_dependency": installed or "openai-codex",
+                "reason": "live_operator_gate_or_execution_blocked",
+                "execution_performed": execution_performed,
                 "request": request,
                 "decisions": [],
+                "operator_ledger": blocked_operator_ledger(
+                    adapter="codex_sdk_simulation_code_maintainer",
+                    blockers=blockers,
+                    command_chosen=None,
+                    proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+                ),
                 "diagnostics": [
                     {
                         "status": "blocked",
-                        "blockers": ["missing_optional_dependency"],
-                        "summary": "Codex SDK assistance was requested but no supported Codex SDK import was available.",
+                        "blockers": blockers,
+                        "summary": "Codex SDK live code-maintainer execution was blocked or failed.",
                     }
                 ],
+                "evidence": {
+                    "codex_sdk_available": bool(sdk_available),
+                    "openai_api_key_present": api_key_present,
+                    "cli_allow_live_operator": self.allow_live_operator,
+                    LIVE_CODEX_SDK_ENV: env_allowed,
+                    **external_action_gates(),
+                },
+                "proof_effect": proof_effect(
+                    deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+                ),
             }
+        operator_ledger = completed_operator_ledger(
+            adapter="codex_sdk_simulation_code_maintainer",
+            output=live_output or {},
+            default_command="diagnose_patch_and_test_simulation_automation",
+            proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+        )
         return {
             "schema_version": AGENT_LEDGER_SCHEMA_VERSION,
             "adapter": "codex_sdk",
-            "status": "request_manifest_ready",
+            "status": "operator_completed",
+            "operator_mode": "live_operator",
             "network_required": True,
+            "execution_performed": True,
             "optional_dependency": installed,
             "request": request,
-            "decisions": [
-                {
-                    "decision": "codex_thread_request_prepared",
-                    "summary": "A Codex SDK thread request can be started or resumed by caller-owned SDK code.",
-                    "owned_by": "agent_adapter",
-                }
-            ],
+            "decisions": operator_ledger["decisions"],
+            "operator_ledger": operator_ledger,
             "diagnostics": [],
+            "evidence": {
+                "codex_sdk_available": bool(sdk_available),
+                "openai_api_key_present": api_key_present,
+                "cli_allow_live_operator": self.allow_live_operator,
+                LIVE_CODEX_SDK_ENV: env_allowed,
+                **external_action_gates(),
+            },
+            "proof_effect": proof_effect(
+                deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+            ),
         }
 
 
 @dataclass(frozen=True)
 class AgentsSdkCodexMCPAdapter:
-    """Optional Agents SDK + Codex MCP advisory adapter."""
+    """Optional Agents SDK pipeline operator with Codex-compatible workspace scope."""
 
-    sandbox: str = "read-only"
+    sandbox: str = "workspace-write"
+    agents_sdk_available: bool | None = None
+    openai_api_key: str | None = None
+    live_env_allowed: bool | None = None
+    allow_live_operator: bool = False
+    model: str = "gpt-4.1"
+    executor: OperatorExecutor | None = None
 
     def build_ledger(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
         agents_package = next(
             (name for name in ("agents", "openai_agents") if importlib.util.find_spec(name)),
             None,
+        )
+        agents_available = (
+            self.agents_sdk_available
+            if self.agents_sdk_available is not None
+            else bool(self.executor is not None) or bool(agents_package)
+        )
+        api_key_present = bool(
+            _string(self.openai_api_key)
+            if self.openai_api_key is not None
+            else _string(os.getenv("OPENAI_API_KEY"))
+        )
+        env_allowed = (
+            bool(self.live_env_allowed)
+            if self.live_env_allowed is not None
+            else env_truthy(LIVE_AGENTS_SDK_ENV)
         )
         request = {
             "agent_type": "openai_agents_sdk",
@@ -202,50 +345,133 @@ class AgentsSdkCodexMCPAdapter:
             "workspace": str(plan_context.get("repo_root") or ""),
             "sandbox": self.sandbox if self.sandbox in {"read-only", "workspace-write"} else "read-only",
             "tool_scope": [
-                "propose_commands",
+                "inspect_manifests_and_logs",
+                "choose_next_deterministic_command",
+                "trigger_allowed_reruns",
                 "diagnose_failures",
                 "summarize_traces",
-                "update_next_action_plan",
+                "route_review_items",
+                "maintain_progress_ledger",
             ],
         }
-        if not agents_package:
+        blockers: List[str] = []
+        if not agents_available:
+            blockers.append("missing_openai_agents_sdk")
+        if not api_key_present:
+            blockers.append("missing_openai_api_key")
+        if not self.allow_live_operator:
+            blockers.append("missing_cli_allow_live_agents_sdk_operator")
+        if not env_allowed:
+            blockers.append(f"missing_env_{LIVE_AGENTS_SDK_ENV}")
+        live_output: Dict[str, Any] | None = None
+        execution_performed = False
+        execution_failed = False
+        if not blockers:
+            try:
+                live_output = run_agents_sdk_operator(
+                    OperatorRunConfig(
+                        adapter="openai_agents_sdk_simulation_operator",
+                        model=self.model,
+                        prompt=_agents_sdk_simulation_operator_prompt(plan_context),
+                        plan_context=plan_context,
+                        executor=self.executor,
+                    )
+                )
+                execution_performed = True
+            except RuntimeError as exc:
+                blockers.append(str(exc))
+                execution_failed = True
+            except Exception as exc:
+                blockers.append(f"agents_sdk_operator_execution_failed:{type(exc).__name__}")
+                execution_failed = True
+        if blockers:
             return {
                 "schema_version": AGENT_LEDGER_SCHEMA_VERSION,
                 "adapter": "openai_agents_sdk_codex_mcp",
-                "status": "blocked",
+                "status": "operator_failed" if execution_failed else "blocked",
+                "operator_mode": "live_operator_blocked",
                 "network_required": True,
-                "optional_dependency": "openai-agents",
-                "reason": "missing_optional_dependency",
+                "optional_dependency": agents_package or "openai-agents",
+                "reason": "live_operator_gate_or_execution_blocked",
+                "execution_performed": execution_performed,
                 "request": request,
                 "decisions": [],
+                "operator_ledger": blocked_operator_ledger(
+                    adapter="openai_agents_sdk_simulation_operator",
+                    blockers=blockers,
+                    command_chosen=None,
+                    proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+                ),
                 "diagnostics": [
                     {
                         "status": "blocked",
-                        "blockers": ["missing_optional_dependency"],
-                        "summary": "Agents SDK assistance was requested but the Agents SDK import was unavailable.",
+                        "blockers": blockers,
+                        "summary": "Agents SDK live pipeline operator execution was blocked or failed.",
                     }
                 ],
+                "evidence": {
+                    "openai_agents_sdk_available": bool(agents_available),
+                    "openai_api_key_present": api_key_present,
+                    "cli_allow_live_operator": self.allow_live_operator,
+                    LIVE_AGENTS_SDK_ENV: env_allowed,
+                    **external_action_gates(),
+                },
+                "proof_effect": proof_effect(
+                    deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+                ),
             }
+        operator_ledger = completed_operator_ledger(
+            adapter="openai_agents_sdk_simulation_operator",
+            output=live_output or {},
+            default_command="choose_next_simulation_automation_command",
+            proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+        )
         return {
             "schema_version": AGENT_LEDGER_SCHEMA_VERSION,
             "adapter": "openai_agents_sdk_codex_mcp",
-            "status": "request_manifest_ready",
+            "status": "operator_completed",
+            "operator_mode": "live_operator",
             "network_required": True,
+            "execution_performed": True,
             "optional_dependency": agents_package,
             "request": request,
-            "decisions": [
-                {
-                    "decision": "agents_sdk_codex_mcp_request_prepared",
-                    "summary": "Agents SDK + Codex MCP advisory orchestration can be launched by caller-owned code.",
-                    "owned_by": "agent_adapter",
-                }
-            ],
+            "decisions": operator_ledger["decisions"],
+            "operator_ledger": operator_ledger,
             "diagnostics": [],
+            "evidence": {
+                "openai_agents_sdk_available": bool(agents_available),
+                "openai_api_key_present": api_key_present,
+                "cli_allow_live_operator": self.allow_live_operator,
+                LIVE_AGENTS_SDK_ENV: env_allowed,
+                **external_action_gates(),
+            },
+            "proof_effect": proof_effect(
+                deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+            ),
         }
 
 
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _codex_simulation_operator_prompt(plan_context: Mapping[str, Any]) -> str:
+    return (
+        "Act as the Blueprint Codex SDK code maintainer for the simulation automation "
+        "lane. Diagnose failures, patch code if needed, run focused tests, and summarize "
+        "diffs. Do not set proof booleans directly; proof can only come from deterministic "
+        "accepted artifacts.\n\n"
+        f"{json.dumps(plan_context, sort_keys=True, default=str)[:12000]}"
+    )
+
+
+def _agents_sdk_simulation_operator_prompt(plan_context: Mapping[str, Any]) -> str:
+    return (
+        "Act as the Blueprint Agents SDK simulation pipeline operator. Inspect manifests "
+        "and logs, choose safe deterministic commands or reruns, summarize blockers, route "
+        "review, and maintain a progress ledger. Do not set proof booleans directly.\n\n"
+        f"{json.dumps(plan_context, sort_keys=True, default=str)[:12000]}"
+    )
 
 
 def _read_optional_mapping(path: Path) -> Dict[str, Any]:
@@ -261,6 +487,25 @@ def _mapping(value: Any) -> Dict[str, Any]:
 
 def _string(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _string_list(value: Any) -> List[str]:
+    if value is None:
+        values: Iterable[Any] = []
+    elif isinstance(value, str):
+        values = [value]
+    elif isinstance(value, Iterable):
+        values = value
+    else:
+        values = [value]
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = _string(item)
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
 
 
 def _relative_to(base_dir: Path, target: Path) -> str:
@@ -317,6 +562,7 @@ def _source_artifacts(*, automation_dir: Path, pipeline_dir: Path) -> Dict[str, 
         "cpu_simulator_preflight_manifest": automation_dir / "cpu_simulator_preflight_manifest.json",
         "cpu_preflight_manifest": automation_dir / "cpu_preflight_manifest.json",
         "pre_gpu_readiness_summary": automation_dir / "pre_gpu_readiness_summary.json",
+        "arena_environment_packet": automation_dir / "arena_environment_packet.json",
         "gpu_handoff_packet": automation_dir / "gpu_handoff_packet.json",
         "gpu_owner_system_proof_schema": automation_dir / "gpu_owner_system_proof_schema.json",
         "owner_gpu_simulator_execution_blocked_manifest": (
@@ -325,6 +571,13 @@ def _source_artifacts(*, automation_dir: Path, pipeline_dir: Path) -> Dict[str, 
         "cosmos_training_export": pipeline_dir / "cosmos_training_export" / "manifest.json",
         "cosmos_lora_training": (
             pipeline_dir / "cosmos_training_export" / "training_run_manifest.json"
+        ),
+        "robot_eval_site_card": pipeline_dir / "robot_eval_dataset" / "site_card.json",
+        "robot_eval_task_cards": pipeline_dir / "robot_eval_dataset" / "task_cards.json",
+        "robot_eval_scenario_cards": pipeline_dir / "robot_eval_dataset" / "scenario_cards.json",
+        "robot_eval_eval_cards": pipeline_dir / "robot_eval_dataset" / "eval_cards.json",
+        "robot_eval_proof_boundaries": (
+            pipeline_dir / "robot_eval_dataset" / "proof_boundaries.json"
         ),
     }
     return {
@@ -790,6 +1043,30 @@ def _conversion_status(
             "convert SPZ/PLY/GLB into USD review scene as needed",
             "import into Isaac Sim headless only after explicit approval",
         ]
+    elif framework == "isaac_lab_arena":
+        if not has_visual:
+            status = "blocked"
+            blockers = ["missing_visual_asset"]
+        elif worldlabs.get("usd_available") or cpu_preflight.get("isaac_usd_import_candidate"):
+            status = "arena_environment_packet_ready_for_owner_review"
+            blockers = (
+                []
+                if cpu_preflight.get("isaac_usd_collision_verified")
+                else ["isaac_usd_collision_unverified"]
+            )
+        elif worldlabs.get("ply_available") or collider:
+            status = "planned_requires_owner_asset_mapping"
+            blockers = ["arena_scene_asset_mapping_required"]
+        else:
+            status = "planned_requires_conversion"
+            blockers = ["spz_to_usd_or_arena_scene_asset_required"]
+        output_format = "Isaac_Lab_Arena_scene_embodiment_task_package"
+        recommended_steps = [
+            "review arena_environment_packet.json for scene, embodiment, task, metrics, and episode bindings",
+            "map Blueprint scene assets into Isaac Lab-Arena Scene primitives on the owner system",
+            "map robot-team assets into Isaac Lab-Arena Embodiment primitives without altering capture truth",
+            "run Isaac Lab-Arena only after explicit approval and owner-system proof capture",
+        ]
     elif framework == "mujoco":
         status = "planned_requires_conversion" if collider else "blocked"
         blockers = [] if collider else ["portable_collider_glb_missing"]
@@ -875,6 +1152,393 @@ def _build_asset_conversion_plan(*, plan: Mapping[str, Any], generated_at: str) 
     }
 
 
+def _cards_from_payload(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    cards = payload.get("cards")
+    if isinstance(cards, list):
+        return [dict(item) for item in cards if isinstance(item, Mapping)]
+    if isinstance(payload, list):  # type: ignore[unreachable]
+        return [dict(item) for item in payload if isinstance(item, Mapping)]
+    return []
+
+
+def _task_card_index(cards: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for index, card in enumerate(cards):
+        task_id = _string(card.get("task_id") or card.get("id") or f"task_{index + 1}")
+        if task_id:
+            out[task_id] = dict(card)
+    return out
+
+
+def _scenario_card_index(cards: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for index, card in enumerate(cards):
+        scenario_id = _string(card.get("scenario_id") or card.get("id") or f"scenario_{index + 1}")
+        if scenario_id:
+            out[scenario_id] = dict(card)
+    return out
+
+
+def _arena_scene_components(
+    *,
+    context: Any,
+    site_card: Mapping[str, Any],
+    inventory: Mapping[str, Any],
+    dependency_audit: Mapping[str, Any],
+    conversion_plan: Mapping[str, Any],
+) -> Dict[str, Any]:
+    assets = [dict(item) for item in inventory.get("assets") or [] if isinstance(item, Mapping)]
+    return {
+        "scene_component_id": f"blueprint_scene_{context.scene_id}",
+        "arena_primitive": "Scene",
+        "source_site_card": "robot_eval_dataset/site_card.json",
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "site_id": _string(site_card.get("site_id")) or None,
+        "site_type": _string(site_card.get("site_type")) or None,
+        "layout_truth_source": "Blueprint raw capture and downstream Site Card",
+        "asset_inputs": assets,
+        "dependency_summary": {
+            "missing_local_file_count": dependency_audit.get("missing_local_file_count", 0),
+            "hard_missing_local_file_count": dependency_audit.get(
+                "hard_missing_local_file_count",
+                dependency_audit.get("missing_local_file_count") or 0,
+            ),
+            "remote_ref_count": dependency_audit.get("remote_ref_count", 0),
+            "unresolved_ref_count": dependency_audit.get("unresolved_ref_count", 0),
+        },
+        "conversion_status": _mapping(
+            _mapping(conversion_plan.get("frameworks")).get("isaac_lab_arena")
+        ).get("status"),
+        "capture_truth_authority": "raw_capture_not_arena_generated_scene",
+    }
+
+
+def _arena_task_components(
+    *,
+    task_cards: Sequence[Mapping[str, Any]],
+    episode_spec: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    by_task = _task_card_index(task_cards)
+    task_ids = list(by_task)
+    for episode in episode_spec.get("episodes") or []:
+        if not isinstance(episode, Mapping):
+            continue
+        task_id = _string(episode.get("task_id"))
+        if task_id and task_id not in task_ids:
+            task_ids.append(task_id)
+    components: List[Dict[str, Any]] = []
+    for task_id in task_ids:
+        card = by_task.get(task_id, {})
+        components.append(
+            {
+                "task_component_id": f"arena_task_{task_id}",
+                "arena_primitive": "Task",
+                "task_id": task_id,
+                "objective": _string(
+                    card.get("task_statement")
+                    or card.get("task_text")
+                    or card.get("name")
+                    or task_id
+                ),
+                "task_category": _string(card.get("task_category") or "scene_review"),
+                "required_metrics": _string_list(card.get("required_metrics")),
+                "success_criteria": card.get("success_criteria")
+                or card.get("thresholds")
+                or "owner_eval_card_thresholds_required",
+                "source": "robot_eval_dataset/task_cards.json" if card else "episode_spec.v1.json",
+                "review_required": True,
+                "claim_boundary": "arena_task_component_defines_eval_scope_not_execution_proof",
+            }
+        )
+    return components
+
+
+def _arena_scenario_components(
+    *,
+    scenario_cards: Sequence[Mapping[str, Any]],
+    episode_spec: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    by_scenario = _scenario_card_index(scenario_cards)
+    scenario_ids = list(by_scenario)
+    for episode in episode_spec.get("episodes") or []:
+        if not isinstance(episode, Mapping):
+            continue
+        scenario_id = _string(episode.get("scenario_id"))
+        if scenario_id and scenario_id not in scenario_ids:
+            scenario_ids.append(scenario_id)
+    components: List[Dict[str, Any]] = []
+    for scenario_id in scenario_ids:
+        card = by_scenario.get(scenario_id, {})
+        labels = _mapping(card.get("observed_vs_inferred_labels"))
+        components.append(
+            {
+                "scenario_component_id": f"arena_scenario_{scenario_id}",
+                "scenario_id": scenario_id,
+                "task_id": _string(card.get("task_id")) or None,
+                "robot_profile_id": _string(card.get("robot_profile_id")) or None,
+                "normal_scenario": card.get("normal_scenario"),
+                "variation": card.get("variation"),
+                "edge_case": card.get("edge_case"),
+                "observed_vs_inferred_labels": labels,
+                "review_required": True,
+                "source": (
+                    "robot_eval_dataset/scenario_cards.json"
+                    if card
+                    else "episode_spec.v1.json"
+                ),
+                "claim_boundary": "arena_scenario_component_is_review_scope_not_simulator_result",
+            }
+        )
+    return components
+
+
+def _arena_eval_bindings(eval_cards: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    bindings: List[Dict[str, Any]] = []
+    for index, card in enumerate(eval_cards):
+        eval_id = _string(card.get("eval_card_id") or card.get("id") or f"eval_card_{index + 1}")
+        bindings.append(
+            {
+                "eval_binding_id": f"arena_eval_binding_{eval_id}",
+                "eval_card_id": eval_id,
+                "scenario_id": _string(card.get("scenario_id")) or None,
+                "task_id": _string(card.get("task_id")) or None,
+                "prediction_source": _string(card.get("prediction_source")) or None,
+                "metrics": card.get("metrics") or card.get("required_metrics") or [],
+                "validation": card.get("validation") or {},
+                "blocked_upgrades": _string_list(card.get("blocked_upgrades")),
+                "proof_boundary": card.get("proof_boundary"),
+                "source": "robot_eval_dataset/eval_cards.json",
+            }
+        )
+    return bindings
+
+
+def _arena_embodiment_components(episode_spec: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for episode in episode_spec.get("episodes") or []:
+        if not isinstance(episode, Mapping):
+            continue
+        profile = _mapping(episode.get("robot_profile"))
+        profile_id = _string(episode.get("robot_profile_id") or profile.get("robot_profile_id"))
+        if not profile_id or profile_id in seen:
+            continue
+        seen.add(profile_id)
+        out.append(
+            {
+                "embodiment_component_id": f"arena_embodiment_{profile_id}",
+                "arena_primitive": "Embodiment",
+                "robot_profile_id": profile_id,
+                "embodiment": _string(profile.get("embodiment")) or None,
+                "base_type": _string(profile.get("base_type")) or None,
+                "sensors": _string_list(profile.get("sensors")),
+                "source": profile.get("source") or "episode_spec.v1.json",
+                "owner_robot_asset_mapping_required": True,
+                "claim_boundary": "embodiment_reference_only_not_robot_policy_or_asset_proof",
+            }
+        )
+    return out
+
+
+def _arena_episode_bindings(
+    *,
+    context: Any,
+    episode_spec: Mapping[str, Any],
+    task_components: Sequence[Mapping[str, Any]],
+    scenario_components: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    task_ids = {_string(item.get("task_id")) for item in task_components}
+    scenario_ids = {_string(item.get("scenario_id")) for item in scenario_components}
+    bindings: List[Dict[str, Any]] = []
+    for episode in episode_spec.get("episodes") or []:
+        if not isinstance(episode, Mapping):
+            continue
+        episode_id = _string(episode.get("episode_id"))
+        task_id = _string(episode.get("task_id"))
+        scenario_id = _string(episode.get("scenario_id"))
+        robot_profile_id = _string(episode.get("robot_profile_id"))
+        missing = _string_list(episode.get("missing_proof_labels"))
+        if task_id not in task_ids:
+            missing.append("arena_task_component_missing")
+        if scenario_id not in scenario_ids:
+            missing.append("arena_scenario_component_missing")
+        bindings.append(
+            {
+                "arena_environment_name": f"blueprint_{context.scene_id}_{episode_id}",
+                "episode_id": episode_id,
+                "scene_component_id": f"blueprint_scene_{context.scene_id}",
+                "task_component_id": f"arena_task_{task_id}",
+                "scenario_component_id": f"arena_scenario_{scenario_id}",
+                "embodiment_component_id": f"arena_embodiment_{robot_profile_id}",
+                "robot_spawn_pose": episode.get("robot_spawn_pose") or {},
+                "camera_pose": episode.get("camera_pose") or {},
+                "allowed_motion_region": episode.get("allowed_motion_region") or {},
+                "target_region": episode.get("target_region") or {},
+                "reset_conditions": episode.get("reset_conditions") or [],
+                "arena_builder_target": "IsaacLabArenaEnvironment",
+                "manager_based_rl_env_cfg_required": True,
+                "review_required": True,
+                "missing_proof_labels": _string_list(missing),
+                "proof_booleans": {
+                    "simulator_execution_proven": False,
+                    "robot_readiness_proven": False,
+                    "physics_contact_validated": False,
+                    "safety_validated": False,
+                },
+            }
+        )
+    return bindings
+
+
+def _build_arena_environment_packet(
+    *,
+    context: Any,
+    automation_dir: Path,
+    pipeline_dir: Path,
+    conversion_plan: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    site_card = _read_optional_mapping(pipeline_dir / "robot_eval_dataset" / "site_card.json")
+    task_cards = _cards_from_payload(
+        _read_optional_mapping(pipeline_dir / "robot_eval_dataset" / "task_cards.json")
+    )
+    scenario_cards = _cards_from_payload(
+        _read_optional_mapping(pipeline_dir / "robot_eval_dataset" / "scenario_cards.json")
+    )
+    eval_cards = _cards_from_payload(
+        _read_optional_mapping(pipeline_dir / "robot_eval_dataset" / "eval_cards.json")
+    )
+    proof_boundaries = _read_optional_mapping(
+        pipeline_dir / "robot_eval_dataset" / "proof_boundaries.json"
+    )
+    episode_spec = _read_optional_mapping(automation_dir / "episode_spec.v1.json")
+    inventory = _read_optional_mapping(automation_dir / "scene_asset_inventory.json")
+    dependency_audit = _read_optional_mapping(automation_dir / "scene_asset_dependency_audit.json")
+
+    task_components = _arena_task_components(task_cards=task_cards, episode_spec=episode_spec)
+    scenario_components = _arena_scenario_components(
+        scenario_cards=scenario_cards,
+        episode_spec=episode_spec,
+    )
+    embodiment_components = _arena_embodiment_components(episode_spec)
+    eval_bindings = _arena_eval_bindings(eval_cards)
+    episode_bindings = _arena_episode_bindings(
+        context=context,
+        episode_spec=episode_spec,
+        task_components=task_components,
+        scenario_components=scenario_components,
+    )
+    source_blockers: List[str] = []
+    if not site_card:
+        source_blockers.append("robot_eval_site_card_missing")
+    if not task_cards:
+        source_blockers.append("robot_eval_task_cards_missing")
+    if not scenario_cards:
+        source_blockers.append("robot_eval_scenario_cards_missing")
+    if not eval_cards:
+        source_blockers.append("robot_eval_eval_cards_missing")
+    if not episode_bindings:
+        source_blockers.append("episode_spec_v1_missing_or_empty")
+
+    blocker_set = _string_list(source_blockers)
+    for episode in episode_bindings:
+        blocker_set.extend(_string_list(episode.get("missing_proof_labels")))
+    blocker_set.extend(
+        [
+            "owner_gpu_simulator_execution_not_run",
+            "isaac_lab_arena_owner_install_not_verified",
+            "owner_robot_asset_mapping_required",
+        ]
+    )
+    blockers = _string_list(blocker_set)
+    packet = {
+        "schema_version": ARENA_ENVIRONMENT_PACKET_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "scene_id": context.scene_id,
+        "capture_id": context.capture_id,
+        "status": "ready_for_owner_arena_pack_review"
+        if episode_bindings
+        else "blocked_missing_episode_spec",
+        "backend": "isaac_lab_arena",
+        "compatibility_target": {
+            "framework": "NVIDIA Isaac Lab-Arena",
+            "environment_builder": "ArenaEnvBuilder",
+            "runtime_config_target": "ManagerBasedRLEnvCfg",
+            "package_role": "Blueprint Arena Pack review input",
+        },
+        "source_artifacts": {
+            "site_card": "../robot_eval_dataset/site_card.json" if site_card else None,
+            "task_cards": "../robot_eval_dataset/task_cards.json" if task_cards else None,
+            "scenario_cards": "../robot_eval_dataset/scenario_cards.json"
+            if scenario_cards
+            else None,
+            "eval_cards": "../robot_eval_dataset/eval_cards.json" if eval_cards else None,
+            "proof_boundaries": "../robot_eval_dataset/proof_boundaries.json"
+            if proof_boundaries
+            else None,
+            "episode_spec": "episode_spec.v1.json" if episode_spec else None,
+            "scene_asset_inventory": "scene_asset_inventory.json" if inventory else None,
+            "scene_asset_dependency_audit": "scene_asset_dependency_audit.json"
+            if dependency_audit
+            else None,
+            "asset_conversion_plan": "asset_conversion_plan.json",
+        },
+        "arena_components": {
+            "scene": _arena_scene_components(
+                context=context,
+                site_card=site_card,
+                inventory=inventory,
+                dependency_audit=dependency_audit,
+                conversion_plan=conversion_plan,
+            ),
+            "embodiments": embodiment_components,
+            "tasks": task_components,
+            "scenarios": scenario_components,
+            "eval_bindings": eval_bindings,
+            "episode_bindings": episode_bindings,
+        },
+        "package_layout": {
+            "suggested_root": "blueprint_arena_pack/",
+            "suggested_files": [
+                "scene.py",
+                "embodiments.py",
+                "tasks.py",
+                "metrics.py",
+                "episodes.yaml",
+                "README.md",
+                "proof_boundary.json",
+            ],
+            "export_executed": False,
+            "remote_asset_downloads_performed": False,
+        },
+        "execution_policy": {
+            "simulator_execution_allowed_by_default": False,
+            "required_env_gate": "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true",
+            "required_cli_gate": "--allow-simulator isaac_lab_arena",
+            "required_command_gate": "--simulator-command isaac_lab_arena=<owner command>",
+            "owner_gpu_proof_required": True,
+        },
+        "blockers": blockers,
+        "simulator_execution_proven": False,
+        "robot_readiness_proven": False,
+        "physics_contact_validated": False,
+        "safety_validated": False,
+        "public_claim_upgrade_allowed": False,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    packet["deterministic_fingerprint"] = _sha_payload(
+        {
+            "scene_id": packet["scene_id"],
+            "capture_id": packet["capture_id"],
+            "arena_components": packet["arena_components"],
+            "source_artifacts": packet["source_artifacts"],
+        }
+    )
+    write_json(automation_dir / "arena_environment_packet.json", packet)
+    return packet
+
+
 def _request_for_framework(
     *,
     framework: str,
@@ -884,6 +1548,9 @@ def _request_for_framework(
     generated_at: str,
 ) -> Dict[str, Any]:
     conversion = _mapping(_mapping(conversion_plan.get("frameworks")).get(framework))
+    arena_packet_path = (
+        "arena_environment_packet.json" if framework == "isaac_lab_arena" else None
+    )
     return {
         "schema_version": SIMULATOR_REQUEST_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -893,6 +1560,7 @@ def _request_for_framework(
         "status": "requested_if_approved",
         "command": shlex.split(command) if command else [],
         "conversion_status": conversion.get("status"),
+        "arena_environment_packet_path": arena_packet_path,
         "input_assets": conversion.get("input_assets") or {},
         "expected_outputs": [
             "stdout",
@@ -1271,11 +1939,28 @@ def _gpu_backend_recommendations(
                 ).get("status"),
             }
         )
+        recommendations.append(
+            {
+                "backend": "isaac_lab_arena",
+                "priority": 2,
+                "recommendation": "candidate_for_composable_policy_eval_package",
+                "why": [
+                    "USD-like asset detected",
+                    "Arena packet can bind Blueprint scene, embodiment, task, scenario, and eval components",
+                ],
+                "requires_owner_gpu": True,
+                "compatible_with_proxy_only": proxy_estimated,
+                "conversion_status": _mapping(
+                    _mapping(conversion_plan.get("frameworks")).get("isaac_lab_arena")
+                ).get("status"),
+                "artifact": "arena_environment_packet.json",
+            }
+        )
     if real_collider or asset_types.intersection({"urdf", "mjcf", "obj", "glb", "gltf"}):
         recommendations.append(
             {
                 "backend": "mujoco",
-                "priority": 2,
+                "priority": 3,
                 "recommendation": "candidate_for_portable_collision_or_generated_proxy_fixture",
                 "why": [
                     "Portable collision metadata or conversion target is available"
@@ -1292,7 +1977,7 @@ def _gpu_backend_recommendations(
         recommendations.append(
             {
                 "backend": "pybullet",
-                "priority": 3,
+                "priority": 4,
                 "recommendation": "candidate_for_urdf_or_generated_proxy_fixture",
                 "why": [
                     "URDF/collision assets or generated proxy fixture can support load sanity checks",
@@ -1314,6 +1999,20 @@ def _gpu_backend_recommendations(
                 "requires_owner_gpu": True,
                 "compatible_with_proxy_only": False,
                 "conversion_status": None,
+            }
+        )
+        recommendations.append(
+            {
+                "backend": "isaac_lab_arena",
+                "priority": 2,
+                "recommendation": "owner_review_required_before_arena_package_execution",
+                "why": ["Arena package can still be reviewed, but no compatible scene asset was proven locally"],
+                "requires_owner_gpu": True,
+                "compatible_with_proxy_only": False,
+                "conversion_status": _mapping(
+                    _mapping(conversion_plan.get("frameworks")).get("isaac_lab_arena")
+                ).get("status"),
+                "artifact": "arena_environment_packet.json",
             }
         )
     return sorted(recommendations, key=lambda item: int(item.get("priority") or 99))
@@ -1427,6 +2126,7 @@ def _build_gpu_handoff_artifacts(
     spawn_validation = _read_optional_mapping(automation_dir / "spawn_pose_validation_manifest.json")
     cpu_preflight = _read_optional_mapping(automation_dir / "cpu_preflight_manifest.json")
     pre_gpu_summary = _read_optional_mapping(automation_dir / "pre_gpu_readiness_summary.json")
+    arena_packet = _read_optional_mapping(automation_dir / "arena_environment_packet.json")
     owner_gpu_proof = _read_optional_mapping(
         automation_dir / "owner_gpu_simulator_execution_proof_manifest.json"
     )
@@ -1443,6 +2143,14 @@ def _build_gpu_handoff_artifacts(
             "--allow-simulator-execution --allow-simulator isaac_sim "
             "--simulator-command isaac_sim='<owner isaac sim headless command "
             "--scene <scene-asset> --proof-out <proof-dir>>'"
+        ),
+        "isaac_lab_arena": (
+            "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true "
+            "blueprint-run-simulation-automation --capture-root <capture-root> "
+            "--allow-simulator-execution --allow-simulator isaac_lab_arena "
+            "--simulator-command isaac_lab_arena='<owner Isaac Lab-Arena command "
+            "--arena-pack pipeline/simulation_automation/arena_environment_packet.json "
+            "--proof-out <proof-dir>>'"
         ),
         "mujoco": (
             "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true "
@@ -1496,6 +2204,7 @@ def _build_gpu_handoff_artifacts(
             "cpu_scene_proxy_manifest": "cpu_scene_proxy_manifest.json",
             "task_anchor_proposal_manifest": "task_anchor_proposal_manifest.json",
             "episode_specs": "episode_specs.json",
+            "arena_environment_packet": "arena_environment_packet.json",
             "spawn_pose_validation_manifest": "spawn_pose_validation_manifest.json",
             "cpu_preflight_manifest": "cpu_preflight_manifest.json",
             "pre_gpu_readiness_summary": "pre_gpu_readiness_summary.json",
@@ -1513,13 +2222,36 @@ def _build_gpu_handoff_artifacts(
         "recommended_backends": recommended_backends,
         "target_backend_guidance": {
             "isaac_sim": "Prefer for rich USD/OpenUSD scenes, references, materials, and future Isaac Lab workflows.",
+            "isaac_lab_arena": (
+                "Use when the owner wants a composable Isaac Lab-Arena scene/embodiment/task/eval package; "
+                "the packet is a review input until owner-system Arena execution proof exists."
+            ),
             "mujoco": "Use for compatible MJCF or generated/proxy fixtures, not for rich USD scene proof.",
             "pybullet": "Use for URDF/proxy fixture load checks, not as rich-scene proof unless owner accepts it.",
         },
         "required_dependencies": {
             "isaac_sim": ["NVIDIA GPU", "Isaac Sim/Isaac Lab owner install", "OpenUSD dependencies"],
+            "isaac_lab_arena": [
+                "NVIDIA GPU",
+                "Owner-pinned Isaac Lab-Arena install",
+                "Isaac Lab/Isaac Sim compatible versions",
+                "robot-team embodiment assets",
+                "OpenUSD or mapped scene assets",
+            ],
             "mujoco": ["mujoco Python package or owner MuJoCo install"],
             "pybullet": ["pybullet Python package or owner PyBullet install"],
+        },
+        "arena_package": {
+            "path": "arena_environment_packet.json" if arena_packet else None,
+            "status": arena_packet.get("status") if arena_packet else "missing",
+            "backend": "isaac_lab_arena",
+            "episode_count": len(
+                _mapping(arena_packet.get("arena_components")).get("episode_bindings") or []
+            )
+            if arena_packet
+            else 0,
+            "simulator_execution_proven": False,
+            "robot_readiness_proven": False,
         },
         "command_templates": command_templates,
         "environment_gates": {
@@ -1600,10 +2332,27 @@ def _default_agent_ledger(*, generated_at: str) -> Dict[str, Any]:
         "generated_at": generated_at,
         "adapter": "none",
         "status": "not_requested",
+        "operator_mode": "not_requested",
+        "proof_booleans_mutable_by_agent": False,
         "network_required": False,
         "live_provider_calls_performed": False,
         "decisions": [],
+        "operator_ledger": {
+            "generated_at": generated_at,
+            "operator_mode": "not_requested",
+            "decisions": [],
+            "tool_call_summaries": [],
+            "commands_chosen": [],
+            "refusals": [],
+            "blockers": [],
+            "proof_effect": proof_effect(
+                deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+            ),
+        },
         "diagnostics": [],
+        "proof_effect": proof_effect(
+            deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+        ),
     }
 
 
@@ -1657,6 +2406,13 @@ def build_simulation_automation(
         generated_at=generated_at,
     )
     conversion_plan = _build_asset_conversion_plan(plan=plan, generated_at=generated_at)
+    arena_environment_packet = _build_arena_environment_packet(
+        context=context,
+        automation_dir=automation_dir,
+        pipeline_dir=pipeline_dir,
+        conversion_plan=conversion_plan,
+        generated_at=generated_at,
+    )
     simulator_execution = _build_simulator_execution_manifest(
         context=context,
         automation_dir=automation_dir,
@@ -1709,6 +2465,7 @@ def build_simulation_automation(
         "episode_specs": episode_specs,
         "cpu_preflight": cpu_preflight,
         "conversion_plan": conversion_plan,
+        "arena_environment_packet": arena_environment_packet,
         "simulator_execution": simulator_execution,
         "training": training,
         "proof_boundary": proof_boundary,
@@ -1752,6 +2509,7 @@ def build_simulation_automation(
         "cpu_simulator_preflight_manifest_path": "cpu_simulator_preflight_manifest.json",
         "cpu_preflight_manifest_path": "cpu_preflight_manifest.json",
         "pre_gpu_readiness_summary_path": "pre_gpu_readiness_summary.json",
+        "arena_environment_packet_path": "arena_environment_packet.json",
         "gpu_handoff_packet_path": "gpu_handoff_packet.json",
         "gpu_owner_system_proof_schema_path": "gpu_owner_system_proof_schema.json",
         "owner_gpu_simulator_execution_proof_manifest_path": (
@@ -1768,6 +2526,8 @@ def build_simulation_automation(
         "training_orchestration_manifest_path": "training_orchestration_manifest.json",
         "proof_boundary_path": "proof_boundary.json",
         "agent_decision_ledger_path": "agent_decision_ledger.json",
+        "agent_operator_status": agent_ledger.get("status"),
+        "agent_operator_mode": agent_ledger.get("operator_mode"),
         "scene_asset_preflight_status": scene_preflight.get("status"),
         "episode_spec_status": episode_specs.get("status"),
         "episode_count": episode_specs.get("episode_count"),
@@ -1775,6 +2535,7 @@ def build_simulation_automation(
         "pre_gpu_readiness_status": _read_optional_mapping(
             automation_dir / "pre_gpu_readiness_summary.json"
         ).get("status"),
+        "arena_environment_packet_status": arena_environment_packet.get("status"),
         "gpu_handoff_status": _mapping(gpu_handoff.get("packet")).get("status"),
         "owner_gpu_simulator_execution_proven": bool(
             owner_gpu_proof.get("owner_gpu_simulator_execution_proven")
@@ -1828,7 +2589,8 @@ def _parse_simulator_commands(values: Sequence[str] | None) -> Dict[str, str]:
         framework, sep, command = value.partition("=")
         if not sep or framework not in SIMULATOR_FRAMEWORKS or not command.strip():
             raise ValueError(
-                "--simulator-command must be formatted as <isaac_sim|mujoco|pybullet|newton>=<command>"
+                "--simulator-command must be formatted as "
+                "<isaac_sim|isaac_lab_arena|mujoco|pybullet|newton>=<command>"
             )
         commands[framework] = command.strip()
     return commands
@@ -1841,9 +2603,13 @@ def _agent_adapter_from_args(args: argparse.Namespace) -> SimulationAutomationAg
         return CodexSdkSimulationAutomationAgentAdapter(
             thread_id=args.codex_thread_id,
             sandbox=args.codex_sandbox,
+            allow_live_operator=args.allow_live_agent_operator,
         )
     if args.agent_mode == "agents-sdk":
-        return AgentsSdkCodexMCPAdapter(sandbox=args.codex_sandbox)
+        return AgentsSdkCodexMCPAdapter(
+            sandbox=args.codex_sandbox,
+            allow_live_operator=args.allow_live_agent_operator,
+        )
     return None
 
 
@@ -1912,13 +2678,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--agent-mode",
         choices=("none", "fake", "codex-sdk", "agents-sdk"),
         default="none",
-        help="Optional advisory agent adapter; deterministic manifests remain authoritative",
+        help="Optional agent operator adapter; deterministic manifests remain authoritative",
+    )
+    parser.add_argument(
+        "--allow-live-agent-operator",
+        action="store_true",
+        help=(
+            f"Allow live SDK operator execution when {LIVE_AGENTS_SDK_ENV} or "
+            f"{LIVE_CODEX_SDK_ENV} is true and credentials exist"
+        ),
     )
     parser.add_argument(
         "--codex-sandbox",
         choices=("read-only", "workspace-write"),
-        default="read-only",
-        help="Sandbox request for optional Codex SDK or Agents SDK adapter manifests",
+        default="workspace-write",
+        help="Sandbox for optional Codex SDK or Agents SDK operators",
     )
     parser.add_argument("--codex-thread-id", default=None)
     args = parser.parse_args(argv)

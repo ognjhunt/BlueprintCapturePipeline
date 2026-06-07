@@ -397,7 +397,7 @@ def test_episode_spec_and_cpu_preflight_emit_review_required_optional_dependency
     assert episode_spec["default_robot_profiles_used"] is True
     assert episode_spec["episodes"][0]["review_required"] is True
     assert "simulator_execution_not_run" in episode_spec["episodes"][0]["missing_proof_labels"]
-    assert proposals["agent_authority"] == "advisory_only"
+    assert proposals["agent_authority"] == "review_input_proposal_operator"
     assert proposals["proof_booleans_mutable_by_agent"] is False
     assert proposals["proposal_count"] == 1
 

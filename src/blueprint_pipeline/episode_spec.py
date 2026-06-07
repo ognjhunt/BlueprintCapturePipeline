@@ -24,7 +24,9 @@ TASK_ANCHOR_PROPOSAL_SCHEMA_VERSION = "task_anchor_proposal_manifest.v1"
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "episode_setup_specification_only",
     "deterministic_code_owns_proof_booleans": True,
-    "agents_advisory_only": True,
+    "agent_operator_mode_allowed": True,
+    "agents_may_generate_review_inputs": True,
+    "agents_may_mutate_proof_booleans": False,
     "live_provider_calls_performed": False,
     "remote_asset_downloads_performed": False,
     "gpu_required": False,
@@ -71,7 +73,7 @@ class EpisodeSpecAgentAdapter(Protocol):
 
 @dataclass(frozen=True)
 class FakeEpisodeSpecAgentAdapter:
-    """Network-free advisory adapter used in tests."""
+    """Network-free proposal operator used in tests."""
 
     adapter_name: str = "fake"
 
@@ -98,7 +100,8 @@ class FakeEpisodeSpecAgentAdapter:
             "schema_version": AGENT_EPISODE_PROPOSAL_SCHEMA_VERSION,
             "adapter": self.adapter_name,
             "status": "completed",
-            "agent_authority": "advisory_only",
+            "operator_mode": "deterministic_proposal_operator",
+            "agent_authority": "review_input_proposal_operator",
             "proof_booleans_mutable_by_agent": False,
             "proposal_count": len(proposals),
             "proposals": proposals,
@@ -380,7 +383,7 @@ def build_task_anchor_proposals(
         "status": "compiled_review_required",
         "proposal_count": len(proposals),
         "proposals": proposals,
-        "advisory_only": True,
+        "proposal_authority": "review_input_not_execution_or_proof",
         "review_required": True,
         "proof_booleans_mutable_by_proposals": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -586,7 +589,8 @@ def _default_agent_proposals(*, generated_at: str) -> Dict[str, Any]:
         "generated_at": generated_at,
         "adapter": "none",
         "status": "not_requested",
-        "agent_authority": "advisory_only",
+        "operator_mode": "not_requested",
+        "agent_authority": "not_requested",
         "proof_booleans_mutable_by_agent": False,
         "proposal_count": 0,
         "proposals": [],

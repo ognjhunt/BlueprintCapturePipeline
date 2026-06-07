@@ -111,6 +111,7 @@ def build_production_handoff_readiness(
     scene_inventory = _read_optional_mapping(automation_dir / "scene_asset_inventory.json")
     scene_preflight = _read_optional_mapping(automation_dir / "scene_asset_preflight.json")
     cpu_preflight = _read_optional_mapping(automation_dir / "cpu_preflight_manifest.json")
+    arena_packet = _read_optional_mapping(automation_dir / "arena_environment_packet.json")
     gpu_handoff = _read_optional_mapping(automation_dir / "gpu_handoff_packet.json")
     gpu_proof_schema = _read_optional_mapping(automation_dir / "gpu_owner_system_proof_schema.json")
     owner_gpu_blocked = _read_optional_mapping(
@@ -182,6 +183,14 @@ def build_production_handoff_readiness(
     elif not bool(cpu_preflight.get("ready_for_owner_gpu_preflight")):
         blockers.append("cpu_preflight_not_ready_for_owner_gpu")
 
+    if not arena_packet:
+        blockers.append("arena_environment_packet_missing")
+    else:
+        if bool(arena_packet.get("simulator_execution_proven")):
+            blockers.append("arena_packet_illegally_marks_simulator_execution")
+        if bool(arena_packet.get("robot_readiness_proven")):
+            blockers.append("arena_packet_illegally_marks_robot_readiness")
+
     if not gpu_handoff:
         blockers.append("gpu_handoff_packet_missing")
     else:
@@ -240,6 +249,7 @@ def build_production_handoff_readiness(
             "cpu_preflight_ready_for_owner_gpu": bool(
                 cpu_preflight.get("ready_for_owner_gpu_preflight")
             ),
+            "arena_environment_packet_manifested": bool(arena_packet),
             "gpu_handoff_packet_ready": gpu_handoff.get("status")
             == "ready_for_owner_gpu_preflight_handoff",
             "owner_gpu_simulator_execution_proven": False,
@@ -264,6 +274,9 @@ def build_production_handoff_readiness(
             "scene_asset_inventory": _artifact(automation_dir / "scene_asset_inventory.json"),
             "scene_asset_preflight": _artifact(automation_dir / "scene_asset_preflight.json"),
             "cpu_preflight_manifest": _artifact(automation_dir / "cpu_preflight_manifest.json"),
+            "arena_environment_packet": _artifact(
+                automation_dir / "arena_environment_packet.json"
+            ),
             "gpu_handoff_packet": _artifact(automation_dir / "gpu_handoff_packet.json"),
             "gpu_owner_system_proof_schema": _artifact(
                 automation_dir / "gpu_owner_system_proof_schema.json"

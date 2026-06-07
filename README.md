@@ -107,6 +107,7 @@ Artifact families and advisory downstream outputs:
 - `simulation_automation/cpu_preflight_manifest.json`
 - `simulation_automation/pre_gpu_readiness_summary.json`
 - `simulation_automation/cpu_simulator_preflight_manifest.json`
+- `simulation_automation/arena_environment_packet.json`
 - `simulation_automation/gpu_handoff_packet.json`
 - `simulation_automation/gpu_owner_system_proof_schema.json`
 - `simulation_automation/owner_gpu_simulator_execution_proof_manifest.json` when
@@ -135,15 +136,44 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/simulator_service_request.json`
 - `robot_eval_jobs/<job_id>/simulator_service_result.json`
 - `robot_eval_jobs/<job_id>/policy_package_manifest.json`
+- `robot_eval_jobs/<job_id>/policy_adapter_manifest.json` when Arena package
+  ingest is run
 - `robot_eval_jobs/<job_id>/training_request.json`
 - `robot_eval_jobs/<job_id>/training_result.json`
 - `robot_eval_jobs/<job_id>/evaluation_request.json`
 - `robot_eval_jobs/<job_id>/evaluation_result.json`
+- `robot_eval_jobs/<job_id>/arena_eval_schedule.json` when Arena package ingest
+  is run
+- `robot_eval_jobs/<job_id>/arena_result_ingest_ledger.json` when Arena package
+  ingest is run
+- `robot_eval_jobs/<job_id>/arena_eval_metrics.json` when Arena package ingest
+  is run
 - `robot_eval_jobs/<job_id>/normalized_attempt_trace.json`
 - `robot_eval_jobs/<job_id>/failure_labels.json`
+- `robot_eval_jobs/<job_id>/clips_manifest.json` when Arena package ingest is run
+- `robot_eval_jobs/<job_id>/rollout_vision_labels.json` when Arena package ingest
+  is run
+- `robot_eval_jobs/<job_id>/review_resolution_ledger.json` when Arena package
+  ingest is run
+- `robot_eval_jobs/<job_id>/accepted_failure_labels.json` when Arena package
+  ingest is run
 - `robot_eval_jobs/<job_id>/prediction_outcome_ledger.json`
 - `robot_eval_jobs/<job_id>/calibration_report.json`
 - `robot_eval_jobs/<job_id>/breakage_library.json`
+- `robot_eval_jobs/<job_id>/customer_handoff_report.md` when Arena package
+  ingest is run
+- `robot_eval_jobs/<job_id>/customer_handoff_report.json` when Arena package
+  ingest is run
+- `robot_eval_jobs/<job_id>/delivery_manifest.json` when Arena package ingest
+  is run
+- `robot_eval_jobs/<job_id>/arena_rerun_plan.json` when Arena package ingest is run
+- `robot_eval_jobs/<job_id>/live_operator_ledger.json` when Arena package ingest
+  is run
+- `robot_eval_jobs/<job_id>/dataset_card.json`
+- `robot_eval_jobs/<job_id>/license_manifest.json`
+- `robot_eval_jobs/<job_id>/package_index.json`
+- `robot_eval_jobs/<job_id>/checksums.json`
+- `robot_eval_jobs/<job_id>/archive_manifest.json`
 - `robot_eval_jobs/<job_id>/post_training_data_package_export_manifest.json`
 - `robot_eval_jobs/<job_id>/proof_boundary.json`
 - `robot_eval_jobs/<job_id>/job_run_manifest.json`
@@ -395,9 +425,14 @@ blueprint-run-simulation-automation \
 
 The simulation automation lane is documented in
 [`docs/SIMULATION_AUTOMATION_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SIMULATION_AUTOMATION_LANE.md).
-It writes local orchestration manifests only. It does not run simulators,
-download assets, start training, call providers, or prove robot readiness unless
-explicit per-run approvals and dependencies are present.
+It writes local orchestration manifests only, including an optional
+`isaac_lab_arena` Arena Pack review packet. It does not run simulators, download
+assets, start training, call providers, or prove robot readiness unless explicit
+per-run approvals and dependencies are present.
+Agents SDK and Codex SDK paths are gated live-operator surfaces: when SDK,
+credential, CLI, and environment gates are present, agents may inspect
+manifests/logs, choose deterministic reruns, summarize blockers, route review,
+or patch/test code. They still cannot set proof booleans directly.
 
 Optional deterministic site-eval director plan:
 
@@ -453,10 +488,39 @@ or denied gates. The inbox runner also copies each accepted request under
 `pipeline/robot_eval_job_requests/<job_id>/job_request.json` and writes
 `pipeline/robot_eval_job_requests/inbox_run_manifest.json`. Fixture provisioner
 and fixture simulator paths prove only the repo-local orchestration loop. Vast, RunPod, GCP, local process, Docker,
-MuJoCo, PyBullet, Newton, Isaac Sim, Agents SDK, and Cosmos training paths stay
-blocked unless their explicit environment and CLI gates are present.
+MuJoCo, PyBullet, Newton, Isaac Sim, Isaac Lab-Arena, Agents SDK, and Cosmos
+training paths stay blocked unless their explicit environment and CLI gates are present.
+Live SDK operators log every decision, tool-call summary, command chosen,
+refusal, blocker, and proof effect; deterministic accepted artifacts remain the
+only source for true proof booleans.
+When `--arena-results-dir` points at existing Isaac Lab-Arena rollout artifacts,
+the job ingests those local results into normalized traces, labels, clips,
+metrics, reports, delivery manifests, rerun queues, and a Post-Training Data
+Package. That proves package code paths and result ingestion only; simulator
+execution, robot policy success, contact/safety validation, and robot readiness
+remain false unless separate accepted owner evidence exists.
 
-Post-Training Data Package export manifest:
+Arena result ingest and package build:
+
+```bash
+blueprint-ingest-arena-results \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --arena-results-dir /path/to/isaac-lab-arena-results \
+  --scenario-count 500 \
+  --shard-size 50
+```
+
+Arena package artifact/proof-boundary audit:
+
+```bash
+blueprint-audit-arena-package \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --package-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
+  --expected-scenario-count 500 \
+  --require-job-artifacts
+```
+
+Post-Training Data Package export and archive:
 
 ```bash
 blueprint-build-post-training-data-package \

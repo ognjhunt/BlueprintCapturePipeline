@@ -5,6 +5,8 @@ from pathlib import Path
 
 from blueprint_pipeline.episode_spec import FakeEpisodeSpecAgentAdapter
 from blueprint_pipeline.simulation_automation import (
+    AgentsSdkCodexMCPAdapter,
+    CodexSdkSimulationAutomationAgentAdapter,
     FakeSimulationAutomationAgentAdapter,
     build_simulation_automation,
     validate_owner_gpu_system_proof,
@@ -136,6 +138,74 @@ def _write_worldlabs_and_marble_artifacts(capture_root: Path) -> None:
     )
 
 
+def _write_robot_eval_cards(capture_root: Path) -> None:
+    robot_eval_dir = capture_root / "pipeline" / "robot_eval_dataset"
+    _write_json(
+        robot_eval_dir / "site_card.json",
+        {
+            "schema_version": "real_site_robot_eval_site_card.v0.1",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "site_id": "site-1",
+            "site_type": "stockroom",
+        },
+    )
+    _write_json(
+        robot_eval_dir / "task_cards.json",
+        {
+            "schema_version": "real_site_robot_eval_task_cards.v0.1",
+            "cards": [
+                {
+                    "task_id": "place_return_in_bin",
+                    "task_statement": "Place the return item in the labeled bin",
+                    "task_category": "pick_place",
+                    "required_metrics": ["cycle_time_seconds", "placement_accuracy"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        robot_eval_dir / "scenario_cards.json",
+        {
+            "schema_version": "real_site_robot_eval_scenario_cards.v0.1",
+            "cards": [
+                {
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "task_id": "place_return_in_bin",
+                    "robot_profile_id": "mobile_manipulator_rgbd_fixture",
+                    "normal_scenario": {"statement": "Use the capture-observed layout."},
+                    "variation": {"statement": "Add review-required clutter variation."},
+                    "observed_vs_inferred_labels": {"layout": "capture_grounded"},
+                }
+            ],
+        },
+    )
+    _write_json(
+        robot_eval_dir / "eval_cards.json",
+        {
+            "schema_version": "real_site_robot_eval_eval_cards.v0.1",
+            "cards": [
+                {
+                    "eval_card_id": "eval_card_place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "task_id": "place_return_in_bin",
+                    "prediction_source": "hosted_review",
+                    "validation": {"actual_status": "needs_actual_outcome"},
+                    "blocked_upgrades": ["simulator_execution_completed"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        robot_eval_dir / "proof_boundaries.json",
+        {
+            "schema_version": "real_site_robot_eval_proof_boundaries.v0.1",
+            "simulator_execution_proven": False,
+            "robot_readiness_proven": False,
+        },
+    )
+
+
 def _write_valid_owner_gpu_proof(capture_root: Path) -> Path:
     automation_root = capture_root / "pipeline" / "simulation_automation"
     proof_root = automation_root / "owner_gpu_proof"
@@ -240,6 +310,7 @@ def test_owner_gpu_proof_ingestion_validates_required_artifacts_without_robot_cl
 def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path) -> None:
     capture_root = _build_capture_root(tmp_path)
     _write_worldlabs_and_marble_artifacts(capture_root)
+    _write_robot_eval_cards(capture_root)
 
     result = build_simulation_automation(
         capture_root=capture_root,
@@ -254,6 +325,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     training = _read_json(automation_root / "training_orchestration_manifest.json")
     proof_boundary = _read_json(automation_root / "proof_boundary.json")
     agent_ledger = _read_json(automation_root / "agent_decision_ledger.json")
+    arena_packet = _read_json(automation_root / "arena_environment_packet.json")
     gpu_handoff = _read_json(automation_root / "gpu_handoff_packet.json")
     proof_schema = _read_json(automation_root / "gpu_owner_system_proof_schema.json")
     owner_blocked = _read_json(
@@ -269,6 +341,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     assert (automation_root / "cpu_preflight_manifest.json").is_file()
     assert (automation_root / "pre_gpu_readiness_summary.json").is_file()
     assert (automation_root / "gpu_run_checklist.md").is_file()
+    assert (automation_root / "arena_environment_packet.json").is_file()
     assert (automation_root / "episode_spec.v1.json").is_file()
     assert (automation_root / "episode_setup_manifest.json").is_file()
     assert (automation_root / "cpu_simulator_preflight_manifest.json").is_file()
@@ -280,6 +353,9 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     )
     assert plan["world_model_sources"]["worldlabs"]["world_id"] == "world-1"
     assert conversion["frameworks"]["isaac_sim"]["status"] == "planned_requires_conversion"
+    assert conversion["frameworks"]["isaac_lab_arena"]["status"] == (
+        "planned_requires_owner_asset_mapping"
+    )
     assert conversion["frameworks"]["mujoco"]["status"] == "planned_requires_conversion"
     assert conversion["frameworks"]["pybullet"]["status"] == "planned_requires_conversion"
     assert conversion["frameworks"]["newton"]["status"] == "planned_requires_conversion"
@@ -289,6 +365,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         for record in simulator_execution["simulator_results"]
     } == {
         "isaac_sim": "blocked",
+        "isaac_lab_arena": "blocked",
         "mujoco": "blocked",
         "pybullet": "blocked",
         "newton": "blocked",
@@ -304,8 +381,28 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     assert proof_boundary["robot_readiness_proven"] is False
     assert proof_boundary["training_proof"]["training_completed"] is False
     assert proof_boundary["public_claim_upgrade_allowed"] is False
+    assert arena_packet["schema_version"] == "arena_environment_packet.v1"
+    assert arena_packet["backend"] == "isaac_lab_arena"
+    assert arena_packet["status"] == "ready_for_owner_arena_pack_review"
+    assert arena_packet["arena_components"]["scene"]["scene_id"] == "scene-1"
+    assert arena_packet["arena_components"]["tasks"][0]["task_id"] == "place_return_in_bin"
+    assert arena_packet["arena_components"]["scenarios"][0]["scenario_id"] == (
+        "scenario_place_return_in_bin_mobile"
+    )
+    assert arena_packet["arena_components"]["eval_bindings"][0]["task_id"] == (
+        "place_return_in_bin"
+    )
+    assert arena_packet["arena_components"]["episode_bindings"][0]["arena_builder_target"] == (
+        "IsaacLabArenaEnvironment"
+    )
+    assert arena_packet["simulator_execution_proven"] is False
+    assert arena_packet["robot_readiness_proven"] is False
+    assert "owner_gpu_simulator_execution_not_run" in arena_packet["blockers"]
     assert gpu_handoff["owner_gpu_simulator_execution_proven"] is False
     assert "owner_gpu_simulator_execution_not_run" in gpu_handoff["blockers"]
+    assert gpu_handoff["arena_package"]["path"] == "arena_environment_packet.json"
+    assert gpu_handoff["arena_package"]["status"] == "ready_for_owner_arena_pack_review"
+    assert "isaac_lab_arena" in gpu_handoff["target_backend_guidance"]
     assert "gpu_owner_system_proof.json" in gpu_handoff["output_artifacts_expected"]
     assert "owner_system_id" in proof_schema["required_fields"]
     assert owner_blocked["blocker_id"] == "owner_gpu_simulator_execution_not_run"
@@ -318,6 +415,10 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         "ready_blocked_optional_dependencies_or_gates"
     )
     assert run_manifest["gpu_handoff_packet_path"] == "gpu_handoff_packet.json"
+    assert run_manifest["arena_environment_packet_path"] == "arena_environment_packet.json"
+    assert run_manifest["arena_environment_packet_status"] == (
+        "ready_for_owner_arena_pack_review"
+    )
     assert run_manifest["owner_gpu_simulator_execution_proven"] is False
     assert run_manifest["simulators_run"] is False
     assert run_manifest["gpu_training_run"] is False
@@ -378,9 +479,75 @@ def test_fake_agent_adapter_can_plan_and_diagnose_without_network(tmp_path: Path
     assert ledger["diagnostics"][0]["status"] == "blocked"
     assert "approval_required" in ledger["diagnostics"][0]["blockers"]
     assert proposals["adapter"] == "fake"
-    assert proposals["agent_authority"] == "advisory_only"
+    assert proposals["agent_authority"] == "review_input_proposal_operator"
     assert proposals["proof_booleans_mutable_by_agent"] is False
     assert proposals["proposal_count"] == 1
+
+
+def test_simulation_live_sdk_operators_log_commands_without_proof_mutation(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_worldlabs_and_marble_artifacts(capture_root)
+
+    build_simulation_automation(
+        capture_root=capture_root,
+        agent_adapter=AgentsSdkCodexMCPAdapter(
+            agents_sdk_available=True,
+            openai_api_key="sk-test",
+            live_env_allowed=True,
+            allow_live_operator=True,
+            executor=lambda _prompt, _context: {
+                "final_output": "Retry CPU preflight, then summarize owner GPU blockers.",
+                "commands_chosen": ["blueprint-run-cpu-simulator-preflight"],
+                "tool_call_summaries": [
+                    {"tool_name": "read_manifest", "summary": "read cpu preflight status"}
+                ],
+            },
+        ),
+    )
+
+    automation_root = capture_root / "pipeline" / "simulation_automation"
+    agents_ledger = _read_json(automation_root / "agent_decision_ledger.json")
+    run_manifest = _read_json(automation_root / "simulation_automation_run_manifest.json")
+    assert agents_ledger["status"] == "operator_completed"
+    assert agents_ledger["operator_mode"] == "live_operator"
+    assert agents_ledger["operator_ledger"]["commands_chosen"] == [
+        "choose_next_simulation_automation_command",
+        "blueprint-run-cpu-simulator-preflight",
+    ]
+    assert agents_ledger["proof_effect"]["direct_proof_booleans_set_true"] == []
+    assert run_manifest["agent_operator_mode"] == "live_operator"
+    assert run_manifest["robot_readiness_proven"] is False
+
+    build_simulation_automation(
+        capture_root=capture_root,
+        agent_adapter=CodexSdkSimulationAutomationAgentAdapter(
+            codex_sdk_available=True,
+            openai_api_key="sk-test",
+            live_env_allowed=True,
+            allow_live_operator=True,
+            executor=lambda _prompt, _context: {
+                "final_output": "Patched failing conversion-plan test and reran it.",
+                "commands_chosen": ["pytest tests/test_simulation_automation.py"],
+                "tool_call_summaries": [
+                    {"tool_name": "apply_patch", "summary": "conversion-plan assertion fix"}
+                ],
+            },
+        ),
+    )
+
+    codex_ledger = _read_json(automation_root / "agent_decision_ledger.json")
+    assert codex_ledger["status"] == "operator_completed"
+    assert codex_ledger["operator_mode"] == "live_operator"
+    assert codex_ledger["operator_ledger"]["commands_chosen"] == [
+        "diagnose_patch_and_test_simulation_automation",
+        "pytest tests/test_simulation_automation.py",
+    ]
+    assert codex_ledger["operator_ledger"]["tool_call_summaries"][0]["tool_name"] == (
+        "apply_patch"
+    )
+    assert codex_ledger["proof_effect"]["proof_booleans_mutable_by_agent"] is False
 
 
 def test_evaluation_prep_surfaces_simulation_automation_artifacts_without_overclaiming(
@@ -410,6 +577,9 @@ def test_evaluation_prep_surfaces_simulation_automation_artifacts_without_overcl
         "simulation_automation_agent_decision_ledger": "../simulation_automation/agent_decision_ledger.json",
     }
     assert expected_artifacts.items() <= surface["artifacts"].items()
+    assert surface["artifacts"]["robot_eval_arena_environment_packet"] == (
+        "../simulation_automation/arena_environment_packet.json"
+    )
     assert surface["artifacts"]["robot_eval_cpu_preflight_scorecard"] == (
         "../simulation_automation/cpu_preflight_scorecard.json"
     )

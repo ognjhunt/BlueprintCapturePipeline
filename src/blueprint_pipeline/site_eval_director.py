@@ -1,9 +1,11 @@
-"""Deterministic site-eval director lane.
+"""Deterministic site-eval director lane with gated live SDK operators.
 
 This module assembles real-site robot eval cards and existing simulator-review
 manifests into local scenario/task simulation request manifests. Optional
-Agents SDK and Codex SDK adapters only write advisory request manifests; they do
-not execute agents or upgrade proof booleans.
+Agents SDK and Codex SDK adapters may execute as live operators when explicit
+CLI, environment, SDK, and credential gates are present. Agents can coordinate
+messy review, retries, summaries, and code-fix workflows, but deterministic
+artifacts remain the only authority for proof booleans.
 """
 
 from __future__ import annotations
@@ -19,6 +21,19 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 
+from .agent_operator_runtime import (
+    LIVE_AGENTS_SDK_ENV,
+    LIVE_CODEX_SDK_ENV,
+    OperatorExecutor,
+    OperatorRunConfig,
+    blocked_operator_ledger,
+    completed_operator_ledger,
+    env_truthy,
+    external_action_gates,
+    proof_effect,
+    run_agents_sdk_operator,
+    run_codex_sdk_operator,
+)
 from .common import ensure_dir, read_json_any, write_json
 from .local_capture import resolve_local_capture_context
 
@@ -42,7 +57,7 @@ COSMOS_ORCHESTRATION_EXPORTS_SCHEMA_VERSION = "site_eval_cosmos_orchestration_ex
 REAL_EVIDENCE_BLOCKED_SCHEMA_VERSION = "site_eval_real_evidence_blocked_manifest.v1"
 
 DETERMINISTIC_DEFAULT_GENERATED_AT = "1970-01-01T00:00:00+00:00"
-SIMULATOR_FRAMEWORKS = ("isaac_sim", "mujoco", "pybullet", "newton")
+SIMULATOR_FRAMEWORKS = ("isaac_sim", "isaac_lab_arena", "mujoco", "pybullet", "newton")
 RUNNER_FRAMEWORKS = ("fixture", *SIMULATOR_FRAMEWORKS)
 REAL_EVIDENCE_INPUTS = {
     "robot_pov": "robot_eval_inputs/robot_pov_evidence_manifest.json",
@@ -76,7 +91,8 @@ REQUIRED_ROBOT_EVAL_INPUTS = {
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "site_eval_director_orchestration_and_review_only",
     "repo_local_only": True,
-    "agents_advisory_only": True,
+    "agent_operator_mode_allowed": True,
+    "agents_may_mutate_proof_booleans": False,
     "live_provider_calls_performed": False,
     "remote_asset_downloads_performed": False,
     "simulators_run": False,
@@ -122,81 +138,154 @@ class CodeMaintainerAdapter(Protocol):
 
 @dataclass(frozen=True)
 class AgentsSdkSiteEvalDirectorAdapter:
-    """Optional Agents SDK site-eval coordinator request writer."""
+    """Optional Agents SDK site-eval live operator."""
 
     agents_sdk_available: bool | None = None
     openai_api_key: str | None = None
+    live_env_allowed: bool | None = None
+    allow_live_operator: bool = False
     model: str = "gpt-4.1"
+    executor: OperatorExecutor | None = None
 
     def build_request_manifest(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
         agents_available = (
             self.agents_sdk_available
             if self.agents_sdk_available is not None
-            else _module_available(("agents", "openai_agents"))
+            else bool(self.executor is not None) or _module_available(("agents", "openai_agents"))
         )
         api_key_present = bool(
             _string(self.openai_api_key)
             if self.openai_api_key is not None
             else _string(os.getenv("OPENAI_API_KEY"))
         )
+        env_allowed = (
+            bool(self.live_env_allowed)
+            if self.live_env_allowed is not None
+            else env_truthy(LIVE_AGENTS_SDK_ENV)
+        )
         blockers: List[str] = []
         if not agents_available:
             blockers.append("missing_openai_agents_sdk")
         if not api_key_present:
             blockers.append("missing_openai_api_key")
-        status = "blocked" if blockers else "request_manifest_ready"
+        if not self.allow_live_operator:
+            blockers.append("missing_cli_allow_live_agents_sdk_operator")
+        if not env_allowed:
+            blockers.append(f"missing_env_{LIVE_AGENTS_SDK_ENV}")
+        command = "inspect_manifests_choose_next_deterministic_command"
+        live_output: Dict[str, Any] | None = None
+        execution_performed = False
+        execution_failed = False
+        if not blockers:
+            try:
+                live_output = run_agents_sdk_operator(
+                    OperatorRunConfig(
+                        adapter="openai_agents_sdk_site_eval_director",
+                        model=self.model,
+                        prompt=_agents_sdk_site_eval_prompt(plan_context),
+                        plan_context=plan_context,
+                        executor=self.executor,
+                    )
+                )
+                execution_performed = True
+            except RuntimeError as exc:
+                blockers.append(str(exc))
+                execution_failed = True
+            except Exception as exc:
+                blockers.append(f"agents_sdk_operator_execution_failed:{type(exc).__name__}")
+                execution_failed = True
+        status = (
+            "operator_completed"
+            if execution_performed and not blockers
+            else "operator_failed"
+            if execution_failed
+            else "blocked"
+        )
+        operator_ledger = (
+            completed_operator_ledger(
+                adapter="openai_agents_sdk_site_eval_director",
+                output=live_output or {},
+                default_command=command,
+                proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+            )
+            if execution_performed and not blockers
+            else blocked_operator_ledger(
+                adapter="openai_agents_sdk_site_eval_director",
+                blockers=blockers,
+                command_chosen=command if not blockers else None,
+                proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+            )
+        )
         return {
             "schema_version": AGENTS_SDK_REQUEST_SCHEMA_VERSION,
             "adapter": "openai_agents_sdk_site_eval_director",
             "status": status,
             "blockers": blockers,
             "missing_inputs": list(blockers),
-            "execution_performed": False,
+            "execution_performed": execution_performed,
             "network_required_if_executed": True,
-            "agent_authority": "advisory_only",
+            "operator_mode": "live_operator" if execution_performed else "live_operator_blocked",
+            "agent_authority": "live_operator_when_gated",
+            "proof_booleans_mutable_by_agent": False,
+            "operator_ledger": operator_ledger,
             "request": {
-                "purpose": "site_eval_workflow_coordination_advisory_only",
+                "purpose": "site_eval_workflow_coordination_live_operator",
                 "model": self.model,
                 "capture_root": str(plan_context.get("capture_root") or ""),
                 "scenario_execution_plan": "scenario_execution_plan.json",
                 "task_simulation_requests": "task_simulation_requests.json",
                 "scenario_simulator_matrix": "scenario_simulator_matrix.json",
-                "allowed_outputs": [
-                    "review comments",
-                    "missing-proof diagnostics",
-                    "next-action plan",
+                "allowed_actions": [
+                    "inspect_manifests_and_logs",
+                    "choose_next_deterministic_command",
+                    "trigger_allowed_reruns",
+                    "route_review_items",
+                    "summarize_blockers",
+                    "maintain_progress_ledger",
                 ],
-                "prohibited_outputs": [
-                    "robot readiness proof",
-                    "simulator execution proof",
-                    "safety validation proof",
-                    "public claim upgrade",
+                "prohibited_actions": [
+                    "set_proof_booleans_true_without_deterministic_artifacts",
+                    "override_rights_privacy_blockers",
+                    "spend_money_without_explicit_gates",
+                    "call_live_external_services_without_explicit_gates",
+                    "public_claim_upgrade",
                 ],
             },
             "attempted_commands": [],
             "evidence": {
                 "openai_agents_sdk_available": bool(agents_available),
                 "openai_api_key_present": api_key_present,
+                "cli_allow_live_operator": self.allow_live_operator,
+                LIVE_AGENTS_SDK_ENV: env_allowed,
+                **external_action_gates(),
             },
+            "proof_effect": proof_effect(
+                deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+            ),
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
 
 
 @dataclass(frozen=True)
 class CodexSdkCodeMaintainerAdapter:
-    """Optional Codex coding specialist request writer."""
+    """Optional Codex SDK live code-maintainer operator."""
 
     codex_sdk_available: bool | None = None
     openai_api_key: str | None = None
     codex_mcp_server_available: bool | None = None
     codex_cli_path: str | None = None
-    sandbox: str = "read-only"
+    live_env_allowed: bool | None = None
+    allow_live_operator: bool = False
+    sandbox: str = "workspace-write"
+    model: str = "gpt-4.1"
+    executor: OperatorExecutor | None = None
 
     def build_request_manifest(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
         sdk_available = (
             self.codex_sdk_available
             if self.codex_sdk_available is not None
-            else _module_available(("openai_codex", "openai_codex_sdk", "codex_sdk"))
+            else bool(self.executor is not None)
+            or _module_available(("openai_codex", "openai_codex_sdk", "codex_sdk"))
         )
         api_key_present = bool(
             _string(self.openai_api_key)
@@ -209,33 +298,91 @@ class CodexSdkCodeMaintainerAdapter:
             if self.codex_mcp_server_available is not None
             else _codex_mcp_server_available(codex_cli)
         )
+        env_allowed = (
+            bool(self.live_env_allowed)
+            if self.live_env_allowed is not None
+            else env_truthy(LIVE_CODEX_SDK_ENV)
+        )
         blockers: List[str] = []
         if not sdk_available:
             blockers.append("missing_codex_sdk")
         if not api_key_present:
             blockers.append("missing_openai_api_key")
-        if not mcp_available:
-            blockers.append("missing_codex_mcp_server")
-        status = "blocked" if blockers else "request_manifest_ready"
+        if not self.allow_live_operator:
+            blockers.append("missing_cli_allow_live_codex_sdk_operator")
+        if not env_allowed:
+            blockers.append(f"missing_env_{LIVE_CODEX_SDK_ENV}")
+        status = "blocked"
         sandbox = self.sandbox if self.sandbox in {"read-only", "workspace-write"} else "read-only"
+        command = "diagnose_patch_and_test_pipeline_failure"
+        live_output: Dict[str, Any] | None = None
+        execution_performed = False
+        execution_failed = False
+        if not blockers:
+            try:
+                live_output = run_codex_sdk_operator(
+                    OperatorRunConfig(
+                        adapter="codex_sdk_code_maintainer",
+                        model=self.model,
+                        prompt=_codex_code_maintainer_prompt(plan_context, sandbox=sandbox),
+                        plan_context=plan_context,
+                        executor=self.executor,
+                        sandbox=sandbox,
+                    )
+                )
+                execution_performed = True
+            except RuntimeError as exc:
+                blockers.append(str(exc))
+                execution_failed = True
+            except Exception as exc:
+                blockers.append(f"codex_sdk_operator_execution_failed:{type(exc).__name__}")
+                execution_failed = True
+        status = (
+            "operator_completed"
+            if execution_performed and not blockers
+            else "operator_failed"
+            if execution_failed
+            else "blocked"
+        )
+        operator_ledger = (
+            completed_operator_ledger(
+                adapter="codex_sdk_code_maintainer",
+                output=live_output or {},
+                default_command=command,
+                proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+            )
+            if execution_performed and not blockers
+            else blocked_operator_ledger(
+                adapter="codex_sdk_code_maintainer",
+                blockers=blockers,
+                command_chosen=command if not blockers else None,
+                proof_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"],
+            )
+        )
         return {
             "schema_version": CODEX_SDK_REQUEST_SCHEMA_VERSION,
             "adapter": "codex_sdk_code_maintainer",
             "status": status,
             "blockers": blockers,
             "missing_inputs": list(blockers),
-            "execution_performed": False,
+            "execution_performed": execution_performed,
             "network_required_if_executed": True,
-            "agent_authority": "advisory_only",
+            "operator_mode": "live_operator" if execution_performed else "live_operator_blocked",
+            "agent_authority": "live_code_maintainer_when_gated",
+            "proof_booleans_mutable_by_agent": False,
+            "operator_ledger": operator_ledger,
             "request": {
-                "purpose": "implementation_diagnosis_and_code_fix_advisory_only",
+                "purpose": "implementation_diagnosis_code_fix_patch_and_test_live_operator",
                 "capture_root": str(plan_context.get("capture_root") or ""),
                 "workspace": str(plan_context.get("repo_root") or ""),
+                "model": self.model,
                 "sandbox": sandbox,
                 "mcp_server_command": ["codex", "mcp-server"],
                 "allowed_request_types": [
                     "implementation_diagnosis",
-                    "code_fix_patch_plan",
+                    "code_fix_patch",
+                    "test_execution",
+                    "diff_summary",
                 ],
                 "prohibited_request_types": [
                     "site_eval_business_decision",
@@ -251,9 +398,36 @@ class CodexSdkCodeMaintainerAdapter:
                 "openai_api_key_present": api_key_present,
                 "codex_cli_path": codex_cli,
                 "codex_mcp_server_available": bool(mcp_available),
+                "codex_mcp_server_required_for_live_operator": False,
+                "cli_allow_live_operator": self.allow_live_operator,
+                LIVE_CODEX_SDK_ENV: env_allowed,
+                **external_action_gates(),
             },
+            "proof_effect": proof_effect(
+                deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
+            ),
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
+
+
+def _agents_sdk_site_eval_prompt(plan_context: Mapping[str, Any]) -> str:
+    return (
+        "Act as the Blueprint Agents SDK site-eval director and pipeline operator. "
+        "Inspect this deterministic manifest context, choose the next safe deterministic "
+        "command or rerun, route review items, summarize blockers, and maintain a progress "
+        "ledger. Do not set proof booleans directly.\n\n"
+        f"{json.dumps(plan_context, sort_keys=True, default=str)[:12000]}"
+    )
+
+
+def _codex_code_maintainer_prompt(plan_context: Mapping[str, Any], *, sandbox: str) -> str:
+    return (
+        "Act as the Blueprint Codex SDK code maintainer. Diagnose pipeline failures, patch "
+        "code when needed, run focused tests, and summarize diffs. Work inside sandbox "
+        f"{sandbox}. Never upgrade proof booleans except by producing deterministic code and "
+        "tests that accept authoritative artifacts.\n\n"
+        f"{json.dumps(plan_context, sort_keys=True, default=str)[:12000]}"
+    )
 
 
 def _module_available(candidates: Sequence[str]) -> bool:
@@ -696,6 +870,7 @@ def _write_blocked_outputs(
         "agent_review_queue_path": "agent_review_queue.json",
         "proof_boundary_path": "site_eval_director_proof_boundary.json",
         "blocked_manifest_path": "site_eval_director_blocked_manifest.json",
+        "agent_operator_manifests": {},
         "agent_request_manifests": {},
         "headless_loop_artifacts": {},
         "live_provider_calls_performed": False,
@@ -1801,6 +1976,7 @@ def build_site_eval_director(
         "agent_review_queue_path": "agent_review_queue.json",
         "proof_boundary_path": "site_eval_director_proof_boundary.json",
         "agent_request_manifests": dict(agent_request_manifests),
+        "agent_operator_manifests": dict(agent_request_manifests),
         "headless_loop_artifacts": dict(headless_loop_artifacts),
         "source_artifacts": dict(source_artifacts),
         "scenario_count": int(scenario_plan.get("scenario_count") or 0),
@@ -1838,6 +2014,7 @@ def build_site_eval_director(
             "calibration_record_count": run_manifest["calibration_record_count"],
             "breakage_record_count": run_manifest["breakage_record_count"],
             "agent_request_manifests": agent_request_manifests,
+            "agent_operator_manifests": agent_request_manifests,
             "headless_loop_artifacts": headless_loop_artifacts,
         }
     )
@@ -1860,24 +2037,34 @@ def build_site_eval_director(
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build deterministic site-eval director manifests for a local capture package"
+        description="Build site-eval director manifests with optional gated SDK operators"
     )
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
     parser.add_argument(
         "--agents-sdk-site-eval",
         action="store_true",
-        help="Write an optional OpenAI Agents SDK advisory request or blocked manifest",
+        help="Enable the optional OpenAI Agents SDK site-eval operator manifest",
     )
     parser.add_argument(
         "--codex-sdk-code-maintainer",
         action="store_true",
-        help="Write an optional Codex SDK code-maintainer request or blocked manifest",
+        help="Enable the optional Codex SDK code-maintainer operator manifest",
+    )
+    parser.add_argument(
+        "--allow-live-agents-sdk-operator",
+        action="store_true",
+        help=f"Allow live Agents SDK execution when {LIVE_AGENTS_SDK_ENV}=true and credentials exist",
+    )
+    parser.add_argument(
+        "--allow-live-codex-sdk-operator",
+        action="store_true",
+        help=f"Allow live Codex SDK execution when {LIVE_CODEX_SDK_ENV}=true and credentials exist",
     )
     parser.add_argument(
         "--codex-sandbox",
         choices=("read-only", "workspace-write"),
-        default="read-only",
-        help="Sandbox request for the optional Codex SDK code-maintainer manifest",
+        default="workspace-write",
+        help="Sandbox for the optional Codex SDK code-maintainer operator",
     )
     parser.add_argument("--codex-cli-path", default=None)
     parser.add_argument(
@@ -1901,12 +2088,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         result = build_site_eval_director(
             capture_root=args.capture_root,
-            agents_adapter=AgentsSdkSiteEvalDirectorAdapter()
+            agents_adapter=AgentsSdkSiteEvalDirectorAdapter(
+                allow_live_operator=args.allow_live_agents_sdk_operator
+            )
             if args.agents_sdk_site_eval
             else None,
             codex_adapter=CodexSdkCodeMaintainerAdapter(
                 codex_cli_path=args.codex_cli_path,
                 sandbox=args.codex_sandbox,
+                allow_live_operator=args.allow_live_codex_sdk_operator,
             )
             if args.codex_sdk_code_maintainer
             else None,

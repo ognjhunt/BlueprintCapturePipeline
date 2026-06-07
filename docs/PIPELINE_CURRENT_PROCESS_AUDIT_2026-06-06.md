@@ -20,8 +20,9 @@ The active repo path is:
 7. Owner GPU proof ingestion validates logs, scene/spawn/action traces, artifact
    manifest, and attestation when `gpu_owner_system_proof.json` exists.
 8. Provider-preview QA and final handoff readiness validators summarize local proof and blockers.
-9. Robot-eval job orchestration and Post-Training Data Package export write
-   per-job evidence without upgrading readiness booleans.
+9. Robot-eval job orchestration, optional Arena result ingest, and
+   Post-Training Data Package export write per-job evidence without upgrading
+   readiness booleans.
 10. The capture batch registry tracks retry/resume status per site/capture.
 11. Real simulator execution runs only through explicit env and CLI gates.
 
@@ -50,6 +51,13 @@ qualification -> evaluation_prep -> simulation_automation
   proof.
 - Added Post-Training Data Package export and site/capture batch registry
   command surfaces for production handoff tracking.
+- Added `blueprint-ingest-arena-results` and job-orchestrator integration for
+  local Isaac Lab-Arena rollout artifacts: deterministic 500-scenario scheduling,
+  policy adapter manifests, normalized traces, failure labels, clip manifests,
+  review resolution, rerun queues, customer reports, delivery manifests,
+  package archives, and gated live/fake operator ledgers.
+- Added `blueprint-audit-arena-package` as the local artifact assertion and
+  proof-boundary audit for Arena package outputs.
 
 ## Legacy Or Advisory Paths Still Present
 
@@ -87,6 +95,12 @@ proof, policy success, robot readiness, deployment readiness, or training proof.
 `ready_except_owner_gpu_simulator_execution` handoff status still leaves
 simulator execution, policy success, contact validation, safety validation, and
 robot readiness false until owner-system evidence is supplied.
+Arena result ingest can make a job evaluation complete from supplied local Arena
+result artifacts, but it does not prove that this process ran the simulator and
+does not upgrade robot readiness, policy success, contact/safety validation, or
+public claims. Vision labeling, storage upload/signed URLs, and live Agents
+SDK/Codex SDK operators remain blocked without explicit CLI and environment
+gates; fake operators prove only local operator-control code paths.
 In production mode, the handoff readiness validator also requires real WebApp
 upstream-link truth (`site_submission_id`, derived or explicit `request_id`,
 `buyer_request_id`, and `capture_job_id`) from a succeeded WebApp sync before
