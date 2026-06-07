@@ -344,6 +344,35 @@ def _overall_status(sections: Mapping[str, Mapping[str, Any]]) -> str:
     return "blocked"
 
 
+def _next_inputs_needed(sections: Mapping[str, Mapping[str, Any]]) -> List[str]:
+    next_inputs = [
+        "Export only the live gates you intend to use; do not enable spend/external actions globally."
+    ]
+    if not sections.get("real_arena_execution", {}).get("ready"):
+        next_inputs.append(
+            "Provide an owner-system Arena simulator command or existing Arena results directory."
+        )
+    if not sections.get("rollout_vision_labeling", {}).get("ready"):
+        next_inputs.append(
+            "Provide a vision-labeling command if model-derived rollout labels are required."
+        )
+    if not sections.get("delivery_upload", {}).get("ready"):
+        next_inputs.append("Provide a delivery command if signed/uploaded package access is required.")
+    if not (
+        sections.get("live_agents_operator", {}).get("ready")
+        and sections.get("live_codex_operator", {}).get("ready")
+    ):
+        next_inputs.append(
+            "Install OpenAI Agents/Codex SDK dependencies and provide API credentials for repo CLI "
+            "live operators, or explicitly allow Codex CLI host-OAuth execution."
+        )
+    next_inputs.append(
+        "Use the DigitalOcean droplet as a control plane only unless GPU/Arena proof is produced "
+        "and ingested."
+    )
+    return next_inputs
+
+
 def build_live_pipeline_setup_manifest(
     *,
     capture_root: str | Path | None = None,
@@ -609,17 +638,7 @@ def build_live_pipeline_setup_manifest(
             "commands": commands,
             "sections": sections,
             "blockers": all_blockers,
-            "next_inputs_needed": [
-                "Export only the live gates you intend to use; do not enable spend/external "
-                "actions globally.",
-                "Provide an owner-system Arena simulator command or existing Arena results directory.",
-                "Provide a vision-labeling command if model-derived rollout labels are required.",
-                "Provide a delivery command if signed/uploaded package access is required.",
-                "Install OpenAI Agents/Codex SDK dependencies and provide API credentials for repo "
-                "CLI live operators, or explicitly allow Codex CLI host-OAuth execution.",
-                "Use the DigitalOcean droplet as a control plane only unless GPU/Arena proof is "
-                "produced and ingested.",
-            ],
+            "next_inputs_needed": _next_inputs_needed(sections),
         }
         if output_path:
             path = Path(output_path)

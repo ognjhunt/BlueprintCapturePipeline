@@ -118,6 +118,9 @@ def test_live_pipeline_setup_marks_live_sections_ready_when_explicitly_configure
     assert result["sections"]["real_arena_execution"]["status"] == "ready"
     assert result["sections"]["rollout_vision_labeling"]["status"] == "ready"
     assert result["sections"]["delivery_upload"]["status"] == "ready"
+    next_inputs = " ".join(result["next_inputs_needed"])
+    assert "Provide a vision-labeling command" not in next_inputs
+    assert "Provide a delivery command" not in next_inputs
     assert result["sections"]["live_agents_operator"]["status"] == "blocked"
     assert "missing_openai_agents_sdk" in result["sections"]["live_agents_operator"]["blockers"]
     assert result["sections"]["live_codex_operator"]["status"] == "blocked"

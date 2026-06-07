@@ -209,6 +209,56 @@ def _overall_status(
     return "blocked"
 
 
+def _setup_section_ready(setup_manifest: Mapping[str, Any], section_name: str) -> bool:
+    sections = setup_manifest.get("sections") if isinstance(setup_manifest.get("sections"), Mapping) else {}
+    section = sections.get(section_name) if isinstance(sections, Mapping) else {}
+    if not isinstance(section, Mapping):
+        return False
+    status = _string(section.get("status"))
+    return bool(section.get("ready")) or status.startswith("ready")
+
+
+def _control_plane_next_inputs_needed(
+    *,
+    capture_root: Path | None,
+    job_request_inbox: Path | None,
+    setup_manifest: Mapping[str, Any],
+) -> List[str]:
+    next_inputs: List[str] = []
+    webapp_truth_ready = _setup_section_ready(setup_manifest, "webapp_upstream_truth")
+    if capture_root is None:
+        next_inputs.append("Set BLUEPRINT_PIPELINE_CAPTURE_ROOT to a real capture root.")
+    elif not webapp_truth_ready:
+        next_inputs.append(
+            "Provide a real WebApp capture root with site, request, buyer, and capture job IDs."
+        )
+    if job_request_inbox is None:
+        next_inputs.append("Set BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX to the WebApp job request inbox path.")
+    if not _setup_section_ready(setup_manifest, "real_arena_execution"):
+        next_inputs.append(
+            "Provide a real owner-system Isaac Lab-Arena command or result directory before "
+            "claiming simulator execution."
+        )
+    if not _setup_section_ready(setup_manifest, "rollout_vision_labeling"):
+        next_inputs.append(
+            "Provide a vision-labeling command and gate before model labels can be generated."
+        )
+    if not _setup_section_ready(setup_manifest, "delivery_upload"):
+        next_inputs.append(
+            "Provide a delivery command and gate before package uploads or signed links can be "
+            "created."
+        )
+    if not (
+        _setup_section_ready(setup_manifest, "live_agents_operator")
+        and _setup_section_ready(setup_manifest, "live_codex_operator")
+    ):
+        next_inputs.append(
+            "Configure gated Agents SDK and Codex SDK or host-OAuth operator credentials before "
+            "running live repo operators."
+        )
+    return next_inputs
+
+
 def run_live_pipeline_control_plane(
     *,
     capture_root: str | Path | None = None,
@@ -543,15 +593,11 @@ def run_live_pipeline_control_plane(
             },
             "claim_boundary": dict(CLAIM_BOUNDARY),
             "blockers": blockers,
-            "next_inputs_needed": [
-                "Set BLUEPRINT_PIPELINE_CAPTURE_ROOT to a real capture root.",
-                "Set BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX to the WebApp job request inbox path.",
-                "Provide a real owner-system Isaac Lab-Arena command or result directory before "
-                "claiming simulator execution.",
-                "Provide a vision-labeling command and gate before model labels can be generated.",
-                "Provide a delivery command and gate before package uploads or signed links can be "
-                "created.",
-            ],
+            "next_inputs_needed": _control_plane_next_inputs_needed(
+                capture_root=capture_path,
+                job_request_inbox=inbox_path,
+                setup_manifest=setup_manifest,
+            ),
         }
         manifest["secrets_leaked"] = _manifest_leaks_secret(manifest, secret_values)
         ensure_dir(output.parent)

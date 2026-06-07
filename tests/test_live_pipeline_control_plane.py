@@ -120,6 +120,32 @@ def test_live_pipeline_control_plane_loads_env_paths_and_redacts_values(
     assert output_path.is_file()
 
 
+def test_live_pipeline_control_plane_next_inputs_follow_ready_sections(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    monkeypatch.setenv("BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD", "true")
+
+    result = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=inbox_dir,
+        vision_labeling_command="python -c 'print(1)'",
+        delivery_command="python -c 'print(1)'",
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    next_inputs = " ".join(result["next_inputs_needed"])
+    assert "capture root" not in next_inputs
+    assert "job request inbox" not in next_inputs
+    assert "vision-labeling command" not in next_inputs
+    assert "delivery command" not in next_inputs
+    assert "Isaac Lab-Arena" in next_inputs
+
+
 def test_live_pipeline_control_plane_records_simulator_command_configuration(
     tmp_path: Path,
 ) -> None:
