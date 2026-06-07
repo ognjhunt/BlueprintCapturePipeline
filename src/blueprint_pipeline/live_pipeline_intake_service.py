@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .live_pipeline_control_plane import (
@@ -251,7 +252,7 @@ def create_app() -> FastAPI:
             trigger=trigger,
         )
         if intake.get("input_blockers"):
-            raise HTTPException(status_code=422, detail=response)
+            return JSONResponse(status_code=202, content=response)
         return response
 
     @app.get("/api/live-pipeline/intake-audit", dependencies=[Depends(_require_token)])

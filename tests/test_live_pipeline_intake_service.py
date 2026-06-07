@@ -115,6 +115,44 @@ def test_live_pipeline_intake_service_stages_webapp_request(
     assert payload["proof_boundary"]["intake_sets_proof_booleans"] is False
 
 
+def test_live_pipeline_intake_service_records_blocked_webapp_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    other_capture_root = (
+        tmp_path
+        / "storage"
+        / "bucket"
+        / "scenes"
+        / "scene-2"
+        / "captures"
+        / "capture-2"
+    )
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/live-pipeline/job-requests",
+        json=_webapp_request(other_capture_root),
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["status"] == "blocked"
+    assert payload["accepted"] is False
+    assert (
+        "webapp:request_capture_root_does_not_match_control_plane"
+        in payload["input_blockers"]
+    )
+    assert payload["webapp_job_request"]["capture_root_matches_control_plane"] is False
+    assert payload["webapp_staging"]["performed"] is False
+    assert payload["trigger"]["status"] == "not_run"
+    assert Path(payload["candidate"]["path"]).is_file()
+
+
 def test_live_pipeline_intake_service_exposes_latest_audit(
     tmp_path: Path, monkeypatch
 ) -> None:
