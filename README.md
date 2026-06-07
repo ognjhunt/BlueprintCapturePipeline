@@ -598,7 +598,7 @@ blueprint-audit-live-pipeline-setup \
 ```
 
 The setup audit loads local env files without printing secret values, checks
-configured commands, Codex CLI, and SDK availability, and writes
+configured commands, owner-supplied Arena result directories, Codex CLI, and SDK availability, and writes
 `pipeline/live_pipeline_setup/live_pipeline_setup_manifest.json`. ChatGPT
 Pro/Codex OAuth may be used through an authenticated `codex` CLI when
 `BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH=true` and the live Codex operator gate are
@@ -606,6 +606,11 @@ both set. Repo-local OpenAI SDK calls still require explicit API-key/env
 configuration or a command hook that owns its own OAuth flow. The DigitalOcean
 droplet can act as an always-on control plane, but it is not GPU/Arena execution
 proof by itself.
+
+Use `--arena-results-dir` or `BLUEPRINT_ARENA_RESULTS_DIR` when an owner system
+has already produced Isaac Lab-Arena result artifacts. That path can be ready
+for result ingest without opening the simulator-execution gate; it still does
+not prove simulator execution or robot readiness by itself.
 
 Post-Training Data Package export and archive:
 

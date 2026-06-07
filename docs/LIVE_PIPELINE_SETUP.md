@@ -25,10 +25,18 @@ It checks:
 
 - local env files, with secret values redacted from output
 - simulator, vision-labeling, and delivery command hooks
+- owner-supplied Arena result directories ready for ingest
 - OpenAI Agents SDK and Codex SDK module availability
 - WebApp upstream IDs required for production proof
 - Arena package proof-boundary audit status
 - optional DigitalOcean control-plane metadata
+
+`--arena-results-dir` or `BLUEPRINT_ARENA_RESULTS_DIR` is accepted as an
+owner-supplied result-ingest path. A directory with JSON result artifacts can
+make the Arena section `ready_for_result_ingest` without opening
+`BLUEPRINT_ALLOW_SIMULATOR_EXECUTION`. That does not prove simulator execution,
+robot policy execution, contact, safety, or robot readiness; it only means the
+pipeline has result artifacts it can ingest and audit.
 
 ## Always-On Control Plane
 

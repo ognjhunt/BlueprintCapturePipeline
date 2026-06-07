@@ -162,6 +162,58 @@ def _artifact_status(path: Path | None) -> Dict[str, Any]:
     }
 
 
+def _arena_results_status(path: Path | None) -> Dict[str, Any]:
+    if path is None:
+        return {
+            "arena_results_dir": None,
+            "status": "not_configured",
+            "ready": False,
+            "blockers": ["arena_results_dir_not_provided"],
+            "json_artifact_count": 0,
+            "recognized_artifacts": [],
+        }
+    if not path.is_dir():
+        return {
+            "arena_results_dir": str(path),
+            "status": "blocked",
+            "ready": False,
+            "blockers": ["arena_results_dir_missing"],
+            "json_artifact_count": 0,
+            "recognized_artifacts": [],
+        }
+    json_artifacts = sorted(item for item in path.rglob("*.json") if item.is_file())
+    recognized = [
+        str(item.relative_to(path))
+        for item in json_artifacts
+        if item.name
+        in {
+            "rollout_manifest.json",
+            "shard_manifest.json",
+            "artifact_manifest.json",
+            "metrics.json",
+            "results.json",
+        }
+    ]
+    if not json_artifacts:
+        return {
+            "arena_results_dir": str(path),
+            "status": "blocked",
+            "ready": False,
+            "blockers": ["arena_results_dir_has_no_json_artifacts"],
+            "json_artifact_count": 0,
+            "recognized_artifacts": [],
+        }
+    return {
+        "arena_results_dir": str(path),
+        "status": "ready_for_ingest",
+        "ready": True,
+        "blockers": [],
+        "json_artifact_count": len(json_artifacts),
+        "recognized_artifacts": recognized,
+        "proof_boundary": "existing result artifacts are ingest inputs, not simulator execution proof",
+    }
+
+
 def _capture_upstream_truth(capture_root: Path | None) -> Dict[str, Any]:
     if capture_root is None:
         return {
@@ -340,6 +392,7 @@ def _overall_status(sections: Mapping[str, Mapping[str, Any]]) -> str:
         "delivery_upload",
         "live_agents_operator",
         "live_codex_operator",
+        "webapp_upstream_truth",
     )
     if all(sections[name].get("ready") for name in live_required):
         return "ready_for_live_external_execution"
@@ -467,7 +520,7 @@ def build_live_pipeline_setup_manifest(
 
         arena_results = Path(arena_results_dir).resolve() if arena_results_dir else None
         arena_result_artifacts = {
-            "arena_results_dir": str(arena_results) if arena_results else None,
+            **_arena_results_status(arena_results),
             "rollout_manifest": _artifact_status(arena_results / "rollout_manifest.json")
             if arena_results
             else _artifact_status(None),
@@ -478,6 +531,29 @@ def build_live_pipeline_setup_manifest(
         local_blockers: List[str] = []
         if not commands["ffmpeg"]["ready"]:
             local_blockers.append("missing_ffmpeg_for_clip_keyframe_paths")
+        simulator_path_ready = (
+            env["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"]["ready"]
+            and commands["simulator"]["ready"]
+        )
+        arena_results_ready = bool(arena_result_artifacts["ready"])
+        real_arena_blockers = [
+            blocker
+            for blocker, ok in (
+                (
+                    "missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION",
+                    env["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"]["ready"] or arena_results_ready,
+                ),
+                (
+                    "missing_simulator_command_or_arena_results_dir",
+                    commands["simulator"]["configured"] or arena_results_ready,
+                ),
+                (
+                    "simulator_command_executable_not_found",
+                    commands["simulator"]["ready"] or arena_results_ready,
+                ),
+            )
+            if not ok
+        ]
         sections: Dict[str, Dict[str, Any]] = {
             "local_deterministic_lane": _section(
                 "ready" if not local_blockers else "blocked",
@@ -486,29 +562,16 @@ def build_live_pipeline_setup_manifest(
                 package_audit=_package_audit_status(package_path),
             ),
             "real_arena_execution": _section(
-                "ready"
-                if env["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"]["ready"]
-                and commands["simulator"]["ready"]
+                "ready" if simulator_path_ready else "ready_for_result_ingest"
+                if arena_results_ready
                 else "blocked",
-                [
-                    blocker
-                    for blocker, ok in (
-                        (
-                            "missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION",
-                            env["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"]["ready"],
-                        ),
-                        ("missing_simulator_command", commands["simulator"]["configured"]),
-                        (
-                            "simulator_command_executable_not_found",
-                            commands["simulator"]["ready"],
-                        ),
-                    )
-                    if not ok
-                ],
+                real_arena_blockers,
                 command=commands["simulator"],
+                arena_results=arena_result_artifacts,
+                claim_boundary=dict(CONTROL_PLANE_NOT_PROOF),
                 proof_boundary=(
-                    "completed command output is still not robot readiness without accepted "
-                    "owner evidence"
+                    "completed command or supplied result artifacts are still not robot readiness "
+                    "without accepted owner evidence"
                 ),
             ),
             "rollout_vision_labeling": _section(

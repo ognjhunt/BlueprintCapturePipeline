@@ -134,6 +134,54 @@ def test_live_pipeline_setup_marks_live_sections_ready_when_explicitly_configure
     )
 
 
+def test_live_pipeline_setup_accepts_owner_arena_results_without_overclaiming_webapp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    arena_results = tmp_path / "arena-results"
+    _write_json(
+        arena_results / "rollout_manifest.json",
+        {
+            "episodes": [
+                {
+                    "episode_id": "episode-1",
+                    "scenario_id": "scenario-1",
+                    "status": "success",
+                    "success": True,
+                }
+            ]
+        },
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("blueprint_pipeline.live_pipeline_setup._module_available", lambda _: True)
+
+    result = build_live_pipeline_setup_manifest(
+        capture_root=capture_root,
+        arena_results_dir=arena_results,
+        vision_labeling_command="python -c 'print(1)'",
+        delivery_command="python -c 'print(1)'",
+        load_local_env=False,
+    )
+
+    assert result["status"] == "local_ready_live_external_blocked"
+    assert result["sections"]["real_arena_execution"]["status"] == "ready_for_result_ingest"
+    assert result["sections"]["real_arena_execution"]["ready"] is True
+    assert result["sections"]["real_arena_execution"]["blockers"] == []
+    assert result["sections"]["real_arena_execution"]["arena_results"]["ready"] is True
+    assert result["sections"]["webapp_upstream_truth"]["status"] == "blocked"
+    assert any(
+        blocker.startswith("webapp_upstream_truth:missing_webapp_")
+        for blocker in result["blockers"]
+    )
+    next_inputs = " ".join(result["next_inputs_needed"])
+    assert "owner-system Arena simulator command" not in next_inputs
+    assert result["sections"]["real_arena_execution"]["claim_boundary"]["simulator_execution_proven"] is False
+
+
 def test_live_pipeline_setup_allows_codex_cli_host_oauth_when_gated(
     tmp_path: Path, monkeypatch
 ) -> None:

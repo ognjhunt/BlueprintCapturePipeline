@@ -616,10 +616,13 @@ blueprint-audit-live-pipeline-setup \
 ```
 
 This preflight reports whether the local machine has the live gates, command
-hooks, Codex CLI, SDK modules, package audit, and WebApp upstream IDs required
-for a live run. It may treat a 24/7 droplet as a control-plane target, but not
-as simulator, contact, safety, or robot-readiness proof. ChatGPT Pro/Codex OAuth
-can be used through an authenticated `codex` CLI only when
+hooks, owner-supplied Arena result directories, Codex CLI, SDK modules, package
+audit, and WebApp upstream IDs required for a live run. It may treat a 24/7
+droplet as a control-plane target, but not as simulator, contact, safety, or
+robot-readiness proof. `--arena-results-dir` or `BLUEPRINT_ARENA_RESULTS_DIR`
+can make the Arena section ready for result ingest without opening the
+simulator-execution gate; that is still not execution proof. ChatGPT Pro/Codex
+OAuth can be used through an authenticated `codex` CLI only when
 `BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH=true` and the matching live Codex gate are
 set; otherwise repo subprocesses still require explicit API keys or
 OAuth-owning command hooks.
