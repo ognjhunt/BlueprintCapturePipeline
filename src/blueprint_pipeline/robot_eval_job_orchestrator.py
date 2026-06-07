@@ -422,10 +422,16 @@ def _read_optional_mapping(path: Path) -> Dict[str, Any]:
 
 def _read_job_request(job_request: str | Path | Mapping[str, Any]) -> Dict[str, Any]:
     if isinstance(job_request, Mapping):
-        return dict(job_request)
-    payload = read_json_any(Path(job_request))
+        payload = job_request
+    else:
+        payload = read_json_any(Path(job_request))
     if not isinstance(payload, Mapping):
         raise ValueError(f"Expected job request JSON object at {job_request}")
+    if (
+        payload.get("queue_contract") == "robot_eval_job_request_inbox.v1"
+        and isinstance(payload.get("job_request"), Mapping)
+    ):
+        return dict(payload["job_request"])
     return dict(payload)
 
 

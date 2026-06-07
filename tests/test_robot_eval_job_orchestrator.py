@@ -407,6 +407,51 @@ def test_robot_eval_job_request_inbox_runs_webapp_job_request_automatically(
     assert run_manifest["public_claim_upgrade_allowed"] is False
 
 
+def test_robot_eval_job_request_inbox_accepts_webapp_queue_envelope(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    request = _full_job_request(capture_root)
+    request["job_id"] = "webapp-envelope-job-1"
+    request["buyer_request_id"] = "buyer-request-envelope-1"
+    envelope = {
+        "queue_contract": "robot_eval_job_request_inbox.v1",
+        "status": "queued_for_pipeline",
+        "queued_at_iso": "2026-06-07T00:00:00Z",
+        "job_id": request["job_id"],
+        "buyer_request_id": request["buyer_request_id"],
+        "pipeline_command": "blueprint-run-robot-eval-job",
+        "pipeline_consumer": "BlueprintCapturePipeline",
+        "job_request": request,
+    }
+    _write_json(inbox_dir / "webapp-envelope-job-1.json", envelope)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    queued_request = _read_json(
+        capture_root
+        / "pipeline"
+        / "robot_eval_job_requests"
+        / "webapp-envelope-job-1"
+        / "job_request.json"
+    )
+
+    assert result["status"] == "completed"
+    assert result["processed_count"] == 1
+    assert result["jobs"][0]["job_id"] == "webapp-envelope-job-1"
+    assert queued_request["schema_version"] == "robot_eval_job_request.v1"
+    assert "queue_contract" not in queued_request
+
+
 def test_robot_eval_job_rights_privacy_block_prevents_execution(
     tmp_path: Path,
 ) -> None:
