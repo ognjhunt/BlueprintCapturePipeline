@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV, LIVE_CODEX_SDK_ENV
-from .common import ensure_dir, utc_now_iso, write_json, write_text
+from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .live_pipeline_setup import (
     CONTROL_PLANE_NOT_PROOF,
     build_live_pipeline_setup_manifest,
@@ -59,6 +59,9 @@ ARENA_RESULT_ARTIFACT_NAMES = (
     "results.json",
     "any additional owner-system *.json result artifacts",
 )
+
+WEBAPP_JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
+WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = "robot_eval_job_request_inbox.v1"
 
 CAPTURE_ROOT_ENV = "BLUEPRINT_PIPELINE_CAPTURE_ROOT"
 JOB_REQUEST_INBOX_ENV = "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX"
@@ -249,9 +252,14 @@ def _control_plane_next_inputs_needed(
     capture_root: Path | None,
     job_request_inbox: Path | None,
     setup_manifest: Mapping[str, Any],
+    webapp_upstream_truth_ready: bool | None = None,
 ) -> List[str]:
     next_inputs: List[str] = []
-    webapp_truth_ready = _setup_section_ready(setup_manifest, "webapp_upstream_truth")
+    webapp_truth_ready = (
+        bool(webapp_upstream_truth_ready)
+        if webapp_upstream_truth_ready is not None
+        else _setup_section_ready(setup_manifest, "webapp_upstream_truth")
+    )
     if capture_root is None:
         next_inputs.append("Set BLUEPRINT_PIPELINE_CAPTURE_ROOT to a real capture root.")
     elif not webapp_truth_ready:
@@ -297,6 +305,145 @@ def _setup_section(setup_manifest: Mapping[str, Any], section_name: str) -> Dict
 def _section_blockers(section: Mapping[str, Any]) -> List[str]:
     blockers = section.get("blockers")
     return list(blockers) if isinstance(blockers, list) else []
+
+
+def _field_value_from_sources(
+    payload: Mapping[str, Any],
+    field: str,
+    sources: Sequence[Mapping[str, Any]],
+) -> str | None:
+    for source in sources:
+        value = _string(source.get(field))
+        if value:
+            return value
+    if field == "request_id":
+        owner_system = _as_mapping(payload.get("owner_system"))
+        value = _string(owner_system.get("request_id"))
+        if value:
+            return value
+    return None
+
+
+def _request_from_webapp_payload(payload: Mapping[str, Any]) -> Dict[str, Any] | None:
+    if payload.get("queue_contract") == WEBAPP_JOB_REQUEST_QUEUE_CONTRACT:
+        request = payload.get("job_request")
+        if isinstance(request, Mapping) and request.get("schema_version") == WEBAPP_JOB_REQUEST_SCHEMA_VERSION:
+            return dict(request)
+        return None
+    if payload.get("schema_version") == WEBAPP_JOB_REQUEST_SCHEMA_VERSION:
+        return dict(payload)
+    return None
+
+
+def _path_matches_configured_capture_root(
+    request_capture_root: str | None,
+    capture_root: Path | None,
+) -> bool:
+    if not request_capture_root or capture_root is None:
+        return False
+    try:
+        return Path(request_capture_root).resolve() == capture_root.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _webapp_job_request_inbox_truth(
+    *,
+    inbox_path: Path | None,
+    capture_root: Path | None,
+) -> Dict[str, Any]:
+    if inbox_path is None:
+        return {
+            "status": "not_configured",
+            "ready": False,
+            "inbox_path": None,
+            "blockers": ["job_request_inbox_not_provided"],
+            "request_count": 0,
+            "accepted_request_count": 0,
+            "accepted_request_ids": [],
+            "candidates": [],
+        }
+    if not inbox_path.is_dir():
+        return {
+            "status": "blocked",
+            "ready": False,
+            "inbox_path": str(inbox_path),
+            "blockers": ["job_request_inbox_missing"],
+            "request_count": 0,
+            "accepted_request_count": 0,
+            "accepted_request_ids": [],
+            "candidates": [],
+        }
+    candidates: List[Dict[str, Any]] = []
+    invalid_json_count = 0
+    for request_path in sorted(inbox_path.glob("*.json")):
+        if request_path.name.startswith("."):
+            continue
+        try:
+            payload = read_json_any(request_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            invalid_json_count += 1
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        request = _request_from_webapp_payload(payload)
+        if request is None:
+            continue
+        source = _as_mapping(request.get("source"))
+        site_package = _as_mapping(request.get("site_package"))
+        top_level_sources = (request, source)
+        fields_present: Dict[str, bool] = {}
+        for field in WEBAPP_UPSTREAM_REQUIRED_FIELDS:
+            fields_present[field] = bool(_field_value_from_sources(request, field, top_level_sources))
+        request_capture_root = _string(site_package.get("capture_root")) or None
+        capture_root_matches = _path_matches_configured_capture_root(request_capture_root, capture_root)
+        missing_fields = [
+            field for field, present in fields_present.items() if not present
+        ]
+        accepted = capture_root_matches and not missing_fields
+        candidates.append(
+            {
+                "path": str(request_path),
+                "schema_version": _string(request.get("schema_version")) or None,
+                "job_id": _string(request.get("job_id")) or None,
+                "fields_present": fields_present,
+                "missing_fields": missing_fields,
+                "capture_root_matches_control_plane": capture_root_matches,
+                "request_capture_root_configured": bool(request_capture_root),
+                "accepted_as_webapp_truth": accepted,
+            }
+        )
+    accepted_candidates = [
+        candidate for candidate in candidates if candidate["accepted_as_webapp_truth"]
+    ]
+    blockers: List[str] = []
+    if not candidates:
+        blockers.append("no_robot_eval_job_request_v1_files")
+    if candidates and not accepted_candidates:
+        if not any(candidate["capture_root_matches_control_plane"] for candidate in candidates):
+            blockers.append("no_job_request_matches_configured_capture_root")
+        if any(candidate["missing_fields"] for candidate in candidates):
+            blockers.append("job_request_missing_required_webapp_ids")
+    warnings = ["invalid_json_files_ignored"] if invalid_json_count else []
+    return {
+        "status": "ready" if accepted_candidates else "blocked",
+        "ready": bool(accepted_candidates),
+        "inbox_path": str(inbox_path),
+        "blockers": blockers,
+        "warnings": warnings,
+        "invalid_json_count": invalid_json_count,
+        "request_count": len(candidates),
+        "accepted_request_count": len(accepted_candidates),
+        "accepted_request_ids": [
+            candidate["job_id"] for candidate in accepted_candidates if candidate.get("job_id")
+        ],
+        "candidates": candidates[:20],
+        "truncated_candidates": len(candidates) > 20,
+        "proof_boundary": (
+            "Queued WebApp job requests prove upstream linkage only when they contain real "
+            "WebApp IDs and point at the configured capture root."
+        ),
+    }
 
 
 def _missing_webapp_fields(section: Mapping[str, Any]) -> List[str]:
@@ -361,11 +508,16 @@ def _build_external_input_packet(
     setup_manifest_path: Path,
     setup_manifest: Mapping[str, Any],
     inbox_run: Mapping[str, Any],
+    webapp_inbox_truth: Mapping[str, Any],
 ) -> Dict[str, Any]:
     webapp_section = _setup_section(setup_manifest, "webapp_upstream_truth")
     arena_section = _setup_section(setup_manifest, "real_arena_execution")
+    webapp_truth_ready = _setup_section_ready(
+        setup_manifest,
+        "webapp_upstream_truth",
+    ) or bool(webapp_inbox_truth.get("ready"))
     required_inputs: List[Dict[str, Any]] = []
-    if not _setup_section_ready(setup_manifest, "webapp_upstream_truth"):
+    if not webapp_truth_ready:
         required_inputs.append(
             {
                 "id": "webapp_upstream_truth",
@@ -378,6 +530,12 @@ def _build_external_input_packet(
                 "configured_job_request_inbox": str(job_request_inbox)
                 if job_request_inbox
                 else None,
+                "webapp_inbox_truth": {
+                    "status": webapp_inbox_truth.get("status"),
+                    "request_count": webapp_inbox_truth.get("request_count"),
+                    "accepted_request_count": webapp_inbox_truth.get("accepted_request_count"),
+                    "blockers": webapp_inbox_truth.get("blockers", []),
+                },
                 "current_blockers": _section_blockers(webapp_section),
                 "proof_boundary": (
                     "IDs prove upstream WebApp linkage only when sourced from real capture/job "
@@ -472,6 +630,12 @@ def _build_external_input_packet(
             "control_plane_manifest_path": str(output_path),
             "setup_manifest_path": str(setup_manifest_path),
             "inbox_run_manifest_path": inbox_run.get("manifest_path"),
+        },
+        "webapp_upstream_truth": {
+            "ready": webapp_truth_ready,
+            "capture_root_section_status": _string(webapp_section.get("status")) or "blocked",
+            "job_request_inbox_status": webapp_inbox_truth.get("status"),
+            "accepted_request_ids": webapp_inbox_truth.get("accepted_request_ids", []),
         },
         "required_inputs": required_inputs,
         "enablement_inputs": enablement_inputs,
@@ -861,6 +1025,14 @@ def run_live_pipeline_control_plane(
         for blocker in inbox_run.get("blockers") or []:
             blockers.append(f"inbox:{blocker}")
 
+        webapp_inbox_truth = _webapp_job_request_inbox_truth(
+            inbox_path=inbox_path,
+            capture_root=capture_path,
+        )
+        webapp_upstream_truth_ready = _setup_section_ready(
+            setup_manifest,
+            "webapp_upstream_truth",
+        ) or bool(webapp_inbox_truth.get("ready"))
         generated_at = utc_now_iso()
         external_input_packet_path = output.parent / "live_pipeline_external_input_packet.json"
         external_input_packet_markdown_path = (
@@ -876,6 +1048,7 @@ def run_live_pipeline_control_plane(
             setup_manifest_path=setup_output,
             setup_manifest=setup_manifest,
             inbox_run=inbox_run,
+            webapp_inbox_truth=webapp_inbox_truth,
         )
         external_input_packet["secrets_leaked"] = _manifest_leaks_secret(
             external_input_packet,
@@ -903,6 +1076,8 @@ def run_live_pipeline_control_plane(
             "setup_status": setup_manifest.get("status"),
             "setup_blockers": setup_manifest.get("blockers", []),
             "inbox_run": inbox_run,
+            "webapp_inbox_truth": webapp_inbox_truth,
+            "effective_webapp_upstream_truth_ready": webapp_upstream_truth_ready,
             "external_input_packet": {
                 "schema_version": LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
                 "status": external_input_packet["status"],
@@ -954,6 +1129,7 @@ def run_live_pipeline_control_plane(
                 capture_root=capture_path,
                 job_request_inbox=inbox_path,
                 setup_manifest=setup_manifest,
+                webapp_upstream_truth_ready=webapp_upstream_truth_ready,
             ),
         }
         manifest["secrets_leaked"] = _manifest_leaks_secret(manifest, secret_values)

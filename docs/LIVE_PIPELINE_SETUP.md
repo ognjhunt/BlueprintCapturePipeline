@@ -78,6 +78,11 @@ The example `robot_eval_job_request.v1` inside the packet uses placeholders
 only. The packet is a request/contract artifact and does not prove simulator
 execution, robot policy execution, contact, safety, or robot readiness.
 
+Queued WebApp requests count as upstream truth only when the request includes
+all four WebApp IDs and `site_package.capture_root` resolves to the same
+capture root configured for the control plane. Requests for another capture are
+reported in `webapp_inbox_truth` but remain blocked.
+
 Install templates live under:
 
 ```text

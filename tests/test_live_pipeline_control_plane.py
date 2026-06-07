@@ -16,21 +16,52 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _capture_root(tmp_path: Path) -> Path:
+def _capture_root(tmp_path: Path, *, with_webapp_ids: bool = True) -> Path:
     capture_root = tmp_path / "storage" / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    descriptor: dict[str, object] = {
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+    }
+    if with_webapp_ids:
+        descriptor.update(
+            {
+                "site_submission_id": "site-submission-1",
+                "request_id": "request-1",
+                "buyer_request_id": "buyer-request-1",
+                "capture_job_id": "capture-job-1",
+            }
+        )
     _write_json(
         capture_root / "capture_descriptor.json",
-        {
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
+        descriptor,
+    )
+    _write_json(capture_root / "raw" / "manifest.json", {"scene_id": "scene-1"})
+    return capture_root
+
+
+def _webapp_queue_envelope(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict[str, object]:
+    request = {
+        "schema_version": "robot_eval_job_request.v1",
+        "job_id": job_id,
+        "site_package": {
+            "capture_root": str(capture_root),
+            "site_id": "site-1",
+            "package_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline",
+        },
+        "source": {
+            "system": "Blueprint-WebApp",
             "site_submission_id": "site-submission-1",
             "request_id": "request-1",
             "buyer_request_id": "buyer-request-1",
             "capture_job_id": "capture-job-1",
         },
-    )
-    _write_json(capture_root / "raw" / "manifest.json", {"scene_id": "scene-1"})
-    return capture_root
+    }
+    return {
+        "queue_contract": "robot_eval_job_request_inbox.v1",
+        "status": "queued_for_pipeline",
+        "job_id": job_id,
+        "job_request": request,
+    }
 
 
 def test_live_pipeline_control_plane_blocks_without_capture_root(tmp_path: Path, monkeypatch) -> None:
@@ -117,6 +148,68 @@ def test_live_pipeline_control_plane_processes_empty_inbox_without_live_actions(
     assert "Live Pipeline External Input Packet" in packet_markdown_path.read_text(
         encoding="utf-8"
     )
+
+
+def test_live_pipeline_control_plane_accepts_matching_webapp_inbox_truth(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    _write_json(inbox_dir / "webapp-job-1.json", _webapp_queue_envelope(capture_root))
+
+    result = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=inbox_dir,
+        process_inbox=False,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    packet = json.loads(
+        Path(result["external_input_packet"]["path"]).read_text(encoding="utf-8")
+    )
+    required_input_ids = {item["id"] for item in packet["required_inputs"]}
+    next_inputs = " ".join(result["next_inputs_needed"])
+
+    assert result["webapp_inbox_truth"]["status"] == "ready"
+    assert result["webapp_inbox_truth"]["accepted_request_ids"] == ["webapp-job-1"]
+    assert result["effective_webapp_upstream_truth_ready"] is True
+    assert packet["webapp_upstream_truth"]["ready"] is True
+    assert packet["webapp_upstream_truth"]["job_request_inbox_status"] == "ready"
+    assert "webapp_upstream_truth" not in required_input_ids
+    assert "WebApp capture root" not in next_inputs
+    assert "Isaac Lab-Arena" in next_inputs
+
+
+def test_live_pipeline_control_plane_rejects_mismatched_webapp_inbox_truth(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    other_capture_root = tmp_path / "other" / "captures" / "capture-2"
+    _write_json(inbox_dir / "webapp-job-1.json", _webapp_queue_envelope(other_capture_root))
+
+    result = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=inbox_dir,
+        process_inbox=False,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    packet = json.loads(
+        Path(result["external_input_packet"]["path"]).read_text(encoding="utf-8")
+    )
+    required_input_ids = {item["id"] for item in packet["required_inputs"]}
+
+    assert result["webapp_inbox_truth"]["status"] == "blocked"
+    assert result["webapp_inbox_truth"]["accepted_request_count"] == 0
+    assert "no_job_request_matches_configured_capture_root" in result["webapp_inbox_truth"][
+        "blockers"
+    ]
+    assert result["effective_webapp_upstream_truth_ready"] is False
+    assert "webapp_upstream_truth" in required_input_ids
+    assert packet["required_inputs"][0]["webapp_inbox_truth"]["request_count"] == 1
 
 
 def test_live_pipeline_control_plane_loads_env_paths_and_redacts_values(

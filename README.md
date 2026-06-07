@@ -230,7 +230,10 @@ That command audits readiness and optionally drains
 live simulator commands, owner Arena result artifacts, vision-labeling commands,
 delivery commands, or live operator credentials are missing. The packet is a
 handoff contract only; placeholder WebApp IDs or sample job requests are never
-treated as proof.
+treated as proof. A queued WebApp `robot_eval_job_request.v1` can satisfy the
+WebApp upstream-truth requirement only when it contains `site_submission_id`,
+`request_id`, `buyer_request_id`, and `capture_job_id`, and its
+`site_package.capture_root` matches the configured control-plane capture root.
 
 ## Privacy And World Labs Input
 
