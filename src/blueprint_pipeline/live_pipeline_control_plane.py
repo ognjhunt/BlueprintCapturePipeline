@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV, LIVE_CODEX_SDK_ENV
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, write_text
 from .live_pipeline_setup import (
     CONTROL_PLANE_NOT_PROOF,
     build_live_pipeline_setup_manifest,
@@ -33,6 +33,32 @@ from .safe_env import load_env_files
 
 
 LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION = "blueprint_live_pipeline_control_plane_run.v1"
+LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION = (
+    "blueprint_live_pipeline_external_input_packet.v1"
+)
+
+WEBAPP_UPSTREAM_REQUIRED_FIELDS = (
+    "site_submission_id",
+    "request_id",
+    "buyer_request_id",
+    "capture_job_id",
+)
+
+WEBAPP_UPSTREAM_ACCEPTED_SOURCES = (
+    "capture_descriptor.json",
+    "raw/manifest.json",
+    "pipeline/opportunity_handoff.json",
+    "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX robot_eval_job_request.v1 files for scheduling",
+)
+
+ARENA_RESULT_ARTIFACT_NAMES = (
+    "rollout_manifest.json",
+    "shard_manifest.json",
+    "artifact_manifest.json",
+    "metrics.json",
+    "results.json",
+    "any additional owner-system *.json result artifacts",
+)
 
 CAPTURE_ROOT_ENV = "BLUEPRINT_PIPELINE_CAPTURE_ROOT"
 JOB_REQUEST_INBOX_ENV = "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX"
@@ -257,6 +283,302 @@ def _control_plane_next_inputs_needed(
             "running live repo operators."
         )
     return next_inputs
+
+
+def _as_mapping(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _setup_section(setup_manifest: Mapping[str, Any], section_name: str) -> Dict[str, Any]:
+    sections = _as_mapping(setup_manifest.get("sections"))
+    return _as_mapping(sections.get(section_name))
+
+
+def _section_blockers(section: Mapping[str, Any]) -> List[str]:
+    blockers = section.get("blockers")
+    return list(blockers) if isinstance(blockers, list) else []
+
+
+def _missing_webapp_fields(section: Mapping[str, Any]) -> List[str]:
+    fields_present = _as_mapping(section.get("fields_present"))
+    if not fields_present:
+        return list(WEBAPP_UPSTREAM_REQUIRED_FIELDS)
+    missing = [
+        field
+        for field in WEBAPP_UPSTREAM_REQUIRED_FIELDS
+        if not bool(fields_present.get(field))
+    ]
+    return missing
+
+
+def _input_packet_status(
+    *,
+    required_inputs: Sequence[Mapping[str, Any]],
+    enablement_inputs: Sequence[Mapping[str, Any]],
+) -> str:
+    if required_inputs:
+        return "waiting_for_external_inputs"
+    if enablement_inputs:
+        return "core_external_inputs_ready_enablement_missing"
+    return "all_external_inputs_configured"
+
+
+def _gateable_section_input(
+    *,
+    input_id: str,
+    title: str,
+    section: Mapping[str, Any],
+    required_env: Sequence[str],
+    command_env: str | None = None,
+    accepted_artifact: str | None = None,
+    proof_boundary: str,
+) -> Dict[str, Any] | None:
+    if bool(section.get("ready")):
+        return None
+    command = _as_mapping(section.get("command"))
+    configured = bool(command.get("configured")) if command else None
+    return {
+        "id": input_id,
+        "title": title,
+        "status": _string(section.get("status")) or "blocked",
+        "current_blockers": _section_blockers(section),
+        "required_env": list(required_env),
+        "command_env": command_env,
+        "command_configured": configured,
+        "accepted_artifact": accepted_artifact,
+        "proof_boundary": proof_boundary,
+    }
+
+
+def _build_external_input_packet(
+    *,
+    generated_at: str,
+    capture_root: Path | None,
+    job_request_inbox: Path | None,
+    package_dir: Path | None,
+    arena_results_dir: Path | None,
+    output_path: Path,
+    setup_manifest_path: Path,
+    setup_manifest: Mapping[str, Any],
+    inbox_run: Mapping[str, Any],
+) -> Dict[str, Any]:
+    webapp_section = _setup_section(setup_manifest, "webapp_upstream_truth")
+    arena_section = _setup_section(setup_manifest, "real_arena_execution")
+    required_inputs: List[Dict[str, Any]] = []
+    if not _setup_section_ready(setup_manifest, "webapp_upstream_truth"):
+        required_inputs.append(
+            {
+                "id": "webapp_upstream_truth",
+                "title": "Real WebApp capture/job IDs",
+                "status": _string(webapp_section.get("status")) or "blocked",
+                "required_fields": list(WEBAPP_UPSTREAM_REQUIRED_FIELDS),
+                "missing_fields": _missing_webapp_fields(webapp_section),
+                "accepted_sources": list(WEBAPP_UPSTREAM_ACCEPTED_SOURCES),
+                "configured_capture_root": str(capture_root) if capture_root else None,
+                "configured_job_request_inbox": str(job_request_inbox)
+                if job_request_inbox
+                else None,
+                "current_blockers": _section_blockers(webapp_section),
+                "proof_boundary": (
+                    "IDs prove upstream WebApp linkage only when sourced from real capture/job "
+                    "records; placeholders do not satisfy production proof."
+                ),
+            }
+        )
+    if not _setup_section_ready(setup_manifest, "real_arena_execution"):
+        required_inputs.append(
+            {
+                "id": "isaac_lab_arena_owner_evidence",
+                "title": "Owner-system Isaac Lab-Arena evidence",
+                "status": _string(arena_section.get("status")) or "blocked",
+                "accepted_paths": [
+                    {
+                        "kind": "owner_result_directory",
+                        "env": ARENA_RESULTS_DIR_ENV,
+                        "configured_path": str(arena_results_dir) if arena_results_dir else None,
+                        "required_artifacts": list(ARENA_RESULT_ARTIFACT_NAMES),
+                        "accepted_section_status": "ready_for_result_ingest",
+                    },
+                    {
+                        "kind": "gated_simulator_command",
+                        "gate_env": "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION",
+                        "audit_command_env": SIMULATOR_AUDIT_COMMAND_ENV,
+                        "isaac_lab_arena_command_env": ISAAC_LAB_ARENA_COMMAND_ENV,
+                        "accepted_section_status": "ready",
+                    },
+                ],
+                "current_blockers": _section_blockers(arena_section),
+                "proof_boundary": (
+                    "Arena results or commands are ingest/execution inputs only; robot policy, "
+                    "contact, safety, and readiness claims require accepted owner-system evidence."
+                ),
+            }
+        )
+
+    enablement_inputs: List[Dict[str, Any]] = []
+    for item in (
+        _gateable_section_input(
+            input_id="rollout_vision_labeling",
+            title="Rollout vision labeling hook",
+            section=_setup_section(setup_manifest, "rollout_vision_labeling"),
+            required_env=("BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING",),
+            command_env=VISION_LABELING_COMMAND_ENV,
+            accepted_artifact="rollout_vision_labels.command.json",
+            proof_boundary="Model labels remain review-required support evidence.",
+        ),
+        _gateable_section_input(
+            input_id="delivery_upload",
+            title="Package delivery hook",
+            section=_setup_section(setup_manifest, "delivery_upload"),
+            required_env=("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD",),
+            command_env=DELIVERY_COMMAND_ENV,
+            accepted_artifact="delivery_upload.command.json or signed_access.command.json",
+            proof_boundary="Delivery artifacts do not upgrade robot or simulator proof claims.",
+        ),
+        _gateable_section_input(
+            input_id="live_agents_operator",
+            title="Gated Agents SDK operator",
+            section=_setup_section(setup_manifest, "live_agents_operator"),
+            required_env=(LIVE_AGENTS_SDK_ENV, "OPENAI_API_KEY"),
+            proof_boundary=(
+                "Agents may choose or summarize next steps but cannot mutate proof booleans."
+            ),
+        ),
+        _gateable_section_input(
+            input_id="live_codex_operator",
+            title="Gated Codex SDK or Codex CLI host-OAuth operator",
+            section=_setup_section(setup_manifest, "live_codex_operator"),
+            required_env=(LIVE_CODEX_SDK_ENV, "BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH"),
+            proof_boundary=(
+                "Codex operators may edit or inspect repo artifacts only behind explicit gates."
+            ),
+        ),
+    ):
+        if item is not None:
+            enablement_inputs.append(item)
+
+    packet = {
+        "schema_version": LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": _input_packet_status(
+            required_inputs=required_inputs,
+            enablement_inputs=enablement_inputs,
+        ),
+        "configured_paths": {
+            "capture_root": str(capture_root) if capture_root else None,
+            "job_request_inbox": str(job_request_inbox) if job_request_inbox else None,
+            "package_dir": str(package_dir) if package_dir else None,
+            "arena_results_dir": str(arena_results_dir) if arena_results_dir else None,
+            "control_plane_manifest_path": str(output_path),
+            "setup_manifest_path": str(setup_manifest_path),
+            "inbox_run_manifest_path": inbox_run.get("manifest_path"),
+        },
+        "required_inputs": required_inputs,
+        "enablement_inputs": enablement_inputs,
+        "example_robot_eval_job_request": {
+            "schema_version": "robot_eval_job_request.v1",
+            "job_id": "REPLACE_WITH_WEBAPP_JOB_ID",
+            "customer": {
+                "id": "REPLACE_WITH_ROBOT_TEAM_ID",
+                "name": "REPLACE_WITH_ROBOT_TEAM_NAME",
+            },
+            "site_package": {
+                "capture_root": "REPLACE_WITH_CAPTURE_ROOT",
+                "site_id": "REPLACE_WITH_SITE_ID",
+                "package_uri": "REPLACE_WITH_SITE_PACKAGE_URI",
+            },
+            "requested_tasks": [
+                {
+                    "task_id": "REPLACE_WITH_TASK_ID",
+                    "scenario_ids": ["REPLACE_WITH_SCENARIO_ID"],
+                }
+            ],
+            "robot_profile": {
+                "robot_profile_id": "REPLACE_WITH_ROBOT_PROFILE_ID",
+                "embodiment": "REPLACE_WITH_EMBODIMENT",
+                "sensors": ["REPLACE_WITH_SENSOR"],
+            },
+            "policy_package": {
+                "policy_api_endpoint": {"endpoint_url": "REPLACE_WITH_POLICY_ENDPOINT"},
+                "docker_container": {"image_ref": "REPLACE_WITH_IMAGE_REF"},
+                "recorded_action_trace": {"trace_manifest_uri": "REPLACE_WITH_TRACE_URI"},
+                "high_level_skill_trace": {"ordered_skill_sequence": ["REPLACE_WITH_SKILL"]},
+                "teleop_demo": {"demo_artifact_uri": "REPLACE_WITH_DEMO_URI"},
+                "sim_controller_plugin": {"plugin_uri": "REPLACE_WITH_PLUGIN_URI"},
+            },
+            "operation": "evaluate_only",
+            "simulator_preference": "isaac_lab_arena",
+            "rights_privacy_scope": {
+                "status": "REPLACE_WITH_CLEARED_STATUS",
+                "external_use_allowed": "REPLACE_WITH_BOOLEAN",
+            },
+            "source": {
+                "system": "Blueprint-WebApp",
+                "site_submission_id": "REPLACE_WITH_SITE_SUBMISSION_ID",
+                "request_id": "REPLACE_WITH_REQUEST_ID",
+                "buyer_request_id": "REPLACE_WITH_BUYER_REQUEST_ID",
+                "capture_job_id": "REPLACE_WITH_CAPTURE_JOB_ID",
+            },
+        },
+        "proof_boundary": {
+            **CONTROL_PLANE_NOT_PROOF,
+            "packet_is_request_contract_only": True,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+    return packet
+
+
+def _external_input_packet_markdown(packet: Mapping[str, Any]) -> str:
+    required_inputs = packet.get("required_inputs")
+    enablement_inputs = packet.get("enablement_inputs")
+    paths = _as_mapping(packet.get("configured_paths"))
+    lines = [
+        "# Live Pipeline External Input Packet",
+        "",
+        f"- Schema: `{packet.get('schema_version')}`",
+        f"- Status: `{packet.get('status')}`",
+        f"- Generated: `{packet.get('generated_at')}`",
+        "- Boundary: request/contract artifact only; not simulator, robot policy, safety, or readiness proof.",
+        "",
+        "## Configured Paths",
+    ]
+    for key, value in paths.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Required Inputs"])
+    if isinstance(required_inputs, list) and required_inputs:
+        for item in required_inputs:
+            if not isinstance(item, Mapping):
+                continue
+            blockers = ", ".join(str(blocker) for blocker in item.get("current_blockers", []))
+            lines.append(f"- `{item.get('id')}`: `{item.get('status')}`")
+            if item.get("missing_fields"):
+                lines.append(f"  - Missing fields: `{', '.join(item['missing_fields'])}`")
+            if blockers:
+                lines.append(f"  - Current blockers: `{blockers}`")
+    else:
+        lines.append("- None.")
+    lines.extend(["", "## Enablement Inputs"])
+    if isinstance(enablement_inputs, list) and enablement_inputs:
+        for item in enablement_inputs:
+            if not isinstance(item, Mapping):
+                continue
+            blockers = ", ".join(str(blocker) for blocker in item.get("current_blockers", []))
+            lines.append(f"- `{item.get('id')}`: `{item.get('status')}`")
+            if blockers:
+                lines.append(f"  - Current blockers: `{blockers}`")
+    else:
+        lines.append("- None.")
+    lines.extend(
+        [
+            "",
+            "## WebApp Request Shape",
+            "",
+            "See `example_robot_eval_job_request` in the JSON packet. Values are placeholders only.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def run_live_pipeline_control_plane(
@@ -539,9 +861,35 @@ def run_live_pipeline_control_plane(
         for blocker in inbox_run.get("blockers") or []:
             blockers.append(f"inbox:{blocker}")
 
+        generated_at = utc_now_iso()
+        external_input_packet_path = output.parent / "live_pipeline_external_input_packet.json"
+        external_input_packet_markdown_path = (
+            output.parent / "live_pipeline_external_input_packet.md"
+        )
+        external_input_packet = _build_external_input_packet(
+            generated_at=generated_at,
+            capture_root=capture_path,
+            job_request_inbox=inbox_path,
+            package_dir=package_path,
+            arena_results_dir=arena_results_path,
+            output_path=output,
+            setup_manifest_path=setup_output,
+            setup_manifest=setup_manifest,
+            inbox_run=inbox_run,
+        )
+        external_input_packet["secrets_leaked"] = _manifest_leaks_secret(
+            external_input_packet,
+            secret_values,
+        )
+        write_json(external_input_packet_path, external_input_packet)
+        write_text(
+            external_input_packet_markdown_path,
+            _external_input_packet_markdown(external_input_packet),
+        )
+
         manifest: Dict[str, Any] = {
             "schema_version": LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
-            "generated_at": utc_now_iso(),
+            "generated_at": generated_at,
             "status": _overall_status(
                 capture_root=capture_path,
                 inbox=inbox_run,
@@ -555,6 +903,15 @@ def run_live_pipeline_control_plane(
             "setup_status": setup_manifest.get("status"),
             "setup_blockers": setup_manifest.get("blockers", []),
             "inbox_run": inbox_run,
+            "external_input_packet": {
+                "schema_version": LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
+                "status": external_input_packet["status"],
+                "path": str(external_input_packet_path),
+                "markdown_path": str(external_input_packet_markdown_path),
+                "required_input_count": len(external_input_packet["required_inputs"]),
+                "enablement_input_count": len(external_input_packet["enablement_inputs"]),
+                "secrets_leaked": external_input_packet["secrets_leaked"],
+            },
             "operator_config": {
                 "agent_mode": resolved_agent_mode,
                 "arena_operator_mode": resolved_arena_operator_mode,

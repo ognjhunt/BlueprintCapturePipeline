@@ -6,6 +6,7 @@ from pathlib import Path
 
 from blueprint_pipeline.live_pipeline_control_plane import (
     LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
+    LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
     run_live_pipeline_control_plane,
 )
 
@@ -50,6 +51,16 @@ def test_live_pipeline_control_plane_blocks_without_capture_root(tmp_path: Path,
     assert result["secrets_leaked"] is False
     assert "secret-openai-control-plane" not in json.dumps(result)
     assert output_path.is_file()
+    packet_path = Path(result["external_input_packet"]["path"])
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    assert packet["schema_version"] == LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION
+    assert packet["status"] == "waiting_for_external_inputs"
+    assert packet["secrets_leaked"] is False
+    assert "secret-openai-control-plane" not in json.dumps(packet)
+    assert {item["id"] for item in packet["required_inputs"]} == {
+        "webapp_upstream_truth",
+        "isaac_lab_arena_owner_evidence",
+    }
 
 
 def test_live_pipeline_control_plane_processes_empty_inbox_without_live_actions(
@@ -77,6 +88,35 @@ def test_live_pipeline_control_plane_processes_empty_inbox_without_live_actions(
     assert result["operator_config"]["live_agents_sdk_allowed_by_control_plane"] is False
     assert result["operator_config"]["live_codex_sdk_allowed_by_control_plane"] is False
     assert queue_manifest.is_file()
+    packet_info = result["external_input_packet"]
+    packet_path = Path(packet_info["path"])
+    packet_markdown_path = Path(packet_info["markdown_path"])
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    required_input_ids = {item["id"] for item in packet["required_inputs"]}
+    enablement_input_ids = {item["id"] for item in packet["enablement_inputs"]}
+
+    assert packet_info["schema_version"] == LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION
+    assert packet_info["status"] == "waiting_for_external_inputs"
+    assert packet_info["required_input_count"] == 1
+    assert packet_info["enablement_input_count"] == 4
+    assert packet_path.is_file()
+    assert packet_markdown_path.is_file()
+    assert required_input_ids == {"isaac_lab_arena_owner_evidence"}
+    assert "webapp_upstream_truth" not in required_input_ids
+    assert enablement_input_ids == {
+        "rollout_vision_labeling",
+        "delivery_upload",
+        "live_agents_operator",
+        "live_codex_operator",
+    }
+    assert packet["proof_boundary"]["simulator_execution_proven"] is False
+    assert (
+        packet["example_robot_eval_job_request"]["source"]["capture_job_id"]
+        == "REPLACE_WITH_CAPTURE_JOB_ID"
+    )
+    assert "Live Pipeline External Input Packet" in packet_markdown_path.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_live_pipeline_control_plane_loads_env_paths_and_redacts_values(

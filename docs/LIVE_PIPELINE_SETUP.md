@@ -55,6 +55,28 @@ and capture root are configured.
 The control plane exits 0 even when blocked so a systemd timer does not
 restart-loop. Missing capture roots, inboxes, simulator commands, vision
 commands, delivery commands, or proof inputs are recorded as manifest blockers.
+It also writes:
+
+```text
+pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.json
+pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.md
+```
+
+That packet is the machine-readable handoff for the remaining external inputs:
+
+- real WebApp upstream IDs: `site_submission_id`, `request_id`,
+  `buyer_request_id`, and `capture_job_id`
+- accepted WebApp sources: `capture_descriptor.json`, `raw/manifest.json`,
+  `pipeline/opportunity_handoff.json`, and queued
+  `robot_eval_job_request.v1` files for scheduling
+- owner-system Isaac Lab-Arena result artifacts under
+  `BLUEPRINT_ARENA_RESULTS_DIR` or a gated simulator command path
+- gated command hooks for rollout vision labeling and package delivery
+- gated Agents SDK and Codex SDK/Codex CLI operator credentials
+
+The example `robot_eval_job_request.v1` inside the packet uses placeholders
+only. The packet is a request/contract artifact and does not prove simulator
+execution, robot policy execution, contact, safety, or robot readiness.
 
 Install templates live under:
 

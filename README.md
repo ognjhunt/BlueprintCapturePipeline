@@ -182,6 +182,9 @@ Artifact families and advisory downstream outputs:
 - `live_pipeline_setup/live_pipeline_setup_manifest.json` when live setup is audited
 - `live_pipeline_control_plane/live_pipeline_control_plane_manifest.json` when the
   always-on control-plane runner is used
+- `live_pipeline_control_plane/live_pipeline_external_input_packet.json` and
+  `.md` when the always-on control-plane runner publishes the exact external
+  inputs still needed
 - `site_capture_batch_registry.json` when the capture batch registry command is
   pointed at a registry path
 
@@ -222,9 +225,12 @@ blueprint-run-live-pipeline-control-plane
 
 That command audits readiness and optionally drains
 `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX` through the deterministic
-`robot_eval_job_request.v1` orchestrator. It writes a blocked/noop manifest when
-capture roots, inboxes, live simulator commands, vision-labeling commands,
-delivery commands, or owner proof are missing.
+`robot_eval_job_request.v1` orchestrator. It writes a blocked/noop manifest plus
+`live_pipeline_external_input_packet.json` and `.md` when capture roots, inboxes,
+live simulator commands, owner Arena result artifacts, vision-labeling commands,
+delivery commands, or live operator credentials are missing. The packet is a
+handoff contract only; placeholder WebApp IDs or sample job requests are never
+treated as proof.
 
 ## Privacy And World Labs Input
 
