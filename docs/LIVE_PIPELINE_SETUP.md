@@ -61,6 +61,7 @@ It also writes:
 pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.json
 pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.md
 pipeline/live_pipeline_control_plane/live_pipeline_proof_boundary_audit.json
+pipeline/live_pipeline_control_plane/live_pipeline_input_intake_audit.json
 ```
 
 That packet is the machine-readable handoff for the remaining external inputs:
@@ -95,6 +96,22 @@ It verifies manifest/packet/setup consistency, checks that `secrets_leaked`
 remains false, rejects forbidden proof-boolean upgrades, and separates external
 blockers from internal audit failures. A healthy waiting state exits zero unless
 `--require-live-ready` is provided.
+
+Candidate external inputs can be audited before the timer sees them:
+
+```bash
+blueprint-intake-live-pipeline-inputs \
+  --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
+  --webapp-job-request /path/to/robot_eval_job_request.json \
+  --arena-results-dir /path/to/owner-system/isaac-lab-arena-results
+```
+
+The intake command checks that a WebApp request is a direct
+`robot_eval_job_request.v1` or queue envelope, contains all four WebApp IDs, and
+points at the configured capture root. With `--stage-webapp-request`, it copies
+that validated request into the configured inbox. Arena result directories are
+only marked `ready_for_ingest`; intake does not run Arena, set env files, process
+the job, or upgrade proof claims.
 
 Install templates live under:
 

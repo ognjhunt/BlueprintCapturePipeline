@@ -188,6 +188,9 @@ Artifact families and advisory downstream outputs:
 - `live_pipeline_control_plane/live_pipeline_proof_boundary_audit.json` when
   control-plane outputs are audited for internal consistency, missing external
   inputs, secret leakage, and forbidden proof upgrades
+- `live_pipeline_control_plane/live_pipeline_input_intake_audit.json` when
+  candidate WebApp job requests or owner Arena result directories are validated
+  before staging for the control plane
 - `site_capture_batch_registry.json` when the capture batch registry command is
   pointed at a registry path
 
@@ -223,6 +226,10 @@ blueprint-audit-live-pipeline-setup \
 Timer-safe control-plane pass for the DigitalOcean droplet:
 
 ```bash
+blueprint-intake-live-pipeline-inputs \
+  --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
+  --webapp-job-request /path/to/robot_eval_job_request.json \
+  --arena-results-dir /path/to/owner-arena-results
 blueprint-run-live-pipeline-control-plane
 blueprint-audit-live-pipeline-proof-boundary \
   --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json
@@ -242,6 +249,10 @@ WebApp upstream-truth requirement only when it contains `site_submission_id`,
 The proof-boundary audit exits zero for a healthy waiting state and records
 remaining external blockers separately from internal artifact or overclaim
 failures.
+The intake command validates candidate handoff files against the configured
+capture root and inbox. Add `--stage-webapp-request` only when you want it to
+copy a validated WebApp request into the configured inbox; it does not process
+the job or run Arena.
 
 ## Privacy And World Labs Input
 
