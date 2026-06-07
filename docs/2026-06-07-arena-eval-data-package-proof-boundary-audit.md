@@ -54,6 +54,8 @@ Real external actions remain blocked unless explicit owner gates are supplied:
 - package upload/signed access:
   `BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD=true`,
   `--allow-delivery-upload`, and `--delivery-command`
+  (`blueprint-deliver-arena-package-local --output-dir .` is the built-in local
+  filesystem delivery hook; cloud signed URLs still require a provider command)
 - live Agents SDK operator:
   `BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true`, credentials/dependency
   availability, and the CLI allow flag
@@ -88,6 +90,11 @@ keyframes, and the OpenAI Responses API to write
 `rollout_vision_labels.command.json`. Gemini/Google GenAI remains possible
 through a wrapper using `GEMINI_API_KEY` or `GOOGLE_GENAI_API_KEY`. The model
 backend is not a proof source and labels remain review-required until accepted.
+
+Package delivery is command-backed. `blueprint-deliver-arena-package-local`
+copies `delivery_bundle/` into a local delivery root and writes
+`delivery_upload.command.json` with local access paths. It does not perform
+cloud upload, create signed URLs, verify entitlement, or upgrade proof claims.
 
 ## External Blockers
 

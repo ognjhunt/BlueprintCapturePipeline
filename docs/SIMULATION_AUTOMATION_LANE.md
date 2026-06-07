@@ -568,6 +568,21 @@ The OpenAI hook writes `rollout_vision_labels.command.json`. Ingest consumes
 those labels as review-required support evidence; they do not prove contact,
 safety, policy execution, or robot readiness.
 
+Optional local delivery hook:
+
+```bash
+BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD=true \
+BLUEPRINT_LOCAL_DELIVERY_ROOT=/var/lib/blueprint/pipeline-control-plane/deliveries \
+blueprint-ingest-arena-results \
+  --capture-root /path/to/capture-root \
+  --arena-results-dir /path/to/isaac-lab-arena-results \
+  --allow-delivery-upload \
+  --delivery-command "blueprint-deliver-arena-package-local --output-dir ."
+```
+
+The local delivery hook writes `delivery_upload.command.json` and local access
+paths. It is not cloud signed-access proof.
+
 Arena package proof-boundary audit:
 
 ```bash

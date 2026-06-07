@@ -548,6 +548,22 @@ keyframes with `ffmpeg`, calls OpenAI only when `OPENAI_API_KEY` and the rollout
 labeling gate are present, and writes `rollout_vision_labels.command.json`.
 Ingest consumes those labels as review-required support evidence only.
 
+Optional local delivery command hook:
+
+```bash
+BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD=true \
+BLUEPRINT_LOCAL_DELIVERY_ROOT=/var/lib/blueprint/pipeline-control-plane/deliveries \
+blueprint-ingest-arena-results \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --arena-results-dir /path/to/isaac-lab-arena-results \
+  --allow-delivery-upload \
+  --delivery-command "blueprint-deliver-arena-package-local --output-dir ."
+```
+
+The local delivery hook copies `delivery_bundle/` to a local delivery root and
+returns local access paths. It does not create cloud signed URLs or verify
+customer entitlement.
+
 Arena package artifact/proof-boundary audit:
 
 ```bash

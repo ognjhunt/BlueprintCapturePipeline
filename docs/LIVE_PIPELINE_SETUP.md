@@ -102,6 +102,26 @@ Model-derived labels are support evidence only. They do not prove contact,
 safety, policy execution, or robot readiness until accepted through review or
 owner-system proof.
 
+## Delivery Command Boundary
+
+The default Arena package path already writes a local `delivery_bundle/`.
+Gated delivery commands are optional and must write `delivery_upload.command.json`
+or `signed_access.command.json` in the Arena package output directory.
+
+Built-in local delivery:
+
+```bash
+BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD=true
+BLUEPRINT_LOCAL_DELIVERY_ROOT=/var/lib/blueprint/pipeline-control-plane/deliveries
+BLUEPRINT_PACKAGE_DELIVERY_UPLOAD_COMMAND="blueprint-deliver-arena-package-local --output-dir ."
+```
+
+`blueprint-deliver-arena-package-local` copies the delivery bundle into the
+local delivery root and returns local access paths. It does not create signed
+URLs, upload to cloud storage, verify entitlement, or upgrade proof claims.
+Cloud signed-access delivery still requires a provider-specific command that
+returns signed URLs and explicit owner review.
+
 ## DigitalOcean Droplet Boundary
 
 `paperclip-prod-01` at `206.81.11.69` can be used as an always-on control plane

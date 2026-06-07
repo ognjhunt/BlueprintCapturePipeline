@@ -43,6 +43,7 @@ COMMAND_VISION_LABELS_SCHEMA_VERSION = "arena_rollout_vision_command_labels.v1"
 REVIEW_RESOLUTION_LEDGER_SCHEMA_VERSION = "arena_review_resolution_ledger.v1"
 CUSTOMER_HANDOFF_REPORT_SCHEMA_VERSION = "arena_customer_handoff_report.v1"
 DELIVERY_MANIFEST_SCHEMA_VERSION = "arena_delivery_manifest.v1"
+DELIVERY_COMMAND_MANIFEST_SCHEMA_VERSION = "arena_delivery_command_manifest.v1"
 RERUN_PLAN_SCHEMA_VERSION = "arena_rerun_plan.v1"
 LIVE_OPERATOR_LEDGER_SCHEMA_VERSION = "arena_live_operator_ledger.v1"
 
@@ -66,6 +67,11 @@ VISION_COMMAND_OUTPUT_CANDIDATES = (
     "rollout_vision_labels.command.json",
     "rollout_vision_labels.generated.json",
     "vision_labels.json",
+)
+DELIVERY_COMMAND_OUTPUT_CANDIDATES = (
+    "delivery_upload.command.json",
+    "signed_access.command.json",
+    "delivery_access.json",
 )
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
@@ -907,6 +913,46 @@ def _load_command_vision_labels(output_dir: Path) -> Dict[str, Any]:
     }
 
 
+def _load_delivery_command_output(output_dir: Path) -> Dict[str, Any]:
+    for name in DELIVERY_COMMAND_OUTPUT_CANDIDATES:
+        path = output_dir / name
+        if not path.is_file():
+            continue
+        payload = read_json_any(path)
+        if not isinstance(payload, Mapping):
+            return {
+                "status": "blocked",
+                "path": _relative_to(output_dir, path),
+                "blockers": ["delivery_command_output_not_object"],
+            }
+        signed_urls = payload.get("signed_urls") if isinstance(payload.get("signed_urls"), list) else []
+        local_access_paths = (
+            payload.get("local_access_paths")
+            if isinstance(payload.get("local_access_paths"), list)
+            else []
+        )
+        storage_upload_performed = bool(payload.get("storage_upload_performed"))
+        return {
+            "status": _string(payload.get("status")) or "completed",
+            "path": _relative_to(output_dir, path),
+            "blockers": payload.get("blockers") if isinstance(payload.get("blockers"), list) else [],
+            "provider": _string(payload.get("provider")) or None,
+            "signed_urls": signed_urls,
+            "local_access_paths": local_access_paths,
+            "storage_upload_performed": storage_upload_performed,
+            "retention_expires_at": _string(payload.get("retention_expires_at")) or None,
+            "delivery_root": _string(payload.get("delivery_root")) or None,
+        }
+    return {
+        "status": "missing",
+        "path": None,
+        "blockers": ["delivery_command_output_missing"],
+        "signed_urls": [],
+        "local_access_paths": [],
+        "storage_upload_performed": False,
+    }
+
+
 def _build_vision_labels(
     *,
     failure_labels: Mapping[str, Any],
@@ -1359,6 +1405,14 @@ def _build_delivery_artifacts(
     }
     command_text = _string(delivery_command or os.getenv("BLUEPRINT_PACKAGE_DELIVERY_UPLOAD_COMMAND"))
     upload_result = None
+    delivery_command_output: Dict[str, Any] = {
+        "status": "not_requested",
+        "path": None,
+        "blockers": [],
+        "signed_urls": [],
+        "local_access_paths": [],
+        "storage_upload_performed": False,
+    }
     blockers: List[str] = []
     if allow_delivery_upload or command_text:
         if not _env_truthy("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD"):
@@ -1371,17 +1425,41 @@ def _build_delivery_artifacts(
             upload_result = _run_optional_command(command_text, timeout_seconds, output_dir)
             if upload_result["status"] != "completed":
                 blockers.append(f"delivery_upload_{upload_result['status']}")
+            else:
+                delivery_command_output = _load_delivery_command_output(output_dir)
+                blockers.extend(delivery_command_output.get("blockers") or [])
+    signed_urls = delivery_command_output.get("signed_urls") or []
+    local_access_paths = delivery_command_output.get("local_access_paths") or []
+    storage_upload_performed = bool(delivery_command_output.get("storage_upload_performed"))
+    if blockers or not upload_result:
+        signed_access_status = "blocked"
+        signed_access_blockers = blockers or ["upload_not_requested"]
+    elif signed_urls:
+        signed_access_status = "signed_access_ready"
+        signed_access_blockers = []
+    elif local_access_paths:
+        signed_access_status = "local_delivery_ready_review_required"
+        signed_access_blockers = ["signed_urls_not_provided_by_local_delivery_command"]
+    else:
+        signed_access_status = "delivery_command_completed_review_required"
+        signed_access_blockers = ["delivery_command_output_missing_signed_or_local_access"]
     signed_access = {
         "schema_version": "arena_signed_access_manifest.v1",
         "generated_at": generated_at,
-        "status": "blocked" if blockers or not upload_result else "signed_access_ready",
-        "blockers": blockers or ["upload_not_requested"],
-        "signed_urls": [],
+        "status": signed_access_status,
+        "blockers": signed_access_blockers,
+        "signed_urls": signed_urls,
+        "local_access_paths": local_access_paths,
+        "delivery_command_output": {
+            key: value
+            for key, value in delivery_command_output.items()
+            if key not in {"signed_urls", "local_access_paths"}
+        },
         "upload_result": upload_result,
-        "storage_upload_performed": bool(upload_result and upload_result["status"] == "completed"),
+        "storage_upload_performed": storage_upload_performed,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
-            "storage_upload_performed": bool(upload_result and upload_result["status"] == "completed"),
+            "storage_upload_performed": storage_upload_performed,
         },
     }
     delivery = {

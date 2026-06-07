@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from blueprint_pipeline.arena_package_audit import build_arena_package_proof_boundary_audit
+from blueprint_pipeline.arena_package_delivery_local import build_local_delivery_command_manifest
 from blueprint_pipeline.arena_result_ingest import build_arena_result_ingest
 from blueprint_pipeline.rollout_vision_label_openai import build_openai_rollout_vision_labels
 
@@ -264,3 +265,87 @@ def test_openai_rollout_vision_labeler_fails_closed_without_gate_key_or_keyframe
     assert result["label_count"] == 0
     assert result["public_claim_upgrade_allowed"] is False
     assert (tmp_path / "rollout_vision_labels.command.json").is_file()
+
+
+def test_arena_result_ingest_consumes_local_delivery_command_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    results_dir = _arena_results(tmp_path)
+    output_dir = tmp_path / "arena-package"
+    delivery_root = tmp_path / "local-delivery-root"
+    writer = tmp_path / "write_delivery_manifest.py"
+    writer.write_text(
+        "\n".join(
+            [
+                "import json, pathlib, shutil",
+                f"delivery_root = pathlib.Path({str(delivery_root)!r})",
+                "bundle = pathlib.Path('delivery_bundle')",
+                "target = delivery_root / pathlib.Path.cwd().name",
+                "target.mkdir(parents=True, exist_ok=True)",
+                "paths = []",
+                "for source in sorted(bundle.rglob('*')):",
+                "    if not source.is_file():",
+                "        continue",
+                "    rel = source.relative_to(bundle)",
+                "    dest = target / rel",
+                "    dest.parent.mkdir(parents=True, exist_ok=True)",
+                "    shutil.copy2(source, dest)",
+                "    paths.append({'relative_path': str(rel), 'delivered_path': str(dest), 'size_bytes': dest.stat().st_size})",
+                "payload = {",
+                "  'schema_version': 'arena_delivery_command_manifest.v1',",
+                "  'status': 'local_delivery_ready_review_required',",
+                "  'provider': 'local_filesystem',",
+                "  'delivery_root': str(delivery_root),",
+                "  'signed_urls': [],",
+                "  'local_access_paths': paths,",
+                "  'storage_upload_performed': False,",
+                "}",
+                "with open('delivery_upload.command.json', 'w', encoding='utf-8') as f:",
+                "    json.dump(payload, f)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD", "true")
+    monkeypatch.setenv("BLUEPRINT_LOCAL_DELIVERY_ROOT", str(delivery_root))
+
+    build_arena_result_ingest(
+        capture_root=capture_root,
+        arena_results_dir=results_dir,
+        output_dir=output_dir,
+        scenario_count=500,
+        shard_size=100,
+        allow_delivery_upload=True,
+        delivery_command=f"{sys.executable} {writer}",
+    )
+
+    signed_access = _read_json(output_dir / "signed_access_manifest.json")
+    command_manifest = _read_json(output_dir / "delivery_upload.command.json")
+
+    assert signed_access["status"] == "local_delivery_ready_review_required"
+    assert "signed_urls_not_provided_by_local_delivery_command" in signed_access["blockers"]
+    assert signed_access["signed_urls"] == []
+    assert signed_access["local_access_paths"]
+    assert signed_access["storage_upload_performed"] is False
+    assert command_manifest["status"] == "local_delivery_ready_review_required"
+    assert command_manifest["storage_upload_performed"] is False
+    assert (delivery_root / output_dir.name / "customer_handoff_report.md").is_file()
+
+
+def test_local_delivery_command_fails_closed_without_gate_or_bundle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD", raising=False)
+    monkeypatch.delenv("BLUEPRINT_LOCAL_DELIVERY_ROOT", raising=False)
+
+    result = build_local_delivery_command_manifest(output_dir=tmp_path)
+
+    assert result["status"] == "blocked"
+    assert "missing_env_BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD" in result["blockers"]
+    assert "missing_env_BLUEPRINT_LOCAL_DELIVERY_ROOT" in result["blockers"]
+    assert "missing_delivery_bundle" in result["blockers"]
+    assert result["storage_upload_performed"] is False
+    assert (tmp_path / "delivery_upload.command.json").is_file()
