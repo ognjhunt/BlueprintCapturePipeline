@@ -36,6 +36,7 @@ LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION = "blueprint_live_pipeline_control_pl
 LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION = (
     "blueprint_live_pipeline_external_input_packet.v1"
 )
+LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION = "blueprint_live_pipeline_staged_inputs.v1"
 
 WEBAPP_UPSTREAM_REQUIRED_FIELDS = (
     "site_submission_id",
@@ -67,6 +68,7 @@ CAPTURE_ROOT_ENV = "BLUEPRINT_PIPELINE_CAPTURE_ROOT"
 JOB_REQUEST_INBOX_ENV = "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX"
 PACKAGE_DIR_ENV = "BLUEPRINT_PIPELINE_PACKAGE_DIR"
 ARENA_RESULTS_DIR_ENV = "BLUEPRINT_ARENA_RESULTS_DIR"
+STAGED_INPUTS_ENV = "BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH"
 SIMULATOR_AUDIT_COMMAND_ENV = "BLUEPRINT_SIMULATOR_COMMAND"
 VISION_LABELING_COMMAND_ENV = "BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND"
 DELIVERY_COMMAND_ENV = "BLUEPRINT_PACKAGE_DELIVERY_UPLOAD_COMMAND"
@@ -446,6 +448,84 @@ def _webapp_job_request_inbox_truth(
     }
 
 
+def _staged_inputs_path(output_path: Path) -> Path:
+    configured = _string(os.getenv(STAGED_INPUTS_ENV))
+    if configured:
+        return Path(configured).resolve()
+    return output_path.parent / "live_pipeline_staged_inputs.json"
+
+
+def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, Any]:
+    if not path.is_file():
+        return {
+            "status": "not_configured",
+            "ready": False,
+            "path": str(path),
+            "blockers": ["staged_inputs_missing"],
+            "arena_results_dir": None,
+            "webapp_request_path": None,
+        }
+    try:
+        payload = read_json_any(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "blocked",
+            "ready": False,
+            "path": str(path),
+            "blockers": [f"staged_inputs_read_failed:{type(exc).__name__}"],
+            "arena_results_dir": None,
+            "webapp_request_path": None,
+        }
+    if not isinstance(payload, Mapping):
+        return {
+            "status": "blocked",
+            "ready": False,
+            "path": str(path),
+            "blockers": ["staged_inputs_not_json_object"],
+            "arena_results_dir": None,
+            "webapp_request_path": None,
+        }
+    blockers: List[str] = []
+    if payload.get("schema_version") != LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION:
+        blockers.append("staged_inputs_schema_mismatch")
+    configured_capture_root = _string(payload.get("configured_capture_root")) or None
+    capture_root_matches = _path_matches_configured_capture_root(
+        configured_capture_root,
+        capture_root,
+    )
+    if configured_capture_root and not capture_root_matches:
+        blockers.append("staged_inputs_capture_root_mismatch")
+    arena = _as_mapping(payload.get("arena_results"))
+    webapp = _as_mapping(payload.get("webapp_request"))
+    arena_results_dir = _string(arena.get("arena_results_dir")) or None
+    webapp_request_path = _string(webapp.get("target_path") or webapp.get("path")) or None
+    arena_ready = bool(arena.get("ready")) and bool(arena_results_dir)
+    webapp_ready = bool(webapp.get("ready") or webapp.get("staged")) and bool(webapp_request_path)
+    if arena_results_dir and not Path(arena_results_dir).is_dir():
+        blockers.append("staged_arena_results_dir_missing")
+        arena_ready = False
+    if webapp_request_path and not Path(webapp_request_path).is_file():
+        blockers.append("staged_webapp_request_missing")
+        webapp_ready = False
+    status = "ready" if (arena_ready or webapp_ready) and not blockers else "blocked"
+    if not arena_ready and not webapp_ready and not blockers:
+        status = "empty"
+    return {
+        "status": status,
+        "ready": status == "ready",
+        "path": str(path),
+        "schema_version": payload.get("schema_version"),
+        "configured_capture_root": configured_capture_root,
+        "capture_root_matches_control_plane": capture_root_matches,
+        "arena_results_dir": arena_results_dir,
+        "arena_results_ready": arena_ready,
+        "webapp_request_path": webapp_request_path,
+        "webapp_request_ready": webapp_ready,
+        "blockers": blockers,
+        "proof_boundary": "staged inputs are pointers to validated inputs, not proof claims",
+    }
+
+
 def _missing_webapp_fields(section: Mapping[str, Any]) -> List[str]:
     fields_present = _as_mapping(section.get("fields_present"))
     if not fields_present:
@@ -509,6 +589,7 @@ def _build_external_input_packet(
     setup_manifest: Mapping[str, Any],
     inbox_run: Mapping[str, Any],
     webapp_inbox_truth: Mapping[str, Any],
+    staged_inputs: Mapping[str, Any],
 ) -> Dict[str, Any]:
     webapp_section = _setup_section(setup_manifest, "webapp_upstream_truth")
     arena_section = _setup_section(setup_manifest, "real_arena_execution")
@@ -630,6 +711,13 @@ def _build_external_input_packet(
             "control_plane_manifest_path": str(output_path),
             "setup_manifest_path": str(setup_manifest_path),
             "inbox_run_manifest_path": inbox_run.get("manifest_path"),
+            "staged_inputs_path": staged_inputs.get("path"),
+        },
+        "staged_inputs": {
+            "status": staged_inputs.get("status"),
+            "arena_results_ready": staged_inputs.get("arena_results_ready"),
+            "webapp_request_ready": staged_inputs.get("webapp_request_ready"),
+            "blockers": staged_inputs.get("blockers", []),
         },
         "webapp_upstream_truth": {
             "ready": webapp_truth_ready,
@@ -829,10 +917,16 @@ def run_live_pipeline_control_plane(
         inbox_path = Path(inbox_text).resolve() if inbox_text else None
         package_text = _env_value(PACKAGE_DIR_ENV, package_dir)
         package_path = Path(package_text).resolve() if package_text else None
-        arena_results_text = _env_value(ARENA_RESULTS_DIR_ENV, arena_results_dir)
-        arena_results_path = Path(arena_results_text).resolve() if arena_results_text else None
         output_text = _env_value(CONTROL_PLANE_OUTPUT_PATH_ENV, output_path)
         output = _output_path(capture_path, output_text)
+        staged_inputs = _load_staged_inputs(
+            _staged_inputs_path(output),
+            capture_root=capture_path,
+        )
+        arena_results_text = _env_value(ARENA_RESULTS_DIR_ENV, arena_results_dir)
+        if not arena_results_text and staged_inputs.get("arena_results_ready"):
+            arena_results_text = _string(staged_inputs.get("arena_results_dir")) or None
+        arena_results_path = Path(arena_results_text).resolve() if arena_results_text else None
         secret_values = _secret_values()
 
         resolved_agent_mode = _string(agent_mode or os.getenv(CONTROL_PLANE_AGENT_MODE_ENV)) or "none"
@@ -1049,6 +1143,7 @@ def run_live_pipeline_control_plane(
             setup_manifest=setup_manifest,
             inbox_run=inbox_run,
             webapp_inbox_truth=webapp_inbox_truth,
+            staged_inputs=staged_inputs,
         )
         external_input_packet["secrets_leaked"] = _manifest_leaks_secret(
             external_input_packet,
@@ -1076,6 +1171,7 @@ def run_live_pipeline_control_plane(
             "setup_status": setup_manifest.get("status"),
             "setup_blockers": setup_manifest.get("blockers", []),
             "inbox_run": inbox_run,
+            "staged_inputs": staged_inputs,
             "webapp_inbox_truth": webapp_inbox_truth,
             "effective_webapp_upstream_truth_ready": webapp_upstream_truth_ready,
             "external_input_packet": {

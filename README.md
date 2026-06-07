@@ -191,6 +191,9 @@ Artifact families and advisory downstream outputs:
 - `live_pipeline_control_plane/live_pipeline_input_intake_audit.json` when
   candidate WebApp job requests or owner Arena result directories are validated
   before staging for the control plane
+- `live_pipeline_control_plane/live_pipeline_staged_inputs.json` when validated
+  WebApp requests or owner Arena result directories are deliberately staged for
+  the next control-plane pass
 - `site_capture_batch_registry.json` when the capture batch registry command is
   pointed at a registry path
 
@@ -229,7 +232,9 @@ Timer-safe control-plane pass for the DigitalOcean droplet:
 blueprint-intake-live-pipeline-inputs \
   --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
   --webapp-job-request /path/to/robot_eval_job_request.json \
-  --arena-results-dir /path/to/owner-arena-results
+  --arena-results-dir /path/to/owner-arena-results \
+  --stage-webapp-request \
+  --stage-arena-results
 blueprint-run-live-pipeline-control-plane
 blueprint-audit-live-pipeline-proof-boundary \
   --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json
@@ -252,7 +257,10 @@ failures.
 The intake command validates candidate handoff files against the configured
 capture root and inbox. Add `--stage-webapp-request` only when you want it to
 copy a validated WebApp request into the configured inbox; it does not process
-the job or run Arena.
+the job or run Arena. Add `--stage-arena-results` to write
+`live_pipeline_staged_inputs.json`; the next control-plane pass can consume that
+validated Arena result directory without an env-file edit. The staged pointer is
+still an ingest input only, not simulator execution proof.
 
 ## Privacy And World Labs Input
 

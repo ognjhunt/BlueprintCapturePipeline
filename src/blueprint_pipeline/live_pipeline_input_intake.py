@@ -20,6 +20,7 @@ from .live_pipeline_control_plane import (
     ARENA_RESULT_ARTIFACT_NAMES,
     JOB_REQUEST_INBOX_ENV,
     LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
+    LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION,
     WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
     WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
     WEBAPP_UPSTREAM_REQUIRED_FIELDS,
@@ -257,14 +258,93 @@ def _stage_webapp_request(
     }
 
 
+def _write_staged_inputs(
+    *,
+    path: Path,
+    manifest_path: Path,
+    capture_root: Path | None,
+    webapp_audit: Mapping[str, Any],
+    webapp_staging: Mapping[str, Any],
+    arena_audit: Mapping[str, Any],
+    stage_arena_results: bool,
+) -> Dict[str, Any]:
+    arena_ready = bool(arena_audit.get("ready"))
+    webapp_ready = bool(webapp_audit.get("ready"))
+    webapp_staged = bool(webapp_staging.get("performed"))
+    blockers: List[str] = []
+    if stage_arena_results and not arena_ready:
+        blockers.append("arena_results_not_ready_for_staging")
+    if webapp_staging.get("status") == "blocked":
+        blockers.append("webapp_request_not_staged")
+    if blockers:
+        return {
+            "status": "blocked",
+            "performed": False,
+            "path": str(path),
+            "blockers": blockers,
+        }
+    if not stage_arena_results and not webapp_staged:
+        return {
+            "status": "not_requested",
+            "performed": False,
+            "path": str(path),
+            "blockers": [],
+        }
+    payload = {
+        "schema_version": LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "source_intake_manifest_path": str(manifest_path),
+        "configured_capture_root": str(capture_root) if capture_root else None,
+        "webapp_request": {
+            "ready": webapp_ready and webapp_staged,
+            "staged": webapp_staged,
+            "job_id": webapp_audit.get("job_id"),
+            "path": webapp_audit.get("path"),
+            "target_path": webapp_staging.get("target_path"),
+            "sha256": webapp_staging.get("sha256") or webapp_audit.get("sha256"),
+        },
+        "arena_results": {
+            "ready": arena_ready if stage_arena_results else False,
+            "arena_results_dir": arena_audit.get("arena_results_dir")
+            if stage_arena_results
+            else None,
+            "json_artifact_count": arena_audit.get("json_artifact_count", 0)
+            if stage_arena_results
+            else 0,
+            "recognized_artifacts": arena_audit.get("recognized_artifacts", [])
+            if stage_arena_results
+            else [],
+        },
+        "proof_boundary": {
+            "staged_inputs_are_pointers_only": True,
+            "simulator_execution_proven": False,
+            "robot_policy_execution_proven": False,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+    ensure_dir(path.parent)
+    write_json(path, payload)
+    return {
+        "status": "staged",
+        "performed": True,
+        "path": str(path),
+        "blockers": [],
+        "arena_results_staged": bool(stage_arena_results and arena_ready),
+        "webapp_request_staged": webapp_staged,
+    }
+
+
 def build_live_pipeline_input_intake(
     *,
     manifest_path: str | Path,
     webapp_job_request: str | Path | None = None,
     arena_results_dir: str | Path | None = None,
     stage_webapp_request: bool = False,
+    stage_arena_results: bool = False,
     overwrite: bool = False,
     output_path: str | Path | None = None,
+    staged_inputs_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).resolve()
     manifest = _load_control_plane_manifest(resolved_manifest_path)
@@ -309,6 +389,32 @@ def build_live_pipeline_input_intake(
         status = "waiting_for_inputs"
     elif stage_webapp_request and staging.get("performed"):
         status = "staged_for_control_plane"
+    elif stage_arena_results and arena_audit.get("ready"):
+        status = "staged_for_control_plane"
+
+    if output_path:
+        path = Path(output_path).resolve()
+    else:
+        path = resolved_manifest_path.parent / "live_pipeline_input_intake_audit.json"
+    staged_path = (
+        Path(staged_inputs_path).resolve()
+        if staged_inputs_path
+        else resolved_manifest_path.parent / "live_pipeline_staged_inputs.json"
+    )
+    staged_inputs = _write_staged_inputs(
+        path=staged_path,
+        manifest_path=path,
+        capture_root=capture_root,
+        webapp_audit=webapp_audit,
+        webapp_staging=staging,
+        arena_audit=arena_audit,
+        stage_arena_results=stage_arena_results,
+    )
+    if staged_inputs.get("blockers"):
+        input_blockers.extend(
+            f"staged_inputs:{blocker}" for blocker in staged_inputs.get("blockers", [])
+        )
+        status = "blocked"
 
     intake = {
         "schema_version": LIVE_PIPELINE_INPUT_INTAKE_SCHEMA_VERSION,
@@ -320,10 +426,11 @@ def build_live_pipeline_input_intake(
         "webapp_job_request": webapp_audit,
         "arena_results": arena_audit,
         "webapp_staging": staging,
+        "staged_inputs": staged_inputs,
         "input_blockers": input_blockers,
         "next_steps": [
             "Run blueprint-run-live-pipeline-control-plane after staging a WebApp request.",
-            "Set BLUEPRINT_ARENA_RESULTS_DIR or pass --arena-results-dir to the control plane after owner Arena artifacts are available.",
+            "Run blueprint-run-live-pipeline-control-plane after staging owner Arena artifacts.",
             "Run blueprint-audit-live-pipeline-proof-boundary after the control-plane pass.",
         ],
         "proof_boundary": {
@@ -336,10 +443,6 @@ def build_live_pipeline_input_intake(
             "public_claim_upgrade_allowed": False,
         },
     }
-    if output_path:
-        path = Path(output_path).resolve()
-    else:
-        path = resolved_manifest_path.parent / "live_pipeline_input_intake_audit.json"
     ensure_dir(path.parent)
     intake["output_path"] = str(path)
     write_json(path, intake)
@@ -357,16 +460,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--webapp-job-request")
     parser.add_argument("--arena-results-dir")
     parser.add_argument("--stage-webapp-request", action="store_true")
+    parser.add_argument("--stage-arena-results", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--output-path")
+    parser.add_argument("--staged-inputs-path")
     args = parser.parse_args(argv)
     result = build_live_pipeline_input_intake(
         manifest_path=args.manifest_path,
         webapp_job_request=args.webapp_job_request,
         arena_results_dir=args.arena_results_dir,
         stage_webapp_request=args.stage_webapp_request,
+        stage_arena_results=args.stage_arena_results,
         overwrite=args.overwrite,
         output_path=args.output_path,
+        staged_inputs_path=args.staged_inputs_path,
     )
     print(f"[live-pipeline-input-intake] audit={result['output_path']}")
     print(f"[live-pipeline-input-intake] status={result['status']}")

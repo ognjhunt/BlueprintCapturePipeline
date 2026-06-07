@@ -117,8 +117,41 @@ def test_live_pipeline_input_intake_stages_valid_webapp_request(tmp_path: Path) 
     target_path = Path(str(result["webapp_staging"]["target_path"]))
     assert result["status"] == "staged_for_control_plane"
     assert result["webapp_staging"]["performed"] is True
+    assert result["staged_inputs"]["status"] == "staged"
+    assert Path(str(result["staged_inputs"]["path"])).is_file()
     assert target_path.is_file()
     assert json.loads(target_path.read_text(encoding="utf-8"))["job_id"] == "webapp-job-1"
+
+
+def test_live_pipeline_input_intake_staged_arena_results_feed_control_plane(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    results_dir = _arena_results(tmp_path / "arena-results")
+
+    intake = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        arena_results_dir=results_dir,
+        stage_arena_results=True,
+    )
+    rerun = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=tmp_path / "webapp-inbox",
+        load_local_env=False,
+        output_path=manifest_path,
+    )
+    packet = json.loads(
+        Path(rerun["external_input_packet"]["path"]).read_text(encoding="utf-8")
+    )
+    required_input_ids = {item["id"] for item in packet["required_inputs"]}
+
+    assert intake["status"] == "staged_for_control_plane"
+    assert intake["staged_inputs"]["arena_results_staged"] is True
+    assert rerun["staged_inputs"]["arena_results_ready"] is True
+    assert rerun["setup_status"] == "local_ready_live_external_blocked"
+    assert required_input_ids == {"webapp_upstream_truth"}
+    assert "Isaac Lab-Arena" not in " ".join(rerun["next_inputs_needed"])
 
 
 def test_live_pipeline_input_intake_rejects_mismatched_capture_root(tmp_path: Path) -> None:

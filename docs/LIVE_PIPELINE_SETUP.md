@@ -62,6 +62,7 @@ pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.json
 pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.md
 pipeline/live_pipeline_control_plane/live_pipeline_proof_boundary_audit.json
 pipeline/live_pipeline_control_plane/live_pipeline_input_intake_audit.json
+pipeline/live_pipeline_control_plane/live_pipeline_staged_inputs.json
 ```
 
 That packet is the machine-readable handoff for the remaining external inputs:
@@ -103,7 +104,9 @@ Candidate external inputs can be audited before the timer sees them:
 blueprint-intake-live-pipeline-inputs \
   --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
   --webapp-job-request /path/to/robot_eval_job_request.json \
-  --arena-results-dir /path/to/owner-system/isaac-lab-arena-results
+  --arena-results-dir /path/to/owner-system/isaac-lab-arena-results \
+  --stage-webapp-request \
+  --stage-arena-results
 ```
 
 The intake command checks that a WebApp request is a direct
@@ -111,7 +114,10 @@ The intake command checks that a WebApp request is a direct
 points at the configured capture root. With `--stage-webapp-request`, it copies
 that validated request into the configured inbox. Arena result directories are
 only marked `ready_for_ingest`; intake does not run Arena, set env files, process
-the job, or upgrade proof claims.
+the job, or upgrade proof claims. With `--stage-arena-results`, intake writes
+`live_pipeline_staged_inputs.json`; the next control-plane pass can consume the
+validated owner-results pointer when no `BLUEPRINT_ARENA_RESULTS_DIR` or
+`--arena-results-dir` override is set.
 
 Install templates live under:
 
