@@ -228,7 +228,11 @@ def _digitalocean_read(
         return {
             **base,
             "status": "configured_advisory" if (droplet_name or droplet_ip) else "not_configured",
-            "blockers": ["digitalocean_api_read_not_requested"],
+            "blockers": [],
+            "notes": [
+                "DigitalOcean API read is optional advisory control-plane evidence.",
+                "Set the read gate and token only when droplet inventory verification is needed.",
+            ],
         }
     blockers: List[str] = []
     if not token_present:

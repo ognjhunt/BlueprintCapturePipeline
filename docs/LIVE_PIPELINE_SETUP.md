@@ -127,6 +127,10 @@ returns signed URLs and explicit owner review.
 `paperclip-prod-01` at `206.81.11.69` can be used as an always-on control plane
 for scheduling, manifest hosting, repo sync, and watchdogs.
 
+DigitalOcean API reads are optional advisory inventory checks. Leaving the read
+gate unset does not block the pipeline; setting the gate without a token or
+matching droplet still fails closed in the setup manifest.
+
 It is not by itself:
 
 - Isaac Lab-Arena execution proof

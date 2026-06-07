@@ -51,6 +51,10 @@ def test_live_pipeline_setup_blocks_external_actions_without_gates(tmp_path: Pat
         for blocker in result["blockers"]
     )
     assert result["sections"]["digitalocean_control_plane"]["status"] == "configured_advisory"
+    assert result["sections"]["digitalocean_control_plane"]["blockers"] == []
+    assert not any(
+        blocker.startswith("digitalocean_control_plane:") for blocker in result["blockers"]
+    )
     assert (
         result["sections"]["digitalocean_control_plane"]["control_plane_boundary"][
             "simulator_execution_proven"
