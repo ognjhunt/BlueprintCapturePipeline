@@ -593,6 +593,18 @@ blueprint-audit-arena-package \
   --require-job-artifacts
 ```
 
+One-command local fixture smoke:
+
+```bash
+blueprint-smoke-arena-package-local --output-dir output/arena-fixture-smoke
+```
+
+This creates synthetic local capture and Arena result fixtures, runs the real
+ingest CLI path for a 500-scenario schedule, exercises review-required vision
+labels, local delivery, fake local operators, and the package audit, and writes
+`arena_fixture_smoke_manifest.json`. It is local proof of the package pipeline,
+not proof of WebApp upstream truth or owner-system Isaac Lab-Arena execution.
+
 Live setup and external-gate preflight:
 
 ```bash

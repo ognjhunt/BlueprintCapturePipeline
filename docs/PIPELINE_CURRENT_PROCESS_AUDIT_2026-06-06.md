@@ -58,6 +58,10 @@ qualification -> evaluation_prep -> simulation_automation
   package archives, and gated live/fake operator ledgers.
 - Added `blueprint-audit-arena-package` as the local artifact assertion and
   proof-boundary audit for Arena package outputs.
+- Added `blueprint-smoke-arena-package-local` as a one-command local fixture
+  smoke that creates synthetic capture/results fixtures, runs the real Arena
+  ingest CLI path, local delivery, fake local operators, and the package audit
+  without claiming WebApp or owner-system Arena proof.
 
 ## Legacy Or Advisory Paths Still Present
 

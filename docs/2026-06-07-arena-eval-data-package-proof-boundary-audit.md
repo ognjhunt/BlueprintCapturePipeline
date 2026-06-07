@@ -38,6 +38,14 @@ checks:
 
 The auditor writes `arena_package_proof_boundary_audit.json`.
 
+`blueprint-smoke-arena-package-local --output-dir <dir>` is the one-command
+local smoke for this lane. It creates synthetic capture/results fixtures, runs
+the real ingest CLI path with a 500-scenario schedule, exercises
+review-required vision labels, local delivery, fake local operators, and the
+package audit, then writes `arena_fixture_smoke_manifest.json`. It is local
+package-pipeline proof only; it does not prove WebApp upstream truth or
+owner-system Isaac Lab-Arena execution.
+
 ## Live Gates
 
 Real external actions remain blocked unless explicit owner gates are supplied:
