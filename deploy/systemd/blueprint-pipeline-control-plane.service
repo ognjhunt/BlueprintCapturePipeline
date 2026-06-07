@@ -9,8 +9,8 @@ Type=oneshot
 Environment=BLUEPRINT_PIPELINE_REPO=/Users/nijelhunt_1/workspace/BlueprintCapturePipeline
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
-ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-run-live-pipeline-control-plane ]; then exec .venv/bin/blueprint-run-live-pipeline-control-plane; fi; exec python3 -m blueprint_pipeline.live_pipeline_control_plane'
-ExecStartPost=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && manifest="$${BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH:-/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json}" && if [ -x .venv/bin/blueprint-audit-live-pipeline-proof-boundary ]; then exec .venv/bin/blueprint-audit-live-pipeline-proof-boundary --manifest-path "$${manifest}"; fi; exec python3 -m blueprint_pipeline.live_pipeline_proof_audit --manifest-path "$${manifest}"'
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-run-live-pipeline-control-plane ]; then exec .venv/bin/blueprint-run-live-pipeline-control-plane; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_control_plane; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_control_plane'
+ExecStartPost=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && manifest="$${BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH:-/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json}" && if [ -x .venv/bin/blueprint-audit-live-pipeline-proof-boundary ]; then exec .venv/bin/blueprint-audit-live-pipeline-proof-boundary --manifest-path "$${manifest}"; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_proof_audit --manifest-path "$${manifest}"; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_proof_audit --manifest-path "$${manifest}"'
 Nice=5
 NoNewPrivileges=true
 PrivateTmp=true
