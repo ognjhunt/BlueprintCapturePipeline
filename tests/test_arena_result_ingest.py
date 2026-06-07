@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from blueprint_pipeline.arena_package_audit import build_arena_package_proof_boundary_audit
 from blueprint_pipeline.arena_result_ingest import build_arena_result_ingest
+from blueprint_pipeline.rollout_vision_label_openai import build_openai_rollout_vision_labels
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -157,3 +159,108 @@ def test_arena_package_audit_blocks_illegal_proof_upgrade(tmp_path: Path) -> Non
     assert "proof_boundary_violation:arena_result_ingest_run_manifest.json:robot_readiness_proven" in audit[
         "blockers"
     ]
+
+
+def test_arena_result_ingest_consumes_review_required_vision_command_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    results_dir = _arena_results(tmp_path)
+    output_dir = tmp_path / "arena-package"
+    writer = tmp_path / "write_vision_labels.py"
+    writer.write_text(
+        "\n".join(
+            [
+                "import json",
+                "payload = {",
+                "  'schema_version': 'arena_rollout_vision_command_labels.v1',",
+                "  'provider': 'fake-command',",
+                "  'model': 'fake-vision-model',",
+                "  'visual_evidence_used': True,",
+                "  'labels': [{",
+                "    'vision_label_id': 'vision-command-1',",
+                "    'source_failure_label_id': 'failure_episode-1',",
+                "    'attempt_id': 'episode-1',",
+                "    'status': 'accepted',",
+                "    'object_state': 'object partially occluded',",
+                "    'contact': 'review_required',",
+                "    'occlusion': 'present',",
+                "    'threshold_miss': True,",
+                "    'failure_evidence': ['occlusion_threshold_miss'],",
+                "    'label_source': 'fake-command',",
+                "    'visual_evidence_used': True,",
+                "  }],",
+                "}",
+                "with open('rollout_vision_labels.command.json', 'w', encoding='utf-8') as f:",
+                "    json.dump(payload, f)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING", "true")
+
+    build_arena_result_ingest(
+        capture_root=capture_root,
+        arena_results_dir=results_dir,
+        output_dir=output_dir,
+        scenario_count=500,
+        shard_size=100,
+        allow_rollout_vision_labeling=True,
+        vision_labeling_command=f"{sys.executable} {writer}",
+    )
+
+    vision = _read_json(output_dir / "rollout_vision_labels.json")
+
+    assert vision["status"] == "completed_review_required"
+    assert vision["vision_model_labeling_performed"] is True
+    assert vision["command_labels"]["status"] == "completed"
+    assert vision["command_labels"]["provider"] == "fake-command"
+    assert vision["labels"][0]["vision_label_id"] == "vision-command-1"
+    assert vision["labels"][0]["status"] == "review_required"
+    assert vision["labels"][0]["label_source"] == "fake-command"
+    assert vision["claim_boundary"]["robot_readiness_proven"] is False
+    assert vision["claim_boundary"]["vision_model_labeling_performed"] is True
+
+
+def test_openai_rollout_vision_labeler_fails_closed_without_gate_key_or_keyframes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _write_json(
+        tmp_path / "failure_labels.json",
+        {
+            "labels": [
+                {
+                    "label_id": "failure-1",
+                    "attempt_id": "attempt-1",
+                    "threshold_miss": True,
+                    "failure_categories": ["threshold_miss"],
+                }
+            ]
+        },
+    )
+    _write_json(
+        tmp_path / "clips_manifest.json",
+        {
+            "clips": [
+                {
+                    "clip_id": "clip-attempt-1",
+                    "attempt_id": "attempt-1",
+                    "clip_path": "clips/missing.mp4",
+                }
+            ]
+        },
+    )
+
+    result = build_openai_rollout_vision_labels(output_dir=tmp_path)
+
+    assert result["status"] == "blocked_review_required"
+    assert "missing_env_BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING" in result["blockers"]
+    assert "missing_openai_api_key" in result["blockers"]
+    assert "missing_visual_evidence_keyframes" in result["blockers"]
+    assert result["label_count"] == 0
+    assert result["public_claim_upgrade_allowed"] is False
+    assert (tmp_path / "rollout_vision_labels.command.json").is_file()

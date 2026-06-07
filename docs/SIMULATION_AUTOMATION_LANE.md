@@ -553,6 +553,21 @@ blueprint-ingest-arena-results \
   --shard-size 50
 ```
 
+Optional OpenAI rollout vision labels:
+
+```bash
+BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING=true \
+blueprint-ingest-arena-results \
+  --capture-root /path/to/capture-root \
+  --arena-results-dir /path/to/isaac-lab-arena-results \
+  --allow-rollout-vision-labeling \
+  --vision-labeling-command "blueprint-label-rollout-vision-openai --output-dir ."
+```
+
+The OpenAI hook writes `rollout_vision_labels.command.json`. Ingest consumes
+those labels as review-required support evidence; they do not prove contact,
+safety, policy execution, or robot readiness.
+
 Arena package proof-boundary audit:
 
 ```bash

@@ -79,15 +79,28 @@ and must not be copied into pipeline manifests.
 
 ## Vision Model Boundary
 
-The current vision-labeling env/auth slots are `GEMINI_API_KEY` and
-`GOOGLE_GENAI_API_KEY`, so a Gemini/Google GenAI wrapper is the expected first
-provider for rollout vision labels.
+The pipeline is not hardwired to Gemini. Rollout vision labeling is behind the
+replaceable `BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND` contract. The command
+must write `rollout_vision_labels.command.json` in the Arena package output
+directory, and ingest will force command labels to remain review-required.
 
-The pipeline is not hardwired to Gemini. The contract is
-`BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND`, which can be a Gemini wrapper, an
-OpenAI vision wrapper, or another reviewed local/HTTP command that returns the
-expected deterministic label artifact. Model-derived labels remain
-review-required until accepted.
+Supported setup paths:
+
+- OpenAI: `blueprint-label-rollout-vision-openai`, using `OPENAI_API_KEY`
+- Gemini/Google GenAI: a wrapper using `GEMINI_API_KEY` or
+  `GOOGLE_GENAI_API_KEY`
+- another reviewed local/HTTP command that writes the same command-label JSON
+
+OpenAI setup example:
+
+```bash
+BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING=true
+BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND="blueprint-label-rollout-vision-openai --output-dir ."
+```
+
+Model-derived labels are support evidence only. They do not prove contact,
+safety, policy execution, or robot readiness until accepted through review or
+owner-system proof.
 
 ## DigitalOcean Droplet Boundary
 

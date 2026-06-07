@@ -49,6 +49,8 @@ Real external actions remain blocked unless explicit owner gates are supplied:
 - rollout vision labeling:
   `BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING=true`,
   `--allow-rollout-vision-labeling`, and `--vision-labeling-command`
+  (`blueprint-label-rollout-vision-openai --output-dir .` is the built-in
+  OpenAI command hook)
 - package upload/signed access:
   `BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD=true`,
   `--allow-delivery-upload`, and `--delivery-command`
@@ -80,10 +82,12 @@ require `OPENAI_API_KEY` or a configured command hook that owns its own OAuth
 flow.
 
 Rollout vision labeling is provider-replaceable behind
-`BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND`. `GEMINI_API_KEY` and
-`GOOGLE_GENAI_API_KEY` are the current Gemini/Google GenAI auth slots, but the
-model backend is not a proof source and labels remain review-required until
-accepted.
+`BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND`. The repo includes
+`blueprint-label-rollout-vision-openai`, which uses `OPENAI_API_KEY`, extracted
+keyframes, and the OpenAI Responses API to write
+`rollout_vision_labels.command.json`. Gemini/Google GenAI remains possible
+through a wrapper using `GEMINI_API_KEY` or `GOOGLE_GENAI_API_KEY`. The model
+backend is not a proof source and labels remain review-required until accepted.
 
 ## External Blockers
 

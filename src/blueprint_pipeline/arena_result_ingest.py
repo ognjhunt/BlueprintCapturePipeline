@@ -39,6 +39,7 @@ FAILURE_LABELS_SCHEMA_VERSION = "arena_failure_labels.v1"
 POLICY_ADAPTER_MANIFEST_SCHEMA_VERSION = "arena_policy_adapter_manifest.v1"
 CLIPS_MANIFEST_SCHEMA_VERSION = "arena_rollout_clips_manifest.v1"
 VISION_LABELS_SCHEMA_VERSION = "arena_rollout_vision_labels.v1"
+COMMAND_VISION_LABELS_SCHEMA_VERSION = "arena_rollout_vision_command_labels.v1"
 REVIEW_RESOLUTION_LEDGER_SCHEMA_VERSION = "arena_review_resolution_ledger.v1"
 CUSTOMER_HANDOFF_REPORT_SCHEMA_VERSION = "arena_customer_handoff_report.v1"
 DELIVERY_MANIFEST_SCHEMA_VERSION = "arena_delivery_manifest.v1"
@@ -61,6 +62,11 @@ POLICY_MODALITY_ORDER = (
 )
 
 SECRET_KEY_MARKERS = ("token", "secret", "password", "api_key", "apikey", "authorization")
+VISION_COMMAND_OUTPUT_CANDIDATES = (
+    "rollout_vision_labels.command.json",
+    "rollout_vision_labels.generated.json",
+    "vision_labels.json",
+)
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "arena_eval_ingest_and_post_training_package_support",
@@ -828,6 +834,79 @@ def _run_optional_command(command_text: str, timeout_seconds: int, cwd: Path) ->
     }
 
 
+def _canonical_vision_label(value: Mapping[str, Any]) -> Dict[str, Any]:
+    source_label_id = _string(
+        value.get("source_failure_label_id")
+        or value.get("failure_label_id")
+        or value.get("label_id")
+    )
+    attempt_id = _string(value.get("attempt_id"))
+    vision_label_id = _string(value.get("vision_label_id")) or f"vision_{source_label_id or attempt_id}"
+    status = _string(value.get("status")) or "review_required"
+    if status in {"accepted", "proof", "verified", "passed"}:
+        status = "review_required"
+    return {
+        "vision_label_id": vision_label_id,
+        "source_failure_label_id": source_label_id or None,
+        "attempt_id": attempt_id or None,
+        "status": status,
+        "masks": value.get("masks") if isinstance(value.get("masks"), list) else [],
+        "object_state": _string(value.get("object_state")) or "review_required",
+        "contact": _string(value.get("contact")) or "review_required",
+        "occlusion": _string(value.get("occlusion")) or "review_required",
+        "threshold_miss": bool(value.get("threshold_miss")),
+        "failure_evidence": _string_list(value.get("failure_evidence")),
+        "label_source": _string(value.get("label_source")) or "vision_command",
+        "confidence": value.get("confidence") if isinstance(value.get("confidence"), (int, float)) else None,
+        "evidence_refs": value.get("evidence_refs") if isinstance(value.get("evidence_refs"), list) else [],
+        "visual_evidence_used": bool(value.get("visual_evidence_used")),
+        "proof_effect": "none_until_human_review_or_owner_proof",
+    }
+
+
+def _load_command_vision_labels(output_dir: Path) -> Dict[str, Any]:
+    for name in VISION_COMMAND_OUTPUT_CANDIDATES:
+        path = output_dir / name
+        if not path.is_file():
+            continue
+        payload = read_json_any(path)
+        if not isinstance(payload, Mapping):
+            return {
+                "status": "blocked",
+                "path": _relative_to(output_dir, path),
+                "blockers": ["vision_command_output_not_object"],
+                "labels": [],
+            }
+        raw_labels = payload.get("labels")
+        if not isinstance(raw_labels, list):
+            return {
+                "status": "blocked",
+                "path": _relative_to(output_dir, path),
+                "blockers": ["vision_command_output_missing_labels"],
+                "labels": [],
+            }
+        labels = [
+            _canonical_vision_label(item)
+            for item in raw_labels
+            if isinstance(item, Mapping)
+        ]
+        return {
+            "status": "completed" if labels else "blocked",
+            "path": _relative_to(output_dir, path),
+            "blockers": [] if labels else ["vision_command_output_empty_labels"],
+            "labels": labels,
+            "provider": _string(payload.get("provider")) or None,
+            "model": _string(payload.get("model")) or None,
+            "visual_evidence_used": bool(payload.get("visual_evidence_used")),
+        }
+    return {
+        "status": "missing",
+        "path": None,
+        "blockers": ["vision_command_output_missing"],
+        "labels": [],
+    }
+
+
 def _build_vision_labels(
     *,
     failure_labels: Mapping[str, Any],
@@ -861,6 +940,12 @@ def _build_vision_labels(
     command_text = _string(vision_labeling_command or os.getenv("BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND"))
     blockers: List[str] = []
     command_result: Dict[str, Any] | None = None
+    command_labels: Dict[str, Any] = {
+        "status": "not_requested",
+        "path": None,
+        "blockers": [],
+        "labels": [],
+    }
     if allow_vision_labeling or command_text:
         if not env_allowed:
             blockers.append("missing_env_BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING")
@@ -872,6 +957,10 @@ def _build_vision_labels(
             command_result = _run_optional_command(command_text, timeout_seconds, output_dir)
             if command_result["status"] != "completed":
                 blockers.append(f"vision_labeling_command_{command_result['status']}")
+            else:
+                command_labels = _load_command_vision_labels(output_dir)
+                labels = list(command_labels["labels"] or labels)
+                blockers.extend(command_labels.get("blockers") or [])
     status = "completed_review_required" if not blockers else "blocked_review_required"
     if not labels:
         status = "no_failure_labels"
@@ -883,12 +972,23 @@ def _build_vision_labels(
         "label_count": len(labels),
         "labels": labels,
         "command_result": command_result,
-        "vision_model_labeling_performed": bool(command_result and command_result["status"] == "completed"),
+        "command_labels": {
+            key: value
+            for key, value in command_labels.items()
+            if key not in {"labels"}
+        },
+        "vision_model_labeling_performed": bool(
+            command_result
+            and command_result["status"] == "completed"
+            and command_labels.get("status") == "completed"
+        ),
         "human_review_required": bool(labels),
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "vision_model_labeling_performed": bool(
-                command_result and command_result["status"] == "completed"
+                command_result
+                and command_result["status"] == "completed"
+                and command_labels.get("status") == "completed"
             ),
         },
     }

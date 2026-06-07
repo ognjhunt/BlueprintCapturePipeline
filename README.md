@@ -532,6 +532,22 @@ blueprint-ingest-arena-results \
   --shard-size 50
 ```
 
+Optional OpenAI rollout vision labeling command hook:
+
+```bash
+BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING=true \
+blueprint-ingest-arena-results \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --arena-results-dir /path/to/isaac-lab-arena-results \
+  --allow-rollout-vision-labeling \
+  --vision-labeling-command "blueprint-label-rollout-vision-openai --output-dir ."
+```
+
+The OpenAI hook reads `failure_labels.json` and `clips_manifest.json`, extracts
+keyframes with `ffmpeg`, calls OpenAI only when `OPENAI_API_KEY` and the rollout
+labeling gate are present, and writes `rollout_vision_labels.command.json`.
+Ingest consumes those labels as review-required support evidence only.
+
 Arena package artifact/proof-boundary audit:
 
 ```bash
