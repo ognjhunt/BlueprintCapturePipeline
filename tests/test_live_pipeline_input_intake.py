@@ -63,6 +63,44 @@ def _webapp_request(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict
     }
 
 
+def _webapp_site_library_request(
+    capture_root: Path, *, job_id: str = "webapp-job-1"
+) -> dict[str, object]:
+    buyer_request_id = "buyer-request-1"
+    return {
+        "queue_contract": "robot_eval_job_request_inbox.v1",
+        "status": "queued_for_pipeline",
+        "job_id": job_id,
+        "job_request": {
+            "schema_version": "robot_eval_job_request.v1",
+            "job_id": job_id,
+            "buyer_request_id": buyer_request_id,
+            "site_package": {
+                "capture_root": str(capture_root),
+                "site_submission_id": "site-submission-1",
+                "capture_job_id": "capture-job-1",
+                "buyer_request_id": buyer_request_id,
+                "package_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline",
+            },
+            "owner_system": {
+                "name": "Blueprint-WebApp",
+                "request_id": job_id,
+                "buyer_request_id": buyer_request_id,
+                "site_submission_id": "site-submission-1",
+                "capture_job_id": "capture-job-1",
+            },
+            "source": {
+                "system": "Blueprint-WebApp",
+                "selection_state": {
+                    "buyer_request_id": buyer_request_id,
+                    "site_submission_id": "site-submission-1",
+                    "capture_job_id": "capture-job-1",
+                },
+            },
+        },
+    }
+
+
 def _arena_results(results_dir: Path) -> Path:
     _write_json(
         results_dir / "rollout_manifest.json",
@@ -121,6 +159,30 @@ def test_live_pipeline_input_intake_stages_valid_webapp_request(tmp_path: Path) 
     assert Path(str(result["staged_inputs"]["path"])).is_file()
     assert target_path.is_file()
     assert json.loads(target_path.read_text(encoding="utf-8"))["job_id"] == "webapp-job-1"
+
+
+def test_live_pipeline_input_intake_accepts_webapp_site_library_id_locations(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    request_path = tmp_path / "incoming" / "webapp-job-1.json"
+    _write_json(request_path, _webapp_site_library_request(capture_root))
+
+    result = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        webapp_job_request=request_path,
+        stage_webapp_request=True,
+    )
+
+    assert result["status"] == "staged_for_control_plane"
+    assert result["webapp_job_request"]["missing_fields"] == []
+    assert result["webapp_job_request"]["fields_present"] == {
+        "site_submission_id": True,
+        "request_id": True,
+        "buyer_request_id": True,
+        "capture_job_id": True,
+    }
 
 
 def test_live_pipeline_input_intake_staged_arena_results_feed_control_plane(

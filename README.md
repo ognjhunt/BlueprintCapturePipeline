@@ -264,6 +264,22 @@ the job or run Arena. Add `--stage-arena-results` to write
 validated Arena result directory without an env-file edit. The staged pointer is
 still an ingest input only, not simulator execution proof.
 
+For live WebApp-to-droplet handoff, run the authenticated intake service:
+
+```bash
+BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=<redacted> \
+blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
+```
+
+`POST /api/live-pipeline/job-requests` accepts either the direct
+`robot_eval_job_request.v1` body or the WebApp queue envelope, validates the
+same four WebApp IDs and matching `site_package.capture_root`, stages the file
+into `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`, and optionally triggers the
+control-plane one-shot when `BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER=true`
+and `BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND` are set. The service is an
+intake layer only; it does not run Arena, set proof booleans, or publish a claim
+upgrade.
+
 ## Privacy And World Labs Input
 
 The current World Labs preview path requires a production-audited

@@ -12,7 +12,8 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/install_live_pipeline_control_plane.sh [--enable-now] [--dry-run]
 
-Installs the Blueprint live pipeline control-plane systemd service/timer.
+Installs the Blueprint live pipeline control-plane systemd service/timer plus
+the optional authenticated WebApp intake service unit.
 The service runs one safe control-plane pass on each timer tick:
 read env, audit readiness, optionally consume the robot-eval job inbox, write
 manifests, run the proof-boundary audit, and exit. It does not add secrets or
@@ -68,6 +69,9 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.timer" \
   "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-intake.service" \
+  "${SYSTEMD_DIR}/blueprint-pipeline-intake.service"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   run install -m 0600 \
@@ -86,5 +90,6 @@ systemctl daemon-reload
 if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-pipeline-control-plane.timer
 else
-  echo "installed; enable with: systemctl enable --now blueprint-pipeline-control-plane.timer"
+  echo "installed; enable timer with: systemctl enable --now blueprint-pipeline-control-plane.timer"
+  echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"
 fi

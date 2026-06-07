@@ -1,0 +1,17 @@
+[Unit]
+Description=Blueprint live pipeline WebApp intake service
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=BLUEPRINT_PIPELINE_REPO=/Users/nijelhunt_1/workspace/BlueprintCapturePipeline
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-live-pipeline-intake-service ]; then exec .venv/bin/blueprint-live-pipeline-intake-service; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_intake_service; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_intake_service'
+Restart=on-failure
+RestartSec=5
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true

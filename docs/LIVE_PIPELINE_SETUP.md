@@ -121,11 +121,36 @@ the job, or upgrade proof claims. With `--stage-arena-results`, intake writes
 validated owner-results pointer when no `BLUEPRINT_ARENA_RESULTS_DIR` or
 `--arena-results-dir` override is set.
 
+For live WebApp-to-droplet handoff, run the authenticated intake service:
+
+```bash
+BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=<redacted> \
+blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
+```
+
+The service exposes:
+
+- `GET /health`
+- `POST /api/live-pipeline/job-requests`
+- `GET /api/live-pipeline/intake-audit`
+
+Send the token with `Authorization: Bearer ...` or
+`X-Blueprint-Intake-Token`. The POST body can be either a direct
+`robot_eval_job_request.v1` or a `robot_eval_job_request_inbox.v1` queue
+envelope. A staged request is still only handoff proof; the control plane must
+process it and the proof audit must remain clean. Keep the service bound to
+localhost unless a reverse proxy/TLS layer owns public exposure. To trigger the
+one-shot control plane after successful staging, set
+`BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER=true` and
+`BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND`, for example
+`/bin/systemctl start blueprint-pipeline-control-plane.service`.
+
 Install templates live under:
 
 ```text
 deploy/systemd/blueprint-pipeline-control-plane.service
 deploy/systemd/blueprint-pipeline-control-plane.timer
+deploy/systemd/blueprint-pipeline-intake.service
 deploy/systemd/pipeline-control-plane.env.example
 scripts/install_live_pipeline_control_plane.sh
 ```

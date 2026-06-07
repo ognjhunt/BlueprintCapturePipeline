@@ -88,6 +88,7 @@ blueprint-audit-live-pipeline-setup = "blueprint_pipeline.live_pipeline_setup:ma
 blueprint-run-live-pipeline-control-plane = "blueprint_pipeline.live_pipeline_control_plane:main"
 blueprint-audit-live-pipeline-proof-boundary = "blueprint_pipeline.live_pipeline_proof_audit:main"
 blueprint-intake-live-pipeline-inputs = "blueprint_pipeline.live_pipeline_input_intake:main"
+blueprint-live-pipeline-intake-service = "blueprint_pipeline.live_pipeline_intake_service:main"
 blueprint-label-rollout-vision-openai = "blueprint_pipeline.rollout_vision_label_openai:main"
 blueprint-deliver-arena-package-local = "blueprint_pipeline.arena_package_delivery_local:main"
 blueprint-build-post-training-data-package = "blueprint_pipeline.post_training_data_package:main"

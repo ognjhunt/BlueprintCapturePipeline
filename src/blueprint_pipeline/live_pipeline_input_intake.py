@@ -66,13 +66,11 @@ def _request_from_payload(payload: Mapping[str, Any]) -> Dict[str, Any] | None:
 
 def _field_value(request: Mapping[str, Any], field: str) -> str | None:
     source = _mapping(request.get("source"))
-    for candidate in (request, source):
+    source_selection = _mapping(source.get("selection_state"))
+    owner_system = _mapping(request.get("owner_system"))
+    site_package = _mapping(request.get("site_package"))
+    for candidate in (request, source, source_selection, owner_system, site_package):
         value = _string(candidate.get(field))
-        if value:
-            return value
-    if field == "request_id":
-        owner_system = _mapping(request.get("owner_system"))
-        value = _string(owner_system.get("request_id"))
         if value:
             return value
     return None
