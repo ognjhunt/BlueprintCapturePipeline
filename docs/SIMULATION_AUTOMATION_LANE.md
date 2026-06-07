@@ -407,10 +407,11 @@ Live Agents SDK operators require:
 - optional `BLUEPRINT_ALLOW_AGENT_EXTERNAL_ACTIONS=true` for external actions
 - optional `BLUEPRINT_ALLOW_AGENT_SPEND_ACTIONS=true` for spend-bearing actions
 
-Live Codex SDK code-maintainer operators require:
+Live Codex code-maintainer operators require:
 
-- `OPENAI_API_KEY`
 - `BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS=true`
+- either `OPENAI_API_KEY` plus a Python Codex SDK dependency, or an installed
+  authenticated `codex` CLI plus `BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH=true`
 - `--allow-live-agent-operator` for `blueprint-run-simulation-automation --agent-mode codex-sdk`
 - `--allow-live-codex-sdk-operator` for `blueprint-run-site-eval-director --codex-sdk-code-maintainer`
 - optional `BLUEPRINT_ALLOW_AGENT_EXTERNAL_ACTIONS=true` for external actions
@@ -561,6 +562,25 @@ blueprint-audit-arena-package \
   --expected-scenario-count 500 \
   --require-job-artifacts
 ```
+
+Live setup and external-gate preflight:
+
+```bash
+blueprint-audit-live-pipeline-setup \
+  --capture-root /path/to/capture-root \
+  --package-dir /path/to/capture-root/pipeline/robot_eval_jobs/<job_id> \
+  --digitalocean-droplet-name paperclip-prod-01 \
+  --digitalocean-droplet-ip 206.81.11.69
+```
+
+This preflight reports whether the local machine has the live gates, command
+hooks, Codex CLI, SDK modules, package audit, and WebApp upstream IDs required
+for a live run. It may treat a 24/7 droplet as a control-plane target, but not
+as simulator, contact, safety, or robot-readiness proof. ChatGPT Pro/Codex OAuth
+can be used through an authenticated `codex` CLI only when
+`BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH=true` and the matching live Codex gate are
+set; otherwise repo subprocesses still require explicit API keys or
+OAuth-owning command hooks.
 
 `--allow-rollout-vision-labeling`, `--allow-delivery-upload`,
 `--operator-mode agents-sdk`, `--allow-live-agents-sdk`, and

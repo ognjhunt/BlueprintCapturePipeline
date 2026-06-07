@@ -14,7 +14,6 @@ import argparse
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass
 from hashlib import sha256
@@ -22,16 +21,19 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 
 from .agent_operator_runtime import (
+    CODEX_CLI_HOST_OAUTH_ENV,
     LIVE_AGENTS_SDK_ENV,
     LIVE_CODEX_SDK_ENV,
     OperatorExecutor,
     OperatorRunConfig,
     blocked_operator_ledger,
+    codex_cli_path as resolve_codex_cli_path,
     completed_operator_ledger,
     env_truthy,
     external_action_gates,
     proof_effect,
     run_agents_sdk_operator,
+    run_codex_cli_operator,
     run_codex_sdk_operator,
 )
 from .common import ensure_dir, read_json_any, write_json
@@ -292,22 +294,31 @@ class CodexSdkCodeMaintainerAdapter:
             if self.openai_api_key is not None
             else _string(os.getenv("OPENAI_API_KEY"))
         )
-        codex_cli = _string(self.codex_cli_path) or shutil.which("codex")
+        codex_cli = _string(self.codex_cli_path) or resolve_codex_cli_path()
         mcp_available = (
             self.codex_mcp_server_available
             if self.codex_mcp_server_available is not None
             else _codex_mcp_server_available(codex_cli)
         )
+        codex_cli_ready = bool(codex_cli)
+        codex_cli_host_oauth_allowed = env_truthy(CODEX_CLI_HOST_OAUTH_ENV)
+        transport_ready = bool(self.executor is not None) or (
+            sdk_available and api_key_present
+        ) or (codex_cli_ready and codex_cli_host_oauth_allowed)
         env_allowed = (
             bool(self.live_env_allowed)
             if self.live_env_allowed is not None
             else env_truthy(LIVE_CODEX_SDK_ENV)
         )
         blockers: List[str] = []
-        if not sdk_available:
+        if not transport_ready and not sdk_available:
             blockers.append("missing_codex_sdk")
-        if not api_key_present:
+        if not transport_ready and not api_key_present:
             blockers.append("missing_openai_api_key")
+        if not transport_ready and not codex_cli_ready:
+            blockers.append("missing_codex_cli")
+        if not transport_ready and codex_cli_ready and not codex_cli_host_oauth_allowed:
+            blockers.append(f"missing_env_{CODEX_CLI_HOST_OAUTH_ENV}")
         if not self.allow_live_operator:
             blockers.append("missing_cli_allow_live_codex_sdk_operator")
         if not env_allowed:
@@ -320,14 +331,26 @@ class CodexSdkCodeMaintainerAdapter:
         execution_failed = False
         if not blockers:
             try:
-                live_output = run_codex_sdk_operator(
-                    OperatorRunConfig(
-                        adapter="codex_sdk_code_maintainer",
-                        model=self.model,
-                        prompt=_codex_code_maintainer_prompt(plan_context, sandbox=sandbox),
-                        plan_context=plan_context,
-                        executor=self.executor,
-                        sandbox=sandbox,
+                config = OperatorRunConfig(
+                    adapter="codex_sdk_code_maintainer",
+                    model=self.model,
+                    prompt=_codex_code_maintainer_prompt(plan_context, sandbox=sandbox),
+                    plan_context=plan_context,
+                    executor=self.executor,
+                    sandbox=sandbox,
+                    cwd=_string(plan_context.get("repo_root")) or None,
+                    codex_bin=codex_cli or "codex",
+                )
+                live_output = (
+                    run_codex_sdk_operator(config)
+                    if self.executor is not None or (sdk_available and api_key_present)
+                    else run_codex_cli_operator(
+                        OperatorRunConfig(
+                            **{
+                                **config.__dict__,
+                                "adapter": "codex_cli_code_maintainer",
+                            }
+                        )
                     )
                 )
                 execution_performed = True
@@ -395,12 +418,15 @@ class CodexSdkCodeMaintainerAdapter:
             "attempted_commands": [],
             "evidence": {
                 "codex_sdk_available": bool(sdk_available),
+                "codex_cli_available": codex_cli_ready,
+                "codex_cli_host_oauth_allowed": codex_cli_host_oauth_allowed,
                 "openai_api_key_present": api_key_present,
                 "codex_cli_path": codex_cli,
                 "codex_mcp_server_available": bool(mcp_available),
                 "codex_mcp_server_required_for_live_operator": False,
                 "cli_allow_live_operator": self.allow_live_operator,
                 LIVE_CODEX_SDK_ENV: env_allowed,
+                CODEX_CLI_HOST_OAUTH_ENV: codex_cli_host_oauth_allowed,
                 **external_action_gates(),
             },
             "proof_effect": proof_effect(
@@ -2058,7 +2084,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--allow-live-codex-sdk-operator",
         action="store_true",
-        help=f"Allow live Codex SDK execution when {LIVE_CODEX_SDK_ENV}=true and credentials exist",
+        help=(
+            f"Allow live Codex execution when {LIVE_CODEX_SDK_ENV}=true and either "
+            f"SDK credentials or {CODEX_CLI_HOST_OAUTH_ENV}=true with an authenticated codex CLI exist"
+        ),
     )
     parser.add_argument(
         "--codex-sandbox",

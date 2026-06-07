@@ -19,7 +19,14 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
-from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV, LIVE_CODEX_SDK_ENV
+from .agent_operator_runtime import (
+    CODEX_CLI_HOST_OAUTH_ENV,
+    LIVE_AGENTS_SDK_ENV,
+    LIVE_CODEX_SDK_ENV,
+    OperatorRunConfig,
+    codex_cli_path,
+    run_codex_cli_operator,
+)
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .local_capture import resolve_local_capture_context
 
@@ -1403,12 +1410,19 @@ def _live_agents_blockers(allow_live_agents_sdk: bool) -> List[str]:
 
 def _live_codex_blockers(allow_live_codex_sdk: bool) -> List[str]:
     blockers: List[str] = []
+    sdk_available = _module_available(("openai_codex",))
+    cli_available = bool(codex_cli_path())
+    cli_host_oauth_allowed = _env_truthy(CODEX_CLI_HOST_OAUTH_ENV)
     if not _env_truthy(LIVE_CODEX_SDK_ENV):
         blockers.append(f"missing_env_{LIVE_CODEX_SDK_ENV}")
     if not allow_live_codex_sdk:
         blockers.append("missing_cli_allow_live_codex_sdk")
-    if not _module_available(("openai_codex",)):
+    if not sdk_available and not (cli_available and cli_host_oauth_allowed):
         blockers.append("missing_openai_codex_sdk")
+    if not sdk_available and not cli_available:
+        blockers.append("missing_codex_cli")
+    if not sdk_available and cli_available and not cli_host_oauth_allowed:
+        blockers.append(f"missing_env_{CODEX_CLI_HOST_OAUTH_ENV}")
     return blockers
 
 
@@ -1455,7 +1469,6 @@ def _run_agents_sdk_operator(output_dir: Path, timeout_seconds: int) -> Dict[str
 
 
 def _run_codex_sdk_operator(output_dir: Path, timeout_seconds: int) -> Dict[str, Any]:
-    del timeout_seconds
     try:
         from openai_codex import Codex, Sandbox
 
@@ -1473,6 +1486,42 @@ def _run_codex_sdk_operator(output_dir: Path, timeout_seconds: int) -> Dict[str,
             "proof_effect": "none",
             "workspace": str(output_dir),
         }
+    except ImportError:
+        try:
+            result = run_codex_cli_operator(
+                OperatorRunConfig(
+                    adapter="codex_cli_code_maintainer",
+                    model="gpt-5.4",
+                    prompt=(
+                        "Review the Arena package artifacts for code-maintenance issues. "
+                        "Do not mutate proof booleans. Return concise blockers and next commands."
+                    ),
+                    plan_context={"workspace": str(output_dir)},
+                    sandbox="workspace-write",
+                    cwd=str(output_dir),
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+            return {
+                "operator": "codex_cli_code_maintainer",
+                "decision": "live_codex_cli_completed",
+                "command_chosen": "diagnose_code_maintenance_issues",
+                "tool_call_summary": {
+                    "transport": "codex_cli_host_oauth",
+                    "final_output": _string(result.get("final_output"))[:2000],
+                },
+                "proof_effect": "none",
+                "workspace": str(output_dir),
+            }
+        except Exception as exc:  # pragma: no cover - gated external path
+            return {
+                "operator": "codex_cli_code_maintainer",
+                "decision": "live_codex_cli_failed",
+                "command_chosen": None,
+                "tool_call_summary": {"error": f"{type(exc).__name__}: {exc}"},
+                "proof_effect": "none",
+                "workspace": str(output_dir),
+            }
     except Exception as exc:  # pragma: no cover - gated external path
         return {
             "operator": "codex_sdk_code_maintainer",

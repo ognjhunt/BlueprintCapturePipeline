@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Sequence
 
 from .common import utc_now_iso
@@ -13,6 +17,7 @@ from .common import utc_now_iso
 
 LIVE_AGENTS_SDK_ENV = "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS"
 LIVE_CODEX_SDK_ENV = "BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS"
+CODEX_CLI_HOST_OAUTH_ENV = "BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH"
 AGENT_EXTERNAL_ACTIONS_ENV = "BLUEPRINT_ALLOW_AGENT_EXTERNAL_ACTIONS"
 AGENT_SPEND_ACTIONS_ENV = "BLUEPRINT_ALLOW_AGENT_SPEND_ACTIONS"
 
@@ -27,6 +32,9 @@ class OperatorRunConfig:
     plan_context: Mapping[str, Any]
     executor: OperatorExecutor | None = None
     sandbox: str | None = None
+    cwd: str | None = None
+    timeout_seconds: int = 120
+    codex_bin: str = "codex"
 
 
 def env_truthy(name: str) -> bool:
@@ -39,6 +47,13 @@ def string(value: Any) -> str:
 
 def module_available(candidates: Sequence[str]) -> bool:
     return any(importlib.util.find_spec(candidate) is not None for candidate in candidates)
+
+
+def codex_cli_path(codex_bin: str = "codex") -> str | None:
+    candidate = string(codex_bin) or "codex"
+    if "/" in candidate:
+        return candidate if Path(candidate).exists() else None
+    return shutil.which(candidate)
 
 
 def external_action_gates() -> Dict[str, Any]:
@@ -203,6 +218,67 @@ def run_codex_sdk_operator(config: OperatorRunConfig) -> Dict[str, Any]:
         "refusals": [],
         "blockers": [],
         "raw_result_type": type(result).__name__,
+    }
+
+
+def run_codex_cli_operator(config: OperatorRunConfig) -> Dict[str, Any]:
+    if config.executor is not None:
+        return normalize_operator_output(config.executor(config.prompt, config.plan_context))
+    path = codex_cli_path(config.codex_bin)
+    if not path:
+        raise RuntimeError("missing_codex_cli")
+    sandbox = config.sandbox or "read-only"
+    if sandbox not in {"read-only", "workspace-write"}:
+        sandbox = "read-only"
+    cwd = Path(config.cwd or os.getcwd()).resolve()
+    with tempfile.TemporaryDirectory(prefix="blueprint-codex-cli-") as tmp_dir:
+        output_path = Path(tmp_dir) / "codex-last-message.txt"
+        command = [
+            path,
+            "exec",
+            "--skip-git-repo-check",
+            "--sandbox",
+            sandbox,
+            "--output-last-message",
+            str(output_path),
+            "--cd",
+            str(cwd),
+        ]
+        if config.model:
+            command.extend(["--model", config.model])
+        command.append("-")
+        try:
+            completed = subprocess.run(
+                command,
+                input=config.prompt,
+                text=True,
+                capture_output=True,
+                timeout=max(1, int(config.timeout_seconds)),
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise RuntimeError(f"codex_cli_operator_execution_failed:{type(exc).__name__}") from exc
+        final_output = (
+            output_path.read_text(encoding="utf-8")
+            if output_path.is_file()
+            else completed.stdout
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("codex_cli_operator_execution_failed")
+    return {
+        "final_output": string(final_output),
+        "decisions": [],
+        "tool_call_summaries": [
+            {
+                "tool_name": "codex_exec",
+                "transport": "codex_cli_host_oauth",
+                "exit_code": completed.returncode,
+            }
+        ],
+        "commands_chosen": [],
+        "refusals": [],
+        "blockers": [],
+        "raw_result_type": "codex_cli_exec",
     }
 
 

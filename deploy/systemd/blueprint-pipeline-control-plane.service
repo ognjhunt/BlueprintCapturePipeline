@@ -1,0 +1,15 @@
+[Unit]
+Description=Blueprint live pipeline control-plane one-shot
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=BLUEPRINT_PIPELINE_REPO=/Users/nijelhunt_1/workspace/BlueprintCapturePipeline
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd "${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-run-live-pipeline-control-plane ]; then exec .venv/bin/blueprint-run-live-pipeline-control-plane; fi; exec python -m blueprint_pipeline.live_pipeline_control_plane'
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Blueprint live pipeline control-plane periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=blueprint-pipeline-control-plane.service
+
+[Install]
+WantedBy=timers.target
+

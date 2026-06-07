@@ -179,6 +179,9 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/job_run_manifest.json`
 - `robot_eval_jobs/<job_id>/blocked_manifest.json` when blocked
 - `robot_eval_job_requests/inbox_run_manifest.json` when a request inbox is consumed
+- `live_pipeline_setup/live_pipeline_setup_manifest.json` when live setup is audited
+- `live_pipeline_control_plane/live_pipeline_control_plane_manifest.json` when the
+  always-on control-plane runner is used
 - `site_capture_batch_registry.json` when the capture batch registry command is
   pointed at a registry path
 
@@ -203,6 +206,25 @@ Cross-repo external alpha gate:
 ```bash
 python scripts/run_external_alpha_launch_gate.py
 ```
+
+Live Arena/package setup audit:
+
+```bash
+blueprint-audit-live-pipeline-setup \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+Timer-safe control-plane pass for the DigitalOcean droplet:
+
+```bash
+blueprint-run-live-pipeline-control-plane
+```
+
+That command audits readiness and optionally drains
+`BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX` through the deterministic
+`robot_eval_job_request.v1` orchestrator. It writes a blocked/noop manifest when
+capture roots, inboxes, live simulator commands, vision-labeling commands,
+delivery commands, or owner proof are missing.
 
 ## Privacy And World Labs Input
 
@@ -519,6 +541,26 @@ blueprint-audit-arena-package \
   --expected-scenario-count 500 \
   --require-job-artifacts
 ```
+
+Live setup and external-gate preflight:
+
+```bash
+blueprint-audit-live-pipeline-setup \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --package-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
+  --digitalocean-droplet-name paperclip-prod-01 \
+  --digitalocean-droplet-ip 206.81.11.69
+```
+
+The setup audit loads local env files without printing secret values, checks
+configured commands, Codex CLI, and SDK availability, and writes
+`pipeline/live_pipeline_setup/live_pipeline_setup_manifest.json`. ChatGPT
+Pro/Codex OAuth may be used through an authenticated `codex` CLI when
+`BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH=true` and the live Codex operator gate are
+both set. Repo-local OpenAI SDK calls still require explicit API-key/env
+configuration or a command hook that owns its own OAuth flow. The DigitalOcean
+droplet can act as an always-on control plane, but it is not GPU/Arena execution
+proof by itself.
 
 Post-Training Data Package export and archive:
 

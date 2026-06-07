@@ -60,6 +60,30 @@ Real external actions remain blocked unless explicit owner gates are supplied:
   allow flag
 - local fake operator:
   `BLUEPRINT_ALLOW_FAKE_LIVE_OPERATORS=true` and `--operator-mode fake`
+- live setup preflight:
+  `blueprint-audit-live-pipeline-setup` checks env gates, command hooks,
+  package audit status, WebApp upstream IDs, SDK availability, and optional
+  control-plane droplet metadata without printing secret values or running
+  provider jobs
+- always-on control plane:
+  `blueprint-run-live-pipeline-control-plane` performs the same setup audit and
+  optionally drains a `robot_eval_job_request.v1` inbox on the DigitalOcean
+  droplet. It exits cleanly when blocked and records missing live commands,
+  capture roots, inboxes, or owner proof as manifest blockers rather than
+  treating the droplet itself as simulator proof.
+
+ChatGPT Pro/Codex OAuth may be used by the host application when a host-managed
+tool is triggered. The repo can also use an installed authenticated `codex` CLI
+when `BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH=true` and the matching live Codex
+operator gate are set. Repo subprocesses that call OpenAI SDKs directly still
+require `OPENAI_API_KEY` or a configured command hook that owns its own OAuth
+flow.
+
+Rollout vision labeling is provider-replaceable behind
+`BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND`. `GEMINI_API_KEY` and
+`GOOGLE_GENAI_API_KEY` are the current Gemini/Google GenAI auth slots, but the
+model backend is not a proof source and labels remain review-required until
+accepted.
 
 ## External Blockers
 
@@ -73,6 +97,9 @@ External/live proof still requires owner input:
   required
 - live storage/upload command and entitlement context if signed delivery URLs are
   required
+- capture-root and WebApp job-request inbox paths if the always-on control plane
+  should process production requests instead of only writing blocked/noop
+  readiness manifests
 - OpenAI SDK dependencies/credentials and explicit env/CLI gates if real
   Agents SDK or Codex SDK execution is required
 
