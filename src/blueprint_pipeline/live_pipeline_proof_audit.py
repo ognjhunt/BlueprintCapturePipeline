@@ -18,6 +18,7 @@ from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .live_pipeline_control_plane import (
     LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
     LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
+    LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION,
 )
 
 
@@ -214,6 +215,24 @@ def _goal_requirement_audit(
     }
 
 
+def _staged_inputs_audit(
+    *,
+    staged_info: Mapping[str, Any],
+    staged_manifest: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+) -> Dict[str, Any]:
+    status = str(staged_info.get("status") or "not_configured")
+    return {
+        "status": status,
+        "artifact_exists": bool(artifact.get("exists")),
+        "arena_results_ready": bool(staged_info.get("arena_results_ready")),
+        "webapp_request_ready": bool(staged_info.get("webapp_request_ready")),
+        "blockers": list(staged_info.get("blockers") or []),
+        "schema_version": staged_manifest.get("schema_version"),
+        "proof_boundary": "staged inputs are validated pointers only, not proof claims",
+    }
+
+
 def _audit_status(
     *,
     internal_blockers: Sequence[str],
@@ -252,15 +271,19 @@ def build_live_pipeline_proof_audit(
         internal_blockers.append("control_plane_manifest_reports_secret_leak")
 
     packet_info = _mapping(manifest.get("external_input_packet"))
+    staged_info = _mapping(manifest.get("staged_inputs"))
     packet_path = _path_from_value(packet_info.get("path"))
     packet_markdown_path = _path_from_value(packet_info.get("markdown_path"))
     setup_manifest_path = _path_from_value(manifest.get("setup_manifest_path"))
+    staged_inputs_path = _path_from_value(staged_info.get("path"))
     artifacts["external_input_packet"] = _artifact(packet_path)
     artifacts["external_input_packet_markdown"] = _artifact(packet_markdown_path)
     artifacts["setup_manifest"] = _artifact(setup_manifest_path)
+    artifacts["staged_inputs"] = _artifact(staged_inputs_path)
 
     packet: Dict[str, Any] = {}
     setup_manifest: Dict[str, Any] = {}
+    staged_manifest: Dict[str, Any] = {}
     if not artifacts["external_input_packet"]["exists"]:
         internal_blockers.append("external_input_packet_missing")
     else:
@@ -277,6 +300,15 @@ def build_live_pipeline_proof_audit(
         internal_blockers.append("setup_manifest_missing")
     else:
         setup_manifest = _read_mapping(setup_manifest_path or Path())
+    staged_status = str(staged_info.get("status") or "not_configured")
+    if staged_status == "ready" and not artifacts["staged_inputs"]["exists"]:
+        internal_blockers.append("staged_inputs_ready_but_missing")
+    if staged_status == "blocked":
+        internal_blockers.append("staged_inputs_blocked")
+    if artifacts["staged_inputs"]["exists"]:
+        staged_manifest = _read_mapping(staged_inputs_path or Path())
+        if staged_manifest.get("schema_version") != LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION:
+            internal_blockers.append("staged_inputs_schema_mismatch")
 
     proof_violations = []
     proof_violations.extend(_proof_violations(manifest, artifact_name="control_plane_manifest"))
@@ -284,6 +316,8 @@ def build_live_pipeline_proof_audit(
         proof_violations.extend(_proof_violations(packet, artifact_name="external_input_packet"))
     if setup_manifest:
         proof_violations.extend(_proof_violations(setup_manifest, artifact_name="setup_manifest"))
+    if staged_manifest:
+        proof_violations.extend(_proof_violations(staged_manifest, artifact_name="staged_inputs"))
     if proof_violations:
         internal_blockers.append("forbidden_proof_boundary_upgrade")
 
@@ -328,6 +362,11 @@ def build_live_pipeline_proof_audit(
         "external_blockers": external_blockers,
         "proof_violations": proof_violations,
         "live_readiness": live_readiness,
+        "staged_inputs_audit": _staged_inputs_audit(
+            staged_info=staged_info,
+            staged_manifest=staged_manifest,
+            artifact=artifacts["staged_inputs"],
+        ),
         "goal_requirement_audit": _goal_requirement_audit(
             manifest=manifest,
             packet=packet,

@@ -96,7 +96,9 @@ blueprint-audit-live-pipeline-proof-boundary \
 It verifies manifest/packet/setup consistency, checks that `secrets_leaked`
 remains false, rejects forbidden proof-boolean upgrades, and separates external
 blockers from internal audit failures. A healthy waiting state exits zero unless
-`--require-live-ready` is provided.
+`--require-live-ready` is provided. When `live_pipeline_staged_inputs.json`
+exists, the audit also validates its schema and proof boundary; malformed or
+blocked staged pointers fail internally.
 
 Candidate external inputs can be audited before the timer sees them:
 

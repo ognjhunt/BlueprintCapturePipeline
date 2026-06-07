@@ -253,7 +253,9 @@ WebApp upstream-truth requirement only when it contains `site_submission_id`,
 `site_package.capture_root` matches the configured control-plane capture root.
 The proof-boundary audit exits zero for a healthy waiting state and records
 remaining external blockers separately from internal artifact or overclaim
-failures.
+failures. It also checks `live_pipeline_staged_inputs.json` when present, so a
+bad staged pointer is treated as an internal audit failure rather than a normal
+external wait.
 The intake command validates candidate handoff files against the configured
 capture root and inbox. Add `--stage-webapp-request` only when you want it to
 copy a validated WebApp request into the configured inbox; it does not process

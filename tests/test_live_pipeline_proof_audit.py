@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from blueprint_pipeline.live_pipeline_control_plane import run_live_pipeline_control_plane
+from blueprint_pipeline.live_pipeline_input_intake import build_live_pipeline_input_intake
 from blueprint_pipeline.live_pipeline_proof_audit import (
     LIVE_PIPELINE_PROOF_AUDIT_SCHEMA_VERSION,
     build_live_pipeline_proof_audit,
@@ -104,6 +105,74 @@ def test_live_pipeline_proof_audit_fails_on_proof_overclaim(
     assert audit["status"] == "failed"
     assert "forbidden_proof_boundary_upgrade" in audit["internal_blockers"]
     assert audit["proof_violations"][0]["field"] == "proof_boundary.robot_readiness_proven"
+
+
+def test_live_pipeline_proof_audit_accepts_valid_staged_arena_inputs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    output_path = tmp_path / "control" / "live_pipeline_control_plane_manifest.json"
+    arena_results = tmp_path / "arena-results"
+    _write_json(
+        arena_results / "rollout_manifest.json",
+        {
+            "episodes": [
+                {
+                    "episode_id": "episode-1",
+                    "scenario_id": "scenario-1",
+                    "status": "success",
+                    "success": True,
+                }
+            ]
+        },
+    )
+    run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=tmp_path / "inbox",
+        load_local_env=False,
+        output_path=output_path,
+    )
+    build_live_pipeline_input_intake(
+        manifest_path=output_path,
+        arena_results_dir=arena_results,
+        stage_arena_results=True,
+    )
+    run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=tmp_path / "inbox",
+        load_local_env=False,
+        output_path=output_path,
+    )
+
+    audit = build_live_pipeline_proof_audit(manifest_path=output_path)
+
+    assert audit["status"] == "passed_external_inputs_blocked"
+    assert audit["internal_blockers"] == []
+    assert audit["external_blockers"] == ["webapp_upstream_truth"]
+    assert audit["staged_inputs_audit"]["status"] == "ready"
+    assert audit["staged_inputs_audit"]["arena_results_ready"] is True
+
+
+def test_live_pipeline_proof_audit_fails_on_malformed_staged_inputs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    output_path = tmp_path / "control" / "live_pipeline_control_plane_manifest.json"
+    run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=tmp_path / "inbox",
+        load_local_env=False,
+        output_path=output_path,
+    )
+    _write_json(
+        tmp_path / "control" / "live_pipeline_staged_inputs.json",
+        {"schema_version": "wrong"},
+    )
+
+    audit = build_live_pipeline_proof_audit(manifest_path=output_path)
+
+    assert audit["status"] == "failed"
+    assert "staged_inputs_schema_mismatch" in audit["internal_blockers"]
 
 
 def test_live_pipeline_proof_audit_module_cli(tmp_path: Path) -> None:
