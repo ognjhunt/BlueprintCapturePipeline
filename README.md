@@ -185,6 +185,9 @@ Artifact families and advisory downstream outputs:
 - `live_pipeline_control_plane/live_pipeline_external_input_packet.json` and
   `.md` when the always-on control-plane runner publishes the exact external
   inputs still needed
+- `live_pipeline_control_plane/live_pipeline_proof_boundary_audit.json` when
+  control-plane outputs are audited for internal consistency, missing external
+  inputs, secret leakage, and forbidden proof upgrades
 - `site_capture_batch_registry.json` when the capture batch registry command is
   pointed at a registry path
 
@@ -221,6 +224,8 @@ Timer-safe control-plane pass for the DigitalOcean droplet:
 
 ```bash
 blueprint-run-live-pipeline-control-plane
+blueprint-audit-live-pipeline-proof-boundary \
+  --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json
 ```
 
 That command audits readiness and optionally drains
@@ -234,6 +239,9 @@ treated as proof. A queued WebApp `robot_eval_job_request.v1` can satisfy the
 WebApp upstream-truth requirement only when it contains `site_submission_id`,
 `request_id`, `buyer_request_id`, and `capture_job_id`, and its
 `site_package.capture_root` matches the configured control-plane capture root.
+The proof-boundary audit exits zero for a healthy waiting state and records
+remaining external blockers separately from internal artifact or overclaim
+failures.
 
 ## Privacy And World Labs Input
 

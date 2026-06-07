@@ -15,8 +15,8 @@ Usage: scripts/install_live_pipeline_control_plane.sh [--enable-now] [--dry-run]
 Installs the Blueprint live pipeline control-plane systemd service/timer.
 The service runs one safe control-plane pass on each timer tick:
 read env, audit readiness, optionally consume the robot-eval job inbox, write
-manifests, and exit. It does not add secrets or enable live simulator/provider
-actions by itself.
+manifests, run the proof-boundary audit, and exit. It does not add secrets or
+enable live simulator/provider actions by itself.
 
 Environment overrides:
   SYSTEMD_DIR=/etc/systemd/system

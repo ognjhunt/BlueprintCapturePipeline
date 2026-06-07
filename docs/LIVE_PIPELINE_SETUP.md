@@ -60,6 +60,7 @@ It also writes:
 ```text
 pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.json
 pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.md
+pipeline/live_pipeline_control_plane/live_pipeline_proof_boundary_audit.json
 ```
 
 That packet is the machine-readable handoff for the remaining external inputs:
@@ -82,6 +83,18 @@ Queued WebApp requests count as upstream truth only when the request includes
 all four WebApp IDs and `site_package.capture_root` resolves to the same
 capture root configured for the control plane. Requests for another capture are
 reported in `webapp_inbox_truth` but remain blocked.
+
+The proof-boundary audit can also be run directly:
+
+```bash
+blueprint-audit-live-pipeline-proof-boundary \
+  --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json
+```
+
+It verifies manifest/packet/setup consistency, checks that `secrets_leaked`
+remains false, rejects forbidden proof-boolean upgrades, and separates external
+blockers from internal audit failures. A healthy waiting state exits zero unless
+`--require-live-ready` is provided.
 
 Install templates live under:
 
