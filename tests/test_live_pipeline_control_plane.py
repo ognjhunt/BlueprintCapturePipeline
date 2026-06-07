@@ -85,6 +85,7 @@ def test_live_pipeline_control_plane_loads_env_paths_and_redacts_values(
 ) -> None:
     capture_root = _capture_root(tmp_path)
     inbox_dir = tmp_path / "env-configured-inbox"
+    output_path = tmp_path / "env-configured-control-plane.json"
     secret_value = "secret-sync-token-control-plane"
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -92,6 +93,7 @@ def test_live_pipeline_control_plane_loads_env_paths_and_redacts_values(
             [
                 f"BLUEPRINT_PIPELINE_CAPTURE_ROOT={capture_root}",
                 f"BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX={inbox_dir}",
+                f"BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH={output_path}",
                 "BLUEPRINT_CONTROL_PLANE_ALLOW_ROLLOUT_VISION_LABELING=true",
                 "BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND=python -c 'print(1)'",
                 f"PIPELINE_SYNC_TOKEN={secret_value}",
@@ -101,11 +103,12 @@ def test_live_pipeline_control_plane_loads_env_paths_and_redacts_values(
     )
     monkeypatch.chdir(tmp_path)
 
-    result = run_live_pipeline_control_plane(output_path=tmp_path / "env-control.json")
+    result = run_live_pipeline_control_plane()
 
     serialized = json.dumps(result)
     assert result["capture_root"] == str(capture_root.resolve())
     assert result["job_request_inbox"] == str(inbox_dir.resolve())
+    assert result["output_path"] == str(output_path.resolve())
     assert result["execution_config"]["allow_rollout_vision_labeling"] is True
     assert result["env_files"]["files"]
     assert "PIPELINE_SYNC_TOKEN" in (
@@ -114,6 +117,7 @@ def test_live_pipeline_control_plane_loads_env_paths_and_redacts_values(
     assert result["secrets_leaked"] is False
     assert secret_value not in serialized
     assert os.environ.get("PIPELINE_SYNC_TOKEN") != secret_value
+    assert output_path.is_file()
 
 
 def test_live_pipeline_control_plane_records_simulator_command_configuration(

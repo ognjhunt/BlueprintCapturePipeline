@@ -43,6 +43,7 @@ VISION_LABELING_COMMAND_ENV = "BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND"
 DELIVERY_COMMAND_ENV = "BLUEPRINT_PACKAGE_DELIVERY_UPLOAD_COMMAND"
 CONTROL_PLANE_AGENT_MODE_ENV = "BLUEPRINT_CONTROL_PLANE_AGENT_MODE"
 CONTROL_PLANE_ARENA_OPERATOR_MODE_ENV = "BLUEPRINT_CONTROL_PLANE_ARENA_OPERATOR_MODE"
+CONTROL_PLANE_OUTPUT_PATH_ENV = "BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH"
 CONTROL_PLANE_ALLOW_LIVE_AGENT_OPERATOR_ENV = "BLUEPRINT_CONTROL_PLANE_ALLOW_LIVE_AGENT_OPERATOR"
 CONTROL_PLANE_ALLOW_DIGITALOCEAN_READ_ENV = "BLUEPRINT_CONTROL_PLANE_ALLOW_DIGITALOCEAN_READ"
 CONTROL_PLANE_ALLOW_GPU_PROVISIONING_ENV = "BLUEPRINT_CONTROL_PLANE_ALLOW_GPU_PROVISIONING"
@@ -294,7 +295,8 @@ def run_live_pipeline_control_plane(
         package_path = Path(package_text).resolve() if package_text else None
         arena_results_text = _env_value(ARENA_RESULTS_DIR_ENV, arena_results_dir)
         arena_results_path = Path(arena_results_text).resolve() if arena_results_text else None
-        output = _output_path(capture_path, output_path)
+        output_text = _env_value(CONTROL_PLANE_OUTPUT_PATH_ENV, output_path)
+        output = _output_path(capture_path, output_text)
         secret_values = _secret_values()
 
         resolved_agent_mode = _string(agent_mode or os.getenv(CONTROL_PLANE_AGENT_MODE_ENV)) or "none"
