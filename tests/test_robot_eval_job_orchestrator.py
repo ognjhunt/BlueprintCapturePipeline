@@ -301,6 +301,11 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "simulator_service_request.json",
         "simulator_service_result.json",
         "policy_package_manifest.json",
+        "robot_pov_observation_manifest.json",
+        "robot_pov_observations.jsonl",
+        "policy_execution_manifest.json",
+        "policy_execution_trace.json",
+        "policy_execution_trace.jsonl",
         "training_request.json",
         "training_result.json",
         "evaluation_request.json",
@@ -310,6 +315,9 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "prediction_outcome_ledger.json",
         "calibration_report.json",
         "breakage_library.json",
+        "deployment_outcome_ledger.json",
+        "sim_vs_real_calibration_report.json",
+        "prediction_vs_actual_deployment_summary.json",
         "post_training_data_package_export_manifest.json",
         "proof_boundary.json",
         "job_run_manifest.json",
@@ -326,6 +334,9 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     evaluation = _read_json(job_dir / "evaluation_result.json")
     proof_boundary = _read_json(job_dir / "proof_boundary.json")
     trace = _read_json(job_dir / "normalized_attempt_trace.json")
+    robot_pov = _read_json(job_dir / "robot_pov_observation_manifest.json")
+    policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
+    deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
     data_package_export = _read_json(job_dir / "post_training_data_package_export_manifest.json")
 
     assert validation["status"] == "passed"
@@ -336,6 +347,12 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert simulator_result["simulator_execution_proven"] is False
     assert evaluation["status"] == "completed"
     assert trace["attempts"][0]["success"] is True
+    assert robot_pov["status"] == "completed"
+    assert robot_pov["observation_count"] == 1
+    assert policy_execution["status"] == "completed"
+    assert policy_execution["modality_results"]["high_level_skill_trace"]["attempt_count"] == 1
+    assert policy_execution["robot_policy_execution_proven"] is False
+    assert deployment["status"] == "blocked_missing_real_world_outcomes"
     assert run_manifest["state"] == "completed"
     assert run_manifest["scene_asset_preflight_status"] == "blocked"
     assert run_manifest["episode_spec_status"] == "compiled_review_required"
@@ -347,6 +364,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     )
     assert run_manifest["public_claim_upgrade_allowed"] is False
     assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["robot_policy_execution_proven"] is False
     assert proof_boundary["public_claim_upgrade_allowed"] is False
     assert proof_boundary["fixture_only_proof"] is True
     assert data_package_export["status"] == "export_ready_review_required"
@@ -354,7 +372,224 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert data_package_export["included_artifacts"]["normalized_attempt_trace"] == (
         "normalized_attempt_trace.json"
     )
+    assert data_package_export["included_artifacts"]["robot_pov_observation_manifest"] == (
+        "robot_pov_observation_manifest.json"
+    )
+    assert data_package_export["included_artifacts"]["policy_execution_trace"] == (
+        "policy_execution_trace.json"
+    )
     assert data_package_export["claim_boundary"]["robot_readiness_proven"] is False
+
+
+def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_POLICY_EXECUTION", "true")
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_inputs" / "actual_outcome_manifest.json",
+        {
+            "schema_version": "actual_outcome_manifest.v1",
+            "records": [
+                {
+                    "outcome_id": "pilot-outcome-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "policy_id": "policy-command",
+                    "actual_success": False,
+                    "failure_mode_ids": ["failure_collision_risk"],
+                    "cycle_time_seconds": 22.0,
+                    "intervention_count": 1,
+                    "tuning_hours": 3.5,
+                    "tuning_iterations": 2,
+                    "tuning_notes": ["slowed approach near bin"],
+                    "site_modifications": [
+                        {"modification": "moved cart 0.5m from approach path"}
+                    ],
+                    "site_modifications_helped": True,
+                    "evidence_refs": {"pilot_log": "file://pilot-log.json"},
+                }
+            ],
+        },
+    )
+    policy_script = tmp_path / "policy_adapter.py"
+    policy_script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "out = os.environ['BLUEPRINT_POLICY_EXECUTION_OUTPUT']",
+                "payload = {",
+                "  'attempts': [{",
+                "    'attempt_id': 'policy-command-attempt-1',",
+                "    'task_id': 'place_return_in_bin',",
+                "    'scenario_id': 'scenario_place_return_in_bin_mobile',",
+                "    'policy_id': 'policy-command',",
+                "    'status': 'completed',",
+                "    'success': True,",
+                "    'actions': [{'type': 'move_base', 'target': 'bin_approach'}],",
+                "    'metrics': {'policy_latency_ms': 42}",
+                "  }]",
+                "}",
+                "open(out, 'w', encoding='utf-8').write(json.dumps(payload))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, _full_job_request(capture_root))
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-policy-and-real-world",
+        provisioner="fixture_local",
+        simulator="fixture",
+        allow_policy_execution=True,
+        policy_execution_commands={
+            "policy_api_endpoint": f"{sys.executable} {policy_script}",
+        },
+    )
+
+    job_dir = Path(result["job_dir"])
+    policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
+    policy_trace = _read_json(job_dir / "policy_execution_trace.json")
+    proof_boundary = _read_json(job_dir / "proof_boundary.json")
+    deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
+    calibration = _read_json(job_dir / "sim_vs_real_calibration_report.json")
+    deployment_summary = _read_json(job_dir / "prediction_vs_actual_deployment_summary.json")
+    package = _read_json(job_dir / "post_training_data_package_export_manifest.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert policy_execution["robot_policy_execution_proven"] is True
+    assert policy_execution["modality_results"]["policy_api_endpoint"]["status"] == "completed"
+    assert policy_trace["attempt_count"] >= 1
+    assert proof_boundary["robot_policy_execution_proven"] is True
+    assert proof_boundary["real_world_outcome_proven"] is True
+
+    assert deployment["status"] == "completed"
+    assert deployment["real_world_outcome_proven"] is True
+    assert calibration["status"] == "completed"
+    assert calibration["sim_vs_real_calibration_score"] == 0.0
+    assert calibration["missed_failure_count"] == 1
+    assert calibration["site_modification_count"] == 1
+    assert deployment_summary["how_much_real_world_tuning_was_needed"] == {
+        "tuning_hours_total": 3.5,
+        "tuning_iterations_total": 2,
+        "records_with_tuning": 1,
+    }
+    assert deployment_summary["whether_site_modifications_helped"][0][
+        "site_modifications_helped"
+    ] is True
+    assert package["included_artifacts"]["sim_vs_real_calibration_report"] == (
+        "sim_vs_real_calibration_report.json"
+    )
+    assert package["included_artifacts"]["deployment_outcome_ledger"] == (
+        "deployment_outcome_ledger.json"
+    )
+    assert package["export_policy"]["policy_execution_trace_included"] is True
+    assert package["export_policy"]["sim_vs_real_calibration_included"] is True
+    assert run_manifest["robot_policy_execution_proven"] is True
+    assert run_manifest["real_world_outcome_proven"] is True
+    assert run_manifest["robot_readiness_proven"] is False
+
+
+def test_robot_eval_job_normalizes_command_backed_simulator_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    simulator_script = tmp_path / "pybullet_runner.py"
+    simulator_script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "out = os.environ['BLUEPRINT_SIMULATOR_OUTPUT']",
+                "payload = {",
+                "  'attempts': [{",
+                "    'attempt_id': 'pybullet-attempt-1',",
+                "    'task_id': 'place_return_in_bin',",
+                "    'scenario_id': 'scenario_place_return_in_bin_mobile',",
+                "    'policy_id': 'policy-command',",
+                "    'status': 'completed',",
+                "    'success': True,",
+                "    'metrics': {'cycle_time_seconds': 11.0, 'intervention_count': 0},",
+                "    'actions': [{'type': 'move_base', 'target': 'bin_approach'}]",
+                "  }]",
+                "}",
+                "open(out, 'w', encoding='utf-8').write(json.dumps(payload))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    request_path = tmp_path / "job-request.json"
+    request = _full_job_request(capture_root)
+    request["simulator_preference"] = "pybullet"
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-pybullet-command",
+        provisioner="fixture_local",
+        simulator="pybullet",
+        allow_simulator_execution=True,
+        allowed_simulators=["pybullet"],
+        simulator_commands={"pybullet": f"{sys.executable} {simulator_script}"},
+    )
+
+    job_dir = Path(result["job_dir"])
+    simulator_result = _read_json(job_dir / "simulator_service_result.json")
+    provider_adapter = _read_json(job_dir / "simulator_provider_adapter_manifest.json")
+    eval_result = _read_json(job_dir / "evaluation_result.json")
+    trace = _read_json(job_dir / "normalized_attempt_trace.json")
+    prediction = _read_json(job_dir / "prediction_outcome_ledger.json")
+    proof_boundary = _read_json(job_dir / "proof_boundary.json")
+    package = _read_json(job_dir / "post_training_data_package_export_manifest.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert result["status"] == "simulator_command_completed"
+    assert simulator_result["status"] == "completed"
+    assert simulator_result["simulator_execution_proven"] is True
+    assert simulator_result["artifact_paths"]["simulator_provider_adapter_manifest"] == (
+        "simulator_provider_adapter_manifest.json"
+    )
+    assert simulator_result["artifact_paths"]["normalized_attempt_trace"] == (
+        "normalized_attempt_trace.json"
+    )
+    assert provider_adapter["schema_version"] == (
+        "robot_eval_simulator_provider_adapter_manifest.v1"
+    )
+    assert provider_adapter["provider_profile"]["provider_family"] == "cpu_physics_engine"
+    assert provider_adapter["gates"] == {
+        "env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION": True,
+        "allow_simulator_execution_flag": True,
+        "simulator_allowlisted": True,
+        "command_configured": True,
+        "blockers": [],
+    }
+    assert provider_adapter["command_ref"]["configured"] is True
+    assert provider_adapter["command_ref"]["sha256"]
+    assert provider_adapter["normalization"]["simulator_output_ingested"] is True
+    assert eval_result["status"] == "completed"
+    assert trace["attempt_count"] == 1
+    assert trace["attempts"][0]["engine"] == "pybullet"
+    assert prediction["records"][0]["predicted_success"] is True
+    assert proof_boundary["simulator_execution_proven"] is True
+    assert proof_boundary["robot_readiness_proven"] is False
+    assert package["included_artifacts"]["simulator_command_artifacts_manifest"] == (
+        "simulator_command_artifacts_manifest.json"
+    )
+    assert package["included_artifacts"]["simulator_provider_adapter_manifest"] == (
+        "simulator_provider_adapter_manifest.json"
+    )
+    assert package["export_policy"]["simulator_provider_adapter_included"] is True
+    assert run_manifest["simulator_execution_proven"] is True
+    assert run_manifest["robot_readiness_proven"] is False
 
 
 def test_robot_eval_job_request_inbox_runs_webapp_job_request_automatically(
@@ -494,7 +729,9 @@ def test_robot_eval_job_missing_policy_evidence_writes_exact_blockers(
     _write_robot_eval_cards(capture_root)
     request = _full_job_request(capture_root)
     policy = dict(request["policy_package"])  # type: ignore[index]
-    policy.pop("teleop_demo")
+    policy["teleop_demo"] = {
+        "demo_artifact_uri": "gs://robot-team/demos/demo-1.json",
+    }
     policy["docker_container"] = {"image_ref": "registry.example/robot/policy:latest"}
     request["policy_package"] = policy
     request_path = tmp_path / "job-request.json"
@@ -520,10 +757,48 @@ def test_robot_eval_job_missing_policy_evidence_writes_exact_blockers(
     ]
     assert blocked["missing_inputs"] == [
         "policy_package.docker_container.digest",
-        "policy_package.teleop_demo",
+        "policy_package.teleop_demo.rights_privacy_attestation",
     ]
     assert policy_manifest["modalities"]["docker_container"]["status"] == "blocked"
     assert policy_manifest["modalities"]["teleop_demo"]["status"] == "blocked"
+
+
+def test_robot_eval_job_accepts_one_complete_policy_modality(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    request = _full_job_request(capture_root)
+    request["policy_package"] = {
+        "policy_api_endpoint": {
+            "endpoint_url": "https://robot-team.example/policy",
+            "observation_schema_ref": "schemas/obs-v1.json",
+            "action_schema_ref": "schemas/action-v1.json",
+        }
+    }
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, request)
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-single-modality-policy",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-single-modality-policy"
+    validation = _read_json(job_dir / "job_validation.json")
+    policy_manifest = _read_json(job_dir / "policy_package_manifest.json")
+    policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
+
+    assert "needs_robot_team_test_modality" not in validation["missing_evidence_statuses"]
+    assert "needs_docker_container_ref" not in validation["missing_evidence_statuses"]
+    assert policy_manifest["status"] == "review_required"
+    assert policy_manifest["selected_modalities"] == ["policy_api_endpoint"]
+    assert policy_manifest["modalities"]["docker_container"]["status"] == "not_selected"
+    assert policy_manifest["modalities"]["docker_container"]["owner_system_review_required"] is False
+    assert policy_execution["selected_modalities"] == ["policy_api_endpoint"]
 
 
 def test_robot_eval_job_real_provisioner_fails_closed_without_gates(
@@ -635,8 +910,28 @@ def test_command_simulator_blocks_without_env_gate(tmp_path: Path) -> None:
         / "job-command-missing-env"
         / "simulator_service_result.json"
     )
+    provider_adapter = _read_json(
+        capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "job-command-missing-env"
+        / "simulator_provider_adapter_manifest.json"
+    )
     assert result["status"] == "blocked"
     assert result["blockers"] == ["missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"]
+    assert result["artifact_paths"]["simulator_provider_adapter_manifest"] == (
+        "simulator_provider_adapter_manifest.json"
+    )
+    assert provider_adapter["status"] == "blocked"
+    assert provider_adapter["provider_profile"]["provider_family"] == "cpu_physics_engine"
+    assert provider_adapter["gates"] == {
+        "env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION": False,
+        "allow_simulator_execution_flag": True,
+        "simulator_allowlisted": True,
+        "command_configured": True,
+        "blockers": ["missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"],
+    }
+    assert provider_adapter["command_ref"]["configured"] is True
 
 
 def test_isaac_lab_arena_simulator_surfaces_packet_and_blocks_without_env_gate(

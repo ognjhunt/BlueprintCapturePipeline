@@ -2617,6 +2617,9 @@ def _requested_downstream_lanes(
             lanes.append("scene_memory")
     if "evaluation_prep" in explicit or "deeper_evaluation" in requested_outputs:
         lanes.append("evaluation_prep")
+    if requested_outputs.intersection({"robot_eval_dataset", "task_evaluation_run"}):
+        if "evaluation_prep" not in lanes:
+            lanes.append("evaluation_prep")
     return lanes
 
 

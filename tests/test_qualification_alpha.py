@@ -5,9 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
+from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, resolve_requested_lanes, run_capture_pipeline
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
+from blueprint_pipeline.qualification import _requested_downstream_lanes
 
 
 def _build_staged_capture(
@@ -109,6 +111,23 @@ def _build_staged_capture(
         gcs_root=tmp_path,
     )
     return capture_root, str(materialized["descriptor_uri"])
+
+
+def test_requested_downstream_lanes_include_evaluation_prep_for_robot_eval_outputs() -> None:
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "capture_source": "iphone",
+            "capture_tier": "tier1_iphone",
+            "raw_prefix_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw",
+            "frames_index_uri": "gs://bucket/scenes/scene-1/captures/capture-1/frames/index.jsonl",
+            "requested_outputs": ["qualification", "robot_eval_dataset", "task_evaluation_run"],
+        }
+    )
+
+    assert _requested_downstream_lanes(descriptor=descriptor) == ["evaluation_prep"]
 
 
 def test_materialization_does_not_fabricate_missing_upstream_ids(tmp_path: Path) -> None:

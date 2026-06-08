@@ -39,6 +39,10 @@ _LANE_ORDER = (
     "cosmos_single_capture_smoke",
 )
 _SUPPORTED_LANES = {*_CURRENT_PIPELINE_LANES, *_LEGACY_PIPELINE_LANES, "current", "all"}
+_LANE_ALIASES = {
+    "robot_eval_dataset": "evaluation_prep",
+    "task_evaluation_run": "simulation_automation",
+}
 _ANDROID_XR_VIDEO_ONLY_PROFILE = "android_xr_glasses"
 _ANDROID_XR_VIDEO_ONLY_MODALITY = "android_xr_video_only"
 
@@ -54,6 +58,7 @@ def _normalize_lane_value(raw: Optional[str]) -> Optional[str]:
     value = raw.strip().lower()
     if not value:
         return None
+    value = _LANE_ALIASES.get(value, value)
     if value not in _SUPPORTED_LANES:
         raise ValueError(f"Unsupported pipeline lane: {raw}")
     return value
@@ -159,6 +164,10 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
         return descriptor_requested_lanes
     if isinstance(raw_payload, Mapping) and _descriptor_is_native_default_candidate(raw_payload):
         return list(_CURRENT_PIPELINE_LANES)
+    if "task_evaluation_run" in normalized_outputs:
+        return list(_CURRENT_PIPELINE_LANES)
+    if "robot_eval_dataset" in normalized_outputs:
+        return ["qualification", "evaluation_prep"]
     if normalized_outputs & {
         "preview",
         "preview_simulation",

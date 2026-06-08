@@ -210,6 +210,57 @@ def test_resolve_requested_lanes_honors_explicit_descriptor_requested_lanes(tmp_
     ]
 
 
+def test_resolve_requested_lanes_accepts_capture_bridge_robot_eval_alias_lanes(tmp_path: Path) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "requested_outputs": ["robot_eval_dataset", "task_evaluation_run"],
+                "requested_lanes": [
+                    "evaluation_prep",
+                    "robot_eval_dataset",
+                    "task_evaluation_run",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == ["qualification", "evaluation_prep", "simulation_automation"]
+
+
+def test_resolve_requested_lanes_infers_current_lanes_from_robot_eval_outputs(tmp_path: Path) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "requested_outputs": ["robot_eval_dataset", "task_evaluation_run"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == ["qualification", "evaluation_prep", "simulation_automation"]
+
+
 def test_resolve_requested_lanes_demotes_bridge_default_scene_memory_pair(tmp_path: Path) -> None:
     descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
     descriptor_path.parent.mkdir(parents=True)

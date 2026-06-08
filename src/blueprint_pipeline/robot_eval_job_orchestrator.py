@@ -39,6 +39,13 @@ from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
 from .local_capture import resolve_local_capture_context
 from .post_training_data_package import build_post_training_data_package_export
+from .robot_eval_execution import (
+    build_deployment_validation_bundle,
+    build_policy_execution_bundle,
+    build_robot_pov_observation_bundle,
+    build_simulator_command_artifacts,
+    fingerprint_execution_artifacts,
+)
 from .robot_eval_dataset import build_real_site_robot_eval_dataset
 from .scene_asset_preflight import build_scene_asset_preflight
 from .simulation_automation import build_simulation_automation
@@ -53,6 +60,7 @@ GPU_PROVISIONING_REQUEST_SCHEMA_VERSION = "robot_eval_gpu_provisioning_request.v
 GPU_PROVISIONING_RESULT_SCHEMA_VERSION = "robot_eval_gpu_provisioning_result.v1"
 SIMULATOR_SERVICE_REQUEST_SCHEMA_VERSION = "robot_eval_simulator_service_request.v1"
 SIMULATOR_SERVICE_RESULT_SCHEMA_VERSION = "robot_eval_simulator_service_result.v1"
+SIMULATOR_PROVIDER_ADAPTER_SCHEMA_VERSION = "robot_eval_simulator_provider_adapter_manifest.v1"
 POLICY_PACKAGE_MANIFEST_SCHEMA_VERSION = "robot_eval_policy_package_manifest.v1"
 TRAINING_REQUEST_SCHEMA_VERSION = "robot_eval_training_request.v1"
 TRAINING_RESULT_SCHEMA_VERSION = "robot_eval_training_result.v1"
@@ -78,6 +86,51 @@ PROVISIONERS = (
 )
 SIMULATORS = ("fixture", "mujoco", "pybullet", "newton", "isaac_sim", "isaac_lab_arena")
 OPERATIONS = ("evaluate_only", "train_only", "train_then_evaluate")
+
+SIMULATOR_PROVIDER_PROFILES: Dict[str, Dict[str, Any]] = {
+    "fixture": {
+        "provider_family": "repo_local_fixture",
+        "execution_surface": "site_eval_director_artifacts",
+        "command_required": False,
+        "optional_dependencies": [],
+        "default_output_contract": "site_eval_director_normalized_artifacts",
+    },
+    "mujoco": {
+        "provider_family": "cpu_physics_engine",
+        "execution_surface": "gated_owner_command",
+        "command_required": True,
+        "optional_dependencies": ["mujoco"],
+        "default_output_contract": "robot_eval_simulator_command_output.v1",
+    },
+    "pybullet": {
+        "provider_family": "cpu_physics_engine",
+        "execution_surface": "gated_owner_command",
+        "command_required": True,
+        "optional_dependencies": ["pybullet"],
+        "default_output_contract": "robot_eval_simulator_command_output.v1",
+    },
+    "newton": {
+        "provider_family": "gpu_physics_engine",
+        "execution_surface": "gated_owner_command",
+        "command_required": True,
+        "optional_dependencies": ["newton"],
+        "default_output_contract": "robot_eval_simulator_command_output.v1",
+    },
+    "isaac_sim": {
+        "provider_family": "gpu_simulator",
+        "execution_surface": "gated_owner_command",
+        "command_required": True,
+        "optional_dependencies": ["isaac-sim"],
+        "default_output_contract": "robot_eval_simulator_command_output.v1",
+    },
+    "isaac_lab_arena": {
+        "provider_family": "isaac_lab_arena_batch_harness",
+        "execution_surface": "gated_owner_command_or_owner_results_ingest",
+        "command_required": True,
+        "optional_dependencies": ["isaac-sim", "isaac-lab"],
+        "default_output_contract": "robot_eval_simulator_command_output.v1",
+    },
+}
 
 REQUIRED_ROBOT_EVAL_INPUTS = {
     "robot_eval_site_card": "robot_eval_dataset/site_card.json",
@@ -467,7 +520,7 @@ def _validate_policy_modality(
     missing: List[str] = []
     status = "reference_present_requires_owner_system_review"
     if not payload:
-        return "blocked", [f"policy_package.{modality}"]
+        return "not_selected", []
     if modality == "policy_api_endpoint":
         endpoint = _string(_field(payload, "endpoint_url", "endpointUrl", "url"))
         if not (endpoint.startswith("https://") or endpoint.startswith("http://")):
@@ -513,27 +566,38 @@ def _policy_package_manifest(
     modalities: Dict[str, Dict[str, Any]] = {}
     missing_inputs: List[str] = []
     missing_statuses: List[str] = []
+    selected_modalities: List[str] = []
     for modality in POLICY_MODALITY_ORDER:
         payload = _modality_payload(policy_package, modality)
         status, missing = _validate_policy_modality(modality=modality, payload=payload)
+        selected = bool(payload)
+        if selected:
+            selected_modalities.append(modality)
         if missing:
             missing_inputs.extend(missing)
             missing_statuses.append(POLICY_MODALITY_STATUSES[modality])
         modalities[modality] = {
             "status": status,
+            "selected": selected,
             "missing_inputs": missing,
-            "missing_evidence_status": POLICY_MODALITY_STATUSES[modality],
+            "missing_evidence_status": (
+                POLICY_MODALITY_STATUSES[modality] if missing else None
+            ),
             "reference": dict(payload),
             "download_performed": False,
-            "owner_system_review_required": status != "blocked",
+            "owner_system_review_required": status not in {"blocked", "not_selected"},
             "claim_boundary": (
                 "reference_present_only_not_policy_execution_or_robot_readiness_proof"
             ),
         }
+    if not selected_modalities:
+        missing_inputs.append("policy_package.one_supported_modality")
+        missing_statuses.append("needs_robot_team_test_modality")
     manifest = {
         "schema_version": POLICY_PACKAGE_MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at,
         "status": "blocked" if missing_inputs else "review_required",
+        "selected_modalities": selected_modalities,
         "modalities": modalities,
         "missing_inputs": missing_inputs,
         "missing_evidence_statuses": missing_statuses,
@@ -821,14 +885,119 @@ def _blocked_simulator_result(
     }
 
 
+def _command_executable(command_text: str) -> str | None:
+    if not command_text:
+        return None
+    try:
+        command = shlex.split(command_text)
+    except ValueError:
+        return None
+    return command[0] if command else None
+
+
+def _write_simulator_provider_adapter_manifest(
+    *,
+    job_dir: Path,
+    simulator: str,
+    status: str,
+    blockers: Sequence[str],
+    allow_simulator_execution: bool,
+    env_allows_simulator_execution: bool,
+    allowed_simulators: Sequence[str],
+    command_text: str,
+    artifact_paths: Mapping[str, Any],
+    generated_at: str,
+    simulator_output_ingested: bool = False,
+    reason: str | None = None,
+) -> Dict[str, Any]:
+    profile = dict(SIMULATOR_PROVIDER_PROFILES.get(simulator, {}))
+    command_configured = bool(command_text)
+    manifest = {
+        "schema_version": SIMULATOR_PROVIDER_ADAPTER_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "simulator": simulator,
+        "status": status,
+        "reason": reason,
+        "provider_profile": profile,
+        "plugin_contract": {
+            "env": {
+                "BLUEPRINT_SIMULATOR_OUTPUT": "path where provider command writes JSON output",
+                "BLUEPRINT_CAPTURE_ROOT": "capture root used by the simulator adapter",
+                "BLUEPRINT_SIMULATOR_FRAMEWORK": "selected simulator framework id",
+            },
+            "accepted_output_shapes": [
+                "attempts[]",
+                "records[]",
+                "outcomes[]",
+                "single attempt object",
+            ],
+            "normalized_outputs": [
+                "normalized_attempt_trace.json",
+                "failure_labels.json",
+                "prediction_outcome_ledger.json",
+                "calibration_report.json",
+                "breakage_library.json",
+            ],
+        },
+        "gates": {
+            "env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION": env_allows_simulator_execution,
+            "allow_simulator_execution_flag": bool(allow_simulator_execution),
+            "simulator_allowlisted": simulator == "fixture" or simulator in set(allowed_simulators),
+            "command_configured": command_configured,
+            "blockers": list(blockers),
+        },
+        "command_ref": {
+            "configured": command_configured,
+            "sha256": sha256(command_text.encode("utf-8")).hexdigest()
+            if command_configured
+            else None,
+            "executable": _command_executable(command_text),
+        },
+        "normalization": {
+            "simulator_output_ingested": bool(simulator_output_ingested),
+            "artifact_paths": dict(artifact_paths),
+            "deterministic_manifests_are_proof_source": True,
+        },
+        "owner_system_review_required": simulator != "fixture",
+        "simulator_execution_proven": status == "completed" and simulator != "fixture",
+        "robot_readiness_proven": False,
+        "public_claim_upgrade_allowed": False,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    write_json(job_dir / "simulator_provider_adapter_manifest.json", manifest)
+    return manifest
+
+
+def _attach_simulator_provider_manifest(result: Mapping[str, Any]) -> Dict[str, Any]:
+    artifact_paths = {
+        **_mapping(result.get("artifact_paths")),
+        "simulator_provider_adapter_manifest": "simulator_provider_adapter_manifest.json",
+    }
+    return {
+        **dict(result),
+        "provider_adapter_manifest_path": "simulator_provider_adapter_manifest.json",
+        "artifact_paths": artifact_paths,
+    }
+
+
 def _run_command_simulator(
     *,
     simulator: str,
     command_text: str,
     timeout_seconds: int,
     generated_at: str,
+    output_path: Path | None = None,
+    capture_root: Path | None = None,
 ) -> Dict[str, Any]:
     command = shlex.split(command_text)
+    if output_path is not None:
+        ensure_dir(output_path.parent)
+    env = os.environ.copy()
+    if output_path is not None:
+        env["BLUEPRINT_SIMULATOR_OUTPUT"] = str(output_path)
+    if capture_root is not None:
+        env["BLUEPRINT_CAPTURE_ROOT"] = str(capture_root)
+    env["BLUEPRINT_SIMULATOR_FRAMEWORK"] = simulator
     try:
         completed = subprocess.run(
             command,
@@ -836,6 +1005,7 @@ def _run_command_simulator(
             text=True,
             timeout=timeout_seconds,
             check=False,
+            env=env,
         )
     except FileNotFoundError:
         return _blocked_simulator_result(
@@ -859,12 +1029,24 @@ def _run_command_simulator(
             "stderr": exc.stderr or "",
             "exit_code": None,
             "artifact_paths": {},
+            "simulator_output_path": str(output_path) if output_path else None,
             "simulators_run": True,
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
     status = "completed" if completed.returncode == 0 else "failed"
+    simulator_output_payload = None
+    if output_path is not None and output_path.is_file():
+        try:
+            simulator_output_payload = read_json_any(output_path)
+        except (OSError, json.JSONDecodeError, ValueError):
+            simulator_output_payload = None
+    if not simulator_output_payload and completed.stdout.strip().startswith(("{", "[")):
+        try:
+            simulator_output_payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            simulator_output_payload = None
     return {
         "schema_version": SIMULATOR_SERVICE_RESULT_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -878,7 +1060,11 @@ def _run_command_simulator(
         "stdout": completed.stdout,
         "stderr": completed.stderr,
         "exit_code": completed.returncode,
-        "artifact_paths": {},
+        "artifact_paths": {
+            "simulator_output": str(output_path) if output_path and output_path.is_file() else None
+        },
+        "simulator_output_path": str(output_path) if output_path else None,
+        "simulator_output_payload": simulator_output_payload,
         "simulators_run": True,
         "simulator_execution_proven": status == "completed",
         "robot_policy_execution_proven": False,
@@ -1028,12 +1214,25 @@ def _run_simulator(
             generated_at=generated_at,
             reason="job_validation_blocked",
         )
+        _write_simulator_provider_adapter_manifest(
+            job_dir=job_dir,
+            simulator=simulator,
+            status=_string(result.get("status")),
+            blockers=_string_list(result.get("blockers")),
+            allow_simulator_execution=allow_simulator_execution,
+            env_allows_simulator_execution=_env_truthy("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"),
+            allowed_simulators=allowed_simulators,
+            command_text=_string(simulator_commands.get(simulator)),
+            artifact_paths=_mapping(result.get("artifact_paths")),
+            generated_at=generated_at,
+            reason=_string(result.get("reason")) or None,
+        )
         copied = _copy_site_eval_artifacts(
             pipeline_dir=pipeline_dir,
             job_dir=job_dir,
             generated_at=generated_at,
         )
-        return result, copied, []
+        return _attach_simulator_provider_manifest(result), copied, []
     if provisioning_result.get("status") == "blocked":
         result = _blocked_simulator_result(
             simulator=simulator,
@@ -1041,19 +1240,47 @@ def _run_simulator(
             generated_at=generated_at,
             reason="gpu_provisioning_blocked",
         )
+        _write_simulator_provider_adapter_manifest(
+            job_dir=job_dir,
+            simulator=simulator,
+            status=_string(result.get("status")),
+            blockers=_string_list(result.get("blockers")),
+            allow_simulator_execution=allow_simulator_execution,
+            env_allows_simulator_execution=_env_truthy("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"),
+            allowed_simulators=allowed_simulators,
+            command_text=_string(simulator_commands.get(simulator)),
+            artifact_paths=_mapping(result.get("artifact_paths")),
+            generated_at=generated_at,
+            reason=_string(result.get("reason")) or None,
+        )
         copied = _copy_site_eval_artifacts(
             pipeline_dir=pipeline_dir,
             job_dir=job_dir,
             generated_at=generated_at,
         )
-        return result, copied, ["gpu_provisioning_blocked"]
+        return _attach_simulator_provider_manifest(result), copied, ["gpu_provisioning_blocked"]
     if simulator == "fixture":
-        return _run_fixture_simulator(
+        result, copied, blockers = _run_fixture_simulator(
             capture_root=capture_root,
             pipeline_dir=pipeline_dir,
             job_dir=job_dir,
             generated_at=generated_at,
         )
+        _write_simulator_provider_adapter_manifest(
+            job_dir=job_dir,
+            simulator=simulator,
+            status=_string(result.get("status")),
+            blockers=_string_list(result.get("blockers")),
+            allow_simulator_execution=allow_simulator_execution,
+            env_allows_simulator_execution=False,
+            allowed_simulators=allowed_simulators,
+            command_text="",
+            artifact_paths=_mapping(result.get("artifact_paths")),
+            generated_at=generated_at,
+            simulator_output_ingested=bool(copied.get("normalized_attempt_trace")),
+            reason=_string(result.get("reason")) or None,
+        )
+        return _attach_simulator_provider_manifest(result), copied, blockers
     env_allowed = _env_truthy("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION")
     allowed = set(allowed_simulators)
     command_text = _string(simulator_commands.get(simulator))
@@ -1073,17 +1300,69 @@ def _run_simulator(
             generated_at=generated_at,
         )
     else:
+        simulator_output_path = job_dir / f"{simulator}_simulator_output.json"
         result = _run_command_simulator(
             simulator=simulator,
             command_text=command_text,
             timeout_seconds=timeout_seconds,
             generated_at=generated_at,
+            output_path=simulator_output_path,
+            capture_root=capture_root,
         )
-    copied = _copy_site_eval_artifacts(
-        pipeline_dir=pipeline_dir,
+    simulator_output_payload = result.pop("simulator_output_payload", None)
+    if result.get("status") == "completed" and simulator_output_payload is not None:
+        copied = build_simulator_command_artifacts(
+            job_dir=job_dir,
+            simulator=simulator,
+            simulator_output=simulator_output_payload,
+            generated_at=generated_at,
+        )
+        copied = {
+            key: value
+            for key, value in copied.items()
+            if key
+            in {
+                "normalized_attempt_trace",
+                "failure_labels",
+                "prediction_outcome_ledger",
+                "calibration_report",
+                "breakage_library",
+            }
+        }
+        result = {
+            **dict(result),
+            "artifact_paths": {
+                **_mapping(result.get("artifact_paths")),
+                "normalized_attempt_trace": "normalized_attempt_trace.json",
+                "failure_labels": "failure_labels.json",
+                "prediction_outcome_ledger": "prediction_outcome_ledger.json",
+                "calibration_report": "calibration_report.json",
+                "breakage_library": "breakage_library.json",
+            },
+        }
+    else:
+        copied = _copy_site_eval_artifacts(
+            pipeline_dir=pipeline_dir,
+            job_dir=job_dir,
+            generated_at=generated_at,
+        )
+    _write_simulator_provider_adapter_manifest(
         job_dir=job_dir,
+        simulator=simulator,
+        status=_string(result.get("status")),
+        blockers=_string_list(result.get("blockers")),
+        allow_simulator_execution=allow_simulator_execution,
+        env_allows_simulator_execution=env_allowed,
+        allowed_simulators=allowed_simulators,
+        command_text=command_text,
+        artifact_paths=_mapping(result.get("artifact_paths")),
         generated_at=generated_at,
+        simulator_output_ingested=(
+            result.get("status") == "completed" and simulator_output_payload is not None
+        ),
+        reason=_string(result.get("reason")) or None,
     )
+    result = _attach_simulator_provider_manifest(result)
     return result, copied, ["simulator_service_blocked"] if result.get("status") == "blocked" else []
 
 
@@ -1266,10 +1545,27 @@ def _proof_boundary(
     simulator: str,
     simulator_result: Mapping[str, Any],
     training_result: Mapping[str, Any],
+    policy_execution_manifest: Mapping[str, Any] | None = None,
+    deployment_outcome_ledger: Mapping[str, Any] | None = None,
     generated_at: str,
 ) -> Dict[str, Any]:
     training_completed = bool(training_result.get("training_completed"))
     simulator_proven = bool(simulator_result.get("simulator_execution_proven")) and simulator != "fixture"
+    policy_execution_proven = bool(
+        _mapping(policy_execution_manifest).get("robot_policy_execution_proven")
+    )
+    real_world_outcome_proven = bool(
+        _mapping(deployment_outcome_ledger).get("real_world_outcome_proven")
+    )
+    remaining = list(CLAIM_BOUNDARY["proof_upgrade_requires"])
+    if policy_execution_proven:
+        remaining = [
+            item
+            for item in remaining
+            if item != "owner-system robot policy, teleoperation, or action logs"
+        ]
+    if real_world_outcome_proven:
+        remaining = [item for item in remaining if item != "actual outcome records"]
     return {
         "schema_version": PROOF_BOUNDARY_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1280,17 +1576,19 @@ def _proof_boundary(
         "gpu_training_run": bool(training_result.get("gpu_training_run")),
         "simulator_execution_proven": simulator_proven,
         "robot_readiness_proven": False,
-        "robot_policy_execution_proven": False,
+        "robot_policy_execution_proven": policy_execution_proven,
+        "real_world_outcome_proven": real_world_outcome_proven,
         "physics_contact_validated": False,
         "safety_validated": False,
         "training_completed": training_completed,
         "public_claim_upgrade_allowed": False,
-        "remaining_required_evidence": list(CLAIM_BOUNDARY["proof_upgrade_requires"]),
+        "remaining_required_evidence": remaining,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "simulators_run": bool(simulator_result.get("simulators_run")),
             "gpu_training_run": bool(training_result.get("gpu_training_run")),
             "simulator_execution_proven": simulator_proven,
+            "robot_policy_execution_proven": policy_execution_proven,
             "training_completed": training_completed,
         },
     }
@@ -1383,7 +1681,14 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "gpu_provisioning_result.json",
         "simulator_service_request.json",
         "simulator_service_result.json",
+        "simulator_provider_adapter_manifest.json",
+        "simulator_command_artifacts_manifest.json",
         "policy_package_manifest.json",
+        "robot_pov_observation_manifest.json",
+        "robot_pov_observations.jsonl",
+        "policy_execution_manifest.json",
+        "policy_execution_trace.json",
+        "policy_execution_trace.jsonl",
         "training_request.json",
         "training_result.json",
         "evaluation_request.json",
@@ -1405,6 +1710,9 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "prediction_outcome_ledger.json",
         "calibration_report.json",
         "breakage_library.json",
+        "deployment_outcome_ledger.json",
+        "sim_vs_real_calibration_report.json",
+        "prediction_vs_actual_deployment_summary.json",
         "arena_rerun_plan.json",
         "arena_rerun_lineage.json",
         "customer_handoff_report.json",
@@ -1443,6 +1751,8 @@ def build_robot_eval_job(
     allow_cpu_preflight_render: bool = False,
     allow_training: bool = False,
     training_command: str | None = None,
+    allow_policy_execution: bool = False,
+    policy_execution_commands: Mapping[str, str] | None = None,
     timeout_seconds: int = 120,
     budget_usd: float | None = None,
     arena_results_dir: str | Path | None = None,
@@ -1508,6 +1818,23 @@ def build_robot_eval_job(
         pipeline_dir=pipeline_dir,
     )
     _write_job_json(job_dir, "job_validation.json", validation)
+    robot_pov_manifest = build_robot_pov_observation_bundle(
+        capture_root=context.capture_root,
+        job_dir=job_dir,
+        job_request=request,
+        generated_at=generated_at,
+    )
+    policy_execution = build_policy_execution_bundle(
+        capture_root=context.capture_root,
+        job_dir=job_dir,
+        job_request=request,
+        observation_manifest=robot_pov_manifest,
+        allow_policy_execution=allow_policy_execution and validation.get("status") != "blocked",
+        allow_reference_replay=validation.get("status") != "blocked",
+        policy_execution_commands=policy_execution_commands or {},
+        timeout_seconds=timeout_seconds,
+        generated_at=generated_at,
+    )
 
     plan_context = {
         "repo_root": str(Path(__file__).resolve().parents[2]),
@@ -1521,6 +1848,9 @@ def build_robot_eval_job(
         "episode_specs": episode_specs,
         "cpu_preflight": cpu_preflight,
         "simulation_automation": simulation_automation,
+        "robot_pov_observation_manifest": robot_pov_manifest,
+        "policy_execution_manifest": _mapping(policy_execution.get("manifest")),
+        "policy_execution_trace": _mapping(policy_execution.get("trace")),
     }
     agent_plan = _agent_plan(
         adapter=agent_adapter,
@@ -1632,6 +1962,14 @@ def build_robot_eval_job(
             simulator_blockers = []
             _write_job_json(job_dir, "simulator_service_result.json", sim_result)
 
+    robot_pov_manifest = build_robot_pov_observation_bundle(
+        capture_root=context.capture_root,
+        job_dir=job_dir,
+        job_request=request,
+        generated_at=generated_at,
+        attempt_trace=_mapping(copied_artifacts.get("normalized_attempt_trace")),
+    )
+
     training_req = _training_request(request=request, generated_at=generated_at)
     _write_job_json(job_dir, "training_request.json", training_req)
     training_res = _training_result(
@@ -1656,11 +1994,24 @@ def build_robot_eval_job(
         generated_at=generated_at,
     )
     _write_job_json(job_dir, "evaluation_result.json", eval_result)
+    prediction_ledger = _mapping(copied_artifacts.get("prediction_outcome_ledger"))
+    if not prediction_ledger:
+        prediction_ledger = _read_optional_mapping(job_dir / "prediction_outcome_ledger.json")
+    deployment_validation = build_deployment_validation_bundle(
+        capture_root=context.capture_root,
+        job_dir=job_dir,
+        job_request=request,
+        prediction_ledger=prediction_ledger,
+        attempt_trace=_mapping(copied_artifacts.get("normalized_attempt_trace")),
+        generated_at=generated_at,
+    )
 
     proof_boundary = _proof_boundary(
         simulator=simulator,
         simulator_result=sim_result,
         training_result=training_res,
+        policy_execution_manifest=_mapping(policy_execution.get("manifest")),
+        deployment_outcome_ledger=_mapping(deployment_validation.get("ledger")),
         generated_at=generated_at,
     )
     _write_job_json(job_dir, "proof_boundary.json", proof_boundary)
@@ -1675,6 +2026,12 @@ def build_robot_eval_job(
         "job_validation_status": validation.get("status"),
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
+        "robot_pov_status": robot_pov_manifest.get("status"),
+        "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
+        "deployment_outcome_status": _mapping(deployment_validation.get("ledger")).get("status"),
+        "sim_vs_real_calibration_status": _mapping(
+            deployment_validation.get("calibration_report")
+        ).get("status"),
         "training_status": training_res.get("status"),
         "evaluation_status": eval_result.get("status"),
     }
@@ -1733,9 +2090,15 @@ def build_robot_eval_job(
         "validation_status": validation.get("status"),
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
+        "robot_pov_observation_status": robot_pov_manifest.get("status"),
+        "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "arena_result_ingest_status": _mapping(arena_ingest.get("run_manifest")).get("status")
         if arena_ingest
         else None,
+        "deployment_outcome_status": _mapping(deployment_validation.get("ledger")).get("status"),
+        "sim_vs_real_calibration_status": _mapping(
+            deployment_validation.get("calibration_report")
+        ).get("status"),
         "training_status": training_res.get("status"),
         "evaluation_status": eval_result.get("status"),
         "post_training_data_package_export_status": data_package_export.get("status"),
@@ -1782,6 +2145,16 @@ def build_robot_eval_job(
             "post_training_data_package_export_manifest": (
                 "post_training_data_package_export_manifest.json"
             ),
+            "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
+            "robot_pov_observations": "robot_pov_observations.jsonl",
+            "policy_execution_manifest": "policy_execution_manifest.json",
+            "policy_execution_trace": "policy_execution_trace.json",
+            "policy_execution_trace_jsonl": "policy_execution_trace.jsonl",
+            "deployment_outcome_ledger": "deployment_outcome_ledger.json",
+            "sim_vs_real_calibration_report": "sim_vs_real_calibration_report.json",
+            "prediction_vs_actual_deployment_summary": (
+                "prediction_vs_actual_deployment_summary.json"
+            ),
             "arena_eval_schedule": "arena_eval_schedule.json",
             "arena_result_ingest_ledger": "arena_result_ingest_ledger.json",
             "arena_eval_metrics": "arena_eval_metrics.json",
@@ -1806,6 +2179,10 @@ def build_robot_eval_job(
         "payments_touched": False,
         "deployments_performed": False,
         "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
+        "robot_policy_execution_proven": bool(
+            proof_boundary.get("robot_policy_execution_proven")
+        ),
+        "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -1816,8 +2193,16 @@ def build_robot_eval_job(
             "validation": validation,
             "gpu_result": gpu_result,
             "sim_result": sim_result,
+            "robot_pov_manifest": robot_pov_manifest,
+            "policy_execution": _mapping(policy_execution.get("manifest")),
+            "deployment_validation": _mapping(deployment_validation.get("calibration_report")),
             "training_result": training_res,
             "evaluation_result": eval_result,
+            "execution_fingerprint": fingerprint_execution_artifacts(
+                robot_pov_manifest,
+                _mapping(policy_execution.get("manifest")),
+                _mapping(deployment_validation.get("calibration_report")),
+            ),
         }
     )
     _write_job_json(job_dir, "job_run_manifest.json", run_manifest)
@@ -1863,6 +2248,8 @@ def run_robot_eval_job_request_inbox(
     allow_cpu_preflight_render: bool = False,
     allow_training: bool = False,
     training_command: str | None = None,
+    allow_policy_execution: bool = False,
+    policy_execution_commands: Mapping[str, str] | None = None,
     timeout_seconds: int = 120,
     budget_usd: float | None = None,
     arena_results_dir: str | Path | None = None,
@@ -1913,6 +2300,8 @@ def run_robot_eval_job_request_inbox(
             allow_cpu_preflight_render=allow_cpu_preflight_render,
             allow_training=allow_training,
             training_command=training_command,
+            allow_policy_execution=allow_policy_execution,
+            policy_execution_commands=policy_execution_commands or {},
             timeout_seconds=timeout_seconds,
             budget_usd=budget_usd,
             arena_results_dir=arena_results_dir,
@@ -1965,6 +2354,20 @@ def _parse_simulator_commands(values: Sequence[str] | None) -> Dict[str, str]:
                 "<mujoco|pybullet|newton|isaac_sim|isaac_lab_arena>=<command>"
             )
         commands[framework] = command.strip()
+    return commands
+
+
+def _parse_policy_execution_commands(values: Sequence[str] | None) -> Dict[str, str]:
+    commands: Dict[str, str] = {}
+    for value in values or []:
+        modality, sep, command = value.partition("=")
+        if not sep or modality not in POLICY_MODALITY_ORDER or not command.strip():
+            raise ValueError(
+                "--policy-execution-command must be formatted as "
+                "<policy_api_endpoint|docker_container|recorded_action_trace|"
+                "high_level_skill_trace|teleop_demo|sim_controller_plugin>=<command>"
+            )
+        commands[modality] = command.strip()
     return commands
 
 
@@ -2048,6 +2451,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Permit command-based Cosmos training only with matching environment approval",
     )
     parser.add_argument("--training-command", default=None)
+    parser.add_argument(
+        "--allow-policy-execution",
+        action="store_true",
+        help="Permit gated policy API/container/command execution with matching env approval",
+    )
+    parser.add_argument(
+        "--policy-execution-command",
+        action="append",
+        default=[],
+        help="Explicit policy adapter command as <modality>=<command>",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--budget-usd", type=float, default=None)
     parser.add_argument(
@@ -2082,6 +2496,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         simulator_commands = _parse_simulator_commands(args.simulator_command)
+        policy_execution_commands = _parse_policy_execution_commands(
+            args.policy_execution_command
+        )
         if args.job_request_inbox:
             result = run_robot_eval_job_request_inbox(
                 capture_root=args.capture_root,
@@ -2102,6 +2519,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 allow_cpu_preflight_render=args.allow_cpu_preflight_render,
                 allow_training=args.allow_training,
                 training_command=args.training_command,
+                allow_policy_execution=args.allow_policy_execution,
+                policy_execution_commands=policy_execution_commands,
                 timeout_seconds=args.timeout_seconds,
                 budget_usd=args.budget_usd,
                 arena_results_dir=args.arena_results_dir,
@@ -2146,6 +2565,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             allow_cpu_preflight_render=args.allow_cpu_preflight_render,
             allow_training=args.allow_training,
             training_command=args.training_command,
+            allow_policy_execution=args.allow_policy_execution,
+            policy_execution_commands=policy_execution_commands,
             timeout_seconds=args.timeout_seconds,
             budget_usd=args.budget_usd,
             arena_results_dir=args.arena_results_dir,

@@ -391,6 +391,27 @@ def test_assess_geometry_scale_respects_metric_policy() -> None:
     assert assess_geometry_scale(descriptor)["status"] == "metric_trusted"
 
 
+def test_capture_descriptor_accepts_robot_eval_alias_requested_lanes() -> None:
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "capture_source": "iphone",
+            "capture_tier": "tier1_iphone",
+            "raw_prefix_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw",
+            "frames_index_uri": "gs://bucket/scenes/scene-1/captures/capture-1/frames/index.jsonl",
+            "requested_lanes": ["robot_eval_dataset", "task_evaluation_run"],
+        }
+    )
+
+    assert descriptor.requested_lanes == [
+        "qualification",
+        "evaluation_prep",
+        "simulation_automation",
+    ]
+
+
 def test_materialization_preserves_android_video_only_capture_source(tmp_path: Path) -> None:
     capture_root = _build_staged_capture(
         tmp_path,
@@ -479,6 +500,26 @@ def test_materialization_maps_preview_simulation_to_current_requested_lanes(tmp_
         manifest_overrides={"requested_outputs": ["preview_simulation"]},
     )
 
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    assert descriptor["requested_lanes"] == [
+        "qualification",
+        "evaluation_prep",
+        "simulation_automation",
+    ]
+
+
+def test_materialization_maps_robot_eval_outputs_to_current_requested_lanes(tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={"requested_outputs": ["robot_eval_dataset"]},
+    )
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    assert descriptor["requested_lanes"] == ["qualification", "evaluation_prep"]
+
+    capture_root = _build_staged_capture(
+        tmp_path,
+        manifest_overrides={"requested_outputs": ["task_evaluation_run"]},
+    )
     descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
     assert descriptor["requested_lanes"] == [
         "qualification",

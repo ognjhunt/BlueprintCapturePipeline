@@ -29,6 +29,10 @@ _ALLOWED_REQUESTED_LANES = {
     "synthesis_coverage_validation",
 }
 _CURRENT_REQUESTED_LANES = ("qualification", "evaluation_prep", "simulation_automation")
+_REQUESTED_LANE_ALIASES = {
+    "robot_eval_dataset": "evaluation_prep",
+    "task_evaluation_run": "simulation_automation",
+}
 _REQUESTED_LANE_ORDER = (
     "qualification",
     "scene_memory",
@@ -200,6 +204,7 @@ def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
         lowered = value.strip().lower()
         if not lowered:
             continue
+        lowered = _REQUESTED_LANE_ALIASES.get(lowered, lowered)
         if lowered in {"all", "current"}:
             for lane in _CURRENT_REQUESTED_LANES:
                 if lane not in normalized:

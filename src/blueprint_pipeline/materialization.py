@@ -996,23 +996,27 @@ def _default_requested_lanes(
         return current_default_lanes if native_default_candidate else ["qualification"]
 
     lanes: List[str] = []
+
+    def append_lanes(values: List[str]) -> None:
+        for lane in values:
+            if lane not in lanes:
+                lanes.append(lane)
+
     for output in requested_outputs:
         lowered = str(output).strip().lower()
         if lowered == "qualification":
             if "qualification" not in lanes:
                 lanes.append("qualification")
         elif lowered in {"preview", "preview_simulation", "managed_tuning", "data_licensing"}:
-            for lane in current_default_lanes:
-                if lane not in lanes:
-                    lanes.append(lane)
+            append_lanes(current_default_lanes)
+        elif lowered == "robot_eval_dataset":
+            append_lanes(["qualification", "evaluation_prep"])
+        elif lowered == "task_evaluation_run":
+            append_lanes(current_default_lanes)
         elif lowered == "scene_memory":
-            for lane in legacy_scene_memory_lanes:
-                if lane not in lanes:
-                    lanes.append(lane)
+            append_lanes(legacy_scene_memory_lanes)
         elif lowered in {"deeper_evaluation", "evaluation_prep"}:
-            for lane in current_default_lanes:
-                if lane not in lanes:
-                    lanes.append(lane)
+            append_lanes(current_default_lanes)
         elif lowered == "review_intake":
             if "qualification" not in lanes:
                 lanes.append("qualification")

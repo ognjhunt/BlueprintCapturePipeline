@@ -184,9 +184,36 @@ def _dispatch_payload(payload: Dict[str, Any], *, mode: Optional[str] = None) ->
                 "SWAP_TRIGGER_DISPATCH_MODE=direct is blocked by default. "
                 "Set SWAP_TRIGGER_ALLOW_DIRECT=true for local/dev only."
             )
-        run_capture_pipeline(descriptor_gcs_uri=str(payload["descriptor_gcs_uri"]))
+        descriptor_uri = str(
+            payload.get("descriptor_gcs_uri") or payload.get("capture_descriptor_uri") or ""
+        ).strip()
+        if not descriptor_uri:
+            raise RuntimeError("Dispatch payload missing descriptor_gcs_uri")
+        run_capture_pipeline(**_pipeline_kwargs_from_payload(payload, descriptor_uri=descriptor_uri))
         return "direct:completed"
     raise RuntimeError(f"Unsupported SWAP_TRIGGER_DISPATCH_MODE: {dispatch_mode}")
+
+
+def _payload_requested_lanes(payload: Dict[str, Any]) -> Optional[list[str]]:
+    raw = payload.get("requested_lanes") or payload.get("requestedLanes")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        values = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        values = [str(value) for value in raw]
+    else:
+        values = [str(raw)]
+    requested_lanes = [value.strip() for value in values if value.strip()]
+    return requested_lanes or None
+
+
+def _pipeline_kwargs_from_payload(payload: Dict[str, Any], *, descriptor_uri: str) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {"descriptor_gcs_uri": descriptor_uri}
+    requested_lanes = _payload_requested_lanes(payload)
+    if requested_lanes is not None:
+        kwargs["requested_lanes"] = requested_lanes
+    return kwargs
 
 
 def _descriptor_uri_for_capture(*, bucket: str, scene_id: str, capture_id: str) -> str:
@@ -265,7 +292,9 @@ def _launch_cloud_run_job(payload: Dict[str, Any]) -> str:
 
 
 def _run_pipeline_inline(payload: Dict[str, Any]) -> str:
-    descriptor_uri = str(payload.get("descriptor_gcs_uri") or "").strip()
+    descriptor_uri = str(
+        payload.get("descriptor_gcs_uri") or payload.get("capture_descriptor_uri") or ""
+    ).strip()
     bucket = str(payload.get("bucket") or "").strip()
     scene_id = str(payload.get("scene_id") or "").strip()
     capture_id = str(payload.get("capture_id") or "").strip()
@@ -290,7 +319,7 @@ def _run_pipeline_inline(payload: Dict[str, Any]) -> str:
         descriptor_uri = str(materialized["descriptor_uri"])
     if not descriptor_uri:
         raise RuntimeError("Dispatch payload missing descriptor_gcs_uri")
-    run_capture_pipeline(descriptor_gcs_uri=descriptor_uri)
+    run_capture_pipeline(**_pipeline_kwargs_from_payload(payload, descriptor_uri=descriptor_uri))
     return "inline:completed"
 
 
@@ -396,7 +425,9 @@ def on_swap_dispatch(event: Dict[str, Any], context: Any) -> None:  # noqa: ARG0
 
     raw = base64.b64decode(data_b64)
     payload = json.loads(raw.decode("utf-8"))
-    descriptor_uri = str(payload.get("descriptor_gcs_uri") or "").strip()
+    descriptor_uri = str(
+        payload.get("descriptor_gcs_uri") or payload.get("capture_descriptor_uri") or ""
+    ).strip()
     logger.info("Dispatch worker executing payload for descriptor=%s", descriptor_uri or "<materialize-first>")
     execution_result = _execute_pipeline_payload(payload)
     logger.info("Dispatch worker result: %s", execution_result)
@@ -409,7 +440,10 @@ def on_swap_dispatch_http(request: Any):  # type: ignore[no-untyped-def]
     if not isinstance(payload, dict):
         return ("Invalid payload", 400)
 
-    if not str(payload.get("descriptor_gcs_uri") or "").strip() and not (
+    descriptor_uri = str(
+        payload.get("descriptor_gcs_uri") or payload.get("capture_descriptor_uri") or ""
+    ).strip()
+    if not descriptor_uri and not (
         str(payload.get("bucket") or "").strip()
         and str(payload.get("scene_id") or "").strip()
         and str(payload.get("capture_id") or "").strip()
