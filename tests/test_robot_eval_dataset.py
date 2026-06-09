@@ -298,10 +298,18 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert task_cards["task_card_count"] == 1
     assert task_cards["cards"][0]["ontology_task_id"] == "place_object_into_bin"
     assert task_cards["cards"][0]["required_metrics"] == [
-        "cycle_time_seconds",
-        "placement_accuracy",
+        "success_rate",
+        "cycle_time",
         "intervention_rate",
+        "unsafe_proximity",
+        "collision_risk",
+        "object_drop",
+        "wrong_object",
+        "timeout",
         "recovery_success",
+        "world_model_uncertainty",
+        "sim_vs_real_calibration_score",
+        "placement_accuracy",
     ]
     assert scenario_cards["scenario_card_count"] == 1
     assert scenario_cards["cards"][0]["observed_vs_inferred_labels"]["variation"] == (

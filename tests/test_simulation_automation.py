@@ -159,7 +159,20 @@ def _write_robot_eval_cards(capture_root: Path) -> None:
                     "task_id": "place_return_in_bin",
                     "task_statement": "Place the return item in the labeled bin",
                     "task_category": "pick_place",
-                    "required_metrics": ["cycle_time_seconds", "placement_accuracy"],
+                    "required_metrics": [
+                        "success_rate",
+                        "cycle_time",
+                        "intervention_rate",
+                        "unsafe_proximity",
+                        "collision_risk",
+                        "object_drop",
+                        "wrong_object",
+                        "timeout",
+                        "recovery_success",
+                        "world_model_uncertainty",
+                        "sim_vs_real_calibration_score",
+                        "placement_accuracy",
+                    ],
                 }
             ],
         },
@@ -202,6 +215,39 @@ def _write_robot_eval_cards(capture_root: Path) -> None:
             "schema_version": "real_site_robot_eval_proof_boundaries.v0.1",
             "simulator_execution_proven": False,
             "robot_readiness_proven": False,
+        },
+    )
+
+
+def _write_scenario_family_library(capture_root: Path) -> None:
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_dataset" / "scenario_family_library.json",
+        {
+            "schema_version": "scenario_family_library.v1",
+            "families": [
+                {
+                    "family_id": "family_place_return_in_bin_robustness",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "scenario_family": "stockroom_pick_place_robustness",
+                    "variations": [
+                        {"variation_id": "lighting_variation", "variation_name": "lighting variation"},
+                        {"variation_id": "object_rotation", "variation_name": "object rotation"},
+                        {"variation_id": "cart_shifted", "variation_name": "cart shifted"},
+                        {"variation_id": "blocked_path", "variation_name": "blocked path"},
+                        {"variation_id": "human_crossing", "variation_name": "human crossing"},
+                        {"variation_id": "forklift_nearby", "variation_name": "forklift nearby"},
+                        {"variation_id": "occlusion", "variation_name": "occlusion"},
+                        {"variation_id": "glare", "variation_name": "glare"},
+                        {"variation_id": "missing_label", "variation_name": "missing label"},
+                        {"variation_id": "wrong_object_nearby", "variation_name": "wrong object nearby"},
+                        {
+                            "variation_id": "narrow_approach_angle",
+                            "variation_name": "narrow approach angle",
+                        },
+                    ],
+                }
+            ],
         },
     )
 
@@ -322,6 +368,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     run_manifest = _read_json(automation_root / "simulation_automation_run_manifest.json")
     conversion = _read_json(automation_root / "asset_conversion_plan.json")
     simulator_execution = _read_json(automation_root / "simulator_execution_manifest.json")
+    engine_registry = _read_json(automation_root / "simulator_engine_plugin_registry.json")
     training = _read_json(automation_root / "training_orchestration_manifest.json")
     proof_boundary = _read_json(automation_root / "proof_boundary.json")
     agent_ledger = _read_json(automation_root / "agent_decision_ledger.json")
@@ -360,6 +407,47 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     assert conversion["frameworks"]["pybullet"]["status"] == "planned_requires_conversion"
     assert conversion["frameworks"]["newton"]["status"] == "planned_requires_conversion"
     assert simulator_execution["overall_status"] == "blocked"
+    assert engine_registry["schema_version"] == "simulator_engine_plugin_registry.v1"
+    assert set(engine_registry["engine_targets"]) == {
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    }
+    assert set(engine_registry["world_model_engine_targets"]) == {
+        "worldlabs_world_model",
+        "marble_simready",
+        "cosmos_predict",
+        "native_site_reference",
+    }
+    assert set(engine_registry["plugins"]) == set(engine_registry["engine_targets"])
+    assert set(engine_registry["world_model_plugins"]) == set(
+        engine_registry["world_model_engine_targets"]
+    )
+    for plugin in engine_registry["plugins"].values():
+        assert plugin["adapter_contract_status"] == "ready"
+        assert plugin["managed_execution_supported"] is True
+        assert plugin["execution_manager"]["status"] == "gated_waiting_for_owner_runtime"
+        assert plugin["inputs"]["scenario_variation_instances"] == (
+            "scenario_variation_instances.json"
+        )
+        assert plugin["outputs_expected"]["normalized_attempt_trace"] == (
+            "normalized_attempt_trace.json"
+        )
+        assert plugin["proof_boundary"]["simulator_execution_proven"] is False
+    for plugin in engine_registry["world_model_plugins"].values():
+        assert plugin["adapter_contract_status"] == "ready"
+        assert plugin["managed_execution_supported"] is True
+        assert plugin["runtime_kind"] == "world_model_support_engine"
+        assert plugin["inputs"]["scenario_variation_instances"] == (
+            "scenario_variation_instances.json"
+        )
+        assert plugin["outputs_expected"]["uncertainty_summary"].endswith(
+            "/world_model_uncertainty.json"
+        )
+        assert plugin["proof_boundary"]["world_model_support_assets_generated"] is False
+        assert plugin["proof_boundary"]["robot_readiness_proven"] is False
     assert {
         record["framework"]: record["status"]
         for record in simulator_execution["simulator_results"]
@@ -424,6 +512,93 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     assert run_manifest["gpu_training_run"] is False
     assert agent_ledger["adapter"] == "fake"
     assert agent_ledger["decisions"][0]["decision"] == "plan_next_actions"
+
+
+def test_simulation_automation_instantiates_scenario_variations_for_all_engine_targets(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_worldlabs_and_marble_artifacts(capture_root)
+    _write_robot_eval_cards(capture_root)
+    _write_scenario_family_library(capture_root)
+
+    build_simulation_automation(capture_root=capture_root)
+
+    automation_root = capture_root / "pipeline" / "simulation_automation"
+    variation_instances = _read_json(automation_root / "scenario_variation_instances.json")
+    arena_packet = _read_json(automation_root / "arena_environment_packet.json")
+
+    required_names = {
+        "lighting_variation",
+        "object_rotation",
+        "cart_shifted",
+        "blocked_path",
+        "human_crossing",
+        "forklift_nearby",
+        "occlusion",
+        "glare",
+        "missing_label",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+    }
+    expected_mutation_fields = {
+        "lighting_variation": "lighting",
+        "object_rotation": "object_pose_delta",
+        "cart_shifted": "cart_pose_delta",
+        "blocked_path": "path_obstacle",
+        "human_crossing": "dynamic_actor",
+        "forklift_nearby": "forklift_actor",
+        "occlusion": "occluder",
+        "glare": "glare_source",
+        "missing_label": "label_visibility",
+        "wrong_object_nearby": "distractor_object",
+        "narrow_approach_angle": "approach_constraint",
+    }
+
+    assert variation_instances["schema_version"] == "scenario_variation_instances.v1"
+    assert set(variation_instances["required_variation_names"]) == required_names
+    assert set(variation_instances["variation_names_instantiated"]) == required_names
+    assert variation_instances["instance_count"] == len(required_names)
+    assert set(variation_instances["engine_targets"]) == {
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    }
+    assert set(variation_instances["engine_mutation_plan"]) == {
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    }
+    assert all(
+        plan["mutation_count"] == len(required_names)
+        and plan["status"] == "ready_for_owner_engine_adapter"
+        for plan in variation_instances["engine_mutation_plan"].values()
+    )
+    for instance in variation_instances["instances"]:
+        variation_name = instance["variation_name"]
+        assert expected_mutation_fields[variation_name] in instance["concrete_mutation"]
+        assert set(instance["engine_mutations"]) == set(variation_instances["engine_targets"])
+        assert all(
+            mutation["operation_count"] >= 1
+            for mutation in instance["engine_mutations"].values()
+        )
+
+    assert arena_packet["source_artifacts"]["scenario_variation_instances"] == (
+        "scenario_variation_instances.json"
+    )
+    scenario_component = arena_packet["arena_components"]["scenarios"][0]
+    assert set(scenario_component["scenario_variation_instance_ids"]) == {
+        instance["instance_id"] for instance in variation_instances["instances"]
+    }
+    episode_binding = arena_packet["arena_components"]["episode_bindings"][0]
+    assert set(episode_binding["scenario_variation_instance_ids"]) == {
+        instance["instance_id"] for instance in variation_instances["instances"]
+    }
+    assert episode_binding["engine_mutation_plan_path"] == "scenario_variation_instances.json"
 
 
 def test_missing_simulator_dependency_produces_blocked_result(
@@ -573,6 +748,12 @@ def test_evaluation_prep_surfaces_simulation_automation_artifacts_without_overcl
         "asset_conversion_plan": "../simulation_automation/asset_conversion_plan.json",
         "simulator_execution_manifest": "../simulation_automation/simulator_execution_manifest.json",
         "training_orchestration_manifest": "../simulation_automation/training_orchestration_manifest.json",
+        "robot_eval_scenario_variation_instances": (
+            "../simulation_automation/scenario_variation_instances.json"
+        ),
+        "robot_eval_simulator_engine_plugin_registry": (
+            "../simulation_automation/simulator_engine_plugin_registry.json"
+        ),
         "simulation_automation_proof_boundary": "../simulation_automation/proof_boundary.json",
         "simulation_automation_agent_decision_ledger": "../simulation_automation/agent_decision_ledger.json",
     }
@@ -597,4 +778,7 @@ def test_evaluation_prep_surfaces_simulation_automation_artifacts_without_overcl
     )
     assert surface["artifact_uris"]["simulation_automation_proof_boundary_uri"].endswith(
         "/pipeline/simulation_automation/proof_boundary.json"
+    )
+    assert surface["artifact_uris"]["robot_eval_scenario_variation_instances_uri"].endswith(
+        "/pipeline/simulation_automation/scenario_variation_instances.json"
     )

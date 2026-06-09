@@ -162,6 +162,56 @@ def test_arena_package_audit_blocks_illegal_proof_upgrade(tmp_path: Path) -> Non
     ]
 
 
+def test_arena_package_audit_allows_live_closure_backed_proof_upgrade(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    results_dir = _arena_results(tmp_path)
+    output_dir = tmp_path / "arena-package"
+    build_arena_result_ingest(
+        capture_root=capture_root,
+        arena_results_dir=results_dir,
+        output_dir=output_dir,
+        scenario_count=500,
+        shard_size=100,
+    )
+    closure_boundary = {
+        "live_end_to_end_verified": True,
+        "simulator_execution_proven": True,
+        "robot_policy_execution_proven": True,
+        "robot_readiness_proven": True,
+        "physics_contact_validated": True,
+        "safety_validated": True,
+        "public_claim_upgrade_allowed": True,
+    }
+    _write_json(
+        output_dir / "live_eval_closure_manifest.json",
+        {
+            "schema_version": "live_robot_eval_closure_manifest.v1",
+            "status": "live_end_to_end_verified",
+            "live_end_to_end_verified": True,
+            "blockers": [],
+            "proof_boundary": closure_boundary,
+        },
+    )
+    for name, payload in {
+        "job_request.json": {"schema_version": "robot_eval_job_request.v1"},
+        "simulator_service_result.json": {"simulator_execution_proven": True},
+        "evaluation_result.json": {"robot_readiness_proven": True},
+        "proof_boundary.json": dict(closure_boundary),
+        "job_run_manifest.json": dict(closure_boundary),
+    }.items():
+        _write_json(output_dir / name, payload)
+
+    audit = build_arena_package_proof_boundary_audit(
+        capture_root=capture_root,
+        package_dir=output_dir,
+        expected_scenario_count=500,
+        require_job_artifacts=True,
+    )
+
+    assert audit["status"] == "passed"
+    assert audit["proof_boundary_violations"] == []
+
+
 def test_arena_result_ingest_consumes_review_required_vision_command_output(
     tmp_path: Path,
     monkeypatch,

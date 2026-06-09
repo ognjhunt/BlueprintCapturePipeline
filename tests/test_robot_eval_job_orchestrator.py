@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from blueprint_pipeline.evaluation_prep_stage import robot_eval_job_evaluation_prep_surface
+from blueprint_pipeline.live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from blueprint_pipeline.robot_eval_job_orchestrator import (
     AgentsSdkRobotEvalJobAdapter,
     FakeRobotEvalJobAgentAdapter,
@@ -38,8 +39,21 @@ def _build_capture_root(tmp_path: Path) -> Path:
             "scene_id": "scene-1",
             "capture_id": "capture-1",
             "site_identity": {"site_id": "site-1"},
+            "video_uri": "walkthrough.mov",
+            "width": 1280,
+            "height": 720,
+            "frame_count": 3,
         },
     )
+    _write_json(
+        capture_root / "raw" / "capture_upload_complete.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "status": "complete",
+        },
+    )
+    (capture_root / "raw" / "walkthrough.mov").write_bytes(b"raw capture video\n")
     return capture_root
 
 
@@ -84,10 +98,18 @@ def _write_robot_eval_cards(
                     "task_statement": "Place the return item in the labeled bin",
                     "task_category": "pick_place",
                     "required_metrics": [
-                        "cycle_time_seconds",
-                        "placement_accuracy",
+                        "success_rate",
+                        "cycle_time",
                         "intervention_rate",
+                        "unsafe_proximity",
+                        "collision_risk",
+                        "object_drop",
+                        "wrong_object",
+                        "timeout",
                         "recovery_success",
+                        "world_model_uncertainty",
+                        "sim_vs_real_calibration_score",
+                        "placement_accuracy",
                     ],
                     "claim_boundary": "task_card_defines_eval_scope_not_robot_execution",
                 }
@@ -128,6 +150,32 @@ def _write_robot_eval_cards(
                         "needs_actual_outcome",
                     ],
                     "claim_boundary": "scenario_card_is_review_scope_not_simulator_or_pilot_result",
+                }
+            ],
+        },
+    )
+    _write_json(
+        robot_eval_dir / "scenario_family_library.json",
+        {
+            "schema_version": "real_site_robot_eval_scenario_family_library.v1",
+            "family_count": 1,
+            "variation_names_required": list(POLICY_REFERENCE_VARIATION_NAMES),
+            "families": [
+                {
+                    "family_id": "family_scenario_place_return_in_bin_mobile",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "task_id": "place_return_in_bin",
+                    "robot_profile_id": "mobile_manipulator_rgb_v1",
+                    "status": "review_required",
+                    "variation_count": len(POLICY_REFERENCE_VARIATION_NAMES),
+                    "variations": [
+                        {
+                            "variation_id": variation_name,
+                            "variation_name": variation_name,
+                            "scenario_status": "review-only",
+                        }
+                        for variation_name in POLICY_REFERENCE_VARIATION_NAMES
+                    ],
                 }
             ],
         },
@@ -200,6 +248,78 @@ def _write_fixture_attempts(capture_root: Path, *, success: bool) -> None:
             ],
         },
     )
+
+
+POLICY_REFERENCE_VARIATION_NAMES = [
+    "lighting_variation",
+    "object_rotation",
+    "cart_shifted",
+    "blocked_path",
+    "human_crossing",
+    "forklift_nearby",
+    "occlusion",
+    "glare",
+    "missing_label",
+    "wrong_object_nearby",
+    "narrow_approach_angle",
+]
+
+
+def _variation_detail_fields(variation_name: str) -> dict[str, object]:
+    return {
+        "concrete_mutation": {
+            "fixture_variation": {
+                "variation_name": variation_name,
+                "parameter": "deterministic_fixture_mutation",
+            }
+        },
+        "engine_mutations": {
+            "fixture": {
+                "operation_count": 1,
+                "operations": [
+                    {
+                        "operation": "fixture.apply_variation",
+                        "variation_name": variation_name,
+                        "parameters": {"variation_name": variation_name},
+                    }
+                ],
+            }
+        },
+    }
+
+
+def _scenario_eval_run_id(variation_name: str, index: int) -> str:
+    return (
+        "place_return_in_bin_scenario_place_return_in_bin_mobile_"
+        f"{variation_name}_run_{index:04d}"
+    )
+
+
+def _policy_reference_attempts(
+    *,
+    policy_id: str,
+    variation_names: list[str] | None = None,
+) -> list[dict[str, object]]:
+    names = variation_names or POLICY_REFERENCE_VARIATION_NAMES
+    return [
+        {
+            "attempt_id": f"{policy_id}-{index:04d}",
+            "scenario_eval_run_id": _scenario_eval_run_id(variation_name, index),
+            "scenario_variation_instance_id": (
+                "place_return_in_bin_scenario_place_return_in_bin_mobile_"
+                f"{variation_name}_instance"
+            ),
+            "variation_name": variation_name,
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "task_id": "place_return_in_bin",
+            "policy_id": policy_id,
+            "status": "completed",
+            "success": True,
+            "actions": [{"t": 0.0, "action": "navigate"}, {"t": 1.0, "action": "place"}],
+            "metrics": {"cycle_time_seconds": 12.0 + index},
+        }
+        for index, variation_name in enumerate(names, start=1)
+    ]
 
 
 def _full_job_request(
@@ -300,9 +420,12 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "gpu_provisioning_result.json",
         "simulator_service_request.json",
         "simulator_service_result.json",
+        "scenario_eval_matrix.json",
         "policy_package_manifest.json",
         "robot_pov_observation_manifest.json",
         "robot_pov_observations.jsonl",
+        "robot_pov_frame_sequence_manifest.json",
+        "robot_pov_render_storyboard.json",
         "policy_execution_manifest.json",
         "policy_execution_trace.json",
         "policy_execution_trace.jsonl",
@@ -310,14 +433,18 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "training_result.json",
         "evaluation_request.json",
         "evaluation_result.json",
+        "robot_eval_report.json",
+        "robot_eval_report.md",
         "normalized_attempt_trace.json",
         "failure_labels.json",
         "prediction_outcome_ledger.json",
         "calibration_report.json",
         "breakage_library.json",
+        "deployment_outcome_intake_manifest.json",
         "deployment_outcome_ledger.json",
         "sim_vs_real_calibration_report.json",
         "prediction_vs_actual_deployment_summary.json",
+        "live_eval_closure_manifest.json",
         "post_training_data_package_export_manifest.json",
         "proof_boundary.json",
         "job_run_manifest.json",
@@ -331,13 +458,22 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     validation = _read_json(job_dir / "job_validation.json")
     provisioning = _read_json(job_dir / "gpu_provisioning_result.json")
     simulator_result = _read_json(job_dir / "simulator_service_result.json")
+    scenario_eval_matrix = _read_json(job_dir / "scenario_eval_matrix.json")
     evaluation = _read_json(job_dir / "evaluation_result.json")
+    robot_eval_report = _read_json(job_dir / "robot_eval_report.json")
     proof_boundary = _read_json(job_dir / "proof_boundary.json")
     trace = _read_json(job_dir / "normalized_attempt_trace.json")
     robot_pov = _read_json(job_dir / "robot_pov_observation_manifest.json")
+    robot_pov_frames = _read_json(job_dir / "robot_pov_frame_sequence_manifest.json")
+    robot_pov_storyboard = _read_json(job_dir / "robot_pov_render_storyboard.json")
     policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
     deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
     data_package_export = _read_json(job_dir / "post_training_data_package_export_manifest.json")
+    optional_exports = _read_json(job_dir / "optional_export_manifest.json")
+    package_index = _read_json(job_dir / "package_index.json")
+    checksums = _read_json(job_dir / "checksums.json")
+    archive_manifest = _read_json(job_dir / "archive_manifest.json")
 
     assert validation["status"] == "passed"
     assert provisioning["status"] == "allocated"
@@ -345,15 +481,108 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert simulator_result["status"] == "completed"
     assert simulator_result["framework"] == "fixture"
     assert simulator_result["simulator_execution_proven"] is False
+    assert scenario_eval_matrix["status"] == "completed"
+    assert scenario_eval_matrix["scenario_eval_run_count"] == 11
+    assert set(scenario_eval_matrix["variation_names_covered"]) == {
+        "lighting_variation",
+        "object_rotation",
+        "cart_shifted",
+        "blocked_path",
+        "human_crossing",
+        "forklift_nearby",
+        "occlusion",
+        "glare",
+        "missing_label",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+    }
     assert evaluation["status"] == "completed"
+    assert set(evaluation["standard_policy_scorecard"]) == {
+        "success_rate",
+        "cycle_time",
+        "intervention_rate",
+        "unsafe_proximity",
+        "collision_risk",
+        "object_drop",
+        "wrong_object",
+        "timeout",
+        "recovery_success",
+        "world_model_uncertainty",
+        "sim_vs_real_calibration_score",
+    }
+    assert evaluation["standard_policy_scorecard"]["success_rate"] == 1.0
+    assert evaluation["standard_policy_scorecard"]["cycle_time"]["mean_seconds"] == 14.0
+    assert evaluation["standard_policy_scorecard"]["cycle_time"]["sample_count"] == (
+        scenario_eval_matrix["scenario_eval_run_count"]
+    )
+    assert evaluation["standard_policy_scorecard"]["intervention_rate"] == 0.0
+    assert evaluation["standard_policy_scorecard"]["sim_vs_real_calibration_score"] is None
+    assert robot_eval_report["schema_version"] == "robot_eval_job_report.v1"
+    assert robot_eval_report["status"] == "generated"
+    assert robot_eval_report["job_status"] == "fixture_evaluation_completed"
+    assert robot_eval_report["scenario_eval"]["scenario_eval_run_count"] == (
+        scenario_eval_matrix["scenario_eval_run_count"]
+    )
+    assert robot_eval_report["evaluator_scores"]["success_rate"] == 1.0
+    assert robot_eval_report["evaluator_scores"]["cycle_time"]["mean_seconds"] == 14.0
+    assert robot_eval_report["policy_interface"]["executed_modalities"] == [
+        "high_level_skill_trace"
+    ]
+    assert set(robot_eval_report["policy_interface"]["supported_modalities"]) == {
+        "policy_api_endpoint",
+        "docker_container",
+        "recorded_action_trace",
+        "high_level_skill_trace",
+        "teleop_demo",
+        "sim_controller_plugin",
+    }
+    assert robot_eval_report["live_eval_closure"]["status"] == (
+        "local_artifacts_ready_live_external_blocked"
+    )
+    assert robot_eval_report["requirement_coverage"]["schema_version"] == (
+        "live_robot_eval_requirement_coverage.v1"
+    )
+    assert robot_eval_report["proof_boundary"]["robot_readiness_proven"] is False
+    assert "report_generated" in robot_eval_report["neutral_eval_harness_flow"]
+    assert "# Robot Eval Report" in (job_dir / "robot_eval_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert trace["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
+    assert {
+        attempt["scenario_eval_run_id"] for attempt in trace["attempts"]
+    } == {run["scenario_eval_run_id"] for run in scenario_eval_matrix["runs"]}
     assert trace["attempts"][0]["success"] is True
     assert robot_pov["status"] == "completed"
-    assert robot_pov["observation_count"] == 1
+    assert robot_pov["observation_count"] == scenario_eval_matrix["scenario_eval_run_count"]
+    assert robot_pov["local_render_frame_count"] >= 3 * scenario_eval_matrix["scenario_eval_run_count"]
+    assert robot_pov["robot_pov_evidence_proven"] is False
+    assert robot_pov_frames["status"] == "completed"
+    assert robot_pov_frames["sequence_count"] == scenario_eval_matrix["scenario_eval_run_count"]
+    assert robot_pov_frames["total_frame_count"] >= (
+        3 * scenario_eval_matrix["scenario_eval_run_count"]
+    )
+    assert all(
+        (job_dir / path).is_file()
+        for sequence in robot_pov_frames["sequences"]
+        for path in sequence["frame_paths"]
+    )
+    assert robot_pov_storyboard["status"] == "completed"
+    assert robot_pov_storyboard["storyboard_count"] == scenario_eval_matrix[
+        "scenario_eval_run_count"
+    ]
+    assert robot_pov_storyboard["local_robot_pov_render_generated"] is True
+    assert robot_pov_storyboard["robot_pov_evidence_proven"] is False
     assert policy_execution["status"] == "completed"
-    assert policy_execution["modality_results"]["high_level_skill_trace"]["attempt_count"] == 1
+    assert policy_execution["modality_results"]["high_level_skill_trace"]["attempt_count"] == (
+        scenario_eval_matrix["scenario_eval_run_count"]
+    )
     assert policy_execution["robot_policy_execution_proven"] is False
     assert deployment["status"] == "blocked_missing_real_world_outcomes"
     assert run_manifest["state"] == "completed"
+    assert run_manifest["scenario_eval_matrix_status"] == "completed"
+    assert run_manifest["scenario_eval_run_count"] == scenario_eval_matrix[
+        "scenario_eval_run_count"
+    ]
     assert run_manifest["scene_asset_preflight_status"] == "blocked"
     assert run_manifest["episode_spec_status"] == "compiled_review_required"
     assert run_manifest["cpu_simulator_preflight_status"] == (
@@ -363,6 +592,13 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "../simulation_automation/episode_spec.v1.json"
     )
     assert run_manifest["public_claim_upgrade_allowed"] is False
+    assert run_manifest["live_eval_closure_status"] == (
+        "local_artifacts_ready_live_external_blocked"
+    )
+    assert run_manifest["live_end_to_end_verified"] is False
+    assert "live_simulator_execution:live_simulator_execution_not_proven" in run_manifest[
+        "live_eval_closure_blockers"
+    ]
     assert proof_boundary["robot_readiness_proven"] is False
     assert proof_boundary["robot_policy_execution_proven"] is False
     assert proof_boundary["public_claim_upgrade_allowed"] is False
@@ -375,10 +611,2757 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert data_package_export["included_artifacts"]["robot_pov_observation_manifest"] == (
         "robot_pov_observation_manifest.json"
     )
+    assert data_package_export["included_artifacts"]["scenario_eval_matrix"] == (
+        "scenario_eval_matrix.json"
+    )
+    assert data_package_export["export_policy"]["scenario_eval_matrix_included"] is True
     assert data_package_export["included_artifacts"]["policy_execution_trace"] == (
         "policy_execution_trace.json"
     )
+    assert data_package_export["included_artifacts"]["deployment_outcome_intake_manifest"] == (
+        "deployment_outcome_intake_manifest.json"
+    )
+    assert data_package_export["included_artifacts"]["live_eval_closure_manifest"] == (
+        "live_eval_closure_manifest.json"
+    )
+    assert data_package_export["included_artifacts"]["robot_eval_report"] == (
+        "robot_eval_report.json"
+    )
+    assert data_package_export["included_artifacts"]["robot_eval_report_markdown"] == (
+        "robot_eval_report.md"
+    )
+    assert data_package_export["export_policy"]["deployment_outcome_intake_included"] is True
+    assert data_package_export["export_policy"]["live_eval_closure_included"] is True
+    assert data_package_export["export_policy"]["robot_eval_report_included"] is True
     assert data_package_export["claim_boundary"]["robot_readiness_proven"] is False
+    assert live_closure["status"] == "local_artifacts_ready_live_external_blocked"
+    assert live_closure["repo_local_artifacts_ready"] is True
+    assert live_closure["live_external_ready"] is False
+    assert live_closure["gates"]["scenario_library"]["passed"] is True
+    assert live_closure["gates"]["report_generation"]["passed"] is True
+    requirement_coverage = live_closure["requirement_coverage"]
+    assert requirement_coverage["schema_version"] == "live_robot_eval_requirement_coverage.v1"
+    assert set(requirement_coverage["repo_local_requirement_ids"]) == {
+        "site_capture",
+        "task_definitions",
+        "scenario_library",
+        "scenario_variation_families",
+        "robot_pov_generation",
+        "scenario_eval_suite",
+        "failure_labels",
+        "evaluation_methodology",
+        "robot_team_interface",
+        "plugin_world_sim_engines",
+        "neutral_eval_harness_report",
+    }
+    assert set(requirement_coverage["live_external_requirement_ids"]) == {
+        "real_world_validation_loop",
+        "predicted_vs_actual_deployment_data",
+    }
+    assert not (
+        set(requirement_coverage["repo_local_requirement_ids"])
+        - set(requirement_coverage["passed_requirement_ids"])
+    )
+    assert {
+        "real_world_validation_loop",
+        "predicted_vs_actual_deployment_data",
+    }.issubset(set(requirement_coverage["blocked_requirement_ids"]))
+    for export_name in ("rlds", "lerobot", "hdf5", "parquet", "video_bundle"):
+        export_entry = optional_exports["formats"][export_name]
+        assert export_entry["format_written"] is True
+        assert export_entry["path"]
+        assert (job_dir / export_entry["path"]).is_file()
+    assert optional_exports["formats"]["rlds"]["status"] == "written_jsonl"
+    assert optional_exports["formats"]["lerobot"]["status"] == "written_jsonl"
+    assert optional_exports["formats"]["hdf5"]["status"] in {
+        "written_native",
+        "written_jsonl_fallback",
+    }
+    assert optional_exports["formats"]["parquet"]["status"] in {
+        "written_native",
+        "written_jsonl_fallback",
+    }
+    assert package_index["files"]["rlds_episodes"].startswith("exports/rlds/")
+    assert package_index["files"]["lerobot_episodes"].startswith("exports/lerobot/")
+    assert package_index["files"]["video_bundle_manifest"] == (
+        "exports/video_bundle/clips_manifest.json"
+    )
+    assert checksums["files"]["rlds_episodes"]["exists"] is True
+    assert "exports/rlds/episodes.jsonl" in archive_manifest["included_files"]
+
+
+def test_robot_eval_job_blocks_unknown_requested_scenario_id(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request = _full_job_request(capture_root)
+    request["requested_tasks"] = [
+        {
+            "task_id": "place_return_in_bin",
+            "scenario_ids": ["scenario_not_in_library"],
+        }
+    ]
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-unknown-scenario",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    matrix = _read_json(job_dir / "scenario_eval_matrix.json")
+    blocked = _read_json(job_dir / "blocked_manifest.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+    scenario_gate = live_closure["gates"]["scenario_eval_suite"]
+
+    assert result["status"] == "blocked"
+    assert matrix["status"] == "blocked_invalid_requested_scope"
+    assert matrix["scenario_eval_run_count"] == 0
+    assert matrix["unknown_requested_scenario_ids"] == ["scenario_not_in_library"]
+    assert "scenario_eval_matrix_unknown_requested_scenarios" in matrix["blockers"]
+    assert "scenario_eval_matrix_blocked" in blocked["blockers"]
+    assert "scenario_eval_matrix_unknown_requested_scenarios" in blocked["missing_inputs"]
+    assert "scenario_eval_matrix_not_completed" in scenario_gate["blockers"]
+    assert "scenario_eval_matrix_unknown_requested_scenarios" in scenario_gate["blockers"]
+
+
+def test_robot_eval_job_blocks_unknown_requested_task_without_defaulting_to_all_scenarios(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request = _full_job_request(capture_root)
+    request["requested_tasks"] = [{"task_id": "unknown_task"}]
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-unknown-task",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    matrix = _read_json(job_dir / "scenario_eval_matrix.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+    scenario_gate = live_closure["gates"]["scenario_eval_suite"]
+
+    assert result["status"] == "blocked"
+    assert matrix["status"] == "blocked_invalid_requested_scope"
+    assert matrix["requested_scenario_count"] == 0
+    assert matrix["scenario_eval_run_count"] == 0
+    assert matrix["unknown_requested_task_ids"] == ["unknown_task"]
+    assert "scenario_eval_matrix_unknown_requested_tasks" in matrix["blockers"]
+    assert "scenario_eval_matrix_missing_requested_scenarios" in matrix["blockers"]
+    assert "scenario_eval_matrix_unknown_requested_tasks" in scenario_gate["blockers"]
+
+
+def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_POLICY_EXECUTION", "true")
+    capture_root = _build_capture_root(tmp_path)
+    webapp_ids = {
+        "site_submission_id": "site-submission-live-001",
+        "request_id": "request-live-001",
+        "buyer_request_id": "buyer-request-live-001",
+        "capture_job_id": "capture-job-live-001",
+    }
+    descriptor = _read_json(capture_root / "capture_descriptor.json")
+    descriptor.update(webapp_ids)
+    _write_json(capture_root / "capture_descriptor.json", descriptor)
+    raw_manifest = _read_json(capture_root / "raw" / "manifest.json")
+    raw_manifest["upstream_handoff"] = dict(webapp_ids)
+    _write_json(capture_root / "raw" / "manifest.json", raw_manifest)
+    _write_robot_eval_cards(capture_root)
+
+    simulator_writer = tmp_path / "write_simulator_output.py"
+    simulator_writer.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "with open(os.environ['BLUEPRINT_SCENARIO_EVAL_MATRIX'], encoding='utf-8') as f:",
+                "    matrix = json.load(f)",
+                "attempts = []",
+                "for index, run in enumerate(matrix['runs'], start=1):",
+                "    attempts.append({",
+                "      'attempt_id': f'mujoco-attempt-{index}',",
+                "      'episode_id': f'mujoco-episode-{index}',",
+                "      'scenario_id': run['scenario_id'],",
+                "      'scenario_run_id': f\"{run['scenario_eval_run_id']}__mujoco\",",
+                "      'scenario_eval_run_id': run['scenario_eval_run_id'],",
+                "      'scenario_variation_instance_id': run.get('scenario_variation_instance_id'),",
+                "      'variation_name': run.get('variation_name'),",
+                "      'task_id': run['task_id'],",
+                "      'policy_id': 'policy-live-command',",
+                "      'status': 'completed',",
+                "      'success': True,",
+                "      'metrics': {'cycle_time_seconds': 11.25, 'intervention_count': 0},",
+                "      'actions': [{'t': 0.0, 'action': 'navigate'}, {'t': 1.0, 'action': 'place'}],",
+                "      'contact_trace': [{'status': 'clear'}],",
+                "      'safety_events': []",
+                "    })",
+                "payload = {'attempts': attempts}",
+                "with open(os.environ['BLUEPRINT_SIMULATOR_OUTPUT'], 'w', encoding='utf-8') as f:",
+                "    json.dump(payload, f)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    policy_writer = tmp_path / "write_policy_output.py"
+    policy_writer.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "with open(os.environ['BLUEPRINT_POLICY_OBSERVATION_MANIFEST'], encoding='utf-8') as f:",
+                "    observations = json.load(f)['observations']",
+                "attempts = []",
+                "for index, obs in enumerate(observations, start=1):",
+                "    attempts.append({",
+                "      'attempt_id': f'policy-attempt-{index}',",
+                "      'observation_id': obs['observation_id'],",
+                "      'scenario_id': obs['scenario_id'],",
+                "      'scenario_eval_run_id': obs.get('scenario_eval_run_id'),",
+                "      'scenario_variation_instance_id': obs.get('scenario_variation_instance_id'),",
+                "      'variation_name': obs.get('variation_name'),",
+                "      'task_id': obs['task_id'],",
+                "      'policy_id': 'policy-live-command',",
+                "      'status': 'completed',",
+                "      'success': True,",
+                "      'actions': [{'t': 0.0, 'action': 'pick'}, {'t': 1.0, 'action': 'place'}]",
+                "    })",
+                "payload = {'attempts': attempts}",
+                "with open(os.environ['BLUEPRINT_POLICY_EXECUTION_OUTPUT'], 'w', encoding='utf-8') as f:",
+                "    json.dump(payload, f)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    evidence_root = tmp_path / "owner-evidence"
+    methodology = evidence_root / "methodology.md"
+    contact_validation = evidence_root / "contact_validation.json"
+    safety_validation = evidence_root / "safety_validation.json"
+    review_evidence = evidence_root / "review_acceptance.json"
+    rights_clearance = evidence_root / "rights_clearance.json"
+    for path, payload in (
+        (methodology, "accepted safety/contact methodology\n"),
+        (contact_validation, json.dumps({"status": "validated", "contact_clear": True})),
+        (safety_validation, json.dumps({"status": "validated", "safety_validated": True})),
+        (review_evidence, json.dumps({"status": "accepted", "reviewer": "owner-reviewer"})),
+        (rights_clearance, json.dumps({"status": "accepted", "external_use_allowed": True})),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding="utf-8")
+
+    request = _full_job_request(capture_root)
+    request.update(webapp_ids)
+    request["simulator_preference"] = "mujoco"
+    request["actual_outcomes"] = {
+        "records": [
+                {
+                    "outcome_id": "pilot-live-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "scenario_eval_run_id": _scenario_eval_run_id("lighting_variation", 1),
+                    "policy_id": "policy-live-command",
+                    "actual_success": True,
+                    "cycle_time_seconds": 11.5,
+                "intervention_count": 0,
+                "failure_mode_ids": [],
+                "evidence_refs": {"pilot_log": "owner://pilot/live-1"},
+            }
+        ]
+    }
+    staged_closure_evidence_path = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / "job-live-closure"
+        / "live_eval_closure_evidence.json"
+    )
+    _write_json(staged_closure_evidence_path, {
+        "schema_version": "live_robot_eval_closure_evidence.v1",
+        "rights_privacy": {
+            "accepted": True,
+            "clearance_uri_or_path": str(rights_clearance),
+            "operator_attestation": {
+                "attested_by": "rights-owner",
+                "attestation": "Owner approved deidentified external robot-eval use.",
+            },
+        },
+        "review_acceptance": {
+            "accepted": True,
+            "reviewer": "owner-reviewer",
+            "evidence_uri_or_path": str(review_evidence),
+        },
+        "delivery": {
+            "storage_upload_performed": True,
+            "signed_urls": ["https://signed-access.tryblueprint.io/package-live-001"],
+            "entitlement_verified": True,
+            "operator_attestation": {
+                "attested_by": "delivery-owner",
+                "attestation": "Signed delivery was uploaded and entitlement checked.",
+            },
+        },
+        "safety_contact_physics": {
+            "physics_contact_validated": True,
+            "safety_validated": True,
+            "robot_readiness_proven": True,
+            "methodology_uri_or_path": str(methodology),
+            "contact_validation_uri_or_path": str(contact_validation),
+            "safety_validation_uri_or_path": str(safety_validation),
+            "operator_attestation": {
+                "attested_by": "safety-owner",
+                "attestation": "Owner accepted contact, physics, and safety evidence.",
+            },
+        },
+    })
+    request_path = tmp_path / "job-request-live.json"
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-live-closure",
+        provisioner="fixture_local",
+        simulator="mujoco",
+        allow_simulator_execution=True,
+        allowed_simulators=["mujoco"],
+        simulator_commands={"mujoco": f"{sys.executable} {simulator_writer}"},
+        allow_policy_execution=True,
+        policy_execution_commands={
+            "policy_api_endpoint": f"{sys.executable} {policy_writer}",
+        },
+    )
+
+    job_dir = Path(result["job_dir"])
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    proof_boundary = _read_json(job_dir / "proof_boundary.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+    data_package_export = _read_json(job_dir / "post_training_data_package_export_manifest.json")
+
+    assert result["live_eval_closure_status"] == "live_end_to_end_verified"
+    assert result["live_end_to_end_verified"] is True
+    assert live_closure["status"] == "live_end_to_end_verified"
+    assert str(staged_closure_evidence_path) in live_closure["evidence_sources"]
+    assert live_closure["blockers"] == []
+    assert all(gate["passed"] for gate in live_closure["gates"].values())
+    assert proof_boundary["status"] == "live_end_to_end_verified"
+    assert proof_boundary["simulator_execution_proven"] is True
+    assert proof_boundary["robot_policy_execution_proven"] is True
+    assert proof_boundary["real_world_outcome_proven"] is True
+    assert proof_boundary["physics_contact_validated"] is True
+    assert proof_boundary["safety_validated"] is True
+    assert proof_boundary["robot_readiness_proven"] is True
+    assert proof_boundary["public_claim_upgrade_allowed"] is True
+    assert run_manifest["live_end_to_end_verified"] is True
+    assert run_manifest["robot_readiness_proven"] is True
+    assert run_manifest["public_claim_upgrade_allowed"] is True
+    assert data_package_export["included_artifacts"]["live_eval_closure_manifest"] == (
+        "live_eval_closure_manifest.json"
+    )
+
+
+def test_live_robot_eval_closure_blocks_rights_acceptance_without_owner_evidence(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-rights-accepted-only"
+    request = _full_job_request(capture_root)
+    request["rights_privacy_scope"] = {
+        "status": "cleared_for_robot_eval",
+        "external_use_allowed": True,
+        "privacy_scope": "derived_deidentified_environment",
+    }
+    _write_json(
+        job_dir / "live_eval_closure_evidence.json",
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v1",
+            "rights_privacy": {
+                "accepted": True,
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    gate = manifest["gates"]["rights_privacy_scope"]
+    assert gate["passed"] is False
+    assert "rights_privacy_owner_evidence_missing" in gate["blockers"]
+    assert gate["evidence"]["accepted"] is True
+    assert gate["evidence"]["external_use_allowed"] is True
+    assert gate["evidence"]["operator_attestation_present"] is False
+    assert gate["evidence"]["evidence_proven"] is False
+
+
+def test_live_robot_eval_closure_blocks_unverified_webapp_ids_only_in_job_request(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-request-only-webapp-ids"
+    request = _full_job_request(capture_root)
+    request.update(
+        {
+            "site_submission_id": "site-submission-live-001",
+            "request_id": "request-live-001",
+            "buyer_request_id": "buyer-request-live-001",
+            "capture_job_id": "capture-job-live-001",
+        }
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    gate = manifest["gates"]["webapp_upstream_truth"]
+    assert gate["passed"] is False
+    assert "webapp_upstream_ids_not_grounded_in_capture_or_webapp_source" in gate["blockers"]
+    assert gate["evidence"]["ungrounded_fields"] == [
+        "buyer_request_id",
+        "capture_job_id",
+        "request_id",
+        "site_submission_id",
+    ]
+    assert gate["evidence"]["job_request_capture_root_matches"] is True
+    assert gate["evidence"]["job_request_webapp_source_present"] is False
+
+
+def test_live_robot_eval_closure_blocks_conflicting_webapp_upstream_sources(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-conflicting-webapp-ids"
+    request = _full_job_request(capture_root)
+    request.update(
+        {
+            "site_submission_id": "site-submission-live-001",
+            "request_id": "request-live-001",
+            "buyer_request_id": "buyer-request-live-001",
+            "capture_job_id": "capture-job-live-001",
+        }
+    )
+    descriptor = _read_json(capture_root / "capture_descriptor.json")
+    descriptor.update(
+        {
+            "site_submission_id": "site-submission-other",
+            "request_id": "request-live-001",
+            "buyer_request_id": "buyer-request-live-001",
+            "capture_job_id": "capture-job-live-001",
+        }
+    )
+    _write_json(capture_root / "capture_descriptor.json", descriptor)
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    gate = manifest["gates"]["webapp_upstream_truth"]
+    assert gate["passed"] is False
+    assert "webapp_upstream_source_mismatch" in gate["blockers"]
+    assert gate["evidence"]["mismatch_fields"] == ["site_submission_id"]
+    assert gate["evidence"]["source_values"]["site_submission_id"] == {
+        "job_request": "site-submission-live-001",
+        "capture_descriptor": "site-submission-other",
+    }
+
+
+def test_live_robot_eval_closure_revalidates_owner_gpu_proof_manifest_evidence(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-spoofed-owner-gpu-proof"
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "owner_gpu_simulator_execution_proof_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_proof_manifest.v1",
+            "status": "accepted",
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "blockers": [],
+            "missing_inputs": [],
+            "evidence": {},
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["live_simulator_execution"]
+    assert gate["passed"] is False
+    assert "live_simulator_execution_not_proven" in gate["blockers"]
+    assert "owner_gpu_proof_missing_required_manifest_fields" in gate["blockers"]
+    assert "owner_gpu_proof_exit_code_not_zero" in gate["blockers"]
+    assert "owner_gpu_proof_manifest_missing_required_evidence" in gate["blockers"]
+    assert gate["evidence"]["owner_gpu_proof_audit"]["accepted"] is False
+    assert gate["evidence"]["owner_gpu_proof_audit"]["missing_required_fields"] == [
+        "owner_system_id",
+        "simulator_backend",
+        "simulator_version",
+        "gpu_model",
+        "proof_path",
+    ]
+    assert "scene_loaded_in_owner_simulator" in gate["evidence"]["owner_gpu_proof_audit"][
+        "missing_evidence_flags"
+    ]
+
+
+def test_live_robot_eval_closure_accepts_camel_case_owner_attestations(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-camel-evidence"
+    refs_dir = tmp_path / "owner-evidence"
+    methodology = refs_dir / "methodology.md"
+    contact = refs_dir / "contact.json"
+    safety = refs_dir / "safety.json"
+    for path in (methodology, contact, safety):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("owner evidence\n", encoding="utf-8")
+    _write_json(
+        job_dir / "live_eval_closure_evidence.json",
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v1",
+            "reviewAcceptance": {
+                "accepted": True,
+                "operatorAttestation": {
+                    "attestedBy": "owner-reviewer",
+                    "acceptedClaimBoundary": "Owner accepted review evidence.",
+                },
+            },
+            "delivery": {
+                "storageUploadPerformed": True,
+                "signedUrls": ["https://signed-access.tryblueprint.io/package-1"],
+                "entitlementVerified": True,
+                "operatorAttestation": {
+                    "attestedBy": "delivery-owner",
+                    "acceptedClaimBoundary": "Owner accepted signed delivery access.",
+                },
+            },
+            "safetyContactPhysics": {
+                "physicsContactValidated": True,
+                "safetyValidated": True,
+                "robotReadinessProven": True,
+                "methodologyUriOrPath": str(methodology),
+                "contactValidationUriOrPath": str(contact),
+                "safetyValidationUriOrPath": str(safety),
+                "operatorAttestation": {
+                    "attestedBy": "safety-owner",
+                    "acceptedClaimBoundary": (
+                        "Owner accepted contact, physics, and safety evidence."
+                    ),
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    assert manifest["gates"]["review_acceptance"]["passed"] is True
+    assert manifest["gates"]["review_acceptance"]["blockers"] == []
+    assert manifest["gates"]["signed_delivery_access"]["passed"] is True
+    assert manifest["gates"]["signed_delivery_access"]["blockers"] == []
+    assert manifest["gates"]["safety_contact_physics_readiness"]["passed"] is True
+    assert manifest["gates"]["safety_contact_physics_readiness"]["blockers"] == []
+
+
+def test_live_robot_eval_closure_blocks_signed_delivery_without_operator_attestation(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-delivery-no-attestation"
+    _write_json(
+        job_dir / "live_eval_closure_evidence.json",
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v1",
+            "delivery": {
+                "storage_upload_performed": True,
+                "signed_urls": ["https://signed-access.tryblueprint.io/package-1"],
+                "entitlement_verified": True,
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["signed_delivery_access"]
+    assert gate["passed"] is False
+    assert "signed_delivery_operator_attestation_missing" in gate["blockers"]
+    assert gate["evidence"]["operator_attestation_present"] is False
+
+
+def test_live_robot_eval_closure_blocks_mismatched_job_evidence(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-evidence-target"
+    _write_json(
+        job_dir / "live_eval_closure_evidence.json",
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v1",
+            "job_id": "other-job",
+            "review_acceptance": {
+                "accepted": True,
+                "reviewer": "owner-reviewer",
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["live_evidence_integrity"]
+    assert gate["passed"] is False
+    assert "live_closure_evidence_job_id_mismatch" in gate["blockers"]
+    assert gate["evidence"]["input_blockers"] == [
+        {
+            "blocker": "live_closure_evidence_job_id_mismatch",
+            "source": str(job_dir / "live_eval_closure_evidence.json"),
+            "expected_job_id": "job-evidence-target",
+            "declared_job_id": "other-job",
+        }
+    ]
+    assert "live_evidence_integrity:live_closure_evidence_job_id_mismatch" in manifest[
+        "blockers"
+    ]
+    assert manifest["live_end_to_end_verified"] is False
+
+
+def test_live_robot_eval_closure_blocks_missing_local_review_acceptance_ref(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-missing-review-ref"
+    _write_json(
+        job_dir / "live_eval_closure_evidence.json",
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v1",
+            "review_acceptance": {
+                "accepted": True,
+                "reviewer": "owner-reviewer",
+                "evidence_uri_or_path": str(tmp_path / "missing-review-acceptance.json"),
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["review_acceptance"]
+    assert gate["passed"] is False
+    assert "review_acceptance_local_evidence_refs_missing" in gate["blockers"]
+    assert gate["evidence"]["missing_local_ref_keys"] == ["evidence_uri_or_path"]
+
+
+def test_live_robot_eval_closure_blocks_missing_local_safety_contact_refs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-missing-safety-refs"
+    refs_dir = tmp_path / "owner-evidence"
+    _write_json(
+        job_dir / "live_eval_closure_evidence.json",
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v1",
+            "safety_contact_physics": {
+                "physics_contact_validated": True,
+                "safety_validated": True,
+                "robot_readiness_proven": True,
+                "methodology_uri_or_path": str(refs_dir / "missing-methodology.md"),
+                "contact_validation_uri_or_path": str(refs_dir / "missing-contact.json"),
+                "safety_validation_uri_or_path": str(refs_dir / "missing-safety.json"),
+                "operator_attestation": {
+                    "attested_by": "safety-owner",
+                    "attestation": "Owner accepted contact, physics, and safety evidence.",
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["safety_contact_physics_readiness"]
+    assert gate["passed"] is False
+    assert "safety_contact_physics_local_evidence_refs_missing" in gate["blockers"]
+    assert gate["evidence"]["missing_local_ref_keys"] == [
+        "contact_validation_uri_or_path",
+        "methodology_uri_or_path",
+        "safety_validation_uri_or_path",
+    ]
+
+
+def test_live_robot_eval_closure_blocks_metadata_only_site_capture(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
+    _write_json(
+        capture_root / "capture_descriptor.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "metadata": {"site_identity": {"site_id": "site-1"}},
+        },
+    )
+    _write_json(
+        capture_root / "raw" / "manifest.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "site_identity": {"site_id": "site-1"},
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=capture_root / "pipeline" / "robot_eval_jobs" / "job-metadata-only",
+    )
+
+    gate = manifest["gates"]["site_capture"]
+    assert gate["passed"] is False
+    assert "missing_raw_capture_upload_completion" in gate["blockers"]
+    assert "missing_raw_capture_evidence" in gate["blockers"]
+
+
+def test_live_robot_eval_closure_blocks_incomplete_scenario_variation_library(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-incomplete-variation-library"
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "scenario_variation_instances.json",
+        {
+            "schema_version": "scenario_variation_instances.v1",
+            "status": "completed",
+            "required_variation_names": list(POLICY_REFERENCE_VARIATION_NAMES),
+            "variation_names_instantiated": ["lighting_variation"],
+            "instance_count": 1,
+            "instances": [
+                {
+                    "instance_id": "variation-place-return-lighting",
+                    "variation_name": "lighting_variation",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["scenario_library"]
+    assert gate["passed"] is False
+    assert "scenario_variation_instances_missing_required_variations" in gate["blockers"]
+    assert gate["evidence"]["missing_required_variation_names"] == [
+        "object_rotation",
+        "cart_shifted",
+        "blocked_path",
+        "human_crossing",
+        "forklift_nearby",
+        "occlusion",
+        "glare",
+        "missing_label",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+    ]
+
+
+def test_live_robot_eval_closure_blocks_scenario_variations_missing_per_scenario_coverage(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    robot_eval_dir = capture_root / "pipeline" / "robot_eval_dataset"
+    scenario_cards = _read_json(robot_eval_dir / "scenario_cards.json")
+    base_card = dict(scenario_cards["cards"][0])
+    second_card = {
+        **base_card,
+        "scenario_card_id": "scenario_card_place_return_in_bin_secondary",
+        "scenario_id": "scenario_place_return_in_bin_secondary",
+    }
+    scenario_cards["scenario_card_count"] = 2
+    scenario_cards["cards"] = [base_card, second_card]
+    _write_json(robot_eval_dir / "scenario_cards.json", scenario_cards)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-per-scenario-variation-library"
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "scenario_variation_instances.json",
+        {
+            "schema_version": "scenario_variation_instances.v1",
+            "status": "completed",
+            "required_variation_names": ["lighting_variation", "glare"],
+            "variation_names_instantiated": ["lighting_variation", "glare"],
+            "instance_count": 2,
+            "instances": [
+                {
+                    "instance_id": "variation-primary-lighting",
+                    "variation_name": "lighting_variation",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                },
+                {
+                    "instance_id": "variation-secondary-glare",
+                    "variation_name": "glare",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_secondary",
+                },
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["scenario_library"]
+    assert gate["passed"] is False
+    assert "scenario_variation_instances_missing_required_variations_per_scenario" in gate[
+        "blockers"
+    ]
+    assert gate["evidence"]["missing_required_variations_by_scenario"] == [
+        {
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "missing_variation_names": ["glare"],
+        },
+        {
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_secondary",
+            "missing_variation_names": ["lighting_variation"],
+        },
+    ]
+
+
+def test_live_robot_eval_closure_blocks_name_only_scenario_variation_instances(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-name-only-variation-library"
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "scenario_variation_instances.json",
+        {
+            "schema_version": "scenario_variation_instances.v1",
+            "status": "completed",
+            "required_variation_names": ["lighting_variation"],
+            "variation_names_instantiated": ["lighting_variation"],
+            "instance_count": 1,
+            "instances": [
+                {
+                    "instance_id": "variation-primary-lighting",
+                    "variation_name": "lighting_variation",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["scenario_library"]
+    assert gate["passed"] is False
+    assert "scenario_variation_instances_missing_concrete_mutation_details" in gate[
+        "blockers"
+    ]
+    assert gate["evidence"]["variation_rows_missing_concrete_details"] == [
+        {
+            "row_index": 1,
+            "instance_id": "variation-primary-lighting",
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "variation_name": "lighting_variation",
+            "missing_fields": ["concrete_mutation", "engine_mutations"],
+        }
+    ]
+
+
+def test_live_robot_eval_closure_blocks_card_counts_without_required_fields(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    robot_eval_dir = capture_root / "pipeline" / "robot_eval_dataset"
+    _write_json(
+        robot_eval_dir / "task_cards.json",
+        {
+            "schema_version": "real_site_robot_eval_task_cards.v0.1",
+            "task_card_count": 1,
+            "cards": [{}],
+        },
+    )
+    _write_json(
+        robot_eval_dir / "scenario_cards.json",
+        {
+            "schema_version": "real_site_robot_eval_scenario_cards.v0.1",
+            "scenario_card_count": 1,
+            "cards": [{}],
+        },
+    )
+    _write_json(
+        robot_eval_dir / "eval_cards.json",
+        {
+            "schema_version": "real_site_robot_eval_eval_cards.v0.1",
+            "eval_card_count": 1,
+            "cards": [{}],
+        },
+    )
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "scenario_variation_instances.json",
+        {
+            "schema_version": "scenario_variation_instances.v1",
+            "status": "completed",
+            "required_variation_names": list(POLICY_REFERENCE_VARIATION_NAMES),
+            "variation_names_instantiated": list(POLICY_REFERENCE_VARIATION_NAMES),
+            "instance_count": len(POLICY_REFERENCE_VARIATION_NAMES),
+            "instances": [
+                {
+                    "instance_id": f"variation-{variation_name}",
+                    "variation_name": variation_name,
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                }
+                for variation_name in POLICY_REFERENCE_VARIATION_NAMES
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=capture_root / "pipeline" / "robot_eval_jobs" / "job-invalid-card-fields",
+    )
+
+    task_gate = manifest["gates"]["task_definitions"]
+    scenario_gate = manifest["gates"]["scenario_library"]
+    eval_gate = manifest["gates"]["scenario_eval_suite"]
+    assert "task_definitions_cards_missing_required_fields" in task_gate["blockers"]
+    assert "scenario_library_cards_missing_required_fields" in scenario_gate["blockers"]
+    assert "scenario_eval_suite_cards_missing_required_fields" in eval_gate["blockers"]
+    assert set(task_gate["evidence"]["cards_missing_required_fields"][0]["missing_fields"]) == {
+        "task_id",
+        "task_statement",
+        "task_category",
+        "required_metrics",
+    }
+    assert set(scenario_gate["evidence"]["cards_missing_required_fields"][0]["missing_fields"]) == {
+        "scenario_id",
+        "task_id",
+        "robot_profile_id",
+        "normal_scenario",
+        "variation",
+        "edge_case",
+    }
+    assert set(eval_gate["evidence"]["cards_missing_required_fields"][0]["missing_fields"]) == {
+        "eval_card_id",
+        "scenario_id",
+        "task_id",
+        "prediction_source",
+        "validation",
+        "proof_boundary",
+    }
+
+
+def test_live_robot_eval_closure_blocks_task_cards_missing_standard_metrics(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    task_path = capture_root / "pipeline" / "robot_eval_dataset" / "task_cards.json"
+    task_payload = _read_json(task_path)
+    task_payload["cards"][0]["required_metrics"] = ["cycle_time"]
+    _write_json(task_path, task_payload)
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=capture_root / "pipeline" / "robot_eval_jobs" / "job-missing-task-metrics",
+    )
+
+    gate = manifest["gates"]["task_definitions"]
+    assert gate["passed"] is False
+    assert "task_definitions_missing_standard_required_metrics" in gate["blockers"]
+    assert gate["evidence"]["cards_missing_standard_required_metrics"] == [
+        {
+            "index": 0,
+            "task_id": "place_return_in_bin",
+            "missing_metrics": [
+                "collision_risk",
+                "intervention_rate",
+                "object_drop",
+                "recovery_success",
+                "sim_vs_real_calibration_score",
+                "success_rate",
+                "timeout",
+                "unsafe_proximity",
+                "world_model_uncertainty",
+                "wrong_object",
+            ],
+        }
+    ]
+
+
+def test_live_robot_eval_closure_blocks_missing_robot_eval_report(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=capture_root / "pipeline" / "robot_eval_jobs" / "job-missing-report",
+    )
+
+    gate = manifest["gates"]["report_generation"]
+    assert gate["passed"] is False
+    assert "missing_robot_eval_report" in gate["blockers"]
+    assert "missing_robot_eval_report_markdown" in gate["blockers"]
+
+
+def test_live_robot_eval_closure_blocks_unlinked_robot_eval_report_stub(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-unlinked-report"
+    _write_json(
+        job_dir / "robot_eval_report.json",
+        {
+            "schema_version": "robot_eval_job_report.v1",
+            "status": "generated",
+            "neutral_eval_harness_flow": ["report_generated"],
+            "scenario_eval": {"status": "completed", "scenario_eval_run_count": 1},
+            "policy_interface": {
+                "policy_execution_status": "completed",
+                "selected_modalities": ["policy_api_endpoint"],
+            },
+            "evaluator_scores": {
+                "success_rate": 1.0,
+                "cycle_time": {"mean_seconds": 10.0, "sample_count": 1},
+                "intervention_rate": 0.0,
+                "unsafe_proximity": 0.0,
+                "collision_risk": 0.0,
+                "object_drop": 0,
+                "wrong_object": 0,
+                "timeout": 0,
+                "recovery_success": {"rate": 1.0, "sample_count": 1},
+                "world_model_uncertainty": {"mean": 0.1, "sample_count": 1},
+                "sim_vs_real_calibration_score": None,
+            },
+            "real_world_validation": {
+                "deployment_outcome_status": "completed",
+                "real_world_outcome_records_present": True,
+            },
+            "predicted_vs_actual": {
+                "sim_vs_real_calibration_status": "completed",
+            },
+            "live_eval_closure": {"status": "pending_live_eval_closure"},
+            "requirement_coverage": {"schema_version": "live_robot_eval_requirement_coverage.v1"},
+            "proof_boundary": {"robot_readiness_proven": False},
+            "artifact_paths": {
+                "scenario_eval_matrix": "missing-scenario-eval-matrix.json",
+                "evaluation_result": "missing-evaluation-result.json",
+                "policy_execution_manifest": "missing-policy-execution-manifest.json",
+                "policy_execution_trace": "missing-policy-execution-trace.json",
+                "deployment_outcome_ledger": "missing-deployment-outcome-ledger.json",
+                "prediction_vs_actual_deployment_summary": "missing-prediction-summary.json",
+                "proof_boundary": "missing-proof-boundary.json",
+            },
+        },
+    )
+    (job_dir / "robot_eval_report.md").parent.mkdir(parents=True, exist_ok=True)
+    (job_dir / "robot_eval_report.md").write_text("# Robot Eval Report\n", encoding="utf-8")
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["report_generation"]
+    assert gate["passed"] is False
+    assert "robot_eval_report_referenced_artifacts_missing" in gate["blockers"]
+    assert gate["evidence"]["artifact_audit"]["missing_artifact_file_keys"] == [
+        "scenario_eval_matrix",
+        "evaluation_result",
+        "policy_execution_manifest",
+        "policy_execution_trace",
+        "deployment_outcome_ledger",
+        "prediction_vs_actual_deployment_summary",
+        "proof_boundary",
+    ]
+
+
+def test_live_robot_eval_closure_blocks_count_only_scenario_eval_matrix(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-count-only-matrix"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "required_variation_names": ["lighting_variation"],
+            "variation_names_covered": ["lighting_variation"],
+            "runs": [],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["scenario_eval_suite"]
+    assert gate["passed"] is False
+    assert "scenario_eval_matrix_missing_run_rows" in gate["blockers"]
+    assert "scenario_eval_matrix_run_count_mismatch" in gate["blockers"]
+    assert gate["evidence"]["scenario_eval_run_row_count"] == 0
+
+
+def test_live_robot_eval_closure_requires_complete_simulator_plugin_registry(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-partial-plugins"
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "simulator_engine_plugin_registry.json",
+        {
+            "schema_version": "simulator_engine_plugin_registry.v1",
+            "status": "ready_for_gated_managed_execution",
+            "engine_targets": [
+                "isaac_sim",
+                "isaac_lab_arena",
+                "mujoco",
+                "pybullet",
+                "newton",
+            ],
+            "plugin_count": 1,
+            "plugins": {
+                "mujoco": {
+                    "plugin_id": "blueprint_mujoco_sim_engine_plugin",
+                    "framework": "mujoco",
+                    "adapter_contract_status": "ready",
+                    "managed_execution_supported": True,
+                }
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    plugin_gate = manifest["gates"]["simulator_engine_plugins"]
+    assert plugin_gate["passed"] is False
+    assert "simulator_engine_plugin_registry_missing_required_engines" in plugin_gate[
+        "blockers"
+    ]
+    assert set(plugin_gate["evidence"]["missing_required_plugins"]) == {
+        "isaac_sim",
+        "isaac_lab_arena",
+        "pybullet",
+        "newton",
+    }
+
+
+def test_live_robot_eval_closure_rejects_unready_simulator_engine_plugins(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-unready-plugins"
+    engines = [
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    ]
+    plugins = {
+        engine: {
+            "plugin_id": f"blueprint_{engine}_sim_engine_plugin",
+            "framework": engine,
+            "adapter_contract_status": "ready",
+            "managed_execution_supported": True,
+        }
+        for engine in engines
+    }
+    plugins["isaac_lab_arena"]["adapter_contract_status"] = "blocked_missing_owner_adapter"
+    plugins["newton"]["managed_execution_supported"] = False
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "simulator_engine_plugin_registry.json",
+        {
+            "schema_version": "simulator_engine_plugin_registry.v1",
+            "status": "ready_for_gated_managed_execution",
+            "engine_targets": engines,
+            "plugin_count": len(plugins),
+            "plugins": plugins,
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    plugin_gate = manifest["gates"]["simulator_engine_plugins"]
+    assert plugin_gate["passed"] is False
+    assert "simulator_engine_plugins_not_ready" in plugin_gate["blockers"]
+    assert plugin_gate["evidence"]["unready_plugins"] == [
+        {
+            "framework": "isaac_lab_arena",
+            "adapter_contract_status": "blocked_missing_owner_adapter",
+            "managed_execution_supported": True,
+        },
+        {
+            "framework": "newton",
+            "adapter_contract_status": "ready",
+            "managed_execution_supported": False,
+        },
+    ]
+
+
+def test_live_robot_eval_closure_requires_world_model_engine_plugins(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-missing-world-plugins"
+    engines = [
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    ]
+    plugins = {
+        engine: {
+            "plugin_id": f"blueprint_{engine}_sim_engine_plugin",
+            "framework": engine,
+            "adapter_contract_status": "ready",
+            "managed_execution_supported": True,
+        }
+        for engine in engines
+    }
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "simulator_engine_plugin_registry.json",
+        {
+            "schema_version": "simulator_engine_plugin_registry.v1",
+            "status": "ready_for_gated_managed_execution",
+            "engine_targets": engines,
+            "world_model_engine_targets": [
+                "worldlabs_world_model",
+                "marble_simready",
+                "cosmos_predict",
+                "native_site_reference",
+            ],
+            "plugin_count": len(plugins),
+            "world_model_plugin_count": 1,
+            "plugins": plugins,
+            "world_model_plugins": {
+                "worldlabs_world_model": {
+                    "plugin_id": "blueprint_worldlabs_world_model_engine_plugin",
+                    "engine": "worldlabs_world_model",
+                    "adapter_contract_status": "ready",
+                    "managed_execution_supported": True,
+                }
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    plugin_gate = manifest["gates"]["simulator_engine_plugins"]
+    assert plugin_gate["passed"] is False
+    assert "simulator_engine_plugin_registry_missing_required_world_model_engines" in plugin_gate[
+        "blockers"
+    ]
+    assert set(plugin_gate["evidence"]["missing_required_world_model_plugins"]) == {
+        "marble_simready",
+        "cosmos_predict",
+        "native_site_reference",
+    }
+
+
+def test_live_robot_eval_closure_blocks_ready_simulator_plugins_missing_local_inputs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-plugin-inputs-missing"
+    engines = [
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    ]
+    plugins = {
+        engine: {
+            "plugin_id": f"blueprint_{engine}_sim_engine_plugin",
+            "framework": engine,
+            "adapter_contract_status": "ready",
+            "managed_execution_supported": True,
+            "inputs": {
+                "simulation_automation_plan": "simulation_automation_plan.json",
+                "asset_conversion_plan": "asset_conversion_plan.json",
+                "scenario_variation_instances": "scenario_variation_instances.json",
+                "episode_spec": "episode_spec.v1.json",
+                "cpu_preflight_manifest": "cpu_simulator_preflight_manifest.json",
+            },
+        }
+        for engine in engines
+    }
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "simulator_engine_plugin_registry.json",
+        {
+            "schema_version": "simulator_engine_plugin_registry.v1",
+            "status": "ready_for_gated_managed_execution",
+            "engine_targets": engines,
+            "plugin_count": len(plugins),
+            "plugins": plugins,
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    plugin_gate = manifest["gates"]["simulator_engine_plugins"]
+    assert plugin_gate["passed"] is False
+    assert "simulator_engine_plugin_registry_missing_local_input_artifacts" in plugin_gate[
+        "blockers"
+    ]
+    assert set(plugin_gate["evidence"]["missing_local_input_artifacts_by_plugin"]) == {
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    }
+    assert plugin_gate["evidence"]["missing_local_input_artifacts_by_plugin"]["mujoco"] == [
+        "asset_conversion_plan",
+        "cpu_preflight_manifest",
+        "episode_spec",
+        "scenario_variation_instances",
+        "simulation_automation_plan",
+    ]
+
+
+def test_live_robot_eval_closure_blocks_ready_world_model_plugins_missing_required_local_inputs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-world-plugin-inputs-missing"
+    engines = [
+        "isaac_sim",
+        "isaac_lab_arena",
+        "mujoco",
+        "pybullet",
+        "newton",
+    ]
+    plugins = {
+        engine: {
+            "plugin_id": f"blueprint_{engine}_sim_engine_plugin",
+            "framework": engine,
+            "adapter_contract_status": "ready",
+            "managed_execution_supported": True,
+        }
+        for engine in engines
+    }
+    world_engines = [
+        "worldlabs_world_model",
+        "marble_simready",
+        "cosmos_predict",
+        "native_site_reference",
+    ]
+    world_plugins = {
+        engine: {
+            "plugin_id": f"blueprint_{engine}_engine_plugin",
+            "engine": engine,
+            "adapter_contract_status": "ready",
+            "managed_execution_supported": True,
+            "source_status": "optional_missing",
+            "inputs": {
+                "simulation_automation_plan": "simulation_automation_plan.json",
+                "scenario_variation_instances": "scenario_variation_instances.json",
+                "site_card": "../robot_eval_dataset/site_card.json",
+                "task_cards": "../robot_eval_dataset/task_cards.json",
+                "scenario_cards": "../robot_eval_dataset/scenario_cards.json",
+                "world_manifest": "../worldlabs_world_manifest.json",
+            },
+        }
+        for engine in world_engines
+    }
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "simulator_engine_plugin_registry.json",
+        {
+            "schema_version": "simulator_engine_plugin_registry.v1",
+            "status": "ready_for_gated_managed_execution",
+            "engine_targets": engines,
+            "world_model_engine_targets": world_engines,
+            "plugin_count": len(plugins),
+            "world_model_plugin_count": len(world_plugins),
+            "plugins": plugins,
+            "world_model_plugins": world_plugins,
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    plugin_gate = manifest["gates"]["simulator_engine_plugins"]
+    assert plugin_gate["passed"] is False
+    assert "world_model_engine_plugin_registry_missing_local_input_artifacts" in plugin_gate[
+        "blockers"
+    ]
+    missing_by_plugin = plugin_gate["evidence"][
+        "missing_local_input_artifacts_by_world_model_plugin"
+    ]
+    assert set(missing_by_plugin) == set(world_engines)
+    assert set(missing_by_plugin["worldlabs_world_model"]) == {
+        "scenario_cards",
+        "scenario_variation_instances",
+        "simulation_automation_plan",
+        "site_card",
+        "task_cards",
+    }
+    assert "world_manifest" not in missing_by_plugin["worldlabs_world_model"]
+
+
+def test_live_robot_eval_closure_blocks_incomplete_scenario_eval_matrix(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-incomplete-matrix"
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_dataset" / "eval_cards.json",
+        {
+            "schema_version": "real_site_robot_eval_eval_cards.v0.1",
+            "eval_card_count": 1,
+            "cards": [{"eval_card_id": "eval-card-1", "task_id": "place_return_in_bin"}],
+        },
+    )
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "required_variation_names": ["lighting_variation", "glare"],
+            "variation_names_covered": ["lighting_variation"],
+            "missing_required_variation_names": ["glare"],
+            "runs": [
+                {
+                    "scenario_eval_run_id": "place_return_in_bin_scenario_lighting_run_0001",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["scenario_eval_suite"]
+    assert gate["passed"] is False
+    assert "scenario_eval_matrix_missing_required_variations" in gate["blockers"]
+    assert gate["evidence"]["missing_required_variation_names"] == ["glare"]
+
+
+def test_live_robot_eval_closure_blocks_name_only_scenario_eval_matrix_runs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-name-only-matrix"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "required_variation_names": ["lighting_variation"],
+            "variation_names_covered": ["lighting_variation"],
+            "missing_required_variation_names": [],
+            "runs": [
+                {
+                    "scenario_eval_run_id": "primary-lighting-run-0001",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["scenario_eval_suite"]
+    assert gate["passed"] is False
+    assert "scenario_eval_matrix_runs_missing_concrete_variation_details" in gate[
+        "blockers"
+    ]
+    assert gate["evidence"]["scenario_eval_runs_missing_concrete_details"] == [
+        {
+            "row_index": 1,
+            "scenario_eval_run_id": "primary-lighting-run-0001",
+            "scenario_variation_instance_id": "",
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "variation_name": "lighting_variation",
+            "missing_fields": [
+                "scenario_variation_instance_id",
+                "concrete_mutation",
+                "engine_mutations",
+            ],
+        }
+    ]
+
+
+def test_live_robot_eval_closure_blocks_scenario_eval_matrix_missing_per_scenario_coverage(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-per-scenario-matrix"
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_dataset" / "eval_cards.json",
+        {
+            "schema_version": "real_site_robot_eval_eval_cards.v0.1",
+            "eval_card_count": 2,
+            "cards": [
+                {
+                    "eval_card_id": "eval-card-primary",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "task_id": "place_return_in_bin",
+                    "prediction_source": "fixture",
+                    "validation": {"actual_status": "needs_actual_outcome"},
+                    "proof_boundary": "prediction_only_no_actual_outcome_no_deployment_claim",
+                },
+                {
+                    "eval_card_id": "eval-card-secondary",
+                    "scenario_id": "scenario_place_return_in_bin_secondary",
+                    "task_id": "place_return_in_bin",
+                    "prediction_source": "fixture",
+                    "validation": {"actual_status": "needs_actual_outcome"},
+                    "proof_boundary": "prediction_only_no_actual_outcome_no_deployment_claim",
+                },
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 2,
+            "required_variation_names": ["lighting_variation", "glare"],
+            "variation_names_covered": ["glare", "lighting_variation"],
+            "missing_required_variation_names": [],
+            "runs": [
+                {
+                    "scenario_eval_run_id": "primary-lighting-run-0001",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                },
+                {
+                    "scenario_eval_run_id": "secondary-glare-run-0001",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_secondary",
+                    "variation_name": "glare",
+                },
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["scenario_eval_suite"]
+    assert gate["passed"] is False
+    assert "scenario_eval_matrix_missing_required_variations_per_scenario" in gate[
+        "blockers"
+    ]
+    assert gate["evidence"]["missing_required_variations_by_scenario"] == [
+        {
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "missing_variation_names": ["glare"],
+        },
+        {
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_secondary",
+            "missing_variation_names": ["lighting_variation"],
+        },
+    ]
+
+
+def test_live_robot_eval_closure_blocks_scenario_family_library_task_and_variation_gaps(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    robot_eval_dir = capture_root / "pipeline" / "robot_eval_dataset"
+    task_path = robot_eval_dir / "task_cards.json"
+    task_payload = _read_json(task_path)
+    second_task = dict(task_payload["cards"][0])  # type: ignore[index]
+    second_task.update(
+        {
+            "task_card_id": "task_card_inspect_label",
+            "task_id": "inspect_label",
+            "task_statement": "Inspect the shelf label before placing the item",
+            "task_category": "inspection",
+        }
+    )
+    task_payload["cards"].append(second_task)  # type: ignore[union-attr]
+    task_payload["task_card_count"] = 2
+    _write_json(task_path, task_payload)
+    family_path = robot_eval_dir / "scenario_family_library.json"
+    family_payload = _read_json(family_path)
+    family_payload["families"][0]["variations"] = [  # type: ignore[index]
+        variation
+        for variation in family_payload["families"][0]["variations"]  # type: ignore[index]
+        if variation["variation_id"] != "glare"
+    ]
+    family_payload["families"][0]["variation_count"] = len(  # type: ignore[index]
+        family_payload["families"][0]["variations"]  # type: ignore[index]
+    )
+    _write_json(family_path, family_payload)
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "scenario_variation_instances.json",
+        {
+            "schema_version": "scenario_variation_instances.v1",
+            "status": "completed",
+            "required_variation_names": list(POLICY_REFERENCE_VARIATION_NAMES),
+            "variation_names_instantiated": list(POLICY_REFERENCE_VARIATION_NAMES),
+            "instance_count": len(POLICY_REFERENCE_VARIATION_NAMES),
+            "instances": [
+                {
+                    "instance_id": f"variation-{variation_name}",
+                    "variation_name": variation_name,
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                }
+                for variation_name in POLICY_REFERENCE_VARIATION_NAMES
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=capture_root / "pipeline" / "robot_eval_jobs" / "job-scenario-family-gap",
+    )
+
+    gate = manifest["gates"]["scenario_library"]
+    coverage = gate["evidence"]["scenario_family_task_coverage"]
+    assert "scenario_family_library_missing_task_coverage" in gate["blockers"]
+    assert "scenario_family_library_missing_required_variations" in gate["blockers"]
+    assert coverage["missing_task_ids"] == ["inspect_label"]
+    assert coverage["missing_required_variations_by_family"] == [
+        {
+            "family_id": "family_scenario_place_return_in_bin_mobile",
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "missing_variation_names": ["glare"],
+        }
+    ]
+
+
+def test_live_robot_eval_closure_blocks_robot_pov_missing_required_run_ids(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-pov-coverage"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 2,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                },
+                {
+                    "scenario_eval_run_id": "scenario-run-2",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "glare",
+                },
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "robot_pov_observation_manifest.json",
+        {
+            "schema_version": "robot_pov_observation_manifest.v1",
+            "status": "completed",
+            "observation_count": 2,
+            "observations": [
+                {
+                    "observation_id": "obs-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                },
+                {
+                    "observation_id": "obs-2",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                },
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["robot_pov_generation"]
+    assert gate["passed"] is False
+    assert "robot_pov_missing_required_scenario_eval_run_ids" in gate["blockers"]
+    assert gate["evidence"]["covered_scenario_eval_run_ids"] == ["scenario-run-1"]
+    assert gate["evidence"]["missing_scenario_eval_run_ids"] == ["scenario-run-2"]
+
+
+def test_live_robot_eval_closure_blocks_robot_pov_without_frame_sequence_artifacts(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-pov-missing-frames"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "robot_pov_observation_manifest.json",
+        {
+            "schema_version": "robot_pov_observation_manifest.v1",
+            "status": "completed",
+            "observation_count": 1,
+            "local_render_sequence_count": 0,
+            "local_render_frame_count": 0,
+            "observations": [
+                {
+                    "observation_id": "obs-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "render_sequence_id": "sequence-missing",
+                    "render_frame_paths": [],
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["robot_pov_generation"]
+    assert gate["passed"] is False
+    assert "missing_robot_pov_frame_sequence_manifest" in gate["blockers"]
+    assert "missing_robot_pov_render_storyboard" in gate["blockers"]
+    assert "robot_pov_local_render_frames_empty" in gate["blockers"]
+
+
+def test_live_robot_eval_closure_blocks_robot_pov_observations_missing_required_fields(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-pov-missing-observation-fields"
+    frame_path = job_dir / "robot_pov" / "frame-1.png"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    frame_path.write_bytes(b"robot pov frame\n")
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "robot_pov_observation_manifest.json",
+        {
+            "schema_version": "robot_pov_observation_manifest.v1",
+            "status": "completed",
+            "observation_count": 1,
+            "local_render_sequence_count": 1,
+            "local_render_frame_count": 1,
+            "observations": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "robot_pov_frame_sequence_manifest.json",
+        {
+            "schema_version": "robot_pov_frame_sequence_manifest.v1",
+            "status": "completed",
+            "sequence_count": 1,
+            "total_frame_count": 1,
+            "sequences": [
+                {
+                    "sequence_id": "sequence-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "frame_count": 1,
+                    "frame_paths": ["robot_pov/frame-1.png"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "robot_pov_render_storyboard.json",
+        {
+            "schema_version": "robot_pov_render_storyboard.v1",
+            "status": "completed",
+            "storyboard_count": 1,
+            "storyboards": [
+                {
+                    "storyboard_id": "storyboard-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "frames": [{"frame_path": "robot_pov/frame-1.png"}],
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["robot_pov_generation"]
+    assert gate["passed"] is False
+    assert "robot_pov_observations_missing_required_fields" in gate["blockers"]
+    assert gate["evidence"]["observation_rows_missing_required_fields"] == [
+        {
+            "index": 0,
+            "observation_id": None,
+            "scenario_eval_run_id": "scenario-run-1",
+            "missing_fields": [
+                "camera",
+                "generated_frame_path",
+                "observation_id",
+                "render_sequence_id",
+                "render_storyboard_id",
+                "scenario_id",
+                "task_id",
+            ],
+        }
+    ]
+
+
+def test_live_robot_eval_closure_blocks_robot_pov_storyboard_missing_local_frame_files(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-pov-missing-storyboard-frame"
+    frame_path = job_dir / "robot_pov" / "frame-1.png"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    frame_path.write_bytes(b"robot pov frame\n")
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "robot_pov_observation_manifest.json",
+        {
+            "schema_version": "robot_pov_observation_manifest.v1",
+            "status": "completed",
+            "observation_count": 1,
+            "local_render_sequence_count": 1,
+            "local_render_frame_count": 1,
+            "observations": [
+                {
+                    "observation_id": "obs-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "camera": {"name": "front", "frame": "base_link"},
+                    "generated_frame_path": "robot_pov/frame-1.png",
+                    "render_sequence_id": "sequence-1",
+                    "render_storyboard_id": "storyboard-1",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "robot_pov_frame_sequence_manifest.json",
+        {
+            "schema_version": "robot_pov_frame_sequence_manifest.v1",
+            "status": "completed",
+            "sequence_count": 1,
+            "total_frame_count": 1,
+            "sequences": [
+                {
+                    "sequence_id": "sequence-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "frame_count": 1,
+                    "frame_paths": ["robot_pov/frame-1.png"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "robot_pov_render_storyboard.json",
+        {
+            "schema_version": "robot_pov_render_storyboard.v1",
+            "status": "completed",
+            "storyboard_count": 1,
+            "storyboards": [
+                {
+                    "storyboard_id": "storyboard-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "frames": [{"frame_path": "robot_pov/missing-frame.png"}],
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["robot_pov_generation"]
+    assert gate["passed"] is False
+    assert "robot_pov_storyboard_local_frame_files_missing" in gate["blockers"]
+    assert gate["evidence"]["missing_storyboard_frame_paths"] == [
+        "robot_pov/missing-frame.png"
+    ]
+
+
+def test_live_robot_eval_closure_blocks_unlabeled_failed_scenario_eval_runs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-failure-label-coverage"
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "schema_version": "robot_eval_simulator_command_normalized_attempt_trace.v1",
+            "status": "completed",
+            "attempt_count": 2,
+            "attempts": [
+                {
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "success": False,
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                },
+                {
+                    "attempt_id": "attempt-run-2",
+                    "scenario_eval_run_id": "scenario-run-2",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "success": False,
+                    "failure_mode_ids": ["failure_collision_risk"],
+                },
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "schema_version": "robot_eval_simulator_command_failure_labels.v1",
+            "status": "review_required",
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label_attempt_run_1",
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                    "status": "review_required",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["failure_labels"]
+    assert gate["passed"] is False
+    assert "failure_labels_missing_failed_attempt_coverage" in gate["blockers"]
+    assert gate["evidence"]["failed_attempt_count"] == 2
+    assert gate["evidence"]["covered_failed_attempt_ids"] == ["attempt-run-1"]
+    assert gate["evidence"]["missing_failed_attempt_ids"] == ["attempt-run-2"]
+    assert gate["evidence"]["missing_failed_scenario_eval_run_ids"] == ["scenario-run-2"]
+
+
+def test_live_robot_eval_closure_blocks_unlabeled_failed_policy_attempts(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-policy-failure-labels"
+    _write_json(
+        job_dir / "policy_execution_trace.json",
+        {
+            "schema_version": "robot_policy_execution_trace.v1",
+            "status": "completed",
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "policy-attempt-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "policy_id": "policy-api",
+                    "status": "failed",
+                    "success": False,
+                    "actions": [{"type": "move_base", "target": "bin_approach"}],
+                    "failure_mode_ids": ["failure_wrong_object"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "schema_version": "robot_eval_failure_labels.v1",
+            "status": "review_required",
+            "label_count": 0,
+            "labels": [],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["failure_labels"]
+    assert gate["passed"] is False
+    assert "failure_labels_missing_failed_attempt_coverage" in gate["blockers"]
+    assert gate["evidence"]["failed_policy_attempt_count"] == 1
+    assert gate["evidence"]["missing_failed_attempt_ids"] == ["policy-attempt-1"]
+    assert gate["evidence"]["missing_failed_scenario_eval_run_ids"] == ["scenario-run-1"]
+
+
+def test_live_robot_eval_closure_blocks_failure_labels_without_failure_modes(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-empty-failure-label"
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "schema_version": "robot_eval_simulator_command_normalized_attempt_trace.v1",
+            "status": "completed",
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "success": False,
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "schema_version": "robot_eval_simulator_command_failure_labels.v1",
+            "status": "review_required",
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label_attempt_run_1",
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "failure_mode_ids": [],
+                    "status": "review_required",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["failure_labels"]
+    assert gate["passed"] is False
+    assert "failure_labels_missing_failure_mode_ids" in gate["blockers"]
+    assert gate["evidence"]["labels_missing_failure_mode_ids"] == ["label_attempt_run_1"]
+
+
+def test_live_robot_eval_closure_blocks_invalid_scorecard_metric_values(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-invalid-scorecard"
+    _write_json(
+        job_dir / "evaluation_result.json",
+        {
+            "schema_version": "robot_eval_evaluation_result.v1",
+            "status": "completed",
+            "standard_policy_scorecard": {
+                "success_rate": "one",
+                "cycle_time": {"mean_seconds": -1.0, "sample_count": 1},
+                "intervention_rate": -0.25,
+                "unsafe_proximity": {"event_count": -1},
+                "collision_risk": {"event_count": 0},
+                "object_drop": {"event_count": 0},
+                "wrong_object": {"event_count": 0},
+                "timeout": {"event_count": 0},
+                "recovery_success": {
+                    "success_rate": 2.0,
+                    "success_count": 2,
+                    "attempt_count": 1,
+                },
+                "world_model_uncertainty": {
+                    "status": "scored",
+                    "mean_score": 1.5,
+                    "sample_count": 1,
+                },
+                "sim_vs_real_calibration_score": "n/a",
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["evaluation_methodology"]
+    assert gate["passed"] is False
+    assert "standard_policy_scorecard_invalid_metric_values" in gate["blockers"]
+    assert set(gate["evidence"]["invalid_scorecard_fields"]) == {
+        "success_rate",
+        "cycle_time",
+        "intervention_rate",
+        "unsafe_proximity",
+        "recovery_success",
+        "world_model_uncertainty",
+        "sim_vs_real_calibration_score",
+    }
+
+
+def test_live_robot_eval_closure_blocks_evaluation_scorecard_missing_run_coverage(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-incomplete-evaluation-coverage"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 2,
+            "runs": [
+                {"scenario_eval_run_id": "scenario-run-1"},
+                {"scenario_eval_run_id": "scenario-run-2"},
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "schema_version": "robot_eval_job_normalized_attempt_trace.v1",
+            "status": "completed",
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "success": True,
+                    "metrics": {"cycle_time_seconds": 10.0},
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "evaluation_result.json",
+        {
+            "schema_version": "robot_eval_evaluation_result.v1",
+            "status": "completed",
+            "normalized_attempt_trace_path": "normalized_attempt_trace.json",
+            "standard_policy_scorecard": {
+                "success_rate": 1.0,
+                "cycle_time": {"mean_seconds": 10.0, "sample_count": 1},
+                "intervention_rate": 0.0,
+                "unsafe_proximity": {"event_count": 0},
+                "collision_risk": {"event_count": 0},
+                "object_drop": {"event_count": 0},
+                "wrong_object": {"event_count": 0},
+                "timeout": {"event_count": 0},
+                "recovery_success": {
+                    "success_rate": None,
+                    "success_count": 0,
+                    "attempt_count": 0,
+                },
+                "world_model_uncertainty": {
+                    "status": "not_available",
+                    "mean_score": None,
+                    "sample_count": 0,
+                },
+                "sim_vs_real_calibration_score": None,
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["evaluation_methodology"]
+    assert gate["passed"] is False
+    assert "evaluation_scorecard_missing_required_scenario_eval_run_ids" in gate["blockers"]
+    assert gate["evidence"]["required_scenario_eval_run_ids"] == [
+        "scenario-run-1",
+        "scenario-run-2",
+    ]
+    assert gate["evidence"]["scored_scenario_eval_run_ids"] == ["scenario-run-1"]
+    assert gate["evidence"]["missing_scenario_eval_run_ids"] == ["scenario-run-2"]
+
+
+def test_live_robot_eval_closure_blocks_invalid_selected_policy_modality(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-invalid-policy-interface"
+    _write_json(
+        job_dir / "policy_package_manifest.json",
+        {
+            "schema_version": "robot_eval_policy_package_manifest.v1",
+            "status": "review_required",
+            "selected_modalities": ["docker_container"],
+            "modalities": {
+                "policy_api_endpoint": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+                "docker_container": {
+                    "status": "blocked",
+                    "selected": True,
+                    "reference": {"image_ref": "registry.example/robot/policy:latest"},
+                    "missing_inputs": ["policy_package.docker_container.digest"],
+                },
+                "recorded_action_trace": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+                "high_level_skill_trace": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+                "teleop_demo": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+                "sim_controller_plugin": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["policy_interface"]
+    assert gate["passed"] is False
+    assert "policy_interface_selected_modalities_invalid" in gate["blockers"]
+    assert gate["evidence"]["selected_modality_statuses"]["docker_container"] == "blocked"
+    assert gate["evidence"]["selected_modality_missing_inputs"] == {
+        "docker_container": ["policy_package.docker_container.digest"]
+    }
+
+
+def test_live_robot_eval_closure_blocks_missing_local_selected_policy_reference(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-missing-policy-ref"
+    _write_json(
+        job_dir / "policy_package_manifest.json",
+        {
+            "schema_version": "robot_eval_policy_package_manifest.v1",
+            "status": "review_required",
+            "selected_modalities": ["recorded_action_trace"],
+            "modalities": {
+                "policy_api_endpoint": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+                "docker_container": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+                "recorded_action_trace": {
+                    "status": "reference_present_requires_owner_system_review",
+                    "selected": True,
+                    "reference": {
+                        "trace_manifest_uri": "policy_refs/missing-recorded-action-trace.json",
+                        "timestamp_alignment": "aligned_to_capture_timestamps",
+                    },
+                    "missing_inputs": [],
+                },
+                "high_level_skill_trace": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+                "teleop_demo": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+                "sim_controller_plugin": {
+                    "status": "not_selected",
+                    "selected": False,
+                    "reference": {},
+                    "missing_inputs": [],
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["policy_interface"]
+    assert gate["passed"] is False
+    assert "policy_interface_selected_modalities_invalid" in gate["blockers"]
+    assert gate["evidence"]["selected_modality_missing_local_ref_keys"] == {
+        "recorded_action_trace": ["trace_manifest_uri"]
+    }
+    assert gate["evidence"]["selected_modality_missing_inputs"] == {
+        "recorded_action_trace": [
+            "policy_package.recorded_action_trace.trace_manifest_uri_local_file_missing"
+        ]
+    }
+
+
+def test_live_robot_eval_closure_blocks_policy_execution_without_actions_or_skills(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-policy-no-actions"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "policy_execution_manifest.json",
+        {
+            "schema_version": "robot_policy_execution_manifest.v1",
+            "status": "completed",
+            "robot_policy_execution_proven": True,
+            "attempt_count": 1,
+            "selected_modalities": ["policy_api_endpoint"],
+        },
+    )
+    _write_json(
+        job_dir / "policy_execution_trace.json",
+        {
+            "schema_version": "robot_policy_execution_trace.v1",
+            "status": "completed",
+            "robot_policy_execution_proven": True,
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "attempt-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "policy_id": "policy-api",
+                    "status": "completed",
+                    "success": True,
+                    "actions": [],
+                    "skills": [],
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["live_policy_execution"]
+    assert gate["passed"] is False
+    assert "policy_execution_attempts_missing_action_or_skill_trace" in gate["blockers"]
+    assert gate["evidence"]["attempts_missing_action_or_skill_trace"] == ["attempt-1"]
+
+
+def test_live_robot_eval_closure_rejects_reference_replay_as_live_policy_proof(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-policy-reference-spoof"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "policy_execution_manifest.json",
+        {
+            "schema_version": "robot_policy_execution_manifest.v1",
+            "status": "completed",
+            "robot_policy_execution_proven": True,
+            "attempt_count": 1,
+            "selected_modalities": ["recorded_action_trace"],
+            "modality_results": {
+                "recorded_action_trace": {
+                    "status": "completed_reference_replay",
+                    "execution_performed": False,
+                    "reference_replayed": True,
+                    "attempt_count": 1,
+                    "robot_policy_execution_proven": True,
+                }
+            },
+        },
+    )
+    _write_json(
+        job_dir / "policy_execution_trace.json",
+        {
+            "schema_version": "robot_policy_execution_trace.v1",
+            "status": "completed",
+            "robot_policy_execution_proven": True,
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "attempt-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "policy_id": "recorded-policy",
+                    "status": "completed",
+                    "success": True,
+                    "actions": [{"type": "move_base", "target": "bin_approach"}],
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["live_policy_execution"]
+    assert gate["passed"] is False
+    assert "policy_execution_missing_proven_executed_modality" in gate["blockers"]
+    assert "policy_execution_selected_modalities_reference_replay_only" in gate["blockers"]
+    assert gate["evidence"]["policy_execution_result_audit"][
+        "reference_only_modalities"
+    ] == ["recorded_action_trace"]
+    assert gate["evidence"]["policy_execution_result_audit"][
+        "proven_executed_modalities"
+    ] == []
+
+
+def test_live_robot_eval_closure_blocks_policy_execution_failed_status_even_with_proof_boolean(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-policy-failed-status"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "policy_execution_manifest.json",
+        {
+            "schema_version": "robot_policy_execution_manifest.v1",
+            "status": "failed",
+            "robot_policy_execution_proven": True,
+            "attempt_count": 1,
+            "selected_modalities": ["policy_api_endpoint"],
+        },
+    )
+    _write_json(
+        job_dir / "policy_execution_trace.json",
+        {
+            "schema_version": "robot_policy_execution_trace.v1",
+            "status": "failed",
+            "robot_policy_execution_proven": True,
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "attempt-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "policy_id": "policy-api",
+                    "status": "completed",
+                    "success": True,
+                    "actions": [{"type": "move_base", "target": "bin_approach"}],
+                    "skills": [],
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["live_policy_execution"]
+    assert gate["passed"] is False
+    assert "policy_execution_manifest_not_completed" in gate["blockers"]
+    assert "policy_execution_trace_not_completed" in gate["blockers"]
+    assert gate["evidence"]["policy_execution_manifest_status"] == "failed"
+    assert gate["evidence"]["policy_execution_trace_status"] == "failed"
+
+
+def test_live_robot_eval_closure_blocks_simulator_failed_status_even_with_proof_boolean(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-simulator-failed-status"
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "scenario_eval_run_count": 1,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": "lighting_variation",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "simulator_service_result.json",
+        {
+            "schema_version": "robot_eval_simulator_service_result.v1",
+            "framework": "pybullet",
+            "status": "failed",
+            "simulators_run": True,
+            "simulator_execution_proven": True,
+        },
+    )
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "schema_version": "robot_eval_simulator_command_normalized_attempt_trace.v1",
+            "status": "failed",
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "success": True,
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["live_simulator_execution"]
+    assert gate["passed"] is False
+    assert "simulator_service_result_not_completed" in gate["blockers"]
+    assert "normalized_attempt_trace_not_completed" in gate["blockers"]
+    assert gate["evidence"]["simulator_status"] == "failed"
+    assert gate["evidence"]["normalized_attempt_trace_status"] == "failed"
 
 
 def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
@@ -398,6 +3381,7 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
                     "outcome_id": "pilot-outcome-1",
                     "task_id": "place_return_in_bin",
                     "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "scenario_eval_run_id": _scenario_eval_run_id("lighting_variation", 1),
                     "policy_id": "policy-command",
                     "actual_success": False,
                     "failure_mode_ids": ["failure_collision_risk"],
@@ -460,6 +3444,7 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
     calibration = _read_json(job_dir / "sim_vs_real_calibration_report.json")
     deployment_summary = _read_json(job_dir / "prediction_vs_actual_deployment_summary.json")
+    evaluation = _read_json(job_dir / "evaluation_result.json")
     package = _read_json(job_dir / "post_training_data_package_export_manifest.json")
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
 
@@ -470,9 +3455,17 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     assert proof_boundary["real_world_outcome_proven"] is True
 
     assert deployment["status"] == "completed"
+    assert deployment["real_world_outcome_records_present"] is True
+    assert deployment["owner_evidence_record_count"] == 1
+    assert deployment["missing_owner_evidence_record_ids"] == []
     assert deployment["real_world_outcome_proven"] is True
+    assert deployment["records"][0]["owner_evidence_present"] is True
     assert calibration["status"] == "completed"
     assert calibration["sim_vs_real_calibration_score"] == 0.0
+    assert calibration["exact_prediction_record_count"] == 1
+    assert calibration["weak_prediction_match_record_count"] == 0
+    assert evaluation["standard_policy_scorecard"]["sim_vs_real_calibration_score"] == 0.0
+    assert evaluation["sim_vs_real_calibration_report_path"] == "sim_vs_real_calibration_report.json"
     assert calibration["missed_failure_count"] == 1
     assert calibration["site_modification_count"] == 1
     assert deployment_summary["how_much_real_world_tuning_was_needed"] == {
@@ -494,6 +3487,492 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     assert run_manifest["robot_policy_execution_proven"] is True
     assert run_manifest["real_world_outcome_proven"] is True
     assert run_manifest["robot_readiness_proven"] is False
+
+
+def test_robot_eval_job_ingests_inline_real_world_outcomes_from_job_request(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request_path = tmp_path / "job-request.json"
+    request = _full_job_request(capture_root)
+    request["actual_outcomes"] = {
+        "schema_version": "actual_outcome_manifest.v1",
+        "records": [
+            {
+                "outcome_id": "inline-pilot-outcome-1",
+                "task_id": "place_return_in_bin",
+                "scenario_id": "scenario_place_return_in_bin_mobile",
+                "policy_id": "fixture-policy",
+                "actual_success": True,
+                "failure_mode_ids": [],
+                "cycle_time_seconds": 10.5,
+                "intervention_count": 0,
+                "real_world_tuning_needed": False,
+                "site_modifications": [],
+            }
+        ],
+    }
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-inline-real-world",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
+    calibration = _read_json(job_dir / "sim_vs_real_calibration_report.json")
+    deployment_summary = _read_json(job_dir / "prediction_vs_actual_deployment_summary.json")
+    intake = _read_json(job_dir / "deployment_outcome_intake_manifest.json")
+    evaluation = _read_json(job_dir / "evaluation_result.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+
+    assert deployment["status"] == "completed"
+    assert deployment["real_world_outcome_records_present"] is True
+    assert deployment["owner_evidence_record_count"] == 0
+    assert deployment["missing_owner_evidence_record_ids"] == ["inline-pilot-outcome-1"]
+    assert deployment["real_world_outcome_proven"] is False
+    assert deployment["outcome_source"] == "job_request_inline_actual_outcomes"
+    assert intake["status"] == "completed"
+    assert intake["record_count"] == 1
+    assert intake["real_world_outcome_records_present"] is True
+    assert intake["real_world_outcome_proven"] is False
+    assert calibration["status"] == "blocked_weak_prediction_matches"
+    assert calibration["real_world_outcome_records_present"] is True
+    assert calibration["real_world_outcome_proven"] is False
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["exact_prediction_record_count"] == 0
+    assert calibration["weak_prediction_match_record_count"] == 1
+    assert calibration["weak_prediction_match_record_ids"] == ["inline-pilot-outcome-1"]
+    assert evaluation["standard_policy_scorecard"]["sim_vs_real_calibration_score"] is None
+    assert deployment_summary["real_world_outcome_proven"] is False
+    assert deployment_summary["weak_prediction_match_record_ids"] == ["inline-pilot-outcome-1"]
+    assert deployment_summary["what_actually_happened"][0]["actual_success"] is True
+    assert deployment_summary["what_actually_happened"][0]["exact_prediction_match"] is False
+    predicted_gate = live_closure["gates"]["predicted_vs_actual_calibration"]
+    assert predicted_gate["passed"] is False
+    assert "predicted_vs_actual_weak_prediction_matches" in predicted_gate["blockers"]
+    assert "predicted_vs_actual_no_exact_prediction_matches" in predicted_gate["blockers"]
+    assert predicted_gate["evidence"]["weak_prediction_match_record_ids"] == [
+        "inline-pilot-outcome-1"
+    ]
+    assert run_manifest["real_world_outcome_records_present"] is True
+    assert run_manifest["owner_evidence_record_count"] == 0
+    assert run_manifest["missing_owner_evidence_record_ids"] == ["inline-pilot-outcome-1"]
+    assert run_manifest["real_world_outcome_proven"] is False
+
+
+def test_robot_eval_job_blocks_deployment_outcomes_without_actual_result_signal(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request_path = tmp_path / "job-request.json"
+    request = _full_job_request(capture_root)
+    request["actual_outcomes"] = {
+        "schema_version": "actual_outcome_manifest.v1",
+        "records": [
+            {
+                "outcome_id": "pilot-missing-result-1",
+                "task_id": "place_return_in_bin",
+                "scenario_id": "scenario_place_return_in_bin_mobile",
+                "policy_id": "fixture-policy",
+                "cycle_time_seconds": 10.5,
+                "intervention_count": 0,
+                "evidence_refs": {"pilot_log": "owner://pilot/missing-result-1"},
+            }
+        ],
+    }
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-missing-actual-result",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
+    proof_boundary = _read_json(job_dir / "proof_boundary.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+    gate = live_closure["gates"]["real_world_validation_loop"]
+
+    assert deployment["owner_evidence_record_count"] == 1
+    assert deployment["missing_owner_evidence_record_ids"] == []
+    assert deployment["missing_actual_result_signal_record_ids"] == ["pilot-missing-result-1"]
+    assert "deployment_outcomes_missing_actual_result_signal" in deployment["blockers"]
+    assert deployment["real_world_outcome_proven"] is False
+    assert proof_boundary["real_world_outcome_proven"] is False
+    assert run_manifest["real_world_outcome_proven"] is False
+    assert gate["passed"] is False
+    assert "deployment_outcomes_missing_actual_result_signal" in gate["blockers"]
+
+
+def test_live_robot_eval_closure_recomputes_real_world_owner_evidence_from_rows(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-spoofed-real-world"
+    _write_json(
+        job_dir / "deployment_outcome_intake_manifest.json",
+        {
+            "schema_version": "deployment_outcome_intake_manifest.v1",
+            "status": "completed",
+            "record_count": 1,
+            "real_world_outcome_records_present": True,
+            "real_world_outcome_proven": False,
+        },
+    )
+    _write_json(
+        job_dir / "deployment_outcome_ledger.json",
+        {
+            "schema_version": "deployment_outcome_ledger.v1",
+            "status": "completed",
+            "record_count": 1,
+            "real_world_outcome_records_present": True,
+            "real_world_outcome_proven": True,
+            "owner_evidence_record_count": 1,
+            "missing_owner_evidence_record_ids": [],
+            "missing_actual_result_signal_record_ids": [],
+            "records": [
+                {
+                    "record_id": "spoofed-owner-evidence",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "actual_success": True,
+                    "owner_evidence_present": True,
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["real_world_validation_loop"]
+    assert gate["passed"] is False
+    assert "deployment_outcomes_missing_owner_evidence" in gate["blockers"]
+    assert gate["evidence"]["ledger_real_world_outcome_proven_claimed"] is True
+    assert gate["evidence"]["record_level_real_world_outcome_proven"] is False
+    assert gate["evidence"]["real_world_outcome_proven"] is False
+    assert gate["evidence"]["missing_owner_evidence_record_ids"] == [
+        "spoofed-owner-evidence"
+    ]
+
+
+def test_robot_eval_job_blocks_predicted_vs_actual_with_unmatched_actual_run_id(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request_path = tmp_path / "job-request.json"
+    request = _full_job_request(capture_root)
+    request["actual_outcomes"] = {
+        "schema_version": "actual_outcome_manifest.v1",
+        "records": [
+            {
+                "outcome_id": "pilot-unmatched-run-1",
+                "task_id": "place_return_in_bin",
+                "scenario_id": "scenario_place_return_in_bin_mobile",
+                "scenario_eval_run_id": "not-in-scenario-eval-matrix",
+                "policy_id": "fixture-policy",
+                "actual_success": True,
+                "failure_mode_ids": [],
+                "cycle_time_seconds": 10.5,
+                "intervention_count": 0,
+                "evidence_refs": {"pilot_log": "owner://pilot/unmatched-run-1"},
+            }
+        ],
+    }
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-unmatched-real-world-run",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
+    calibration = _read_json(job_dir / "sim_vs_real_calibration_report.json")
+    deployment_summary = _read_json(job_dir / "prediction_vs_actual_deployment_summary.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+    gate = live_closure["gates"]["predicted_vs_actual_calibration"]
+
+    assert deployment.get("unmatched_actual_record_ids") == ["pilot-unmatched-run-1"]
+    assert "deployment_outcomes_missing_matching_prediction" in deployment["blockers"]
+    assert calibration.get("unmatched_actual_record_count") == 1
+    assert calibration.get("unmatched_actual_record_ids") == ["pilot-unmatched-run-1"]
+    assert deployment_summary.get("unmatched_actual_record_ids") == ["pilot-unmatched-run-1"]
+    assert gate["passed"] is False
+    assert "predicted_vs_actual_unmatched_actual_records" in gate["blockers"]
+    assert gate["evidence"]["unmatched_actual_record_ids"] == ["pilot-unmatched-run-1"]
+
+
+def test_live_robot_eval_closure_blocks_invalid_predicted_vs_actual_score_without_matches(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-invalid-calibration"
+    _write_json(
+        job_dir / "sim_vs_real_calibration_report.json",
+        {
+            "schema_version": "sim_vs_real_calibration_report.v1",
+            "status": "completed",
+            "sim_vs_real_calibration_score": 1.5,
+            "matched_prediction_record_count": 0,
+            "unmatched_actual_record_count": 0,
+            "unmatched_actual_record_ids": [],
+            "prediction_match_counts": {
+                "scenario_eval_run_and_variation": 0,
+                "scenario_eval_run": 0,
+                "scenario_variation_instance": 0,
+                "task_scenario_fallback": 0,
+                "unmatched": 0,
+            },
+        },
+    )
+    _write_json(
+        job_dir / "prediction_vs_actual_deployment_summary.json",
+        {
+            "schema_version": "prediction_vs_actual_deployment_summary.v1",
+            "status": "completed",
+            "sim_vs_real_calibration_score": 1.5,
+            "matched_prediction_record_count": 0,
+            "unmatched_actual_record_count": 0,
+            "unmatched_actual_record_ids": [],
+            "prediction_match_counts": {
+                "scenario_eval_run_and_variation": 0,
+                "scenario_eval_run": 0,
+                "scenario_variation_instance": 0,
+                "task_scenario_fallback": 0,
+                "unmatched": 0,
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["predicted_vs_actual_calibration"]
+    assert gate["passed"] is False
+    assert "sim_vs_real_calibration_score_invalid" in gate["blockers"]
+    assert "predicted_vs_actual_no_matched_prediction_records" in gate["blockers"]
+    assert gate["evidence"]["matched_prediction_record_count"] == 0
+
+
+def test_live_robot_eval_closure_blocks_incomplete_predicted_vs_actual_summary(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-incomplete-pva-summary"
+    _write_json(
+        job_dir / "sim_vs_real_calibration_report.json",
+        {
+            "schema_version": "sim_vs_real_calibration_report.v1",
+            "status": "completed",
+            "sim_vs_real_calibration_score": 0.5,
+            "matched_prediction_record_count": 1,
+            "unmatched_actual_record_count": 0,
+            "unmatched_actual_record_ids": [],
+            "prediction_match_counts": {
+                "scenario_eval_run_and_variation": 1,
+                "scenario_eval_run": 0,
+                "scenario_variation_instance": 0,
+                "task_scenario_fallback": 0,
+                "unmatched": 0,
+            },
+        },
+    )
+    _write_json(
+        job_dir / "prediction_vs_actual_deployment_summary.json",
+        {
+            "schema_version": "prediction_vs_actual_deployment_summary.v1",
+            "status": "completed",
+            "sim_vs_real_calibration_score": 0.5,
+            "matched_prediction_record_count": 1,
+            "unmatched_actual_record_count": 0,
+            "unmatched_actual_record_ids": [],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["predicted_vs_actual_calibration"]
+    assert gate["passed"] is False
+    assert "prediction_vs_actual_summary_missing_required_sections" in gate["blockers"]
+    assert gate["evidence"]["missing_summary_sections"] == [
+        "how_much_real_world_tuning_was_needed",
+        "what_actually_happened",
+        "what_eval_predicted",
+        "whether_site_modifications_helped",
+        "which_failures_were_missed",
+        "which_scenarios_predicted_failure",
+    ]
+
+
+def test_robot_eval_job_ingests_deployment_outcome_inbox(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    inbox = capture_root / "pipeline" / "robot_eval_inputs" / "deployment_outcomes" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_json(
+        inbox / "pilot-outcome-001.json",
+        {
+            "schema_version": "deployment_outcome.v1",
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "policy_id": "fixture-policy",
+            "actual_success": False,
+            "failure_mode_ids": ["missed_blocked_path"],
+            "cycle_time_seconds": 31.0,
+            "intervention_count": 1,
+            "real_world_tuning_needed": True,
+            "tuning_iterations": 1,
+            "tuning_hours": 0.75,
+            "site_modifications": ["moved_cart_from_approach_lane"],
+            "site_modifications_helped": True,
+        },
+    )
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, _full_job_request(capture_root))
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-deployment-inbox",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    intake = _read_json(job_dir / "deployment_outcome_intake_manifest.json")
+    deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
+    calibration = _read_json(job_dir / "sim_vs_real_calibration_report.json")
+    evaluation = _read_json(job_dir / "evaluation_result.json")
+    proof_boundary = _read_json(job_dir / "proof_boundary.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+
+    assert intake["status"] == "completed"
+    assert intake["outcome_source"] == "deployment_outcome_inbox"
+    assert intake["record_count"] == 1
+    assert intake["real_world_outcome_records_present"] is True
+    assert intake["real_world_outcome_proven"] is False
+    assert intake["source_files"] == [str(inbox / "pilot-outcome-001.json")]
+    assert deployment["status"] == "completed"
+    assert deployment["outcome_source"] == "deployment_outcome_inbox"
+    assert deployment["real_world_outcome_records_present"] is True
+    assert deployment["owner_evidence_record_count"] == 0
+    assert deployment["missing_owner_evidence_record_ids"] == ["deployment_outcome_0001"]
+    assert deployment["real_world_outcome_proven"] is False
+    assert deployment["records"][0]["missed_failures"] == ["missed_blocked_path"]
+    assert deployment["records"][0]["owner_evidence_present"] is False
+    assert calibration["status"] == "blocked_weak_prediction_matches"
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["exact_prediction_record_count"] == 0
+    assert calibration["weak_prediction_match_record_ids"] == ["deployment_outcome_0001"]
+    assert calibration["real_world_outcome_proven"] is False
+    assert evaluation["standard_policy_scorecard"]["sim_vs_real_calibration_score"] is None
+    assert proof_boundary["real_world_outcome_records_present"] is True
+    assert proof_boundary["real_world_outcome_proven"] is False
+    assert run_manifest["real_world_outcome_records_present"] is True
+    assert run_manifest["real_world_outcome_proven"] is False
+    validation_gate = live_closure["gates"]["real_world_validation_loop"]
+    predicted_gate = live_closure["gates"]["predicted_vs_actual_calibration"]
+    assert "deployment_outcomes_missing_owner_evidence" in validation_gate["blockers"]
+    assert "predicted_vs_actual_weak_prediction_matches" in predicted_gate["blockers"]
+    assert predicted_gate["evidence"]["weak_prediction_match_record_ids"] == [
+        "deployment_outcome_0001"
+    ]
+    assert (
+        "real_world_validation_loop:deployment_outcomes_missing_owner_evidence"
+        in live_closure["blockers"]
+    )
+
+
+def test_robot_eval_job_ingests_job_specific_deployment_outcome_inbox(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    job_id = "job-specific-deployment-inbox"
+    inbox = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / job_id
+        / "deployment_outcomes"
+        / "inbox"
+    )
+    _write_json(
+        inbox / "pilot-outcome-001.json",
+        {
+            "schema_version": "deployment_outcome.v1",
+            "job_id": job_id,
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "policy_id": "fixture-policy",
+            "actual_success": True,
+            "failure_mode_ids": [],
+            "cycle_time_seconds": 12.0,
+            "intervention_count": 0,
+            "evidence_refs": {"pilot_log": "owner://pilot/pilot-outcome-001"},
+        },
+    )
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, _full_job_request(capture_root))
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id=job_id,
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    intake = _read_json(job_dir / "deployment_outcome_intake_manifest.json")
+    deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
+    calibration = _read_json(job_dir / "sim_vs_real_calibration_report.json")
+
+    assert intake["status"] == "completed"
+    assert intake["outcome_source"] == "deployment_outcome_inbox"
+    assert intake["source_files"] == [str(inbox / "pilot-outcome-001.json")]
+    assert deployment["real_world_outcome_records_present"] is True
+    assert deployment["owner_evidence_record_count"] == 1
+    assert deployment["missing_owner_evidence_record_ids"] == []
+    assert deployment["real_world_outcome_proven"] is True
+    assert deployment["records"][0]["actual_success"] is True
+    assert deployment["records"][0]["owner_evidence_present"] is True
+    assert calibration["status"] == "blocked_weak_prediction_matches"
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["exact_prediction_record_count"] == 0
+    assert calibration["weak_prediction_match_record_ids"] == ["deployment_outcome_0001"]
 
 
 def test_robot_eval_job_normalizes_command_backed_simulator_output(
@@ -799,6 +4278,205 @@ def test_robot_eval_job_accepts_one_complete_policy_modality(
     assert policy_manifest["modalities"]["docker_container"]["status"] == "not_selected"
     assert policy_manifest["modalities"]["docker_container"]["owner_system_review_required"] is False
     assert policy_execution["selected_modalities"] == ["policy_api_endpoint"]
+
+
+def test_robot_eval_job_consumes_staged_policy_package(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    job_id = "job-staged-policy-package"
+    staged_path = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / job_id
+        / "policy_package.json"
+    )
+    _write_json(
+        staged_path,
+        {
+            "schema_version": "robot_team_policy_package.v1",
+            "job_id": job_id,
+            "policy_package": {
+                "high_level_skill_trace": {
+                    "skill_taxonomy_version": "skills-v1",
+                    "ordered_skill_sequence": ["navigate", "pick", "place"],
+                }
+            },
+        },
+    )
+    request = _full_job_request(capture_root)
+    request.pop("policy_package")
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, request)
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id=job_id,
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / job_id
+    job_request = _read_json(job_dir / "job_request.json")
+    validation = _read_json(job_dir / "job_validation.json")
+    scenario_eval_matrix = _read_json(job_dir / "scenario_eval_matrix.json")
+    policy_manifest = _read_json(job_dir / "policy_package_manifest.json")
+    policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
+
+    assert job_request["external_input_sources"]["staged_policy_package"] == str(staged_path)
+    assert validation["status"] != "blocked"
+    assert policy_manifest["selected_modalities"] == ["high_level_skill_trace"]
+    assert policy_execution["selected_modalities"] == ["high_level_skill_trace"]
+    assert policy_execution["modality_results"]["high_level_skill_trace"]["status"] == (
+        "completed_reference_replay"
+    )
+    assert policy_execution["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
+
+
+def test_robot_eval_job_replays_all_reference_policy_modalities_with_matrix_coverage(
+    tmp_path: Path,
+) -> None:
+    cases: dict[str, dict[str, object]] = {
+        "policy_api_endpoint": {
+            "endpoint_url": "https://robot-team.example/policy",
+            "response_manifest_uri": "policy_refs/policy_api_endpoint.json",
+        },
+        "docker_container": {
+            "image_ref": "registry.example/robot/policy:2026-06-04",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "output_manifest_uri": "policy_refs/docker_container.json",
+        },
+        "recorded_action_trace": {
+            "trace_manifest_uri": "policy_refs/recorded_action_trace.json",
+            "timestamp_alignment": "aligned_to_capture_timestamps",
+        },
+        "high_level_skill_trace": {
+            "skill_taxonomy_version": "skills-v1",
+            "ordered_skill_sequence": ["navigate", "pick", "place"],
+        },
+        "teleop_demo": {
+            "demo_artifact_uri": "policy_refs/teleop_demo.json",
+            "rights_privacy_attestation": "deidentified_operator_approved",
+        },
+        "sim_controller_plugin": {
+            "simulator_framework": "fixture",
+            "plugin_uri": "policy_refs/sim_controller_plugin.json",
+        },
+    }
+    for modality, payload in cases.items():
+        capture_root = _build_capture_root(tmp_path / modality)
+        _write_robot_eval_cards(capture_root)
+        if modality != "high_level_skill_trace":
+            reference_path = capture_root / "policy_refs" / f"{modality}.json"
+            _write_json(
+                reference_path,
+                {
+                    "schema_version": f"{modality}_policy_reference.v1",
+                    "attempts": _policy_reference_attempts(policy_id=f"{modality}-policy"),
+                },
+            )
+        request = _full_job_request(capture_root)
+        request["policy_package"] = {modality: payload}
+        request_path = tmp_path / modality / "job-request.json"
+        _write_json(request_path, request)
+
+        build_robot_eval_job(
+            capture_root=capture_root,
+            job_request=request_path,
+            job_id=f"job-{modality}",
+            provisioner="fixture_local",
+            simulator="fixture",
+        )
+
+        job_dir = capture_root / "pipeline" / "robot_eval_jobs" / f"job-{modality}"
+        scenario_eval_matrix = _read_json(job_dir / "scenario_eval_matrix.json")
+        policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
+        policy_trace = _read_json(job_dir / "policy_execution_trace.json")
+        live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+        modality_result = policy_execution["modality_results"][modality]  # type: ignore[index]
+
+        assert policy_execution["selected_modalities"] == [modality]
+        assert policy_execution["attempt_count"] == scenario_eval_matrix[
+            "scenario_eval_run_count"
+        ]
+        assert policy_execution["scenario_eval_run_coverage_complete"] is True
+        assert policy_execution["missing_scenario_eval_run_ids"] == []
+        assert policy_trace["scenario_eval_run_coverage_complete"] is True
+        assert modality_result["status"] == "completed_reference_replay"
+        assert modality_result["reference_replayed"] is True
+        assert modality_result["attempt_count"] == scenario_eval_matrix[
+            "scenario_eval_run_count"
+        ]
+        assert modality_result["scenario_eval_run_coverage_complete"] is True
+        assert modality_result["missing_scenario_eval_run_ids"] == []
+        assert modality_result["robot_policy_execution_proven"] is False
+        policy_gate = live_closure["gates"]["live_policy_execution"]
+        assert "policy_execution_missing_scenario_variation_run_coverage" not in policy_gate[
+            "blockers"
+        ]
+        assert "policy_execution_missing_required_scenario_eval_run_ids" not in policy_gate[
+            "blockers"
+        ]
+        assert "live_policy_execution_not_proven" in policy_gate["blockers"]
+
+
+def test_robot_eval_job_policy_reference_replay_reports_missing_matrix_coverage(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    reference_path = capture_root / "policy_refs" / "partial-recorded-action-trace.json"
+    _write_json(
+        reference_path,
+        {
+            "schema_version": "recorded_action_trace_policy_reference.v1",
+            "attempts": _policy_reference_attempts(
+                policy_id="partial-recorded-policy",
+                variation_names=["lighting_variation"],
+            ),
+        },
+    )
+    request = _full_job_request(capture_root)
+    request["policy_package"] = {
+        "recorded_action_trace": {
+            "trace_manifest_uri": "policy_refs/partial-recorded-action-trace.json",
+            "timestamp_alignment": "aligned_to_capture_timestamps",
+        }
+    }
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, request)
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-partial-reference-policy",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-partial-reference-policy"
+    scenario_eval_matrix = _read_json(job_dir / "scenario_eval_matrix.json")
+    policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
+    policy_trace = _read_json(job_dir / "policy_execution_trace.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+    modality_result = policy_execution["modality_results"]["recorded_action_trace"]  # type: ignore[index]
+
+    expected_missing = int(scenario_eval_matrix["scenario_eval_run_count"]) - 1
+    assert policy_execution["attempt_count"] == 1
+    assert policy_execution["scenario_eval_run_coverage_complete"] is False
+    assert policy_execution["missing_scenario_eval_run_count"] == expected_missing
+    assert policy_trace["missing_scenario_eval_run_count"] == expected_missing
+    assert modality_result["missing_scenario_eval_run_count"] == expected_missing
+    assert modality_result["scenario_eval_run_coverage_complete"] is False
+    policy_gate = live_closure["gates"]["live_policy_execution"]
+    assert policy_gate["evidence"]["missing_scenario_eval_run_count"] == expected_missing
+    assert "policy_execution_missing_scenario_variation_run_coverage" in policy_gate[
+        "blockers"
+    ]
+    assert "policy_execution_missing_required_scenario_eval_run_ids" in policy_gate["blockers"]
 
 
 def test_robot_eval_job_real_provisioner_fails_closed_without_gates(
@@ -1246,9 +4924,50 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
     assert surface["artifacts"]["robot_eval_job_job-surfaced_run_manifest"] == (
         "../robot_eval_jobs/job-surfaced/job_run_manifest.json"
     )
+    assert surface["artifacts"]["robot_eval_job_job-surfaced_robot_pov_frame_sequence_manifest"] == (
+        "../robot_eval_jobs/job-surfaced/robot_pov_frame_sequence_manifest.json"
+    )
+    assert surface["artifacts"]["robot_eval_job_job-surfaced_scenario_eval_matrix"] == (
+        "../robot_eval_jobs/job-surfaced/scenario_eval_matrix.json"
+    )
+    assert surface["artifacts"]["robot_eval_job_job-surfaced_deployment_outcome_intake_manifest"] == (
+        "../robot_eval_jobs/job-surfaced/deployment_outcome_intake_manifest.json"
+    )
+    assert surface["artifacts"]["robot_eval_job_job-surfaced_live_eval_closure_manifest"] == (
+        "../robot_eval_jobs/job-surfaced/live_eval_closure_manifest.json"
+    )
+    assert surface["artifacts"]["robot_eval_job_job-surfaced_robot_eval_report"] == (
+        "../robot_eval_jobs/job-surfaced/robot_eval_report.json"
+    )
+    assert surface["artifacts"]["robot_eval_job_job-surfaced_robot_eval_report_markdown"] == (
+        "../robot_eval_jobs/job-surfaced/robot_eval_report.md"
+    )
+    assert surface["artifacts"][
+        "robot_eval_job_job-surfaced_post_training_data_package_export_manifest"
+    ] == "../robot_eval_jobs/job-surfaced/post_training_data_package_export_manifest.json"
     assert surface["artifact_uris"][
         "robot_eval_job_job-surfaced_run_manifest_uri"
     ].endswith("/pipeline/robot_eval_jobs/job-surfaced/job_run_manifest.json")
+    assert surface["artifact_uris"]["robot_eval_job_evaluation_result_uri"].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/evaluation_result.json"
+    )
+    assert surface["artifact_uris"]["robot_eval_job_scenario_eval_matrix_uri"].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/scenario_eval_matrix.json"
+    )
+    assert surface["artifact_uris"][
+        "robot_eval_job_post_training_data_package_export_manifest_uri"
+    ].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/post_training_data_package_export_manifest.json"
+    )
+    assert surface["artifact_uris"]["robot_eval_job_live_eval_closure_manifest_uri"].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/live_eval_closure_manifest.json"
+    )
+    assert surface["artifact_uris"]["robot_eval_job_robot_eval_report_uri"].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/robot_eval_report.json"
+    )
+    assert surface["artifact_uris"]["robot_eval_job_robot_eval_report_markdown_uri"].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/robot_eval_report.md"
+    )
 
 
 def _write_arena_rollout_results(results_dir: Path, *, count: int = 500) -> None:

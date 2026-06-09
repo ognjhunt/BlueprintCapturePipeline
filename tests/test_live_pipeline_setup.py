@@ -104,6 +104,7 @@ def test_live_pipeline_setup_marks_live_sections_ready_when_explicitly_configure
     tmp_path: Path, monkeypatch
 ) -> None:
     capture_root = _capture_root(tmp_path, with_webapp_ids=True)
+    monkeypatch.setattr("blueprint_pipeline.live_pipeline_setup._module_available", lambda _: False)
     monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD", "true")

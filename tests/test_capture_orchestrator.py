@@ -116,6 +116,69 @@ def test_capture_orchestrator_current_lane_runs_simulation_automation(
         "simulation_automation",
     ]
     assert result["results"][-1]["automation_status"] == "blocked"
+    assert result["results"][-1]["robot_eval_job_inbox_status"] == "waiting_for_job_requests"
+    assert result["results"][-1]["robot_eval_job_inbox_processed_count"] == 0
+
+
+def test_capture_orchestrator_processes_robot_eval_job_inbox_when_present(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text("{}", encoding="utf-8")
+    inbox = descriptor_path.parent / "pipeline" / "robot_eval_job_requests" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "robot-eval-job.json").write_text("{}", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.run_qualification_pipeline",
+        lambda **_kwargs: {
+            "status": "completed",
+            "lane": "qualification",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "pipeline_prefix": "scenes/scene-1/captures/capture-1/pipeline",
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.run_evaluation_prep_stage",
+        lambda **_kwargs: {"manifest_path": str(tmp_path / "evaluation_prep_manifest.json")},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.build_simulation_automation",
+        lambda **_kwargs: {
+            "manifest_path": str(tmp_path / "simulation_automation_run_manifest.json"),
+            "plan_path": str(tmp_path / "simulation_automation_plan.json"),
+            "status": "blocked",
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.resolve_gs_uri_to_path",
+        lambda *_args, **_kwargs: descriptor_path,
+    )
+
+    def _run_inbox(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        return {"status": "completed", "processed_count": 1}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.run_robot_eval_job_request_inbox",
+        _run_inbox,
+    )
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        lane="current",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["capture_root"] == descriptor_path.parent
+    assert calls[0]["inbox_dir"] == inbox
+    assert result["results"][-1]["robot_eval_job_inbox_status"] == "completed"
+    assert result["results"][-1]["robot_eval_job_inbox_processed_count"] == 1
 
 
 def test_capture_orchestrator_runs_single_capture_smoke_lane(monkeypatch, tmp_path: Path) -> None:

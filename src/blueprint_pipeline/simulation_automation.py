@@ -44,12 +44,14 @@ from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import EpisodeSpecAgentAdapter, FakeEpisodeSpecAgentAdapter, build_episode_specs
 from .local_capture import resolve_local_capture_context
 from .scene_asset_preflight import build_scene_asset_preflight
+from .scenario_variation_instantiator import build_scenario_variation_instances
 
 
 SIMULATION_AUTOMATION_SCHEMA_VERSION = "simulation_automation_plan.v1"
 SIMULATION_AUTOMATION_RUN_SCHEMA_VERSION = "simulation_automation_run_manifest.v1"
 ASSET_CONVERSION_PLAN_SCHEMA_VERSION = "simulation_asset_conversion_plan.v1"
 SIMULATOR_EXECUTION_SCHEMA_VERSION = "simulator_execution_manifest.v1"
+SIMULATOR_ENGINE_PLUGIN_REGISTRY_SCHEMA_VERSION = "simulator_engine_plugin_registry.v1"
 SIMULATOR_REQUEST_SCHEMA_VERSION = "simulator_request.v1"
 SIMULATOR_RESULT_SCHEMA_VERSION = "simulator_result.v1"
 TRAINING_ORCHESTRATION_SCHEMA_VERSION = "training_orchestration_manifest.v1"
@@ -62,6 +64,12 @@ OWNER_GPU_PROOF_MANIFEST_SCHEMA_VERSION = "owner_gpu_simulator_execution_proof_m
 ARENA_ENVIRONMENT_PACKET_SCHEMA_VERSION = "arena_environment_packet.v1"
 
 SIMULATOR_FRAMEWORKS = ("isaac_sim", "isaac_lab_arena", "mujoco", "pybullet", "newton")
+WORLD_MODEL_ENGINE_TARGETS = (
+    "worldlabs_world_model",
+    "marble_simready",
+    "cosmos_predict",
+    "native_site_reference",
+)
 TRAINING_RUNNER = "blueprint_pipeline.synthesis.cosmos_lora_training.run_cosmos_lora_training"
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
@@ -591,10 +599,14 @@ def _source_artifacts(*, automation_dir: Path, pipeline_dir: Path) -> Dict[str, 
         "episode_specs": automation_dir / "episode_specs.json",
         "episode_setup_manifest": automation_dir / "episode_setup_manifest.json",
         "spawn_pose_validation_manifest": automation_dir / "spawn_pose_validation_manifest.json",
+        "scenario_variation_instances": automation_dir / "scenario_variation_instances.json",
         "cpu_simulator_preflight_manifest": automation_dir / "cpu_simulator_preflight_manifest.json",
         "cpu_preflight_manifest": automation_dir / "cpu_preflight_manifest.json",
         "pre_gpu_readiness_summary": automation_dir / "pre_gpu_readiness_summary.json",
         "arena_environment_packet": automation_dir / "arena_environment_packet.json",
+        "simulator_engine_plugin_registry": (
+            automation_dir / "simulator_engine_plugin_registry.json"
+        ),
         "gpu_handoff_packet": automation_dir / "gpu_handoff_packet.json",
         "gpu_owner_system_proof_schema": automation_dir / "gpu_owner_system_proof_schema.json",
         "owner_gpu_simulator_execution_blocked_manifest": (
@@ -910,7 +922,10 @@ def _worldlabs_summary(world_manifest: Mapping[str, Any]) -> Dict[str, Any]:
         or assets.get("semantics_metadata")
         or world_manifest.get("semantics_metadata")
     )
+    manifest_present = bool(world_manifest)
     return {
+        "status": "present" if manifest_present else "optional_missing",
+        "artifact_present": manifest_present,
         "world_id": _string(world_manifest.get("world_id") or world_manifest.get("id")) or None,
         "world_marble_url": _string(world_manifest.get("world_marble_url")) or None,
         "model": _string(world_manifest.get("model")) or None,
@@ -962,6 +977,8 @@ def _build_plan(
         "world_model_sources": {
             "worldlabs": worldlabs,
             "marble": {
+                "status": "present" if marble_bridge else "optional_missing",
+                "artifact_present": bool(marble_bridge),
                 "bridge_status": _string(marble_bridge.get("status")) or None,
                 "validation_status": _string(marble_validation.get("overall_status")) or None,
                 "physics_collision_review_ready": bool(
@@ -1290,6 +1307,7 @@ def _arena_scenario_components(
     *,
     scenario_cards: Sequence[Mapping[str, Any]],
     episode_spec: Mapping[str, Any],
+    variation_instances: Mapping[str, Any],
 ) -> List[Dict[str, Any]]:
     by_scenario = _scenario_card_index(scenario_cards)
     scenario_ids = list(by_scenario)
@@ -1299,10 +1317,12 @@ def _arena_scenario_components(
         scenario_id = _string(episode.get("scenario_id"))
         if scenario_id and scenario_id not in scenario_ids:
             scenario_ids.append(scenario_id)
+    variation_ids_by_scenario = _variation_instance_ids_by_scenario(variation_instances)
     components: List[Dict[str, Any]] = []
     for scenario_id in scenario_ids:
         card = by_scenario.get(scenario_id, {})
         labels = _mapping(card.get("observed_vs_inferred_labels"))
+        variation_ids = variation_ids_by_scenario.get(scenario_id, [])
         components.append(
             {
                 "scenario_component_id": f"arena_scenario_{scenario_id}",
@@ -1313,6 +1333,11 @@ def _arena_scenario_components(
                 "variation": card.get("variation"),
                 "edge_case": card.get("edge_case"),
                 "observed_vs_inferred_labels": labels,
+                "scenario_variation_instance_ids": variation_ids,
+                "scenario_variation_count": len(variation_ids),
+                "engine_mutation_plan_path": (
+                    "scenario_variation_instances.json" if variation_ids else None
+                ),
                 "review_required": True,
                 "source": (
                     "robot_eval_dataset/scenario_cards.json"
@@ -1323,6 +1348,26 @@ def _arena_scenario_components(
             }
         )
     return components
+
+
+def _variation_instance_ids_by_scenario(
+    variation_instances: Mapping[str, Any],
+) -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    instances = variation_instances.get("instances")
+    if not isinstance(instances, list):
+        return out
+    for instance in instances:
+        if not isinstance(instance, Mapping):
+            continue
+        scenario_id = _string(instance.get("scenario_id"))
+        instance_id = _string(instance.get("instance_id"))
+        if not scenario_id or not instance_id:
+            continue
+        out.setdefault(scenario_id, [])
+        if instance_id not in out[scenario_id]:
+            out[scenario_id].append(instance_id)
+    return out
 
 
 def _arena_eval_bindings(eval_cards: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
@@ -1379,9 +1424,11 @@ def _arena_episode_bindings(
     episode_spec: Mapping[str, Any],
     task_components: Sequence[Mapping[str, Any]],
     scenario_components: Sequence[Mapping[str, Any]],
+    variation_instances: Mapping[str, Any],
 ) -> List[Dict[str, Any]]:
     task_ids = {_string(item.get("task_id")) for item in task_components}
     scenario_ids = {_string(item.get("scenario_id")) for item in scenario_components}
+    variation_ids_by_scenario = _variation_instance_ids_by_scenario(variation_instances)
     bindings: List[Dict[str, Any]] = []
     for episode in episode_spec.get("episodes") or []:
         if not isinstance(episode, Mapping):
@@ -1395,6 +1442,7 @@ def _arena_episode_bindings(
             missing.append("arena_task_component_missing")
         if scenario_id not in scenario_ids:
             missing.append("arena_scenario_component_missing")
+        scenario_variation_ids = variation_ids_by_scenario.get(scenario_id, [])
         bindings.append(
             {
                 "arena_environment_name": f"blueprint_{context.scene_id}_{episode_id}",
@@ -1408,6 +1456,11 @@ def _arena_episode_bindings(
                 "allowed_motion_region": episode.get("allowed_motion_region") or {},
                 "target_region": episode.get("target_region") or {},
                 "reset_conditions": episode.get("reset_conditions") or [],
+                "scenario_variation_instance_ids": scenario_variation_ids,
+                "scenario_variation_count": len(scenario_variation_ids),
+                "engine_mutation_plan_path": (
+                    "scenario_variation_instances.json" if scenario_variation_ids else None
+                ),
                 "arena_builder_target": "IsaacLabArenaEnvironment",
                 "manager_based_rl_env_cfg_required": True,
                 "review_required": True,
@@ -1445,6 +1498,7 @@ def _build_arena_environment_packet(
         pipeline_dir / "robot_eval_dataset" / "proof_boundaries.json"
     )
     episode_spec = _read_optional_mapping(automation_dir / "episode_spec.v1.json")
+    variation_instances = _read_optional_mapping(automation_dir / "scenario_variation_instances.json")
     inventory = _read_optional_mapping(automation_dir / "scene_asset_inventory.json")
     dependency_audit = _read_optional_mapping(automation_dir / "scene_asset_dependency_audit.json")
 
@@ -1452,6 +1506,7 @@ def _build_arena_environment_packet(
     scenario_components = _arena_scenario_components(
         scenario_cards=scenario_cards,
         episode_spec=episode_spec,
+        variation_instances=variation_instances,
     )
     embodiment_components = _arena_embodiment_components(episode_spec)
     eval_bindings = _arena_eval_bindings(eval_cards)
@@ -1460,6 +1515,7 @@ def _build_arena_environment_packet(
         episode_spec=episode_spec,
         task_components=task_components,
         scenario_components=scenario_components,
+        variation_instances=variation_instances,
     )
     source_blockers: List[str] = []
     if not site_card:
@@ -1472,6 +1528,8 @@ def _build_arena_environment_packet(
         source_blockers.append("robot_eval_eval_cards_missing")
     if not episode_bindings:
         source_blockers.append("episode_spec_v1_missing_or_empty")
+    if not variation_instances:
+        source_blockers.append("scenario_variation_instances_missing")
 
     blocker_set = _string_list(source_blockers)
     for episode in episode_bindings:
@@ -1510,6 +1568,9 @@ def _build_arena_environment_packet(
             if proof_boundaries
             else None,
             "episode_spec": "episode_spec.v1.json" if episode_spec else None,
+            "scenario_variation_instances": "scenario_variation_instances.json"
+            if variation_instances
+            else None,
             "scene_asset_inventory": "scene_asset_inventory.json" if inventory else None,
             "scene_asset_dependency_audit": "scene_asset_dependency_audit.json"
             if dependency_audit
@@ -1527,6 +1588,21 @@ def _build_arena_environment_packet(
             "embodiments": embodiment_components,
             "tasks": task_components,
             "scenarios": scenario_components,
+            "scenario_variation_instances": {
+                "path": "scenario_variation_instances.json" if variation_instances else None,
+                "status": variation_instances.get("status") if variation_instances else "missing",
+                "instance_count": variation_instances.get("instance_count", 0)
+                if variation_instances
+                else 0,
+                "engine_targets": variation_instances.get("engine_targets", [])
+                if variation_instances
+                else [],
+                "engine_mutation_plan_available": bool(
+                    _mapping(variation_instances.get("engine_mutation_plan"))
+                )
+                if variation_instances
+                else False,
+            },
             "eval_bindings": eval_bindings,
             "episode_bindings": episode_bindings,
         },
@@ -1569,6 +1645,228 @@ def _build_arena_environment_packet(
     )
     write_json(automation_dir / "arena_environment_packet.json", packet)
     return packet
+
+
+def _plugin_runtime_kind(framework: str) -> str:
+    if framework in {"isaac_sim", "isaac_lab_arena", "newton"}:
+        return "gpu_world_sim_runtime"
+    return "cpu_or_gpu_physics_runtime"
+
+
+def _plugin_provider_family(framework: str) -> str:
+    if framework == "isaac_lab_arena":
+        return "isaac_lab_arena"
+    if framework == "isaac_sim":
+        return "isaac_sim"
+    if framework == "newton":
+        return "newton_or_warp_physics"
+    return "cpu_physics_engine"
+
+
+def _world_model_plugin_provider_family(engine: str) -> str:
+    return {
+        "worldlabs_world_model": "worldlabs",
+        "marble_simready": "marble",
+        "cosmos_predict": "nvidia_cosmos",
+        "native_site_reference": "blueprint_native_site_reference",
+    }.get(engine, "replaceable_world_model_engine")
+
+
+def _world_model_plugin_inputs(engine: str) -> Dict[str, str | None]:
+    common_inputs: Dict[str, str | None] = {
+        "simulation_automation_plan": "simulation_automation_plan.json",
+        "scenario_variation_instances": "scenario_variation_instances.json",
+        "site_card": "../robot_eval_dataset/site_card.json",
+        "task_cards": "../robot_eval_dataset/task_cards.json",
+        "scenario_cards": "../robot_eval_dataset/scenario_cards.json",
+    }
+    if engine == "worldlabs_world_model":
+        return {
+            **common_inputs,
+            "world_manifest": "../worldlabs_world_manifest.json",
+        }
+    if engine == "marble_simready":
+        return {
+            **common_inputs,
+            "simready_bridge": "../marble_sim_assets/marble_simready_bridge.json",
+        }
+    if engine == "cosmos_predict":
+        return {
+            **common_inputs,
+            "gpu_handoff_packet": "gpu_handoff_packet.json",
+            "dense_world_model_export": "../world_model_export/dense_index.jsonl",
+        }
+    return {
+        **common_inputs,
+        "site_reference_projection": "../sites/site_reference_summary_projection.json",
+    }
+
+
+def _build_world_model_engine_plugins(
+    *,
+    plan: Mapping[str, Any],
+    scenario_variation_instances: Mapping[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    plugins: Dict[str, Dict[str, Any]] = {}
+    world_sources = _mapping(plan.get("world_model_sources"))
+    for engine in WORLD_MODEL_ENGINE_TARGETS:
+        source_key = {
+            "worldlabs_world_model": "worldlabs",
+            "marble_simready": "marble",
+            "cosmos_predict": "cosmos",
+            "native_site_reference": "site_reference",
+        }.get(engine, engine)
+        source = _mapping(world_sources.get(source_key))
+        plugins[engine] = {
+            "plugin_id": f"blueprint_{engine}_engine_plugin",
+            "engine": engine,
+            "provider_family": _world_model_plugin_provider_family(engine),
+            "runtime_kind": "world_model_support_engine",
+            "adapter_contract_status": "ready",
+            "managed_execution_supported": True,
+            "inputs": _world_model_plugin_inputs(engine),
+            "outputs_expected": {
+                "scenario_support_assets": f"world_model_plugins/{engine}/scenario_support_assets.json",
+                "uncertainty_summary": f"world_model_plugins/{engine}/world_model_uncertainty.json",
+                "engine_adapter_manifest": f"world_model_plugins/{engine}/adapter_manifest.json",
+            },
+            "source_status": source.get("status") or ("present" if source else "optional_missing"),
+            "source_artifact": source.get("path") or source.get("uri"),
+            "scenario_variation_instance_count": scenario_variation_instances.get(
+                "instance_count",
+                0,
+            ),
+            "normalization_contract": {
+                "input_formats": [
+                    "capture_grounded_reference_media",
+                    "scenario_variation_instances",
+                    "engine_specific_support_assets",
+                ],
+                "output_format": "blueprint_world_model_support_assets.v1",
+                "world_model_uncertainty_required": True,
+            },
+            "proof_boundary": {
+                **dict(CLAIM_BOUNDARY),
+                "world_model_support_assets_generated": False,
+                "world_model_uncertainty_scored": False,
+                "simulator_execution_proven": False,
+                "robot_policy_execution_proven": False,
+                "robot_readiness_proven": False,
+            },
+        }
+    return plugins
+
+
+def _build_simulator_engine_plugin_registry(
+    *,
+    context: Any,
+    automation_dir: Path,
+    plan: Mapping[str, Any],
+    conversion_plan: Mapping[str, Any],
+    scenario_variation_instances: Mapping[str, Any],
+    allow_simulator_execution: bool,
+    allowed_simulators: Sequence[str],
+    simulator_commands: Mapping[str, str],
+    generated_at: str,
+) -> Dict[str, Any]:
+    env_allows = _env_truthy("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION")
+    allowed = {item for item in allowed_simulators if item in SIMULATOR_FRAMEWORKS}
+    plugins: Dict[str, Dict[str, Any]] = {}
+    for framework in SIMULATOR_FRAMEWORKS:
+        command_text = _string(simulator_commands.get(framework))
+        command = shlex.split(command_text) if command_text else []
+        missing_gates: List[str] = []
+        if not env_allows:
+            missing_gates.append("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true")
+        if not allow_simulator_execution:
+            missing_gates.append("--allow-simulator-execution")
+        if framework not in allowed:
+            missing_gates.append(f"--allow-simulator {framework}")
+        if not command:
+            missing_gates.append(f"--simulator-command {framework}=<owner command>")
+        conversion = _mapping(_mapping(conversion_plan.get("frameworks")).get(framework))
+        plugins[framework] = {
+            "plugin_id": f"blueprint_{framework}_sim_engine_plugin",
+            "framework": framework,
+            "provider_family": _plugin_provider_family(framework),
+            "runtime_kind": _plugin_runtime_kind(framework),
+            "adapter_contract_status": "ready",
+            "managed_execution_supported": True,
+            "inputs": {
+                "simulation_automation_plan": "simulation_automation_plan.json",
+                "asset_conversion_plan": "asset_conversion_plan.json",
+                "arena_environment_packet": "arena_environment_packet.json"
+                if framework == "isaac_lab_arena"
+                else None,
+                "scenario_variation_instances": "scenario_variation_instances.json",
+                "episode_spec": "episode_spec.v1.json",
+                "cpu_preflight_manifest": "cpu_simulator_preflight_manifest.json",
+            },
+            "outputs_expected": {
+                "simulator_request": f"simulators/{framework}_request.json",
+                "simulator_result": f"simulators/{framework}_result.json",
+                "normalized_attempt_trace": "normalized_attempt_trace.json",
+                "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
+                "robot_pov_frame_sequence_manifest": "robot_pov_frame_sequence_manifest.json",
+                "policy_execution_trace": "policy_execution_trace.json",
+                "owner_gpu_proof": "gpu_owner_system_proof.json",
+            },
+            "conversion_status": conversion.get("status"),
+            "scenario_variation_instance_count": scenario_variation_instances.get(
+                "instance_count",
+                0,
+            ),
+            "scenario_variation_engine_mutation_plan_status": _mapping(
+                _mapping(scenario_variation_instances.get("engine_mutation_plan")).get(framework)
+            ).get("status"),
+            "execution_manager": {
+                "status": "ready_to_run_command" if not missing_gates else "gated_waiting_for_owner_runtime",
+                "env_gate_allows": env_allows,
+                "allow_simulator_execution_flag": bool(allow_simulator_execution),
+                "simulator_allowlisted": framework in allowed,
+                "command_configured": bool(command),
+                "command": command,
+                "command_sha256": sha256(command_text.encode("utf-8")).hexdigest()
+                if command_text
+                else None,
+                "missing_gates": missing_gates,
+                "timeout_seconds_default": 120,
+            },
+            "normalization_contract": {
+                "input_formats": [
+                    "simulator_attempts_json",
+                    "engine_stdout_stderr",
+                    "owner_artifact_manifest",
+                ],
+                "output_format": "blueprint_normalized_attempt_trace.v1",
+                "failure_label_mapping_required": True,
+            },
+            "proof_boundary": dict(CLAIM_BOUNDARY),
+        }
+
+    world_model_plugins = _build_world_model_engine_plugins(
+        plan=plan,
+        scenario_variation_instances=scenario_variation_instances,
+    )
+    registry = {
+        "schema_version": SIMULATOR_ENGINE_PLUGIN_REGISTRY_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "scene_id": plan.get("scene_id"),
+        "capture_id": plan.get("capture_id"),
+        "capture_root": str(context.capture_root),
+        "status": "ready_for_gated_managed_execution",
+        "engine_targets": list(SIMULATOR_FRAMEWORKS),
+        "world_model_engine_targets": list(WORLD_MODEL_ENGINE_TARGETS),
+        "plugin_count": len(plugins),
+        "world_model_plugin_count": len(world_model_plugins),
+        "plugins": plugins,
+        "world_model_plugins": world_model_plugins,
+        "scenario_variation_instances_path": "scenario_variation_instances.json",
+        "simulator_execution_manifest_path": "simulator_execution_manifest.json",
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    write_json(automation_dir / "simulator_engine_plugin_registry.json", registry)
+    return registry
 
 
 def _request_for_framework(
@@ -2430,6 +2728,11 @@ def build_simulation_automation(
         smoke_steps=cpu_preflight_smoke_steps,
         allow_render=allow_cpu_preflight_render,
     )
+    scenario_variation_instances = build_scenario_variation_instances(
+        capture_root=context.capture_root,
+        output_dir=automation_dir,
+        generated_at=generated_at,
+    )
 
     plan = _build_plan(
         context=context,
@@ -2443,6 +2746,17 @@ def build_simulation_automation(
         automation_dir=automation_dir,
         pipeline_dir=pipeline_dir,
         conversion_plan=conversion_plan,
+        generated_at=generated_at,
+    )
+    simulator_engine_plugin_registry = _build_simulator_engine_plugin_registry(
+        context=context,
+        automation_dir=automation_dir,
+        plan=plan,
+        conversion_plan=conversion_plan,
+        scenario_variation_instances=scenario_variation_instances,
+        allow_simulator_execution=allow_simulator_execution,
+        allowed_simulators=allowed_simulators or [],
+        simulator_commands=simulator_commands or {},
         generated_at=generated_at,
     )
     simulator_execution = _build_simulator_execution_manifest(
@@ -2496,8 +2810,10 @@ def build_simulation_automation(
         "scene_preflight": scene_preflight,
         "episode_specs": episode_specs,
         "cpu_preflight": cpu_preflight,
+        "scenario_variation_instances": scenario_variation_instances,
         "conversion_plan": conversion_plan,
         "arena_environment_packet": arena_environment_packet,
+        "simulator_engine_plugin_registry": simulator_engine_plugin_registry,
         "simulator_execution": simulator_execution,
         "training": training,
         "proof_boundary": proof_boundary,
@@ -2541,7 +2857,9 @@ def build_simulation_automation(
         "cpu_simulator_preflight_manifest_path": "cpu_simulator_preflight_manifest.json",
         "cpu_preflight_manifest_path": "cpu_preflight_manifest.json",
         "pre_gpu_readiness_summary_path": "pre_gpu_readiness_summary.json",
+        "scenario_variation_instances_path": "scenario_variation_instances.json",
         "arena_environment_packet_path": "arena_environment_packet.json",
+        "simulator_engine_plugin_registry_path": "simulator_engine_plugin_registry.json",
         "gpu_handoff_packet_path": "gpu_handoff_packet.json",
         "gpu_owner_system_proof_schema_path": "gpu_owner_system_proof_schema.json",
         "owner_gpu_simulator_execution_proof_manifest_path": (
@@ -2567,7 +2885,10 @@ def build_simulation_automation(
         "pre_gpu_readiness_status": _read_optional_mapping(
             automation_dir / "pre_gpu_readiness_summary.json"
         ).get("status"),
+        "scenario_variation_instances_status": scenario_variation_instances.get("status"),
+        "scenario_variation_instance_count": scenario_variation_instances.get("instance_count"),
         "arena_environment_packet_status": arena_environment_packet.get("status"),
+        "simulator_engine_plugin_registry_status": simulator_engine_plugin_registry.get("status"),
         "gpu_handoff_status": _mapping(gpu_handoff.get("packet")).get("status"),
         "owner_gpu_simulator_execution_proven": bool(
             owner_gpu_proof.get("owner_gpu_simulator_execution_proven")

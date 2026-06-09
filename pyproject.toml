@@ -87,6 +87,7 @@ blueprint-smoke-arena-package-local = "blueprint_pipeline.arena_fixture_smoke:ma
 blueprint-audit-live-pipeline-setup = "blueprint_pipeline.live_pipeline_setup:main"
 blueprint-run-live-pipeline-control-plane = "blueprint_pipeline.live_pipeline_control_plane:main"
 blueprint-audit-live-pipeline-proof-boundary = "blueprint_pipeline.live_pipeline_proof_audit:main"
+blueprint-audit-live-robot-eval-closure = "blueprint_pipeline.live_robot_eval_closure:main"
 blueprint-intake-live-pipeline-inputs = "blueprint_pipeline.live_pipeline_input_intake:main"
 blueprint-live-pipeline-intake-service = "blueprint_pipeline.live_pipeline_intake_service:main"
 blueprint-label-rollout-vision-openai = "blueprint_pipeline.rollout_vision_label_openai:main"
@@ -97,6 +98,7 @@ blueprint-build-scene-asset-preflight = "blueprint_pipeline.scene_asset_prefligh
 blueprint-build-episode-specs = "blueprint_pipeline.episode_spec:main"
 blueprint-run-cpu-simulator-preflight = "blueprint_pipeline.cpu_simulator_preflight:main"
 blueprint-materialize-worldlabs-assets = "blueprint_pipeline.worldlabs_asset_materialization:main"
+blueprint-build-palatial-physready = "blueprint_pipeline.palatial_physready:main"
 blueprint-validate-provider-preview-packet = "blueprint_pipeline.provider_preview_qa:main"
 blueprint-build-production-handoff-readiness = "blueprint_pipeline.production_handoff_readiness:main"
 

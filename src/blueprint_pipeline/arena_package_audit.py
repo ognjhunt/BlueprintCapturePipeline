@@ -58,6 +58,7 @@ JOB_ARTIFACTS = (
     "job_request.json",
     "simulator_service_result.json",
     "evaluation_result.json",
+    "live_eval_closure_manifest.json",
     "proof_boundary.json",
     "job_run_manifest.json",
 )
@@ -163,6 +164,16 @@ def _resolve_package_dir(capture_root: Path, package_dir: str | Path | None) -> 
     return context.pipeline_root / "arena_eval_package"
 
 
+def _closure_allows_proof_field(package_dir: Path, field: str) -> bool:
+    closure = _read_optional_mapping(package_dir / "live_eval_closure_manifest.json")
+    closure_boundary = _mapping(closure.get("proof_boundary"))
+    return (
+        closure.get("status") == "live_end_to_end_verified"
+        and bool(closure.get("live_end_to_end_verified"))
+        and bool(closure_boundary.get(field))
+    )
+
+
 def _proof_field_violations(package_dir: Path, relative_paths: Sequence[str]) -> List[Dict[str, Any]]:
     violations: List[Dict[str, Any]] = []
     for relative_path in relative_paths:
@@ -177,22 +188,26 @@ def _proof_field_violations(package_dir: Path, relative_paths: Sequence[str]) ->
             continue
         for field in FORBIDDEN_PROOF_TRUE_FIELDS:
             if bool(payload.get(field)):
+                if _closure_allows_proof_field(package_dir, field):
+                    continue
                 violations.append(
                     {
                         "artifact": relative_path,
                         "field": field,
                         "value": True,
-                        "reason": "proof_boolean_true_without_audit_accepted_owner_evidence",
+                        "reason": "proof_boolean_true_without_live_eval_closure",
                     }
                 )
             boundary = _mapping(payload.get("claim_boundary") or payload.get("proof_boundary"))
             if bool(boundary.get(field)):
+                if _closure_allows_proof_field(package_dir, field):
+                    continue
                 violations.append(
                     {
                         "artifact": relative_path,
                         "field": f"claim_boundary.{field}",
                         "value": True,
-                        "reason": "claim_boundary_upgraded_without_audit_accepted_owner_evidence",
+                        "reason": "claim_boundary_upgraded_without_live_eval_closure",
                     }
                 )
     return violations

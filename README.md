@@ -66,6 +66,12 @@ Artifact families and advisory downstream outputs:
 - `simready/isaac_sim/site_scene.usda`
 - `simready/mujoco/site_scene.xml`
 - `simready/pybullet/site_scene.urdf`
+- `palatial_physready/twin_candidate_manifest.json`
+- `palatial_physready/palatial_request_manifest.json`
+- `palatial_physready/palatial_physready_run_manifest.json`
+- `palatial_physready/materialization_manifest.json`
+- `palatial_physready/validation_manifest.json`
+- `palatial_physready/assets/*`
 - `marble_sim_assets/marble_asset_manifest.json`
 - `marble_sim_assets/marble_simready_bridge.json`
 - `robot_eval_dataset/robot_eval_dataset_manifest.json`
@@ -107,7 +113,9 @@ Artifact families and advisory downstream outputs:
 - `simulation_automation/cpu_preflight_manifest.json`
 - `simulation_automation/pre_gpu_readiness_summary.json`
 - `simulation_automation/cpu_simulator_preflight_manifest.json`
+- `simulation_automation/scenario_variation_instances.json`
 - `simulation_automation/arena_environment_packet.json`
+- `simulation_automation/simulator_engine_plugin_registry.json`
 - `simulation_automation/gpu_handoff_packet.json`
 - `simulation_automation/gpu_owner_system_proof_schema.json`
 - `simulation_automation/owner_gpu_simulator_execution_proof_manifest.json` when
@@ -135,7 +143,15 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/gpu_provisioning_result.json`
 - `robot_eval_jobs/<job_id>/simulator_service_request.json`
 - `robot_eval_jobs/<job_id>/simulator_service_result.json`
+- `robot_eval_jobs/<job_id>/scenario_eval_matrix.json`
 - `robot_eval_jobs/<job_id>/policy_package_manifest.json`
+- `robot_eval_jobs/<job_id>/robot_pov_observation_manifest.json`
+- `robot_eval_jobs/<job_id>/robot_pov_observations.jsonl`
+- `robot_eval_jobs/<job_id>/robot_pov_frame_sequence_manifest.json`
+- `robot_eval_jobs/<job_id>/robot_pov_render_storyboard.json`
+- `robot_eval_jobs/<job_id>/policy_execution_manifest.json`
+- `robot_eval_jobs/<job_id>/policy_execution_trace.json`
+- `robot_eval_jobs/<job_id>/policy_execution_trace.jsonl`
 - `robot_eval_jobs/<job_id>/policy_adapter_manifest.json` when Arena package
   ingest is run
 - `robot_eval_jobs/<job_id>/training_request.json`
@@ -160,6 +176,11 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/prediction_outcome_ledger.json`
 - `robot_eval_jobs/<job_id>/calibration_report.json`
 - `robot_eval_jobs/<job_id>/breakage_library.json`
+- `robot_eval_jobs/<job_id>/deployment_outcome_intake_manifest.json`
+- `robot_eval_jobs/<job_id>/deployment_outcome_ledger.json`
+- `robot_eval_jobs/<job_id>/sim_vs_real_calibration_report.json`
+- `robot_eval_jobs/<job_id>/prediction_vs_actual_deployment_summary.json`
+- `robot_eval_jobs/<job_id>/live_eval_closure_manifest.json`
 - `robot_eval_jobs/<job_id>/customer_handoff_report.md` when Arena package
   ingest is run
 - `robot_eval_jobs/<job_id>/customer_handoff_report.json` when Arena package
@@ -233,8 +254,14 @@ blueprint-intake-live-pipeline-inputs \
   --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
   --webapp-job-request /path/to/robot_eval_job_request.json \
   --arena-results-dir /path/to/owner-arena-results \
+  --policy-package /path/to/robot_team_policy_package.json \
+  --deployment-outcomes /path/to/deployment_outcome_manifest.json \
+  --live-closure-evidence /path/to/live_eval_closure_evidence.json \
   --stage-webapp-request \
-  --stage-arena-results
+  --stage-arena-results \
+  --stage-policy-package \
+  --stage-deployment-outcomes \
+  --stage-live-closure-evidence
 blueprint-run-live-pipeline-control-plane
 blueprint-audit-live-pipeline-proof-boundary \
   --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json
@@ -245,12 +272,20 @@ That command audits readiness and optionally drains
 `robot_eval_job_request.v1` orchestrator. It writes a blocked/noop manifest plus
 `live_pipeline_external_input_packet.json` and `.md` when capture roots, inboxes,
 live simulator commands, owner Arena result artifacts, vision-labeling commands,
-delivery commands, or live operator credentials are missing. The packet is a
-handoff contract only; placeholder WebApp IDs or sample job requests are never
-treated as proof. A queued WebApp `robot_eval_job_request.v1` can satisfy the
-WebApp upstream-truth requirement only when it contains `site_submission_id`,
-`request_id`, `buyer_request_id`, and `capture_job_id`, and its
-`site_package.capture_root` matches the configured control-plane capture root.
+robot-team policy package references, deployment outcome records, delivery
+commands, closure evidence, or live operator credentials are missing. The packet
+is a handoff contract only; placeholder WebApp IDs or sample job requests are
+never treated as proof. Deployment outcome records can feed prediction-vs-actual
+tracking and calibration, but `real_world_outcome_proven` stays false until each
+actual outcome record carries owner evidence refs, an owner proof URI, or an
+operator/owner attestation. A queued WebApp `robot_eval_job_request.v1` can satisfy
+the WebApp upstream-truth
+requirement only when it contains `site_submission_id`, `request_id`,
+`buyer_request_id`, and `capture_job_id`, its `site_package.capture_root`
+matches the configured control-plane capture root, and the request source
+identifies the WebApp. Otherwise the closure gate requires those IDs to be
+grounded in persisted capture/WebApp handoff artifacts and blocks conflicting
+source values.
 The proof-boundary audit exits zero for a healthy waiting state and records
 remaining external blockers separately from internal artifact or overclaim
 failures. It also checks `live_pipeline_staged_inputs.json` when present, so a
@@ -262,7 +297,32 @@ copy a validated WebApp request into the configured inbox; it does not process
 the job or run Arena. Add `--stage-arena-results` to write
 `live_pipeline_staged_inputs.json`; the next control-plane pass can consume that
 validated Arena result directory without an env-file edit. The staged pointer is
-still an ingest input only, not simulator execution proof.
+still an ingest input only, not simulator execution proof. Add
+`--policy-package` plus `--stage-policy-package` to validate and copy a
+job-specific robot-team policy handoff into
+`pipeline/robot_eval_inputs/<job_id>/policy_package.json`. The job orchestrator
+accepts API endpoint, Docker container, recorded action trace, high-level skill
+trace, teleop demo, and sim controller plugin modalities, but policy proof still
+requires the gated policy execution bundle to produce attempts. The final closure
+audit also revalidates selected modality status and required fields, so a
+hand-authored manifest cannot pass by naming a modality while leaving its
+reference blocked or incomplete. Add
+`--deployment-outcomes` plus `--stage-deployment-outcomes` to validate and copy
+job-specific actual pilot/deployment records into
+`pipeline/robot_eval_inputs/<job_id>/deployment_outcomes/inbox/`; the robot-eval
+job still has to pair those records with predictions before sim-vs-real
+calibration is proven. Records with task/scenario IDs and actual-result signals
+can be staged as real-world validation inputs before proof, but they are only
+calibration-ready when each staged record includes `scenario_eval_run_id` or
+`scenario_variation_instance_id` for an exact prediction join. Otherwise the
+control-plane packet keeps `predicted_vs_actual_exact_match_keys` open. It also
+keeps `real_world_deployment_outcome_owner_evidence` open until every staged
+record has owner evidence. Add
+`--live-closure-evidence` plus `--stage-live-closure-evidence` to validate and
+copy job-specific review, delivery, rights/privacy, and safety/contact/physics
+evidence into
+`pipeline/robot_eval_inputs/<job_id>/live_eval_closure_evidence.json`; the
+job-level closure audit is still the only artifact allowed to upgrade readiness.
 
 For live WebApp-to-droplet handoff, run the authenticated intake service:
 
@@ -276,9 +336,22 @@ blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
 same four WebApp IDs and matching `site_package.capture_root`, stages the file
 into `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`, and optionally triggers the
 control-plane one-shot when `BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER=true`
-and `BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND` are set. The service is an
-intake layer only; it does not run Arena, set proof booleans, or publish a claim
-upgrade.
+and `BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND` are set.
+`POST /api/live-pipeline/policy-packages` accepts `robot_team_policy_package.v1`
+or a direct policy-package body with one supported robot-team modality, validates
+the job id and modality-specific required fields, and stages it at
+`pipeline/robot_eval_inputs/<job_id>/policy_package.json`.
+`POST /api/live-pipeline/deployment-outcomes` accepts
+`deployment_outcome_manifest.v1`, `actual_outcome_manifest.v1`, or
+`deployment_outcome.v1` JSON, validates job id plus task/scenario/actual-result
+fields, audits exact prediction join keys, and stages records under
+`pipeline/robot_eval_inputs/<job_id>/deployment_outcomes/inbox/`.
+`POST /api/live-pipeline/live-closure-evidence` accepts
+`live_robot_eval_closure_evidence.v1`, validates the required review, delivery,
+and safety/contact/physics sections, and stages it at
+`pipeline/robot_eval_inputs/<job_id>/live_eval_closure_evidence.json`. The
+service is an intake layer only; it does not run Arena, set proof booleans, or
+publish a claim upgrade.
 
 ## Privacy And World Labs Input
 
@@ -462,6 +535,30 @@ live providers, model downloads, or robot-readiness trials.
 Evaluation prep surfaces existing SimReady artifacts but does not auto-build
 them unless `BLUEPRINT_ALLOW_LEGACY_SIMREADY_EVAL_PREP=true` is set.
 
+Optional Palatial PhysReady twin request/materialization lane:
+
+```bash
+blueprint-build-palatial-physready \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id>
+```
+
+By default this writes `pipeline/palatial_physready/*` request, cost, lineage,
+and validation manifests only. It does not call Palatial or upload captured
+images. Live Palatial calls require the explicit double gate:
+
+```bash
+BLUEPRINT_ENABLE_PALATIAL_PHYSREADY=true \
+PALATIAL_API_KEY=<secret> \
+blueprint-build-palatial-physready \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --allow-live-palatial
+```
+
+Use `--label microwave --label tote` or `--object-id <object_id>` to focus a
+pilot on captured objects that should become PhysReady twins. The Palatial lane
+is documented in
+[`docs/PALATIAL_PHYSREADY_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PALATIAL_PHYSREADY_LANE.md).
+
 Legacy local Marble sim-asset handoff module:
 
 ```bash
@@ -554,6 +651,13 @@ blueprint-run-robot-eval-job \
   --simulator fixture
 ```
 
+When `blueprint-capture-pipeline --lane current` or a descriptor requesting
+`task_evaluation_run` reaches `simulation_automation`, the capture pipeline also
+checks `pipeline/robot_eval_job_requests/inbox/` and consumes queued
+`robot_eval_job_request.v1` files through the same fail-closed job orchestrator.
+No external simulator, live policy, training, upload, or SDK action is performed
+unless its explicit env and CLI gates are present.
+
 The job orchestrator reads a robot-team request for policy/container/trace/demo
 references, robot profile, task/scenario scope, rights/privacy scope, operation,
 simulator preference, training preference, budget, owner system, provenance, and
@@ -563,18 +667,112 @@ surfaces when allowed, and writes exact blocked manifests for missing evidence
 or denied gates. The inbox runner also copies each accepted request under
 `pipeline/robot_eval_job_requests/<job_id>/job_request.json` and writes
 `pipeline/robot_eval_job_requests/inbox_run_manifest.json`. Fixture provisioner
-and fixture simulator paths prove only the repo-local orchestration loop. Vast, RunPod, GCP, local process, Docker,
-MuJoCo, PyBullet, Newton, Isaac Sim, Isaac Lab-Arena, Agents SDK, and Cosmos
-training paths stay blocked unless their explicit environment and CLI gates are present.
+and fixture simulator paths prove only the repo-local orchestration loop. Vast,
+RunPod, GCP, local process, Docker, MuJoCo, PyBullet, Newton, Isaac Sim, Isaac
+Lab-Arena, Agents SDK, and Cosmos training paths stay blocked unless their
+explicit environment and CLI gates are present.
 Live SDK operators log every decision, tool-call summary, command chosen,
 refusal, blocker, and proof effect; deterministic accepted artifacts remain the
 only source for true proof booleans.
+
+Each robot-eval job also writes `scenario_eval_matrix.json`. It expands the
+requested site/task/scenario scope into concrete scenario-family variation runs
+from `simulation_automation/scenario_variation_instances.json`. Robot POV
+observations, policy adapter inputs, simulator command environments, live
+closure coverage checks, and Post-Training Data Package exports use that matrix
+so lighting, object rotation, cart shift, blocked path, human crossing,
+forklift, occlusion, glare, missing label, wrong object, and narrow approach
+angle cases are not collapsed back into one base scenario.
+`policy_execution_manifest.json` and `policy_execution_trace.json` also report
+required, covered, and missing `scenario_eval_run_id`s for each selected
+robot-team modality and for the aggregate trace. Local reference replays can
+prove trace coverage only; live policy proof still requires a gated execution
+command/API/container run and accepted owner-system evidence.
 When `--arena-results-dir` points at existing Isaac Lab-Arena rollout artifacts,
 the job ingests those local results into normalized traces, labels, clips,
 metrics, reports, delivery manifests, rerun queues, and a Post-Training Data
 Package. That proves package code paths and result ingestion only; simulator
 execution, robot policy success, contact/safety validation, and robot readiness
 remain false unless separate accepted owner evidence exists.
+
+Real deployment or pilot actuals can be supplied inline on the job request,
+through `actual_outcome_manifest_uri` / `deployment_outcome_manifest_uri`, as
+`pipeline/robot_eval_inputs/actual_outcome_manifest.json`, or as streamed JSON
+files in `pipeline/robot_eval_inputs/deployment_outcomes/inbox/`. The job writes
+`deployment_outcome_intake_manifest.json`, `deployment_outcome_ledger.json`,
+`sim_vs_real_calibration_report.json`, and
+`prediction_vs_actual_deployment_summary.json`, then reflects the calibration
+score on `evaluation_result.json`. Actual records with a `scenario_eval_run_id`
+must match a prediction for that same run before predicted-vs-actual closure can
+pass; unmatched actual records are listed as calibration blockers rather than
+falling back to same-scenario predictions. Actual records without owner evidence
+remain calibration inputs only; live outcome proof requires `evidence_refs`, an
+owner proof URI, or an owner/operator attestation on every record.
+
+Every job also writes `live_eval_closure_manifest.json`. This is the
+requirement-by-requirement closure audit for the full neutral harness:
+site capture, task definitions, scenario library, robot POV generation,
+scenario/eval suite, failure labels, standard scorecard methodology, robot-team
+policy modalities, simulator engine plugins, WebApp upstream truth, rights and
+privacy scope, live simulator execution, live policy execution, real-world
+outcomes, predicted-vs-actual calibration, review acceptance, signed delivery,
+and safety/contact/physics readiness. The closure remains
+`local_artifacts_ready_live_external_blocked` until all live gates have accepted
+evidence. Robot POV closure requires coverage of every `scenario_eval_run_id` in
+the job matrix, not only a matching observation count. Scenario-library and
+scenario/eval-suite closure require each claimed variation row to include
+concrete mutation details and engine-adapter mutation operations, or a linked
+scenario variation instance that carries them. Failure-label closure
+requires every failed attempt or failed `scenario_eval_run_id` in
+`normalized_attempt_trace.json` to have a corresponding label in
+`failure_labels.json`; an unlabeled failed run remains a package/eval blocker.
+Evaluation-methodology closure requires the standard scorecard fields to carry
+valid values and shapes: success/calibration scores in `[0, 1]` when present,
+non-negative rates/counts/timing samples, and well-formed recovery and
+world-model-uncertainty summaries.
+Policy-interface closure requires every selected robot-team modality to be
+supported, selected, non-blocked, and complete against its modality-specific
+reference fields. Live-policy closure additionally requires
+`policy_execution_manifest.json` and `policy_execution_trace.json` to agree that
+at least one selected modality was actually executed, completed, and proven; a
+recorded/reference replay with trace actions is still coverage evidence, not
+live policy proof.
+Report-generation closure requires `robot_eval_report.json` and `.md` plus
+linked core job artifacts whose statuses, counts, scorecard fields, policy
+status, real-world outcome status, predicted-vs-actual status, and proof booleans
+match the report. A section-complete report stub is not enough.
+The simulator-engine plugin gate requires every supported engine in
+`simulator_engine_plugin_registry.json` to have a ready adapter contract and
+managed execution support; a partial or blocked registry remains a closure
+blocker. Predicted-vs-actual closure also blocks when deployment outcome records
+carry run-level identifiers that do not match a prediction. Real-world
+validation closure recomputes owner evidence and actual-outcome signals from
+each ledger row; aggregate `real_world_outcome_proven` booleans alone cannot
+upgrade the gate. Live-simulator closure also re-audits owner GPU proof
+manifests for required identity/runtime fields, zero exit code, empty
+blockers/missing inputs, and all validator-emitted evidence flags; an aggregate
+`owner_gpu_simulator_execution_proven` boolean alone cannot upgrade simulator
+proof. Signed-delivery closure requires non-placeholder external signed URLs,
+storage-upload proof, entitlement verification, and owner/operator attestation.
+Rights/privacy closure requires explicit `external_use_allowed=true` plus
+owner/operator attestation or a non-placeholder evidence reference; a bare
+`accepted=true` or OK status cannot upgrade the gate.
+Only a
+`live_end_to_end_verified` closure can upgrade
+`robot_readiness_proven` or `public_claim_upgrade_allowed` in `proof_boundary.json`.
+Owner closure evidence can be supplied inline on the job request, by job-request
+URI, directly in the job directory, globally under
+`pipeline/robot_eval_inputs/live_eval_closure_evidence.json`, or in the
+job-specific staged intake path
+`pipeline/robot_eval_inputs/<job_id>/live_eval_closure_evidence.json`.
+
+Standalone closure audit:
+
+```bash
+blueprint-audit-live-robot-eval-closure \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --job-dir /path/to/<capture_root>/pipeline/robot_eval_jobs/<job_id>
+```
 
 Arena result ingest and package build:
 

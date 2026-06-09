@@ -17,6 +17,7 @@ from .materialization import materialize_capture_bundle
 from .qualification import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
 from .retrieval_index_stage import run_retrieval_index_stage
+from .robot_eval_job_orchestrator import run_robot_eval_job_request_inbox
 from .simulation_automation import build_simulation_automation
 from .synthesis.synthesize import synthesize_view
 
@@ -225,6 +226,48 @@ def _build_derived_lane_result(
     return result
 
 
+def _robot_eval_job_request_inbox_for_capture(capture_root: Path) -> Optional[Path]:
+    """Return the first configured inbox containing WebApp robot-eval job requests."""
+
+    candidates: List[Path] = []
+    env_inbox = os.getenv("ROBOT_EVAL_JOB_REQUEST_INBOX_DIR")
+    if env_inbox:
+        candidates.append(Path(env_inbox))
+    candidates.append(capture_root / "pipeline" / "robot_eval_job_requests" / "inbox")
+
+    for candidate in candidates:
+        if candidate.is_dir() and any(path.is_file() for path in candidate.glob("*.json")):
+            return candidate
+    return None
+
+
+def _run_robot_eval_job_inbox_if_ready(capture_root: Path) -> Dict[str, Any]:
+    inbox = _robot_eval_job_request_inbox_for_capture(capture_root)
+    if inbox is None:
+        return {
+            "status": "waiting_for_job_requests",
+            "processed_count": 0,
+            "inbox_dir": None,
+            "manifest_path": None,
+            "claim_boundary": "no_robot_eval_job_request_v1_files_found",
+        }
+    result = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox,
+        provisioner=os.getenv("ROBOT_EVAL_JOB_DEFAULT_PROVISIONER", "fixture_local"),
+        simulator=os.getenv("ROBOT_EVAL_JOB_DEFAULT_SIMULATOR", "fixture"),
+    )
+    return {
+        "status": result.get("status"),
+        "processed_count": result.get("processed_count", 0),
+        "inbox_dir": str(inbox),
+        "manifest_path": str(
+            capture_root / "pipeline" / "robot_eval_job_requests" / "inbox_run_manifest.json"
+        ),
+        "claim_boundary": "job_requests_processed_with_gated_default_execution",
+    }
+
+
 def run_capture_pipeline(
     *,
     descriptor_gcs_uri: str,
@@ -283,6 +326,7 @@ def run_capture_pipeline(
         if selected_lane == "simulation_automation":
             capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
             automation_result = build_simulation_automation(capture_root=capture_root)
+            robot_eval_jobs = _run_robot_eval_job_inbox_if_ready(capture_root)
             lane_result = _build_derived_lane_result(
                 lane="simulation_automation",
                 source="simulation_automation_artifacts",
@@ -291,6 +335,12 @@ def run_capture_pipeline(
                     "manifest_path": automation_result.get("manifest_path"),
                     "plan_path": automation_result.get("plan_path"),
                     "automation_status": automation_result.get("status"),
+                    "robot_eval_job_inbox_status": robot_eval_jobs.get("status"),
+                    "robot_eval_job_inbox_processed_count": robot_eval_jobs.get(
+                        "processed_count",
+                        0,
+                    ),
+                    "robot_eval_job_inbox_manifest_path": robot_eval_jobs.get("manifest_path"),
                 },
             )
             results.append(lane_result)

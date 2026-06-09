@@ -18,8 +18,9 @@ from .local_capture import resolve_local_capture_context
 POST_TRAINING_DATA_PACKAGE_EXPORT_SCHEMA_VERSION = "post_training_data_package_export.v1"
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
-    "artifact_purpose": "post_training_data_package_export_manifest",
-    "export_manifest_only": True,
+    "artifact_purpose": "post_training_data_package_export",
+    "export_manifest_only": False,
+    "export_files_written": True,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "robot_readiness_proven": False,
@@ -108,6 +109,265 @@ def _optional_export_formats() -> Dict[str, Dict[str, Any]]:
     return formats
 
 
+def _rows_for_optional_exports(
+    *,
+    attempts: Sequence[Mapping[str, Any]],
+    label_rows: Sequence[Mapping[str, Any]],
+    metrics: Mapping[str, Any],
+    scene_id: str,
+    capture_id: str,
+) -> List[Dict[str, Any]]:
+    labels_by_attempt: Dict[str, List[Dict[str, Any]]] = {}
+    labels_by_scenario: Dict[str, List[Dict[str, Any]]] = {}
+    for label in label_rows:
+        label_payload = dict(label)
+        attempt_id = str(label.get("attempt_id") or "").strip()
+        scenario_id = str(label.get("scenario_id") or "").strip()
+        if attempt_id:
+            labels_by_attempt.setdefault(attempt_id, []).append(label_payload)
+        if scenario_id:
+            labels_by_scenario.setdefault(scenario_id, []).append(label_payload)
+
+    rows: List[Dict[str, Any]] = []
+    for index, attempt in enumerate(attempts, start=1):
+        attempt_id = str(attempt.get("attempt_id") or f"attempt_{index}").strip()
+        scenario_id = str(attempt.get("scenario_id") or "").strip()
+        labels = labels_by_attempt.get(attempt_id) or labels_by_scenario.get(scenario_id) or []
+        rows.append(
+            {
+                "episode_id": attempt_id,
+                "episode_index": index - 1,
+                "scene_id": scene_id,
+                "capture_id": capture_id,
+                "task_id": attempt.get("task_id"),
+                "scenario_id": scenario_id or None,
+                "policy_id": attempt.get("policy_id"),
+                "success": bool(attempt.get("success")),
+                "status": attempt.get("status") or "unknown",
+                "metrics": dict(_mapping(attempt.get("metrics"))),
+                "actions": attempt.get("actions") or attempt.get("action_trace") or [],
+                "observations": attempt.get("observations") or attempt.get("observation_refs") or [],
+                "failure_labels": labels,
+                "package_metrics": dict(metrics),
+                "source_format": "blueprint_normalized_attempt_trace.v1",
+                "claim_boundary": dict(CLAIM_BOUNDARY),
+            }
+        )
+    if rows:
+        return rows
+    return [
+        {
+            "episode_id": "missing_attempts",
+            "episode_index": 0,
+            "scene_id": scene_id,
+            "capture_id": capture_id,
+            "task_id": None,
+            "scenario_id": None,
+            "policy_id": None,
+            "success": False,
+            "status": "missing_source_attempts",
+            "metrics": dict(metrics),
+            "actions": [],
+            "observations": [],
+            "failure_labels": list(label_rows),
+            "package_metrics": dict(metrics),
+            "source_format": "blueprint_normalized_attempt_trace.v1",
+            "claim_boundary": dict(CLAIM_BOUNDARY),
+        }
+    ]
+
+
+def _flat_export_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "episode_id": row.get("episode_id"),
+                "episode_index": row.get("episode_index"),
+                "scene_id": row.get("scene_id"),
+                "capture_id": row.get("capture_id"),
+                "task_id": row.get("task_id"),
+                "scenario_id": row.get("scenario_id"),
+                "policy_id": row.get("policy_id"),
+                "success": bool(row.get("success")),
+                "status": row.get("status"),
+                "metrics_json": json.dumps(row.get("metrics") or {}, sort_keys=True),
+                "actions_json": json.dumps(row.get("actions") or [], sort_keys=True),
+                "observations_json": json.dumps(row.get("observations") or [], sort_keys=True),
+                "failure_labels_json": json.dumps(
+                    row.get("failure_labels") or [],
+                    sort_keys=True,
+                ),
+            }
+        )
+    return out
+
+
+def _write_native_hdf5(path: Path, rows: Sequence[Mapping[str, Any]]) -> bool:
+    try:
+        import h5py  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+    ensure_dir(path.parent)
+    payloads = [json.dumps(dict(row), sort_keys=True) for row in rows]
+    with h5py.File(path, "w") as handle:
+        handle.attrs["schema_version"] = "blueprint_post_training_hdf5.v1"
+        handle.attrs["source_format"] = "blueprint_normalized_attempt_trace.v1"
+        string_dtype = h5py.string_dtype(encoding="utf-8")
+        handle.create_dataset("episodes_json", data=payloads, dtype=string_dtype)
+    return True
+
+
+def _write_native_parquet(path: Path, rows: Sequence[Mapping[str, Any]]) -> bool:
+    if importlib.util.find_spec("pyarrow") is None or importlib.util.find_spec("pandas") is None:
+        return False
+    import pandas as pd  # type: ignore[import-not-found]
+
+    ensure_dir(path.parent)
+    pd.DataFrame(_flat_export_rows(rows)).to_parquet(path, index=False)
+    return True
+
+
+def _write_optional_exports(
+    *,
+    output_dir: Path,
+    attempts: Sequence[Mapping[str, Any]],
+    label_rows: Sequence[Mapping[str, Any]],
+    metrics: Mapping[str, Any],
+    clips: Mapping[str, Any],
+    generated_at: str,
+    scene_id: str,
+    capture_id: str,
+) -> Dict[str, Any]:
+    rows = _rows_for_optional_exports(
+        attempts=attempts,
+        label_rows=label_rows,
+        metrics=metrics,
+        scene_id=scene_id,
+        capture_id=capture_id,
+    )
+    files: Dict[str, str] = {}
+    formats = _optional_export_formats()
+
+    rlds_path = output_dir / "exports" / "rlds" / "episodes.jsonl"
+    _write_jsonl(rlds_path, rows)
+    files["rlds_episodes"] = _relative_to(output_dir, rlds_path)
+    formats["rlds"] = {
+        **formats["rlds"],
+        "status": "written_jsonl",
+        "format_written": True,
+        "path": files["rlds_episodes"],
+        "episode_count": len(rows),
+        "native_package_required": False,
+    }
+
+    lerobot_rows = [
+        {
+            "episode_index": row.get("episode_index"),
+            "episode_id": row.get("episode_id"),
+            "task": row.get("task_id"),
+            "scenario": row.get("scenario_id"),
+            "observation": row.get("observations") or [],
+            "action": row.get("actions") or [],
+            "reward_or_success": 1.0 if row.get("success") else 0.0,
+            "metadata": {
+                "scene_id": scene_id,
+                "capture_id": capture_id,
+                "policy_id": row.get("policy_id"),
+                "failure_labels": row.get("failure_labels") or [],
+                "claim_boundary": dict(CLAIM_BOUNDARY),
+            },
+        }
+        for row in rows
+    ]
+    lerobot_path = output_dir / "exports" / "lerobot" / "episodes.jsonl"
+    _write_jsonl(lerobot_path, lerobot_rows)
+    files["lerobot_episodes"] = _relative_to(output_dir, lerobot_path)
+    formats["lerobot"] = {
+        **formats["lerobot"],
+        "status": "written_jsonl",
+        "format_written": True,
+        "path": files["lerobot_episodes"],
+        "episode_count": len(lerobot_rows),
+        "native_package_required": False,
+    }
+
+    hdf5_path = output_dir / "exports" / "hdf5" / "episodes.hdf5"
+    if _write_native_hdf5(hdf5_path, rows):
+        files["hdf5_episodes"] = _relative_to(output_dir, hdf5_path)
+        formats["hdf5"] = {
+            **formats["hdf5"],
+            "status": "written_native",
+            "format_written": True,
+            "path": files["hdf5_episodes"],
+            "episode_count": len(rows),
+        }
+    else:
+        hdf5_fallback = output_dir / "exports" / "hdf5" / "episodes.hdf5.jsonl"
+        _write_jsonl(hdf5_fallback, rows)
+        files["hdf5_episodes"] = _relative_to(output_dir, hdf5_fallback)
+        formats["hdf5"] = {
+            **formats["hdf5"],
+            "status": "written_jsonl_fallback",
+            "format_written": True,
+            "path": files["hdf5_episodes"],
+            "episode_count": len(rows),
+            "fallback_reason": "optional_dependency_h5py_missing",
+        }
+
+    parquet_path = output_dir / "exports" / "parquet" / "episodes.parquet"
+    if _write_native_parquet(parquet_path, rows):
+        files["parquet_episodes"] = _relative_to(output_dir, parquet_path)
+        formats["parquet"] = {
+            **formats["parquet"],
+            "status": "written_native",
+            "format_written": True,
+            "path": files["parquet_episodes"],
+            "episode_count": len(rows),
+        }
+    else:
+        parquet_fallback = output_dir / "exports" / "parquet" / "episodes.parquet.jsonl"
+        _write_jsonl(parquet_fallback, _flat_export_rows(rows))
+        files["parquet_episodes"] = _relative_to(output_dir, parquet_fallback)
+        formats["parquet"] = {
+            **formats["parquet"],
+            "status": "written_jsonl_fallback",
+            "format_written": True,
+            "path": files["parquet_episodes"],
+            "episode_count": len(rows),
+            "fallback_reason": "optional_dependency_pyarrow_or_pandas_missing",
+        }
+
+    video_bundle_path = output_dir / "exports" / "video_bundle" / "clips_manifest.json"
+    write_json(
+        video_bundle_path,
+        {
+            "schema_version": "post_training_video_bundle_manifest.v1",
+            "generated_at": generated_at,
+            "status": "written_manifest",
+            "source_clips": dict(clips),
+            "clip_count": int(clips.get("clip_count") or 0) if clips else 0,
+            "claim_boundary": dict(CLAIM_BOUNDARY),
+        },
+    )
+    files["video_bundle_manifest"] = _relative_to(output_dir, video_bundle_path)
+    formats["video_bundle"] = {
+        **formats["video_bundle"],
+        "status": "written_manifest",
+        "format_written": True,
+        "path": files["video_bundle_manifest"],
+        "clip_count": int(clips.get("clip_count") or 0) if clips else 0,
+    }
+
+    return {
+        "schema_version": "post_training_data_package_optional_exports.v1",
+        "generated_at": generated_at,
+        "formats": formats,
+        "files": files,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
 def _write_package_files(
     *,
     output_dir: Path,
@@ -169,26 +429,33 @@ def _write_package_files(
         "included_artifacts": dict(included_artifacts),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
-    optional_exports = {
-        "schema_version": "post_training_data_package_optional_exports.v1",
-        "generated_at": generated_at,
-        "formats": _optional_export_formats(),
-    }
+    optional_exports = _write_optional_exports(
+        output_dir=output_dir,
+        attempts=attempts,
+        label_rows=label_rows,
+        metrics=metrics,
+        clips=clips,
+        generated_at=generated_at,
+        scene_id=scene_id,
+        capture_id=capture_id,
+    )
     write_json(output_dir / "dataset_card.json", dataset_card)
     write_json(output_dir / "license_manifest.json", license_manifest)
     write_json(output_dir / "optional_export_manifest.json", optional_exports)
+    package_file_index = {
+        "attempts_jsonl": "data/attempts.jsonl",
+        "failure_labels_jsonl": "data/failure_labels.jsonl",
+        "metrics_json": "data/metrics.json",
+        "clips_manifest": "clips_manifest.json",
+        "dataset_card": "dataset_card.json",
+        "license_manifest": "license_manifest.json",
+        "optional_export_manifest": "optional_export_manifest.json",
+        **dict(optional_exports.get("files") or {}),
+    }
     package_index = {
         "schema_version": "post_training_data_package_index.v1",
         "generated_at": generated_at,
-        "files": {
-            "attempts_jsonl": "data/attempts.jsonl",
-            "failure_labels_jsonl": "data/failure_labels.jsonl",
-            "metrics_json": "data/metrics.json",
-            "clips_manifest": "clips_manifest.json",
-            "dataset_card": "dataset_card.json",
-            "license_manifest": "license_manifest.json",
-            "optional_export_manifest": "optional_export_manifest.json",
-        },
+        "files": package_file_index,
         "source_artifacts": dict(included_artifacts),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -227,6 +494,11 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
         output_dir / "package_index.json",
         output_dir / "checksums.json",
     ]
+    exports_dir = output_dir / "exports"
+    if exports_dir.is_dir():
+        archive_inputs.extend(
+            path for path in sorted(exports_dir.rglob("*")) if path.is_file()
+        )
     with tarfile.open(archive_path, "w:gz") as tar:
         for path in archive_inputs:
             if path.is_file():
@@ -272,8 +544,11 @@ def build_post_training_data_package_export(
             ("arena_eval_metrics", "arena_eval_metrics.json"),
             ("simulator_provider_adapter_manifest", "simulator_provider_adapter_manifest.json"),
             ("simulator_command_artifacts_manifest", "simulator_command_artifacts_manifest.json"),
+            ("scenario_eval_matrix", "scenario_eval_matrix.json"),
             ("robot_pov_observation_manifest", "robot_pov_observation_manifest.json"),
             ("robot_pov_observations", "robot_pov_observations.jsonl"),
+            ("robot_pov_frame_sequence_manifest", "robot_pov_frame_sequence_manifest.json"),
+            ("robot_pov_render_storyboard", "robot_pov_render_storyboard.json"),
             ("policy_execution_manifest", "policy_execution_manifest.json"),
             ("policy_execution_trace", "policy_execution_trace.json"),
             ("clips_manifest", "clips_manifest.json"),
@@ -287,14 +562,18 @@ def build_post_training_data_package_export(
             ("arena_result_ingest_ledger", "arena_result_ingest_ledger.json"),
             ("prediction_outcome_ledger", "prediction_outcome_ledger.json"),
             ("calibration_report", "calibration_report.json"),
+            ("deployment_outcome_intake_manifest", "deployment_outcome_intake_manifest.json"),
             ("deployment_outcome_ledger", "deployment_outcome_ledger.json"),
             ("sim_vs_real_calibration_report", "sim_vs_real_calibration_report.json"),
             (
                 "prediction_vs_actual_deployment_summary",
                 "prediction_vs_actual_deployment_summary.json",
             ),
+            ("live_eval_closure_manifest", "live_eval_closure_manifest.json"),
             ("breakage_library", "breakage_library.json"),
             ("evaluation_result", "evaluation_result.json"),
+            ("robot_eval_report", "robot_eval_report.json"),
+            ("robot_eval_report_markdown", "robot_eval_report.md"),
             ("proof_boundary", "proof_boundary.json"),
         ):
             value = _job_artifact(resolved_job_dir, name)
@@ -382,6 +661,7 @@ def build_post_training_data_package_export(
             "curated_robot_pov_clips_required_for_richer_exports": True,
             "robot_pov_observations_included": "robot_pov_observation_manifest"
             in included_artifacts,
+            "scenario_eval_matrix_included": "scenario_eval_matrix" in included_artifacts,
             "policy_execution_trace_included": "policy_execution_trace" in included_artifacts,
             "normalized_eval_attempts_included": "normalized_attempt_trace" in included_artifacts,
             "failure_labels_included": "failure_labels" in included_artifacts,
@@ -392,8 +672,13 @@ def build_post_training_data_package_export(
             in included_artifacts,
             "sim_vs_real_calibration_included": "sim_vs_real_calibration_report"
             in included_artifacts,
+            "deployment_outcome_intake_included": "deployment_outcome_intake_manifest"
+            in included_artifacts,
             "deployment_outcomes_included": "deployment_outcome_ledger" in included_artifacts,
+            "live_eval_closure_included": "live_eval_closure_manifest"
+            in included_artifacts,
             "breakage_library_included": "breakage_library" in included_artifacts,
+            "robot_eval_report_included": "robot_eval_report" in included_artifacts,
         },
         "package_files": package_files["package_files"],
         "dataset_card_path": "dataset_card.json",

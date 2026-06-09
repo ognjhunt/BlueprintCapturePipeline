@@ -967,7 +967,13 @@ def simulation_automation_evaluation_prep_surface(
         "robot_eval_cpu_simulator_preflight_manifest": (
             automation_dir / "cpu_simulator_preflight_manifest.json"
         ),
+        "robot_eval_scenario_variation_instances": (
+            automation_dir / "scenario_variation_instances.json"
+        ),
         "robot_eval_arena_environment_packet": automation_dir / "arena_environment_packet.json",
+        "robot_eval_simulator_engine_plugin_registry": (
+            automation_dir / "simulator_engine_plugin_registry.json"
+        ),
         "robot_eval_gpu_handoff_packet": automation_dir / "gpu_handoff_packet.json",
         "robot_eval_gpu_owner_system_proof_schema": (
             automation_dir / "gpu_owner_system_proof_schema.json"
@@ -1013,6 +1019,74 @@ def simulation_automation_evaluation_prep_surface(
         ),
         "public_claim_upgrade_allowed": bool(
             proof_boundary.get("public_claim_upgrade_allowed")
+            or run_manifest.get("public_claim_upgrade_allowed")
+        ),
+    }
+
+
+def palatial_physready_evaluation_prep_surface(
+    *,
+    capture_root: str | Path,
+    eval_dir: Path,
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    palatial_dir = context.pipeline_root / "palatial_physready"
+    artifact_paths = {
+        "palatial_physready_twin_candidates": (
+            palatial_dir / "twin_candidate_manifest.json"
+        ),
+        "palatial_physready_request_manifest": (
+            palatial_dir / "palatial_request_manifest.json"
+        ),
+        "palatial_physready_run_manifest": (
+            palatial_dir / "palatial_physready_run_manifest.json"
+        ),
+        "palatial_physready_materialization_manifest": (
+            palatial_dir / "materialization_manifest.json"
+        ),
+        "palatial_physready_validation_manifest": (
+            palatial_dir / "validation_manifest.json"
+        ),
+    }
+    artifacts = {
+        key: _relative_to(eval_dir, path)
+        for key, path in artifact_paths.items()
+        if path.is_file()
+    }
+    artifact_uris = {
+        f"{key}_uri": _gs_uri(context, f"palatial_physready/{path.name}")
+        for key, path in artifact_paths.items()
+        if path.is_file()
+    }
+    run_manifest = _read_optional_mapping(
+        palatial_dir / "palatial_physready_run_manifest.json"
+    )
+    validation = _read_optional_mapping(palatial_dir / "validation_manifest.json")
+    return {
+        "schema_version": "palatial_physready_evaluation_prep_surface.v1",
+        "status": str(run_manifest.get("status") or "missing"),
+        "artifacts": artifacts,
+        "artifact_uris": artifact_uris,
+        "model_derived_support_assets_present": bool(
+            validation.get("inspection_count")
+            or run_manifest.get("local_exports_materialized")
+        ),
+        "live_provider_calls_performed": bool(
+            run_manifest.get("live_provider_calls_performed")
+        ),
+        "remote_asset_downloads_performed": bool(
+            run_manifest.get("remote_asset_downloads_performed")
+        ),
+        "simulator_execution_proven": bool(
+            validation.get("simulator_execution_proven")
+            or run_manifest.get("simulator_execution_proven")
+        ),
+        "robot_readiness_proven": bool(
+            validation.get("robot_readiness_proven")
+            or run_manifest.get("robot_readiness_proven")
+        ),
+        "public_claim_upgrade_allowed": bool(
+            validation.get("public_claim_upgrade_allowed")
             or run_manifest.get("public_claim_upgrade_allowed")
         ),
     }
@@ -1126,9 +1200,36 @@ def robot_eval_job_evaluation_prep_surface(
         "blocked_manifest": "blocked_manifest.json",
         "job_validation": "job_validation.json",
         "policy_package_manifest": "policy_package_manifest.json",
+        "scenario_eval_matrix": "scenario_eval_matrix.json",
+        "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
+        "robot_pov_observations": "robot_pov_observations.jsonl",
+        "robot_pov_frame_sequence_manifest": "robot_pov_frame_sequence_manifest.json",
+        "robot_pov_render_storyboard": "robot_pov_render_storyboard.json",
+        "policy_execution_manifest": "policy_execution_manifest.json",
+        "policy_execution_trace": "policy_execution_trace.json",
+        "policy_execution_trace_jsonl": "policy_execution_trace.jsonl",
         "simulator_service_result": "simulator_service_result.json",
+        "normalized_attempt_trace": "normalized_attempt_trace.json",
+        "failure_labels": "failure_labels.json",
+        "prediction_outcome_ledger": "prediction_outcome_ledger.json",
+        "calibration_report": "calibration_report.json",
+        "deployment_outcome_intake_manifest": "deployment_outcome_intake_manifest.json",
+        "deployment_outcome_ledger": "deployment_outcome_ledger.json",
+        "sim_vs_real_calibration_report": "sim_vs_real_calibration_report.json",
+        "prediction_vs_actual_deployment_summary": (
+            "prediction_vs_actual_deployment_summary.json"
+        ),
+        "live_eval_closure_manifest": "live_eval_closure_manifest.json",
         "training_result": "training_result.json",
         "evaluation_result": "evaluation_result.json",
+        "robot_eval_report": "robot_eval_report.json",
+        "robot_eval_report_markdown": "robot_eval_report.md",
+        "post_training_data_package_export_manifest": (
+            "post_training_data_package_export_manifest.json"
+        ),
+        "customer_handoff_report": "customer_handoff_report.json",
+        "delivery_manifest": "delivery_manifest.json",
+        "arena_rerun_plan": "arena_rerun_plan.json",
     }
     artifacts: Dict[str, str] = {}
     artifact_uris: Dict[str, str] = {}
@@ -1171,7 +1272,16 @@ def robot_eval_job_evaluation_prep_surface(
                         proof_boundary.get("robot_readiness_proven")
                         or run_manifest.get("robot_readiness_proven")
                     ),
-                    "public_claim_upgrade_allowed": False,
+                    "live_end_to_end_verified": bool(
+                        proof_boundary.get("live_end_to_end_verified")
+                        or run_manifest.get("live_end_to_end_verified")
+                    ),
+                    "live_eval_closure_status": run_manifest.get("live_eval_closure_status")
+                    or proof_boundary.get("live_eval_closure_status"),
+                    "public_claim_upgrade_allowed": bool(
+                        proof_boundary.get("public_claim_upgrade_allowed")
+                        or run_manifest.get("public_claim_upgrade_allowed")
+                    ),
                 }
             )
     status = "missing"
@@ -1195,6 +1305,20 @@ def robot_eval_job_evaluation_prep_surface(
             "run_manifest_uri": "robot_eval_job_run_manifest_uri",
             "proof_boundary_uri": "robot_eval_job_proof_boundary_uri",
             "blocked_manifest_uri": "robot_eval_job_blocked_manifest_uri",
+            "evaluation_result_uri": "robot_eval_job_evaluation_result_uri",
+            "scenario_eval_matrix_uri": "robot_eval_job_scenario_eval_matrix_uri",
+            "deployment_outcome_ledger_uri": "robot_eval_job_deployment_outcome_ledger_uri",
+            "sim_vs_real_calibration_report_uri": (
+                "robot_eval_job_sim_vs_real_calibration_report_uri"
+            ),
+            "live_eval_closure_manifest_uri": (
+                "robot_eval_job_live_eval_closure_manifest_uri"
+            ),
+            "robot_eval_report_uri": "robot_eval_job_robot_eval_report_uri",
+            "robot_eval_report_markdown_uri": "robot_eval_job_robot_eval_report_markdown_uri",
+            "post_training_data_package_export_manifest_uri": (
+                "robot_eval_job_post_training_data_package_export_manifest_uri"
+            ),
         }
         for source_key, alias_key in alias_map.items():
             value = latest_artifact_uris.get(source_key)
@@ -1207,10 +1331,18 @@ def robot_eval_job_evaluation_prep_surface(
         "jobs": jobs,
         "artifacts": artifacts,
         "artifact_uris": artifact_uris,
-        "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
-        "public_claim_upgrade_allowed": False,
-        "claim_boundary": "robot_eval_job_artifacts_are_advisory_and_do_not_upgrade_public_claims",
+        "simulator_execution_proven": any(
+            bool(job.get("simulator_execution_proven")) for job in jobs
+        ),
+        "robot_readiness_proven": any(
+            bool(job.get("robot_readiness_proven")) for job in jobs
+        ),
+        "public_claim_upgrade_allowed": any(
+            bool(job.get("public_claim_upgrade_allowed")) for job in jobs
+        ),
+        "claim_boundary": (
+            "robot_eval_job_artifacts_are_advisory_unless_live_eval_closure_manifest_is_verified"
+        ),
     }
 
 
@@ -3901,6 +4033,10 @@ def run_evaluation_prep_stage(
         capture_root=context.capture_root,
         eval_dir=eval_dir,
     )
+    palatial_physready_surface = palatial_physready_evaluation_prep_surface(
+        capture_root=context.capture_root,
+        eval_dir=eval_dir,
+    )
     site_eval_director_surface = site_eval_director_evaluation_prep_surface(
         capture_root=context.capture_root,
         eval_dir=eval_dir,
@@ -3980,6 +4116,13 @@ def run_evaluation_prep_stage(
         "simready_asset_lane_status": simready_assets.get("status"),
         "marble_sim_asset_lane_status": marble_sim_assets.get("status"),
         "marble_asset_validation_status": marble_asset_validation_status or None,
+        "palatial_physready_status": palatial_physready_surface.get("status"),
+        "palatial_physready_model_derived_support_assets_present": (
+            palatial_physready_surface.get("model_derived_support_assets_present")
+        ),
+        "palatial_physready_live_provider_calls_performed": (
+            palatial_physready_surface.get("live_provider_calls_performed")
+        ),
         "robot_eval_dataset_status": robot_eval_dataset.get("status"),
         "robot_eval_dataset_statuses": robot_eval_dataset.get("dataset_statuses"),
         "robot_eval_recorded_trace_eval_status": robot_eval_dataset.get(
@@ -4433,6 +4576,7 @@ def run_evaluation_prep_stage(
                 else {}
             ),
             **({"simready_prep_manifest": _relative_to(eval_dir, simready_prep_manifest_path)} if simready_prep_manifest_path is not None else {}),
+            **dict(palatial_physready_surface.get("artifacts") or {}),
             **dict(simulation_automation_surface.get("artifacts") or {}),
             **dict(site_eval_director_surface.get("artifacts") or {}),
             **dict(robot_eval_job_surface.get("artifacts") or {}),
@@ -4636,6 +4780,7 @@ def run_evaluation_prep_stage(
         )
         if eval_methodology_summary_path.is_file()
         else None,
+        **dict(palatial_physready_surface.get("artifact_uris") or {}),
         **dict(simulation_automation_surface.get("artifact_uris") or {}),
         **dict(site_eval_director_surface.get("artifact_uris") or {}),
         **dict(robot_eval_job_surface.get("artifact_uris") or {}),
@@ -4728,6 +4873,7 @@ def run_evaluation_prep_stage(
         "proof_path_status": proof_path_status,
         "simready_assets": simready_assets,
         "marble_sim_assets": marble_sim_assets,
+        "palatial_physready": palatial_physready_surface,
         "robot_eval_dataset": robot_eval_dataset,
         "webapp_sync_result": webapp_sync_result,
         "alpha_readiness_summary": alpha_summary,

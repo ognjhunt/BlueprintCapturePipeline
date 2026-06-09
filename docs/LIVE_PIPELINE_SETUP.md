@@ -37,6 +37,10 @@ make the Arena section `ready_for_result_ingest` without opening
 `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION`. That does not prove simulator execution,
 robot policy execution, contact, safety, or robot readiness; it only means the
 pipeline has result artifacts it can ingest and audit.
+The live closure audit also checks
+`simulation_automation/simulator_engine_plugin_registry.json`; every supported
+engine must be present with a ready adapter contract and managed execution
+support before the simulator-plugin gate can pass.
 
 ## Always-On Control Plane
 
@@ -71,9 +75,13 @@ That packet is the machine-readable handoff for the remaining external inputs:
   `buyer_request_id`, and `capture_job_id`
 - accepted WebApp sources: `capture_descriptor.json`, `raw/manifest.json`,
   `pipeline/opportunity_handoff.json`, and queued
-  `robot_eval_job_request.v1` files for scheduling
+  `robot_eval_job_request.v1` files for scheduling when their source identifies
+  Blueprint-WebApp and their `site_package.capture_root` matches the capture
+  root under audit
 - owner-system Isaac Lab-Arena result artifacts under
   `BLUEPRINT_ARENA_RESULTS_DIR` or a gated simulator command path
+- robot-team policy package references for one supported execution or trace
+  modality
 - gated command hooks for rollout vision labeling and package delivery
 - gated Agents SDK and Codex SDK/Codex CLI operator credentials
 
@@ -107,8 +115,10 @@ blueprint-intake-live-pipeline-inputs \
   --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
   --webapp-job-request /path/to/robot_eval_job_request.json \
   --arena-results-dir /path/to/owner-system/isaac-lab-arena-results \
+  --policy-package /path/to/robot_team_policy_package.json \
   --stage-webapp-request \
-  --stage-arena-results
+  --stage-arena-results \
+  --stage-policy-package
 ```
 
 The intake command checks that a WebApp request is a direct
@@ -121,6 +131,16 @@ the job, or upgrade proof claims. With `--stage-arena-results`, intake writes
 validated owner-results pointer when no `BLUEPRINT_ARENA_RESULTS_DIR` or
 `--arena-results-dir` override is set.
 
+`--policy-package` accepts `robot_team_policy_package.v1` or a direct
+policy-package body for one supported robot-team modality: API endpoint, Docker
+container, recorded action trace, high-level skill trace, teleop demo, or sim
+controller plugin. With `--stage-policy-package`, intake writes the validated
+handoff to
+`pipeline/robot_eval_inputs/<job_id>/policy_package.json`. This is an execution
+input only; policy proof still requires the job-level policy execution bundle to
+produce attempts. The closure audit revalidates selected modality status and
+modality-specific required fields before the policy-interface gate can pass.
+
 For live WebApp-to-droplet handoff, run the authenticated intake service:
 
 ```bash
@@ -132,6 +152,9 @@ The service exposes:
 
 - `GET /health`
 - `POST /api/live-pipeline/job-requests`
+- `POST /api/live-pipeline/policy-packages`
+- `POST /api/live-pipeline/deployment-outcomes`
+- `POST /api/live-pipeline/live-closure-evidence`
 - `GET /api/live-pipeline/intake-audit`
 
 Send the token with `Authorization: Bearer ...` or
@@ -239,7 +262,84 @@ It is not by itself:
 - robot readiness proof
 
 Those claims require owner-system simulator logs, accepted artifacts, and the
-normal proof-boundary audit.
+normal proof-boundary audit. Job-level closure is recorded in
+`pipeline/robot_eval_jobs/<job_id>/live_eval_closure_manifest.json`; the only
+ready state for the full live loop is `live_end_to_end_verified`. Anything else
+is a local/package-ready or externally blocked state, even if deterministic
+package artifacts are complete.
+
+Robot-team policy packages should be staged per job before claiming policy
+execution input readiness:
+
+```bash
+blueprint-intake-live-pipeline-inputs \
+  --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
+  --policy-package /path/to/robot_team_policy_package.json \
+  --stage-policy-package
+```
+
+The same path is available over HTTP:
+
+```text
+POST /api/live-pipeline/policy-packages
+```
+
+The body must carry a safe `job_id` and one supported modality. The service
+stages the package under `pipeline/robot_eval_inputs/<job_id>/policy_package.json`
+and does not run policy execution or set proof booleans.
+
+Predicted-vs-actual deployment records can be staged separately:
+
+```bash
+blueprint-intake-live-pipeline-inputs \
+  --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
+  --deployment-outcomes /path/to/deployment_outcome_manifest.json \
+  --stage-deployment-outcomes
+```
+
+The intake command copies validated records to
+`pipeline/robot_eval_inputs/<job_id>/deployment_outcomes/inbox/`. This is a
+real-world validation input only; the robot-eval job still has to pair it with
+predictions before a calibration score appears. For predicted-vs-actual
+calibration, every staged actual record must include `scenario_eval_run_id` or
+`scenario_variation_instance_id`; task/scenario-only records remain real-world
+validation inputs but keep `predicted_vs_actual_exact_match_keys` open. If an
+actual record includes a `scenario_eval_run_id`, the prediction match must be
+for that same run; unmatched run-level actuals remain predicted-vs-actual
+blockers. `real_world_outcome_proven` requires owner evidence on every actual
+outcome record, such as `evidence_refs`, an owner proof URI, or an
+operator/owner attestation. If records have task, scenario, actual-result, and
+exact-match-key fields but lack owner evidence, the control plane accepts them
+for calibration and keeps `real_world_deployment_outcome_owner_evidence` as the
+remaining proof blocker.
+
+Closure evidence for review acceptance, signed delivery/access, rights/privacy,
+and safety/contact/physics readiness should also be staged per job with:
+
+```bash
+blueprint-intake-live-pipeline-inputs \
+  --manifest-path /var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json \
+  --live-closure-evidence /path/to/live_eval_closure_evidence.json \
+  --stage-live-closure-evidence
+```
+
+The intake command copies validated evidence to
+`pipeline/robot_eval_inputs/<job_id>/live_eval_closure_evidence.json`. This is a
+closure-audit input only; it does not set `robot_readiness_proven`,
+`safety_validated`, or `public_claim_upgrade_allowed`.
+
+When the authenticated intake service is running, the same handoffs can be
+submitted without shell access through:
+
+```http
+POST /api/live-pipeline/deployment-outcomes
+POST /api/live-pipeline/live-closure-evidence
+```
+
+Deployment-outcome bodies must include a safe `job_id`, task/scenario IDs, and
+an actual result signal. Closure-evidence bodies must be
+`live_robot_eval_closure_evidence.v1` JSON objects with a safe `job_id` and the
+required review, delivery, and safety/contact/physics sections.
 
 Do not commit DigitalOcean tokens. If a token was pasted into chat or a terminal
 transcript, rotate it after use.

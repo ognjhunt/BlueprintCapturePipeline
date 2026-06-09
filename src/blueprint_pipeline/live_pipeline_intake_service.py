@@ -1,10 +1,11 @@
 """Authenticated HTTP intake for live WebApp robot-eval job requests.
 
 The service is a thin wrapper around ``build_live_pipeline_input_intake``. It
-accepts a WebApp ``robot_eval_job_request.v1`` payload or queue envelope, stages
-the validated file into the configured control-plane inbox, and optionally runs
-a configured trigger command. It does not execute simulator/provider work or
-promote proof claims.
+accepts a WebApp ``robot_eval_job_request.v1`` payload or queue envelope, accepts
+job-specific policy packages, deployment outcomes, and live closure evidence,
+stages validated files into the configured control-plane paths, and optionally
+runs a configured trigger command. It does not execute simulator/provider work
+or promote proof claims.
 """
 
 from __future__ import annotations
@@ -84,6 +85,39 @@ def _candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
     return work_dir / f"{_safe_stem(job_id or digest)}-{digest}.json"
 
 
+def _closure_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
+    job_id = _string(
+        payload.get("job_id")
+        or payload.get("jobId")
+        or payload.get("robot_eval_job_id")
+        or payload.get("robotEvalJobId")
+    )
+    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+    return work_dir / "live_closure_evidence" / f"{_safe_stem(job_id or digest)}-{digest}.json"
+
+
+def _deployment_outcome_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
+    job_id = _string(
+        payload.get("job_id")
+        or payload.get("jobId")
+        or payload.get("robot_eval_job_id")
+        or payload.get("robotEvalJobId")
+    )
+    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+    return work_dir / "deployment_outcomes" / f"{_safe_stem(job_id or digest)}-{digest}.json"
+
+
+def _policy_package_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
+    job_id = _string(
+        payload.get("job_id")
+        or payload.get("jobId")
+        or payload.get("robot_eval_job_id")
+        or payload.get("robotEvalJobId")
+    )
+    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+    return work_dir / "policy_packages" / f"{_safe_stem(job_id or digest)}-{digest}.json"
+
+
 def _redacted_intake_response(
     *,
     candidate_path: Path,
@@ -113,6 +147,152 @@ def _redacted_intake_response(
             "blockers": webapp.get("blockers", []),
         },
         "webapp_staging": {
+            "status": staging.get("status"),
+            "performed": bool(staging.get("performed")),
+            "target_path": staging.get("target_path"),
+            "blockers": staging.get("blockers", []),
+        },
+        "staged_inputs": {
+            "status": staged_inputs.get("status"),
+            "performed": bool(staged_inputs.get("performed")),
+            "path": staged_inputs.get("path"),
+            "blockers": staged_inputs.get("blockers", []),
+        },
+        "input_blockers": list(intake.get("input_blockers") or []),
+        "trigger": dict(trigger),
+        "proof_boundary": {
+            "intake_performs_simulator_execution": False,
+            "intake_sets_proof_booleans": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
+def _redacted_policy_package_response(
+    *,
+    candidate_path: Path,
+    intake: Mapping[str, Any],
+    trigger: Mapping[str, Any],
+) -> Dict[str, Any]:
+    policy = _mapping(intake.get("policy_package"))
+    staging = _mapping(intake.get("policy_package_staging"))
+    staged_inputs = _mapping(intake.get("staged_inputs"))
+    return {
+        "schema_version": INTAKE_SCHEMA_VERSION,
+        "status": intake.get("status"),
+        "accepted": intake.get("status") == "staged_for_control_plane",
+        "generated_at": utc_now_iso(),
+        "candidate": {
+            "path": str(candidate_path),
+            "sha256": policy.get("sha256"),
+        },
+        "policy_package": {
+            "status": policy.get("status"),
+            "job_id": policy.get("job_id"),
+            "selected_modalities": policy.get("selected_modalities"),
+            "blockers": policy.get("blockers", []),
+        },
+        "policy_package_staging": {
+            "status": staging.get("status"),
+            "performed": bool(staging.get("performed")),
+            "target_path": staging.get("target_path"),
+            "blockers": staging.get("blockers", []),
+        },
+        "staged_inputs": {
+            "status": staged_inputs.get("status"),
+            "performed": bool(staged_inputs.get("performed")),
+            "path": staged_inputs.get("path"),
+            "blockers": staged_inputs.get("blockers", []),
+        },
+        "input_blockers": list(intake.get("input_blockers") or []),
+        "trigger": dict(trigger),
+        "proof_boundary": {
+            "intake_performs_policy_execution": False,
+            "intake_sets_proof_booleans": False,
+            "robot_policy_execution_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
+def _redacted_deployment_outcome_response(
+    *,
+    candidate_path: Path,
+    intake: Mapping[str, Any],
+    trigger: Mapping[str, Any],
+) -> Dict[str, Any]:
+    outcomes = _mapping(intake.get("deployment_outcomes"))
+    staging = _mapping(intake.get("deployment_outcomes_staging"))
+    staged_inputs = _mapping(intake.get("staged_inputs"))
+    return {
+        "schema_version": INTAKE_SCHEMA_VERSION,
+        "status": intake.get("status"),
+        "accepted": intake.get("status") == "staged_for_control_plane",
+        "generated_at": utc_now_iso(),
+        "candidate": {
+            "path": str(candidate_path),
+            "sha256": outcomes.get("sha256"),
+        },
+        "deployment_outcomes": {
+            "status": outcomes.get("status"),
+            "job_id": outcomes.get("job_id"),
+            "record_count": outcomes.get("record_count"),
+            "record_ids": outcomes.get("record_ids"),
+            "owner_evidence_ready": bool(outcomes.get("owner_evidence_ready")),
+            "owner_evidence_record_count": outcomes.get("owner_evidence_record_count"),
+            "missing_owner_evidence_record_ids": outcomes.get(
+                "missing_owner_evidence_record_ids"
+            ),
+            "blockers": outcomes.get("blockers", []),
+        },
+        "deployment_outcomes_staging": {
+            "status": staging.get("status"),
+            "performed": bool(staging.get("performed")),
+            "target_path": staging.get("target_path"),
+            "blockers": staging.get("blockers", []),
+        },
+        "staged_inputs": {
+            "status": staged_inputs.get("status"),
+            "performed": bool(staged_inputs.get("performed")),
+            "path": staged_inputs.get("path"),
+            "blockers": staged_inputs.get("blockers", []),
+        },
+        "input_blockers": list(intake.get("input_blockers") or []),
+        "trigger": dict(trigger),
+        "proof_boundary": {
+            "intake_performs_simulator_execution": False,
+            "intake_sets_proof_booleans": False,
+            "real_world_outcome_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
+def _redacted_closure_evidence_response(
+    *,
+    candidate_path: Path,
+    intake: Mapping[str, Any],
+    trigger: Mapping[str, Any],
+) -> Dict[str, Any]:
+    evidence = _mapping(intake.get("live_closure_evidence"))
+    staging = _mapping(intake.get("live_closure_evidence_staging"))
+    staged_inputs = _mapping(intake.get("staged_inputs"))
+    return {
+        "schema_version": INTAKE_SCHEMA_VERSION,
+        "status": intake.get("status"),
+        "accepted": intake.get("status") == "staged_for_control_plane",
+        "generated_at": utc_now_iso(),
+        "candidate": {
+            "path": str(candidate_path),
+            "sha256": evidence.get("sha256"),
+        },
+        "live_closure_evidence": {
+            "status": evidence.get("status"),
+            "job_id": evidence.get("job_id"),
+            "sections": evidence.get("sections"),
+            "blockers": evidence.get("blockers", []),
+        },
+        "live_closure_evidence_staging": {
             "status": staging.get("status"),
             "performed": bool(staging.get("performed")),
             "target_path": staging.get("target_path"),
@@ -206,6 +386,13 @@ def create_app() -> FastAPI:
             "manifest_exists": manifest_path.is_file(),
             "token_configured": bool(_string(os.getenv(INTAKE_TOKEN_ENV))),
             "trigger_configured": bool(_string(os.getenv(INTAKE_TRIGGER_ENV))),
+            "endpoints": [
+                "/api/live-pipeline/job-requests",
+                "/api/live-pipeline/policy-packages",
+                "/api/live-pipeline/deployment-outcomes",
+                "/api/live-pipeline/live-closure-evidence",
+                "/api/live-pipeline/intake-audit",
+            ],
             "proof_boundary": {
                 "service_is_intake_only": True,
                 "simulator_execution_proven": False,
@@ -255,6 +442,141 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=202, content=response)
         return response
 
+    @app.post(
+        "/api/live-pipeline/policy-packages",
+        dependencies=[Depends(_require_token)],
+    )
+    async def intake_policy_package(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        manifest_path = _manifest_path().resolve()
+        if not manifest_path.is_file():
+            raise HTTPException(
+                status_code=503,
+                detail=f"control-plane manifest missing: {manifest_path}",
+            )
+        work_dir = _work_dir(manifest_path).resolve()
+        ensure_dir(work_dir)
+        candidate_path = _policy_package_candidate_path(payload, work_dir)
+        write_json(candidate_path, dict(payload))
+        intake = build_live_pipeline_input_intake(
+            manifest_path=manifest_path,
+            policy_package=candidate_path,
+            stage_policy_package=True,
+            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
+        )
+        trigger = (
+            _trigger_control_plane()
+            if intake.get("status") == "staged_for_control_plane"
+            else {
+                "status": "not_run",
+                "performed": False,
+                "reason": "intake_not_staged_for_control_plane",
+            }
+        )
+        response = _redacted_policy_package_response(
+            candidate_path=candidate_path,
+            intake=intake,
+            trigger=trigger,
+        )
+        if intake.get("input_blockers"):
+            return JSONResponse(status_code=202, content=response)
+        return response
+
+    @app.post(
+        "/api/live-pipeline/deployment-outcomes",
+        dependencies=[Depends(_require_token)],
+    )
+    async def intake_deployment_outcomes(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        manifest_path = _manifest_path().resolve()
+        if not manifest_path.is_file():
+            raise HTTPException(
+                status_code=503,
+                detail=f"control-plane manifest missing: {manifest_path}",
+            )
+        work_dir = _work_dir(manifest_path).resolve()
+        ensure_dir(work_dir)
+        candidate_path = _deployment_outcome_candidate_path(payload, work_dir)
+        write_json(candidate_path, dict(payload))
+        intake = build_live_pipeline_input_intake(
+            manifest_path=manifest_path,
+            deployment_outcomes=candidate_path,
+            stage_deployment_outcomes=True,
+            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
+        )
+        trigger = (
+            _trigger_control_plane()
+            if intake.get("status") == "staged_for_control_plane"
+            else {
+                "status": "not_run",
+                "performed": False,
+                "reason": "intake_not_staged_for_control_plane",
+            }
+        )
+        response = _redacted_deployment_outcome_response(
+            candidate_path=candidate_path,
+            intake=intake,
+            trigger=trigger,
+        )
+        if intake.get("input_blockers"):
+            return JSONResponse(status_code=202, content=response)
+        return response
+
+    @app.post(
+        "/api/live-pipeline/live-closure-evidence",
+        dependencies=[Depends(_require_token)],
+    )
+    async def intake_live_closure_evidence(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        manifest_path = _manifest_path().resolve()
+        if not manifest_path.is_file():
+            raise HTTPException(
+                status_code=503,
+                detail=f"control-plane manifest missing: {manifest_path}",
+            )
+        work_dir = _work_dir(manifest_path).resolve()
+        ensure_dir(work_dir)
+        candidate_path = _closure_candidate_path(payload, work_dir)
+        write_json(candidate_path, dict(payload))
+        intake = build_live_pipeline_input_intake(
+            manifest_path=manifest_path,
+            live_closure_evidence=candidate_path,
+            stage_live_closure_evidence=True,
+            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
+        )
+        trigger = (
+            _trigger_control_plane()
+            if intake.get("status") == "staged_for_control_plane"
+            else {
+                "status": "not_run",
+                "performed": False,
+                "reason": "intake_not_staged_for_control_plane",
+            }
+        )
+        response = _redacted_closure_evidence_response(
+            candidate_path=candidate_path,
+            intake=intake,
+            trigger=trigger,
+        )
+        if intake.get("input_blockers"):
+            return JSONResponse(status_code=202, content=response)
+        return response
+
     @app.get("/api/live-pipeline/intake-audit", dependencies=[Depends(_require_token)])
     def latest_intake_audit() -> Dict[str, Any]:
         manifest_path = _manifest_path().resolve()
@@ -271,6 +593,16 @@ def create_app() -> FastAPI:
             "input_blockers": list(payload.get("input_blockers") or []),
             "webapp_job_request": _mapping(payload.get("webapp_job_request")),
             "webapp_staging": _mapping(payload.get("webapp_staging")),
+            "policy_package": _mapping(payload.get("policy_package")),
+            "policy_package_staging": _mapping(payload.get("policy_package_staging")),
+            "deployment_outcomes": _mapping(payload.get("deployment_outcomes")),
+            "deployment_outcomes_staging": _mapping(
+                payload.get("deployment_outcomes_staging")
+            ),
+            "live_closure_evidence": _mapping(payload.get("live_closure_evidence")),
+            "live_closure_evidence_staging": _mapping(
+                payload.get("live_closure_evidence_staging")
+            ),
             "staged_inputs": _mapping(payload.get("staged_inputs")),
             "proof_boundary": payload.get("proof_boundary"),
         }

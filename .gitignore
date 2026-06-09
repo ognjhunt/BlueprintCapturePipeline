@@ -50,6 +50,7 @@ Thumbs.db
 htmlcov/
 .tox/
 .nox/
+yolov8s-worldv2.pt
 
 # Mypy
 .mypy_cache/

@@ -55,6 +55,51 @@ def _webapp_queue_envelope(capture_root: Path, *, job_id: str = "webapp-job-1") 
             "buyer_request_id": "buyer-request-1",
             "capture_job_id": "capture-job-1",
         },
+        "policy_package": {
+            "policy_api_endpoint": {"endpoint_url": "https://robot-team.example/policy"}
+        },
+    }
+    return {
+        "queue_contract": "robot_eval_job_request_inbox.v1",
+        "status": "queued_for_pipeline",
+        "job_id": job_id,
+        "job_request": request,
+    }
+
+
+def _webapp_site_library_queue_envelope(
+    capture_root: Path, *, job_id: str = "webapp-job-1"
+) -> dict[str, object]:
+    buyer_request_id = "buyer-request-1"
+    request = {
+        "schema_version": "robot_eval_job_request.v1",
+        "job_id": job_id,
+        "buyer_request_id": buyer_request_id,
+        "site_package": {
+            "capture_root": str(capture_root),
+            "site_submission_id": "site-submission-1",
+            "capture_job_id": "capture-job-1",
+            "buyer_request_id": buyer_request_id,
+            "package_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline",
+        },
+        "owner_system": {
+            "name": "Blueprint-WebApp",
+            "request_id": job_id,
+            "buyer_request_id": buyer_request_id,
+            "site_submission_id": "site-submission-1",
+            "capture_job_id": "capture-job-1",
+        },
+        "source": {
+            "system": "Blueprint-WebApp",
+            "selection_state": {
+                "buyer_request_id": buyer_request_id,
+                "site_submission_id": "site-submission-1",
+                "capture_job_id": "capture-job-1",
+            },
+        },
+        "policy_package": {
+            "policy_api_endpoint": {"endpoint_url": "https://robot-team.example/policy"}
+        },
     }
     return {
         "queue_contract": "robot_eval_job_request_inbox.v1",
@@ -91,6 +136,9 @@ def test_live_pipeline_control_plane_blocks_without_capture_root(tmp_path: Path,
     assert {item["id"] for item in packet["required_inputs"]} == {
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
+        "live_robot_eval_closure_evidence",
+        "real_world_deployment_outcomes",
+        "robot_team_policy_package",
     }
 
 
@@ -128,11 +176,16 @@ def test_live_pipeline_control_plane_processes_empty_inbox_without_live_actions(
 
     assert packet_info["schema_version"] == LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION
     assert packet_info["status"] == "waiting_for_external_inputs"
-    assert packet_info["required_input_count"] == 1
+    assert packet_info["required_input_count"] == 4
     assert packet_info["enablement_input_count"] == 4
     assert packet_path.is_file()
     assert packet_markdown_path.is_file()
-    assert required_input_ids == {"isaac_lab_arena_owner_evidence"}
+    assert required_input_ids == {
+        "isaac_lab_arena_owner_evidence",
+        "live_robot_eval_closure_evidence",
+        "real_world_deployment_outcomes",
+        "robot_team_policy_package",
+    }
     assert "webapp_upstream_truth" not in required_input_ids
     assert enablement_input_ids == {
         "rollout_vision_labeling",
@@ -179,6 +232,86 @@ def test_live_pipeline_control_plane_accepts_matching_webapp_inbox_truth(
     assert "webapp_upstream_truth" not in required_input_ids
     assert "WebApp capture root" not in next_inputs
     assert "Isaac Lab-Arena" in next_inputs
+    assert "live closure evidence" in next_inputs
+    assert "deployment outcome" in next_inputs
+    assert "policy package" not in next_inputs
+
+
+def test_live_pipeline_control_plane_accepts_webapp_site_library_id_locations(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    _write_json(
+        inbox_dir / "webapp-job-1.json",
+        _webapp_site_library_queue_envelope(capture_root),
+    )
+
+    result = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=inbox_dir,
+        process_inbox=False,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    packet = json.loads(
+        Path(result["external_input_packet"]["path"]).read_text(encoding="utf-8")
+    )
+    required_input_ids = {item["id"] for item in packet["required_inputs"]}
+    candidate = result["webapp_inbox_truth"]["candidates"][0]
+
+    assert result["webapp_inbox_truth"]["status"] == "ready"
+    assert candidate["fields_present"] == {
+        "site_submission_id": True,
+        "request_id": True,
+        "buyer_request_id": True,
+        "capture_job_id": True,
+    }
+    assert candidate["missing_fields"] == []
+    assert candidate["policy_package_ready"] is True
+    assert candidate["policy_package_ready_modalities"] == ["policy_api_endpoint"]
+    assert result["effective_webapp_upstream_truth_ready"] is True
+    assert "webapp_upstream_truth" not in required_input_ids
+    assert "robot_team_policy_package" not in required_input_ids
+
+
+def test_live_pipeline_control_plane_keeps_policy_package_input_for_invalid_inline_refs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    envelope = _webapp_site_library_queue_envelope(capture_root)
+    job_request = envelope["job_request"]
+    assert isinstance(job_request, dict)
+    job_request["policy_package"] = {
+        "docker_container": {"image_ref": "registry.example/policy:latest"}
+    }
+    _write_json(inbox_dir / "webapp-job-1.json", envelope)
+
+    result = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=inbox_dir,
+        process_inbox=False,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    packet = json.loads(
+        Path(result["external_input_packet"]["path"]).read_text(encoding="utf-8")
+    )
+    required_input_ids = {item["id"] for item in packet["required_inputs"]}
+    candidate = result["webapp_inbox_truth"]["candidates"][0]
+
+    assert result["webapp_inbox_truth"]["status"] == "ready"
+    assert candidate["accepted_as_webapp_truth"] is True
+    assert candidate["policy_package_ready"] is False
+    assert candidate["policy_package_selected_modalities"] == ["docker_container"]
+    assert candidate["policy_package_missing_inputs"] == {
+        "docker_container": ["policy_package.docker_container.digest"]
+    }
+    assert "webapp_upstream_truth" not in required_input_ids
+    assert "robot_team_policy_package" in required_input_ids
 
 
 def test_live_pipeline_control_plane_rejects_mismatched_webapp_inbox_truth(
@@ -277,6 +410,9 @@ def test_live_pipeline_control_plane_next_inputs_follow_ready_sections(
     assert "vision-labeling command" not in next_inputs
     assert "delivery command" not in next_inputs
     assert "Isaac Lab-Arena" in next_inputs
+    assert "live closure evidence" in next_inputs
+    assert "deployment outcome" in next_inputs
+    assert "policy package" in next_inputs
 
 
 def test_live_pipeline_control_plane_records_simulator_command_configuration(

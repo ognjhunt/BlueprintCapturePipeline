@@ -34,12 +34,14 @@ from .agent_operator_runtime import (
     run_agents_sdk_operator,
 )
 from .arena_result_ingest import build_arena_result_ingest
-from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
 from .local_capture import resolve_local_capture_context
+from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from .post_training_data_package import build_post_training_data_package_export
 from .robot_eval_execution import (
+    build_scenario_eval_matrix,
     build_deployment_validation_bundle,
     build_policy_execution_bundle,
     build_robot_pov_observation_bundle,
@@ -66,6 +68,7 @@ TRAINING_REQUEST_SCHEMA_VERSION = "robot_eval_training_request.v1"
 TRAINING_RESULT_SCHEMA_VERSION = "robot_eval_training_result.v1"
 EVALUATION_REQUEST_SCHEMA_VERSION = "robot_eval_evaluation_request.v1"
 EVALUATION_RESULT_SCHEMA_VERSION = "robot_eval_evaluation_result.v1"
+ROBOT_EVAL_REPORT_SCHEMA_VERSION = "robot_eval_job_report.v1"
 NORMALIZED_ATTEMPT_TRACE_SCHEMA_VERSION = "robot_eval_job_normalized_attempt_trace.v1"
 FAILURE_LABELS_SCHEMA_VERSION = "robot_eval_job_failure_labels.v1"
 PREDICTION_OUTCOME_LEDGER_SCHEMA_VERSION = "robot_eval_job_prediction_outcome_ledger.v1"
@@ -488,6 +491,64 @@ def _read_job_request(job_request: str | Path | Mapping[str, Any]) -> Dict[str, 
     return dict(payload)
 
 
+def _policy_package_from_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    policy_package = _mapping(payload.get("policy_package") or payload.get("policyPackage"))
+    if policy_package:
+        return policy_package
+    direct = {
+        modality: _modality_payload(payload, modality)
+        for modality in POLICY_MODALITY_ORDER
+        if _modality_payload(payload, modality)
+    }
+    return direct
+
+
+def _load_staged_policy_package(*, capture_root: Path, job_id: str) -> Dict[str, Any]:
+    path = capture_root / "pipeline" / "robot_eval_inputs" / job_id / "policy_package.json"
+    payload = _read_optional_mapping(path)
+    if not payload:
+        return {}
+    staged_job_id = _string(payload.get("job_id") or payload.get("jobId"))
+    if staged_job_id and staged_job_id != job_id:
+        return {}
+    package = _policy_package_from_payload(payload)
+    if not package:
+        return {}
+    return {
+        "policy_package": package,
+        "source_path": str(path),
+        "schema_version": payload.get("schema_version"),
+    }
+
+
+def _apply_staged_policy_package(
+    *,
+    request: Mapping[str, Any],
+    capture_root: Path,
+    job_id: str,
+) -> Dict[str, Any]:
+    updated = dict(request)
+    staged = _load_staged_policy_package(capture_root=capture_root, job_id=job_id)
+    if not staged:
+        return updated
+    existing = _mapping(updated.get("policy_package") or updated.get("policyPackage"))
+    merged = dict(existing)
+    for modality in POLICY_MODALITY_ORDER:
+        if _modality_payload(merged, modality):
+            continue
+        payload = _modality_payload(staged["policy_package"], modality)
+        if payload:
+            merged[modality] = payload
+    updated["policy_package"] = merged
+    updated.setdefault("external_input_sources", {})
+    if isinstance(updated["external_input_sources"], Mapping):
+        updated["external_input_sources"] = {
+            **dict(updated["external_input_sources"]),
+            "staged_policy_package": staged["source_path"],
+        }
+    return updated
+
+
 def _write_job_json(job_dir: Path, name: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
     write_json(job_dir / name, payload)
     return dict(payload)
@@ -835,6 +896,7 @@ def _simulator_request(
     job_id: str,
     simulator: str,
     request: Mapping[str, Any],
+    scenario_eval_matrix: Mapping[str, Any],
     timeout_seconds: int,
     generated_at: str,
 ) -> Dict[str, Any]:
@@ -845,6 +907,19 @@ def _simulator_request(
         "framework": simulator,
         "status": "planned",
         "requested_tasks": request.get("requested_tasks") or request.get("requestedTasks") or [],
+        "scenario_eval_matrix_path": "scenario_eval_matrix.json",
+        "scenario_eval_run_count": int(scenario_eval_matrix.get("scenario_eval_run_count") or 0),
+        "required_variation_names": list(
+            scenario_eval_matrix.get("required_variation_names") or []
+        ),
+        "variation_names_covered": list(
+            scenario_eval_matrix.get("variation_names_covered") or []
+        ),
+        "scenario_variation_instances_path": (
+            "../simulation_automation/scenario_variation_instances.json"
+            if scenario_eval_matrix.get("variation_instance_count")
+            else None
+        ),
         "robot_profile": _mapping(request.get("robot_profile") or request.get("robotProfile")),
         "timeout_seconds": timeout_seconds,
         "execution_allowed_by_default": False,
@@ -988,6 +1063,7 @@ def _run_command_simulator(
     generated_at: str,
     output_path: Path | None = None,
     capture_root: Path | None = None,
+    scenario_eval_matrix_path: Path | None = None,
 ) -> Dict[str, Any]:
     command = shlex.split(command_text)
     if output_path is not None:
@@ -997,6 +1073,8 @@ def _run_command_simulator(
         env["BLUEPRINT_SIMULATOR_OUTPUT"] = str(output_path)
     if capture_root is not None:
         env["BLUEPRINT_CAPTURE_ROOT"] = str(capture_root)
+    if scenario_eval_matrix_path is not None:
+        env["BLUEPRINT_SCENARIO_EVAL_MATRIX"] = str(scenario_eval_matrix_path)
     env["BLUEPRINT_SIMULATOR_FRAMEWORK"] = simulator
     try:
         completed = subprocess.run(
@@ -1133,6 +1211,223 @@ def _copy_site_eval_artifacts(*, pipeline_dir: Path, job_dir: Path, generated_at
             payload.setdefault("schema_version", NORMALIZED_ATTEMPT_TRACE_SCHEMA_VERSION)
         write_json(job_dir / f"{key}.json", payload)
         copied[key] = dict(payload)
+    return copied
+
+
+def _scenario_eval_matrix_runs(scenario_eval_matrix: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        dict(run)
+        for run in scenario_eval_matrix.get("runs", []) or []
+        if isinstance(run, Mapping) and _string(run.get("scenario_eval_run_id"))
+    ]
+
+
+def _attempt_for_matrix_run(
+    *,
+    attempts: Sequence[Mapping[str, Any]],
+    matrix_run: Mapping[str, Any],
+    fallback_index: int,
+) -> Mapping[str, Any]:
+    task_id = _string(matrix_run.get("task_id") or matrix_run.get("taskId"))
+    scenario_id = _string(matrix_run.get("scenario_id") or matrix_run.get("scenarioId"))
+    for attempt in attempts:
+        if (
+            _string(attempt.get("scenario_id") or attempt.get("scenarioId")) == scenario_id
+            and (
+                not task_id
+                or _string(attempt.get("task_id") or attempt.get("taskId")) == task_id
+            )
+        ):
+            return attempt
+    return attempts[fallback_index % len(attempts)]
+
+
+def _expand_fixture_artifacts_to_scenario_eval_runs(
+    *,
+    copied_artifacts: Mapping[str, Mapping[str, Any]],
+    scenario_eval_matrix: Mapping[str, Any],
+    job_dir: Path,
+    generated_at: str,
+) -> Dict[str, Dict[str, Any]]:
+    matrix_runs = _scenario_eval_matrix_runs(scenario_eval_matrix)
+    copied = {key: dict(value) for key, value in copied_artifacts.items()}
+    trace = _mapping(copied.get("normalized_attempt_trace"))
+    attempts = [item for item in trace.get("attempts", []) or [] if isinstance(item, Mapping)]
+    if _string(trace.get("runner")) != "fixture" or not matrix_runs or not attempts:
+        return copied
+
+    required_run_ids = sorted(_string(run.get("scenario_eval_run_id")) for run in matrix_runs)
+    covered_run_ids = sorted(
+        {
+            _string(attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId"))
+            for attempt in attempts
+            if _string(attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId"))
+        }
+    )
+    if set(required_run_ids).issubset(set(covered_run_ids)):
+        return copied
+
+    expanded_attempts: List[Dict[str, Any]] = []
+    for index, matrix_run in enumerate(matrix_runs):
+        source = _attempt_for_matrix_run(
+            attempts=attempts,
+            matrix_run=matrix_run,
+            fallback_index=index,
+        )
+        run_id = _string(matrix_run.get("scenario_eval_run_id"))
+        source_attempt_id = _string(source.get("attempt_id") or source.get("attemptId")) or "fixture_attempt"
+        expanded = {
+            **dict(source),
+            "attempt_id": f"{source_attempt_id}__{run_id}",
+            "scenario_eval_run_id": run_id,
+            "scenario_variation_instance_id": _string(
+                matrix_run.get("scenario_variation_instance_id")
+                or matrix_run.get("scenarioVariationInstanceId")
+            )
+            or None,
+            "variation_name": _string(matrix_run.get("variation_name") or matrix_run.get("variationName"))
+            or None,
+            "task_id": _string(matrix_run.get("task_id") or matrix_run.get("taskId")),
+            "scenario_id": _string(matrix_run.get("scenario_id") or matrix_run.get("scenarioId")),
+            "matrix_run_source": {
+                "scenario_eval_run_id": run_id,
+                "baseline_capture_layout": bool(matrix_run.get("baseline_capture_layout")),
+            },
+            "claim_boundary": (
+                "fixture_attempt_expanded_to_scenario_eval_run_contract_not_real_simulator_rollout"
+            ),
+        }
+        expanded_attempts.append(expanded)
+
+    failures = [attempt for attempt in expanded_attempts if not bool(attempt.get("success"))]
+    expanded_trace = {
+        **dict(trace),
+        "schema_version": trace.get("schema_version") or NORMALIZED_ATTEMPT_TRACE_SCHEMA_VERSION,
+        "generated_at": trace.get("generated_at") or generated_at,
+        "status": "completed",
+        "attempt_count": len(expanded_attempts),
+        "scenario_eval_run_count": len(matrix_runs),
+        "covered_scenario_eval_run_ids": required_run_ids,
+        "missing_scenario_eval_run_ids": [],
+        "scenario_eval_run_coverage_complete": True,
+        "expanded_from_site_eval_fixture_attempts": True,
+        "attempts": expanded_attempts,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    failure_labels = {
+        **_mapping(copied.get("failure_labels")),
+        "schema_version": FAILURE_LABELS_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "review_required" if failures else "no_failures_labeled",
+        "label_count": len(failures),
+        "failed_attempt_count": len(failures),
+        "covered_failed_attempt_ids": sorted(
+            _string(attempt.get("attempt_id")) for attempt in failures
+        ),
+        "missing_failed_attempt_ids": [],
+        "covered_failed_scenario_eval_run_ids": sorted(
+            _string(attempt.get("scenario_eval_run_id")) for attempt in failures
+        ),
+        "missing_failed_scenario_eval_run_ids": [],
+        "failed_run_label_coverage_complete": True,
+        "labels": [
+            {
+                "label_id": f"fixture_label_{index:04d}",
+                "attempt_id": attempt.get("attempt_id"),
+                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+                "variation_name": attempt.get("variation_name"),
+                "task_id": attempt.get("task_id"),
+                "scenario_id": attempt.get("scenario_id"),
+                "policy_id": attempt.get("policy_id"),
+                "failure_mode_ids": _string_list(attempt.get("failure_mode_ids")),
+                "failure_reason": _string(attempt.get("failure_reason")) or None,
+                "status": "review_required",
+                "proof_effect": "none_until_review_accepted_or_owner_proof_supplied",
+            }
+            for index, attempt in enumerate(failures, start=1)
+        ],
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    prediction_records = [
+        {
+            "scenario_id": attempt.get("scenario_id"),
+            "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+            "variation_name": attempt.get("variation_name"),
+            "task_id": attempt.get("task_id"),
+            "policy_id": attempt.get("policy_id"),
+            "predicted_status": "passed" if attempt.get("success") else "failed",
+            "predicted_success": bool(attempt.get("success")),
+            "predicted_cycle_time_seconds": _number(
+                _mapping(attempt.get("metrics")).get("cycle_time_seconds")
+                or attempt.get("predicted_cycle_time_seconds")
+            ),
+            "failure_mode_ids": _string_list(attempt.get("failure_mode_ids")),
+            "source": "site_eval_fixture_expanded_to_scenario_eval_matrix",
+            "actual_status": "needs_actual_outcome",
+        }
+        for attempt in expanded_attempts
+    ]
+    prediction_ledger = {
+        **_mapping(copied.get("prediction_outcome_ledger")),
+        "schema_version": PREDICTION_OUTCOME_LEDGER_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "completed",
+        "record_count": len(prediction_records),
+        "records": prediction_records,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    calibration_report = {
+        **_mapping(copied.get("calibration_report")),
+        "schema_version": CALIBRATION_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "needs_real_world_outcomes",
+        "record_count": len(prediction_records),
+        "records": prediction_records,
+        "sim_vs_real_calibration_score": None,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    breakage_library = {
+        **_mapping(copied.get("breakage_library")),
+        "schema_version": BREAKAGE_LIBRARY_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "review_required" if failures else "no_breakages_recorded",
+        "record_count": len(failures),
+        "records": [
+            {
+                "scenario_id": attempt.get("scenario_id"),
+                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+                "variation_name": attempt.get("variation_name"),
+                "task_id": attempt.get("task_id"),
+                "failure_mode_ids": _string_list(attempt.get("failure_mode_ids")),
+                "failure_reason": _string(attempt.get("failure_reason")) or None,
+                "review_required": True,
+            }
+            for attempt in failures
+        ],
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+    copied.update(
+        {
+            "normalized_attempt_trace": expanded_trace,
+            "failure_labels": failure_labels,
+            "prediction_outcome_ledger": prediction_ledger,
+            "calibration_report": calibration_report,
+            "breakage_library": breakage_library,
+        }
+    )
+    for artifact_name, payload in copied.items():
+        if artifact_name in {
+            "normalized_attempt_trace",
+            "failure_labels",
+            "prediction_outcome_ledger",
+            "calibration_report",
+            "breakage_library",
+        }:
+            write_json(job_dir / f"{artifact_name}.json", payload)
     return copied
 
 
@@ -1308,6 +1603,7 @@ def _run_simulator(
             generated_at=generated_at,
             output_path=simulator_output_path,
             capture_root=capture_root,
+            scenario_eval_matrix_path=job_dir / "scenario_eval_matrix.json",
         )
     simulator_output_payload = result.pop("simulator_output_payload", None)
     if result.get("status") == "completed" and simulator_output_payload is not None:
@@ -1487,6 +1783,128 @@ def _evaluation_request(
     }
 
 
+def _metric_number(attempt: Mapping[str, Any], *keys: str, default: float = 0.0) -> float:
+    metrics = _mapping(attempt.get("metrics"))
+    for key in keys:
+        value = attempt.get(key)
+        if value is None:
+            value = metrics.get(key)
+        number = _number(value)
+        if number is not None:
+            return number
+    return default
+
+
+def _standard_policy_scorecard(attempts: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    attempt_count = len(attempts)
+    if not attempt_count:
+        return {
+            "success_rate": 0.0,
+            "cycle_time": {"mean_seconds": None, "sample_count": 0},
+            "intervention_rate": 0.0,
+            "unsafe_proximity": {"event_count": 0},
+            "collision_risk": {"event_count": 0},
+            "object_drop": {"event_count": 0},
+            "wrong_object": {"event_count": 0},
+            "timeout": {"event_count": 0},
+            "recovery_success": {"success_rate": None, "success_count": 0, "attempt_count": 0},
+            "world_model_uncertainty": {
+                "status": "not_available",
+                "mean_score": None,
+                "sample_count": 0,
+            },
+            "sim_vs_real_calibration_score": None,
+        }
+    successes = sum(1 for attempt in attempts if bool(attempt.get("success")))
+    cycle_times = [
+        value
+        for attempt in attempts
+        if (value := _metric_number(attempt, "cycle_time_seconds", default=-1.0)) >= 0.0
+    ]
+    intervention_count = sum(
+        _metric_number(attempt, "intervention_count", "interventions", default=0.0)
+        for attempt in attempts
+    )
+    unsafe_count = sum(
+        _metric_number(
+            attempt,
+            "unsafe_proximity_event_count",
+            "unsafe_proximity_count",
+            default=0.0,
+        )
+        for attempt in attempts
+    )
+    collision_count = sum(
+        _metric_number(
+            attempt,
+            "collision_risk_event_count",
+            "collision_count",
+            "contact_event_count",
+            default=0.0,
+        )
+        for attempt in attempts
+    )
+    object_drop_count = sum(
+        _metric_number(attempt, "object_drop_count", "drop_count", default=0.0)
+        for attempt in attempts
+    )
+    wrong_object_count = sum(
+        _metric_number(attempt, "wrong_object_count", default=0.0) for attempt in attempts
+    )
+    timeout_count = sum(
+        _metric_number(attempt, "timeout_count", default=0.0) for attempt in attempts
+    )
+    recovery_attempt_count = sum(
+        _metric_number(attempt, "recovery_attempt_count", default=0.0) for attempt in attempts
+    )
+    recovery_success_count = sum(
+        _metric_number(attempt, "recovery_success_count", default=0.0) for attempt in attempts
+    )
+    uncertainty_values = [
+        value
+        for attempt in attempts
+        if (
+            value := _metric_number(
+                attempt,
+                "world_model_uncertainty",
+                "uncertainty",
+                default=-1.0,
+            )
+        )
+        >= 0.0
+    ]
+    return {
+        "success_rate": round(successes / float(attempt_count), 6),
+        "cycle_time": {
+            "mean_seconds": round(sum(cycle_times) / len(cycle_times), 6)
+            if cycle_times
+            else None,
+            "sample_count": len(cycle_times),
+        },
+        "intervention_rate": round(intervention_count / float(attempt_count), 6),
+        "unsafe_proximity": {"event_count": int(unsafe_count)},
+        "collision_risk": {"event_count": int(collision_count)},
+        "object_drop": {"event_count": int(object_drop_count)},
+        "wrong_object": {"event_count": int(wrong_object_count)},
+        "timeout": {"event_count": int(timeout_count)},
+        "recovery_success": {
+            "success_rate": round(recovery_success_count / recovery_attempt_count, 6)
+            if recovery_attempt_count
+            else None,
+            "success_count": int(recovery_success_count),
+            "attempt_count": int(recovery_attempt_count),
+        },
+        "world_model_uncertainty": {
+            "status": "scored" if uncertainty_values else "not_available",
+            "mean_score": round(sum(uncertainty_values) / len(uncertainty_values), 6)
+            if uncertainty_values
+            else None,
+            "sample_count": len(uncertainty_values),
+        },
+        "sim_vs_real_calibration_score": None,
+    }
+
+
 def _evaluation_result(
     *,
     evaluation_request: Mapping[str, Any],
@@ -1515,6 +1933,10 @@ def _evaluation_result(
         else:
             status = "completed"
             blockers = []
+    trace_for_scorecard = _mapping(copied_artifacts.get("normalized_attempt_trace"))
+    attempts_for_scorecard = [
+        item for item in trace_for_scorecard.get("attempts", []) or [] if isinstance(item, Mapping)
+    ]
     return {
         "schema_version": EVALUATION_RESULT_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1534,10 +1956,216 @@ def _evaluation_result(
         "prediction_outcome_ledger_path": "prediction_outcome_ledger.json",
         "calibration_report_path": "calibration_report.json",
         "breakage_library_path": "breakage_library.json",
+        "standard_policy_scorecard": _standard_policy_scorecard(attempts_for_scorecard),
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
+
+
+def _robot_eval_report_markdown(report: Mapping[str, Any]) -> str:
+    scorecard = _mapping(report.get("evaluator_scores"))
+    cycle_time = _mapping(scorecard.get("cycle_time"))
+    closure = _mapping(report.get("live_eval_closure"))
+    proof = _mapping(report.get("proof_boundary"))
+    scenario = _mapping(report.get("scenario_eval"))
+    policy = _mapping(report.get("policy_interface"))
+    lines = [
+        "# Robot Eval Report",
+        "",
+        f"- Job: `{report.get('job_id')}`",
+        f"- Status: `{report.get('job_status')}`",
+        f"- Scene: `{report.get('scene_id')}`",
+        f"- Capture: `{report.get('capture_id')}`",
+        f"- Scenario eval runs: `{scenario.get('scenario_eval_run_count')}`",
+        f"- Variations covered: `{len(_string_list(scenario.get('variation_names_covered')))}`",
+        f"- Executed policy modalities: `{', '.join(_string_list(policy.get('executed_modalities')))}`",
+        f"- Evaluation status: `{report.get('evaluation_status')}`",
+        f"- Success rate: `{scorecard.get('success_rate')}`",
+        f"- Mean cycle time seconds: `{cycle_time.get('mean_seconds')}`",
+        f"- Intervention rate: `{scorecard.get('intervention_rate')}`",
+        f"- Live closure status: `{closure.get('status')}`",
+        f"- Live end-to-end verified: `{closure.get('live_end_to_end_verified')}`",
+        f"- Robot policy execution proven: `{proof.get('robot_policy_execution_proven')}`",
+        f"- Real-world outcome proven: `{proof.get('real_world_outcome_proven')}`",
+        f"- Public claim upgrade allowed: `{proof.get('public_claim_upgrade_allowed')}`",
+        "",
+        "## Core Artifacts",
+        "",
+    ]
+    for label, path in _mapping(report.get("artifact_paths")).items():
+        lines.append(f"- {label}: `{path}`")
+    lines.extend(
+        [
+            "",
+            "## Proof Boundary",
+            "",
+            "This report summarizes the eval harness output. It does not upgrade robot readiness, safety, simulator execution, policy execution, or deployment claims beyond the referenced proof-boundary and live-closure artifacts.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _write_robot_eval_report(
+    *,
+    job_dir: Path,
+    job_id: str,
+    scene_id: str,
+    capture_id: str,
+    job_status: str,
+    blockers: Sequence[str],
+    request: Mapping[str, Any],
+    scenario_eval_matrix: Mapping[str, Any],
+    policy_manifest: Mapping[str, Any],
+    policy_execution_manifest: Mapping[str, Any],
+    evaluation_result: Mapping[str, Any],
+    deployment_validation: Mapping[str, Any],
+    live_closure: Mapping[str, Any],
+    proof_boundary: Mapping[str, Any],
+    generated_at: str,
+    ) -> Dict[str, Any]:
+    deployment_ledger = _mapping(deployment_validation.get("ledger"))
+    calibration = _mapping(deployment_validation.get("calibration_report"))
+    modality_results = _mapping(policy_execution_manifest.get("modality_results"))
+    executed_modalities = [
+        modality
+        for modality, result in modality_results.items()
+        if isinstance(result, Mapping) and int(_number(result.get("attempt_count")) or 0) > 0
+    ]
+    report = {
+        "schema_version": ROBOT_EVAL_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "job_id": job_id,
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "job_status": job_status,
+        "operation": _string(request.get("operation") or "evaluate_only"),
+        "status": "generated",
+        "blockers": _string_list(blockers),
+        "neutral_eval_harness_flow": [
+            "site_task_scenario",
+            "robot_policy_interface",
+            "sim_or_world_model_rollout",
+            "evaluator_scores",
+            "proof_boundary",
+            "report_generated",
+        ],
+        "scenario_eval": {
+            "status": scenario_eval_matrix.get("status"),
+            "scenario_eval_run_count": scenario_eval_matrix.get("scenario_eval_run_count"),
+            "required_variation_names": _string_list(
+                scenario_eval_matrix.get("required_variation_names")
+            ),
+            "variation_names_covered": _string_list(
+                scenario_eval_matrix.get("variation_names_covered")
+            ),
+            "missing_required_variation_names": _string_list(
+                scenario_eval_matrix.get("missing_required_variation_names")
+            ),
+        },
+        "policy_interface": {
+            "status": policy_manifest.get("status"),
+            "configured_modalities": _string_list(policy_manifest.get("selected_modalities")),
+            "selected_modalities": _string_list(
+                policy_execution_manifest.get("selected_modalities")
+            ),
+            "executed_modalities": executed_modalities,
+            "supported_modalities": _string_list(policy_manifest.get("supported_modalities"))
+            or list(POLICY_MODALITY_ORDER),
+            "policy_execution_status": policy_execution_manifest.get("status"),
+            "robot_policy_execution_proven": bool(
+                policy_execution_manifest.get("robot_policy_execution_proven")
+            ),
+        },
+        "evaluation_status": evaluation_result.get("status"),
+        "evaluator_scores": _mapping(evaluation_result.get("standard_policy_scorecard")),
+        "real_world_validation": {
+            "deployment_outcome_status": deployment_ledger.get("status"),
+            "real_world_outcome_records_present": bool(
+                deployment_ledger.get("real_world_outcome_records_present")
+            ),
+            "real_world_outcome_proven": bool(
+                deployment_ledger.get("real_world_outcome_proven")
+            ),
+            "owner_evidence_record_count": int(
+                deployment_ledger.get("owner_evidence_record_count") or 0
+            ),
+            "missing_owner_evidence_record_ids": _string_list(
+                deployment_ledger.get("missing_owner_evidence_record_ids")
+            ),
+        },
+        "predicted_vs_actual": {
+            "sim_vs_real_calibration_status": calibration.get("status"),
+            "sim_vs_real_calibration_score": calibration.get(
+                "sim_vs_real_calibration_score"
+            ),
+            "prediction_vs_actual_deployment_summary_path": (
+                "prediction_vs_actual_deployment_summary.json"
+            ),
+        },
+        "live_eval_closure": {
+            "status": live_closure.get("status"),
+            "repo_local_artifacts_ready": bool(live_closure.get("repo_local_artifacts_ready")),
+            "live_external_ready": bool(live_closure.get("live_external_ready")),
+            "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+            "blockers": _string_list(live_closure.get("blockers")),
+        },
+        "requirement_coverage": {
+            "schema_version": _mapping(live_closure.get("requirement_coverage")).get(
+                "schema_version"
+            ),
+            "requirement_count": _mapping(live_closure.get("requirement_coverage")).get(
+                "requirement_count"
+            ),
+            "passed_count": _mapping(live_closure.get("requirement_coverage")).get(
+                "passed_count"
+            ),
+            "blocked_count": _mapping(live_closure.get("requirement_coverage")).get(
+                "blocked_count"
+            ),
+            "blocked_requirement_ids": _string_list(
+                _mapping(live_closure.get("requirement_coverage")).get(
+                    "blocked_requirement_ids"
+                )
+            ),
+        },
+        "proof_boundary": {
+            "simulator_execution_proven": bool(
+                proof_boundary.get("simulator_execution_proven")
+            ),
+            "robot_policy_execution_proven": bool(
+                proof_boundary.get("robot_policy_execution_proven")
+            ),
+            "real_world_outcome_proven": bool(
+                proof_boundary.get("real_world_outcome_proven")
+            ),
+            "physics_contact_validated": bool(
+                proof_boundary.get("physics_contact_validated")
+            ),
+            "safety_validated": bool(proof_boundary.get("safety_validated")),
+            "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
+            "public_claim_upgrade_allowed": bool(
+                proof_boundary.get("public_claim_upgrade_allowed")
+            ),
+        },
+        "artifact_paths": {
+            "scenario_eval_matrix": "scenario_eval_matrix.json",
+            "evaluation_result": "evaluation_result.json",
+            "policy_execution_manifest": "policy_execution_manifest.json",
+            "policy_execution_trace": "policy_execution_trace.json",
+            "deployment_outcome_ledger": "deployment_outcome_ledger.json",
+            "prediction_vs_actual_deployment_summary": (
+                "prediction_vs_actual_deployment_summary.json"
+            ),
+            "live_eval_closure_manifest": "live_eval_closure_manifest.json",
+            "proof_boundary": "proof_boundary.json",
+        },
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    _write_job_json(job_dir, "robot_eval_report.json", report)
+    write_text(job_dir / "robot_eval_report.md", _robot_eval_report_markdown(report))
+    return report
 
 
 def _proof_boundary(
@@ -1556,6 +2184,15 @@ def _proof_boundary(
     )
     real_world_outcome_proven = bool(
         _mapping(deployment_outcome_ledger).get("real_world_outcome_proven")
+    )
+    real_world_outcome_records_present = bool(
+        _mapping(deployment_outcome_ledger).get("real_world_outcome_records_present")
+    )
+    owner_evidence_record_count = int(
+        _mapping(deployment_outcome_ledger).get("owner_evidence_record_count") or 0
+    )
+    missing_owner_evidence_record_ids = _string_list(
+        _mapping(deployment_outcome_ledger).get("missing_owner_evidence_record_ids")
     )
     remaining = list(CLAIM_BOUNDARY["proof_upgrade_requires"])
     if policy_execution_proven:
@@ -1577,6 +2214,9 @@ def _proof_boundary(
         "simulator_execution_proven": simulator_proven,
         "robot_readiness_proven": False,
         "robot_policy_execution_proven": policy_execution_proven,
+        "real_world_outcome_records_present": real_world_outcome_records_present,
+        "owner_evidence_record_count": owner_evidence_record_count,
+        "missing_owner_evidence_record_ids": missing_owner_evidence_record_ids,
         "real_world_outcome_proven": real_world_outcome_proven,
         "physics_contact_validated": False,
         "safety_validated": False,
@@ -1589,9 +2229,51 @@ def _proof_boundary(
             "gpu_training_run": bool(training_result.get("gpu_training_run")),
             "simulator_execution_proven": simulator_proven,
             "robot_policy_execution_proven": policy_execution_proven,
+            "real_world_outcome_records_present": real_world_outcome_records_present,
             "training_completed": training_completed,
         },
     }
+
+
+def _apply_live_closure_to_proof_boundary(
+    *,
+    proof_boundary: Mapping[str, Any],
+    live_closure: Mapping[str, Any],
+) -> Dict[str, Any]:
+    closure_boundary = _mapping(live_closure.get("proof_boundary"))
+    updated = {
+        **dict(proof_boundary),
+        "live_eval_closure_status": live_closure.get("status"),
+        "live_eval_closure_manifest_path": "live_eval_closure_manifest.json",
+        "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+        "live_eval_closure_blockers": _string_list(live_closure.get("blockers")),
+    }
+    if bool(closure_boundary.get("live_end_to_end_verified")):
+        for field in (
+            "simulator_execution_proven",
+            "robot_policy_execution_proven",
+            "real_world_outcome_proven",
+            "physics_contact_validated",
+            "safety_validated",
+            "robot_readiness_proven",
+            "public_claim_upgrade_allowed",
+        ):
+            updated[field] = bool(closure_boundary.get(field))
+        updated["status"] = "live_end_to_end_verified"
+        updated["remaining_required_evidence"] = []
+    updated["claim_boundary"] = {
+        **_mapping(updated.get("claim_boundary")),
+        "live_eval_closure_manifest_path": "live_eval_closure_manifest.json",
+        "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+        "simulator_execution_proven": bool(updated.get("simulator_execution_proven")),
+        "robot_policy_execution_proven": bool(updated.get("robot_policy_execution_proven")),
+        "real_world_outcome_proven": bool(updated.get("real_world_outcome_proven")),
+        "physics_contact_validated": bool(updated.get("physics_contact_validated")),
+        "safety_validated": bool(updated.get("safety_validated")),
+        "robot_readiness_proven": bool(updated.get("robot_readiness_proven")),
+        "public_claim_upgrade_allowed": bool(updated.get("public_claim_upgrade_allowed")),
+    }
+    return updated
 
 
 def _job_plan(
@@ -1683,9 +2365,12 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "simulator_service_result.json",
         "simulator_provider_adapter_manifest.json",
         "simulator_command_artifacts_manifest.json",
+        "scenario_eval_matrix.json",
         "policy_package_manifest.json",
         "robot_pov_observation_manifest.json",
         "robot_pov_observations.jsonl",
+        "robot_pov_frame_sequence_manifest.json",
+        "robot_pov_render_storyboard.json",
         "policy_execution_manifest.json",
         "policy_execution_trace.json",
         "policy_execution_trace.jsonl",
@@ -1693,6 +2378,7 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "training_result.json",
         "evaluation_request.json",
         "evaluation_result.json",
+        "robot_eval_report.json",
         "arena_eval_schedule.json",
         "arena_eval_retry_queue.json",
         "arena_eval_cost_ledger.json",
@@ -1713,6 +2399,7 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "deployment_outcome_ledger.json",
         "sim_vs_real_calibration_report.json",
         "prediction_vs_actual_deployment_summary.json",
+        "live_eval_closure_manifest.json",
         "arena_rerun_plan.json",
         "arena_rerun_lineage.json",
         "customer_handoff_report.json",
@@ -1782,6 +2469,11 @@ def build_robot_eval_job(
     request.setdefault("schema_version", JOB_REQUEST_SCHEMA_VERSION)
     request.setdefault("job_id", job_id)
     request.setdefault("capture_root", str(context.capture_root))
+    request = _apply_staged_policy_package(
+        request=request,
+        capture_root=context.capture_root,
+        job_id=job_id,
+    )
     _write_job_json(job_dir, "job_request.json", request)
 
     missing_robot_eval_inputs = _ensure_robot_eval_cards(
@@ -1804,6 +2496,12 @@ def build_robot_eval_job(
         cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
         allow_cpu_preflight_render=allow_cpu_preflight_render,
     )
+    scenario_eval_matrix = build_scenario_eval_matrix(
+        capture_root=context.capture_root,
+        job_dir=job_dir,
+        job_request=request,
+        generated_at=generated_at,
+    )
     policy_manifest, policy_missing_inputs, policy_missing_statuses = _policy_package_manifest(
         request=request,
         generated_at=generated_at,
@@ -1823,6 +2521,7 @@ def build_robot_eval_job(
         job_dir=job_dir,
         job_request=request,
         generated_at=generated_at,
+        scenario_eval_matrix=scenario_eval_matrix,
     )
     policy_execution = build_policy_execution_bundle(
         capture_root=context.capture_root,
@@ -1848,6 +2547,7 @@ def build_robot_eval_job(
         "episode_specs": episode_specs,
         "cpu_preflight": cpu_preflight,
         "simulation_automation": simulation_automation,
+        "scenario_eval_matrix": scenario_eval_matrix,
         "robot_pov_observation_manifest": robot_pov_manifest,
         "policy_execution_manifest": _mapping(policy_execution.get("manifest")),
         "policy_execution_trace": _mapping(policy_execution.get("trace")),
@@ -1891,6 +2591,7 @@ def build_robot_eval_job(
         job_id=job_id,
         simulator=simulator,
         request=request,
+        scenario_eval_matrix=scenario_eval_matrix,
         timeout_seconds=timeout_seconds,
         generated_at=generated_at,
     )
@@ -1909,6 +2610,13 @@ def build_robot_eval_job(
         generated_at=generated_at,
     )
     _write_job_json(job_dir, "simulator_service_result.json", sim_result)
+    if simulator == "fixture":
+        copied_artifacts = _expand_fixture_artifacts_to_scenario_eval_runs(
+            copied_artifacts=copied_artifacts,
+            scenario_eval_matrix=scenario_eval_matrix,
+            job_dir=job_dir,
+            generated_at=generated_at,
+        )
 
     arena_ingest: Dict[str, Any] = {}
     if simulator == "isaac_lab_arena" or arena_results_dir:
@@ -2005,6 +2713,19 @@ def build_robot_eval_job(
         attempt_trace=_mapping(copied_artifacts.get("normalized_attempt_trace")),
         generated_at=generated_at,
     )
+    deployment_calibration = _mapping(deployment_validation.get("calibration_report"))
+    calibration_score = deployment_calibration.get("sim_vs_real_calibration_score")
+    if calibration_score is not None:
+        scorecard = dict(_mapping(eval_result.get("standard_policy_scorecard")))
+        scorecard["sim_vs_real_calibration_score"] = calibration_score
+        eval_result = {
+            **dict(eval_result),
+            "standard_policy_scorecard": scorecard,
+            "deployment_outcome_intake_manifest_path": "deployment_outcome_intake_manifest.json",
+            "deployment_outcome_ledger_path": "deployment_outcome_ledger.json",
+            "sim_vs_real_calibration_report_path": "sim_vs_real_calibration_report.json",
+        }
+        _write_job_json(job_dir, "evaluation_result.json", eval_result)
 
     proof_boundary = _proof_boundary(
         simulator=simulator,
@@ -2015,11 +2736,6 @@ def build_robot_eval_job(
         generated_at=generated_at,
     )
     _write_job_json(job_dir, "proof_boundary.json", proof_boundary)
-    data_package_export = build_post_training_data_package_export(
-        capture_root=context.capture_root,
-        job_dir=job_dir,
-    )
-
     blockers: List[str] = []
     missing_inputs: List[str] = []
     evidence: Dict[str, Any] = {
@@ -2029,9 +2745,23 @@ def build_robot_eval_job(
         "robot_pov_status": robot_pov_manifest.get("status"),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "deployment_outcome_status": _mapping(deployment_validation.get("ledger")).get("status"),
+        "real_world_outcome_records_present": bool(
+            _mapping(deployment_validation.get("ledger")).get(
+                "real_world_outcome_records_present"
+            )
+        ),
+        "owner_evidence_record_count": int(
+            _mapping(deployment_validation.get("ledger")).get("owner_evidence_record_count") or 0
+        ),
+        "missing_owner_evidence_record_ids": _string_list(
+            _mapping(deployment_validation.get("ledger")).get(
+                "missing_owner_evidence_record_ids"
+            )
+        ),
         "sim_vs_real_calibration_status": _mapping(
             deployment_validation.get("calibration_report")
         ).get("status"),
+        "live_eval_closure_status": "pending_live_eval_closure",
         "training_status": training_res.get("status"),
         "evaluation_status": eval_result.get("status"),
     }
@@ -2044,6 +2774,12 @@ def build_robot_eval_job(
     if simulator_blockers and validation.get("status") != "blocked":
         blockers.extend(simulator_blockers)
         evidence["simulator_blockers"] = _string_list(sim_result.get("blockers"))
+    if scenario_eval_matrix.get("status") != "completed":
+        blockers.append("scenario_eval_matrix_blocked")
+        missing_inputs.extend(_string_list(scenario_eval_matrix.get("blockers")))
+        evidence["scenario_eval_matrix_blockers"] = _string_list(
+            scenario_eval_matrix.get("blockers")
+        )
     if training_res.get("status") == "blocked":
         blockers.append("training_blocked")
         missing_inputs.extend(_string_list(training_res.get("blockers")))
@@ -2068,6 +2804,57 @@ def build_robot_eval_job(
         )
         _write_job_json(job_dir, "blocked_manifest.json", blocked)
 
+    _write_robot_eval_report(
+        job_dir=job_dir,
+        job_id=job_id,
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        job_status=status,
+        blockers=blockers,
+        request=request,
+        scenario_eval_matrix=scenario_eval_matrix,
+        policy_manifest=policy_manifest,
+        policy_execution_manifest=_mapping(policy_execution.get("manifest")),
+        evaluation_result=eval_result,
+        deployment_validation=deployment_validation,
+        live_closure={"status": "pending_live_eval_closure", "blockers": []},
+        proof_boundary=proof_boundary,
+        generated_at=generated_at,
+    )
+    live_closure = build_live_robot_eval_closure_manifest(
+        capture_root=context.capture_root,
+        job_dir=job_dir,
+        job_request=request,
+        generated_at=generated_at,
+    )
+    proof_boundary = _apply_live_closure_to_proof_boundary(
+        proof_boundary=proof_boundary,
+        live_closure=live_closure,
+    )
+    _write_job_json(job_dir, "proof_boundary.json", proof_boundary)
+    evidence["live_eval_closure_status"] = live_closure.get("status")
+    robot_eval_report = _write_robot_eval_report(
+        job_dir=job_dir,
+        job_id=job_id,
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        job_status=status,
+        blockers=blockers,
+        request=request,
+        scenario_eval_matrix=scenario_eval_matrix,
+        policy_manifest=policy_manifest,
+        policy_execution_manifest=_mapping(policy_execution.get("manifest")),
+        evaluation_result=eval_result,
+        deployment_validation=deployment_validation,
+        live_closure=live_closure,
+        proof_boundary=proof_boundary,
+        generated_at=generated_at,
+    )
+    data_package_export = build_post_training_data_package_export(
+        capture_root=context.capture_root,
+        job_dir=job_dir,
+    )
+
     run_manifest = {
         "schema_version": JOB_RUN_MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2090,6 +2877,9 @@ def build_robot_eval_job(
         "validation_status": validation.get("status"),
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
+        "scenario_eval_matrix_status": scenario_eval_matrix.get("status"),
+        "scenario_eval_run_count": scenario_eval_matrix.get("scenario_eval_run_count"),
+        "scenario_variation_names_covered": scenario_eval_matrix.get("variation_names_covered"),
         "robot_pov_observation_status": robot_pov_manifest.get("status"),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "arena_result_ingest_status": _mapping(arena_ingest.get("run_manifest")).get("status")
@@ -2099,8 +2889,13 @@ def build_robot_eval_job(
         "sim_vs_real_calibration_status": _mapping(
             deployment_validation.get("calibration_report")
         ).get("status"),
+        "live_eval_closure_status": live_closure.get("status"),
+        "live_eval_closure_manifest_path": "live_eval_closure_manifest.json",
+        "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
         "training_status": training_res.get("status"),
         "evaluation_status": eval_result.get("status"),
+        "robot_eval_report_status": robot_eval_report.get("status"),
+        "robot_eval_report_path": "robot_eval_report.json",
         "post_training_data_package_export_status": data_package_export.get("status"),
         "blockers": _dedupe(blockers),
         "missing_inputs": _dedupe(missing_inputs),
@@ -2145,16 +2940,21 @@ def build_robot_eval_job(
             "post_training_data_package_export_manifest": (
                 "post_training_data_package_export_manifest.json"
             ),
+            "scenario_eval_matrix": "scenario_eval_matrix.json",
             "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
             "robot_pov_observations": "robot_pov_observations.jsonl",
+            "robot_pov_frame_sequence_manifest": "robot_pov_frame_sequence_manifest.json",
+            "robot_pov_render_storyboard": "robot_pov_render_storyboard.json",
             "policy_execution_manifest": "policy_execution_manifest.json",
             "policy_execution_trace": "policy_execution_trace.json",
             "policy_execution_trace_jsonl": "policy_execution_trace.jsonl",
+            "deployment_outcome_intake_manifest": "deployment_outcome_intake_manifest.json",
             "deployment_outcome_ledger": "deployment_outcome_ledger.json",
             "sim_vs_real_calibration_report": "sim_vs_real_calibration_report.json",
             "prediction_vs_actual_deployment_summary": (
                 "prediction_vs_actual_deployment_summary.json"
             ),
+            "live_eval_closure_manifest": "live_eval_closure_manifest.json",
             "arena_eval_schedule": "arena_eval_schedule.json",
             "arena_result_ingest_ledger": "arena_result_ingest_ledger.json",
             "arena_eval_metrics": "arena_eval_metrics.json",
@@ -2182,10 +2982,40 @@ def build_robot_eval_job(
         "robot_policy_execution_proven": bool(
             proof_boundary.get("robot_policy_execution_proven")
         ),
+        "real_world_outcome_records_present": bool(
+            proof_boundary.get("real_world_outcome_records_present")
+        ),
+        "owner_evidence_record_count": int(
+            proof_boundary.get("owner_evidence_record_count") or 0
+        ),
+        "missing_owner_evidence_record_ids": _string_list(
+            proof_boundary.get("missing_owner_evidence_record_ids")
+        ),
         "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
-        "robot_readiness_proven": False,
-        "public_claim_upgrade_allowed": False,
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
+        "safety_validated": bool(proof_boundary.get("safety_validated")),
+        "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
+        "public_claim_upgrade_allowed": bool(proof_boundary.get("public_claim_upgrade_allowed")),
+        "live_eval_closure_blockers": _string_list(live_closure.get("blockers")),
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "live_eval_closure_manifest_path": "live_eval_closure_manifest.json",
+            "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+            "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
+            "robot_policy_execution_proven": bool(
+                proof_boundary.get("robot_policy_execution_proven")
+            ),
+            "real_world_outcome_records_present": bool(
+                proof_boundary.get("real_world_outcome_records_present")
+            ),
+            "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
+            "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
+            "safety_validated": bool(proof_boundary.get("safety_validated")),
+            "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
+            "public_claim_upgrade_allowed": bool(
+                proof_boundary.get("public_claim_upgrade_allowed")
+            ),
+        },
     }
     run_manifest["deterministic_fingerprint"] = _sha_payload(
         {
@@ -2198,6 +3028,7 @@ def build_robot_eval_job(
             "deployment_validation": _mapping(deployment_validation.get("calibration_report")),
             "training_result": training_res,
             "evaluation_result": eval_result,
+            "live_closure": live_closure,
             "execution_fingerprint": fingerprint_execution_artifacts(
                 robot_pov_manifest,
                 _mapping(policy_execution.get("manifest")),
@@ -2216,7 +3047,9 @@ def build_robot_eval_job(
         "job_dir": str(job_dir),
         "manifest_path": str((job_dir / "job_run_manifest.json").resolve()),
         "status": status,
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "live_eval_closure_status": live_closure.get("status"),
+        "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+        "claim_boundary": dict(run_manifest["claim_boundary"]),
     }
 
 

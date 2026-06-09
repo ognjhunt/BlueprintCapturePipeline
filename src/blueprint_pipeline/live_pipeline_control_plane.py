@@ -61,6 +61,31 @@ ARENA_RESULT_ARTIFACT_NAMES = (
     "any additional owner-system *.json result artifacts",
 )
 
+LIVE_CLOSURE_EVIDENCE_ARTIFACT_NAMES = (
+    "live_eval_closure_evidence.json",
+    "owner_robot_readiness_evidence.json",
+)
+
+DEPLOYMENT_OUTCOME_ARTIFACT_NAMES = (
+    "deployment_outcome.json",
+    "deployment_outcome_manifest.json",
+    "actual_outcome_manifest.json",
+)
+
+POLICY_PACKAGE_ARTIFACT_NAMES = (
+    "policy_package.json",
+    "robot_team_policy_package.v1",
+)
+
+POLICY_MODALITY_ORDER = (
+    "policy_api_endpoint",
+    "docker_container",
+    "recorded_action_trace",
+    "high_level_skill_trace",
+    "teleop_demo",
+    "sim_controller_plugin",
+)
+
 WEBAPP_JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
 WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = "robot_eval_job_request_inbox.v1"
 
@@ -255,6 +280,10 @@ def _control_plane_next_inputs_needed(
     job_request_inbox: Path | None,
     setup_manifest: Mapping[str, Any],
     webapp_upstream_truth_ready: bool | None = None,
+    live_closure_evidence_ready: bool = False,
+    deployment_outcomes_ready: bool = False,
+    deployment_outcomes_owner_evidence_ready: bool = False,
+    policy_package_ready: bool = False,
 ) -> List[str]:
     next_inputs: List[str] = []
     webapp_truth_ready = (
@@ -274,6 +303,26 @@ def _control_plane_next_inputs_needed(
         next_inputs.append(
             "Provide a real owner-system Isaac Lab-Arena command or result directory before "
             "claiming simulator execution."
+        )
+    if not live_closure_evidence_ready:
+        next_inputs.append(
+            "Provide job-specific live closure evidence for review acceptance, signed delivery, "
+            "rights/privacy, and safety/contact/physics readiness."
+        )
+    if not deployment_outcomes_ready:
+        next_inputs.append(
+            "Provide job-specific real-world deployment outcome records before "
+            "claiming predicted-vs-actual validation."
+        )
+    elif not deployment_outcomes_owner_evidence_ready:
+        next_inputs.append(
+            "Add owner evidence refs, owner proof URIs, or owner/operator attestations "
+            "to every staged real-world deployment outcome before claiming outcome proof."
+        )
+    if not policy_package_ready:
+        next_inputs.append(
+            "Provide a robot-team policy package through one supported modality before "
+            "running policy execution."
         )
     if not _setup_section_ready(setup_manifest, "rollout_vision_labeling"):
         next_inputs.append(
@@ -324,6 +373,78 @@ def _field_value_from_sources(
         if value:
             return value
     return None
+
+
+def _field(payload: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload and payload.get(key) not in (None, ""):
+            return payload.get(key)
+    return None
+
+
+def _policy_modality_missing_inputs(modality: str, reference: Mapping[str, Any]) -> List[str]:
+    missing: List[str] = []
+    if modality == "policy_api_endpoint":
+        endpoint = _string(_field(reference, "endpoint_url", "endpointUrl", "url"))
+        if not (endpoint.startswith("https://") or endpoint.startswith("http://")):
+            missing.append("policy_package.policy_api_endpoint.endpoint_url")
+    elif modality == "docker_container":
+        if not _string(_field(reference, "image_ref", "imageRef")):
+            missing.append("policy_package.docker_container.image_ref")
+        digest = _string(_field(reference, "digest", "digestChecksum"))
+        if not digest.startswith("sha256:"):
+            missing.append("policy_package.docker_container.digest")
+    elif modality == "recorded_action_trace":
+        if not _string(_field(reference, "trace_manifest_uri", "traceManifestUri")):
+            missing.append("policy_package.recorded_action_trace.trace_manifest_uri")
+        if not _string(_field(reference, "timestamp_alignment", "timestampAlignment")):
+            missing.append("policy_package.recorded_action_trace.timestamp_alignment")
+    elif modality == "high_level_skill_trace":
+        sequence = reference.get("ordered_skill_sequence") or reference.get("orderedSkillSequence")
+        if not (isinstance(sequence, list) and sequence):
+            missing.append("policy_package.high_level_skill_trace.ordered_skill_sequence")
+    elif modality == "teleop_demo":
+        if not _string(_field(reference, "demo_artifact_uri", "demoArtifactUri")):
+            missing.append("policy_package.teleop_demo.demo_artifact_uri")
+        if not _string(_field(reference, "rights_privacy_attestation", "rightsPrivacyAttestation")):
+            missing.append("policy_package.teleop_demo.rights_privacy_attestation")
+    elif modality == "sim_controller_plugin":
+        if not _string(_field(reference, "simulator_framework", "simulatorFramework")):
+            missing.append("policy_package.sim_controller_plugin.simulator_framework")
+        if not _string(_field(reference, "plugin_uri", "pluginUri")):
+            missing.append("policy_package.sim_controller_plugin.plugin_uri")
+    return missing
+
+
+def _request_policy_package_audit(request: Mapping[str, Any]) -> Dict[str, Any]:
+    policy_package = _as_mapping(request.get("policy_package") or request.get("policyPackage"))
+    camel = {
+        "policy_api_endpoint": "policyApiEndpoint",
+        "docker_container": "dockerContainer",
+        "recorded_action_trace": "recordedActionTrace",
+        "high_level_skill_trace": "highLevelSkillTrace",
+        "teleop_demo": "teleopDemo",
+        "sim_controller_plugin": "simControllerPlugin",
+    }
+    selected: List[str] = []
+    ready: List[str] = []
+    missing_by_modality: Dict[str, List[str]] = {}
+    for modality in POLICY_MODALITY_ORDER:
+        payload = _as_mapping(policy_package.get(modality) or policy_package.get(camel[modality]))
+        if not payload:
+            continue
+        selected.append(modality)
+        missing = _policy_modality_missing_inputs(modality, payload)
+        if missing:
+            missing_by_modality[modality] = missing
+        else:
+            ready.append(modality)
+    return {
+        "selected_modalities": selected,
+        "ready_modalities": ready,
+        "missing_inputs": missing_by_modality,
+        "ready": bool(ready),
+    }
 
 
 def _request_from_webapp_payload(payload: Mapping[str, Any]) -> Dict[str, Any] | None:
@@ -392,13 +513,16 @@ def _webapp_job_request_inbox_truth(
         if request is None:
             continue
         source = _as_mapping(request.get("source"))
+        source_selection = _as_mapping(source.get("selection_state"))
+        owner_system = _as_mapping(request.get("owner_system"))
         site_package = _as_mapping(request.get("site_package"))
-        top_level_sources = (request, source)
+        top_level_sources = (request, source, source_selection, owner_system, site_package)
         fields_present: Dict[str, bool] = {}
         for field in WEBAPP_UPSTREAM_REQUIRED_FIELDS:
             fields_present[field] = bool(_field_value_from_sources(request, field, top_level_sources))
         request_capture_root = _string(site_package.get("capture_root")) or None
         capture_root_matches = _path_matches_configured_capture_root(request_capture_root, capture_root)
+        policy_package_audit = _request_policy_package_audit(request)
         missing_fields = [
             field for field, present in fields_present.items() if not present
         ]
@@ -412,6 +536,10 @@ def _webapp_job_request_inbox_truth(
                 "missing_fields": missing_fields,
                 "capture_root_matches_control_plane": capture_root_matches,
                 "request_capture_root_configured": bool(request_capture_root),
+                "policy_package_ready": bool(policy_package_audit["ready"]),
+                "policy_package_selected_modalities": policy_package_audit["selected_modalities"],
+                "policy_package_ready_modalities": policy_package_audit["ready_modalities"],
+                "policy_package_missing_inputs": policy_package_audit["missing_inputs"],
                 "accepted_as_webapp_truth": accepted,
             }
         )
@@ -439,6 +567,9 @@ def _webapp_job_request_inbox_truth(
         "accepted_request_ids": [
             candidate["job_id"] for candidate in accepted_candidates if candidate.get("job_id")
         ],
+        "accepted_policy_package_request_count": sum(
+            1 for candidate in accepted_candidates if candidate.get("policy_package_ready")
+        ),
         "candidates": candidates[:20],
         "truncated_candidates": len(candidates) > 20,
         "proof_boundary": (
@@ -464,6 +595,9 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
             "blockers": ["staged_inputs_missing"],
             "arena_results_dir": None,
             "webapp_request_path": None,
+            "live_closure_evidence_path": None,
+            "deployment_outcomes_path": None,
+            "policy_package_path": None,
         }
     try:
         payload = read_json_any(path)
@@ -475,6 +609,9 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
             "blockers": [f"staged_inputs_read_failed:{type(exc).__name__}"],
             "arena_results_dir": None,
             "webapp_request_path": None,
+            "live_closure_evidence_path": None,
+            "deployment_outcomes_path": None,
+            "policy_package_path": None,
         }
     if not isinstance(payload, Mapping):
         return {
@@ -484,6 +621,9 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
             "blockers": ["staged_inputs_not_json_object"],
             "arena_results_dir": None,
             "webapp_request_path": None,
+            "live_closure_evidence_path": None,
+            "deployment_outcomes_path": None,
+            "policy_package_path": None,
         }
     blockers: List[str] = []
     if payload.get("schema_version") != LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION:
@@ -497,18 +637,65 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
         blockers.append("staged_inputs_capture_root_mismatch")
     arena = _as_mapping(payload.get("arena_results"))
     webapp = _as_mapping(payload.get("webapp_request"))
+    closure = _as_mapping(payload.get("live_closure_evidence"))
+    outcomes = _as_mapping(payload.get("deployment_outcomes"))
+    policy = _as_mapping(payload.get("policy_package"))
     arena_results_dir = _string(arena.get("arena_results_dir")) or None
     webapp_request_path = _string(webapp.get("target_path") or webapp.get("path")) or None
+    live_closure_evidence_path = (
+        _string(closure.get("target_path") or closure.get("path")) or None
+    )
+    deployment_outcomes_path = (
+        _string(outcomes.get("target_path") or outcomes.get("path")) or None
+    )
+    policy_package_path = _string(policy.get("target_path") or policy.get("path")) or None
     arena_ready = bool(arena.get("ready")) and bool(arena_results_dir)
     webapp_ready = bool(webapp.get("ready") or webapp.get("staged")) and bool(webapp_request_path)
+    closure_ready = (
+        bool(closure.get("ready") or closure.get("staged")) and bool(live_closure_evidence_path)
+    )
+    outcomes_ready = (
+        bool(outcomes.get("ready") or outcomes.get("staged")) and bool(deployment_outcomes_path)
+    )
+    outcomes_records_ready = (
+        bool(outcomes.get("records_ready_for_calibration"))
+        and bool(deployment_outcomes_path)
+    )
+    outcomes_owner_evidence_ready = (
+        bool(outcomes.get("owner_evidence_ready")) and bool(deployment_outcomes_path)
+    )
+    policy_ready = bool(policy.get("ready") or policy.get("staged")) and bool(policy_package_path)
     if arena_results_dir and not Path(arena_results_dir).is_dir():
         blockers.append("staged_arena_results_dir_missing")
         arena_ready = False
     if webapp_request_path and not Path(webapp_request_path).is_file():
         blockers.append("staged_webapp_request_missing")
         webapp_ready = False
-    status = "ready" if (arena_ready or webapp_ready) and not blockers else "blocked"
-    if not arena_ready and not webapp_ready and not blockers:
+    if live_closure_evidence_path and not Path(live_closure_evidence_path).is_file():
+        blockers.append("staged_live_closure_evidence_missing")
+        closure_ready = False
+    if deployment_outcomes_path and not Path(deployment_outcomes_path).is_file():
+        blockers.append("staged_deployment_outcomes_missing")
+        outcomes_ready = False
+        outcomes_records_ready = False
+        outcomes_owner_evidence_ready = False
+    if policy_package_path and not Path(policy_package_path).is_file():
+        blockers.append("staged_policy_package_missing")
+        policy_ready = False
+    status = (
+        "ready"
+        if (arena_ready or webapp_ready or closure_ready or outcomes_ready or policy_ready)
+        and not blockers
+        else "blocked"
+    )
+    if (
+        not arena_ready
+        and not webapp_ready
+        and not closure_ready
+        and not outcomes_ready
+        and not policy_ready
+        and not blockers
+    ):
         status = "empty"
     return {
         "status": status,
@@ -521,6 +708,35 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
         "arena_results_ready": arena_ready,
         "webapp_request_path": webapp_request_path,
         "webapp_request_ready": webapp_ready,
+        "live_closure_evidence_path": live_closure_evidence_path,
+        "live_closure_evidence_ready": closure_ready,
+        "live_closure_evidence_job_id": closure.get("job_id"),
+        "deployment_outcomes_path": deployment_outcomes_path,
+        "deployment_outcomes_ready": outcomes_ready,
+        "deployment_outcomes_records_ready_for_calibration": outcomes_records_ready,
+        "deployment_outcomes_prediction_match_keys_ready": bool(
+            outcomes.get("prediction_match_keys_ready")
+        )
+        and bool(deployment_outcomes_path),
+        "deployment_outcomes_owner_evidence_ready": outcomes_owner_evidence_ready,
+        "deployment_outcomes_job_id": outcomes.get("job_id"),
+        "deployment_outcome_record_count": int(outcomes.get("record_count") or 0),
+        "deployment_outcome_prediction_match_key_record_count": int(
+            outcomes.get("prediction_match_key_record_count") or 0
+        ),
+        "deployment_outcome_missing_prediction_match_key_record_ids": list(
+            outcomes.get("missing_prediction_match_key_record_ids") or []
+        ),
+        "deployment_outcome_owner_evidence_record_count": int(
+            outcomes.get("owner_evidence_record_count") or 0
+        ),
+        "deployment_outcome_missing_owner_evidence_record_ids": list(
+            outcomes.get("missing_owner_evidence_record_ids") or []
+        ),
+        "policy_package_path": policy_package_path,
+        "policy_package_ready": policy_ready,
+        "policy_package_job_id": policy.get("job_id"),
+        "policy_package_selected_modalities": list(policy.get("selected_modalities") or []),
         "blockers": blockers,
         "proof_boundary": "staged inputs are pointers to validated inputs, not proof claims",
     }
@@ -597,6 +813,17 @@ def _build_external_input_packet(
         setup_manifest,
         "webapp_upstream_truth",
     ) or bool(webapp_inbox_truth.get("ready"))
+    live_closure_evidence_ready = bool(staged_inputs.get("live_closure_evidence_ready"))
+    deployment_outcomes_ready = bool(staged_inputs.get("deployment_outcomes_ready"))
+    deployment_outcomes_records_ready = bool(
+        staged_inputs.get("deployment_outcomes_records_ready_for_calibration")
+    )
+    deployment_outcomes_owner_evidence_ready = bool(
+        staged_inputs.get("deployment_outcomes_owner_evidence_ready")
+    )
+    policy_package_ready = bool(staged_inputs.get("policy_package_ready")) or bool(
+        webapp_inbox_truth.get("accepted_policy_package_request_count")
+    )
     required_inputs: List[Dict[str, Any]] = []
     if not webapp_truth_ready:
         required_inputs.append(
@@ -650,6 +877,192 @@ def _build_external_input_packet(
                 "proof_boundary": (
                     "Arena results or commands are ingest/execution inputs only; robot policy, "
                     "contact, safety, and readiness claims require accepted owner-system evidence."
+                ),
+            }
+        )
+    if not live_closure_evidence_ready:
+        required_inputs.append(
+            {
+                "id": "live_robot_eval_closure_evidence",
+                "title": "Job-specific live robot-eval closure evidence",
+                "status": _string(staged_inputs.get("status")) or "not_staged",
+                "accepted_paths": [
+                    {
+                        "kind": "job_specific_closure_evidence",
+                        "target": (
+                            "<capture_root>/pipeline/robot_eval_inputs/<job_id>/"
+                            "live_eval_closure_evidence.json"
+                        ),
+                        "required_artifacts": list(LIVE_CLOSURE_EVIDENCE_ARTIFACT_NAMES),
+                    }
+                ],
+                "required_sections": [
+                    "review_acceptance",
+                    "delivery",
+                    "safety_contact_physics",
+                ],
+                "optional_sections": [
+                    "rights_privacy",
+                    "webapp_upstream",
+                ],
+                "staged_inputs": {
+                    "status": staged_inputs.get("status"),
+                    "live_closure_evidence_path": staged_inputs.get(
+                        "live_closure_evidence_path"
+                    ),
+                    "live_closure_evidence_job_id": staged_inputs.get(
+                        "live_closure_evidence_job_id"
+                    ),
+                    "blockers": staged_inputs.get("blockers", []),
+                },
+                "proof_boundary": (
+                    "Closure evidence is an input to live_eval_closure_manifest.json; it does "
+                    "not upgrade proof until the job-level closure audit passes."
+                ),
+            }
+        )
+    if not deployment_outcomes_ready:
+        required_inputs.append(
+            {
+                "id": "real_world_deployment_outcomes",
+                "title": "Job-specific real-world deployment outcomes",
+                "status": _string(staged_inputs.get("status")) or "not_staged",
+                "accepted_paths": [
+                    {
+                        "kind": "job_specific_deployment_outcome",
+                        "target": (
+                            "<capture_root>/pipeline/robot_eval_inputs/<job_id>/"
+                            "deployment_outcomes/inbox/*.json"
+                        ),
+                        "required_artifacts": list(DEPLOYMENT_OUTCOME_ARTIFACT_NAMES),
+                    }
+                ],
+                "required_record_fields": [
+                    "task_id",
+                    "scenario_id",
+                    "actual_success or actual_status or failures",
+                ],
+                "staged_inputs": {
+                    "status": staged_inputs.get("status"),
+                    "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
+                    "deployment_outcomes_job_id": staged_inputs.get("deployment_outcomes_job_id"),
+                    "deployment_outcome_record_count": staged_inputs.get(
+                        "deployment_outcome_record_count"
+                    ),
+                    "deployment_outcome_owner_evidence_record_count": staged_inputs.get(
+                        "deployment_outcome_owner_evidence_record_count"
+                    ),
+                    "deployment_outcome_missing_owner_evidence_record_ids": staged_inputs.get(
+                        "deployment_outcome_missing_owner_evidence_record_ids"
+                    ),
+                    "blockers": staged_inputs.get("blockers", []),
+                },
+                "proof_boundary": (
+                    "Deployment outcomes are real-world validation inputs only; the job must pair "
+                    "them with predictions before sim-vs-real calibration is proven."
+                ),
+            }
+        )
+    elif not deployment_outcomes_records_ready:
+        required_inputs.append(
+            {
+                "id": "predicted_vs_actual_exact_match_keys",
+                "title": "Exact prediction join keys for staged deployment outcomes",
+                "status": _string(staged_inputs.get("status")) or "not_staged",
+                "required_record_fields": [
+                    "scenario_eval_run_id or scenario_variation_instance_id",
+                ],
+                "staged_inputs": {
+                    "status": staged_inputs.get("status"),
+                    "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
+                    "deployment_outcomes_job_id": staged_inputs.get("deployment_outcomes_job_id"),
+                    "deployment_outcome_record_count": staged_inputs.get(
+                        "deployment_outcome_record_count"
+                    ),
+                    "deployment_outcome_prediction_match_key_record_count": staged_inputs.get(
+                        "deployment_outcome_prediction_match_key_record_count"
+                    ),
+                    "deployment_outcome_missing_prediction_match_key_record_ids": (
+                        staged_inputs.get(
+                            "deployment_outcome_missing_prediction_match_key_record_ids"
+                        )
+                    ),
+                },
+                "proof_boundary": (
+                    "Task/scenario-level deployment outcomes can prove owner-supplied real-world "
+                    "records exist, but predicted-vs-actual calibration requires exact "
+                    "scenario-eval-run or scenario-variation keys."
+                ),
+            }
+        )
+    elif not deployment_outcomes_owner_evidence_ready:
+        required_inputs.append(
+            {
+                "id": "real_world_deployment_outcome_owner_evidence",
+                "title": "Owner evidence for real-world deployment outcomes",
+                "status": _string(staged_inputs.get("status")) or "not_staged",
+                "required_record_fields": [
+                    "evidence_refs or evidence_uri or pilot_log_uri",
+                    "operator_attestation or owner_attestation",
+                ],
+                "staged_inputs": {
+                    "status": staged_inputs.get("status"),
+                    "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
+                    "deployment_outcomes_job_id": staged_inputs.get("deployment_outcomes_job_id"),
+                    "deployment_outcome_record_count": staged_inputs.get(
+                        "deployment_outcome_record_count"
+                    ),
+                    "deployment_outcome_owner_evidence_record_count": staged_inputs.get(
+                        "deployment_outcome_owner_evidence_record_count"
+                    ),
+                    "deployment_outcome_missing_owner_evidence_record_ids": staged_inputs.get(
+                        "deployment_outcome_missing_owner_evidence_record_ids"
+                    ),
+                },
+                "proof_boundary": (
+                    "Outcome records can support calibration before proof, but live closure cannot "
+                    "pass real_world_outcome_proven until every actual outcome has owner evidence."
+                ),
+            }
+        )
+    if not policy_package_ready:
+        required_inputs.append(
+            {
+                "id": "robot_team_policy_package",
+                "title": "Robot-team policy package or trace modality",
+                "status": _string(staged_inputs.get("status")) or "not_staged",
+                "accepted_paths": [
+                    {
+                        "kind": "job_specific_policy_package",
+                        "target": (
+                            "<capture_root>/pipeline/robot_eval_inputs/<job_id>/"
+                            "policy_package.json"
+                        ),
+                        "required_artifacts": list(POLICY_PACKAGE_ARTIFACT_NAMES),
+                    },
+                    {
+                        "kind": "webapp_job_request_policy_package",
+                        "source": "robot_eval_job_request.v1 policy_package",
+                    },
+                ],
+                "supported_modalities": list(POLICY_MODALITY_ORDER),
+                "staged_inputs": {
+                    "status": staged_inputs.get("status"),
+                    "policy_package_path": staged_inputs.get("policy_package_path"),
+                    "policy_package_job_id": staged_inputs.get("policy_package_job_id"),
+                    "policy_package_selected_modalities": staged_inputs.get(
+                        "policy_package_selected_modalities"
+                    ),
+                    "blockers": staged_inputs.get("blockers", []),
+                },
+                "webapp_inbox_truth": {
+                    "accepted_policy_package_request_count": webapp_inbox_truth.get(
+                        "accepted_policy_package_request_count"
+                    ),
+                },
+                "proof_boundary": (
+                    "Policy package references are execution inputs only; policy proof requires "
+                    "the gated policy execution bundle to produce attempts."
                 ),
             }
         )
@@ -712,11 +1125,35 @@ def _build_external_input_packet(
             "setup_manifest_path": str(setup_manifest_path),
             "inbox_run_manifest_path": inbox_run.get("manifest_path"),
             "staged_inputs_path": staged_inputs.get("path"),
+            "live_closure_evidence_path": staged_inputs.get("live_closure_evidence_path"),
+            "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
+            "policy_package_path": staged_inputs.get("policy_package_path"),
         },
         "staged_inputs": {
             "status": staged_inputs.get("status"),
             "arena_results_ready": staged_inputs.get("arena_results_ready"),
             "webapp_request_ready": staged_inputs.get("webapp_request_ready"),
+            "live_closure_evidence_ready": staged_inputs.get("live_closure_evidence_ready"),
+            "live_closure_evidence_job_id": staged_inputs.get("live_closure_evidence_job_id"),
+            "deployment_outcomes_ready": staged_inputs.get("deployment_outcomes_ready"),
+            "deployment_outcomes_owner_evidence_ready": staged_inputs.get(
+                "deployment_outcomes_owner_evidence_ready"
+            ),
+            "deployment_outcomes_job_id": staged_inputs.get("deployment_outcomes_job_id"),
+            "deployment_outcome_record_count": staged_inputs.get(
+                "deployment_outcome_record_count"
+            ),
+            "deployment_outcome_owner_evidence_record_count": staged_inputs.get(
+                "deployment_outcome_owner_evidence_record_count"
+            ),
+            "deployment_outcome_missing_owner_evidence_record_ids": staged_inputs.get(
+                "deployment_outcome_missing_owner_evidence_record_ids"
+            ),
+            "policy_package_ready": staged_inputs.get("policy_package_ready"),
+            "policy_package_job_id": staged_inputs.get("policy_package_job_id"),
+            "policy_package_selected_modalities": staged_inputs.get(
+                "policy_package_selected_modalities"
+            ),
             "blockers": staged_inputs.get("blockers", []),
         },
         "webapp_upstream_truth": {
@@ -1226,6 +1663,17 @@ def run_live_pipeline_control_plane(
                 job_request_inbox=inbox_path,
                 setup_manifest=setup_manifest,
                 webapp_upstream_truth_ready=webapp_upstream_truth_ready,
+                live_closure_evidence_ready=bool(
+                    staged_inputs.get("live_closure_evidence_ready")
+                ),
+                deployment_outcomes_ready=bool(
+                    staged_inputs.get("deployment_outcomes_ready")
+                ),
+                deployment_outcomes_owner_evidence_ready=bool(
+                    staged_inputs.get("deployment_outcomes_owner_evidence_ready")
+                ),
+                policy_package_ready=bool(staged_inputs.get("policy_package_ready"))
+                or bool(webapp_inbox_truth.get("accepted_policy_package_request_count")),
             ),
         }
         manifest["secrets_leaked"] = _manifest_leaks_secret(manifest, secret_values)

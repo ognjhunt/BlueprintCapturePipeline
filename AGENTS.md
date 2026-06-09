@@ -59,7 +59,7 @@ Targeted launch checks:
 
 ```bash
 python scripts/run_external_alpha_launch_gate.py
-python -m blueprint_pipeline.run_e2e
+python -m blueprint_pipeline.run_e2e --capture-root <path-to-staged-capture> --provider openai
 ```
 
 Common entrypoints:

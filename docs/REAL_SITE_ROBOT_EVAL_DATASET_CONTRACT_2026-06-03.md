@@ -257,10 +257,21 @@ ran, or the site is operationally deployment-ready.
   path, human crossing, forklift nearby, occlusion, glare, missing label, wrong
   object nearby, and narrow approach angle. It never treats generated scenarios
   as simulator or real-world proof.
+- `robot_eval_jobs/<job_id>/scenario_eval_matrix.json`: job-level expansion from
+  requested task/scenario scope to concrete scenario-family variation runs. Robot
+  POV observations, policy adapters, simulator adapters, closure coverage checks,
+  and package exports use this matrix so every required variation family stays
+  visible through evaluation.
+- `robot_eval_jobs/<job_id>/failure_labels.json`: failed-attempt label coverage.
+  Every failed attempt or failed `scenario_eval_run_id` from
+  `normalized_attempt_trace.json` must have a corresponding failure label before
+  the live closure failure-label gate can pass.
 - `scoring_methodology.json`: versioned deterministic scoring methodology for
   success rate, cycle time, intervention rate, unsafe proximity, collision risk,
   object drop, wrong object, timeout, recovery success, uncertainty, and a
-  sim-vs-real calibration placeholder.
+  sim-vs-real calibration placeholder. The job-level standard scorecard must use
+  valid numeric ranges and object shapes before the evaluation-methodology
+  closure gate can pass; field presence alone is not sufficient.
 - `recorded_trace_eval_report.json` / `policy_eval_report.json`: local
   recorded-action-trace fixture runner output. It scores recorded traces without
   Docker, policy API, simulator, live provider, or credential requirements, and
@@ -296,7 +307,10 @@ was met.
 The job orchestrator validates the same six modalities before provisioning or
 execution. Missing or weak references write exact `needs_*_ref` statuses into
 `policy_package_manifest.json`, `job_validation.json`, and
-`blocked_manifest.json`.
+`blocked_manifest.json`. The live closure policy-interface gate revalidates the
+selected modalities and blocks any selected modality that is unsupported,
+`not_selected`, `blocked`, or missing its modality-specific required reference
+fields.
 
 ## Ledger Methodology
 
@@ -322,7 +336,13 @@ It supports these actual sources:
 Records carry success/failure, task completion, cycle time, intervention count,
 contact/collision events, safety violations, failure mode IDs, confidence, proof
 artifact paths, owner system, and claim boundary fields. Missing actual outcomes
-remain `needs_actual_outcome`.
+remain `needs_actual_outcome`. Actual outcome records can be tracked and used for
+sim-vs-real calibration when they pair with predictions. Records that include a
+`scenario_eval_run_id` must pair with the prediction for that same run; unmatched
+records remain calibration blockers and are surfaced in the deployment ledger and
+live closure manifest. Actual outcomes do not satisfy `real_world_outcome_proven`
+unless every actual outcome row includes owner evidence refs, an owner proof URI,
+or an operator/owner attestation.
 
 ## WebApp Boundary
 
