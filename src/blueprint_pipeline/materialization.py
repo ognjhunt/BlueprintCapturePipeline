@@ -1069,13 +1069,12 @@ def capture_materialization_readiness(
     requested_outputs = _normalized_requested_outputs(manifest, {})
     walkthrough_path = raw_root / "walkthrough.mov"
     video_candidates = _raw_video_candidates(raw_root)
+    selected_video_path = raw_root / video_candidates[0] if video_candidates else None
     issues: List[str] = []
     if not manifest_path.is_file():
         issues.append("missing_manifest")
     elif not manifest:
         issues.append("invalid_manifest")
-    if not walkthrough_path.is_file():
-        issues.append("missing_walkthrough_mov")
     if not video_candidates:
         issues.append("missing_raw_video")
     return {
@@ -1084,6 +1083,7 @@ def capture_materialization_readiness(
         "raw_root": str(raw_root),
         "manifest_path": str(manifest_path),
         "walkthrough_path": str(walkthrough_path),
+        "selected_video_path": str(selected_video_path) if selected_video_path else None,
         "requested_outputs": requested_outputs,
         "video_candidates": video_candidates,
     }

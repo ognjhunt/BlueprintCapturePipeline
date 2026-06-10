@@ -156,6 +156,7 @@ def _deployment_outcomes(
     job_id: str = "webapp-job-1",
     include_evidence: bool = True,
     include_prediction_match_key: bool = True,
+    include_variation_match_key: bool = True,
 ) -> Path:
     record: dict[str, object] = {
         "outcome_id": "pilot-outcome-1",
@@ -173,6 +174,8 @@ def _deployment_outcomes(
     }
     if include_prediction_match_key:
         record["scenario_eval_run_id"] = "scenario-run-1"
+    if include_variation_match_key:
+        record["scenario_variation_instance_id"] = "scenario-variation-1"
     if include_evidence:
         record["evidence_refs"] = {"pilot_log": "owner://pilot/pilot-outcome-1"}
     _write_json(
@@ -199,6 +202,37 @@ def _policy_package(path: Path, *, job_id: str = "webapp-job-1") -> Path:
                     "action_schema_ref": "schemas/action-v1.json",
                 }
             },
+        },
+    )
+    return path
+
+
+def _real_robot_pov_manifest(path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "schema_version": "real_robot_pov_manifest.v1",
+            "owner_system": "robot-team-owner-system",
+            "records": [
+                {
+                    "evidence_id": "real-pov-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "scenario_variation_instance_id": "scenario-variation-1",
+                    "robot_camera_video_uri": "owner://pov/scenario-run-1.mp4",
+                    "action_log_uri": "owner://actions/scenario-run-1.jsonl",
+                    "timestamp_alignment": "aligned_to_scenario_eval_run",
+                    "owner_evidence_refs": {
+                        "camera": "owner://pov/scenario-run-1.mp4",
+                        "action_log": "owner://actions/scenario-run-1.jsonl",
+                    },
+                    "operator_attestation": {
+                        "attested_by": "robot-team-ops",
+                        "attestation": "Robot POV and action logs are aligned to this eval run.",
+                    },
+                }
+            ],
         },
     )
     return path
@@ -300,11 +334,58 @@ def test_live_pipeline_input_intake_staged_arena_results_feed_control_plane(
     assert rerun["setup_status"] == "local_ready_live_external_blocked"
     assert required_input_ids == {
         "webapp_upstream_truth",
+        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "real_world_deployment_outcomes",
         "robot_team_policy_package",
     }
     assert "Isaac Lab-Arena" not in " ".join(rerun["next_inputs_needed"])
+
+
+def test_live_pipeline_input_intake_stages_real_robot_pov_manifest(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    pov_path = _real_robot_pov_manifest(tmp_path / "incoming" / "real-pov.json")
+
+    intake = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        real_robot_pov=pov_path,
+        stage_real_robot_pov=True,
+    )
+    rerun = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=tmp_path / "webapp-inbox",
+        load_local_env=False,
+        output_path=manifest_path,
+    )
+    packet = json.loads(
+        Path(rerun["external_input_packet"]["path"]).read_text(encoding="utf-8")
+    )
+    required_input_ids = {item["id"] for item in packet["required_inputs"]}
+    staged_target = Path(str(intake["real_robot_pov_staging"]["target_path"]))
+    staged_payload = json.loads(
+        Path(str(intake["staged_inputs"]["path"])).read_text(encoding="utf-8")
+    )
+
+    assert intake["status"] == "staged_for_control_plane"
+    assert intake["real_robot_pov"]["status"] == "ready_for_robot_eval_job"
+    assert intake["real_robot_pov"]["record_count"] == 1
+    assert intake["real_robot_pov"]["missing_exact_key_record_ids"] == []
+    assert intake["real_robot_pov"]["missing_evidence_record_ids"] == []
+    assert intake["staged_inputs"]["real_robot_pov_staged"] is True
+    assert staged_payload["real_robot_pov"]["ready"] is True
+    assert staged_payload["real_robot_pov"]["record_count"] == 1
+    assert staged_target == (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / "real_robot_pov_manifest.json"
+    )
+    assert staged_target.is_file()
+    assert rerun["staged_inputs"]["real_robot_pov_ready"] is True
+    assert "real_robot_pov_evidence" not in required_input_ids
 
 
 def test_live_pipeline_input_intake_stages_live_closure_evidence(
@@ -516,6 +597,53 @@ def test_live_pipeline_input_intake_keeps_owner_evidence_blocker_for_outcome_rec
     assert "owner evidence" in " ".join(rerun["next_inputs_needed"])
 
 
+def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_run_only_outcomes(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    request_path = tmp_path / "incoming" / "webapp-job-1.json"
+    outcomes_path = _deployment_outcomes(
+        tmp_path / "incoming" / "deployment.json",
+        include_variation_match_key=False,
+    )
+    _write_json(request_path, _webapp_request(capture_root))
+
+    intake = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        webapp_job_request=request_path,
+        deployment_outcomes=outcomes_path,
+        stage_deployment_outcomes=True,
+    )
+    rerun = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=tmp_path / "webapp-inbox",
+        load_local_env=False,
+        output_path=manifest_path,
+    )
+    packet = json.loads(
+        Path(rerun["external_input_packet"]["path"]).read_text(encoding="utf-8")
+    )
+    calibration_input = next(
+        item
+        for item in packet["required_inputs"]
+        if item["id"] == "predicted_vs_actual_exact_match_keys"
+    )
+
+    assert intake["deployment_outcomes"]["records_ready_for_calibration"] is False
+    assert intake["deployment_outcomes"]["prediction_match_keys_ready"] is False
+    assert intake["deployment_outcomes"]["missing_prediction_match_key_record_ids"] == [
+        "pilot-outcome-1"
+    ]
+    assert rerun["staged_inputs"][
+        "deployment_outcome_missing_prediction_match_key_record_ids"
+    ] == ["pilot-outcome-1"]
+    assert calibration_input["required_record_fields"] == [
+        "scenario_eval_run_id",
+        "scenario_variation_instance_id",
+    ]
+
+
 def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_weak_outcome_matches(
     tmp_path: Path,
 ) -> None:
@@ -568,7 +696,8 @@ def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_weak_outco
     assert "predicted_vs_actual_exact_match_keys" in required_input_ids
     assert "real_world_deployment_outcome_owner_evidence" not in required_input_ids
     assert calibration_input["required_record_fields"] == [
-        "scenario_eval_run_id or scenario_variation_instance_id"
+        "scenario_eval_run_id",
+        "scenario_variation_instance_id",
     ]
 
 
@@ -642,6 +771,42 @@ def test_live_pipeline_input_intake_rejects_invalid_policy_package(
         "input_blockers"
     ]
     assert result["policy_package_staging"]["performed"] is False
+
+
+def test_live_pipeline_input_intake_rejects_invalid_real_robot_pov_manifest(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    pov_path = tmp_path / "incoming" / "real-pov.json"
+    _write_json(
+        pov_path,
+        {
+            "schema_version": "real_robot_pov_manifest.v1",
+            "records": [
+                {
+                    "evidence_id": "real-pov-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "robot_camera_video_uri": "owner://pov/scenario-run-1.mp4",
+                }
+            ],
+        },
+    )
+
+    result = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        real_robot_pov=pov_path,
+        stage_real_robot_pov=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert "real_robot_pov:real_robot_pov_missing_exact_keys" in result[
+        "input_blockers"
+    ]
+    assert "real_robot_pov:real_robot_pov_missing_action_logs" in result[
+        "input_blockers"
+    ]
+    assert result["real_robot_pov_staging"]["performed"] is False
 
 
 def test_live_pipeline_input_intake_rejects_invalid_deployment_outcomes(

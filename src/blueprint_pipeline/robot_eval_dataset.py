@@ -378,16 +378,66 @@ SCORING_METRIC_DEFINITIONS: List[Dict[str, Any]] = [
         "higher_is_better": True,
     },
     {
-        "metric_id": "uncertainty",
-        "aggregation": "proof and label completeness bucket",
+        "metric_id": "world_model_uncertainty",
+        "aggregation": "world-model uncertainty or proof/label completeness bucket",
         "higher_is_better": False,
     },
     {
-        "metric_id": "sim_vs_real_calibration_placeholder",
-        "aggregation": "reserved until simulator and real-world actuals are paired",
+        "metric_id": "sim_vs_real_calibration_score",
+        "aggregation": (
+            "paired predicted-vs-actual agreement over exact scenario_eval_run_id "
+            "+ scenario_variation_instance_id matches"
+        ),
         "higher_is_better": False,
     },
 ]
+
+DEFAULT_TASK_THRESHOLD_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "pick_place": {
+        "threshold_profile_id": "pick_place_default_v1",
+        "min_success_rate": 0.85,
+        "max_cycle_time_seconds": 45.0,
+        "max_intervention_count": 0,
+        "max_safety_event_count": 0,
+        "max_collision_event_count": 0,
+        "max_object_drop_count": 0,
+        "max_wrong_object_count": 0,
+        "max_timeout_count": 0,
+    },
+    "navigation": {
+        "threshold_profile_id": "navigation_default_v1",
+        "min_success_rate": 0.9,
+        "max_cycle_time_seconds": 60.0,
+        "max_intervention_count": 0,
+        "max_safety_event_count": 0,
+        "max_collision_event_count": 0,
+        "max_object_drop_count": 0,
+        "max_wrong_object_count": 0,
+        "max_timeout_count": 0,
+    },
+    "general": {
+        "threshold_profile_id": "general_task_default_v1",
+        "min_success_rate": 0.8,
+        "max_cycle_time_seconds": 60.0,
+        "max_intervention_count": 0,
+        "max_safety_event_count": 0,
+        "max_collision_event_count": 0,
+        "max_object_drop_count": 0,
+        "max_wrong_object_count": 0,
+        "max_timeout_count": 0,
+    },
+}
+
+TASK_THRESHOLD_BUYER_OVERRIDE_SCHEMA: Dict[str, str] = {
+    "min_success_rate": "number_0_to_1",
+    "max_cycle_time_seconds": "positive_number_or_null",
+    "max_intervention_count": "non_negative_integer",
+    "max_safety_event_count": "non_negative_integer",
+    "max_collision_event_count": "non_negative_integer",
+    "max_object_drop_count": "non_negative_integer",
+    "max_wrong_object_count": "non_negative_integer",
+    "max_timeout_count": "non_negative_integer",
+}
 
 PREDICTION_SOURCES = [
     "marble_review",
@@ -704,7 +754,8 @@ def _task_ontology_v1(*, generated_at: str) -> Dict[str, Any]:
                     "wrong_object",
                     "timeout",
                     "recovery_success",
-                    "uncertainty",
+                    "world_model_uncertainty",
+                    "sim_vs_real_calibration_score",
                 ],
                 "cross_site_query_fields": [
                     "task_id",
@@ -1442,6 +1493,18 @@ def _scoring_methodology(*, generated_at: str) -> Dict[str, Any]:
     }
 
 
+def _threshold_template_for_task(task: Mapping[str, Any]) -> Dict[str, Any]:
+    task_category = _string(task.get("task_category")).lower()
+    ontology_task_id = _string(task.get("ontology_task_id")).lower()
+    if task_category in DEFAULT_TASK_THRESHOLD_TEMPLATES:
+        return dict(DEFAULT_TASK_THRESHOLD_TEMPLATES[task_category])
+    if any(token in ontology_task_id for token in ("pick", "place", "bin")):
+        return dict(DEFAULT_TASK_THRESHOLD_TEMPLATES["pick_place"])
+    if any(token in ontology_task_id for token in ("navigate", "delivery", "move")):
+        return dict(DEFAULT_TASK_THRESHOLD_TEMPLATES["navigation"])
+    return dict(DEFAULT_TASK_THRESHOLD_TEMPLATES["general"])
+
+
 def _task_thresholds(
     *,
     task_library: Mapping[str, Any],
@@ -1463,25 +1526,22 @@ def _task_thresholds(
         task_id = _string(task.get("task_id"))
         if not task_id:
             continue
+        template = _threshold_template_for_task(task)
+        threshold_profile_id = _string(template.pop("threshold_profile_id"))
         thresholds.append(
             {
                 "task_id": task_id,
                 "ontology_task_id": _string(task.get("ontology_task_id")),
                 "task_category": _string(task.get("task_category")),
-                "threshold_source": "repo_default_publication_gate_requires_buyer_confirmation",
+                "threshold_profile_id": threshold_profile_id,
+                "threshold_source": "repo_default_site_task_template",
+                "buyer_override_allowed": True,
+                "buyer_override_schema": dict(TASK_THRESHOLD_BUYER_OVERRIDE_SCHEMA),
+                "buyer_override_status": "not_supplied",
                 "supported_metric_ids": metric_ids,
-                "thresholds": {
-                    "min_success_rate": 0.0,
-                    "max_cycle_time_seconds": None,
-                    "max_intervention_count": None,
-                    "max_safety_event_count": 0,
-                    "max_collision_event_count": 0,
-                    "max_object_drop_count": 0,
-                    "max_wrong_object_count": 0,
-                    "max_timeout_count": 0,
-                },
+                "thresholds": template,
                 "missing_before_claim_upgrade": [
-                    "buyer_confirmed_task_thresholds",
+                    "buyer_override_or_acceptance_if_claiming_stronger_gate",
                     "owner_system_action_traces",
                     "actual_outcome_manifest",
                     "safety_validation_evidence",
@@ -1496,10 +1556,17 @@ def _task_thresholds(
         "generated_at": generated_at,
         "task_threshold_count": len(thresholds),
         "task_thresholds": thresholds,
-        "threshold_policy": (
-            "default thresholds make task packs comparable; buyer- or operator-approved "
-            "thresholds are required before stronger claims"
-        ),
+        "threshold_policy": {
+            "default_threshold_source": "repo_default_site_task_template",
+            "default_thresholds_are_eval_gates": True,
+            "buyer_override_allowed": True,
+            "buyer_override_schema": dict(TASK_THRESHOLD_BUYER_OVERRIDE_SCHEMA),
+            "buyer_override_required_for_guaranteed_claims": True,
+            "claim_boundary": (
+                "default thresholds make task packs comparable; buyer- or operator-approved "
+                "thresholds are required before stronger claims"
+            ),
+        },
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -1779,8 +1846,10 @@ def _recorded_trace_eval_report(
             "recovery_success_rate": round(recovery_successes / float(recovery_attempts), 6)
             if recovery_attempts
             else None,
-            "uncertainty": "medium_recorded_trace_fixture" if attempts else "blocked_missing_trace",
-            "sim_vs_real_calibration_placeholder": "blocked_until_paired_real_outcomes",
+            "world_model_uncertainty": (
+                "medium_recorded_trace_fixture" if attempts else "blocked_missing_trace"
+            ),
+            "sim_vs_real_calibration_score": "blocked_until_paired_real_outcomes",
         },
         "failure_taxonomy": sorted(
             {
@@ -1931,7 +2000,7 @@ def _prediction_vs_actual_summary(
             else None,
             "source_types": sorted({_string(row.get("actual_source")) for row in matched_rows}),
             "calibration_status": status,
-            "sim_vs_real_calibration_placeholder": "blocked_until_sim_and_real_pairs_exist",
+            "sim_vs_real_calibration_score": "blocked_until_sim_and_real_pairs_exist",
         },
         "blockers": [] if matched_rows else ["missing_actual_outcome_manifest"],
         "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -2513,7 +2582,7 @@ def _eval_cards(*, ledger: Mapping[str, Any], generated_at: str) -> Dict[str, An
                 "intervention_estimate": _mapping(record.get("metrics")).get(
                     "intervention_count"
                 ),
-                "uncertainty": "high_until_action_logs_and_actual_outcomes_exist",
+                "world_model_uncertainty": "high_until_action_logs_and_actual_outcomes_exist",
                 "validation": {
                     "predicted_vs_actual": None,
                     "actual_source": record.get("actual_source"),

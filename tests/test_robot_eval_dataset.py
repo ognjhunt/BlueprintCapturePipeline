@@ -464,8 +464,8 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
         "wrong_object",
         "timeout",
         "recovery_success",
-        "uncertainty",
-        "sim_vs_real_calibration_placeholder",
+        "world_model_uncertainty",
+        "sim_vs_real_calibration_score",
     }
     assert recorded_report["status"] == "blocked_missing_recorded_trace"
     assert recorded_report["proof_boundary"]["simulator_execution_proven"] is False
@@ -488,9 +488,15 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert task_thresholds["task_threshold_count"] == 1
     threshold = task_thresholds["task_thresholds"][0]
     assert threshold["task_id"] == "place_return_in_bin"
-    assert threshold["thresholds"]["min_success_rate"] == 0.0
+    assert threshold["threshold_profile_id"] == "pick_place_default_v1"
+    assert threshold["threshold_source"] == "repo_default_site_task_template"
+    assert threshold["buyer_override_allowed"] is True
+    assert threshold["thresholds"]["min_success_rate"] == 0.85
+    assert threshold["thresholds"]["max_cycle_time_seconds"] == 45.0
+    assert threshold["thresholds"]["max_intervention_count"] == 0
     assert threshold["thresholds"]["max_safety_event_count"] == 0
     assert threshold["thresholds"]["max_collision_event_count"] == 0
+    assert task_thresholds["threshold_policy"]["buyer_override_allowed"] is True
     assert threshold["claim_boundary"] == (
         "thresholds_are_eval_gates_not_robot_readiness_or_safety_validation"
     )
@@ -563,6 +569,46 @@ def test_robot_eval_dataset_blocks_missing_rights_privacy_and_keeps_ledger_empty
     ]
     assert "robot_pov_video_uri" in robot_pov["required_fields"]
     assert human_demo["claim_boundary"] == "human_demo_is_support_evidence_not_robot_trial"
+
+
+def test_robot_eval_dataset_uses_canonical_metrics_and_site_task_threshold_templates(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_eval_inputs(capture_root)
+    _write_review_sources(capture_root)
+
+    build_real_site_robot_eval_dataset(capture_root=capture_root)
+
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    scoring = json.loads((robot_eval_root / "scoring_methodology.json").read_text())
+    thresholds = json.loads((robot_eval_root / "task_thresholds.json").read_text())
+    metric_ids = {metric["metric_id"] for metric in scoring["metrics"]}
+    threshold = thresholds["task_thresholds"][0]
+
+    assert {
+        "success_rate",
+        "cycle_time",
+        "intervention_rate",
+        "unsafe_proximity",
+        "collision_risk",
+        "object_drop",
+        "wrong_object",
+        "timeout",
+        "recovery_success",
+        "world_model_uncertainty",
+        "sim_vs_real_calibration_score",
+    }.issubset(metric_ids)
+    assert "uncertainty" not in metric_ids
+    assert "sim_vs_real_calibration_placeholder" not in metric_ids
+    assert threshold["threshold_profile_id"] == "pick_place_default_v1"
+    assert threshold["threshold_source"] == "repo_default_site_task_template"
+    assert threshold["buyer_override_allowed"] is True
+    assert threshold["buyer_override_schema"]["min_success_rate"] == "number_0_to_1"
+    assert threshold["thresholds"]["min_success_rate"] > 0.0
+    assert threshold["thresholds"]["max_cycle_time_seconds"] is not None
+    assert threshold["thresholds"]["max_intervention_count"] == 0
+    assert thresholds["threshold_policy"]["buyer_override_allowed"] is True
 
 
 def test_robot_eval_dataset_publication_readiness_names_worldlabs_simready_blocker(

@@ -32,6 +32,7 @@ LIVE_PIPELINE_INPUT_INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_input_intak
 LIVE_CLOSURE_EVIDENCE_ARTIFACT_NAME = "live_eval_closure_evidence.json"
 DEPLOYMENT_OUTCOME_ARTIFACT_NAME = "deployment_outcome.json"
 POLICY_PACKAGE_ARTIFACT_NAME = "policy_package.json"
+REAL_ROBOT_POV_ARTIFACT_NAME = "real_robot_pov_manifest.json"
 POLICY_MODALITY_ORDER = (
     "policy_api_endpoint",
     "docker_container",
@@ -356,7 +357,7 @@ def _actual_signal_present(record: Mapping[str, Any]) -> bool:
 def _prediction_match_key_present(record: Mapping[str, Any]) -> bool:
     return bool(
         _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId"))
-        or _string(
+        and _string(
             record.get("scenario_variation_instance_id")
             or record.get("scenarioVariationInstanceId")
         )
@@ -390,6 +391,272 @@ def _outcome_owner_evidence_present(record: Mapping[str, Any]) -> bool:
         or record.get("ownerAttestation")
     )
     return bool(evidence_refs or owner_evidence_uri or _attestation_ok(attestation))
+
+
+def _records_from_real_robot_pov_payload(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [dict(item) for item in payload if isinstance(item, Mapping)]
+    if not isinstance(payload, Mapping):
+        return []
+    for key in (
+        "records",
+        "robot_pov_records",
+        "robotPovRecords",
+        "evidence_records",
+        "evidenceRecords",
+        "observations",
+    ):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [dict(item) for item in value if isinstance(item, Mapping)]
+    if _string(
+        payload.get("robot_camera_video_uri")
+        or payload.get("robotCameraVideoUri")
+        or payload.get("action_log_uri")
+        or payload.get("actionLogUri")
+    ):
+        return [dict(payload)]
+    return []
+
+
+def _real_robot_pov_job_id(
+    payload: Mapping[str, Any],
+    records: Sequence[Mapping[str, Any]],
+) -> str | None:
+    for field in ("job_id", "jobId", "robot_eval_job_id", "robotEvalJobId"):
+        value = _string(payload.get(field))
+        if value:
+            return value
+    record_job_ids = {
+        value
+        for record in records
+        if (
+            value := _string(
+                record.get("job_id")
+                or record.get("jobId")
+                or record.get("robot_eval_job_id")
+                or record.get("robotEvalJobId")
+            )
+        )
+    }
+    if len(record_job_ids) == 1:
+        return next(iter(record_job_ids))
+    return None
+
+
+def _pov_record_id(record: Mapping[str, Any], index: int) -> str:
+    value = _string(
+        record.get("evidence_id")
+        or record.get("evidenceId")
+        or record.get("record_id")
+        or record.get("recordId")
+        or record.get("id")
+    )
+    return value or f"real-robot-pov-{index:04d}"
+
+
+def _pov_exact_key_present(record: Mapping[str, Any]) -> bool:
+    return bool(
+        _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId"))
+        and _string(
+            record.get("scenario_variation_instance_id")
+            or record.get("scenarioVariationInstanceId")
+        )
+    )
+
+
+def _pov_camera_video_present(record: Mapping[str, Any]) -> bool:
+    return bool(
+        _string(
+            record.get("robot_camera_video_uri")
+            or record.get("robotCameraVideoUri")
+            or record.get("pov_video_uri")
+            or record.get("povVideoUri")
+            or record.get("camera_video_uri")
+            or record.get("cameraVideoUri")
+            or record.get("video_uri")
+            or record.get("videoUri")
+        )
+    )
+
+
+def _pov_action_log_present(record: Mapping[str, Any]) -> bool:
+    return bool(
+        _string(
+            record.get("action_log_uri")
+            or record.get("actionLogUri")
+            or record.get("recorded_action_trace_uri")
+            or record.get("recordedActionTraceUri")
+            or record.get("action_trace_uri")
+            or record.get("actionTraceUri")
+        )
+    )
+
+
+def _pov_timestamp_alignment_present(
+    *,
+    record: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> bool:
+    return bool(
+        _string(
+            record.get("timestamp_alignment")
+            or record.get("timestampAlignment")
+            or payload.get("timestamp_alignment")
+            or payload.get("timestampAlignment")
+        )
+    )
+
+
+def _pov_owner_evidence_present(record: Mapping[str, Any]) -> bool:
+    evidence_refs = _mapping(
+        record.get("owner_evidence_refs")
+        or record.get("ownerEvidenceRefs")
+        or record.get("evidence_refs")
+        or record.get("evidenceRefs")
+    )
+    evidence_uri = _string(
+        record.get("owner_evidence_uri")
+        or record.get("ownerEvidenceUri")
+        or record.get("evidence_uri")
+        or record.get("evidenceUri")
+    )
+    attestation = (
+        record.get("operator_attestation")
+        or record.get("operatorAttestation")
+        or record.get("owner_attestation")
+        or record.get("ownerAttestation")
+    )
+    return bool(evidence_refs or evidence_uri or _attestation_ok(attestation))
+
+
+def _audit_real_robot_pov(
+    *,
+    path: Path | None,
+    expected_job_id: str | None,
+) -> Dict[str, Any]:
+    if path is None:
+        return {
+            "status": "not_provided",
+            "ready": False,
+            "path": None,
+            "blockers": ["real_robot_pov_not_provided"],
+            "job_id": expected_job_id,
+            "record_count": 0,
+            "record_ids": [],
+        }
+    if not path.is_file():
+        return {
+            "status": "blocked",
+            "ready": False,
+            "path": str(path),
+            "blockers": ["real_robot_pov_missing"],
+            "job_id": expected_job_id,
+            "record_count": 0,
+            "record_ids": [],
+        }
+    try:
+        payload = _read_mapping(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "blocked",
+            "ready": False,
+            "path": str(path),
+            "blockers": [f"real_robot_pov_read_failed:{type(exc).__name__}"],
+            "sha256": _sha_file(path),
+            "job_id": expected_job_id,
+            "record_count": 0,
+            "record_ids": [],
+        }
+    records = _records_from_real_robot_pov_payload(payload)
+    evidence_job_id = _real_robot_pov_job_id(payload, records)
+    resolved_job_id = expected_job_id or evidence_job_id
+    blockers: List[str] = []
+    if payload.get("schema_version") not in {
+        "real_robot_pov_manifest.v1",
+        "robot_pov_evidence_manifest.v1",
+        "real_robot_pov_evidence_manifest.v1",
+    }:
+        blockers.append("real_robot_pov_schema_mismatch")
+    if evidence_job_id and not _safe_job_id(evidence_job_id):
+        blockers.append("real_robot_pov_job_id_unsafe")
+    if expected_job_id and evidence_job_id and evidence_job_id != expected_job_id:
+        blockers.append("real_robot_pov_job_id_mismatch")
+    if not records:
+        blockers.append("real_robot_pov_empty")
+
+    missing_exact_keys = [
+        _pov_record_id(record, index)
+        for index, record in enumerate(records, start=1)
+        if not _pov_exact_key_present(record)
+    ]
+    missing_camera_video = [
+        _pov_record_id(record, index)
+        for index, record in enumerate(records, start=1)
+        if not _pov_camera_video_present(record)
+    ]
+    missing_action_logs = [
+        _pov_record_id(record, index)
+        for index, record in enumerate(records, start=1)
+        if not _pov_action_log_present(record)
+    ]
+    missing_timestamp_alignment = [
+        _pov_record_id(record, index)
+        for index, record in enumerate(records, start=1)
+        if not _pov_timestamp_alignment_present(record=record, payload=payload)
+    ]
+    missing_evidence = [
+        _pov_record_id(record, index)
+        for index, record in enumerate(records, start=1)
+        if not _pov_owner_evidence_present(record)
+    ]
+    if missing_exact_keys:
+        blockers.append("real_robot_pov_missing_exact_keys")
+    if missing_camera_video:
+        blockers.append("real_robot_pov_missing_camera_videos")
+    if missing_action_logs:
+        blockers.append("real_robot_pov_missing_action_logs")
+    if missing_timestamp_alignment:
+        blockers.append("real_robot_pov_missing_timestamp_alignment")
+    if missing_evidence:
+        blockers.append("real_robot_pov_missing_owner_evidence")
+
+    exact_key_record_count = len(records) - len(missing_exact_keys)
+    camera_video_record_count = len(records) - len(missing_camera_video)
+    action_log_record_count = len(records) - len(missing_action_logs)
+    timestamp_alignment_record_count = len(records) - len(missing_timestamp_alignment)
+    evidence_record_count = len(records) - len(missing_evidence)
+    return {
+        "status": "ready_for_robot_eval_job" if not blockers else "blocked",
+        "ready": not blockers,
+        "path": str(path),
+        "sha256": _sha_file(path),
+        "schema_version": payload.get("schema_version"),
+        "job_id": resolved_job_id,
+        "evidence_job_id": evidence_job_id,
+        "expected_job_id": expected_job_id,
+        "record_count": len(records),
+        "record_ids": [
+            _pov_record_id(record, index)
+            for index, record in enumerate(records, start=1)
+        ],
+        "exact_key_record_count": exact_key_record_count,
+        "camera_video_record_count": camera_video_record_count,
+        "action_log_record_count": action_log_record_count,
+        "timestamp_alignment_record_count": timestamp_alignment_record_count,
+        "evidence_record_count": evidence_record_count,
+        "missing_exact_key_record_ids": missing_exact_keys,
+        "missing_camera_video_record_ids": missing_camera_video,
+        "missing_action_log_record_ids": missing_action_logs,
+        "missing_timestamp_alignment_record_ids": missing_timestamp_alignment,
+        "missing_evidence_record_ids": missing_evidence,
+        "blockers": blockers,
+        "metadata_only": True,
+        "proof_boundary": (
+            "Real robot POV intake validates owner-supplied camera/action evidence references only; "
+            "the job must ingest the manifest before robot POV proof is allowed."
+        ),
+    }
 
 
 def _audit_deployment_outcomes(
@@ -912,6 +1179,55 @@ def _stage_live_closure_evidence(
     }
 
 
+def _stage_real_robot_pov(
+    *,
+    pov_path: Path,
+    audit: Mapping[str, Any],
+    capture_root: Path | None,
+    overwrite: bool,
+) -> Dict[str, Any]:
+    if not audit.get("ready"):
+        return {
+            "status": "blocked",
+            "performed": False,
+            "blockers": ["real_robot_pov_not_ready_for_staging"],
+        }
+    if capture_root is None:
+        return {
+            "status": "blocked",
+            "performed": False,
+            "blockers": ["missing_control_plane_capture_root"],
+        }
+    target = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / REAL_ROBOT_POV_ARTIFACT_NAME
+    )
+    ensure_dir(target.parent)
+    blockers: List[str] = []
+    if target.exists() and not overwrite:
+        blockers.append("target_real_robot_pov_already_exists")
+    if blockers:
+        return {
+            "status": "blocked",
+            "performed": False,
+            "target_path": str(target),
+            "blockers": blockers,
+        }
+    shutil.copy2(pov_path, target)
+    return {
+        "status": "staged",
+        "performed": True,
+        "target_path": str(target),
+        "job_id": audit.get("job_id"),
+        "record_count": int(audit.get("record_count") or 0),
+        "sha256": _sha_file(target),
+        "blockers": [],
+        "proof_boundary": "staging copies real robot POV references only and does not run the job",
+    }
+
+
 def _stage_deployment_outcomes(
     *,
     outcome_path: Path,
@@ -1067,6 +1383,9 @@ def _write_staged_inputs(
     policy_package_audit: Mapping[str, Any],
     policy_package_staging: Mapping[str, Any],
     stage_policy_package: bool,
+    real_robot_pov_audit: Mapping[str, Any],
+    real_robot_pov_staging: Mapping[str, Any],
+    stage_real_robot_pov: bool,
 ) -> Dict[str, Any]:
     arena_ready = bool(arena_audit.get("ready"))
     webapp_ready = bool(webapp_audit.get("ready"))
@@ -1077,6 +1396,8 @@ def _write_staged_inputs(
     outcomes_staged = bool(deployment_outcomes_staging.get("performed"))
     policy_ready = bool(policy_package_audit.get("ready"))
     policy_staged = bool(policy_package_staging.get("performed"))
+    real_pov_ready = bool(real_robot_pov_audit.get("ready"))
+    real_pov_staged = bool(real_robot_pov_staging.get("performed"))
     blockers: List[str] = []
     if stage_arena_results and not arena_ready:
         blockers.append("arena_results_not_ready_for_staging")
@@ -1086,6 +1407,8 @@ def _write_staged_inputs(
         blockers.append("deployment_outcomes_not_ready_for_staging")
     if stage_policy_package and not policy_ready:
         blockers.append("policy_package_not_ready_for_staging")
+    if stage_real_robot_pov and not real_pov_ready:
+        blockers.append("real_robot_pov_not_ready_for_staging")
     if webapp_staging.get("status") == "blocked":
         blockers.append("webapp_request_not_staged")
     if live_closure_evidence_staging.get("status") == "blocked":
@@ -1094,6 +1417,8 @@ def _write_staged_inputs(
         blockers.append("deployment_outcomes_not_staged")
     if policy_package_staging.get("status") == "blocked":
         blockers.append("policy_package_not_staged")
+    if real_robot_pov_staging.get("status") == "blocked":
+        blockers.append("real_robot_pov_not_staged")
     if blockers:
         return {
             "status": "blocked",
@@ -1107,6 +1432,7 @@ def _write_staged_inputs(
         and not closure_staged
         and not outcomes_staged
         and not policy_staged
+        and not real_pov_staged
     ):
         return {
             "status": "not_requested",
@@ -1195,10 +1521,44 @@ def _write_staged_inputs(
             "sha256": policy_package_staging.get("sha256") or policy_package_audit.get("sha256"),
             "selected_modalities": policy_package_audit.get("selected_modalities", []),
         },
+        "real_robot_pov": {
+            "ready": real_pov_ready and real_pov_staged,
+            "staged": real_pov_staged,
+            "job_id": real_robot_pov_audit.get("job_id") or real_robot_pov_staging.get("job_id"),
+            "path": real_robot_pov_audit.get("path"),
+            "target_path": real_robot_pov_staging.get("target_path"),
+            "sha256": real_robot_pov_staging.get("sha256")
+            or real_robot_pov_audit.get("sha256"),
+            "record_count": real_robot_pov_audit.get("record_count", 0),
+            "record_ids": real_robot_pov_audit.get("record_ids", []),
+            "exact_key_record_count": real_robot_pov_audit.get("exact_key_record_count", 0),
+            "camera_video_record_count": real_robot_pov_audit.get("camera_video_record_count", 0),
+            "action_log_record_count": real_robot_pov_audit.get("action_log_record_count", 0),
+            "timestamp_alignment_record_count": real_robot_pov_audit.get(
+                "timestamp_alignment_record_count", 0
+            ),
+            "evidence_record_count": real_robot_pov_audit.get("evidence_record_count", 0),
+            "missing_exact_key_record_ids": real_robot_pov_audit.get(
+                "missing_exact_key_record_ids", []
+            ),
+            "missing_camera_video_record_ids": real_robot_pov_audit.get(
+                "missing_camera_video_record_ids", []
+            ),
+            "missing_action_log_record_ids": real_robot_pov_audit.get(
+                "missing_action_log_record_ids", []
+            ),
+            "missing_timestamp_alignment_record_ids": real_robot_pov_audit.get(
+                "missing_timestamp_alignment_record_ids", []
+            ),
+            "missing_evidence_record_ids": real_robot_pov_audit.get(
+                "missing_evidence_record_ids", []
+            ),
+        },
         "proof_boundary": {
             "staged_inputs_are_pointers_only": True,
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
+            "robot_pov_evidence_proven": False,
             "real_world_outcome_proven": False,
             "policy_execution_proven": False,
             "robot_readiness_proven": False,
@@ -1217,6 +1577,7 @@ def _write_staged_inputs(
         "live_closure_evidence_staged": closure_staged,
         "deployment_outcomes_staged": outcomes_staged,
         "policy_package_staged": policy_staged,
+        "real_robot_pov_staged": real_pov_staged,
     }
 
 
@@ -1228,11 +1589,13 @@ def build_live_pipeline_input_intake(
     live_closure_evidence: str | Path | None = None,
     deployment_outcomes: str | Path | None = None,
     policy_package: str | Path | None = None,
+    real_robot_pov: str | Path | None = None,
     stage_webapp_request: bool = False,
     stage_arena_results: bool = False,
     stage_live_closure_evidence: bool = False,
     stage_deployment_outcomes: bool = False,
     stage_policy_package: bool = False,
+    stage_real_robot_pov: bool = False,
     overwrite: bool = False,
     output_path: str | Path | None = None,
     staged_inputs_path: str | Path | None = None,
@@ -1248,6 +1611,7 @@ def build_live_pipeline_input_intake(
     )
     deployment_outcomes_path = Path(deployment_outcomes).resolve() if deployment_outcomes else None
     policy_package_path = Path(policy_package).resolve() if policy_package else None
+    real_robot_pov_path = Path(real_robot_pov).resolve() if real_robot_pov else None
     generated_at = utc_now_iso()
 
     webapp_audit = _audit_webapp_request(
@@ -1266,6 +1630,10 @@ def build_live_pipeline_input_intake(
     )
     policy_package_audit = _audit_policy_package(
         path=policy_package_path,
+        expected_job_id=_string(webapp_audit.get("job_id")) or None,
+    )
+    real_robot_pov_audit = _audit_real_robot_pov(
+        path=real_robot_pov_path,
         expected_job_id=_string(webapp_audit.get("job_id")) or None,
     )
     staging = (
@@ -1324,6 +1692,20 @@ def build_live_pipeline_input_intake(
             "blockers": [],
         }
     )
+    real_robot_pov_staging = (
+        _stage_real_robot_pov(
+            pov_path=real_robot_pov_path or Path(),
+            audit=real_robot_pov_audit,
+            capture_root=capture_root,
+            overwrite=overwrite,
+        )
+        if stage_real_robot_pov
+        else {
+            "status": "not_requested",
+            "performed": False,
+            "blockers": [],
+        }
+    )
     input_blockers: List[str] = []
     if webapp_job_request and not webapp_audit.get("ready"):
         input_blockers.extend(f"webapp:{blocker}" for blocker in webapp_audit.get("blockers", []))
@@ -1343,6 +1725,11 @@ def build_live_pipeline_input_intake(
         input_blockers.extend(
             f"policy_package:{blocker}" for blocker in policy_package_audit.get("blockers", [])
         )
+    if real_robot_pov and not real_robot_pov_audit.get("ready"):
+        input_blockers.extend(
+            f"real_robot_pov:{blocker}"
+            for blocker in real_robot_pov_audit.get("blockers", [])
+        )
     if staging.get("blockers"):
         input_blockers.extend(f"staging:{blocker}" for blocker in staging.get("blockers", []))
     if live_closure_staging.get("blockers"):
@@ -1357,6 +1744,10 @@ def build_live_pipeline_input_intake(
         input_blockers.extend(
             f"staging:{blocker}" for blocker in policy_package_staging.get("blockers", [])
         )
+    if real_robot_pov_staging.get("blockers"):
+        input_blockers.extend(
+            f"staging:{blocker}" for blocker in real_robot_pov_staging.get("blockers", [])
+        )
 
     status = "ready_for_control_plane"
     if input_blockers:
@@ -1367,6 +1758,7 @@ def build_live_pipeline_input_intake(
         and not live_closure_evidence
         and not deployment_outcomes
         and not policy_package
+        and not real_robot_pov
     ):
         status = "waiting_for_inputs"
     elif stage_webapp_request and staging.get("performed"):
@@ -1378,6 +1770,8 @@ def build_live_pipeline_input_intake(
     elif stage_deployment_outcomes and deployment_outcomes_staging.get("performed"):
         status = "staged_for_control_plane"
     elif stage_policy_package and policy_package_staging.get("performed"):
+        status = "staged_for_control_plane"
+    elif stage_real_robot_pov and real_robot_pov_staging.get("performed"):
         status = "staged_for_control_plane"
 
     if output_path:
@@ -1406,6 +1800,9 @@ def build_live_pipeline_input_intake(
         policy_package_audit=policy_package_audit,
         policy_package_staging=policy_package_staging,
         stage_policy_package=stage_policy_package,
+        real_robot_pov_audit=real_robot_pov_audit,
+        real_robot_pov_staging=real_robot_pov_staging,
+        stage_real_robot_pov=stage_real_robot_pov,
     )
     if staged_inputs.get("blockers"):
         input_blockers.extend(
@@ -1425,10 +1822,12 @@ def build_live_pipeline_input_intake(
         "live_closure_evidence": live_closure_evidence_audit,
         "deployment_outcomes": deployment_outcomes_audit,
         "policy_package": policy_package_audit,
+        "real_robot_pov": real_robot_pov_audit,
         "webapp_staging": staging,
         "live_closure_evidence_staging": live_closure_staging,
         "deployment_outcomes_staging": deployment_outcomes_staging,
         "policy_package_staging": policy_package_staging,
+        "real_robot_pov_staging": real_robot_pov_staging,
         "staged_inputs": staged_inputs,
         "input_blockers": input_blockers,
         "next_steps": [
@@ -1447,8 +1846,12 @@ def build_live_pipeline_input_intake(
                 deployment_outcomes_audit.get("ready")
             ),
             "policy_package_ready_for_robot_eval_job": bool(policy_package_audit.get("ready")),
+            "real_robot_pov_ready_for_job_ingest": bool(
+                real_robot_pov_audit.get("ready")
+            ),
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
+            "robot_pov_evidence_proven": False,
             "real_world_outcome_proven": False,
             "robot_readiness_proven": False,
             "public_claim_upgrade_allowed": False,
@@ -1473,11 +1876,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--live-closure-evidence")
     parser.add_argument("--deployment-outcomes")
     parser.add_argument("--policy-package")
+    parser.add_argument("--real-robot-pov")
     parser.add_argument("--stage-webapp-request", action="store_true")
     parser.add_argument("--stage-arena-results", action="store_true")
     parser.add_argument("--stage-live-closure-evidence", action="store_true")
     parser.add_argument("--stage-deployment-outcomes", action="store_true")
     parser.add_argument("--stage-policy-package", action="store_true")
+    parser.add_argument("--stage-real-robot-pov", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--output-path")
     parser.add_argument("--staged-inputs-path")
@@ -1489,11 +1894,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         live_closure_evidence=args.live_closure_evidence,
         deployment_outcomes=args.deployment_outcomes,
         policy_package=args.policy_package,
+        real_robot_pov=args.real_robot_pov,
         stage_webapp_request=args.stage_webapp_request,
         stage_arena_results=args.stage_arena_results,
         stage_live_closure_evidence=args.stage_live_closure_evidence,
         stage_deployment_outcomes=args.stage_deployment_outcomes,
         stage_policy_package=args.stage_policy_package,
+        stage_real_robot_pov=args.stage_real_robot_pov,
         overwrite=args.overwrite,
         output_path=args.output_path,
         staged_inputs_path=args.staged_inputs_path,

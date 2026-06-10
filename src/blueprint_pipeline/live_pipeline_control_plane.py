@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -26,6 +27,7 @@ from .robot_eval_job_orchestrator import (
     CLAIM_BOUNDARY,
     AgentsSdkRobotEvalJobAdapter,
     FakeRobotEvalJobAgentAdapter,
+    REAL_WORLD_VALIDATION_FOLLOWUP_REQUEST_QUEUE_SCHEMA_VERSION,
     RobotEvalJobAgentAdapter,
     run_robot_eval_job_request_inbox,
 )
@@ -75,6 +77,13 @@ DEPLOYMENT_OUTCOME_ARTIFACT_NAMES = (
 POLICY_PACKAGE_ARTIFACT_NAMES = (
     "policy_package.json",
     "robot_team_policy_package.v1",
+)
+
+REAL_ROBOT_POV_ARTIFACT_NAMES = (
+    "real_robot_pov_manifest.json",
+    "robot camera video URI or local evidence ref per scenario eval run",
+    "action log URI or local evidence ref per scenario eval run",
+    "timestamp alignment and owner/operator attestation",
 )
 
 POLICY_MODALITY_ORDER = (
@@ -159,6 +168,17 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _count(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(value, 0)
+    try:
+        return max(int(str(value)), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _restore_env(original_env: Mapping[str, str]) -> None:
@@ -280,10 +300,12 @@ def _control_plane_next_inputs_needed(
     job_request_inbox: Path | None,
     setup_manifest: Mapping[str, Any],
     webapp_upstream_truth_ready: bool | None = None,
+    real_robot_pov_ready: bool = False,
     live_closure_evidence_ready: bool = False,
     deployment_outcomes_ready: bool = False,
     deployment_outcomes_owner_evidence_ready: bool = False,
     policy_package_ready: bool = False,
+    followup_request_queues: Mapping[str, Any] | None = None,
 ) -> List[str]:
     next_inputs: List[str] = []
     webapp_truth_ready = (
@@ -303,6 +325,11 @@ def _control_plane_next_inputs_needed(
         next_inputs.append(
             "Provide a real owner-system Isaac Lab-Arena command or result directory before "
             "claiming simulator execution."
+        )
+    if not real_robot_pov_ready:
+        next_inputs.append(
+            "Provide real robot POV/action evidence aligned to scenario eval runs before "
+            "claiming live robot POV proof."
         )
     if not live_closure_evidence_ready:
         next_inputs.append(
@@ -341,6 +368,17 @@ def _control_plane_next_inputs_needed(
             "Configure gated Agents SDK and Codex SDK or host-OAuth operator credentials before "
             "running live repo operators."
         )
+    queues = _as_mapping(followup_request_queues)
+    if queues.get("status") == "ready_for_inbox_processing":
+        for queue in queues.get("queues") or []:
+            if not isinstance(queue, Mapping):
+                continue
+            command = _string(queue.get("safe_processing_command"))
+            if command:
+                next_inputs.append(
+                    "Process real-world validation follow-up draft requests: "
+                    f"{command}"
+                )
     return next_inputs
 
 
@@ -444,6 +482,138 @@ def _request_policy_package_audit(request: Mapping[str, Any]) -> Dict[str, Any]:
         "ready_modalities": ready,
         "missing_inputs": missing_by_modality,
         "ready": bool(ready),
+    }
+
+
+def _real_robot_pov_status(capture_root: Path | None) -> Dict[str, Any]:
+    path = (
+        capture_root / "pipeline" / "robot_eval_inputs" / "real_robot_pov_manifest.json"
+        if capture_root
+        else None
+    )
+    return {
+        "ready": bool(path and path.is_file()),
+        "configured_path": str(path) if path else None,
+        "required_artifacts": list(REAL_ROBOT_POV_ARTIFACT_NAMES),
+        "proof_boundary": (
+            "Real robot POV evidence is only proven after job execution ingests this manifest "
+            "and covers every scenario eval run."
+        ),
+    }
+
+
+def _safe_followup_processing_command(capture_root: Path, inbox_dir: Path) -> str:
+    return (
+        "blueprint-run-robot-eval-job "
+        f"--capture-root {shlex.quote(str(capture_root.resolve()))} "
+        f"--job-request-inbox {shlex.quote(str(inbox_dir.resolve()))}"
+    )
+
+
+def _real_world_validation_followup_request_queues(
+    capture_root: Path | None,
+) -> Dict[str, Any]:
+    if capture_root is None:
+        return {
+            "status": "not_configured",
+            "ready": False,
+            "capture_root": None,
+            "queue_count": 0,
+            "ready_queue_count": 0,
+            "queued_request_count": 0,
+            "queues": [],
+            "blockers": ["missing_capture_root"],
+        }
+    jobs_dir = capture_root / "pipeline" / "robot_eval_jobs"
+    queue_paths = (
+        sorted(jobs_dir.glob("*/real_world_validation_followup_request_queue.json"))
+        if jobs_dir.is_dir()
+        else []
+    )
+    queues: List[Dict[str, Any]] = []
+    total_queued = 0
+    ready_count = 0
+    aggregate_blockers: List[str] = []
+    for queue_path in queue_paths:
+        blockers: List[str] = []
+        try:
+            payload = read_json_any(queue_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            payload = {}
+            blockers.append(f"followup_request_queue_read_failed:{type(exc).__name__}")
+        if not isinstance(payload, Mapping):
+            payload = {}
+            blockers.append("followup_request_queue_not_json_object")
+        schema_version = _string(payload.get("schema_version")) or None
+        if schema_version != REAL_WORLD_VALIDATION_FOLLOWUP_REQUEST_QUEUE_SCHEMA_VERSION:
+            blockers.append("followup_request_queue_schema_mismatch")
+        status = _string(payload.get("status")) or "unknown"
+        inbox_dir_text = _string(payload.get("inbox_dir")) or None
+        inbox_dir = Path(inbox_dir_text).resolve() if inbox_dir_text else None
+        queued_request_paths = [
+            str(Path(str(path)).resolve())
+            for path in payload.get("queued_request_paths") or []
+            if _string(path)
+        ]
+        queued_count = _count(payload.get("queued_request_count")) or len(queued_request_paths)
+        total_queued += queued_count
+        if status == "ready_for_inbox_processing":
+            if inbox_dir is None:
+                blockers.append("followup_request_queue_inbox_missing")
+            elif not inbox_dir.is_dir():
+                blockers.append("followup_request_queue_inbox_dir_missing")
+            if queued_count <= 0:
+                blockers.append("followup_request_queue_empty")
+            for request_path in queued_request_paths[:20]:
+                if not Path(request_path).is_file():
+                    blockers.append("followup_request_queue_request_file_missing")
+                    break
+        ready = status == "ready_for_inbox_processing" and not blockers
+        if ready:
+            ready_count += 1
+        aggregate_blockers.extend(blockers)
+        queues.append(
+            {
+                "job_id": _string(payload.get("parent_job_id")) or queue_path.parent.name,
+                "path": str(queue_path.resolve()),
+                "schema_version": schema_version,
+                "status": status,
+                "ready_for_inbox_processing": ready,
+                "inbox_dir": str(inbox_dir) if inbox_dir else None,
+                "queued_request_count": queued_count,
+                "queued_request_paths": queued_request_paths[:20],
+                "truncated_queued_request_paths": len(queued_request_paths) > 20,
+                "safe_processing_command": (
+                    _safe_followup_processing_command(capture_root, inbox_dir)
+                    if ready and inbox_dir
+                    else None
+                ),
+                "blockers": blockers,
+            }
+        )
+    if ready_count:
+        status = "ready_for_inbox_processing"
+    elif aggregate_blockers:
+        status = "blocked"
+    elif queues:
+        status = "no_followup_requests_queued"
+    else:
+        status = "no_followup_request_queues"
+    return {
+        "status": status,
+        "ready": ready_count > 0,
+        "capture_root": str(capture_root),
+        "queue_count": len(queues),
+        "ready_queue_count": ready_count,
+        "queued_request_count": total_queued,
+        "queues": queues[:20],
+        "truncated_queues": len(queues) > 20,
+        "blockers": sorted(set(aggregate_blockers)),
+        "proof_boundary": (
+            "Follow-up request queues are draft job-request inputs generated from "
+            "predicted-vs-actual validation; processing them creates new local job "
+            "artifacts but does not prove real-world rerun success."
+        ),
     }
 
 
@@ -598,6 +768,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
             "live_closure_evidence_path": None,
             "deployment_outcomes_path": None,
             "policy_package_path": None,
+            "real_robot_pov_path": None,
         }
     try:
         payload = read_json_any(path)
@@ -612,6 +783,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
             "live_closure_evidence_path": None,
             "deployment_outcomes_path": None,
             "policy_package_path": None,
+            "real_robot_pov_path": None,
         }
     if not isinstance(payload, Mapping):
         return {
@@ -624,6 +796,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
             "live_closure_evidence_path": None,
             "deployment_outcomes_path": None,
             "policy_package_path": None,
+            "real_robot_pov_path": None,
         }
     blockers: List[str] = []
     if payload.get("schema_version") != LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION:
@@ -640,6 +813,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
     closure = _as_mapping(payload.get("live_closure_evidence"))
     outcomes = _as_mapping(payload.get("deployment_outcomes"))
     policy = _as_mapping(payload.get("policy_package"))
+    real_pov = _as_mapping(payload.get("real_robot_pov"))
     arena_results_dir = _string(arena.get("arena_results_dir")) or None
     webapp_request_path = _string(webapp.get("target_path") or webapp.get("path")) or None
     live_closure_evidence_path = (
@@ -649,6 +823,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
         _string(outcomes.get("target_path") or outcomes.get("path")) or None
     )
     policy_package_path = _string(policy.get("target_path") or policy.get("path")) or None
+    real_robot_pov_path = _string(real_pov.get("target_path") or real_pov.get("path")) or None
     arena_ready = bool(arena.get("ready")) and bool(arena_results_dir)
     webapp_ready = bool(webapp.get("ready") or webapp.get("staged")) and bool(webapp_request_path)
     closure_ready = (
@@ -665,6 +840,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
         bool(outcomes.get("owner_evidence_ready")) and bool(deployment_outcomes_path)
     )
     policy_ready = bool(policy.get("ready") or policy.get("staged")) and bool(policy_package_path)
+    real_pov_ready = bool(real_pov.get("ready") or real_pov.get("staged")) and bool(real_robot_pov_path)
     if arena_results_dir and not Path(arena_results_dir).is_dir():
         blockers.append("staged_arena_results_dir_missing")
         arena_ready = False
@@ -682,9 +858,19 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
     if policy_package_path and not Path(policy_package_path).is_file():
         blockers.append("staged_policy_package_missing")
         policy_ready = False
+    if real_robot_pov_path and not Path(real_robot_pov_path).is_file():
+        blockers.append("staged_real_robot_pov_missing")
+        real_pov_ready = False
     status = (
         "ready"
-        if (arena_ready or webapp_ready or closure_ready or outcomes_ready or policy_ready)
+        if (
+            arena_ready
+            or webapp_ready
+            or closure_ready
+            or outcomes_ready
+            or policy_ready
+            or real_pov_ready
+        )
         and not blockers
         else "blocked"
     )
@@ -694,6 +880,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
         and not closure_ready
         and not outcomes_ready
         and not policy_ready
+        and not real_pov_ready
         and not blockers
     ):
         status = "empty"
@@ -737,6 +924,31 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
         "policy_package_ready": policy_ready,
         "policy_package_job_id": policy.get("job_id"),
         "policy_package_selected_modalities": list(policy.get("selected_modalities") or []),
+        "real_robot_pov_path": real_robot_pov_path,
+        "real_robot_pov_ready": real_pov_ready,
+        "real_robot_pov_job_id": real_pov.get("job_id"),
+        "real_robot_pov_record_count": int(real_pov.get("record_count") or 0),
+        "real_robot_pov_exact_key_record_count": int(
+            real_pov.get("exact_key_record_count") or 0
+        ),
+        "real_robot_pov_camera_video_record_count": int(
+            real_pov.get("camera_video_record_count") or 0
+        ),
+        "real_robot_pov_action_log_record_count": int(
+            real_pov.get("action_log_record_count") or 0
+        ),
+        "real_robot_pov_timestamp_alignment_record_count": int(
+            real_pov.get("timestamp_alignment_record_count") or 0
+        ),
+        "real_robot_pov_evidence_record_count": int(
+            real_pov.get("evidence_record_count") or 0
+        ),
+        "real_robot_pov_missing_exact_key_record_ids": list(
+            real_pov.get("missing_exact_key_record_ids") or []
+        ),
+        "real_robot_pov_missing_evidence_record_ids": list(
+            real_pov.get("missing_evidence_record_ids") or []
+        ),
         "blockers": blockers,
         "proof_boundary": "staged inputs are pointers to validated inputs, not proof claims",
     }
@@ -764,6 +976,320 @@ def _input_packet_status(
     if enablement_inputs:
         return "core_external_inputs_ready_enablement_missing"
     return "all_external_inputs_configured"
+
+
+BLOCKER_PACKET_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "webapp_upstream_truth": {
+        "owner": "Blueprint-WebApp operator",
+        "required_input": (
+            "A real robot_eval_job_request.v1 or queue envelope with site_submission_id, "
+            "request_id, buyer_request_id, capture_job_id, and the configured capture root."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--webapp-job-request <robot_eval_job_request.json> --stage-webapp-request --overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after the WebApp request has real IDs and the request capture_root matches "
+            "BLUEPRINT_PIPELINE_CAPTURE_ROOT."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not invent placeholder upstream IDs, copy capture IDs into WebApp IDs, or mark "
+            "webapp_upstream_truth ready without a real request source."
+        ),
+    },
+    "isaac_lab_arena_owner_evidence": {
+        "owner": "Simulator owner/operator",
+        "required_input": (
+            "Owner-system Isaac Lab-Arena result artifacts or an explicitly gated simulator "
+            "command that produces normalized run evidence."
+        ),
+        "safe_proof_command": (
+            "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true blueprint-run-live-pipeline-control-plane "
+            "--capture-root <capture-root> --job-request-inbox <job-request-inbox> "
+            "--simulator isaac_lab_arena --allow-simulator isaac_lab_arena "
+            "--allow-simulator-execution --simulator-command "
+            "'isaac_lab_arena=<owner-arena-command>' --output-path <control-plane-manifest>"
+        ),
+        "retry_condition": (
+            "Re-run after the owner result directory exists or the gated simulator command exits "
+            "successfully and writes expected artifacts."
+        ),
+        "resume_target": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--arena-results-dir <owner-arena-results-dir> --stage-arena-results --overwrite"
+        ),
+        "disallowed_workaround": (
+            "Do not treat fixture runs, CPU smoke checks, advisory agent plans, or generated "
+            "variation manifests as live simulator execution proof."
+        ),
+    },
+    "live_robot_eval_closure_evidence": {
+        "owner": "Blueprint delivery/review operator",
+        "required_input": (
+            "Job-specific live closure evidence covering review acceptance, signed delivery, "
+            "rights/privacy, and safety/contact/physics readiness where applicable."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--live-closure-evidence <live_eval_closure_evidence.json> "
+            "--stage-live-closure-evidence --overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after the staged closure file job_id matches a robot-eval job and includes "
+            "local evidence refs or owner proof URIs for each claimed live gate."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not upgrade review, delivery, rights, safety, contact, physics, or readiness "
+            "claims from local package generation alone."
+        ),
+    },
+    "real_robot_pov_evidence": {
+        "owner": "Robot-team pilot owner",
+        "required_input": (
+            "A real robot POV manifest with robot camera video/action-log evidence aligned to "
+            "scenario_eval_run_id and scenario_variation_instance_id coverage."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--real-robot-pov <real_robot_pov_manifest.json> --stage-real-robot-pov "
+            "--overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after the intake audit stages the manifest and the next robot-eval job ingests "
+            "it into robot_pov_observation_manifest.json."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not treat generated POV storyboards, simulator camera views, or policy traces "
+            "as real robot POV evidence."
+        ),
+    },
+    "real_world_deployment_outcomes": {
+        "owner": "Robot-team pilot owner",
+        "required_input": (
+            "Job-specific real-world deployment outcome records with actual result signals, "
+            "scenario/task context, and owner evidence references."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--deployment-outcomes <deployment_outcomes.json> --stage-deployment-outcomes "
+            "--overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after the pilot outcome file contains at least one outcome row for the job "
+            "with actual_success, actual_status, or failure signals."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not substitute predicted outcomes, simulator attempts, or task/scenario cards "
+            "for real deployment actuals."
+        ),
+    },
+    "predicted_vs_actual_exact_match_keys": {
+        "owner": "Robot-team pilot owner",
+        "required_input": (
+            "Exact scenario_eval_run_id and scenario_variation_instance_id values on every "
+            "deployment outcome row that should calibrate predictions."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--deployment-outcomes <deployment_outcomes.json> --stage-deployment-outcomes "
+            "--overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after every deployment outcome row has exact join keys from the job's "
+            "scenario_eval_matrix.json."
+        ),
+        "resume_target": (
+            "blueprint-audit-live-pipeline-proof-boundary --manifest-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not infer exact predicted-vs-actual matches from task_id or scenario_id alone."
+        ),
+    },
+    "real_world_deployment_outcome_owner_evidence": {
+        "owner": "Robot-team pilot owner",
+        "required_input": (
+            "Owner evidence refs, owner proof URIs, or operator attestations for every staged "
+            "real-world outcome row."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--deployment-outcomes <deployment_outcomes.json> --stage-deployment-outcomes "
+            "--overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after every deployment outcome row includes owner evidence that the closure "
+            "audit can inspect."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not mark real_world_outcome_proven from aggregate booleans or self-reported "
+            "summary text without row-level owner evidence."
+        ),
+    },
+    "robot_team_policy_package": {
+        "owner": "Robot team",
+        "required_input": (
+            "A policy package using at least one supported modality: policy API endpoint, Docker "
+            "container, recorded action traces, high-level skill traces, teleop demos, or sim "
+            "controller plugin."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--policy-package <policy_package.json> --stage-policy-package --overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after one selected modality has all required fields and points to real "
+            "policy or trace artifacts."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not use placeholder policy endpoints, missing Docker digests, or unsupported "
+            "modalities to satisfy policy execution input readiness."
+        ),
+    },
+    "rollout_vision_labeling": {
+        "owner": "Blueprint model-ops operator",
+        "required_input": "A gated rollout vision-labeling command and enablement env.",
+        "safe_proof_command": (
+            "BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING=true "
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --allow-rollout-vision-labeling "
+            "--vision-labeling-command '<vision-label-command>' --output-path <control-plane-manifest>"
+        ),
+        "retry_condition": (
+            "Re-run after the command is configured and produces review-required label artifacts."
+        ),
+        "resume_target": (
+            "blueprint-audit-live-pipeline-proof-boundary --manifest-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not treat model labels as accepted failure labels without review resolution."
+        ),
+    },
+    "delivery_upload": {
+        "owner": "Blueprint delivery operator",
+        "required_input": "A gated package delivery command that uploads artifacts and returns signed access.",
+        "safe_proof_command": (
+            "BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD=true "
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --allow-delivery-upload "
+            "--delivery-command '<delivery-upload-command>' --output-path <control-plane-manifest>"
+        ),
+        "retry_condition": (
+            "Re-run after delivery_upload.command.json or signed_access.command.json contains "
+            "non-placeholder signed URLs and storage proof."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not claim delivery from local export manifests without storage upload and signed "
+            "access evidence."
+        ),
+    },
+    "live_agents_operator": {
+        "owner": "Blueprint operator",
+        "required_input": "Gated Agents SDK credentials and explicit live-operator enablement.",
+        "safe_proof_command": (
+            "BLUEPRINT_CONTROL_PLANE_ALLOW_LIVE_AGENTS_SDK=true "
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --allow-live-agents-sdk "
+            "--agent-mode agents-sdk --output-path <control-plane-manifest>"
+        ),
+        "retry_condition": (
+            "Re-run after the Agents SDK is installed, OPENAI_API_KEY is configured, and the "
+            "operator gate is explicitly enabled."
+        ),
+        "resume_target": (
+            "blueprint-audit-live-pipeline-proof-boundary --manifest-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not let agent recommendations mutate proof booleans or replace deterministic artifacts."
+        ),
+    },
+    "live_codex_operator": {
+        "owner": "Blueprint operator",
+        "required_input": "Gated Codex SDK or host-OAuth Codex CLI operator credentials.",
+        "safe_proof_command": (
+            "BLUEPRINT_CONTROL_PLANE_ALLOW_LIVE_CODEX_SDK=true "
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --allow-live-codex-sdk "
+            "--output-path <control-plane-manifest>"
+        ),
+        "retry_condition": (
+            "Re-run after Codex SDK or Codex CLI host OAuth is available and explicitly gated."
+        ),
+        "resume_target": (
+            "blueprint-audit-live-pipeline-proof-boundary --manifest-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not treat Codex edits or advisory plans as simulator, policy, safety, or delivery proof."
+        ),
+    },
+}
+
+
+def _blocker_packet_for_input(item: Mapping[str, Any]) -> Dict[str, str]:
+    input_id = _string(item.get("id"))
+    template = BLOCKER_PACKET_TEMPLATES.get(
+        input_id,
+        {
+            "owner": "Blueprint operator",
+            "required_input": f"Resolve external input `{input_id}` with real evidence.",
+            "safe_proof_command": (
+                "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+                "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+            ),
+            "retry_condition": "Re-run after the required external input is staged.",
+            "resume_target": (
+                "blueprint-audit-live-pipeline-proof-boundary --manifest-path <control-plane-manifest>"
+            ),
+            "disallowed_workaround": (
+                "Do not satisfy this blocker with placeholders, inferred evidence, or proof "
+                "boolean edits."
+            ),
+        },
+    )
+    blockers = item.get("current_blockers")
+    packet = {
+        "id": input_id,
+        **template,
+        "current_blockers": ", ".join(str(blocker) for blocker in blockers)
+        if isinstance(blockers, list) and blockers
+        else "none",
+    }
+    return packet
+
+
+def _with_blocker_packets(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    enriched: List[Dict[str, Any]] = []
+    for item in items:
+        enriched.append({**item, "blocker_packet": _blocker_packet_for_input(item)})
+    return enriched
 
 
 def _gateable_section_input(
@@ -806,6 +1332,7 @@ def _build_external_input_packet(
     inbox_run: Mapping[str, Any],
     webapp_inbox_truth: Mapping[str, Any],
     staged_inputs: Mapping[str, Any],
+    followup_request_queues: Mapping[str, Any],
 ) -> Dict[str, Any]:
     webapp_section = _setup_section(setup_manifest, "webapp_upstream_truth")
     arena_section = _setup_section(setup_manifest, "real_arena_execution")
@@ -823,6 +1350,15 @@ def _build_external_input_packet(
     )
     policy_package_ready = bool(staged_inputs.get("policy_package_ready")) or bool(
         webapp_inbox_truth.get("accepted_policy_package_request_count")
+    )
+    real_robot_pov = _real_robot_pov_status(capture_root)
+    real_robot_pov_path = (
+        _string(staged_inputs.get("real_robot_pov_path"))
+        or _string(real_robot_pov.get("configured_path"))
+        or None
+    )
+    real_robot_pov_ready = bool(real_robot_pov.get("ready")) or bool(
+        staged_inputs.get("real_robot_pov_ready")
     )
     required_inputs: List[Dict[str, Any]] = []
     if not webapp_truth_ready:
@@ -877,6 +1413,37 @@ def _build_external_input_packet(
                 "proof_boundary": (
                     "Arena results or commands are ingest/execution inputs only; robot policy, "
                     "contact, safety, and readiness claims require accepted owner-system evidence."
+                ),
+            }
+        )
+    if not real_robot_pov_ready:
+        required_inputs.append(
+            {
+                "id": "real_robot_pov_evidence",
+                "title": "Real robot POV and action-log evidence",
+                "status": "ready" if real_robot_pov_ready else "not_staged",
+                "accepted_paths": [
+                    {
+                        "kind": "capture_root_real_robot_pov_manifest",
+                        "target": (
+                            "<capture_root>/pipeline/robot_eval_inputs/"
+                            "real_robot_pov_manifest.json"
+                        ),
+                        "configured_path": real_robot_pov_path,
+                        "required_artifacts": list(REAL_ROBOT_POV_ARTIFACT_NAMES),
+                    }
+                ],
+                "required_record_fields": [
+                    "scenario_eval_run_id",
+                    "scenario_variation_instance_id",
+                    "robot_camera_video_uri",
+                    "action_log_uri",
+                    "timestamp_alignment",
+                    "operator_attestation or owner_evidence_refs",
+                ],
+                "proof_boundary": (
+                    "Generated POV support does not satisfy this input; live POV proof requires "
+                    "real robot camera/action evidence ingested by the job."
                 ),
             }
         )
@@ -970,7 +1537,8 @@ def _build_external_input_packet(
                 "title": "Exact prediction join keys for staged deployment outcomes",
                 "status": _string(staged_inputs.get("status")) or "not_staged",
                 "required_record_fields": [
-                    "scenario_eval_run_id or scenario_variation_instance_id",
+                    "scenario_eval_run_id",
+                    "scenario_variation_instance_id",
                 ],
                 "staged_inputs": {
                     "status": staged_inputs.get("status"),
@@ -991,7 +1559,7 @@ def _build_external_input_packet(
                 "proof_boundary": (
                     "Task/scenario-level deployment outcomes can prove owner-supplied real-world "
                     "records exist, but predicted-vs-actual calibration requires exact "
-                    "scenario-eval-run or scenario-variation keys."
+                    "scenario-eval-run and scenario-variation keys."
                 ),
             }
         )
@@ -1109,6 +1677,9 @@ def _build_external_input_packet(
         if item is not None:
             enablement_inputs.append(item)
 
+    required_inputs = _with_blocker_packets(required_inputs)
+    enablement_inputs = _with_blocker_packets(enablement_inputs)
+
     packet = {
         "schema_version": LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1125,6 +1696,7 @@ def _build_external_input_packet(
             "setup_manifest_path": str(setup_manifest_path),
             "inbox_run_manifest_path": inbox_run.get("manifest_path"),
             "staged_inputs_path": staged_inputs.get("path"),
+            "real_robot_pov_manifest_path": real_robot_pov_path,
             "live_closure_evidence_path": staged_inputs.get("live_closure_evidence_path"),
             "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
             "policy_package_path": staged_inputs.get("policy_package_path"),
@@ -1154,6 +1726,31 @@ def _build_external_input_packet(
             "policy_package_selected_modalities": staged_inputs.get(
                 "policy_package_selected_modalities"
             ),
+            "real_robot_pov_ready": real_robot_pov_ready,
+            "real_robot_pov_manifest_path": real_robot_pov_path,
+            "real_robot_pov_job_id": staged_inputs.get("real_robot_pov_job_id"),
+            "real_robot_pov_record_count": staged_inputs.get("real_robot_pov_record_count"),
+            "real_robot_pov_exact_key_record_count": staged_inputs.get(
+                "real_robot_pov_exact_key_record_count"
+            ),
+            "real_robot_pov_camera_video_record_count": staged_inputs.get(
+                "real_robot_pov_camera_video_record_count"
+            ),
+            "real_robot_pov_action_log_record_count": staged_inputs.get(
+                "real_robot_pov_action_log_record_count"
+            ),
+            "real_robot_pov_timestamp_alignment_record_count": staged_inputs.get(
+                "real_robot_pov_timestamp_alignment_record_count"
+            ),
+            "real_robot_pov_evidence_record_count": staged_inputs.get(
+                "real_robot_pov_evidence_record_count"
+            ),
+            "real_robot_pov_missing_exact_key_record_ids": staged_inputs.get(
+                "real_robot_pov_missing_exact_key_record_ids"
+            ),
+            "real_robot_pov_missing_evidence_record_ids": staged_inputs.get(
+                "real_robot_pov_missing_evidence_record_ids"
+            ),
             "blockers": staged_inputs.get("blockers", []),
         },
         "webapp_upstream_truth": {
@@ -1162,6 +1759,7 @@ def _build_external_input_packet(
             "job_request_inbox_status": webapp_inbox_truth.get("status"),
             "accepted_request_ids": webapp_inbox_truth.get("accepted_request_ids", []),
         },
+        "real_world_validation_followup_request_queues": dict(followup_request_queues),
         "required_inputs": required_inputs,
         "enablement_inputs": enablement_inputs,
         "example_robot_eval_job_request": {
@@ -1222,6 +1820,7 @@ def _external_input_packet_markdown(packet: Mapping[str, Any]) -> str:
     required_inputs = packet.get("required_inputs")
     enablement_inputs = packet.get("enablement_inputs")
     paths = _as_mapping(packet.get("configured_paths"))
+    followup_queues = _as_mapping(packet.get("real_world_validation_followup_request_queues"))
     lines = [
         "# Live Pipeline External Input Packet",
         "",
@@ -1234,17 +1833,52 @@ def _external_input_packet_markdown(packet: Mapping[str, Any]) -> str:
     ]
     for key, value in paths.items():
         lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Real-World Follow-Up Request Queues"])
+    queues = followup_queues.get("queues")
+    lines.append(f"- Status: `{followup_queues.get('status')}`")
+    lines.append(f"- Ready queues: `{followup_queues.get('ready_queue_count', 0)}`")
+    lines.append(f"- Queued draft requests: `{followup_queues.get('queued_request_count', 0)}`")
+    if isinstance(queues, list) and queues:
+        for queue in queues:
+            if not isinstance(queue, Mapping):
+                continue
+            lines.append(f"- `{queue.get('job_id')}`: `{queue.get('status')}`")
+            if queue.get("inbox_dir"):
+                lines.append(f"  - Draft inbox: `{queue.get('inbox_dir')}`")
+            if queue.get("safe_processing_command"):
+                lines.append(
+                    f"  - Safe processing command: `{queue.get('safe_processing_command')}`"
+                )
+            if queue.get("blockers"):
+                lines.append(
+                    "  - Current blockers: "
+                    f"`{', '.join(str(blocker) for blocker in queue.get('blockers') or [])}`"
+                )
+    else:
+        lines.append("- None.")
+    if followup_queues.get("proof_boundary"):
+        lines.append(f"- Boundary: {followup_queues.get('proof_boundary')}")
     lines.extend(["", "## Required Inputs"])
     if isinstance(required_inputs, list) and required_inputs:
         for item in required_inputs:
             if not isinstance(item, Mapping):
                 continue
             blockers = ", ".join(str(blocker) for blocker in item.get("current_blockers", []))
+            blocker_packet = _as_mapping(item.get("blocker_packet"))
             lines.append(f"- `{item.get('id')}`: `{item.get('status')}`")
             if item.get("missing_fields"):
                 lines.append(f"  - Missing fields: `{', '.join(item['missing_fields'])}`")
             if blockers:
                 lines.append(f"  - Current blockers: `{blockers}`")
+            if blocker_packet:
+                lines.append(f"  - Owner: {blocker_packet.get('owner')}")
+                lines.append(
+                    f"  - Safe proof command: `{blocker_packet.get('safe_proof_command')}`"
+                )
+                lines.append(f"  - Retry condition: {blocker_packet.get('retry_condition')}")
+                lines.append(
+                    f"  - Disallowed workaround: {blocker_packet.get('disallowed_workaround')}"
+                )
     else:
         lines.append("- None.")
     lines.extend(["", "## Enablement Inputs"])
@@ -1253,9 +1887,19 @@ def _external_input_packet_markdown(packet: Mapping[str, Any]) -> str:
             if not isinstance(item, Mapping):
                 continue
             blockers = ", ".join(str(blocker) for blocker in item.get("current_blockers", []))
+            blocker_packet = _as_mapping(item.get("blocker_packet"))
             lines.append(f"- `{item.get('id')}`: `{item.get('status')}`")
             if blockers:
                 lines.append(f"  - Current blockers: `{blockers}`")
+            if blocker_packet:
+                lines.append(f"  - Owner: {blocker_packet.get('owner')}")
+                lines.append(
+                    f"  - Safe proof command: `{blocker_packet.get('safe_proof_command')}`"
+                )
+                lines.append(f"  - Retry condition: {blocker_packet.get('retry_condition')}")
+                lines.append(
+                    f"  - Disallowed workaround: {blocker_packet.get('disallowed_workaround')}"
+                )
     else:
         lines.append("- None.")
     lines.extend(
@@ -1564,6 +2208,7 @@ def run_live_pipeline_control_plane(
             setup_manifest,
             "webapp_upstream_truth",
         ) or bool(webapp_inbox_truth.get("ready"))
+        followup_request_queues = _real_world_validation_followup_request_queues(capture_path)
         generated_at = utc_now_iso()
         external_input_packet_path = output.parent / "live_pipeline_external_input_packet.json"
         external_input_packet_markdown_path = (
@@ -1581,6 +2226,7 @@ def run_live_pipeline_control_plane(
             inbox_run=inbox_run,
             webapp_inbox_truth=webapp_inbox_truth,
             staged_inputs=staged_inputs,
+            followup_request_queues=followup_request_queues,
         )
         external_input_packet["secrets_leaked"] = _manifest_leaks_secret(
             external_input_packet,
@@ -1610,6 +2256,7 @@ def run_live_pipeline_control_plane(
             "inbox_run": inbox_run,
             "staged_inputs": staged_inputs,
             "webapp_inbox_truth": webapp_inbox_truth,
+            "real_world_validation_followup_request_queues": followup_request_queues,
             "effective_webapp_upstream_truth_ready": webapp_upstream_truth_ready,
             "external_input_packet": {
                 "schema_version": LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
@@ -1663,6 +2310,9 @@ def run_live_pipeline_control_plane(
                 job_request_inbox=inbox_path,
                 setup_manifest=setup_manifest,
                 webapp_upstream_truth_ready=webapp_upstream_truth_ready,
+                real_robot_pov_ready=bool(
+                    external_input_packet["staged_inputs"].get("real_robot_pov_ready")
+                ),
                 live_closure_evidence_ready=bool(
                     staged_inputs.get("live_closure_evidence_ready")
                 ),
@@ -1674,6 +2324,7 @@ def run_live_pipeline_control_plane(
                 ),
                 policy_package_ready=bool(staged_inputs.get("policy_package_ready"))
                 or bool(webapp_inbox_truth.get("accepted_policy_package_request_count")),
+                followup_request_queues=followup_request_queues,
             ),
         }
         manifest["secrets_leaked"] = _manifest_leaks_secret(manifest, secret_values)

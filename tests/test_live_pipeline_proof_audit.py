@@ -80,6 +80,7 @@ def _deployment_outcomes(
     }
     if include_prediction_key:
         record["scenario_eval_run_id"] = "scenario-eval-run-1"
+        record["scenario_variation_instance_id"] = "scenario-variation-1"
     if include_evidence:
         record["evidence_refs"] = {"pilot_log": "owner://pilot/pilot-outcome-1"}
     _write_json(
@@ -129,6 +130,7 @@ def test_live_pipeline_proof_audit_passes_when_external_inputs_are_blocked(
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
+        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "real_world_deployment_outcomes",
         "robot_team_policy_package",
@@ -186,6 +188,31 @@ def test_live_pipeline_proof_audit_fails_on_proof_overclaim(
     assert audit["proof_violations"][0]["field"] == "proof_boundary.robot_readiness_proven"
 
 
+def test_live_pipeline_proof_audit_requires_resumable_blocker_packets(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    output_path = tmp_path / "control" / "live_pipeline_control_plane_manifest.json"
+    run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=tmp_path / "inbox",
+        load_local_env=False,
+        output_path=output_path,
+    )
+    packet_path = tmp_path / "control" / "live_pipeline_external_input_packet.json"
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    del packet["required_inputs"][0]["blocker_packet"]
+    packet_path.write_text(json.dumps(packet, indent=2), encoding="utf-8")
+
+    audit = build_live_pipeline_proof_audit(manifest_path=output_path)
+
+    assert audit["status"] == "failed"
+    assert "external_input_packet_missing_blocker_packets" in audit["internal_blockers"]
+    assert audit["blocker_packet_audit"]["missing_blocker_packet_input_ids"] == [
+        packet["required_inputs"][0]["id"]
+    ]
+
+
 def test_live_pipeline_proof_audit_accepts_valid_staged_arena_inputs(
     tmp_path: Path,
 ) -> None:
@@ -229,6 +256,7 @@ def test_live_pipeline_proof_audit_accepts_valid_staged_arena_inputs(
     assert audit["internal_blockers"] == []
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
+        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "real_world_deployment_outcomes",
         "robot_team_policy_package",
@@ -271,6 +299,7 @@ def test_live_pipeline_proof_audit_accepts_valid_staged_closure_evidence(
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
+        "real_robot_pov_evidence",
         "real_world_deployment_outcomes",
         "robot_team_policy_package",
     ]
@@ -312,6 +341,7 @@ def test_live_pipeline_proof_audit_accepts_valid_staged_deployment_outcomes(
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
+        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "robot_team_policy_package",
     ]
@@ -408,6 +438,7 @@ def test_live_pipeline_proof_audit_keeps_owner_evidence_blocker_for_outcome_reco
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
+        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "real_world_deployment_outcome_owner_evidence",
         "robot_team_policy_package",
@@ -462,6 +493,7 @@ def test_live_pipeline_proof_audit_accepts_valid_staged_policy_package(
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
+        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "real_world_deployment_outcomes",
     ]

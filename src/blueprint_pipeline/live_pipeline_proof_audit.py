@@ -37,6 +37,7 @@ FORBIDDEN_TRUE_FIELDS = (
 CORE_EXTERNAL_INPUT_IDS = (
     "webapp_upstream_truth",
     "isaac_lab_arena_owner_evidence",
+    "real_robot_pov_evidence",
     "live_robot_eval_closure_evidence",
     "real_world_deployment_outcomes",
     "predicted_vs_actual_exact_match_keys",
@@ -59,11 +60,22 @@ CORE_GOAL_REQUIREMENTS = (
     "live_codex_operator",
     "webapp_upstream_truth",
     "owner_arena_evidence",
+    "real_robot_pov_evidence",
     "live_robot_eval_closure_evidence",
     "real_world_deployment_outcomes",
     "predicted_vs_actual_exact_match_keys",
     "real_world_deployment_outcome_owner_evidence",
     "robot_team_policy_package",
+)
+
+BLOCKER_PACKET_REQUIRED_FIELDS = (
+    "id",
+    "owner",
+    "required_input",
+    "safe_proof_command",
+    "retry_condition",
+    "resume_target",
+    "disallowed_workaround",
 )
 
 
@@ -142,6 +154,48 @@ def _enablement_input_ids(packet: Mapping[str, Any]) -> List[str]:
     ]
 
 
+def _blocker_packet_audit(packet: Mapping[str, Any]) -> Dict[str, Any]:
+    missing_packet_ids: List[str] = []
+    invalid_packet_fields: Dict[str, List[str]] = {}
+    for section_name in ("required_inputs", "enablement_inputs"):
+        inputs = packet.get(section_name)
+        if not isinstance(inputs, list):
+            continue
+        for item in inputs:
+            if not isinstance(item, Mapping):
+                continue
+            input_id = str(item.get("id") or "").strip()
+            if not input_id:
+                continue
+            blocker_packet = item.get("blocker_packet")
+            if not isinstance(blocker_packet, Mapping):
+                missing_packet_ids.append(input_id)
+                continue
+            missing_fields = [
+                field
+                for field in BLOCKER_PACKET_REQUIRED_FIELDS
+                if not str(blocker_packet.get(field) or "").strip()
+            ]
+            if str(blocker_packet.get("id") or "").strip() != input_id:
+                missing_fields.append("id_matches_input")
+            if missing_fields:
+                invalid_packet_fields[input_id] = missing_fields
+    return {
+        "status": (
+            "passed"
+            if not missing_packet_ids and not invalid_packet_fields
+            else "failed"
+        ),
+        "missing_blocker_packet_input_ids": missing_packet_ids,
+        "invalid_blocker_packet_fields": invalid_packet_fields,
+        "required_fields": list(BLOCKER_PACKET_REQUIRED_FIELDS),
+        "proof_boundary": (
+            "Blocker packets are operational resume instructions, not evidence that external "
+            "inputs are complete."
+        ),
+    }
+
+
 def _setup_section(setup_manifest: Mapping[str, Any], name: str) -> Dict[str, Any]:
     sections = _mapping(setup_manifest.get("sections"))
     return _mapping(sections.get(name))
@@ -166,6 +220,7 @@ def _goal_requirement_audit(
     arena_ready = bool(arena_section.get("ready")) and (
         "isaac_lab_arena_owner_evidence" not in required_inputs
     )
+    real_robot_pov_ready = "real_robot_pov_evidence" not in required_inputs
     live_agents_ready = (
         bool(_setup_section(setup_manifest, "live_agents_operator").get("ready"))
         and "live_agents_operator" not in enablement_inputs
@@ -231,6 +286,12 @@ def _goal_requirement_audit(
             "arena_section_status": arena_section.get("status"),
             "proof_boundary": "requires owner-system Arena command or result artifacts",
         },
+        "real_robot_pov_evidence": {
+            "status": "ready" if real_robot_pov_ready else "external_input_missing",
+            "proof_boundary": (
+                "requires real robot camera/action evidence aligned to every scenario eval run"
+            ),
+        },
         "live_robot_eval_closure_evidence": {
             "status": "ready" if live_closure_evidence_ready else "external_input_missing",
             "proof_boundary": (
@@ -250,7 +311,7 @@ def _goal_requirement_audit(
                 "ready" if prediction_match_keys_ready else "external_input_missing"
             ),
             "proof_boundary": (
-                "requires scenario_eval_run_id or scenario_variation_instance_id "
+                "requires scenario_eval_run_id and scenario_variation_instance_id "
                 "before staged outcomes can be joined to predictions"
             ),
         },
@@ -318,6 +379,32 @@ def _staged_inputs_audit(
         "policy_package_job_id": staged_info.get("policy_package_job_id"),
         "policy_package_selected_modalities": list(
             staged_info.get("policy_package_selected_modalities") or []
+        ),
+        "real_robot_pov_ready": bool(staged_info.get("real_robot_pov_ready")),
+        "real_robot_pov_job_id": staged_info.get("real_robot_pov_job_id"),
+        "real_robot_pov_record_count": int(
+            staged_info.get("real_robot_pov_record_count") or 0
+        ),
+        "real_robot_pov_exact_key_record_count": int(
+            staged_info.get("real_robot_pov_exact_key_record_count") or 0
+        ),
+        "real_robot_pov_camera_video_record_count": int(
+            staged_info.get("real_robot_pov_camera_video_record_count") or 0
+        ),
+        "real_robot_pov_action_log_record_count": int(
+            staged_info.get("real_robot_pov_action_log_record_count") or 0
+        ),
+        "real_robot_pov_timestamp_alignment_record_count": int(
+            staged_info.get("real_robot_pov_timestamp_alignment_record_count") or 0
+        ),
+        "real_robot_pov_evidence_record_count": int(
+            staged_info.get("real_robot_pov_evidence_record_count") or 0
+        ),
+        "real_robot_pov_missing_exact_key_record_ids": list(
+            staged_info.get("real_robot_pov_missing_exact_key_record_ids") or []
+        ),
+        "real_robot_pov_missing_evidence_record_ids": list(
+            staged_info.get("real_robot_pov_missing_evidence_record_ids") or []
         ),
         "blockers": list(staged_info.get("blockers") or []),
         "schema_version": staged_manifest.get("schema_version"),
@@ -413,6 +500,18 @@ def build_live_pipeline_proof_audit(
     if proof_violations:
         internal_blockers.append("forbidden_proof_boundary_upgrade")
 
+    blocker_packet_audit = _blocker_packet_audit(packet) if packet else {
+        "status": "not_available",
+        "missing_blocker_packet_input_ids": [],
+        "invalid_blocker_packet_fields": {},
+        "required_fields": list(BLOCKER_PACKET_REQUIRED_FIELDS),
+        "proof_boundary": "external input packet was not available for blocker packet audit",
+    }
+    if blocker_packet_audit["missing_blocker_packet_input_ids"]:
+        internal_blockers.append("external_input_packet_missing_blocker_packets")
+    if blocker_packet_audit["invalid_blocker_packet_fields"]:
+        internal_blockers.append("external_input_packet_invalid_blocker_packets")
+
     required_input_ids = _required_input_ids(packet)
     enablement_input_ids = _enablement_input_ids(packet)
     for input_id in required_input_ids:
@@ -427,6 +526,7 @@ def build_live_pipeline_proof_audit(
         )
         and "webapp_upstream_truth" not in required_input_ids,
         "owner_arena_evidence_ready": "isaac_lab_arena_owner_evidence" not in required_input_ids,
+        "real_robot_pov_evidence_ready": "real_robot_pov_evidence" not in required_input_ids,
         "live_closure_evidence_ready": (
             "live_robot_eval_closure_evidence" not in required_input_ids
         ),
@@ -466,6 +566,7 @@ def build_live_pipeline_proof_audit(
         "internal_blockers": internal_blockers,
         "external_blockers": external_blockers,
         "proof_violations": proof_violations,
+        "blocker_packet_audit": blocker_packet_audit,
         "live_readiness": live_readiness,
         "staged_inputs_audit": _staged_inputs_audit(
             staged_info=staged_info,

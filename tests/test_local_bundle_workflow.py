@@ -8,6 +8,7 @@ from blueprint_pipeline.local_bundle_workflow import (
     run_local_bundle_workflow,
     stage_local_bundle,
 )
+from blueprint_pipeline.materialization import capture_materialization_readiness
 from blueprint_pipeline.preflight_capture import build_capture_preflight_report
 
 
@@ -124,6 +125,28 @@ def test_preflight_waives_missing_intake_for_open_capture_with_accepted_hypothes
     assert report["intake_packet_waived"] is True
     assert report["status"] == "pre_screen_only"
     assert any("open-capture metadata" in note for note in report["notes"])
+
+
+def test_materialization_readiness_accepts_walkthrough_mp4_without_mov(tmp_path: Path) -> None:
+    raw_dir = tmp_path / "storage" / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1" / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "manifest.json").write_text(
+        json.dumps({"scene_id": "scene-1", "capture_id": "capture-1"}),
+        encoding="utf-8",
+    )
+    (raw_dir / "walkthrough.mp4").write_bytes(b"video")
+
+    readiness = capture_materialization_readiness(
+        bucket="bucket",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        gcs_root=tmp_path / "storage",
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["issues"] == []
+    assert readiness["video_candidates"] == ["walkthrough.mp4"]
+    assert readiness["selected_video_path"].endswith("raw/walkthrough.mp4")
 
 
 def test_run_local_bundle_workflow_can_request_scene_memory_lane(

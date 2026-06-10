@@ -17,8 +17,16 @@ from .materialization import materialize_capture_bundle
 from .qualification import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
 from .retrieval_index_stage import run_retrieval_index_stage
-from .robot_eval_job_orchestrator import run_robot_eval_job_request_inbox
-from .simulation_automation import build_simulation_automation
+from .robot_eval_job_orchestrator import (
+    REQUIRED_ROBOT_EVAL_INPUTS,
+    run_robot_eval_job_request_inbox,
+)
+from .scenario_variation_instantiator import SCENARIO_VARIATION_NAMES
+from .simulation_automation import (
+    SIMULATOR_FRAMEWORKS,
+    WORLD_MODEL_ENGINE_TARGETS,
+    build_simulation_automation,
+)
 from .synthesis.synthesize import synthesize_view
 
 _CURRENT_PIPELINE_LANES = ("qualification", "evaluation_prep", "simulation_automation")
@@ -46,6 +54,47 @@ _LANE_ALIASES = {
 }
 _ANDROID_XR_VIDEO_ONLY_PROFILE = "android_xr_glasses"
 _ANDROID_XR_VIDEO_ONLY_MODALITY = "android_xr_video_only"
+_STANDARD_ROBOT_EVAL_SCORECARD_METRICS = (
+    "success_rate",
+    "cycle_time",
+    "intervention_rate",
+    "unsafe_proximity",
+    "collision_risk",
+    "object_drop",
+    "wrong_object",
+    "timeout",
+    "recovery_success",
+    "world_model_uncertainty",
+    "sim_vs_real_calibration_score",
+)
+_STANDARD_SCENARIO_VARIATION_NAMES = tuple(SCENARIO_VARIATION_NAMES)
+_STANDARD_SIMULATOR_ENGINE_NAMES = tuple(SIMULATOR_FRAMEWORKS)
+_STANDARD_WORLD_MODEL_ENGINE_NAMES = tuple(WORLD_MODEL_ENGINE_TARGETS)
+_STANDARD_SIMULATOR_PLUGIN_REQUIRED_INPUT_KEYS = (
+    "simulation_automation_plan",
+    "asset_conversion_plan",
+    "scenario_variation_instances",
+    "episode_spec",
+    "cpu_preflight_manifest",
+)
+_SIMULATOR_PLUGIN_ENGINE_REQUIRED_INPUT_KEYS = {
+    "isaac_lab_arena": ("arena_environment_packet",),
+}
+_STANDARD_WORLD_MODEL_PLUGIN_REQUIRED_INPUT_KEYS = (
+    "simulation_automation_plan",
+    "scenario_variation_instances",
+    "site_card",
+    "task_cards",
+    "scenario_cards",
+)
+_WORLD_MODEL_PLUGIN_OPTIONAL_INPUT_KEYS = {
+    "world_manifest",
+    "simready_bridge",
+    "gpu_handoff_packet",
+    "dense_world_model_export",
+    "site_reference_projection",
+}
+_OPTIONAL_MISSING_SOURCE_STATUSES = {"", "missing", "not_available", "optional_missing"}
 
 
 @dataclass(frozen=True)
@@ -112,6 +161,47 @@ def _mapping_value(payload: Mapping[str, Any], key: str) -> Any:
     return capture_bundle.get(key)
 
 
+def _read_json_mapping(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _safe_slug(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip().lower()
+    cleaned = "".join(char if char.isalnum() else "-" for char in text)
+    cleaned = "-".join(part for part in cleaned.split("-") if part)
+    return cleaned or fallback
+
+
+def _descriptor_requested_outputs(raw_payload: Mapping[str, Any]) -> set[str]:
+    raw_requested_outputs = raw_payload.get("requested_outputs") or raw_payload.get("requestedOutputs")
+    if isinstance(raw_requested_outputs, str):
+        values = [raw_requested_outputs]
+    elif isinstance(raw_requested_outputs, (list, tuple, set)):
+        values = [str(value) for value in raw_requested_outputs]
+    else:
+        values = []
+    return {str(value).strip().lower() for value in values if str(value).strip()}
+
+
+def _descriptor_requests_task_evaluation_run(descriptor_path: Path) -> bool:
+    payload = _read_json_mapping(descriptor_path)
+    return "task_evaluation_run" in _descriptor_requested_outputs(payload)
+
+
+def _call_requests_task_evaluation_run(
+    *,
+    lane: Optional[str],
+    requested_lanes: Optional[List[str]],
+) -> bool:
+    requested = [lane] if lane else []
+    requested.extend(requested_lanes or [])
+    return any(str(value).strip().lower() == "task_evaluation_run" for value in requested)
+
+
 def _descriptor_is_android_xr_video_only(raw_payload: Mapping[str, Any]) -> bool:
     capture_profile_id = str(_mapping_value(raw_payload, "capture_profile_id") or "").strip().lower()
     capture_modality = str(_mapping_value(raw_payload, "capture_modality") or "").strip().lower()
@@ -142,18 +232,8 @@ def _descriptor_is_native_default_candidate(raw_payload: Mapping[str, Any]) -> b
 
 def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> List[str]:
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, gcs_root)
-    try:
-        raw_payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        raw_payload = {}
-    raw_requested_outputs = raw_payload.get("requested_outputs") or raw_payload.get("requestedOutputs")
-    if isinstance(raw_requested_outputs, str):
-        requested_outputs = [raw_requested_outputs]
-    elif isinstance(raw_requested_outputs, (list, tuple, set)):
-        requested_outputs = [str(value) for value in raw_requested_outputs]
-    else:
-        requested_outputs = []
-    normalized_outputs = {str(value).strip().lower() for value in requested_outputs if str(value).strip()}
+    raw_payload = _read_json_mapping(descriptor_path)
+    normalized_outputs = _descriptor_requested_outputs(raw_payload)
     if isinstance(raw_payload, Mapping) and _descriptor_is_android_xr_video_only(raw_payload):
         return ["qualification"]
     descriptor_requested_lanes = _normalize_requested_lanes(
@@ -241,14 +321,946 @@ def _robot_eval_job_request_inbox_for_capture(capture_root: Path) -> Optional[Pa
     return None
 
 
-def _run_robot_eval_job_inbox_if_ready(capture_root: Path) -> Dict[str, Any]:
+def _load_cards(path: Path) -> List[Dict[str, Any]]:
+    payload = _read_json_mapping(path)
+    cards = payload.get("cards")
+    if not isinstance(cards, list):
+        return []
+    return [dict(card) for card in cards if isinstance(card, Mapping)]
+
+
+def _metric_ids_from_methodology(path: Path) -> set[str]:
+    payload = _read_json_mapping(path)
+    raw_metrics = (
+        payload.get("metrics")
+        or payload.get("scorecard_metrics")
+        or payload.get("standard_scorecard_metrics")
+    )
+    metric_ids: set[str] = set()
+    if isinstance(raw_metrics, Mapping):
+        for key, value in raw_metrics.items():
+            if isinstance(value, Mapping):
+                metric_id = value.get("metric_id") or value.get("metricId") or value.get("id")
+            else:
+                metric_id = key
+            metric_id = str(metric_id or "").strip()
+            if metric_id:
+                metric_ids.add(metric_id)
+        return metric_ids
+    if not isinstance(raw_metrics, list):
+        return metric_ids
+    for metric in raw_metrics:
+        if isinstance(metric, Mapping):
+            metric_id = metric.get("metric_id") or metric.get("metricId") or metric.get("id")
+        else:
+            metric_id = metric
+        metric_id = str(metric_id or "").strip()
+        if metric_id:
+            metric_ids.add(metric_id)
+    return metric_ids
+
+
+def _task_ids_from_thresholds(path: Path) -> set[str]:
+    payload = _read_json_mapping(path)
+    raw_thresholds = (
+        payload.get("task_thresholds")
+        or payload.get("taskThresholds")
+        or payload.get("thresholds")
+    )
+    task_ids: set[str] = set()
+    if isinstance(raw_thresholds, Mapping):
+        for key, value in raw_thresholds.items():
+            if isinstance(value, Mapping):
+                task_id = value.get("task_id") or value.get("taskId") or value.get("id")
+            else:
+                task_id = key
+            task_id = str(task_id or "").strip()
+            if task_id:
+                task_ids.add(task_id)
+        return task_ids
+    if not isinstance(raw_thresholds, list):
+        return task_ids
+    for threshold in raw_thresholds:
+        if not isinstance(threshold, Mapping):
+            continue
+        task_id = threshold.get("task_id") or threshold.get("taskId") or threshold.get("id")
+        task_id = str(task_id or "").strip()
+        if task_id:
+            task_ids.add(task_id)
+    return task_ids
+
+
+def _failure_mode_ids_from_taxonomy(path: Path) -> set[str]:
+    payload = _read_json_mapping(path)
+    raw_modes = payload.get("failure_modes") or payload.get("failureModes")
+    mode_ids: set[str] = set()
+    if not isinstance(raw_modes, list):
+        return mode_ids
+    for mode in raw_modes:
+        if isinstance(mode, Mapping):
+            mode_id = mode.get("failure_mode_id") or mode.get("failureModeId") or mode.get("id")
+        else:
+            mode_id = mode
+        mode_id = str(mode_id or "").strip()
+        if mode_id:
+            mode_ids.add(mode_id)
+    return mode_ids
+
+
+def _as_mapping(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _relative_to(base: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return str(path)
+
+
+def _local_artifact(path: Path, *, base_dir: Path) -> Dict[str, Any]:
+    return {
+        "path": _relative_to(base_dir, path),
+        "exists": path.is_file(),
+        "size_bytes": path.stat().st_size if path.is_file() else 0,
+    }
+
+
+def _automation_local_reference_path(
+    value: Any,
+    *,
+    capture_root: Path,
+    automation_root: Path,
+) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.startswith("file://"):
+        return Path(text[7:]).expanduser()
+    if text.startswith("gs://"):
+        default_gcs_root = capture_root.parents[3] if len(capture_root.parents) > 3 else capture_root
+        return resolve_gs_uri_to_path(text, Path(os.getenv("GCS_ROOT", str(default_gcs_root))))
+    if "://" in text:
+        return None
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return path
+    automation_candidate = automation_root / path
+    if automation_candidate.exists():
+        return automation_candidate
+    if path.parts and path.parts[0] in {"pipeline", "raw", "privacy"}:
+        return capture_root / path
+    return automation_candidate
+
+
+def _string_list(values: Any) -> List[str]:
+    if isinstance(values, str):
+        return [values] if values.strip() else []
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    out: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _scenario_family_rows(path: Path) -> List[Dict[str, Any]]:
+    payload = _read_json_mapping(path)
+    rows = payload.get("families") or payload.get("scenario_families")
+    if not isinstance(rows, list):
+        return []
+    return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+
+def _scenario_family_variation_names(family: Mapping[str, Any]) -> set[str]:
+    variations = family.get("variations")
+    if not isinstance(variations, list):
+        return set()
+    names: set[str] = set()
+    for variation in variations:
+        if not isinstance(variation, Mapping):
+            continue
+        variation_name = (
+            variation.get("variation_name")
+            or variation.get("variationName")
+            or variation.get("variation_id")
+            or variation.get("variationId")
+        )
+        variation_name = str(variation_name or "").strip()
+        if variation_name:
+            names.add(variation_name)
+    return names
+
+
+def _variation_instance_rows(path: Path) -> List[Dict[str, Any]]:
+    payload = _read_json_mapping(path)
+    rows = payload.get("instances") or payload.get("scenario_variation_instances")
+    if not isinstance(rows, list):
+        return []
+    return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+
+def _validate_scenario_variation_artifacts(
+    *,
+    capture_root: Path,
+    requested_tasks: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    automation_root = capture_root / "pipeline" / "simulation_automation"
+    scenario_family_path = robot_eval_root / "scenario_family_library.json"
+    variation_instances_path = automation_root / "scenario_variation_instances.json"
+    required_variation_names = list(_STANDARD_SCENARIO_VARIATION_NAMES)
+    requested_task_ids = [
+        str(task.get("task_id") or "").strip()
+        for task in requested_tasks
+        if str(task.get("task_id") or "").strip()
+    ]
+    requested_scenario_ids = sorted(
+        {
+            str(scenario_id or "").strip()
+            for task in requested_tasks
+            for scenario_id in task.get("scenario_ids", [])
+            if str(scenario_id or "").strip()
+        }
+    )
+    blockers: List[str] = []
+    family_rows: List[Dict[str, Any]] = []
+    missing_family_task_ids: List[str] = []
+    missing_family_scenario_ids: List[str] = []
+    missing_family_variations_by_family: List[Dict[str, Any]] = []
+    if not scenario_family_path.is_file():
+        blockers.append("robot_eval_scenario_family_library_missing")
+    else:
+        family_rows = _scenario_family_rows(scenario_family_path)
+        if not family_rows:
+            blockers.append("robot_eval_scenario_family_library_empty")
+        family_task_ids = {
+            str(row.get("task_id") or row.get("taskId") or "").strip()
+            for row in family_rows
+            if str(row.get("task_id") or row.get("taskId") or "").strip()
+        }
+        family_scenario_ids = {
+            str(row.get("scenario_id") or row.get("scenarioId") or "").strip()
+            for row in family_rows
+            if str(row.get("scenario_id") or row.get("scenarioId") or "").strip()
+        }
+        missing_family_task_ids = [
+            task_id for task_id in requested_task_ids if task_id not in family_task_ids
+        ]
+        missing_family_scenario_ids = [
+            scenario_id
+            for scenario_id in requested_scenario_ids
+            if scenario_id not in family_scenario_ids
+        ]
+        if missing_family_task_ids:
+            blockers.append("robot_eval_scenario_family_library_missing_task_coverage")
+        if missing_family_scenario_ids:
+            blockers.append("robot_eval_scenario_family_library_missing_scenario_coverage")
+        for family in family_rows:
+            present = _scenario_family_variation_names(family)
+            missing = [
+                variation_name
+                for variation_name in required_variation_names
+                if variation_name not in present
+            ]
+            if missing:
+                missing_family_variations_by_family.append(
+                    {
+                        "family_id": str(family.get("family_id") or family.get("familyId") or ""),
+                        "task_id": str(family.get("task_id") or family.get("taskId") or ""),
+                        "scenario_id": str(
+                            family.get("scenario_id") or family.get("scenarioId") or ""
+                        ),
+                        "missing_variation_names": missing,
+                    }
+                )
+        if missing_family_variations_by_family:
+            blockers.append("robot_eval_scenario_family_library_missing_required_variations")
+
+    variation_payload = _read_json_mapping(variation_instances_path)
+    variation_rows = _variation_instance_rows(variation_instances_path)
+    missing_variation_names: List[str] = []
+    missing_variation_names_by_scenario: List[Dict[str, Any]] = []
+    if not variation_instances_path.is_file():
+        blockers.append("robot_eval_scenario_variation_instances_missing")
+    else:
+        if variation_payload.get("status") != "completed":
+            blockers.append("robot_eval_scenario_variation_instances_not_completed")
+        if not variation_rows:
+            blockers.append("robot_eval_scenario_variation_instances_empty")
+        instantiated_variation_names = _string_list(
+            variation_payload.get("variation_names_instantiated")
+            or variation_payload.get("variationNamesInstantiated")
+        )
+        if not instantiated_variation_names:
+            instantiated_variation_names = _string_list(
+                [
+                    row.get("variation_name")
+                    or row.get("variationName")
+                    or row.get("variation_id")
+                    or row.get("variationId")
+                    for row in variation_rows
+                ]
+            )
+        missing_variation_names = [
+            variation_name
+            for variation_name in required_variation_names
+            if variation_name not in set(instantiated_variation_names)
+        ]
+        if missing_variation_names:
+            blockers.append("robot_eval_scenario_variation_instances_missing_required_variations")
+        names_by_scenario: Dict[str, set[str]] = {}
+        for row in variation_rows:
+            scenario_id = str(row.get("scenario_id") or row.get("scenarioId") or "").strip()
+            variation_name = (
+                row.get("variation_name")
+                or row.get("variationName")
+                or row.get("variation_id")
+                or row.get("variationId")
+            )
+            variation_name = str(variation_name or "").strip()
+            if scenario_id and variation_name:
+                names_by_scenario.setdefault(scenario_id, set()).add(variation_name)
+        for scenario_id in requested_scenario_ids:
+            present = names_by_scenario.get(scenario_id, set())
+            missing = [
+                variation_name
+                for variation_name in required_variation_names
+                if variation_name not in present
+            ]
+            if missing:
+                missing_variation_names_by_scenario.append(
+                    {
+                        "scenario_id": scenario_id,
+                        "missing_variation_names": missing,
+                    }
+                )
+        if missing_variation_names_by_scenario:
+            blockers.append(
+                "robot_eval_scenario_variation_instances_missing_required_variations_per_scenario"
+            )
+
+    return {
+        "blockers": blockers,
+        "scenario_family_library_path": str(scenario_family_path),
+        "scenario_variation_instances_path": str(variation_instances_path),
+        "required_scenario_variation_names": required_variation_names,
+        "missing_scenario_family_task_ids": missing_family_task_ids,
+        "missing_scenario_family_scenario_ids": missing_family_scenario_ids,
+        "missing_scenario_family_variations_by_family": missing_family_variations_by_family,
+        "missing_scenario_variation_names": missing_variation_names,
+        "missing_scenario_variation_names_by_scenario": missing_variation_names_by_scenario,
+    }
+
+
+def _validate_robot_eval_dataset_required_inputs(*, capture_root: Path) -> Dict[str, Any]:
+    pipeline_root = capture_root / "pipeline"
+    missing_inputs: List[str] = []
+    artifacts: Dict[str, Dict[str, Any]] = {}
+    for key, relative_path in REQUIRED_ROBOT_EVAL_INPUTS.items():
+        path = pipeline_root / relative_path
+        artifacts[key] = _local_artifact(path, base_dir=pipeline_root)
+        if not path.is_file():
+            missing_inputs.append(key)
+    return {
+        "blockers": [f"{key}_missing" for key in missing_inputs],
+        "missing_robot_eval_dataset_inputs": missing_inputs,
+        "robot_eval_dataset_input_artifacts": artifacts,
+    }
+
+
+def _required_simulator_plugin_input_keys(engine: str) -> List[str]:
+    required = list(_STANDARD_SIMULATOR_PLUGIN_REQUIRED_INPUT_KEYS)
+    required.extend(_SIMULATOR_PLUGIN_ENGINE_REQUIRED_INPUT_KEYS.get(engine, ()))
+    return required
+
+
+def _required_world_model_plugin_input_keys(_engine: str) -> List[str]:
+    return list(_STANDARD_WORLD_MODEL_PLUGIN_REQUIRED_INPUT_KEYS)
+
+
+def _plugin_local_input_artifact_audit(
+    *,
+    inputs: Mapping[str, Any],
+    capture_root: Path,
+    automation_root: Path,
+    optional_input_keys: set[str] | None = None,
+    optional_missing_source: bool = False,
+) -> tuple[Dict[str, Dict[str, Any]], List[str]]:
+    optional_keys = optional_input_keys or set()
+    local_artifacts: Dict[str, Dict[str, Any]] = {}
+    missing_local_input_keys: List[str] = []
+    for key, value in sorted(inputs.items()):
+        local_path = _automation_local_reference_path(
+            value,
+            capture_root=capture_root,
+            automation_root=automation_root,
+        )
+        if local_path is None:
+            continue
+        artifact = _local_artifact(local_path, base_dir=automation_root)
+        local_artifacts[key] = artifact
+        if not artifact["exists"] and not (optional_missing_source and key in optional_keys):
+            missing_local_input_keys.append(key)
+    return local_artifacts, missing_local_input_keys
+
+
+def _validate_simulator_engine_plugin_registry(*, capture_root: Path) -> Dict[str, Any]:
+    automation_root = capture_root / "pipeline" / "simulation_automation"
+    registry_path = automation_root / "simulator_engine_plugin_registry.json"
+    payload = _read_json_mapping(registry_path)
+    plugins = _as_mapping(payload.get("plugins"))
+    world_model_plugins = _as_mapping(payload.get("world_model_plugins"))
+    required_plugins = set(_STANDARD_SIMULATOR_ENGINE_NAMES)
+    required_world_model_plugins = set(_STANDARD_WORLD_MODEL_ENGINE_NAMES)
+    present_plugins = set(plugins)
+    present_world_model_plugins = set(world_model_plugins)
+    missing_simulator_plugins = sorted(required_plugins - present_plugins)
+    missing_world_model_plugins = sorted(required_world_model_plugins - present_world_model_plugins)
+    unready_simulator_plugins: List[Dict[str, Any]] = []
+    unready_world_model_plugins: List[Dict[str, Any]] = []
+    missing_simulator_input_keys: Dict[str, List[str]] = {}
+    missing_world_model_input_keys: Dict[str, List[str]] = {}
+    simulator_local_input_artifacts: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    world_model_local_input_artifacts: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    missing_simulator_local_inputs: Dict[str, List[str]] = {}
+    missing_world_model_local_inputs: Dict[str, List[str]] = {}
+    for engine in sorted(required_plugins & present_plugins):
+        plugin = _as_mapping(plugins.get(engine))
+        inputs = _as_mapping(plugin.get("inputs"))
+        missing_required_input_keys = [
+            key
+            for key in _required_simulator_plugin_input_keys(engine)
+            if not str(inputs.get(key) or "").strip()
+        ]
+        if missing_required_input_keys:
+            missing_simulator_input_keys[engine] = missing_required_input_keys
+        local_artifacts, missing_local_input_keys = _plugin_local_input_artifact_audit(
+            inputs=inputs,
+            capture_root=capture_root,
+            automation_root=automation_root,
+        )
+        if local_artifacts:
+            simulator_local_input_artifacts[engine] = local_artifacts
+        if missing_local_input_keys:
+            missing_simulator_local_inputs[engine] = missing_local_input_keys
+        if plugin.get("adapter_contract_status") != "ready" or not bool(
+            plugin.get("managed_execution_supported")
+        ):
+            unready_simulator_plugins.append(
+                {
+                    "engine": engine,
+                    "adapter_contract_status": plugin.get("adapter_contract_status"),
+                    "managed_execution_supported": bool(
+                        plugin.get("managed_execution_supported")
+                    ),
+                }
+            )
+    for engine in sorted(required_world_model_plugins & present_world_model_plugins):
+        plugin = _as_mapping(world_model_plugins.get(engine))
+        inputs = _as_mapping(plugin.get("inputs"))
+        missing_required_input_keys = [
+            key
+            for key in _required_world_model_plugin_input_keys(engine)
+            if not str(inputs.get(key) or "").strip()
+        ]
+        if missing_required_input_keys:
+            missing_world_model_input_keys[engine] = missing_required_input_keys
+        source_status = str(plugin.get("source_status") or "").strip().lower()
+        local_artifacts, missing_local_input_keys = _plugin_local_input_artifact_audit(
+            inputs=inputs,
+            capture_root=capture_root,
+            automation_root=automation_root,
+            optional_input_keys=_WORLD_MODEL_PLUGIN_OPTIONAL_INPUT_KEYS,
+            optional_missing_source=source_status in _OPTIONAL_MISSING_SOURCE_STATUSES,
+        )
+        if local_artifacts:
+            world_model_local_input_artifacts[engine] = local_artifacts
+        if missing_local_input_keys:
+            missing_world_model_local_inputs[engine] = missing_local_input_keys
+        if plugin.get("adapter_contract_status") != "ready" or not bool(
+            plugin.get("managed_execution_supported")
+        ):
+            unready_world_model_plugins.append(
+                {
+                    "engine": engine,
+                    "adapter_contract_status": plugin.get("adapter_contract_status"),
+                    "managed_execution_supported": bool(
+                        plugin.get("managed_execution_supported")
+                    ),
+                }
+            )
+
+    blockers: List[str] = []
+    if not registry_path.is_file():
+        blockers.append("robot_eval_simulator_engine_plugin_registry_missing")
+    elif not plugins:
+        blockers.append("robot_eval_simulator_engine_plugin_registry_empty")
+    if missing_simulator_plugins:
+        blockers.append("robot_eval_simulator_engine_plugin_registry_missing_required_engines")
+    if missing_world_model_plugins:
+        blockers.append(
+            "robot_eval_simulator_engine_plugin_registry_missing_required_world_model_engines"
+        )
+    if unready_simulator_plugins:
+        blockers.append("robot_eval_simulator_engine_plugins_not_ready")
+    if unready_world_model_plugins:
+        blockers.append("robot_eval_world_model_engine_plugins_not_ready")
+    if missing_simulator_input_keys:
+        blockers.append("robot_eval_simulator_engine_plugin_registry_missing_required_input_keys")
+    if missing_world_model_input_keys:
+        blockers.append("robot_eval_world_model_engine_plugin_registry_missing_required_input_keys")
+    if missing_simulator_local_inputs:
+        blockers.append("robot_eval_simulator_engine_plugin_registry_missing_local_input_artifacts")
+    if missing_world_model_local_inputs:
+        blockers.append("robot_eval_world_model_engine_plugin_registry_missing_local_input_artifacts")
+
+    return {
+        "blockers": blockers,
+        "simulator_engine_plugin_registry_path": str(registry_path),
+        "required_simulator_plugins": sorted(required_plugins),
+        "required_world_model_plugins": sorted(required_world_model_plugins),
+        "simulator_plugins": sorted(present_plugins),
+        "world_model_plugins": sorted(present_world_model_plugins),
+        "missing_simulator_plugins": missing_simulator_plugins,
+        "missing_world_model_plugins": missing_world_model_plugins,
+        "unready_simulator_plugins": unready_simulator_plugins,
+        "unready_world_model_plugins": unready_world_model_plugins,
+        "missing_simulator_plugin_input_keys": missing_simulator_input_keys,
+        "missing_world_model_plugin_input_keys": missing_world_model_input_keys,
+        "simulator_plugin_local_input_artifacts": simulator_local_input_artifacts,
+        "world_model_plugin_local_input_artifacts": world_model_local_input_artifacts,
+        "missing_simulator_plugin_local_inputs": missing_simulator_local_inputs,
+        "missing_world_model_plugin_local_inputs": missing_world_model_local_inputs,
+        "simulator_plugin_count": len(plugins),
+        "world_model_plugin_count": len(world_model_plugins),
+    }
+
+
+def _auto_stage_robot_eval_job_request(
+    *,
+    capture_root: Path,
+    descriptor_path: Path,
+) -> Dict[str, Any]:
+    descriptor = _read_json_mapping(descriptor_path)
+    metadata = descriptor.get("metadata") if isinstance(descriptor.get("metadata"), Mapping) else {}
+    site_identity = (
+        metadata.get("site_identity") if isinstance(metadata.get("site_identity"), Mapping) else {}
+    )
+    scene_id = (
+        descriptor.get("scene_id")
+        or metadata.get("scene_id")
+        or capture_root.parent.parent.name
+        if len(capture_root.parents) > 1
+        else "scene"
+    )
+    capture_id = descriptor.get("capture_id") or metadata.get("capture_id") or capture_root.name
+    site_id = (
+        site_identity.get("site_id")
+        or descriptor.get("site_id")
+        or _safe_slug(scene_id, fallback="site")
+    )
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    task_cards_path = robot_eval_root / "task_cards.json"
+    scenario_cards_path = robot_eval_root / "scenario_cards.json"
+    task_thresholds_path = robot_eval_root / "task_thresholds.json"
+    scoring_methodology_path = robot_eval_root / "scoring_methodology.json"
+    failure_taxonomy_path = robot_eval_root / "failure_taxonomy.json"
+    task_cards = _load_cards(task_cards_path)
+    scenario_cards = _load_cards(scenario_cards_path)
+    blockers: List[str] = []
+    if not task_cards:
+        blockers.append("robot_eval_task_cards_missing")
+    if not scenario_cards:
+        blockers.append("robot_eval_scenario_cards_missing")
+    scenario_ids_by_task: Dict[str, List[str]] = {}
+    for scenario in scenario_cards:
+        task_id = str(scenario.get("task_id") or "").strip()
+        scenario_id = str(scenario.get("scenario_id") or "").strip()
+        if task_id and scenario_id:
+            scenario_ids_by_task.setdefault(task_id, []).append(scenario_id)
+    requested_tasks: List[Dict[str, Any]] = []
+    task_ids_without_scenarios: List[str] = []
+    for task in task_cards:
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        scenario_ids = scenario_ids_by_task.get(task_id, [])
+        if not scenario_ids:
+            task_ids_without_scenarios.append(task_id)
+        requested_tasks.append(
+            {
+                "task_id": task_id,
+                "scenario_ids": scenario_ids,
+                "task_thresholds_uri": "pipeline/robot_eval_dataset/task_thresholds.json",
+            }
+        )
+    if task_ids_without_scenarios:
+        blockers.append("robot_eval_task_scenario_links_missing")
+    requested_task_ids = [task["task_id"] for task in requested_tasks]
+    missing_threshold_task_ids: List[str] = []
+    if not task_thresholds_path.is_file():
+        blockers.append("robot_eval_task_thresholds_missing")
+    else:
+        threshold_task_ids = _task_ids_from_thresholds(task_thresholds_path)
+        missing_threshold_task_ids = [
+            task_id for task_id in requested_task_ids if task_id not in threshold_task_ids
+        ]
+        if missing_threshold_task_ids:
+            blockers.append("robot_eval_task_thresholds_missing_requested_tasks")
+    missing_scorecard_metrics: List[str] = []
+    if not scoring_methodology_path.is_file():
+        blockers.append("robot_eval_scoring_methodology_missing")
+    else:
+        metric_ids = _metric_ids_from_methodology(scoring_methodology_path)
+        missing_scorecard_metrics = [
+            metric_id
+            for metric_id in _STANDARD_ROBOT_EVAL_SCORECARD_METRICS
+            if metric_id not in metric_ids
+        ]
+        if missing_scorecard_metrics:
+            blockers.append("robot_eval_scoring_methodology_missing_standard_metrics")
+    scenario_variation_validation: Dict[str, Any] = {
+        "blockers": [],
+        "missing_scenario_family_task_ids": [],
+        "missing_scenario_family_scenario_ids": [],
+        "missing_scenario_family_variations_by_family": [],
+        "missing_scenario_variation_names": [],
+        "missing_scenario_variation_names_by_scenario": [],
+        "required_scenario_variation_names": list(_STANDARD_SCENARIO_VARIATION_NAMES),
+    }
+    simulator_plugin_validation: Dict[str, Any] = {
+        "blockers": [],
+        "missing_simulator_plugins": [],
+        "missing_world_model_plugins": [],
+        "unready_simulator_plugins": [],
+        "unready_world_model_plugins": [],
+        "missing_simulator_plugin_input_keys": {},
+        "missing_world_model_plugin_input_keys": {},
+        "missing_simulator_plugin_local_inputs": {},
+        "missing_world_model_plugin_local_inputs": {},
+        "simulator_plugin_count": 0,
+        "world_model_plugin_count": 0,
+        "required_simulator_plugins": list(_STANDARD_SIMULATOR_ENGINE_NAMES),
+        "required_world_model_plugins": list(_STANDARD_WORLD_MODEL_ENGINE_NAMES),
+    }
+    robot_eval_dataset_validation: Dict[str, Any] = {
+        "blockers": [],
+        "missing_robot_eval_dataset_inputs": [],
+        "robot_eval_dataset_input_artifacts": {},
+    }
+    failure_taxonomy_mode_count = 0
+    if (
+        task_cards
+        and scenario_cards
+        and not missing_threshold_task_ids
+        and not missing_scorecard_metrics
+        and task_thresholds_path.is_file()
+        and scoring_methodology_path.is_file()
+    ):
+        scenario_variation_validation = _validate_scenario_variation_artifacts(
+            capture_root=capture_root,
+            requested_tasks=requested_tasks,
+        )
+        blockers.extend(scenario_variation_validation.get("blockers", []))
+        if not failure_taxonomy_path.is_file():
+            blockers.append("robot_eval_failure_taxonomy_missing")
+        else:
+            failure_taxonomy_mode_count = len(_failure_mode_ids_from_taxonomy(failure_taxonomy_path))
+            if failure_taxonomy_mode_count <= 0:
+                blockers.append("robot_eval_failure_taxonomy_empty")
+        if not blockers:
+            robot_eval_dataset_validation = _validate_robot_eval_dataset_required_inputs(
+                capture_root=capture_root,
+            )
+            blockers.extend(robot_eval_dataset_validation.get("blockers", []))
+        if not blockers:
+            simulator_plugin_validation = _validate_simulator_engine_plugin_registry(
+                capture_root=capture_root,
+            )
+            blockers.extend(simulator_plugin_validation.get("blockers", []))
+    if blockers:
+        return {
+            "status": "blocked",
+            "job_id": None,
+            "inbox_dir": str(capture_root / "pipeline" / "robot_eval_job_requests" / "inbox"),
+            "request_path": None,
+            "blockers": blockers,
+            "missing_task_scenario_links": task_ids_without_scenarios,
+            "missing_threshold_task_ids": missing_threshold_task_ids,
+            "missing_scorecard_metrics": missing_scorecard_metrics,
+            "standard_scorecard_metrics": list(_STANDARD_ROBOT_EVAL_SCORECARD_METRICS),
+            "missing_robot_eval_dataset_inputs": robot_eval_dataset_validation.get(
+                "missing_robot_eval_dataset_inputs",
+                [],
+            ),
+            "robot_eval_dataset_input_artifacts": robot_eval_dataset_validation.get(
+                "robot_eval_dataset_input_artifacts",
+                {},
+            ),
+            "required_scenario_variation_names": scenario_variation_validation.get(
+                "required_scenario_variation_names",
+                list(_STANDARD_SCENARIO_VARIATION_NAMES),
+            ),
+            "missing_scenario_family_task_ids": scenario_variation_validation.get(
+                "missing_scenario_family_task_ids",
+                [],
+            ),
+            "missing_scenario_family_scenario_ids": scenario_variation_validation.get(
+                "missing_scenario_family_scenario_ids",
+                [],
+            ),
+            "missing_scenario_family_variations_by_family": scenario_variation_validation.get(
+                "missing_scenario_family_variations_by_family",
+                [],
+            ),
+            "missing_scenario_variation_names": scenario_variation_validation.get(
+                "missing_scenario_variation_names",
+                [],
+            ),
+            "missing_scenario_variation_names_by_scenario": scenario_variation_validation.get(
+                "missing_scenario_variation_names_by_scenario",
+                [],
+            ),
+            "required_simulator_plugins": simulator_plugin_validation.get(
+                "required_simulator_plugins",
+                list(_STANDARD_SIMULATOR_ENGINE_NAMES),
+            ),
+            "required_world_model_plugins": simulator_plugin_validation.get(
+                "required_world_model_plugins",
+                list(_STANDARD_WORLD_MODEL_ENGINE_NAMES),
+            ),
+            "missing_simulator_plugins": simulator_plugin_validation.get(
+                "missing_simulator_plugins",
+                [],
+            ),
+            "missing_world_model_plugins": simulator_plugin_validation.get(
+                "missing_world_model_plugins",
+                [],
+            ),
+            "unready_simulator_plugins": simulator_plugin_validation.get(
+                "unready_simulator_plugins",
+                [],
+            ),
+            "unready_world_model_plugins": simulator_plugin_validation.get(
+                "unready_world_model_plugins",
+                [],
+            ),
+            "missing_simulator_plugin_input_keys": simulator_plugin_validation.get(
+                "missing_simulator_plugin_input_keys",
+                {},
+            ),
+            "missing_world_model_plugin_input_keys": simulator_plugin_validation.get(
+                "missing_world_model_plugin_input_keys",
+                {},
+            ),
+            "missing_simulator_plugin_local_inputs": simulator_plugin_validation.get(
+                "missing_simulator_plugin_local_inputs",
+                {},
+            ),
+            "missing_world_model_plugin_local_inputs": simulator_plugin_validation.get(
+                "missing_world_model_plugin_local_inputs",
+                {},
+            ),
+            "simulator_plugin_local_input_artifacts": simulator_plugin_validation.get(
+                "simulator_plugin_local_input_artifacts",
+                {},
+            ),
+            "world_model_plugin_local_input_artifacts": simulator_plugin_validation.get(
+                "world_model_plugin_local_input_artifacts",
+                {},
+            ),
+            "task_cards_path": str(task_cards_path),
+            "scenario_cards_path": str(scenario_cards_path),
+            "task_thresholds_path": str(task_thresholds_path),
+            "scoring_methodology_path": str(scoring_methodology_path),
+            "failure_taxonomy_path": str(failure_taxonomy_path),
+            "scenario_family_library_path": scenario_variation_validation.get(
+                "scenario_family_library_path",
+            ),
+            "scenario_variation_instances_path": scenario_variation_validation.get(
+                "scenario_variation_instances_path",
+            ),
+            "simulator_engine_plugin_registry_path": simulator_plugin_validation.get(
+                "simulator_engine_plugin_registry_path",
+            ),
+            "task_card_count": len(task_cards),
+            "scenario_card_count": len(scenario_cards),
+            "failure_taxonomy_mode_count": failure_taxonomy_mode_count,
+            "simulator_plugin_count": simulator_plugin_validation.get(
+                "simulator_plugin_count",
+                0,
+            ),
+            "world_model_plugin_count": simulator_plugin_validation.get(
+                "world_model_plugin_count",
+                0,
+            ),
+            "claim_boundary": (
+                "task_eval_auto_stage_requires_complete_dataset_scenario_scorecard_plugin_artifacts"
+            ),
+        }
+    first_scenario = scenario_cards[0] if scenario_cards else {}
+    robot_profile_id = str(
+        first_scenario.get("robot_profile_id")
+        or first_scenario.get("robotProfileId")
+        or "mobile_manipulator_rgb_v1"
+    )
+    job_id = (
+        f"auto-task-eval-{_safe_slug(scene_id, fallback='scene')}-"
+        f"{_safe_slug(capture_id, fallback='capture')}"
+    )
+    buyer_request_id = f"buyer-request-{job_id}"
+    request = {
+        "schema_version": "robot_eval_job_request.v1",
+        "job_id": job_id,
+        "buyer_request_id": buyer_request_id,
+        "customer": {
+            "id": "blueprint-auto-eval-baseline",
+            "name": "Blueprint auto-staged baseline evaluation",
+            "contact_email": None,
+        },
+        "site_package": {
+            "site_id": site_id,
+            "scene_id": scene_id,
+            "capture_id": capture_id,
+            "capture_root": str(capture_root.resolve()),
+            "buyer_request_id": buyer_request_id,
+            "package_uri": "pipeline/robot_eval_dataset/robot_eval_dataset_manifest.json",
+        },
+        "requested_tasks": requested_tasks,
+        "robot_profile": {
+            "robot_profile_id": robot_profile_id,
+            "embodiment": "mobile_manipulator",
+            "sensors": ["rgb", "depth"],
+        },
+        "policy_package": {
+            "high_level_skill_trace": {
+                "skill_taxonomy_version": "blueprint_baseline_skill_trace.v1",
+                "ordered_skill_sequence": [
+                    "inspect_site_package",
+                    "navigate_to_task_anchor",
+                    "execute_task",
+                    "report_outcome",
+                ],
+                "preconditions_postconditions": (
+                    "Pre: task/scenario cards and generated robot POV are available. "
+                    "Post: baseline reference trace is scored with proof boundaries."
+                ),
+                "failure_labels": "use_pipeline_failure_taxonomy",
+                "source_type": "blueprint_default_baseline_trace",
+                "confidence_coverage_note": (
+                    "Auto-staged baseline for harness automation; not a robot-team "
+                    "policy or deployment-readiness claim."
+                ),
+            }
+        },
+        "operation": "evaluate_only",
+        "simulator_preference": "fixture",
+        "cosmos_training_preference": {"mode": "export_only"},
+        "budget": {"budget_usd": 0.0, "timeout_seconds": 120},
+        "rights_privacy_scope": {
+            "status": "review_required",
+            "external_use_allowed": True,
+            "privacy_scope": "derived_deidentified_environment",
+        },
+        "owner_system": {
+            "name": "BlueprintCapturePipeline",
+            "request_id": job_id,
+            "buyer_request_id": buyer_request_id,
+            "capture_id": capture_id,
+        },
+        "source": {
+            "system": "BlueprintCapturePipeline.auto_stage",
+            "capture_descriptor": str(descriptor_path.resolve()),
+            "requested_outputs": sorted(_descriptor_requested_outputs(descriptor)),
+            "task_cards": "pipeline/robot_eval_dataset/task_cards.json",
+            "scenario_cards": "pipeline/robot_eval_dataset/scenario_cards.json",
+            "task_thresholds": "pipeline/robot_eval_dataset/task_thresholds.json",
+            "scoring_methodology": "pipeline/robot_eval_dataset/scoring_methodology.json",
+            "failure_taxonomy": "pipeline/robot_eval_dataset/failure_taxonomy.json",
+            "failure_taxonomy_mode_count": failure_taxonomy_mode_count,
+            "standard_scorecard_metrics": list(_STANDARD_ROBOT_EVAL_SCORECARD_METRICS),
+            "required_scenario_variation_names": list(_STANDARD_SCENARIO_VARIATION_NAMES),
+            "simulator_engine_plugin_registry": (
+                "pipeline/simulation_automation/simulator_engine_plugin_registry.json"
+            ),
+            "required_simulator_plugins": list(_STANDARD_SIMULATOR_ENGINE_NAMES),
+            "required_world_model_plugins": list(_STANDARD_WORLD_MODEL_ENGINE_NAMES),
+            "auto_staged": True,
+        },
+        "proof_boundary": {
+            "simulator_execution_proven": False,
+            "robot_readiness_proven": False,
+            "robot_policy_execution_proven": False,
+            "physics_contact_validated": False,
+            "safety_validated": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+    inbox = capture_root / "pipeline" / "robot_eval_job_requests" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    envelope_path = inbox / f"{job_id}.json"
+    if not envelope_path.is_file():
+        envelope = {
+            "queue_contract": "robot_eval_job_request_inbox.v1",
+            "status": "queued_for_pipeline",
+            "job_id": job_id,
+            "buyer_request_id": buyer_request_id,
+            "pipeline_command": "blueprint-run-robot-eval-job",
+            "pipeline_consumer": "BlueprintCapturePipeline",
+            "job_request": request,
+        }
+        envelope_path.write_text(json.dumps(envelope, indent=2) + "\n", encoding="utf-8")
+        status = "staged"
+    else:
+        status = "already_staged"
+    return {
+        "status": status,
+        "job_id": job_id,
+        "inbox_dir": str(inbox),
+        "request_path": str(envelope_path),
+        "failure_taxonomy_mode_count": failure_taxonomy_mode_count,
+        "simulator_plugin_count": simulator_plugin_validation.get("simulator_plugin_count", 0),
+        "world_model_plugin_count": simulator_plugin_validation.get(
+            "world_model_plugin_count",
+            0,
+        ),
+        "claim_boundary": "auto_staged_baseline_job_request_not_robot_team_submission",
+    }
+
+
+def _run_robot_eval_job_inbox_if_ready(
+    capture_root: Path,
+    *,
+    auto_stage_task_eval: bool = False,
+    descriptor_path: Optional[Path] = None,
+) -> Dict[str, Any]:
     inbox = _robot_eval_job_request_inbox_for_capture(capture_root)
+    auto_stage: Dict[str, Any] = {"status": "not_requested"}
+    if inbox is None and auto_stage_task_eval and descriptor_path is not None:
+        auto_stage = _auto_stage_robot_eval_job_request(
+            capture_root=capture_root,
+            descriptor_path=descriptor_path,
+        )
+        if auto_stage.get("status") == "blocked":
+            return {
+                "status": "blocked_missing_task_eval_inputs",
+                "processed_count": 0,
+                "inbox_dir": auto_stage.get("inbox_dir"),
+                "manifest_path": None,
+                "auto_stage": auto_stage,
+                "claim_boundary": "task_eval_auto_stage_blocked_before_job_processing",
+            }
+        inbox = _robot_eval_job_request_inbox_for_capture(capture_root)
     if inbox is None:
         return {
             "status": "waiting_for_job_requests",
             "processed_count": 0,
             "inbox_dir": None,
             "manifest_path": None,
+            "auto_stage": auto_stage,
             "claim_boundary": "no_robot_eval_job_request_v1_files_found",
         }
     result = run_robot_eval_job_request_inbox(
@@ -264,6 +1276,7 @@ def _run_robot_eval_job_inbox_if_ready(capture_root: Path) -> Dict[str, Any]:
         "manifest_path": str(
             capture_root / "pipeline" / "robot_eval_job_requests" / "inbox_run_manifest.json"
         ),
+        "auto_stage": auto_stage,
         "claim_boundary": "job_requests_processed_with_gated_default_execution",
     }
 
@@ -282,6 +1295,10 @@ def run_capture_pipeline(
         lane=lane,
         requested_lanes=requested_lanes,
     )
+    descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
+    auto_stage_task_eval = _descriptor_requests_task_evaluation_run(
+        descriptor_path
+    ) or _call_requests_task_evaluation_run(lane=lane, requested_lanes=requested_lanes)
 
     results: List[Dict[str, Any]] = []
     qualification_result: Optional[Dict[str, Any]] = None
@@ -312,7 +1329,7 @@ def run_capture_pipeline(
                     requested_lanes=lanes,
                 )
             evaluation_prep_result = run_evaluation_prep_stage(
-                capture_root=resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent,
+                capture_root=descriptor_path.parent,
                 provider_name="manual",
             )
             lane_result = _build_derived_lane_result(
@@ -324,9 +1341,16 @@ def run_capture_pipeline(
             results.append(lane_result)
             continue
         if selected_lane == "simulation_automation":
-            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            capture_root = descriptor_path.parent
             automation_result = build_simulation_automation(capture_root=capture_root)
-            robot_eval_jobs = _run_robot_eval_job_inbox_if_ready(capture_root)
+            robot_eval_jobs = _run_robot_eval_job_inbox_if_ready(
+                capture_root,
+                auto_stage_task_eval=auto_stage_task_eval,
+                descriptor_path=descriptor_path,
+            )
+            auto_stage = robot_eval_jobs.get("auto_stage") if isinstance(
+                robot_eval_jobs.get("auto_stage"), Mapping
+            ) else {}
             lane_result = _build_derived_lane_result(
                 lane="simulation_automation",
                 source="simulation_automation_artifacts",
@@ -341,6 +1365,85 @@ def run_capture_pipeline(
                         0,
                     ),
                     "robot_eval_job_inbox_manifest_path": robot_eval_jobs.get("manifest_path"),
+                    "robot_eval_job_auto_stage_status": auto_stage.get("status"),
+                    "robot_eval_job_auto_stage_request_path": auto_stage.get("request_path"),
+                    "robot_eval_job_auto_stage_blockers": auto_stage.get("blockers", []),
+                    "robot_eval_job_auto_stage_missing_threshold_task_ids": auto_stage.get(
+                        "missing_threshold_task_ids",
+                        [],
+                    ),
+                    "robot_eval_job_auto_stage_missing_scorecard_metrics": auto_stage.get(
+                        "missing_scorecard_metrics",
+                        [],
+                    ),
+                    "robot_eval_job_auto_stage_missing_robot_eval_dataset_inputs": (
+                        auto_stage.get(
+                            "missing_robot_eval_dataset_inputs",
+                            [],
+                        )
+                    ),
+                    "robot_eval_job_auto_stage_missing_scenario_variation_names": auto_stage.get(
+                        "missing_scenario_variation_names",
+                        [],
+                    ),
+                    "robot_eval_job_auto_stage_missing_scenario_variation_names_by_scenario": (
+                        auto_stage.get(
+                            "missing_scenario_variation_names_by_scenario",
+                            [],
+                        )
+                    ),
+                    "robot_eval_job_auto_stage_failure_taxonomy_mode_count": auto_stage.get(
+                        "failure_taxonomy_mode_count",
+                        0,
+                    ),
+                    "robot_eval_job_auto_stage_missing_simulator_plugins": auto_stage.get(
+                        "missing_simulator_plugins",
+                        [],
+                    ),
+                    "robot_eval_job_auto_stage_missing_world_model_plugins": auto_stage.get(
+                        "missing_world_model_plugins",
+                        [],
+                    ),
+                    "robot_eval_job_auto_stage_unready_simulator_plugins": auto_stage.get(
+                        "unready_simulator_plugins",
+                        [],
+                    ),
+                    "robot_eval_job_auto_stage_unready_world_model_plugins": auto_stage.get(
+                        "unready_world_model_plugins",
+                        [],
+                    ),
+                    "robot_eval_job_auto_stage_missing_simulator_plugin_input_keys": (
+                        auto_stage.get(
+                            "missing_simulator_plugin_input_keys",
+                            {},
+                        )
+                    ),
+                    "robot_eval_job_auto_stage_missing_world_model_plugin_input_keys": (
+                        auto_stage.get(
+                            "missing_world_model_plugin_input_keys",
+                            {},
+                        )
+                    ),
+                    "robot_eval_job_auto_stage_missing_simulator_plugin_local_inputs": (
+                        auto_stage.get(
+                            "missing_simulator_plugin_local_inputs",
+                            {},
+                        )
+                    ),
+                    "robot_eval_job_auto_stage_missing_world_model_plugin_local_inputs": (
+                        auto_stage.get(
+                            "missing_world_model_plugin_local_inputs",
+                            {},
+                        )
+                    ),
+                    "robot_eval_job_auto_stage_simulator_plugin_count": auto_stage.get(
+                        "simulator_plugin_count",
+                        0,
+                    ),
+                    "robot_eval_job_auto_stage_world_model_plugin_count": auto_stage.get(
+                        "world_model_plugin_count",
+                        0,
+                    ),
                 },
             )
             results.append(lane_result)

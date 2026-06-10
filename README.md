@@ -180,6 +180,8 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/deployment_outcome_ledger.json`
 - `robot_eval_jobs/<job_id>/sim_vs_real_calibration_report.json`
 - `robot_eval_jobs/<job_id>/prediction_vs_actual_deployment_summary.json`
+- `robot_eval_jobs/<job_id>/real_world_validation_followup_plan.json`
+- `robot_eval_jobs/<job_id>/real_world_validation_followup_request_queue.json`
 - `robot_eval_jobs/<job_id>/live_eval_closure_manifest.json`
 - `robot_eval_jobs/<job_id>/customer_handoff_report.md` when Arena package
   ingest is run
@@ -255,11 +257,13 @@ blueprint-intake-live-pipeline-inputs \
   --webapp-job-request /path/to/robot_eval_job_request.json \
   --arena-results-dir /path/to/owner-arena-results \
   --policy-package /path/to/robot_team_policy_package.json \
+  --real-robot-pov /path/to/real_robot_pov_manifest.json \
   --deployment-outcomes /path/to/deployment_outcome_manifest.json \
   --live-closure-evidence /path/to/live_eval_closure_evidence.json \
   --stage-webapp-request \
   --stage-arena-results \
   --stage-policy-package \
+  --stage-real-robot-pov \
   --stage-deployment-outcomes \
   --stage-live-closure-evidence
 blueprint-run-live-pipeline-control-plane
@@ -307,6 +311,14 @@ requires the gated policy execution bundle to produce attempts. The final closur
 audit also revalidates selected modality status and required fields, so a
 hand-authored manifest cannot pass by naming a modality while leaving its
 reference blocked or incomplete. Add
+`--real-robot-pov` plus `--stage-real-robot-pov` to validate and copy
+owner-supplied robot camera/action evidence to
+`pipeline/robot_eval_inputs/real_robot_pov_manifest.json`. Each record must
+carry exact `scenario_eval_run_id` and `scenario_variation_instance_id` keys,
+camera video, action log, timestamp alignment, and owner evidence or operator
+attestation. Generated POV storyboards remain support artifacts only; real POV
+proof is allowed only after the robot-eval job ingests matching real robot
+evidence for every required scenario eval run. Add
 `--deployment-outcomes` plus `--stage-deployment-outcomes` to validate and copy
 job-specific actual pilot/deployment records into
 `pipeline/robot_eval_inputs/<job_id>/deployment_outcomes/inbox/`; the robot-eval
@@ -341,6 +353,9 @@ and `BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND` are set.
 or a direct policy-package body with one supported robot-team modality, validates
 the job id and modality-specific required fields, and stages it at
 `pipeline/robot_eval_inputs/<job_id>/policy_package.json`.
+`POST /api/live-pipeline/real-robot-pov` accepts `real_robot_pov_manifest.v1`,
+validates exact run/variation keys plus camera/action evidence refs, and stages
+it at `pipeline/robot_eval_inputs/real_robot_pov_manifest.json`.
 `POST /api/live-pipeline/deployment-outcomes` accepts
 `deployment_outcome_manifest.v1`, `actual_outcome_manifest.v1`, or
 `deployment_outcome.v1` JSON, validates job id plus task/scenario/actual-result
@@ -423,6 +438,66 @@ depth evidence is available or a depth runner is configured:
 - pass those manifests into VIP so non-ARKit inpainting reuses the generated depth artifacts
 
 ## Legacy GPU Bring-Up
+
+For the current sample-video to owner-GPU proof path, use
+[`docs/FIRST_GPU_E2E_RUNBOOK.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/FIRST_GPU_E2E_RUNBOOK.md).
+It sequences local capture preflight, current pipeline lanes, WebApp forwarding,
+owner GPU simulator command execution, proof ingestion, and closure audits
+without promoting CPU or simulator smoke artifacts into robot-readiness proof.
+Before staging a loose local video, run
+`blueprint-audit-first-gpu-sample-video` to check file existence, suffix, size,
+and duration suitability for the first World Labs clip. The staging command can
+also enforce the same check with `--require-source-video-preflight`.
+The runbook also includes a local WebApp rehearsal request mode that is blocked
+by default unless `--allow-local-webapp-rehearsal` is passed, so dry-run request
+shape checks cannot be confused with live WebApp forwarding proof.
+Use `blueprint-audit-first-gpu-cross-repo-readiness` before the run to audit the
+Capture -> Pipeline -> WebApp -> Pipeline source contracts plus the concrete
+capture-root readiness gate and generated first-GPU run packet launch order in
+one manifest. Its `gpu_spend_decision` is the go/no-go field for RunPod or
+equivalent GPU VM allocation, and it remains blocked if the packet is missing,
+`first_gpu_webapp_handoff` is blocked, `first_gpu_scene_asset_acquisition` is
+blocked, `first_gpu_launch_order` forbids GPU execution, `gpu_vm_sync_manifest`
+is blocked, or `gpu_vm_runtime_preflight_plan` is unsafe. Its
+`first_gpu_external_input_packet` condenses the remaining live IDs, env vars,
+provider secrets, scene artifacts, owner GPU command, and VM checks into one
+redacted operator packet and writes `first_gpu_external_input_packet.md` beside
+the output manifest when an output path is provided, while its
+`first_gpu_operator_actions` mirrors the packet's ordered fix list, and its
+`remediation_plan` groups remaining blockers by cross-repo fix lane and names
+the evidence or command needed before GPU time is useful.
+`blueprint-build-first-gpu-run-packet` now also writes
+`gpu_provider_bootstrap.md` and `gpu_provider_bootstrap.json` so the RunPod or
+equivalent GPU VM setup, Isaac GPU constraints, and NIM boundary travel with the
+owner-command packet. The same packet includes `first_gpu_simulator_path_matrix`
+files that distinguish the selected first-GPU backend from Arena/policy,
+MuJoCo/PyBullet preflight, Newton, and NIM inference-service roles,
+`first_gpu_launch_order` files that prevent running GPU commands before WebApp,
+scene, sync, VM-preflight, owner-command, and simulator gates are ready, while
+still allowing the owner proof command before post-GPU closure proof exists,
+`first_gpu_blocker_resolution` JSON/Markdown files that convert current readiness blockers into an ordered
+operator fix list with top-level `actions`, `action_count`, and
+`blocked_action_count` fields plus `blocker_details` for hard preflight scene
+and GPU-handoff inputs, field-level WebApp upstream ID evidence, and owner
+proof wrapper/trace/output requirements, a read-only
+`webapp_upstream_truth_verification_commands.sh` script that verifies real
+non-placeholder WebApp upstream IDs without mutating artifacts or submitting a
+WebApp request, `first_gpu_scene_asset_acquisition` files that name the
+World Labs/world-manifest/materialized-asset evidence needed to clear scene
+blockers and expose when the source video inputs are ready for a World Labs
+request, whether `WORLDLABS_API_KEY` and
+`BLUEPRINT_ALLOW_WORLDLABS_PROVIDER_SUBMISSION=true` are configured, and that
+the generated provider-submission script remains before GPU spend,
+`first_gpu_webapp_handoff` files that pin the upstream-ID,
+forwarding-env, staged-request, and local-rehearsal boundary; the cross-repo
+audit keeps `gpu_spend_decision.gpu_rental_recommended_now=false` when
+`local_webapp_rehearsal_only_observed=true`, so a dry-run WebApp request cannot
+be mistaken for the real WebApp-forwarded full-E2E gate,
+`gpu_vm_runtime_preflight` files that check the GPU VM mount, `nvidia-smi`,
+owner command executable, Docker availability, and synced-file hashes before the
+owner command runs, and block when the sync manifest is blocked, plus
+`gpu_vm_sync_manifest` files that checksum the required raw,
+simulation-automation, and run-packet artifacts before a GPU VM handoff.
 
 The older single-VM GPU runbook is still available for legacy downstream world-model work in [docs/GPU_VM_RUNBOOK.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/GPU_VM_RUNBOOK.md), but it is not the active preview, upload, CPU-preflight, or simulation-manifest path.
 
@@ -701,10 +776,22 @@ through `actual_outcome_manifest_uri` / `deployment_outcome_manifest_uri`, as
 files in `pipeline/robot_eval_inputs/deployment_outcomes/inbox/`. The job writes
 `deployment_outcome_intake_manifest.json`, `deployment_outcome_ledger.json`,
 `sim_vs_real_calibration_report.json`, and
-`prediction_vs_actual_deployment_summary.json`, then reflects the calibration
-score on `evaluation_result.json`. Actual records with a `scenario_eval_run_id`
-must match a prediction for that same run before predicted-vs-actual closure can
-pass; unmatched actual records are listed as calibration blockers rather than
+`prediction_vs_actual_deployment_summary.json`, plus a deterministic
+`real_world_validation_followup_plan.json` for reruns, missed-failure scenario
+updates, robot-team tuning review, and site-modification review. Rerun actions
+also produce `real_world_validation_followup_request_queue.json` plus
+`robot_eval_job_request.v1` drafts under
+`pipeline/robot_eval_job_requests/followup_drafts/<job_id>/`; point
+`blueprint-run-robot-eval-job --job-request-inbox` at that draft directory to
+process the exact follow-up run/variation requests through the same fail-closed
+job runner. The live control plane also scans those follow-up queues and lists a
+safe `blueprint-run-robot-eval-job --capture-root ... --job-request-inbox ...`
+command in `live_pipeline_external_input_packet.json` and `.md`; it does not
+auto-run reruns or upgrade real-world proof. It then reflects the calibration
+score on `evaluation_result.json`.
+Actual records with a `scenario_eval_run_id` must match a prediction for that
+same run before predicted-vs-actual closure can pass; unmatched actual records
+are listed as calibration blockers rather than
 falling back to same-scenario predictions. Actual records without owner evidence
 remain calibration inputs only; live outcome proof requires `evidence_refs`, an
 owner proof URI, or an owner/operator attestation on every record.

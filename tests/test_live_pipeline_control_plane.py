@@ -136,6 +136,7 @@ def test_live_pipeline_control_plane_blocks_without_capture_root(tmp_path: Path,
     assert {item["id"] for item in packet["required_inputs"]} == {
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
+        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "real_world_deployment_outcomes",
         "robot_team_policy_package",
@@ -176,12 +177,13 @@ def test_live_pipeline_control_plane_processes_empty_inbox_without_live_actions(
 
     assert packet_info["schema_version"] == LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION
     assert packet_info["status"] == "waiting_for_external_inputs"
-    assert packet_info["required_input_count"] == 4
+    assert packet_info["required_input_count"] == 5
     assert packet_info["enablement_input_count"] == 4
     assert packet_path.is_file()
     assert packet_markdown_path.is_file()
     assert required_input_ids == {
         "isaac_lab_arena_owner_evidence",
+        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "real_world_deployment_outcomes",
         "robot_team_policy_package",
@@ -201,6 +203,58 @@ def test_live_pipeline_control_plane_processes_empty_inbox_without_live_actions(
     assert "Live Pipeline External Input Packet" in packet_markdown_path.read_text(
         encoding="utf-8"
     )
+
+
+def test_live_pipeline_control_plane_writes_resumable_blocker_packets(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+
+    result = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=inbox_dir,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    packet_path = Path(result["external_input_packet"]["path"])
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    unresolved_inputs = packet["required_inputs"] + packet["enablement_inputs"]
+
+    assert unresolved_inputs
+    for item in unresolved_inputs:
+        blocker_packet = item["blocker_packet"]
+        assert blocker_packet["id"] == item["id"]
+        assert blocker_packet["owner"]
+        assert blocker_packet["required_input"]
+        assert blocker_packet["safe_proof_command"]
+        assert blocker_packet["retry_condition"]
+        assert blocker_packet["resume_target"]
+        assert blocker_packet["disallowed_workaround"]
+
+    by_id = {item["id"]: item["blocker_packet"] for item in unresolved_inputs}
+    assert by_id["isaac_lab_arena_owner_evidence"]["safe_proof_command"].startswith(
+        "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true"
+    )
+    assert (
+        "deployment outcome"
+        in by_id["real_world_deployment_outcomes"]["required_input"].lower()
+    )
+    assert "real robot pov" in by_id["real_robot_pov_evidence"]["required_input"].lower()
+    assert (
+        "blueprint-run-live-pipeline-control-plane"
+        in by_id["delivery_upload"]["resume_target"]
+    )
+    assert "placeholder" in by_id["robot_team_policy_package"]["disallowed_workaround"]
+
+    markdown = Path(result["external_input_packet"]["markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+    assert "Owner:" in markdown
+    assert "Safe proof command:" in markdown
+    assert "Retry condition:" in markdown
+    assert "Disallowed workaround:" in markdown
 
 
 def test_live_pipeline_control_plane_accepts_matching_webapp_inbox_truth(
@@ -312,6 +366,94 @@ def test_live_pipeline_control_plane_keeps_policy_package_input_for_invalid_inli
     }
     assert "webapp_upstream_truth" not in required_input_ids
     assert "robot_team_policy_package" in required_input_ids
+
+
+def test_live_pipeline_control_plane_surfaces_real_world_followup_request_queues(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    followup_inbox = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_job_requests"
+        / "followup_drafts"
+        / "job-with-actuals"
+    )
+    followup_request_path = followup_inbox / "job-with-actuals-followup-0001.json"
+    _write_json(
+        followup_request_path,
+        {
+            "schema_version": "robot_eval_job_request.v1",
+            "job_id": "job-with-actuals-followup-0001",
+            "parent_job_id": "job-with-actuals",
+            "site_package": {"capture_root": str(capture_root)},
+            "requested_scenario_eval_runs": [
+                {
+                    "scenario_eval_run_id": "eval-run-1",
+                    "scenario_variation_instance_id": "variation-1",
+                }
+            ],
+        },
+    )
+    queue_path = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "job-with-actuals"
+        / "real_world_validation_followup_request_queue.json"
+    )
+    _write_json(
+        queue_path,
+        {
+            "schema_version": "real_world_validation_followup_request_queue.v1",
+            "status": "ready_for_inbox_processing",
+            "parent_job_id": "job-with-actuals",
+            "inbox_dir": str(followup_inbox),
+            "queued_request_count": 1,
+            "queued_request_paths": [str(followup_request_path)],
+            "queued_requests": [
+                {
+                    "job_id": "job-with-actuals-followup-0001",
+                    "path": str(followup_request_path),
+                }
+            ],
+        },
+    )
+
+    result = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=inbox_dir,
+        process_inbox=False,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    packet = json.loads(
+        Path(result["external_input_packet"]["path"]).read_text(encoding="utf-8")
+    )
+    markdown = Path(result["external_input_packet"]["markdown_path"]).read_text(
+        encoding="utf-8"
+    )
+    followup_queues = result["real_world_validation_followup_request_queues"]
+    packet_followup = packet["real_world_validation_followup_request_queues"]
+    next_inputs = " ".join(result["next_inputs_needed"])
+    safe_command = (
+        f"blueprint-run-robot-eval-job --capture-root {capture_root.resolve()} "
+        f"--job-request-inbox {followup_inbox.resolve()}"
+    )
+
+    assert followup_queues["status"] == "ready_for_inbox_processing"
+    assert followup_queues["ready_queue_count"] == 1
+    assert followup_queues["queued_request_count"] == 1
+    assert followup_queues["queues"][0]["safe_processing_command"] == safe_command
+    assert packet_followup["queues"][0]["path"] == str(queue_path.resolve())
+    assert packet_followup["queues"][0]["queued_request_paths"] == [
+        str(followup_request_path.resolve())
+    ]
+    assert safe_command in next_inputs
+    assert safe_command in markdown
+    assert "request/contract artifact only" in markdown
 
 
 def test_live_pipeline_control_plane_rejects_mismatched_webapp_inbox_truth(

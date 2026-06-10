@@ -24,6 +24,7 @@ POLICY_EXECUTION_TRACE_SCHEMA_VERSION = "robot_policy_execution_trace.v1"
 DEPLOYMENT_OUTCOME_LEDGER_SCHEMA_VERSION = "deployment_outcome_ledger.v1"
 SIM_VS_REAL_CALIBRATION_SCHEMA_VERSION = "sim_vs_real_calibration_report.v1"
 PREDICTION_VS_ACTUAL_DEPLOYMENT_SCHEMA_VERSION = "prediction_vs_actual_deployment_summary.v1"
+REAL_WORLD_VALIDATION_FOLLOWUP_PLAN_SCHEMA_VERSION = "real_world_validation_followup_plan.v1"
 SIMULATOR_COMMAND_ARTIFACTS_SCHEMA_VERSION = "simulator_command_artifacts.v1"
 
 POLICY_MODALITIES = (
@@ -92,7 +93,10 @@ def _relative_to(base: Path, path: Path) -> str:
     try:
         return str(path.resolve().relative_to(base.resolve()))
     except ValueError:
-        return str(path.resolve())
+        try:
+            return os.path.relpath(path.resolve(), base.resolve())
+        except ValueError:
+            return str(path.resolve())
 
 
 def _read_optional_mapping(path: Path) -> Dict[str, Any]:
@@ -108,6 +112,120 @@ def _read_optional_any(path: Path) -> Any:
         return read_json_any(path)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
+
+
+def _load_real_robot_pov_payload(
+    *,
+    capture_root: Path,
+    job_dir: Path,
+    job_request: Mapping[str, Any],
+) -> tuple[Dict[str, Any], Path | None, str | None]:
+    inline = job_request.get("real_robot_pov") or job_request.get("realRobotPov")
+    if isinstance(inline, Mapping):
+        return dict(inline), None, "job_request_inline_real_robot_pov"
+    for ref in (
+        job_request.get("real_robot_pov_manifest_uri"),
+        job_request.get("realRobotPovManifestUri"),
+    ):
+        loaded = _load_reference_json(ref, capture_root=capture_root, job_dir=job_dir)
+        if isinstance(loaded, Mapping):
+            return dict(loaded), None, "job_request_real_robot_pov_manifest_ref"
+    job_id = job_dir.name
+    for path in (
+        job_dir / "real_robot_pov_manifest.json",
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / job_id
+        / "real_robot_pov_manifest.json",
+        capture_root / "pipeline" / "robot_eval_inputs" / "real_robot_pov_manifest.json",
+    ):
+        loaded = _read_optional_any(path)
+        if isinstance(loaded, Mapping) and _records_from_payload(loaded):
+            return dict(loaded), path, "capture_robot_eval_inputs_real_robot_pov_manifest"
+    return {}, None, None
+
+
+def _real_robot_pov_record_value(record: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = _string(record.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _real_robot_pov_evidence(record: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "evidence_id": _real_robot_pov_record_value(record, "evidence_id", "evidenceId"),
+        "robot_camera_video_uri": _real_robot_pov_record_value(
+            record,
+            "robot_camera_video_uri",
+            "robotCameraVideoUri",
+            "camera_video_uri",
+            "video_uri",
+        ),
+        "action_log_uri": _real_robot_pov_record_value(
+            record,
+            "action_log_uri",
+            "actionLogUri",
+            "robot_action_log_uri",
+        ),
+        "robot_state_log_uri": _real_robot_pov_record_value(
+            record,
+            "robot_state_log_uri",
+            "robotStateLogUri",
+        ),
+        "owner_evidence_refs": _mapping(
+            record.get("owner_evidence_refs")
+            or record.get("ownerEvidenceRefs")
+            or record.get("evidence_refs")
+            or record.get("evidenceRefs")
+        ),
+        "operator_attestation": record.get("operator_attestation")
+        or record.get("operatorAttestation")
+        or record.get("owner_attestation")
+        or record.get("ownerAttestation"),
+        "timestamp_alignment": _real_robot_pov_record_value(
+            record,
+            "timestamp_alignment",
+            "timestampAlignment",
+        ),
+        "present": bool(record),
+        "robot_pov_evidence_proven": bool(
+            _real_robot_pov_record_value(
+                record,
+                "robot_camera_video_uri",
+                "robotCameraVideoUri",
+                "camera_video_uri",
+                "video_uri",
+            )
+            and _real_robot_pov_record_value(
+                record,
+                "action_log_uri",
+                "actionLogUri",
+                "robot_action_log_uri",
+            )
+        ),
+    }
+
+
+def _real_robot_pov_index(records: Sequence[Mapping[str, Any]]) -> Dict[tuple[str, str], Dict[str, Any]]:
+    index: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for record in records:
+        task_id = _string(record.get("task_id") or record.get("taskId"))
+        scenario_id = _string(record.get("scenario_id") or record.get("scenarioId"))
+        run_id = _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId"))
+        variation_id = _string(
+            record.get("scenario_variation_instance_id")
+            or record.get("scenarioVariationInstanceId")
+        )
+        if run_id and variation_id:
+            index[(run_id, variation_id)] = dict(record)
+        if run_id:
+            index.setdefault((run_id, ""), dict(record))
+        if task_id and scenario_id and variation_id:
+            index.setdefault((f"{task_id}:{scenario_id}", variation_id), dict(record))
+    return index
 
 
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -209,6 +327,48 @@ def _requested_scenarios(
     return [row for row in rows if row["scenario_id"]]
 
 
+def _requested_scenario_eval_run_filters(request: Mapping[str, Any]) -> List[Dict[str, str]]:
+    raw_filters = (
+        request.get("requested_scenario_eval_runs")
+        or request.get("requestedScenarioEvalRuns")
+        or []
+    )
+    if isinstance(raw_filters, Mapping):
+        raw_filters = [raw_filters]
+    if not isinstance(raw_filters, Sequence) or isinstance(raw_filters, (str, bytes, bytearray)):
+        return []
+    filters: List[Dict[str, str]] = []
+    for item in raw_filters:
+        if not isinstance(item, Mapping):
+            continue
+        row = {
+            "scenario_eval_run_id": _string(
+                item.get("scenario_eval_run_id") or item.get("scenarioEvalRunId")
+            ),
+            "scenario_variation_instance_id": _string(
+                item.get("scenario_variation_instance_id")
+                or item.get("scenarioVariationInstanceId")
+            ),
+            "variation_name": _string(item.get("variation_name") or item.get("variationName")),
+            "task_id": _string(item.get("task_id") or item.get("taskId")),
+            "scenario_id": _string(item.get("scenario_id") or item.get("scenarioId")),
+            "source_followup_action_id": _string(
+                item.get("source_followup_action_id") or item.get("sourceFollowupActionId")
+            ),
+        }
+        if any(row.values()):
+            filters.append(row)
+    return filters
+
+
+def _run_matches_requested_filter(run: Mapping[str, Any], filter_row: Mapping[str, str]) -> bool:
+    for field in ("task_id", "scenario_id", "scenario_eval_run_id", "scenario_variation_instance_id", "variation_name"):
+        expected = _string(filter_row.get(field))
+        if expected and expected != _string(run.get(field)):
+            return False
+    return True
+
+
 def _scenario_card_rows(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
     cards = payload.get("cards")
     if not isinstance(cards, list):
@@ -271,6 +431,7 @@ def build_scenario_eval_matrix(
     robot_eval_dir = capture_path / "pipeline" / "robot_eval_dataset"
     scenario_cards = _read_optional_mapping(robot_eval_dir / "scenario_cards.json")
     requested = _requested_scenarios(job_request, scenario_cards)
+    requested_eval_run_filters = _requested_scenario_eval_run_filters(job_request)
     scenario_card_rows = _scenario_card_rows(scenario_cards)
     scenario_cards_by_id = {
         _string(card.get("scenario_id")): card
@@ -400,6 +561,34 @@ def build_scenario_eval_matrix(
                 }
             )
 
+    unmatched_requested_eval_run_filters: List[Dict[str, str]] = []
+    if requested_eval_run_filters:
+        filtered_runs: List[Dict[str, Any]] = []
+        seen_run_ids: set[str] = set()
+        for filter_row in requested_eval_run_filters:
+            matches = [
+                run
+                for run in runs
+                if _run_matches_requested_filter(run, filter_row)
+            ]
+            if not matches:
+                unmatched_requested_eval_run_filters.append(dict(filter_row))
+                continue
+            for match in matches:
+                run_id = _string(match.get("scenario_eval_run_id"))
+                if run_id in seen_run_ids:
+                    continue
+                seen_run_ids.add(run_id)
+                filtered_runs.append(
+                    {
+                        **dict(match),
+                        "requested_scenario_eval_run_filter": {
+                            key: value for key, value in filter_row.items() if value
+                        },
+                    }
+                )
+        runs = filtered_runs
+
     required_names = _string_list(variation_payload.get("required_variation_names"))
     covered_names = sorted(
         {
@@ -418,6 +607,8 @@ def build_scenario_eval_matrix(
         matrix_blockers.append("scenario_eval_matrix_requested_task_scenario_mismatch")
     if not runs:
         matrix_blockers.append("scenario_eval_matrix_missing_requested_scenarios")
+    if unmatched_requested_eval_run_filters:
+        matrix_blockers.append("scenario_eval_matrix_unknown_requested_eval_runs")
     if matrix_blockers:
         matrix_status = "blocked_invalid_requested_scope"
     else:
@@ -432,6 +623,14 @@ def build_scenario_eval_matrix(
         "requested_scenario_count": len(requested),
         "valid_requested_scenario_count": len(valid_requested),
         "invalid_requested_scenario_count": len(invalid_requested_rows),
+        "requested_scenario_eval_run_filter_count": len(requested_eval_run_filters),
+        "requested_scenario_eval_run_filters": requested_eval_run_filters,
+        "unmatched_requested_scenario_eval_run_filter_count": len(
+            unmatched_requested_eval_run_filters
+        ),
+        "unmatched_requested_scenario_eval_run_filters": (
+            unmatched_requested_eval_run_filters
+        ),
         "scenario_eval_run_count": len(runs),
         "variation_instance_count": int(variation_payload.get("instance_count") or 0),
         "required_variation_names": required_names,
@@ -621,6 +820,13 @@ def build_robot_pov_observation_bundle(
     robot_profile = _mapping(job_request.get("robot_profile") or job_request.get("robotProfile"))
     robot_profile_id = _string(robot_profile.get("robot_profile_id") or robot_profile.get("id"))
     video_index = _attempt_video_index(attempt_trace or {})
+    real_pov_payload, real_pov_manifest_path, real_pov_source = _load_real_robot_pov_payload(
+        capture_root=capture_path,
+        job_dir=resolved_job_dir,
+        job_request=job_request,
+    )
+    real_pov_records = _records_from_payload(real_pov_payload)
+    real_pov_index = _real_robot_pov_index(real_pov_records)
 
     observations: List[Dict[str, Any]] = []
     frame_sequences: List[Dict[str, Any]] = []
@@ -668,6 +874,13 @@ def build_robot_pov_observation_bundle(
         ]
         sequence_id = f"robot_pov_sequence_{_safe_id(observation_id)}"
         storyboard_id = f"robot_pov_storyboard_{_safe_id(observation_id)}"
+        real_record = (
+            real_pov_index.get((scenario_eval_run_id, variation_instance_id or ""))
+            or real_pov_index.get((scenario_eval_run_id, ""))
+            or real_pov_index.get((f"{task_id}:{scenario_id}", variation_instance_id or ""))
+            or {}
+        )
+        real_evidence = _real_robot_pov_evidence(real_record)
         frame_sequences.append(
             {
                 "sequence_id": sequence_id,
@@ -743,7 +956,9 @@ def build_robot_pov_observation_bundle(
                 "render_sequence_id": sequence_id,
                 "render_frame_paths": relative_sequence_paths,
                 "render_storyboard_id": storyboard_id,
-                "sim_or_real_video_path": video_index.get(scenario_id),
+                "real_robot_pov_evidence": real_evidence,
+                "sim_or_real_video_path": real_evidence.get("robot_camera_video_uri")
+                or video_index.get(scenario_id),
                 "source_artifacts": {
                     "scenario_card": "pipeline/robot_eval_dataset/scenario_cards.json",
                     "task_card": "pipeline/robot_eval_dataset/task_cards.json",
@@ -759,6 +974,27 @@ def build_robot_pov_observation_bundle(
             }
         )
 
+    required_scenario_eval_run_ids = sorted(
+        {
+            _string(item.get("scenario_eval_run_id"))
+            for item in observations
+            if _string(item.get("scenario_eval_run_id"))
+        }
+    )
+    real_robot_pov_covered_scenario_eval_run_ids = sorted(
+        {
+            _string(item.get("scenario_eval_run_id"))
+            for item in observations
+            if bool(_mapping(item.get("real_robot_pov_evidence")).get("robot_pov_evidence_proven"))
+            and _string(item.get("scenario_eval_run_id"))
+        }
+    )
+    missing_real_robot_pov_scenario_eval_run_ids = [
+        run_id
+        for run_id in required_scenario_eval_run_ids
+        if run_id not in real_robot_pov_covered_scenario_eval_run_ids
+    ]
+    robot_pov_evidence_proven = bool(observations) and not missing_real_robot_pov_scenario_eval_run_ids
     manifest = {
         "schema_version": ROBOT_POV_OBSERVATION_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -777,10 +1013,35 @@ def build_robot_pov_observation_bundle(
         "robot_profile": robot_profile,
         "observations": observations,
         "robot_pov_generated": bool(observations),
+        "generated_robot_pov_support_available": bool(observations),
+        "real_robot_pov_manifest_path": _relative_to(
+            resolved_job_dir.parent,
+            real_pov_manifest_path,
+        )
+        if real_pov_manifest_path
+        else None,
+        "real_robot_pov_source": real_pov_source,
+        "real_robot_pov_evidence_record_count": len(real_pov_records),
+        "real_robot_pov_action_log_record_count": sum(
+            1
+            for record in real_pov_records
+            if _real_robot_pov_record_value(
+                record,
+                "action_log_uri",
+                "actionLogUri",
+                "robot_action_log_uri",
+            )
+        ),
+        "real_robot_pov_covered_scenario_eval_run_ids": (
+            real_robot_pov_covered_scenario_eval_run_ids
+        ),
+        "missing_real_robot_pov_scenario_eval_run_ids": (
+            missing_real_robot_pov_scenario_eval_run_ids
+        ),
         "sim_or_real_robot_pov_video_available": any(
             _string(item.get("sim_or_real_video_path")) for item in observations
         ),
-        "robot_pov_evidence_proven": False,
+        "robot_pov_evidence_proven": robot_pov_evidence_proven,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -1799,6 +2060,214 @@ def _outcome_owner_evidence(actual: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _followup_action_context(row: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "record_id": _string(row.get("record_id")),
+        "task_id": _string(row.get("task_id")),
+        "scenario_id": _string(row.get("scenario_id")),
+        "scenario_eval_run_id": _string(row.get("scenario_eval_run_id")) or None,
+        "scenario_variation_instance_id": _string(
+            row.get("scenario_variation_instance_id")
+        )
+        or None,
+        "variation_name": _string(row.get("variation_name")) or None,
+        "policy_id": _string(row.get("policy_id")) or None,
+        "prediction_match_level": _string(row.get("prediction_match_level")) or None,
+        "predicted_success": row.get("predicted_success"),
+        "actual_success": row.get("actual_success"),
+        "predicted_failures": _string_list(row.get("predicted_failures")),
+        "actual_failures": _string_list(row.get("actual_failures")),
+    }
+
+
+def _build_real_world_validation_followup_plan(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    generated_at: str,
+    outcome_source: str | None,
+    calibration_status: str,
+) -> Dict[str, Any]:
+    actions: List[Dict[str, Any]] = []
+    blockers: List[str] = []
+    if not rows:
+        blockers.append("missing_real_world_outcome_records")
+
+    def add_action(
+        row: Mapping[str, Any],
+        *,
+        action_type: str,
+        reasons: Sequence[str],
+        details: Mapping[str, Any],
+    ) -> None:
+        record_id = _string(row.get("record_id")) or "deployment_outcome"
+        actions.append(
+            {
+                "action_id": _safe_id(f"{record_id}_{action_type}_{len(actions) + 1:04d}"),
+                "action_type": action_type,
+                "status": "queued_for_review",
+                "reasons": sorted(set(_string_list(reasons))),
+                **_followup_action_context(row),
+                **dict(details),
+                "claim_boundary": (
+                    "followup_action_is_deterministic_plan_not_proof_of_rerun_or_fix"
+                ),
+            }
+        )
+
+    for row in rows:
+        missed_failures = _string_list(row.get("missed_failures"))
+        unmatched_actual = not bool(row.get("matched_prediction"))
+        weak_prediction_match = bool(row.get("matched_prediction")) and not bool(
+            row.get("exact_prediction_match")
+        )
+        actual_failed = row.get("actual_success") is False
+        missing_actual_signal = not bool(row.get("actual_result_signal_present"))
+        rerun_reasons: List[str] = []
+        if actual_failed:
+            rerun_reasons.append("actual_failed")
+        if missed_failures:
+            rerun_reasons.append("missed_failures")
+        if unmatched_actual:
+            rerun_reasons.append("unmatched_actual")
+        if weak_prediction_match:
+            rerun_reasons.append("weak_prediction_match")
+        if missing_actual_signal:
+            rerun_reasons.append("missing_actual_result_signal")
+        if rerun_reasons:
+            add_action(
+                row,
+                action_type="rerun_scenario_eval",
+                reasons=rerun_reasons,
+                details={
+                    "recommended_next_step": (
+                        "rerun_policy_on_same_task_scenario_variation_after_review"
+                    ),
+                    "rerun_inputs": {
+                        "scenario_eval_run_id": row.get("scenario_eval_run_id"),
+                        "scenario_variation_instance_id": row.get(
+                            "scenario_variation_instance_id"
+                        ),
+                        "task_id": row.get("task_id"),
+                        "scenario_id": row.get("scenario_id"),
+                        "policy_id": row.get("policy_id"),
+                    },
+                },
+            )
+        if missed_failures:
+            add_action(
+                row,
+                action_type="update_scenario_library_for_missed_failures",
+                reasons=("missed_failures",),
+                details={
+                    "missed_failures": missed_failures,
+                    "recommended_library_change": (
+                        "add_or_update_scenario_family_variation_for_missed_failures"
+                    ),
+                },
+            )
+        tuning_needed = bool(row.get("real_world_tuning_needed")) or bool(
+            _number(row.get("tuning_hours"), 0.0)
+        ) or bool(int(_number(row.get("tuning_iterations"), 0.0) or 0))
+        if tuning_needed:
+            add_action(
+                row,
+                action_type="robot_team_tuning_review",
+                reasons=("real_world_tuning_needed",),
+                details={
+                    "tuning_hours": _number(row.get("tuning_hours"), 0.0),
+                    "tuning_iterations": int(
+                        _number(row.get("tuning_iterations"), 0.0) or 0
+                    ),
+                    "tuning_notes": _string_list(row.get("tuning_notes")),
+                    "recommended_next_step": (
+                        "request_robot_team_tuning_notes_and_replay_updated_policy"
+                    ),
+                },
+            )
+        site_modifications = row.get("site_modifications") or []
+        if not isinstance(site_modifications, list):
+            site_modifications = []
+        if site_modifications:
+            add_action(
+                row,
+                action_type="site_modification_review",
+                reasons=("site_modifications_recorded",),
+                details={
+                    "site_modifications": site_modifications,
+                    "site_modifications_helped": row.get("site_modifications_helped"),
+                    "recommended_next_step": (
+                        "review_site_modification_effect_and_rerun_representative_scenarios"
+                    ),
+                },
+            )
+        if unmatched_actual:
+            add_action(
+                row,
+                action_type="unmatched_actual_review",
+                reasons=("unmatched_actual",),
+                details={
+                    "recommended_next_step": (
+                        "repair_prediction_join_keys_before_using_calibration_score"
+                    ),
+                },
+            )
+
+    summary = {
+        "action_count": len(actions),
+        "scenario_rerun_count": sum(
+            1 for action in actions if action.get("action_type") == "rerun_scenario_eval"
+        ),
+        "scenario_library_update_count": sum(
+            1
+            for action in actions
+            if action.get("action_type") == "update_scenario_library_for_missed_failures"
+        ),
+        "robot_team_tuning_review_count": sum(
+            1
+            for action in actions
+            if action.get("action_type") == "robot_team_tuning_review"
+        ),
+        "site_modification_review_count": sum(
+            1
+            for action in actions
+            if action.get("action_type") == "site_modification_review"
+        ),
+        "unmatched_actual_review_count": sum(
+            1 for action in actions if action.get("action_type") == "unmatched_actual_review"
+        ),
+    }
+    status = (
+        "blocked_missing_real_world_outcomes"
+        if not rows
+        else "review_required"
+        if actions
+        else "no_followup_required"
+    )
+    return {
+        "schema_version": REAL_WORLD_VALIDATION_FOLLOWUP_PLAN_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "outcome_source": outcome_source,
+        "calibration_status": calibration_status,
+        "source_artifacts": {
+            "deployment_outcome_ledger": "deployment_outcome_ledger.json",
+            "sim_vs_real_calibration_report": "sim_vs_real_calibration_report.json",
+            "prediction_vs_actual_deployment_summary": (
+                "prediction_vs_actual_deployment_summary.json"
+            ),
+        },
+        "summary": summary,
+        "follow_up_actions": actions,
+        "blockers": blockers,
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "artifact_purpose": "real_world_validation_loop_followup_plan",
+            "followup_plan_is_not_proof_of_rerun_tuning_or_site_modification_success": True,
+            "requires_owner_review_before_public_claim_upgrade": True,
+        },
+    }
+
+
 def build_deployment_validation_bundle(
     *,
     capture_root: str | Path,
@@ -1856,11 +2325,13 @@ def build_deployment_validation_bundle(
             scenario_eval_run_id=scenario_eval_run_id,
             scenario_variation_instance_id=scenario_variation_instance_id,
         )
-        exact_prediction_match = prediction_match_level in {
-            "scenario_eval_run_and_variation",
-            "scenario_eval_run",
-            "scenario_variation_instance",
-        }
+        exact_prediction_join_key_present = bool(
+            scenario_eval_run_id and scenario_variation_instance_id
+        )
+        exact_prediction_match = (
+            exact_prediction_join_key_present
+            and prediction_match_level == "scenario_eval_run_and_variation"
+        )
         predicted_failures = _failure_ids(prediction, "failure_mode_ids", "predicted_failures")
         actual_failures = _failure_ids(actual, "failure_mode_ids", "actual_failures", "failures")
         predicted_success = _predicted_success(prediction)
@@ -1873,11 +2344,15 @@ def build_deployment_validation_bundle(
             or f"deployment_outcome_{index:04d}",
             "task_id": task_id,
             "scenario_id": scenario_id,
-            "scenario_eval_run_id": scenario_eval_run_id
-            or _string(prediction.get("scenario_eval_run_id"))
+            "scenario_eval_run_id": scenario_eval_run_id or None,
+            "scenario_variation_instance_id": scenario_variation_instance_id or None,
+            "matched_prediction_scenario_eval_run_id": _string(
+                prediction.get("scenario_eval_run_id")
+            )
             or None,
-            "scenario_variation_instance_id": scenario_variation_instance_id
-            or _string(prediction.get("scenario_variation_instance_id"))
+            "matched_prediction_scenario_variation_instance_id": _string(
+                prediction.get("scenario_variation_instance_id")
+            )
             or None,
             "variation_name": _string(actual.get("variation_name") or actual.get("variationName"))
             or _string(prediction.get("variation_name"))
@@ -1921,6 +2396,7 @@ def build_deployment_validation_bundle(
             "owner_evidence_present": owner_evidence["owner_evidence_present"],
             "matched_prediction": bool(prediction),
             "prediction_match_level": prediction_match_level,
+            "exact_prediction_join_key_present": exact_prediction_join_key_present,
             "exact_prediction_match": exact_prediction_match,
             "claim_boundary": "real_world_outcome_requires_owner_system_evidence_review",
         }
@@ -1939,6 +2415,11 @@ def build_deployment_validation_bundle(
     ]
     unmatched_actual_record_ids = [
         _string(row.get("record_id")) for row in rows if not row.get("matched_prediction")
+    ]
+    missing_exact_prediction_join_key_record_ids = [
+        _string(row.get("record_id"))
+        for row in rows
+        if not row.get("exact_prediction_join_key_present")
     ]
     weak_prediction_match_record_ids = [
         _string(row.get("record_id"))
@@ -1976,6 +2457,8 @@ def build_deployment_validation_bundle(
         outcome_blockers.append("deployment_outcomes_missing_actual_result_signal")
     if unmatched_actual_record_ids:
         outcome_blockers.append("deployment_outcomes_missing_matching_prediction")
+    if missing_exact_prediction_join_key_record_ids:
+        outcome_blockers.append("deployment_outcomes_missing_exact_prediction_join_keys")
     calibration_status = (
         "blocked_unmatched_predictions"
         if unmatched_actual_record_ids
@@ -1994,6 +2477,12 @@ def build_deployment_validation_bundle(
         "records": rows,
         "matched_prediction_record_count": len(rows) - len(unmatched_actual_record_ids),
         "exact_prediction_record_count": exact_prediction_record_count,
+        "missing_exact_prediction_join_key_record_count": len(
+            missing_exact_prediction_join_key_record_ids
+        ),
+        "missing_exact_prediction_join_key_record_ids": (
+            missing_exact_prediction_join_key_record_ids
+        ),
         "weak_prediction_match_record_count": len(weak_prediction_match_record_ids),
         "weak_prediction_match_record_ids": weak_prediction_match_record_ids,
         "unmatched_actual_record_count": len(unmatched_actual_record_ids),
@@ -2028,6 +2517,12 @@ def build_deployment_validation_bundle(
         "sim_vs_real_calibration_score": score,
         "matched_prediction_record_count": len(rows) - len(unmatched_actual_record_ids),
         "exact_prediction_record_count": exact_prediction_record_count,
+        "missing_exact_prediction_join_key_record_count": len(
+            missing_exact_prediction_join_key_record_ids
+        ),
+        "missing_exact_prediction_join_key_record_ids": (
+            missing_exact_prediction_join_key_record_ids
+        ),
         "weak_prediction_match_record_count": len(weak_prediction_match_record_ids),
         "weak_prediction_match_record_ids": weak_prediction_match_record_ids,
         "unmatched_actual_record_count": len(unmatched_actual_record_ids),
@@ -2068,6 +2563,9 @@ def build_deployment_validation_bundle(
                 "predicted_success": row.get("predicted_success"),
                 "predicted_failures": row.get("predicted_failures"),
                 "prediction_match_level": row.get("prediction_match_level"),
+                "exact_prediction_join_key_present": row.get(
+                    "exact_prediction_join_key_present"
+                ),
                 "exact_prediction_match": row.get("exact_prediction_match"),
             }
             for row in rows
@@ -2082,6 +2580,9 @@ def build_deployment_validation_bundle(
                 "actual_success": row.get("actual_success"),
                 "actual_failures": row.get("actual_failures"),
                 "prediction_match_level": row.get("prediction_match_level"),
+                "exact_prediction_join_key_present": row.get(
+                    "exact_prediction_join_key_present"
+                ),
                 "exact_prediction_match": row.get("exact_prediction_match"),
             }
             for row in rows
@@ -2120,6 +2621,12 @@ def build_deployment_validation_bundle(
         "sim_vs_real_calibration_score": score,
         "matched_prediction_record_count": len(rows) - len(unmatched_actual_record_ids),
         "exact_prediction_record_count": exact_prediction_record_count,
+        "missing_exact_prediction_join_key_record_count": len(
+            missing_exact_prediction_join_key_record_ids
+        ),
+        "missing_exact_prediction_join_key_record_ids": (
+            missing_exact_prediction_join_key_record_ids
+        ),
         "weak_prediction_match_record_count": len(weak_prediction_match_record_ids),
         "weak_prediction_match_record_ids": weak_prediction_match_record_ids,
         "unmatched_actual_record_count": len(unmatched_actual_record_ids),
@@ -2130,12 +2637,27 @@ def build_deployment_validation_bundle(
         "missing_owner_evidence_record_ids": missing_owner_evidence_record_ids,
         "missing_actual_result_signal_record_ids": missing_actual_signal_record_ids,
         "real_world_outcome_proven": real_world_outcome_proven,
+        "real_world_validation_followup_plan_path": (
+            "real_world_validation_followup_plan.json"
+        ),
         "claim_boundary": report["claim_boundary"],
     }
+    followup_plan = _build_real_world_validation_followup_plan(
+        rows=rows,
+        generated_at=generated_at,
+        outcome_source=outcome_source,
+        calibration_status=calibration_status,
+    )
     write_json(resolved_job_dir / "deployment_outcome_ledger.json", ledger)
     write_json(resolved_job_dir / "sim_vs_real_calibration_report.json", report)
     write_json(resolved_job_dir / "prediction_vs_actual_deployment_summary.json", summary)
-    return {"ledger": ledger, "calibration_report": report, "summary": summary}
+    write_json(resolved_job_dir / "real_world_validation_followup_plan.json", followup_plan)
+    return {
+        "ledger": ledger,
+        "calibration_report": report,
+        "summary": summary,
+        "followup_plan": followup_plan,
+    }
 
 
 def fingerprint_execution_artifacts(*payloads: Mapping[str, Any]) -> str:

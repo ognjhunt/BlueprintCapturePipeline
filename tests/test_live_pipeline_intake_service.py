@@ -137,6 +137,34 @@ def _policy_package(job_id: str = "webapp-job-1") -> dict[str, object]:
     }
 
 
+def _real_robot_pov_manifest(job_id: str = "webapp-job-1") -> dict[str, object]:
+    return {
+        "schema_version": "real_robot_pov_manifest.v1",
+        "job_id": job_id,
+        "owner_system": "robot-team-owner-system",
+        "records": [
+            {
+                "evidence_id": "real-pov-1",
+                "task_id": "place_return_in_bin",
+                "scenario_id": "scenario_place_return_in_bin_mobile",
+                "scenario_eval_run_id": "scenario-run-1",
+                "scenario_variation_instance_id": "scenario-variation-1",
+                "robot_camera_video_uri": "owner://pov/scenario-run-1.mp4",
+                "action_log_uri": "owner://actions/scenario-run-1.jsonl",
+                "timestamp_alignment": "aligned_to_scenario_eval_run",
+                "owner_evidence_refs": {
+                    "camera": "owner://pov/scenario-run-1.mp4",
+                    "action_log": "owner://actions/scenario-run-1.jsonl",
+                },
+                "operator_attestation": {
+                    "attested_by": "robot-team-ops",
+                    "attestation": "Robot POV and action logs are aligned to this eval run.",
+                },
+            }
+        ],
+    }
+
+
 def test_live_pipeline_intake_service_requires_token(tmp_path: Path, monkeypatch) -> None:
     capture_root = _capture_root(tmp_path)
     manifest_path = _control_manifest(tmp_path, capture_root)
@@ -368,6 +396,80 @@ def test_live_pipeline_intake_service_records_blocked_policy_package(
         "input_blockers"
     ]
     assert payload["policy_package_staging"]["performed"] is False
+
+
+def test_live_pipeline_intake_service_stages_real_robot_pov_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/live-pipeline/real-robot-pov",
+        json=_real_robot_pov_manifest(),
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    target_path = Path(payload["real_robot_pov_staging"]["target_path"])
+    assert payload["status"] == "staged_for_control_plane"
+    assert payload["accepted"] is True
+    assert payload["real_robot_pov"]["status"] == "ready_for_robot_eval_job"
+    assert payload["real_robot_pov"]["record_count"] == 1
+    assert payload["real_robot_pov"]["missing_exact_key_record_ids"] == []
+    assert payload["real_robot_pov"]["missing_evidence_record_ids"] == []
+    assert payload["real_robot_pov_staging"]["performed"] is True
+    assert target_path == (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / "real_robot_pov_manifest.json"
+    )
+    assert target_path.is_file()
+    assert payload["proof_boundary"]["robot_pov_evidence_proven"] is False
+
+
+def test_live_pipeline_intake_service_records_blocked_real_robot_pov_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/live-pipeline/real-robot-pov",
+        json={
+            "schema_version": "real_robot_pov_manifest.v1",
+            "job_id": "../escape",
+            "records": [
+                {
+                    "evidence_id": "real-pov-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "robot_camera_video_uri": "owner://pov/scenario-run-1.mp4",
+                }
+            ],
+        },
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["status"] == "blocked"
+    assert payload["accepted"] is False
+    assert "real_robot_pov:real_robot_pov_job_id_unsafe" in payload["input_blockers"]
+    assert "real_robot_pov:real_robot_pov_missing_exact_keys" in payload[
+        "input_blockers"
+    ]
+    assert "real_robot_pov:real_robot_pov_missing_action_logs" in payload[
+        "input_blockers"
+    ]
+    assert payload["real_robot_pov_staging"]["performed"] is False
 
 
 def test_live_pipeline_intake_service_records_blocked_deployment_outcomes(

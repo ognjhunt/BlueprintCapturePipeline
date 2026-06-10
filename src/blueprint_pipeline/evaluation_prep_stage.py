@@ -1219,6 +1219,10 @@ def robot_eval_job_evaluation_prep_surface(
         "prediction_vs_actual_deployment_summary": (
             "prediction_vs_actual_deployment_summary.json"
         ),
+        "real_world_validation_followup_plan": "real_world_validation_followup_plan.json",
+        "real_world_validation_followup_request_queue": (
+            "real_world_validation_followup_request_queue.json"
+        ),
         "live_eval_closure_manifest": "live_eval_closure_manifest.json",
         "training_result": "training_result.json",
         "evaluation_result": "evaluation_result.json",
@@ -1310,6 +1314,12 @@ def robot_eval_job_evaluation_prep_surface(
             "deployment_outcome_ledger_uri": "robot_eval_job_deployment_outcome_ledger_uri",
             "sim_vs_real_calibration_report_uri": (
                 "robot_eval_job_sim_vs_real_calibration_report_uri"
+            ),
+            "real_world_validation_followup_plan_uri": (
+                "robot_eval_job_real_world_validation_followup_plan_uri"
+            ),
+            "real_world_validation_followup_request_queue_uri": (
+                "robot_eval_job_real_world_validation_followup_request_queue_uri"
             ),
             "live_eval_closure_manifest_uri": (
                 "robot_eval_job_live_eval_closure_manifest_uri"

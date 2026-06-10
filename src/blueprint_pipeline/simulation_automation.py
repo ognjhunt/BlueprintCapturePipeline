@@ -1757,6 +1757,40 @@ def _build_world_model_engine_plugins(
     return plugins
 
 
+def _simulator_adapter_smoke_contract(framework: str) -> Dict[str, Any]:
+    return {
+        "schema_version": "simulator_adapter_smoke_contract.v1",
+        "framework": framework,
+        "smoke_runner": f"{framework}_owner_command_probe",
+        "required_env": {
+            "BLUEPRINT_CAPTURE_ROOT": "absolute capture root under owner runtime",
+            "BLUEPRINT_SIMULATOR_FRAMEWORK": framework,
+            "BLUEPRINT_SCENARIO_EVAL_MATRIX": "scenario_eval_matrix.json",
+            "BLUEPRINT_SIMULATOR_OUTPUT": "path to simulator attempts JSON output",
+        },
+        "required_output_fields": [
+            "scenario_eval_run_id",
+            "scenario_variation_instance_id",
+            "task_id",
+            "scenario_id",
+            "success",
+            "metrics",
+        ],
+        "accepted_output_shapes": [
+            "attempts[]",
+            "records[]",
+            "outcomes[]",
+            "single attempt object",
+        ],
+        "smoke_output_acceptance": {
+            "normalized_attempt_trace_required": True,
+            "failure_labels_required": True,
+            "prediction_ledger_required": True,
+        },
+        "proof_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
 def _build_simulator_engine_plugin_registry(
     *,
     context: Any,
@@ -1841,6 +1875,7 @@ def _build_simulator_engine_plugin_registry(
                 "output_format": "blueprint_normalized_attempt_trace.v1",
                 "failure_label_mapping_required": True,
             },
+            "adapter_smoke_contract": _simulator_adapter_smoke_contract(framework),
             "proof_boundary": dict(CLAIM_BOUNDARY),
         }
 
@@ -2397,6 +2432,179 @@ def _gpu_owner_system_proof_schema(*, generated_at: str, scene_id: str, capture_
     }
 
 
+def _append_blocker_detail(
+    details: List[Dict[str, Any]],
+    seen: set[str],
+    *,
+    blocker_id: str,
+    source_artifact: str,
+    severity: str,
+    required_input: str,
+    safe_next_command: str | None = None,
+) -> None:
+    if not blocker_id or blocker_id in seen:
+        return
+    seen.add(blocker_id)
+    detail: Dict[str, Any] = {
+        "blocker_id": blocker_id,
+        "source_artifact": source_artifact,
+        "severity": severity,
+        "required_input": required_input,
+        "proof_boundary": "required input only; does not prove simulator execution or robot readiness",
+    }
+    if safe_next_command:
+        detail["safe_next_command"] = safe_next_command
+    details.append(detail)
+
+
+def _gpu_handoff_blocker_details(
+    *,
+    scene_preflight: Mapping[str, Any],
+    spawn_validation: Mapping[str, Any],
+    cpu_preflight: Mapping[str, Any],
+    owner_gpu_proven: bool,
+) -> List[Dict[str, Any]]:
+    details: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    hard_blockers = _string_list(cpu_preflight.get("hard_preflight_blockers"))
+    scene_blockers = _string_list(scene_preflight.get("blockers"))
+    spawn_blockers = _string_list(spawn_validation.get("blockers"))
+    all_blockers = _string_list([*hard_blockers, *scene_blockers, *spawn_blockers])
+
+    if not owner_gpu_proven:
+        _append_blocker_detail(
+            details,
+            seen,
+            blocker_id="owner_gpu_simulator_execution_not_run",
+            source_artifact="gpu_owner_system_proof.json",
+            severity="expected_before_first_gpu_attempt",
+            required_input=(
+                "Run the selected simulator backend on an owner GPU system and provide "
+                "gpu_owner_system_proof.json plus stdout/stderr/load/spawn/action traces."
+            ),
+            safe_next_command=(
+                "blueprint-run-owner-gpu-proof --capture-root <capture-root> "
+                "--proof-dir <proof-dir> --command <owner simulator command>"
+            ),
+        )
+
+    for blocker in all_blockers:
+        if blocker == "missing_local_scene_asset":
+            _append_blocker_detail(
+                details,
+                seen,
+                blocker_id=blocker,
+                source_artifact="scene_asset_preflight.json",
+                severity="hard_pre_gpu_blocker",
+                required_input=(
+                    "Provide a local materialized scene asset with geometry or bounds, such as "
+                    "World Labs/SimReady/OpenUSD/glTF/PLY output referenced by the capture package."
+                ),
+                safe_next_command="blueprint-run-simulation-automation --capture-root <capture-root>",
+            )
+        elif blocker == "missing_scene_frame_estimate":
+            _append_blocker_detail(
+                details,
+                seen,
+                blocker_id=blocker,
+                source_artifact="scene_frame_estimate.json",
+                severity="hard_pre_gpu_blocker",
+                required_input=(
+                    "Generate scene_frame_estimate.json from a local scene asset that exposes "
+                    "finite min/max bounds and floor_z_estimate for CPU spawn sanity checks."
+                ),
+                safe_next_command="blueprint-run-simulation-automation --capture-root <capture-root>",
+            )
+        elif blocker == "scene_bounds_missing_or_invalid":
+            _append_blocker_detail(
+                details,
+                seen,
+                blocker_id=blocker,
+                source_artifact="spawn_pose_validation_manifest.json",
+                severity="hard_pre_gpu_blocker",
+                required_input=(
+                    "Provide finite scene bounds before owner GPU execution; spawn validation "
+                    "cannot distinguish an invalid spawn from missing scene geometry."
+                ),
+                safe_next_command="blueprint-run-simulation-automation --capture-root <capture-root>",
+            )
+        elif blocker == "scene_bounds_empty_or_inverted":
+            _append_blocker_detail(
+                details,
+                seen,
+                blocker_id=blocker,
+                source_artifact="spawn_pose_validation_manifest.json",
+                severity="hard_pre_gpu_blocker",
+                required_input="Repair scene bounds so max xyz is greater than min xyz on every axis.",
+                safe_next_command="blueprint-run-simulation-automation --capture-root <capture-root>",
+            )
+        elif blocker == "spawn_outside_scene_bounds":
+            _append_blocker_detail(
+                details,
+                seen,
+                blocker_id=blocker,
+                source_artifact="spawn_pose_validation_manifest.json",
+                severity="hard_pre_gpu_blocker",
+                required_input=(
+                    "Choose or review a robot spawn pose inside the scene bounds before owner GPU execution."
+                ),
+                safe_next_command="blueprint-run-simulation-automation --capture-root <capture-root>",
+            )
+        elif blocker == "spawn_inside_known_or_proxy_geometry":
+            _append_blocker_detail(
+                details,
+                seen,
+                blocker_id=blocker,
+                source_artifact="spawn_pose_validation_manifest.json",
+                severity="hard_pre_gpu_blocker",
+                required_input=(
+                    "Choose a robot spawn pose outside known/proxy geometry before owner GPU execution."
+                ),
+                safe_next_command="blueprint-run-simulation-automation --capture-root <capture-root>",
+            )
+        elif blocker in {"portable_collider_glb_missing", "isaac_usd_collision_unverified"}:
+            _append_blocker_detail(
+                details,
+                seen,
+                blocker_id=blocker,
+                source_artifact="scene_asset_preflight.json",
+                severity="review_or_backend_selection_blocker",
+                required_input=(
+                    "Provide or review collision assets if the selected simulator/backend requires "
+                    "contact or collision confidence; this does not block visual scene-load smoke by itself."
+                ),
+            )
+        elif blocker == "simulator_execution_not_run":
+            continue
+        else:
+            _append_blocker_detail(
+                details,
+                seen,
+                blocker_id=blocker,
+                source_artifact="pre_gpu_readiness_summary.json",
+                severity="pre_gpu_review_required",
+                required_input="Inspect the named source artifact and supply the missing pre-GPU input.",
+            )
+    return details
+
+
+def _spawn_validation_summary(spawn_validation: Mapping[str, Any]) -> Dict[str, Any]:
+    validations = [
+        dict(item)
+        for item in spawn_validation.get("validations") or []
+        if isinstance(item, Mapping)
+    ]
+    return {
+        "status": spawn_validation.get("status"),
+        "episode_count": spawn_validation.get("episode_count") or len(validations),
+        "blockers": _string_list(spawn_validation.get("blockers")),
+        "valid_candidate_count": sum(
+            int(item.get("valid_candidate_count") or 0) for item in validations
+        ),
+        "candidate_count": sum(int(item.get("candidate_count") or 0) for item in validations),
+    }
+
+
 def _gpu_run_checklist_text(packet: Mapping[str, Any]) -> str:
     commands = packet.get("command_templates") or {}
     recommended = packet.get("recommended_backends") or []
@@ -2514,6 +2722,13 @@ def _build_gpu_handoff_artifacts(
         blockers.append("missing_scene_asset_dependencies")
     if spawn_validation.get("status") == "blocked":
         blockers.append("spawn_validation_blocked")
+    blocker_details = _gpu_handoff_blocker_details(
+        scene_preflight=_read_optional_mapping(automation_dir / "scene_asset_preflight.json"),
+        spawn_validation=spawn_validation,
+        cpu_preflight=cpu_preflight,
+        owner_gpu_proven=owner_gpu_proven,
+    )
+    spawn_summary = _spawn_validation_summary(spawn_validation)
     packet = {
         "schema_version": GPU_HANDOFF_PACKET_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2549,6 +2764,9 @@ def _build_gpu_handoff_artifacts(
             "remote_ref_count": dependency_audit.get("remote_ref_count", 0),
             "unresolved_ref_count": dependency_audit.get("unresolved_ref_count", 0),
         },
+        "spawn_validation_summary": spawn_summary,
+        "hard_preflight_blockers": _string_list(cpu_preflight.get("hard_preflight_blockers")),
+        "pre_gpu_blocker_details": blocker_details,
         "recommended_backends": recommended_backends,
         "target_backend_guidance": {
             "isaac_sim": "Prefer for rich USD/OpenUSD scenes, references, materials, and future Isaac Lab workflows.",
@@ -2639,6 +2857,7 @@ def _build_gpu_handoff_artifacts(
         "safe_proof_command": command_templates.get("isaac_sim"),
         "retry_condition": "Retry after owner-system proof artifacts are written and synced.",
         "disallowed_workaround": "Do not mark simulator, robot readiness, contact, policy, or safety proof from CPU-only artifacts.",
+        "pre_gpu_blocker_details": blocker_details,
         "next_artifacts": packet["output_artifacts_expected"],
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

@@ -429,6 +429,16 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         assert plugin["adapter_contract_status"] == "ready"
         assert plugin["managed_execution_supported"] is True
         assert plugin["execution_manager"]["status"] == "gated_waiting_for_owner_runtime"
+        smoke_contract = plugin["adapter_smoke_contract"]
+        assert smoke_contract["schema_version"] == "simulator_adapter_smoke_contract.v1"
+        assert smoke_contract["framework"] == plugin["framework"]
+        assert smoke_contract["required_env"]["BLUEPRINT_SIMULATOR_OUTPUT"]
+        assert "scenario_eval_run_id" in smoke_contract["required_output_fields"]
+        assert "scenario_variation_instance_id" in smoke_contract["required_output_fields"]
+        assert smoke_contract["smoke_output_acceptance"][
+            "normalized_attempt_trace_required"
+        ] is True
+        assert smoke_contract["proof_boundary"]["robot_readiness_proven"] is False
         assert plugin["inputs"]["scenario_variation_instances"] == (
             "scenario_variation_instances.json"
         )
@@ -492,8 +502,16 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     assert gpu_handoff["arena_package"]["status"] == "ready_for_owner_arena_pack_review"
     assert "isaac_lab_arena" in gpu_handoff["target_backend_guidance"]
     assert "gpu_owner_system_proof.json" in gpu_handoff["output_artifacts_expected"]
+    assert gpu_handoff["pre_gpu_blocker_details"][0]["blocker_id"] == (
+        "owner_gpu_simulator_execution_not_run"
+    )
+    assert all(
+        detail["proof_boundary"].endswith("does not prove simulator execution or robot readiness")
+        for detail in gpu_handoff["pre_gpu_blocker_details"]
+    )
     assert "owner_system_id" in proof_schema["required_fields"]
     assert owner_blocked["blocker_id"] == "owner_gpu_simulator_execution_not_run"
+    assert owner_blocked["pre_gpu_blocker_details"] == gpu_handoff["pre_gpu_blocker_details"]
     assert owner_blocked["disallowed_workaround"].startswith("Do not mark simulator")
     assert run_manifest["live_provider_calls_performed"] is False
     assert run_manifest["remote_asset_downloads_performed"] is False

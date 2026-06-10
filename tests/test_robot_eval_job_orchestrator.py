@@ -295,6 +295,13 @@ def _scenario_eval_run_id(variation_name: str, index: int) -> str:
     )
 
 
+def _scenario_variation_instance_id(variation_name: str) -> str:
+    return (
+        "variation_place_return_in_bin_scenario_place_return_in_bin_mobile_"
+        f"{variation_name}"
+    )
+
+
 def _policy_reference_attempts(
     *,
     policy_id: str,
@@ -305,9 +312,8 @@ def _policy_reference_attempts(
         {
             "attempt_id": f"{policy_id}-{index:04d}",
             "scenario_eval_run_id": _scenario_eval_run_id(variation_name, index),
-            "scenario_variation_instance_id": (
-                "place_return_in_bin_scenario_place_return_in_bin_mobile_"
-                f"{variation_name}_instance"
+            "scenario_variation_instance_id": _scenario_variation_instance_id(
+                variation_name
             ),
             "variation_name": variation_name,
             "scenario_id": "scenario_place_return_in_bin_mobile",
@@ -320,6 +326,41 @@ def _policy_reference_attempts(
         }
         for index, variation_name in enumerate(names, start=1)
     ]
+
+
+def _write_real_robot_pov_manifest(capture_root: Path) -> None:
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_inputs" / "real_robot_pov_manifest.json",
+        {
+            "schema_version": "real_robot_pov_manifest.v1",
+            "owner_system": "robot-team-owner-system",
+            "timestamp_alignment": "aligned_to_scenario_eval_run",
+            "records": [
+                {
+                    "evidence_id": f"real-pov-{index:04d}",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "scenario_eval_run_id": _scenario_eval_run_id(variation_name, index),
+                    "scenario_variation_instance_id": _scenario_variation_instance_id(
+                        variation_name
+                    ),
+                    "variation_name": variation_name,
+                    "robot_camera_video_uri": f"owner://pov/{variation_name}.mp4",
+                    "action_log_uri": f"owner://actions/{variation_name}.jsonl",
+                    "robot_state_log_uri": f"owner://state/{variation_name}.jsonl",
+                    "owner_evidence_refs": {
+                        "camera": f"owner://pov/{variation_name}.mp4",
+                        "action_log": f"owner://actions/{variation_name}.jsonl",
+                    },
+                    "operator_attestation": {
+                        "attested_by": "robot-team-ops",
+                        "attestation": "Robot POV and action log are aligned to this eval run.",
+                    },
+                }
+                for index, variation_name in enumerate(POLICY_REFERENCE_VARIATION_NAMES, start=1)
+            ],
+        },
+    )
 
 
 def _full_job_request(
@@ -444,6 +485,8 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "deployment_outcome_ledger.json",
         "sim_vs_real_calibration_report.json",
         "prediction_vs_actual_deployment_summary.json",
+        "real_world_validation_followup_plan.json",
+        "real_world_validation_followup_request_queue.json",
         "live_eval_closure_manifest.json",
         "post_training_data_package_export_manifest.json",
         "proof_boundary.json",
@@ -638,6 +681,10 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert live_closure["repo_local_artifacts_ready"] is True
     assert live_closure["live_external_ready"] is False
     assert live_closure["gates"]["scenario_library"]["passed"] is True
+    assert live_closure["gates"]["real_robot_pov_evidence"]["passed"] is False
+    assert "real_robot_pov_evidence_not_proven" in live_closure["gates"][
+        "real_robot_pov_evidence"
+    ]["blockers"]
     assert live_closure["gates"]["report_generation"]["passed"] is True
     requirement_coverage = live_closure["requirement_coverage"]
     assert requirement_coverage["schema_version"] == "live_robot_eval_requirement_coverage.v1"
@@ -655,6 +702,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "neutral_eval_harness_report",
     }
     assert set(requirement_coverage["live_external_requirement_ids"]) == {
+        "real_robot_pov_evidence",
         "real_world_validation_loop",
         "predicted_vs_actual_deployment_data",
     }
@@ -663,6 +711,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         - set(requirement_coverage["passed_requirement_ids"])
     )
     assert {
+        "real_robot_pov_evidence",
         "real_world_validation_loop",
         "predicted_vs_actual_deployment_data",
     }.issubset(set(requirement_coverage["blocked_requirement_ids"]))
@@ -785,6 +834,7 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
     raw_manifest["upstream_handoff"] = dict(webapp_ids)
     _write_json(capture_root / "raw" / "manifest.json", raw_manifest)
     _write_robot_eval_cards(capture_root)
+    _write_real_robot_pov_manifest(capture_root)
 
     simulator_writer = tmp_path / "write_simulator_output.py"
     simulator_writer.write_text(
@@ -874,6 +924,9 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
                     "task_id": "place_return_in_bin",
                     "scenario_id": "scenario_place_return_in_bin_mobile",
                     "scenario_eval_run_id": _scenario_eval_run_id("lighting_variation", 1),
+                    "scenario_variation_instance_id": _scenario_variation_instance_id(
+                        "lighting_variation"
+                    ),
                     "policy_id": "policy-live-command",
                     "actual_success": True,
                     "cycle_time_seconds": 11.5,
@@ -957,6 +1010,7 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
     assert str(staged_closure_evidence_path) in live_closure["evidence_sources"]
     assert live_closure["blockers"] == []
     assert all(gate["passed"] for gate in live_closure["gates"].values())
+    assert live_closure["gates"]["real_robot_pov_evidence"]["passed"] is True
     assert proof_boundary["status"] == "live_end_to_end_verified"
     assert proof_boundary["simulator_execution_proven"] is True
     assert proof_boundary["robot_policy_execution_proven"] is True
@@ -3382,6 +3436,9 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
                     "task_id": "place_return_in_bin",
                     "scenario_id": "scenario_place_return_in_bin_mobile",
                     "scenario_eval_run_id": _scenario_eval_run_id("lighting_variation", 1),
+                    "scenario_variation_instance_id": _scenario_variation_instance_id(
+                        "lighting_variation"
+                    ),
                     "policy_id": "policy-command",
                     "actual_success": False,
                     "failure_mode_ids": ["failure_collision_risk"],
@@ -3444,9 +3501,13 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
     calibration = _read_json(job_dir / "sim_vs_real_calibration_report.json")
     deployment_summary = _read_json(job_dir / "prediction_vs_actual_deployment_summary.json")
+    followup_plan = _read_json(job_dir / "real_world_validation_followup_plan.json")
+    followup_queue = _read_json(job_dir / "real_world_validation_followup_request_queue.json")
     evaluation = _read_json(job_dir / "evaluation_result.json")
     package = _read_json(job_dir / "post_training_data_package_export_manifest.json")
+    robot_eval_report = _read_json(job_dir / "robot_eval_report.json")
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
 
     assert policy_execution["robot_policy_execution_proven"] is True
     assert policy_execution["modality_results"]["policy_api_endpoint"]["status"] == "completed"
@@ -3476,16 +3537,152 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     assert deployment_summary["whether_site_modifications_helped"][0][
         "site_modifications_helped"
     ] is True
+    assert deployment_summary["real_world_validation_followup_plan_path"] == (
+        "real_world_validation_followup_plan.json"
+    )
+    assert followup_plan["schema_version"] == "real_world_validation_followup_plan.v1"
+    assert followup_plan["status"] == "review_required"
+    assert followup_plan["source_artifacts"] == {
+        "deployment_outcome_ledger": "deployment_outcome_ledger.json",
+        "sim_vs_real_calibration_report": "sim_vs_real_calibration_report.json",
+        "prediction_vs_actual_deployment_summary": (
+            "prediction_vs_actual_deployment_summary.json"
+        ),
+    }
+    assert followup_plan["summary"] == {
+        "action_count": 4,
+        "scenario_rerun_count": 1,
+        "scenario_library_update_count": 1,
+        "robot_team_tuning_review_count": 1,
+        "site_modification_review_count": 1,
+        "unmatched_actual_review_count": 0,
+    }
+    action_types = {action["action_type"] for action in followup_plan["follow_up_actions"]}
+    assert action_types == {
+        "rerun_scenario_eval",
+        "update_scenario_library_for_missed_failures",
+        "robot_team_tuning_review",
+        "site_modification_review",
+    }
+    rerun_action = next(
+        action
+        for action in followup_plan["follow_up_actions"]
+        if action["action_type"] == "rerun_scenario_eval"
+    )
+    assert rerun_action["scenario_eval_run_id"] == _scenario_eval_run_id(
+        "lighting_variation",
+        1,
+    )
+    assert rerun_action["scenario_variation_instance_id"] == (
+        _scenario_variation_instance_id("lighting_variation")
+    )
+    assert "actual_failed" in rerun_action["reasons"]
+    scenario_update = next(
+        action
+        for action in followup_plan["follow_up_actions"]
+        if action["action_type"] == "update_scenario_library_for_missed_failures"
+    )
+    assert scenario_update["missed_failures"] == ["failure_collision_risk"]
+    assert scenario_update["variation_name"] == "lighting_variation"
+    assert followup_queue["schema_version"] == "real_world_validation_followup_request_queue.v1"
+    assert followup_queue["status"] == "ready_for_inbox_processing"
+    assert followup_queue["queued_request_count"] == 1
+    queued_request = followup_queue["queued_requests"][0]
+    assert queued_request["schema_version"] == "robot_eval_job_request.v1"
+    assert queued_request["job_id"] == "job-policy-and-real-world-followup-0001"
+    assert queued_request["parent_job_id"] == "job-policy-and-real-world"
+    assert queued_request["source_followup_action_id"] == rerun_action["action_id"]
+    assert queued_request["requested_scenario_eval_runs"] == [
+        {
+            "scenario_eval_run_id": _scenario_eval_run_id("lighting_variation", 1),
+            "scenario_variation_instance_id": _scenario_variation_instance_id(
+                "lighting_variation"
+            ),
+            "task_id": "place_return_in_bin",
+            "scenario_id": "scenario_place_return_in_bin_mobile",
+            "variation_name": "lighting_variation",
+            "source_followup_action_id": rerun_action["action_id"],
+        }
+    ]
+    assert "actual_outcomes" not in queued_request
+    queued_request_file = Path(followup_queue["queued_request_paths"][0])
+    assert queued_request_file.is_file()
+    assert _read_json(queued_request_file) == queued_request
+    followup_result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=queued_request_file,
+        job_id=queued_request["job_id"],
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+    followup_job_dir = Path(followup_result["job_dir"])
+    followup_matrix = _read_json(followup_job_dir / "scenario_eval_matrix.json")
+    followup_live_closure = _read_json(followup_job_dir / "live_eval_closure_manifest.json")
+    assert followup_matrix["requested_scenario_eval_run_filter_count"] == 1
+    assert followup_matrix["unmatched_requested_scenario_eval_run_filter_count"] == 0
+    assert followup_matrix["scenario_eval_run_count"] == 1
+    assert followup_matrix["runs"][0]["scenario_eval_run_id"] == _scenario_eval_run_id(
+        "lighting_variation",
+        1,
+    )
+    assert followup_matrix["runs"][0]["scenario_variation_instance_id"] == (
+        _scenario_variation_instance_id("lighting_variation")
+    )
+    assert followup_live_closure["gates"]["scenario_eval_suite"]["evidence"][
+        "exact_followup_rerun_scope"
+    ] is True
+    assert followup_live_closure["gates"]["scenario_eval_suite"]["passed"] is True
+    assert robot_eval_report["real_world_validation"]["followup_plan_status"] == (
+        "review_required"
+    )
+    assert robot_eval_report["real_world_validation"]["followup_request_queue_status"] == (
+        "ready_for_inbox_processing"
+    )
+    assert robot_eval_report["artifact_paths"]["real_world_validation_followup_plan"] == (
+        "real_world_validation_followup_plan.json"
+    )
+    assert robot_eval_report["artifact_paths"]["real_world_validation_followup_request_queue"] == (
+        "real_world_validation_followup_request_queue.json"
+    )
     assert package["included_artifacts"]["sim_vs_real_calibration_report"] == (
         "sim_vs_real_calibration_report.json"
     )
     assert package["included_artifacts"]["deployment_outcome_ledger"] == (
         "deployment_outcome_ledger.json"
     )
+    assert package["included_artifacts"]["real_world_validation_followup_plan"] == (
+        "real_world_validation_followup_plan.json"
+    )
+    assert package["included_artifacts"]["real_world_validation_followup_request_queue"] == (
+        "real_world_validation_followup_request_queue.json"
+    )
     assert package["export_policy"]["policy_execution_trace_included"] is True
     assert package["export_policy"]["sim_vs_real_calibration_included"] is True
+    assert package["export_policy"]["real_world_validation_followup_plan_included"] is True
+    assert package["export_policy"]["real_world_validation_followup_queue_included"] is True
     assert run_manifest["robot_policy_execution_proven"] is True
     assert run_manifest["real_world_outcome_proven"] is True
+    assert run_manifest["real_world_validation_followup_plan_status"] == "review_required"
+    assert run_manifest["real_world_validation_followup_request_queue_status"] == (
+        "ready_for_inbox_processing"
+    )
+    assert run_manifest["cpu_preflight_artifacts"]["real_world_validation_followup_plan"] == (
+        "real_world_validation_followup_plan.json"
+    )
+    assert run_manifest["cpu_preflight_artifacts"][
+        "real_world_validation_followup_request_queue"
+    ] == "real_world_validation_followup_request_queue.json"
+    assert run_manifest["artifacts"]["real_world_validation_followup_plan"] == (
+        "real_world_validation_followup_plan.json"
+    )
+    assert run_manifest["artifacts"]["real_world_validation_followup_request_queue"] == (
+        "real_world_validation_followup_request_queue.json"
+    )
+    validation_gate = live_closure["gates"]["real_world_validation_loop"]
+    assert validation_gate["evidence"]["followup_request_queue_status"] == (
+        "ready_for_inbox_processing"
+    )
+    assert validation_gate["evidence"]["followup_request_queue_request_count"] == 1
     assert run_manifest["robot_readiness_proven"] is False
 
 
@@ -3566,6 +3763,55 @@ def test_robot_eval_job_ingests_inline_real_world_outcomes_from_job_request(
     assert run_manifest["owner_evidence_record_count"] == 0
     assert run_manifest["missing_owner_evidence_record_ids"] == ["inline-pilot-outcome-1"]
     assert run_manifest["real_world_outcome_proven"] is False
+
+
+def test_robot_eval_job_marks_run_only_deployment_outcomes_as_missing_exact_join_keys(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request_path = tmp_path / "job-request.json"
+    request = _full_job_request(capture_root)
+    request["actual_outcomes"] = {
+        "schema_version": "actual_outcome_manifest.v1",
+        "records": [
+            {
+                "outcome_id": "pilot-run-only-1",
+                "task_id": "place_return_in_bin",
+                "scenario_id": "scenario_place_return_in_bin_mobile",
+                "scenario_eval_run_id": _scenario_eval_run_id("lighting_variation", 1),
+                "policy_id": "fixture-policy",
+                "actual_success": True,
+                "failure_mode_ids": [],
+                "cycle_time_seconds": 10.5,
+                "intervention_count": 0,
+                "evidence_refs": {"pilot_log": "owner://pilot/run-only-1"},
+            }
+        ],
+    }
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-run-only-real-world",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
+    calibration = _read_json(job_dir / "sim_vs_real_calibration_report.json")
+    summary = _read_json(job_dir / "prediction_vs_actual_deployment_summary.json")
+
+    assert deployment["missing_exact_prediction_join_key_record_ids"] == ["pilot-run-only-1"]
+    assert "deployment_outcomes_missing_exact_prediction_join_keys" in deployment["blockers"]
+    assert deployment["records"][0]["prediction_match_level"] == "scenario_eval_run"
+    assert deployment["records"][0]["exact_prediction_match"] is False
+    assert calibration["status"] == "blocked_weak_prediction_matches"
+    assert calibration["missing_exact_prediction_join_key_record_ids"] == ["pilot-run-only-1"]
+    assert summary["missing_exact_prediction_join_key_record_ids"] == ["pilot-run-only-1"]
 
 
 def test_robot_eval_job_blocks_deployment_outcomes_without_actual_result_signal(
@@ -3670,6 +3916,56 @@ def test_live_robot_eval_closure_recomputes_real_world_owner_evidence_from_rows(
     assert gate["evidence"]["missing_owner_evidence_record_ids"] == [
         "spoofed-owner-evidence"
     ]
+
+
+def test_live_robot_eval_closure_requires_real_world_followup_plan(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-missing-followup-plan"
+    _write_json(
+        job_dir / "deployment_outcome_intake_manifest.json",
+        {
+            "schema_version": "deployment_outcome_intake_manifest.v1",
+            "status": "completed",
+            "record_count": 1,
+            "real_world_outcome_records_present": True,
+            "real_world_outcome_proven": False,
+        },
+    )
+    _write_json(
+        job_dir / "deployment_outcome_ledger.json",
+        {
+            "schema_version": "deployment_outcome_ledger.v1",
+            "status": "completed",
+            "record_count": 1,
+            "real_world_outcome_records_present": True,
+            "real_world_outcome_proven": True,
+            "owner_evidence_record_count": 1,
+            "missing_owner_evidence_record_ids": [],
+            "missing_actual_result_signal_record_ids": [],
+            "records": [
+                {
+                    "record_id": "proven-without-followup",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "actual_success": True,
+                    "owner_evidence_present": True,
+                    "owner_evidence_refs": {"pilot_log": "owner://pilot/proven"},
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["real_world_validation_loop"]
+    assert gate["passed"] is False
+    assert "real_world_validation_followup_plan_missing" in gate["blockers"]
+    assert gate["evidence"]["real_world_validation_followup_plan"]["exists"] is False
 
 
 def test_robot_eval_job_blocks_predicted_vs_actual_with_unmatched_actual_run_id(
@@ -4071,6 +4367,60 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     assert run_manifest["robot_readiness_proven"] is False
 
 
+def test_robot_eval_job_ingests_real_robot_pov_and_action_logs_separate_from_generated_support(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    _write_real_robot_pov_manifest(capture_root)
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, _full_job_request(capture_root))
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-real-pov-evidence",
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = Path(result["job_dir"])
+    robot_pov = _read_json(job_dir / "robot_pov_observation_manifest.json")
+    frame_sequences = _read_json(job_dir / "robot_pov_frame_sequence_manifest.json")
+    storyboard = _read_json(job_dir / "robot_pov_render_storyboard.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert robot_pov["robot_pov_generated"] is True
+    assert robot_pov["generated_robot_pov_support_available"] is True
+    assert robot_pov["real_robot_pov_evidence_record_count"] == len(
+        POLICY_REFERENCE_VARIATION_NAMES
+    )
+    assert robot_pov["real_robot_pov_action_log_record_count"] == len(
+        POLICY_REFERENCE_VARIATION_NAMES
+    )
+    assert robot_pov["missing_real_robot_pov_scenario_eval_run_ids"] == []
+    assert robot_pov["robot_pov_evidence_proven"] is True
+    assert robot_pov["real_robot_pov_manifest_path"] == (
+        "../robot_eval_inputs/real_robot_pov_manifest.json"
+    )
+    assert all(
+        observation["real_robot_pov_evidence"]["action_log_uri"]
+        for observation in robot_pov["observations"]
+    )
+    assert all(
+        observation["real_robot_pov_evidence"]["robot_camera_video_uri"]
+        for observation in robot_pov["observations"]
+    )
+    assert frame_sequences["local_robot_pov_render_generated"] is True
+    assert frame_sequences["robot_pov_evidence_proven"] is False
+    assert storyboard["local_robot_pov_render_generated"] is True
+    assert storyboard["robot_pov_evidence_proven"] is False
+    assert run_manifest["robot_pov_evidence_proven"] is True
+    assert run_manifest["robot_readiness_proven"] is False
+
+
 def test_robot_eval_job_request_inbox_runs_webapp_job_request_automatically(
     tmp_path: Path,
 ) -> None:
@@ -4165,6 +4515,48 @@ def test_robot_eval_job_request_inbox_accepts_webapp_queue_envelope(
     assert result["jobs"][0]["job_id"] == "webapp-envelope-job-1"
     assert queued_request["schema_version"] == "robot_eval_job_request.v1"
     assert "queue_contract" not in queued_request
+
+
+def test_robot_eval_job_policy_manifest_includes_adapter_smoke_contracts(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, _full_job_request(capture_root))
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-policy-smoke-contracts",
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    policy_manifest = _read_json(Path(result["job_dir"]) / "policy_package_manifest.json")
+    for modality in (
+        "policy_api_endpoint",
+        "docker_container",
+        "recorded_action_trace",
+        "high_level_skill_trace",
+        "teleop_demo",
+        "sim_controller_plugin",
+    ):
+        contract = policy_manifest["modalities"][modality]["adapter_smoke_contract"]
+        assert contract["schema_version"] == "policy_adapter_smoke_contract.v1"
+        assert contract["modality"] == modality
+        assert contract["observation_manifest_input"] == "robot_pov_observation_manifest.json"
+        assert "scenario_eval_run_id" in contract["required_attempt_fields"]
+        assert "scenario_variation_instance_id" in contract["required_attempt_fields"]
+        assert contract["proof_boundary"]["robot_readiness_proven"] is False
+    assert policy_manifest["modalities"]["policy_api_endpoint"]["adapter_smoke_contract"][
+        "smoke_runner"
+    ] == "http_policy_api_observation_probe"
+    assert policy_manifest["modalities"]["docker_container"]["adapter_smoke_contract"][
+        "smoke_runner"
+    ] == "docker_run_observation_manifest_probe"
 
 
 def test_robot_eval_job_rights_privacy_block_prevents_execution(
@@ -4936,6 +5328,12 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
     assert surface["artifacts"]["robot_eval_job_job-surfaced_live_eval_closure_manifest"] == (
         "../robot_eval_jobs/job-surfaced/live_eval_closure_manifest.json"
     )
+    assert surface["artifacts"]["robot_eval_job_job-surfaced_real_world_validation_followup_plan"] == (
+        "../robot_eval_jobs/job-surfaced/real_world_validation_followup_plan.json"
+    )
+    assert surface["artifacts"][
+        "robot_eval_job_job-surfaced_real_world_validation_followup_request_queue"
+    ] == "../robot_eval_jobs/job-surfaced/real_world_validation_followup_request_queue.json"
     assert surface["artifacts"]["robot_eval_job_job-surfaced_robot_eval_report"] == (
         "../robot_eval_jobs/job-surfaced/robot_eval_report.json"
     )
@@ -4961,6 +5359,15 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
     )
     assert surface["artifact_uris"]["robot_eval_job_live_eval_closure_manifest_uri"].endswith(
         "/pipeline/robot_eval_jobs/job-surfaced/live_eval_closure_manifest.json"
+    )
+    assert surface["artifact_uris"][
+        "robot_eval_job_real_world_validation_followup_plan_uri"
+    ].endswith("/pipeline/robot_eval_jobs/job-surfaced/real_world_validation_followup_plan.json")
+    assert surface["artifact_uris"][
+        "robot_eval_job_real_world_validation_followup_request_queue_uri"
+    ].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/"
+        "real_world_validation_followup_request_queue.json"
     )
     assert surface["artifact_uris"]["robot_eval_job_robot_eval_report_uri"].endswith(
         "/pipeline/robot_eval_jobs/job-surfaced/robot_eval_report.json"

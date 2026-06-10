@@ -78,6 +78,9 @@ PROOF_BOUNDARY_SCHEMA_VERSION = "robot_eval_job_proof_boundary.v1"
 JOB_RUN_MANIFEST_SCHEMA_VERSION = "robot_eval_job_run_manifest.v1"
 BLOCKED_MANIFEST_SCHEMA_VERSION = "robot_eval_job_blocked_manifest.v1"
 JOB_REQUEST_INBOX_RUN_SCHEMA_VERSION = "robot_eval_job_request_inbox_run.v1"
+REAL_WORLD_VALIDATION_FOLLOWUP_REQUEST_QUEUE_SCHEMA_VERSION = (
+    "real_world_validation_followup_request_queue.v1"
+)
 
 PROVISIONERS = (
     "fixture_local",
@@ -491,6 +494,142 @@ def _read_job_request(job_request: str | Path | Mapping[str, Any]) -> Dict[str, 
     return dict(payload)
 
 
+ACTUAL_OUTCOME_REQUEST_KEYS = (
+    "actual_outcomes",
+    "actualOutcomes",
+    "real_world_outcomes",
+    "realWorldOutcomes",
+    "deployment_outcomes",
+    "deploymentOutcomes",
+    "actual_outcome_manifest_uri",
+    "actualOutcomeManifestUri",
+    "deployment_outcome_manifest_uri",
+    "deploymentOutcomeManifestUri",
+)
+
+
+def _request_without_actual_outcomes(request: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in dict(request).items()
+        if key not in ACTUAL_OUTCOME_REQUEST_KEYS
+    }
+
+
+def _build_real_world_validation_followup_request_queue(
+    *,
+    capture_root: Path,
+    pipeline_dir: Path,
+    job_dir: Path,
+    parent_job_id: str,
+    request: Mapping[str, Any],
+    followup_plan: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    queue_dir = pipeline_dir / "robot_eval_job_requests" / "followup_drafts" / parent_job_id
+    ensure_dir(queue_dir)
+    followup_actions = [
+        dict(action)
+        for action in followup_plan.get("follow_up_actions", []) or []
+        if isinstance(action, Mapping) and action.get("action_type") == "rerun_scenario_eval"
+    ]
+    queued_requests: List[Dict[str, Any]] = []
+    queued_request_paths: List[str] = []
+    base_request = _request_without_actual_outcomes(request)
+    for index, action in enumerate(followup_actions, start=1):
+        task_id = _string(action.get("task_id"))
+        scenario_id = _string(action.get("scenario_id"))
+        run_id = _string(action.get("scenario_eval_run_id"))
+        variation_instance_id = _string(action.get("scenario_variation_instance_id"))
+        variation_name = _string(action.get("variation_name"))
+        action_id = _string(action.get("action_id")) or f"followup_action_{index:04d}"
+        followup_job_id = f"{parent_job_id}-followup-{index:04d}"
+        requested_eval_run = {
+            "scenario_eval_run_id": run_id,
+            "scenario_variation_instance_id": variation_instance_id,
+            "task_id": task_id,
+            "scenario_id": scenario_id,
+            "variation_name": variation_name,
+            "source_followup_action_id": action_id,
+        }
+        queued_request = {
+            **base_request,
+            "schema_version": JOB_REQUEST_SCHEMA_VERSION,
+            "job_id": followup_job_id,
+            "parent_job_id": parent_job_id,
+            "capture_root": str(capture_root),
+            "operation": _string(base_request.get("operation") or "evaluate_only"),
+            "requested_tasks": [
+                {
+                    "task_id": task_id,
+                    "scenario_ids": [scenario_id] if scenario_id else [],
+                }
+            ],
+            "requested_scenario_eval_runs": [requested_eval_run],
+            "source_followup_action_id": action_id,
+            "source_followup_plan_path": str(
+                (job_dir / "real_world_validation_followup_plan.json").resolve()
+            ),
+            "followup_depth": int(_number(base_request.get("followup_depth"), 0.0) or 0) + 1,
+            "actual_outcome_inputs_required_after_rerun": True,
+            "source": {
+                **_mapping(base_request.get("source")),
+                "real_world_validation_followup": {
+                    "parent_job_id": parent_job_id,
+                    "source_followup_action_id": action_id,
+                    "source_plan_path": "real_world_validation_followup_plan.json",
+                    "claim_boundary": "followup_request_is_rerun_input_not_robot_readiness_proof",
+                },
+            },
+            "external_input_sources": {
+                **_mapping(base_request.get("external_input_sources")),
+                "real_world_validation_followup_plan": str(
+                    (job_dir / "real_world_validation_followup_plan.json").resolve()
+                ),
+            },
+            "claim_boundary": {
+                **_mapping(base_request.get("claim_boundary")),
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+                "followup_request_is_not_deployment_outcome_proof": True,
+            },
+        }
+        request_path = queue_dir / f"{followup_job_id}.json"
+        write_json(request_path, queued_request)
+        queued_requests.append(queued_request)
+        queued_request_paths.append(str(request_path.resolve()))
+
+    status = (
+        "ready_for_inbox_processing"
+        if queued_requests
+        else "no_followup_requests_queued"
+        if followup_plan
+        else "blocked_missing_followup_plan"
+    )
+    queue = {
+        "schema_version": REAL_WORLD_VALIDATION_FOLLOWUP_REQUEST_QUEUE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "parent_job_id": parent_job_id,
+        "capture_root": str(capture_root),
+        "inbox_dir": str(queue_dir.resolve()),
+        "queued_request_count": len(queued_requests),
+        "queued_request_paths": queued_request_paths,
+        "queued_requests": queued_requests,
+        "source_artifacts": {
+            "real_world_validation_followup_plan": "real_world_validation_followup_plan.json",
+        },
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "artifact_purpose": "real_world_validation_followup_job_request_queue",
+            "queue_is_draft_input_for_next_control_plane_pass": True,
+            "queued_requests_do_not_prove_rerun_execution": True,
+        },
+    }
+    _write_job_json(job_dir, "real_world_validation_followup_request_queue.json", queue)
+    return queue
+
+
 def _policy_package_from_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     policy_package = _mapping(payload.get("policy_package") or payload.get("policyPackage"))
     if policy_package:
@@ -618,6 +757,44 @@ def _validate_policy_modality(
     return status, missing
 
 
+def _policy_adapter_smoke_contract(modality: str) -> Dict[str, Any]:
+    smoke_runners = {
+        "policy_api_endpoint": "http_policy_api_observation_probe",
+        "docker_container": "docker_run_observation_manifest_probe",
+        "recorded_action_trace": "recorded_action_trace_replay_probe",
+        "high_level_skill_trace": "high_level_skill_trace_replay_probe",
+        "teleop_demo": "teleop_demo_replay_probe",
+        "sim_controller_plugin": "sim_controller_plugin_probe",
+    }
+    return {
+        "schema_version": "policy_adapter_smoke_contract.v1",
+        "modality": modality,
+        "smoke_runner": smoke_runners.get(modality, f"{modality}_probe"),
+        "observation_manifest_input": "robot_pov_observation_manifest.json",
+        "scenario_eval_matrix_input": "scenario_eval_matrix.json",
+        "required_attempt_fields": [
+            "scenario_eval_run_id",
+            "scenario_variation_instance_id",
+            "task_id",
+            "scenario_id",
+            "success",
+            "metrics",
+            "failure_mode_ids",
+        ],
+        "required_artifact_outputs": [
+            "normalized_attempt_trace.json",
+            "policy_execution_trace.json",
+            "prediction_ledger.json",
+        ],
+        "smoke_output_acceptance": {
+            "normalized_attempt_trace_required": True,
+            "failure_labels_required": True,
+            "scenario_variation_exact_keys_required": True,
+        },
+        "proof_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
 def _policy_package_manifest(
     *,
     request: Mapping[str, Any],
@@ -647,6 +824,7 @@ def _policy_package_manifest(
             "reference": dict(payload),
             "download_performed": False,
             "owner_system_review_required": status not in {"blocked", "not_selected"},
+            "adapter_smoke_contract": _policy_adapter_smoke_contract(modality),
             "claim_boundary": (
                 "reference_present_only_not_policy_execution_or_robot_readiness_proof"
             ),
@@ -2027,6 +2205,8 @@ def _write_robot_eval_report(
     ) -> Dict[str, Any]:
     deployment_ledger = _mapping(deployment_validation.get("ledger"))
     calibration = _mapping(deployment_validation.get("calibration_report"))
+    followup_plan = _mapping(deployment_validation.get("followup_plan"))
+    followup_request_queue = _mapping(deployment_validation.get("followup_request_queue"))
     modality_results = _mapping(policy_execution_manifest.get("modality_results"))
     executed_modalities = [
         modality
@@ -2094,6 +2274,20 @@ def _write_robot_eval_report(
             "missing_owner_evidence_record_ids": _string_list(
                 deployment_ledger.get("missing_owner_evidence_record_ids")
             ),
+            "followup_plan_status": followup_plan.get("status"),
+            "followup_action_count": int(
+                _mapping(followup_plan.get("summary")).get("action_count") or 0
+            ),
+            "real_world_validation_followup_plan_path": (
+                "real_world_validation_followup_plan.json"
+            ),
+            "followup_request_queue_status": followup_request_queue.get("status"),
+            "followup_request_queue_count": int(
+                followup_request_queue.get("queued_request_count") or 0
+            ),
+            "real_world_validation_followup_request_queue_path": (
+                "real_world_validation_followup_request_queue.json"
+            ),
         },
         "predicted_vs_actual": {
             "sim_vs_real_calibration_status": calibration.get("status"),
@@ -2157,6 +2351,12 @@ def _write_robot_eval_report(
             "deployment_outcome_ledger": "deployment_outcome_ledger.json",
             "prediction_vs_actual_deployment_summary": (
                 "prediction_vs_actual_deployment_summary.json"
+            ),
+            "real_world_validation_followup_plan": (
+                "real_world_validation_followup_plan.json"
+            ),
+            "real_world_validation_followup_request_queue": (
+                "real_world_validation_followup_request_queue.json"
             ),
             "live_eval_closure_manifest": "live_eval_closure_manifest.json",
             "proof_boundary": "proof_boundary.json",
@@ -2399,6 +2599,8 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "deployment_outcome_ledger.json",
         "sim_vs_real_calibration_report.json",
         "prediction_vs_actual_deployment_summary.json",
+        "real_world_validation_followup_plan.json",
+        "real_world_validation_followup_request_queue.json",
         "live_eval_closure_manifest.json",
         "arena_rerun_plan.json",
         "arena_rerun_lineage.json",
@@ -2713,6 +2915,19 @@ def build_robot_eval_job(
         attempt_trace=_mapping(copied_artifacts.get("normalized_attempt_trace")),
         generated_at=generated_at,
     )
+    followup_request_queue = _build_real_world_validation_followup_request_queue(
+        capture_root=context.capture_root,
+        pipeline_dir=pipeline_dir,
+        job_dir=job_dir,
+        parent_job_id=job_id,
+        request=request,
+        followup_plan=_mapping(deployment_validation.get("followup_plan")),
+        generated_at=generated_at,
+    )
+    deployment_validation = {
+        **dict(deployment_validation),
+        "followup_request_queue": followup_request_queue,
+    }
     deployment_calibration = _mapping(deployment_validation.get("calibration_report"))
     calibration_score = deployment_calibration.get("sim_vs_real_calibration_score")
     if calibration_score is not None:
@@ -2743,8 +2958,14 @@ def build_robot_eval_job(
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
         "robot_pov_status": robot_pov_manifest.get("status"),
+        "robot_pov_evidence_proven": bool(
+            robot_pov_manifest.get("robot_pov_evidence_proven")
+        ),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "deployment_outcome_status": _mapping(deployment_validation.get("ledger")).get("status"),
+        "real_world_validation_followup_plan_status": _mapping(
+            deployment_validation.get("followup_plan")
+        ).get("status"),
         "real_world_outcome_records_present": bool(
             _mapping(deployment_validation.get("ledger")).get(
                 "real_world_outcome_records_present"
@@ -2881,11 +3102,32 @@ def build_robot_eval_job(
         "scenario_eval_run_count": scenario_eval_matrix.get("scenario_eval_run_count"),
         "scenario_variation_names_covered": scenario_eval_matrix.get("variation_names_covered"),
         "robot_pov_observation_status": robot_pov_manifest.get("status"),
+        "robot_pov_evidence_proven": bool(
+            robot_pov_manifest.get("robot_pov_evidence_proven")
+        ),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "arena_result_ingest_status": _mapping(arena_ingest.get("run_manifest")).get("status")
         if arena_ingest
         else None,
         "deployment_outcome_status": _mapping(deployment_validation.get("ledger")).get("status"),
+        "real_world_validation_followup_plan_status": _mapping(
+            deployment_validation.get("followup_plan")
+        ).get("status"),
+        "real_world_validation_followup_action_count": int(
+            _mapping(_mapping(deployment_validation.get("followup_plan")).get("summary")).get(
+                "action_count"
+            )
+            or 0
+        ),
+        "real_world_validation_followup_request_queue_status": _mapping(
+            deployment_validation.get("followup_request_queue")
+        ).get("status"),
+        "real_world_validation_followup_request_count": int(
+            _mapping(deployment_validation.get("followup_request_queue")).get(
+                "queued_request_count"
+            )
+            or 0
+        ),
         "sim_vs_real_calibration_status": _mapping(
             deployment_validation.get("calibration_report")
         ).get("status"),
@@ -2953,6 +3195,12 @@ def build_robot_eval_job(
             "sim_vs_real_calibration_report": "sim_vs_real_calibration_report.json",
             "prediction_vs_actual_deployment_summary": (
                 "prediction_vs_actual_deployment_summary.json"
+            ),
+            "real_world_validation_followup_plan": (
+                "real_world_validation_followup_plan.json"
+            ),
+            "real_world_validation_followup_request_queue": (
+                "real_world_validation_followup_request_queue.json"
             ),
             "live_eval_closure_manifest": "live_eval_closure_manifest.json",
             "arena_eval_schedule": "arena_eval_schedule.json",
@@ -3026,6 +3274,12 @@ def build_robot_eval_job(
             "robot_pov_manifest": robot_pov_manifest,
             "policy_execution": _mapping(policy_execution.get("manifest")),
             "deployment_validation": _mapping(deployment_validation.get("calibration_report")),
+            "real_world_validation_followup_plan": _mapping(
+                deployment_validation.get("followup_plan")
+            ),
+            "real_world_validation_followup_request_queue": _mapping(
+                deployment_validation.get("followup_request_queue")
+            ),
             "training_result": training_res,
             "evaluation_result": eval_result,
             "live_closure": live_closure,
@@ -3033,6 +3287,8 @@ def build_robot_eval_job(
                 robot_pov_manifest,
                 _mapping(policy_execution.get("manifest")),
                 _mapping(deployment_validation.get("calibration_report")),
+                _mapping(deployment_validation.get("followup_plan")),
+                _mapping(deployment_validation.get("followup_request_queue")),
             ),
         }
     )

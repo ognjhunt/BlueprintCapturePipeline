@@ -101,6 +101,13 @@ blueprint-materialize-worldlabs-assets = "blueprint_pipeline.worldlabs_asset_mat
 blueprint-build-palatial-physready = "blueprint_pipeline.palatial_physready:main"
 blueprint-validate-provider-preview-packet = "blueprint_pipeline.provider_preview_qa:main"
 blueprint-build-production-handoff-readiness = "blueprint_pipeline.production_handoff_readiness:main"
+blueprint-audit-first-gpu-e2e-readiness = "blueprint_pipeline.first_gpu_e2e_readiness:main"
+blueprint-run-owner-gpu-proof = "blueprint_pipeline.owner_gpu_proof_runner:main"
+blueprint-build-first-gpu-run-packet = "blueprint_pipeline.first_gpu_run_packet:main"
+blueprint-audit-first-gpu-candidates = "blueprint_pipeline.first_gpu_candidate_audit:main"
+blueprint-audit-first-gpu-sample-video = "blueprint_pipeline.first_gpu_sample_video_preflight:main"
+blueprint-stage-first-gpu-sample-video = "blueprint_pipeline.first_gpu_sample_video_stage:main"
+blueprint-audit-first-gpu-cross-repo-readiness = "blueprint_pipeline.cross_repo_first_gpu_readiness:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

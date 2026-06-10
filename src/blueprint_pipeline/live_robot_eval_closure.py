@@ -169,6 +169,7 @@ LIVE_EXTERNAL_GATES = (
     "rights_privacy_scope",
     "live_simulator_execution",
     "live_policy_execution",
+    "real_robot_pov_evidence",
     "real_world_validation_loop",
     "predicted_vs_actual_calibration",
     "review_acceptance",
@@ -206,6 +207,12 @@ REQUIREMENT_COVERAGE_SPEC: Sequence[Dict[str, Any]] = (
         "label": "robot POV generation",
         "gate_ids": ("robot_pov_generation",),
         "scope": "repo_local",
+    },
+    {
+        "requirement_id": "real_robot_pov_evidence",
+        "label": "real robot POV and action-log evidence",
+        "gate_ids": ("real_robot_pov_evidence",),
+        "scope": "live_external",
     },
     {
         "requirement_id": "scenario_eval_suite",
@@ -2161,6 +2168,63 @@ def _robot_pov_gate(job_dir: Path) -> Dict[str, Any]:
                 payload.get("sim_or_real_robot_pov_video_available")
             ),
             "robot_pov_evidence_proven": bool(payload.get("robot_pov_evidence_proven")),
+            "real_robot_pov_evidence_record_count": int(
+                payload.get("real_robot_pov_evidence_record_count") or 0
+            ),
+            "real_robot_pov_action_log_record_count": int(
+                payload.get("real_robot_pov_action_log_record_count") or 0
+            ),
+            "real_robot_pov_covered_scenario_eval_run_ids": _string_list(
+                payload.get("real_robot_pov_covered_scenario_eval_run_ids")
+            ),
+            "missing_real_robot_pov_scenario_eval_run_ids": _string_list(
+                payload.get("missing_real_robot_pov_scenario_eval_run_ids")
+            ),
+        },
+    )
+
+
+def _real_robot_pov_evidence_gate(robot_pov_gate: Mapping[str, Any]) -> Dict[str, Any]:
+    generation_passed = bool(robot_pov_gate.get("passed"))
+    robot_pov_evidence = _mapping(robot_pov_gate.get("evidence"))
+    evidence_record_count = int(robot_pov_evidence.get("real_robot_pov_evidence_record_count") or 0)
+    action_log_record_count = int(
+        robot_pov_evidence.get("real_robot_pov_action_log_record_count") or 0
+    )
+    missing_run_ids = _string_list(
+        robot_pov_evidence.get("missing_real_robot_pov_scenario_eval_run_ids")
+    )
+    blockers: List[str] = []
+    if not generation_passed:
+        blockers.append("robot_pov_generation_not_ready")
+    if not bool(robot_pov_evidence.get("robot_pov_evidence_proven")):
+        blockers.append("real_robot_pov_evidence_not_proven")
+    if evidence_record_count <= 0:
+        blockers.append("real_robot_pov_evidence_records_empty")
+    if action_log_record_count <= 0:
+        blockers.append("real_robot_pov_action_logs_missing")
+    if missing_run_ids:
+        blockers.append("real_robot_pov_missing_required_scenario_eval_run_ids")
+    return _gate(
+        "real_robot_pov_evidence",
+        passed=not blockers,
+        blockers=blockers,
+        evidence={
+            "robot_pov_generation_gate_passed": generation_passed,
+            "robot_pov_observation_manifest": robot_pov_evidence.get("artifact"),
+            "robot_pov_evidence_proven": bool(
+                robot_pov_evidence.get("robot_pov_evidence_proven")
+            ),
+            "real_robot_pov_evidence_record_count": evidence_record_count,
+            "real_robot_pov_action_log_record_count": action_log_record_count,
+            "real_robot_pov_covered_scenario_eval_run_ids": _string_list(
+                robot_pov_evidence.get("real_robot_pov_covered_scenario_eval_run_ids")
+            ),
+            "missing_real_robot_pov_scenario_eval_run_ids": missing_run_ids,
+            "proof_boundary": (
+                "Generated POV support is repo-local. This live gate only passes when real "
+                "robot POV/action evidence covers the scenario eval matrix."
+            ),
         },
     )
 
@@ -2214,6 +2278,10 @@ def _scenario_eval_suite_gate(*, capture_root: Path, job_dir: Path) -> Dict[str,
     )
     required_variation_names = _string_list(matrix.get("required_variation_names"))
     variation_names_covered = _string_list(matrix.get("variation_names_covered"))
+    exact_requested_eval_run_filter_count = int(
+        _number(matrix.get("requested_scenario_eval_run_filter_count")) or 0
+    )
+    exact_followup_rerun_scope = exact_requested_eval_run_filter_count > 0
     missing_required_variation_names = _string_list(
         matrix.get("missing_required_variation_names")
     )
@@ -2225,6 +2293,9 @@ def _scenario_eval_suite_gate(*, capture_root: Path, job_dir: Path) -> Dict[str,
         coverage_rows=matrix_runs,
         required_variation_names=required_variation_names,
     )
+    if exact_followup_rerun_scope:
+        missing_required_variation_names = []
+        missing_required_variations_by_scenario = {}
     blockers = list(eval_gate["blockers"])
     if not matrix_path.is_file():
         blockers.append("missing_scenario_eval_matrix")
@@ -2256,6 +2327,10 @@ def _scenario_eval_suite_gate(*, capture_root: Path, job_dir: Path) -> Dict[str,
     evidence["scenario_eval_run_rows_missing_required_fields"] = run_rows_missing_fields
     evidence["required_variation_names"] = required_variation_names
     evidence["variation_names_covered"] = variation_names_covered
+    evidence["exact_followup_rerun_scope"] = exact_followup_rerun_scope
+    evidence["requested_scenario_eval_run_filter_count"] = (
+        exact_requested_eval_run_filter_count
+    )
     evidence["missing_required_variation_names"] = missing_required_variation_names
     evidence["missing_required_variations_by_scenario"] = missing_required_variations_by_scenario
     evidence["scenario_eval_runs_missing_concrete_details"] = (
@@ -2686,6 +2761,8 @@ REPORT_REQUIRED_ARTIFACT_PATH_KEYS = (
     "policy_execution_trace",
     "deployment_outcome_ledger",
     "prediction_vs_actual_deployment_summary",
+    "real_world_validation_followup_plan",
+    "real_world_validation_followup_request_queue",
     "proof_boundary",
 )
 
@@ -3063,8 +3140,12 @@ def _live_policy_execution_gate(job_dir: Path) -> Dict[str, Any]:
 def _real_world_validation_gate(job_dir: Path) -> Dict[str, Any]:
     intake_path = job_dir / "deployment_outcome_intake_manifest.json"
     ledger_path = job_dir / "deployment_outcome_ledger.json"
+    followup_path = job_dir / "real_world_validation_followup_plan.json"
+    followup_queue_path = job_dir / "real_world_validation_followup_request_queue.json"
     intake = _read_optional_mapping(intake_path)
     ledger = _read_optional_mapping(ledger_path)
+    followup_plan = _read_optional_mapping(followup_path)
+    followup_queue = _read_optional_mapping(followup_queue_path)
     blockers = []
     ledger_records = [
         dict(record)
@@ -3128,6 +3209,36 @@ def _real_world_validation_gate(job_dir: Path) -> Dict[str, Any]:
                 blockers.append("deployment_outcomes_not_proven")
     if record_count <= 0:
         blockers.append("deployment_outcome_intake_empty")
+    followup_status = _string(followup_plan.get("status"))
+    followup_rerun_count = int(
+        _mapping(followup_plan.get("summary")).get("scenario_rerun_count") or 0
+    )
+    followup_queue_status = _string(followup_queue.get("status"))
+    followup_queue_request_count = int(followup_queue.get("queued_request_count") or 0)
+    if not followup_path.is_file():
+        blockers.append("real_world_validation_followup_plan_missing")
+    elif followup_plan.get("schema_version") != "real_world_validation_followup_plan.v1":
+        blockers.append("real_world_validation_followup_plan_schema_invalid")
+    elif followup_status not in {
+        "review_required",
+        "no_followup_required",
+        "blocked_missing_real_world_outcomes",
+    }:
+        blockers.append("real_world_validation_followup_plan_status_invalid")
+    elif records_present and followup_status == "blocked_missing_real_world_outcomes":
+        blockers.append("real_world_validation_followup_plan_not_paired_to_outcomes")
+    if not followup_queue_path.is_file():
+        blockers.append("real_world_validation_followup_request_queue_missing")
+    elif followup_queue.get("schema_version") != "real_world_validation_followup_request_queue.v1":
+        blockers.append("real_world_validation_followup_request_queue_schema_invalid")
+    elif followup_queue_status not in {
+        "ready_for_inbox_processing",
+        "no_followup_requests_queued",
+        "blocked_missing_followup_plan",
+    }:
+        blockers.append("real_world_validation_followup_request_queue_status_invalid")
+    elif followup_rerun_count > 0 and followup_queue_request_count < followup_rerun_count:
+        blockers.append("real_world_validation_followup_request_queue_incomplete")
     return _gate(
         "real_world_validation_loop",
         passed=not blockers,
@@ -3135,9 +3246,24 @@ def _real_world_validation_gate(job_dir: Path) -> Dict[str, Any]:
         evidence={
             "deployment_outcome_intake_manifest": _artifact(intake_path, base_dir=job_dir),
             "deployment_outcome_ledger": _artifact(ledger_path, base_dir=job_dir),
+            "real_world_validation_followup_plan": _artifact(
+                followup_path,
+                base_dir=job_dir,
+            ),
+            "real_world_validation_followup_request_queue": _artifact(
+                followup_queue_path,
+                base_dir=job_dir,
+            ),
             "outcome_source": intake.get("outcome_source") or ledger.get("outcome_source"),
             "record_count": record_count,
             "ledger_record_row_count": len(ledger_records),
+            "followup_plan_status": followup_status,
+            "followup_action_count": int(
+                _mapping(followup_plan.get("summary")).get("action_count") or 0
+            ),
+            "followup_rerun_count": followup_rerun_count,
+            "followup_request_queue_status": followup_queue_status,
+            "followup_request_queue_request_count": followup_queue_request_count,
             "real_world_outcome_records_present": records_present,
             "owner_evidence_record_count": int(ledger.get("owner_evidence_record_count") or 0),
             "missing_owner_evidence_record_ids": missing_owner_evidence_ids,
@@ -3462,6 +3588,9 @@ def build_live_robot_eval_closure_manifest(
     )
     gates["scenario_library"] = _scenario_library_gate(capture_root=context.capture_root, job_dir=resolved_job_dir)
     gates["robot_pov_generation"] = _robot_pov_gate(resolved_job_dir)
+    gates["real_robot_pov_evidence"] = _real_robot_pov_evidence_gate(
+        gates["robot_pov_generation"]
+    )
     gates["scenario_eval_suite"] = _scenario_eval_suite_gate(capture_root=context.capture_root, job_dir=resolved_job_dir)
     gates["failure_labels"] = _failure_labels_gate(resolved_job_dir)
     gates["evaluation_methodology"] = _evaluation_methodology_gate(resolved_job_dir)

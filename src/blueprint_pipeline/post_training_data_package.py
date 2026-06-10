@@ -569,6 +569,14 @@ def build_post_training_data_package_export(
                 "prediction_vs_actual_deployment_summary",
                 "prediction_vs_actual_deployment_summary.json",
             ),
+            (
+                "real_world_validation_followup_plan",
+                "real_world_validation_followup_plan.json",
+            ),
+            (
+                "real_world_validation_followup_request_queue",
+                "real_world_validation_followup_request_queue.json",
+            ),
             ("live_eval_closure_manifest", "live_eval_closure_manifest.json"),
             ("breakage_library", "breakage_library.json"),
             ("evaluation_result", "evaluation_result.json"),
@@ -675,6 +683,12 @@ def build_post_training_data_package_export(
             "deployment_outcome_intake_included": "deployment_outcome_intake_manifest"
             in included_artifacts,
             "deployment_outcomes_included": "deployment_outcome_ledger" in included_artifacts,
+            "real_world_validation_followup_plan_included": (
+                "real_world_validation_followup_plan" in included_artifacts
+            ),
+            "real_world_validation_followup_queue_included": (
+                "real_world_validation_followup_request_queue" in included_artifacts
+            ),
             "live_eval_closure_included": "live_eval_closure_manifest"
             in included_artifacts,
             "breakage_library_included": "breakage_library" in included_artifacts,
