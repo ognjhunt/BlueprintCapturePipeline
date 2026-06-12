@@ -29,6 +29,8 @@ FORWARD_URL_ENV = "ROBOT_EVAL_JOB_REQUEST_FORWARD_URL"
 FORWARD_TOKEN_ENV = "ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN"
 FORWARD_CAPTURE_ROOT_ENV = "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT"
 FORWARD_CAPTURE_ROOT_BY_SITE_ENV = "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON"
+FORWARD_PREFLIGHT_REPORT_ENV = "ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT"
+FORWARD_PREFLIGHT_SCHEMA_VERSION = "blueprint.webapp.robot_eval_forwarding_readiness.v1"
 SIMULATOR_EXECUTION_ENV = "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"
 GPU_PROVISIONING_ENV = "BLUEPRINT_ALLOW_GPU_PROVISIONING"
 SIMULATOR_COMMAND_ENV = "BLUEPRINT_SIMULATOR_COMMAND"
@@ -202,7 +204,13 @@ def _requested_outputs_stage(capture_root: Path) -> Dict[str, Any]:
     }
 
 
-def _webapp_upstream_truth_stage(capture_root: Path, *, scene_id: str, capture_id: str) -> Dict[str, Any]:
+def _webapp_upstream_truth_stage(
+    capture_root: Path,
+    *,
+    scene_id: str,
+    capture_id: str,
+    staged_inputs_path: str | Path | None = None,
+) -> Dict[str, Any]:
     sources = [
         _read_optional_mapping(capture_root / "capture_descriptor.json"),
         _read_optional_mapping(capture_root / "raw" / "manifest.json"),
@@ -211,15 +219,95 @@ def _webapp_upstream_truth_stage(capture_root: Path, *, scene_id: str, capture_i
     ]
     fields = ("site_submission_id", "request_id", "buyer_request_id", "capture_job_id")
     values: Dict[str, str] = {}
+    source_artifacts: Dict[str, str | None] = {field: None for field in fields}
     for field in fields:
-        for source in sources:
+        for index, source in enumerate(sources):
             candidate = _string(source.get(field))
             if candidate:
                 values[field] = candidate
+                source_artifacts[field] = (
+                    "capture_descriptor.json",
+                    "raw/manifest.json",
+                    "pipeline_handoff.json",
+                    "pipeline/opportunity_handoff.json",
+                )[index]
                 break
     owner_system = _mapping(_read_optional_mapping(capture_root / "pipeline_handoff.json").get("owner_system"))
     if "request_id" not in values:
         values["request_id"] = _string(owner_system.get("request_id"))
+        if values["request_id"]:
+            source_artifacts["request_id"] = "pipeline_handoff.json owner_system"
+
+    staged_path = _default_staged_inputs_path(capture_root, staged_inputs_path)
+    staged_request_used = False
+    staged_request_warnings: List[str] = []
+    if staged_path.is_file() and any(
+        _placeholder_like(values.get(field, ""), scene_id=scene_id, capture_id=capture_id)
+        for field in fields
+    ):
+        try:
+            staged_payload = read_json_any(staged_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            staged_request_warnings.append(f"staged_webapp_request_read_failed:{type(exc).__name__}")
+        else:
+            if isinstance(staged_payload, Mapping):
+                source_kind = _string(
+                    _mapping(staged_payload.get("webapp_request")).get("source_kind")
+                    or staged_payload.get("source_kind")
+                )
+                local_rehearsal_only = (
+                    bool(staged_payload.get("local_rehearsal_only"))
+                    or source_kind == LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND
+                )
+                if local_rehearsal_only:
+                    staged_request_warnings.append("staged_webapp_request_local_rehearsal_only")
+                else:
+                    webapp = _mapping(staged_payload.get("webapp_request"))
+                    request_path_text = _string(webapp.get("target_path") or webapp.get("path"))
+                    if request_path_text:
+                        request_path = Path(request_path_text).expanduser()
+                        if request_path.is_file():
+                            try:
+                                request_payload = read_json_any(request_path)
+                            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                                staged_request_warnings.append(
+                                    f"staged_webapp_request_payload_read_failed:{type(exc).__name__}"
+                                )
+                            else:
+                                request = (
+                                    _request_from_webapp_payload(request_payload)
+                                    if isinstance(request_payload, Mapping)
+                                    else {}
+                                )
+                                site_package = _mapping(request.get("site_package"))
+                                if request and _path_matches(
+                                    _string(site_package.get("capture_root")),
+                                    capture_root,
+                                ):
+                                    for field in fields:
+                                        if _placeholder_like(
+                                            values.get(field, ""),
+                                            scene_id=scene_id,
+                                            capture_id=capture_id,
+                                        ):
+                                            candidate = _nested_webapp_source(request, field)
+                                            if candidate:
+                                                values[field] = candidate
+                                                source_artifacts[field] = (
+                                                    "pipeline/live_pipeline_staged_inputs.json "
+                                                    "robot_eval_job_request.v1"
+                                                )
+                                                staged_request_used = True
+                                elif request:
+                                    staged_request_warnings.append(
+                                        "staged_webapp_request_capture_root_mismatch"
+                                    )
+                        else:
+                            staged_request_warnings.append("staged_webapp_request_file_missing")
+                    else:
+                        staged_request_warnings.append("staged_webapp_request_path_missing")
+            else:
+                staged_request_warnings.append("staged_webapp_inputs_not_json_object")
     blockers: List[str] = []
     for field in fields:
         value = values.get(field, "")
@@ -230,7 +318,11 @@ def _webapp_upstream_truth_stage(capture_root: Path, *, scene_id: str, capture_i
         "ready": not blockers,
         "fields": {field: bool(values.get(field)) for field in fields},
         "values_redacted": {field: bool(values.get(field)) for field in fields},
+        "source_artifacts": source_artifacts,
+        "staged_webapp_request_used": staged_request_used,
+        "staged_webapp_request_path": str(staged_path),
         "blockers": blockers,
+        "warnings": staged_request_warnings,
     }
 
 
@@ -254,6 +346,166 @@ def _parse_by_site_override() -> Dict[str, Any]:
         }
     overrides = {str(key): _string(value) for key, value in payload.items() if _string(value)}
     return {"status": "configured", "overrides": overrides, "blockers": []}
+
+
+def _default_forwarding_preflight_path(explicit: str | Path | None) -> Path | None:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    configured = _string(os.getenv(FORWARD_PREFLIGHT_REPORT_ENV))
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return None
+
+
+def _webapp_forwarding_preflight_stage(
+    *,
+    webapp_site_slug: str,
+    require_webapp_forwarding: bool,
+    preflight_report_path: str | Path | None,
+) -> Dict[str, Any]:
+    path = _default_forwarding_preflight_path(preflight_report_path)
+    if path is None:
+        return {
+            "configured": False,
+            "ready": False,
+            "path": None,
+            "status": "not_configured",
+            "blockers": [],
+            "warnings": [],
+            "site_slug_covered": False,
+            "single_capture_root_override_configured": False,
+        }
+    if not path.is_file():
+        return {
+            "configured": True,
+            "ready": False,
+            "path": str(path),
+            "status": "blocked",
+            "blockers": ["webapp_forwarding_preflight_report_missing"],
+            "warnings": [],
+            "site_slug_covered": False,
+            "single_capture_root_override_configured": False,
+        }
+    try:
+        payload = read_json_any(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "configured": True,
+            "ready": False,
+            "path": str(path),
+            "status": "blocked",
+            "blockers": [f"webapp_forwarding_preflight_report_read_failed:{type(exc).__name__}"],
+            "warnings": [],
+            "site_slug_covered": False,
+            "single_capture_root_override_configured": False,
+        }
+    if not isinstance(payload, Mapping):
+        return {
+            "configured": True,
+            "ready": False,
+            "path": str(path),
+            "status": "blocked",
+            "blockers": ["webapp_forwarding_preflight_report_not_json_object"],
+            "warnings": [],
+            "site_slug_covered": False,
+            "single_capture_root_override_configured": False,
+        }
+
+    blockers: List[str] = []
+    warnings: List[str] = []
+    if payload.get("schema_version") != FORWARD_PREFLIGHT_SCHEMA_VERSION:
+        blockers.append("webapp_forwarding_preflight_schema_mismatch")
+    status = _string(payload.get("status"))
+    ready_statuses = {
+        "ready_for_required_forwarding",
+        "ready_for_required_forwarding_with_probe",
+    }
+    if not require_webapp_forwarding:
+        ready_statuses.update(
+            {
+                "ready_for_optional_forwarding",
+                "ready_for_optional_forwarding_with_probe",
+            }
+        )
+    if status not in ready_statuses:
+        blockers.append(f"webapp_forwarding_preflight_status:{status or 'unknown'}")
+    if require_webapp_forwarding and payload.get("forwarding_required") is not True:
+        blockers.append("webapp_forwarding_preflight_not_required_mode")
+    if payload.get("endpoint_configured") is not True:
+        blockers.append("webapp_forwarding_preflight_endpoint_not_configured")
+
+    configured_env = _mapping(payload.get("configured_env"))
+    forward_url = _mapping(configured_env.get("forward_url"))
+    if forward_url.get("valid") is not True:
+        blockers.append("webapp_forwarding_preflight_forward_url_invalid")
+    forward_token = _mapping(configured_env.get("forward_token"))
+    if forward_token.get("configured") is not True:
+        blockers.append("webapp_forwarding_preflight_token_not_configured")
+    if forward_token.get("redacted") is not True:
+        blockers.append("webapp_forwarding_preflight_token_not_redacted")
+    timeout = _mapping(configured_env.get("forward_timeout_ms"))
+    if timeout and timeout.get("valid") is not True:
+        blockers.append("webapp_forwarding_preflight_timeout_invalid")
+
+    capture_root_by_site = _mapping(configured_env.get("capture_root_by_site_json"))
+    if capture_root_by_site.get("configured") and capture_root_by_site.get("valid") is not True:
+        blockers.append("webapp_forwarding_preflight_capture_root_map_invalid")
+    site_slugs = {
+        _string(item)
+        for item in capture_root_by_site.get("site_slugs") or []
+        if _string(item)
+    }
+    single_override = _mapping(configured_env.get("single_capture_root_override"))
+    single_override_configured = single_override.get("configured") is True
+    site_slug_covered = bool(webapp_site_slug and webapp_site_slug in site_slugs)
+    if webapp_site_slug and not site_slug_covered and not single_override_configured:
+        blockers.append("webapp_forwarding_preflight_missing_site_slug")
+    if not webapp_site_slug and not single_override_configured:
+        warnings.append("webapp_forwarding_preflight_site_slug_not_checked")
+
+    report_blockers = _string_list(payload.get("blockers"))
+    if report_blockers:
+        blockers.append("webapp_forwarding_preflight_report_has_blockers")
+    proof_boundary = _mapping(payload.get("proof_boundary"))
+    required_boundaries = (
+        "command_is_read_only",
+        "no_job_queued",
+        "no_pipeline_mutation_requested",
+        "no_gpu_allocated",
+        "no_simulator_execution_proven",
+        "no_robot_readiness_proven",
+        "no_public_claim_upgrade_allowed",
+    )
+    for field in required_boundaries:
+        if proof_boundary.get(field) is not True:
+            blockers.append(f"webapp_forwarding_preflight_boundary_missing:{field}")
+
+    probe = _mapping(payload.get("probe"))
+    if probe.get("requested") is True and probe.get("status") != "reachable":
+        blockers.append("webapp_forwarding_preflight_probe_not_reachable")
+    if probe.get("requested") is not True:
+        warnings.append("webapp_forwarding_preflight_not_network_probed")
+
+    return {
+        "configured": True,
+        "ready": not blockers,
+        "path": str(path),
+        "status": "ready" if not blockers else "blocked",
+        "preflight_status": status or None,
+        "forwarding_required": bool(payload.get("forwarding_required")),
+        "endpoint_configured": bool(payload.get("endpoint_configured")),
+        "site_slug_covered": site_slug_covered,
+        "site_slugs": sorted(site_slugs),
+        "single_capture_root_override_configured": single_override_configured,
+        "probe_status": probe.get("status"),
+        "blockers": blockers,
+        "warnings": warnings,
+        "proof_boundary": (
+            "WebApp forwarding preflight proves configuration and optional intake-audit "
+            "reachability only; it does not submit a job, allocate GPU workers, run a "
+            "simulator, or prove robot readiness."
+        ),
+    }
 
 
 def _request_from_webapp_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -445,13 +697,23 @@ def _webapp_forwarding_stage(
     *,
     webapp_site_slug: str,
     require_webapp_forwarding: bool,
+    webapp_forwarding_preflight_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     blockers: List[str] = []
     url_present = bool(_string(os.getenv(FORWARD_URL_ENV)))
     token_present = bool(_string(os.getenv(FORWARD_TOKEN_ENV)))
-    if require_webapp_forwarding and not url_present:
+    preflight = _webapp_forwarding_preflight_stage(
+        webapp_site_slug=webapp_site_slug,
+        require_webapp_forwarding=require_webapp_forwarding,
+        preflight_report_path=webapp_forwarding_preflight_path,
+    )
+    _append_unique(blockers, preflight.get("blockers") or [])
+    preflight_ready = bool(preflight.get("ready"))
+    url_evidence_present = url_present or preflight_ready
+    token_evidence_present = token_present or preflight_ready
+    if require_webapp_forwarding and not url_evidence_present:
         blockers.append(f"missing_env_{FORWARD_URL_ENV}")
-    if require_webapp_forwarding and not token_present:
+    if require_webapp_forwarding and not token_evidence_present:
         blockers.append(f"missing_env_{FORWARD_TOKEN_ENV}")
 
     by_site = _parse_by_site_override()
@@ -472,12 +734,23 @@ def _webapp_forwarding_stage(
     elif global_override:
         override_source = FORWARD_CAPTURE_ROOT_ENV
         override_value = global_override
+    elif preflight_ready and (
+        bool(preflight.get("site_slug_covered"))
+        or bool(preflight.get("single_capture_root_override_configured"))
+    ):
+        override_source = FORWARD_PREFLIGHT_REPORT_ENV
+        override_value = "<redacted-preflight-report>"
     elif require_webapp_forwarding:
         blockers.append("missing_pipeline_capture_root_override_for_webapp_synced_artifact")
 
-    if override_value and str(Path(override_value).expanduser().resolve()) != expected:
+    if (
+        override_value
+        and override_source != FORWARD_PREFLIGHT_REPORT_ENV
+        and str(Path(override_value).expanduser().resolve()) != expected
+    ):
         blockers.append("pipeline_capture_root_override_does_not_match_capture_root")
 
+    warnings = _string_list(preflight.get("warnings"))
     return {
         "status": "ready" if not blockers else "blocked",
         "ready": not blockers,
@@ -485,9 +758,13 @@ def _webapp_forwarding_stage(
         "webapp_site_slug": webapp_site_slug or None,
         "forward_url_configured": url_present,
         "forward_token_configured": token_present,
+        "forward_url_evidence_present": url_evidence_present,
+        "forward_token_evidence_present": token_evidence_present,
         "capture_root_override_source": override_source,
         "capture_root_override_configured": bool(override_value),
+        "forwarding_preflight": preflight,
         "blockers": blockers,
+        "warnings": warnings,
     }
 
 
@@ -619,6 +896,7 @@ def build_first_gpu_e2e_readiness(
     capture_root: str | Path,
     webapp_site_slug: str = "",
     webapp_staged_inputs_path: str | Path | None = None,
+    webapp_forwarding_preflight_path: str | Path | None = None,
     simulator: str = "isaac_sim",
     provisioner: str = "runpod",
     simulator_command: str | None = None,
@@ -644,11 +922,13 @@ def build_first_gpu_e2e_readiness(
             context.capture_root,
             scene_id=context.scene_id,
             capture_id=context.capture_id,
+            staged_inputs_path=webapp_staged_inputs_path,
         ),
         "webapp_forwarding": _webapp_forwarding_stage(
             context.capture_root,
             webapp_site_slug=webapp_site_slug,
             require_webapp_forwarding=require_webapp_forwarding,
+            webapp_forwarding_preflight_path=webapp_forwarding_preflight_path,
         ),
         "webapp_staged_request": _webapp_staged_request_stage(
             context.capture_root,
@@ -724,6 +1004,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--capture-root", required=True)
     parser.add_argument("--webapp-site-slug", default="")
     parser.add_argument("--webapp-staged-inputs", default=None)
+    parser.add_argument("--webapp-forwarding-preflight", default=None)
     parser.add_argument("--simulator", choices=SIMULATOR_FRAMEWORKS, default="isaac_sim")
     parser.add_argument("--provisioner", choices=PROVISIONERS, default="runpod")
     parser.add_argument("--simulator-command", default=None)
@@ -754,6 +1035,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         capture_root=args.capture_root,
         webapp_site_slug=args.webapp_site_slug,
         webapp_staged_inputs_path=args.webapp_staged_inputs,
+        webapp_forwarding_preflight_path=args.webapp_forwarding_preflight,
         simulator=args.simulator,
         provisioner=args.provisioner,
         simulator_command=args.simulator_command,

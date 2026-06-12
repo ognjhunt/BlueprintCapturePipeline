@@ -64,6 +64,14 @@ OWNER_GPU_PROOF_MANIFEST_SCHEMA_VERSION = "owner_gpu_simulator_execution_proof_m
 ARENA_ENVIRONMENT_PACKET_SCHEMA_VERSION = "arena_environment_packet.v1"
 
 SIMULATOR_FRAMEWORKS = ("isaac_sim", "isaac_lab_arena", "mujoco", "pybullet", "newton")
+ISAAC_SIMULATOR_FRAMEWORKS = {"isaac_sim", "isaac_lab_arena"}
+DEFAULT_ISAAC_HUMANOID_ROBOT_ASSET = {
+    "name": "Unitree G1",
+    "uri_or_path": "Robots/Unitree/G1/g1.usd",
+    "source": "isaac_sim_robot_assets",
+    "asset_class": "humanoid",
+    "catalog_reference": "Isaac Sim Robot Assets: Robots/Unitree/G1/g1.usd",
+}
 WORLD_MODEL_ENGINE_TARGETS = (
     "worldlabs_world_model",
     "marble_simready",
@@ -85,6 +93,8 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "payments_touched": False,
     "deployments_performed": False,
     "simulator_execution_proven": False,
+    "isaac_sim_execution_proven": False,
+    "isaac_robot_asset_execution_proven": False,
     "robot_readiness_proven": False,
     "training_proof_available": False,
     "robot_policy_execution_proven": False,
@@ -644,12 +654,17 @@ OWNER_GPU_REQUIRED_FIELDS = (
     "stderr_uri_or_path",
     "scene_load_trace_uri_or_path",
     "action_or_policy_trace_uri_or_path",
+    "default_smoke_policy_uri_or_path",
+    "policy_execution_trace_uri_or_path",
+    "sim_robot_pov_evidence_uri_or_path",
     "artifact_manifest_uri_or_path",
     "pass_fail_criteria",
     "operator_attestation",
 )
 
 OWNER_GPU_FORBIDDEN_TRUE_FIELDS = (
+    "isaac_robot_asset_execution_proven",
+    "isaac_sim_execution_proven",
     "robot_readiness_proven",
     "robot_policy_execution_proven",
     "physics_contact_validated",
@@ -732,6 +747,84 @@ def _pass_fail_ok(value: Any) -> bool:
         return bool(value.get("passed"))
     status = _string(value.get("status")).lower()
     return status in {"passed", "accepted", "completed", "succeeded"}
+
+
+def _default_smoke_policy_ok(payload: Mapping[str, Any]) -> bool:
+    return _string(payload.get("policy_kind")) == "walk_to_target" and bool(
+        _string(payload.get("target"))
+    )
+
+
+def _robot_asset_mapping(value: Any) -> Dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    text = _string(value)
+    return {"name": text} if text else {}
+
+
+def _owner_robot_asset(*payloads: Mapping[str, Any]) -> Dict[str, Any]:
+    for payload in payloads:
+        for key in ("robot_asset", "owner_robot_asset", "spawned_robot_asset"):
+            asset = _robot_asset_mapping(payload.get(key))
+            if asset:
+                return asset
+    return {}
+
+
+def _robot_asset_name(asset: Mapping[str, Any]) -> str:
+    return _string(asset.get("name") or asset.get("asset_name") or asset.get("robot_name"))
+
+
+def _robot_asset_path(asset: Mapping[str, Any]) -> str:
+    return _string(
+        asset.get("uri_or_path")
+        or asset.get("usd_path")
+        or asset.get("asset_path")
+        or asset.get("path")
+        or asset.get("uri")
+    )
+
+
+def _normalize_asset_text(value: str) -> str:
+    return value.strip().lower().replace("\\", "/")
+
+
+def _is_unitree_g1_isaac_asset(asset: Mapping[str, Any]) -> bool:
+    name = _normalize_asset_text(_robot_asset_name(asset))
+    path = _normalize_asset_text(_robot_asset_path(asset))
+    source = _normalize_asset_text(_string(asset.get("source") or asset.get("catalog")))
+    path_matches = path.endswith("robots/unitree/g1/g1.usd") or path.endswith("g1/g1.usd")
+    name_matches = ("unitree" in name and "g1" in name) or name in {"g1", "unitree_g1"}
+    source_matches = "isaac" in source or "robots/unitree" in path
+    return path_matches and (name_matches or source_matches)
+
+
+def _is_unitree_g1_mujoco_asset(asset: Mapping[str, Any]) -> bool:
+    name = _normalize_asset_text(_robot_asset_name(asset))
+    path = _normalize_asset_text(_robot_asset_path(asset))
+    source = _normalize_asset_text(_string(asset.get("source") or asset.get("catalog")))
+    path_matches = path.endswith("unitree_g1/g1.xml") or path.endswith("g1.xml")
+    name_matches = ("unitree" in name and "g1" in name) or name in {"g1", "unitree_g1"}
+    source_matches = "mujoco" in source or "menagerie" in source or "unitree_g1" in path
+    return path_matches and (name_matches or source_matches)
+
+
+def _robot_assets_match(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    left_path = _normalize_asset_text(_robot_asset_path(left))
+    right_path = _normalize_asset_text(_robot_asset_path(right))
+    if left_path and right_path:
+        return left_path == right_path or left_path.endswith(right_path) or right_path.endswith(left_path)
+    left_name = _normalize_asset_text(_robot_asset_name(left))
+    right_name = _normalize_asset_text(_robot_asset_name(right))
+    return bool(left_name and right_name and left_name == right_name)
+
+
+def _sim_robot_pov_ok(payload: Mapping[str, Any]) -> bool:
+    if _trace_status_ok(payload, true_field="sim_robot_pov_captured"):
+        return True
+    if _string(payload.get("robot_camera_video_uri") or payload.get("video_uri")):
+        return True
+    return bool(payload.get("frames") or payload.get("frame_paths") or payload.get("frame_sequence"))
 
 
 def _owner_required_field_present(value: Any) -> bool:
@@ -826,6 +919,19 @@ def validate_owner_gpu_system_proof(
         proof.get("action_or_policy_trace_uri_or_path"),
         proof_dir=proof_dir,
     )
+    default_policy, default_policy_reason, default_policy_present = _read_owner_proof_json_artifact(
+        proof.get("default_smoke_policy_uri_or_path"),
+        proof_dir=proof_dir,
+    )
+    policy_trace, policy_reason, policy_present = _read_owner_proof_json_artifact(
+        proof.get("policy_execution_trace_uri_or_path")
+        or proof.get("action_or_policy_trace_uri_or_path"),
+        proof_dir=proof_dir,
+    )
+    sim_robot_pov, sim_pov_reason, sim_pov_present = _read_owner_proof_json_artifact(
+        proof.get("sim_robot_pov_evidence_uri_or_path"),
+        proof_dir=proof_dir,
+    )
     artifact_manifest, artifact_reason, artifact_present = _read_owner_proof_json_artifact(
         proof.get("artifact_manifest_uri_or_path"),
         proof_dir=proof_dir,
@@ -834,6 +940,9 @@ def validate_owner_gpu_system_proof(
         ("scene_load_trace", scene_reason),
         ("spawn_trace", spawn_reason),
         ("action_or_policy_trace", action_reason),
+        ("default_smoke_policy", default_policy_reason),
+        ("policy_execution_trace", policy_reason),
+        ("sim_robot_pov_evidence", sim_pov_reason),
         ("artifact_manifest", artifact_reason),
     ):
         if reason:
@@ -845,9 +954,52 @@ def validate_owner_gpu_system_proof(
         _trace_status_ok(action_trace, true_field="policy_trace_loaded")
         or bool(action_trace.get("actions") or action_trace.get("attempts") or action_trace.get("records"))
     )
+    default_policy_ok = default_policy_present and _default_smoke_policy_ok(default_policy)
+    policy_execution_ok = policy_present and (
+        _trace_status_ok(policy_trace, true_field="default_policy_executed")
+        or _trace_status_ok(policy_trace, true_field="policy_execution_completed")
+        or bool(
+            policy_trace.get("actions")
+            or policy_trace.get("attempts")
+            or policy_trace.get("records")
+        )
+    )
+    sim_robot_pov_ok = sim_pov_present and _sim_robot_pov_ok(sim_robot_pov)
     artifact_manifest_ok = artifact_present and (
         _trace_status_ok(artifact_manifest, true_field="artifact_manifest_complete")
         or bool(artifact_manifest.get("artifacts") or artifact_manifest.get("files"))
+    )
+    simulator_backend = _string(proof.get("simulator_backend"))
+    isaac_robot_asset_required = simulator_backend in ISAAC_SIMULATOR_FRAMEWORKS
+    proof_robot_asset = _owner_robot_asset(proof)
+    scene_robot_asset = _owner_robot_asset(scene_load)
+    spawn_robot_asset = _owner_robot_asset(spawn_trace)
+    robot_asset = spawn_robot_asset or proof_robot_asset or scene_robot_asset
+    robot_asset_trace_present = bool(spawn_robot_asset or scene_robot_asset)
+    robot_asset_matches_proof = (
+        not proof_robot_asset
+        or not robot_asset
+        or _robot_assets_match(proof_robot_asset, robot_asset)
+    )
+    unitree_g1_asset_spawned = bool(spawn_robot_asset) and _is_unitree_g1_isaac_asset(
+        spawn_robot_asset
+    )
+    mujoco_g1_asset_spawned = bool(spawn_robot_asset) and _is_unitree_g1_mujoco_asset(
+        spawn_robot_asset
+    )
+    isaac_robot_asset_valid = (
+        isaac_robot_asset_required
+        and bool(proof_robot_asset)
+        and bool(spawn_robot_asset)
+        and robot_asset_matches_proof
+        and unitree_g1_asset_spawned
+    )
+    mujoco_g1_asset_valid = (
+        simulator_backend == "mujoco"
+        and bool(proof_robot_asset)
+        and bool(spawn_robot_asset)
+        and robot_asset_matches_proof
+        and mujoco_g1_asset_spawned
     )
     if not scene_loaded:
         blockers.append("owner_gpu_scene_load_trace_not_proven")
@@ -855,12 +1007,27 @@ def validate_owner_gpu_system_proof(
         blockers.append("owner_gpu_spawn_trace_not_proven")
     if not action_trace_ok:
         blockers.append("owner_gpu_action_or_policy_trace_not_proven")
+    if not default_policy_ok:
+        blockers.append("owner_gpu_default_smoke_policy_not_proven")
+    if not policy_execution_ok:
+        blockers.append("owner_gpu_default_policy_execution_trace_not_proven")
+    if not sim_robot_pov_ok:
+        blockers.append("owner_gpu_sim_robot_pov_evidence_not_proven")
     if not artifact_manifest_ok:
         blockers.append("owner_gpu_artifact_manifest_not_proven")
     if not _attestation_ok(proof.get("operator_attestation")):
         blockers.append("owner_gpu_operator_attestation_missing_or_incomplete")
     if not _pass_fail_ok(proof.get("pass_fail_criteria")):
         blockers.append("owner_gpu_pass_fail_criteria_not_passed")
+    if isaac_robot_asset_required:
+        if not proof_robot_asset:
+            blockers.append("owner_gpu_proof_missing_isaac_robot_asset")
+        if not spawn_robot_asset:
+            blockers.append("owner_gpu_spawn_trace_missing_isaac_robot_asset")
+        if proof_robot_asset and spawn_robot_asset and not robot_asset_matches_proof:
+            blockers.append("owner_gpu_robot_asset_mismatch")
+        if spawn_robot_asset and not unitree_g1_asset_spawned:
+            blockers.append("owner_gpu_unitree_g1_asset_not_spawned")
 
     unique_blockers: List[str] = []
     for blocker in blockers:
@@ -876,6 +1043,8 @@ def validate_owner_gpu_system_proof(
         "simulator_backend": proof.get("simulator_backend"),
         "simulator_version": proof.get("simulator_version"),
         "gpu_model": proof.get("gpu_model"),
+        "robot_asset": robot_asset or None,
+        "expected_isaac_robot_asset": dict(DEFAULT_ISAAC_HUMANOID_ROBOT_ASSET),
         "exit_code": exit_code,
         "blockers": unique_blockers,
         "warnings": warnings,
@@ -889,15 +1058,41 @@ def validate_owner_gpu_system_proof(
             "spawn_pose_loaded": spawn_loaded,
             "action_or_policy_trace_present": action_present,
             "action_or_policy_trace_valid": action_trace_ok,
+            "default_smoke_policy_present": default_policy_present,
+            "default_smoke_policy_valid": default_policy_ok,
+            "policy_execution_trace_present": policy_present,
+            "default_policy_execution_trace_valid": policy_execution_ok,
+            "sim_robot_pov_evidence_present": sim_pov_present,
+            "sim_robot_pov_evidence_valid": sim_robot_pov_ok,
             "artifact_manifest_present": artifact_present,
             "artifact_manifest_valid": artifact_manifest_ok,
+            "robot_asset_trace_present": robot_asset_trace_present,
+            "robot_asset_matches_proof": robot_asset_matches_proof,
+            "isaac_robot_asset_required": isaac_robot_asset_required,
+            "unitree_g1_asset_spawned": unitree_g1_asset_spawned,
+            "mujoco_g1_asset_spawned": mujoco_g1_asset_spawned,
+            "isaac_robot_asset_valid": isaac_robot_asset_valid,
+            "mujoco_g1_asset_valid": mujoco_g1_asset_valid,
             "operator_attestation_present": _attestation_ok(proof.get("operator_attestation")),
             "pass_fail_criteria_passed": _pass_fail_ok(proof.get("pass_fail_criteria")),
         },
         "owner_gpu_simulator_execution_proven": accepted,
         "simulator_execution_proven": accepted,
+        "isaac_sim_execution_proven": accepted and isaac_robot_asset_valid,
+        "isaac_robot_asset_execution_proven": accepted and isaac_robot_asset_valid,
+        "unitree_g1_asset_spawned": accepted and unitree_g1_asset_spawned,
+        "mujoco_g1_asset_spawned": accepted and mujoco_g1_asset_spawned,
+        "mujoco_g1_asset_execution_proven": accepted and mujoco_g1_asset_valid,
         "scene_loaded_in_owner_simulator": accepted and scene_loaded,
         "spawn_pose_loaded": accepted and spawn_loaded,
+        "owner_gpu_default_policy_execution_proven": (
+            accepted and default_policy_ok and policy_execution_ok
+        ),
+        "default_sim_policy_execution_proven": (
+            accepted and default_policy_ok and policy_execution_ok
+        ),
+        "owner_gpu_sim_robot_pov_evidence_proven": accepted and sim_robot_pov_ok,
+        "real_robot_pov_evidence_proven": False,
         "robot_policy_execution_proven": False,
         "physics_contact_validated": False,
         "safety_validated": False,
@@ -906,6 +1101,17 @@ def validate_owner_gpu_system_proof(
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "simulator_execution_proven": accepted,
+            "owner_gpu_default_policy_execution_proven": (
+                accepted and default_policy_ok and policy_execution_ok
+            ),
+            "default_sim_policy_execution_proven": (
+                accepted and default_policy_ok and policy_execution_ok
+            ),
+            "owner_gpu_sim_robot_pov_evidence_proven": accepted and sim_robot_pov_ok,
+            "isaac_sim_execution_proven": accepted and isaac_robot_asset_valid,
+            "isaac_robot_asset_execution_proven": accepted and isaac_robot_asset_valid,
+            "mujoco_g1_asset_execution_proven": accepted and mujoco_g1_asset_valid,
+            "real_robot_pov_evidence_proven": False,
         },
     }
     if output_path:
@@ -2226,21 +2432,147 @@ def _training_orchestration_manifest(
     }
 
 
+def _proof_aware_claim_boundary(
+    *,
+    simulators_run: bool = False,
+    simulator_execution_proven: bool = False,
+    owner_gpu_simulator_execution_proven: bool = False,
+    isaac_sim_execution_proven: bool = False,
+    isaac_robot_asset_execution_proven: bool = False,
+    mujoco_g1_asset_execution_proven: bool = False,
+    local_mujoco_g1_asset_execution_proven: bool = False,
+    owner_gpu_default_policy_execution_proven: bool = False,
+    owner_gpu_sim_robot_pov_evidence_proven: bool = False,
+    gpu_training_run: bool = False,
+    training_proof_available: bool = False,
+) -> Dict[str, Any]:
+    effective_simulator_proven = bool(
+        simulator_execution_proven or owner_gpu_simulator_execution_proven
+    )
+    effective_simulators_run = bool(simulators_run or effective_simulator_proven)
+    disallowed_claims = [
+        claim
+        for claim in CLAIM_BOUNDARY["disallowed_claims"]
+        if not (claim == "simulator_execution_completed" and effective_simulator_proven)
+    ]
+    proof_upgrade_requires: List[str] = []
+    for requirement in CLAIM_BOUNDARY["proof_upgrade_requires"]:
+        if effective_simulator_proven and requirement in {
+            "simulator load trace",
+            "simulator stdout/stderr and exit code",
+        }:
+            continue
+        if owner_gpu_default_policy_execution_proven and requirement == "action or policy logs":
+            proof_upgrade_requires.append(
+                "robot-team policy/action logs beyond the default smoke policy"
+            )
+            continue
+        if effective_simulator_proven and requirement == "accepted simulator or real robot trial evidence":
+            proof_upgrade_requires.append(
+                "accepted real robot trial evidence for physical-readiness claims"
+            )
+            continue
+        proof_upgrade_requires.append(requirement)
+    return {
+        **dict(CLAIM_BOUNDARY),
+        "simulators_run": effective_simulators_run,
+        "gpu_training_run": bool(gpu_training_run),
+        "simulator_execution_proven": effective_simulator_proven,
+        "isaac_sim_execution_proven": bool(isaac_sim_execution_proven),
+        "isaac_robot_asset_execution_proven": bool(isaac_robot_asset_execution_proven),
+        "mujoco_g1_asset_execution_proven": bool(mujoco_g1_asset_execution_proven),
+        "local_mujoco_g1_asset_execution_proven": bool(
+            local_mujoco_g1_asset_execution_proven
+        ),
+        "owner_gpu_simulator_execution_proven": bool(owner_gpu_simulator_execution_proven),
+        "owner_gpu_default_policy_execution_proven": bool(
+            owner_gpu_default_policy_execution_proven
+        ),
+        "default_sim_policy_execution_proven": bool(
+            owner_gpu_default_policy_execution_proven
+        ),
+        "owner_gpu_sim_robot_pov_evidence_proven": bool(
+            owner_gpu_sim_robot_pov_evidence_proven
+        ),
+        "real_robot_pov_evidence_proven": False,
+        "robot_readiness_proven": False,
+        "robot_policy_execution_proven": False,
+        "physics_contact_validated": False,
+        "safety_contact_proof_available": False,
+        "training_proof_available": bool(training_proof_available),
+        "public_claim_upgrade_allowed": False,
+        "disallowed_claims": _string_list(disallowed_claims),
+        "proof_upgrade_requires": _string_list(proof_upgrade_requires),
+    }
+
+
 def _proof_boundary(
     *,
     simulator_execution: Mapping[str, Any],
     training: Mapping[str, Any],
     owner_gpu_proof: Mapping[str, Any],
+    local_mujoco_g1_smoke: Mapping[str, Any],
     generated_at: str,
 ) -> Dict[str, Any]:
     simulator_proven = bool(simulator_execution.get("simulator_execution_proven"))
     owner_gpu_proven = bool(owner_gpu_proof.get("owner_gpu_simulator_execution_proven"))
+    default_policy_proven = bool(owner_gpu_proof.get("owner_gpu_default_policy_execution_proven"))
+    sim_robot_pov_proven = bool(owner_gpu_proof.get("owner_gpu_sim_robot_pov_evidence_proven"))
+    isaac_sim_proven = bool(owner_gpu_proof.get("isaac_sim_execution_proven"))
+    isaac_robot_asset_proven = bool(owner_gpu_proof.get("isaac_robot_asset_execution_proven"))
+    owner_mujoco_g1_proven = bool(owner_gpu_proof.get("mujoco_g1_asset_execution_proven"))
+    local_mujoco_g1_proven = bool(
+        local_mujoco_g1_smoke.get("local_cpu_mujoco_execution_proven")
+        and local_mujoco_g1_smoke.get("mujoco_g1_asset_execution_proven")
+        and local_mujoco_g1_smoke.get("unitree_g1_asset_spawned")
+    )
+    if owner_mujoco_g1_proven:
+        selected_simulator_asset_evidence = []
+    elif local_mujoco_g1_proven:
+        selected_simulator_asset_evidence = [
+            "owner-runtime MuJoCo execution with the real Menagerie Unitree G1 MJCF asset",
+        ]
+    else:
+        selected_simulator_asset_evidence = [
+            "owner-runtime simulator execution with a selected real Unitree G1 asset",
+        ]
+    if not isaac_sim_proven and not owner_mujoco_g1_proven:
+        selected_simulator_asset_evidence.append(
+            "Isaac Sim execution with Unitree G1 USD robot asset only if the selected lane is Isaac"
+        )
     training_completed = str(training.get("status") or "") == "completed"
+    proof_claim_boundary = _proof_aware_claim_boundary(
+        simulators_run=bool(simulator_execution.get("simulators_run")),
+        simulator_execution_proven=simulator_proven,
+        owner_gpu_simulator_execution_proven=owner_gpu_proven,
+        isaac_sim_execution_proven=isaac_sim_proven,
+        isaac_robot_asset_execution_proven=isaac_robot_asset_proven,
+        mujoco_g1_asset_execution_proven=owner_mujoco_g1_proven,
+        local_mujoco_g1_asset_execution_proven=local_mujoco_g1_proven,
+        owner_gpu_default_policy_execution_proven=default_policy_proven,
+        owner_gpu_sim_robot_pov_evidence_proven=sim_robot_pov_proven,
+        gpu_training_run=bool(training.get("gpu_training_run")),
+        training_proof_available=training_completed,
+    )
     return {
         "schema_version": PROOF_BOUNDARY_SCHEMA_VERSION,
         "generated_at": generated_at,
         "owner_gpu_simulator_execution_proven": owner_gpu_proven,
         "simulator_execution_proven": simulator_proven or owner_gpu_proven,
+        "isaac_sim_execution_proven": isaac_sim_proven,
+        "isaac_robot_asset_execution_proven": isaac_robot_asset_proven,
+        "unitree_g1_asset_spawned": bool(owner_gpu_proof.get("unitree_g1_asset_spawned")),
+        "mujoco_g1_asset_execution_proven": owner_mujoco_g1_proven,
+        "local_mujoco_g1_asset_execution_proven": local_mujoco_g1_proven,
+        "local_mujoco_g1_smoke_manifest_path": (
+            "mujoco_g1_local_smoke/mujoco_g1_local_smoke_manifest.json"
+            if local_mujoco_g1_smoke
+            else None
+        ),
+        "owner_gpu_default_policy_execution_proven": default_policy_proven,
+        "default_sim_policy_execution_proven": default_policy_proven,
+        "owner_gpu_sim_robot_pov_evidence_proven": sim_robot_pov_proven,
+        "real_robot_pov_evidence_proven": False,
         "robot_readiness_proven": False,
         "robot_policy_execution_proven": False,
         "physics_contact_validated": False,
@@ -2259,20 +2591,22 @@ def _proof_boundary(
                 if owner_gpu_proof
                 else None
             ),
+            "default_policy_execution_proven": default_policy_proven,
+            "sim_robot_pov_evidence_proven": sim_robot_pov_proven,
+            "isaac_sim_execution_proven": isaac_sim_proven,
+            "isaac_robot_asset_execution_proven": isaac_robot_asset_proven,
+            "mujoco_g1_asset_execution_proven": owner_mujoco_g1_proven,
+            "local_mujoco_g1_asset_execution_proven": local_mujoco_g1_proven,
         },
         "remaining_required_evidence": [
-            "real simulator load traces",
-            "action logs",
+            *selected_simulator_asset_evidence,
+            "robot-team policy/action logs beyond the default smoke policy",
+            "real robot POV video and aligned action logs",
             "physics/contact validation logs",
             "robot-team-owned robot assets",
             "accepted simulator or real robot trial evidence",
         ],
-        "claim_boundary": {
-            **dict(CLAIM_BOUNDARY),
-            "simulators_run": bool(simulator_execution.get("simulators_run")),
-            "simulator_execution_proven": simulator_proven or owner_gpu_proven,
-            "training_proof_available": training_completed,
-        },
+        "claim_boundary": proof_claim_boundary,
     }
 
 
@@ -2394,6 +2728,7 @@ def _gpu_owner_system_proof_schema(*, generated_at: str, scene_id: str, capture_
             "simulator_backend",
             "simulator_version",
             "gpu_model",
+            "robot_asset",
             "command",
             "started_at",
             "completed_at",
@@ -2403,6 +2738,9 @@ def _gpu_owner_system_proof_schema(*, generated_at: str, scene_id: str, capture_
             "scene_load_trace_uri_or_path",
             "spawn_pose_validation_uri_or_path",
             "action_or_policy_trace_uri_or_path",
+            "default_smoke_policy_uri_or_path",
+            "policy_execution_trace_uri_or_path",
+            "sim_robot_pov_evidence_uri_or_path",
             "artifact_manifest_uri_or_path",
             "pass_fail_criteria",
             "operator_attestation",
@@ -2411,8 +2749,25 @@ def _gpu_owner_system_proof_schema(*, generated_at: str, scene_id: str, capture_
             "owner_system_simulator_execution_proven",
             "scene_loaded_in_owner_simulator",
             "spawn_pose_loaded",
+            "owner_gpu_default_policy_execution_proven",
+            "owner_gpu_sim_robot_pov_evidence_proven",
+            "isaac_sim_execution_proven",
+            "isaac_robot_asset_execution_proven",
         ],
+        "default_isaac_robot_asset": dict(DEFAULT_ISAAC_HUMANOID_ROBOT_ASSET),
+        "conditional_requirements": {
+            "isaac_sim_or_isaac_lab_arena": [
+                "proof.robot_asset identifies Unitree G1",
+                "spawn trace robot_asset identifies Robots/Unitree/G1/g1.usd",
+                "proof robot_asset and spawn trace robot_asset match",
+            ],
+        },
         "proof_booleans_still_require_separate_evidence": {
+            "real_robot_pov_evidence_proven": [
+                "physical robot camera video",
+                "aligned physical robot action log",
+                "owner attestation for the real robot run",
+            ],
             "robot_readiness_proven": [
                 "accepted robot policy/action logs",
                 "buyer/operator-approved methodology",
@@ -2468,7 +2823,11 @@ def _gpu_handoff_blocker_details(
     seen: set[str] = set()
     hard_blockers = _string_list(cpu_preflight.get("hard_preflight_blockers"))
     scene_blockers = _string_list(scene_preflight.get("blockers"))
-    spawn_blockers = _string_list(spawn_validation.get("blockers"))
+    spawn_blockers = (
+        _string_list(spawn_validation.get("blockers"))
+        if spawn_validation.get("status") == "blocked"
+        else []
+    )
     all_blockers = _string_list([*hard_blockers, *scene_blockers, *spawn_blockers])
 
     if not owner_gpu_proven:
@@ -2628,8 +2987,9 @@ def _gpu_run_checklist_text(packet: Mapping[str, Any]) -> str:
             "- The selected scene loads in the owner simulator.",
             "- The selected spawn pose loads without immediate invalid state.",
             "- Simulator stdout, stderr, exit code, and load trace are captured.",
-            "- Action or policy traces are captured for any robot-eval claim.",
-            "- Contact, safety, and policy success claims remain false without their own logs.",
+            "- The default walk-to-target smoke policy writes an execution trace.",
+            "- Simulator robot POV evidence is captured as video or frame evidence.",
+            "- Contact, safety, real robot POV, and robot-readiness claims remain false without their own logs.",
             "",
             "## Recommended First Command",
             "```bash",
@@ -2640,6 +3000,7 @@ def _gpu_run_checklist_text(packet: Mapping[str, Any]) -> str:
             "- Command exits 0 before timeout.",
             "- Proof schema JSON is filled with owner-system logs and artifact paths.",
             "- Scene load trace names the backend, version, scene asset, and spawn pose.",
+            "- Policy trace and simulator POV evidence manifest are present and valid.",
             "",
             "## Fail Criteria",
             "- Missing dependency, missing asset reference, nonzero exit, timeout, empty load trace, or no owner attestation.",
@@ -2669,6 +3030,21 @@ def _build_gpu_handoff_artifacts(
         automation_dir / "owner_gpu_simulator_execution_proof_manifest.json"
     )
     owner_gpu_proven = bool(owner_gpu_proof.get("owner_gpu_simulator_execution_proven"))
+    default_policy_proven = bool(owner_gpu_proof.get("owner_gpu_default_policy_execution_proven"))
+    sim_robot_pov_proven = bool(owner_gpu_proof.get("owner_gpu_sim_robot_pov_evidence_proven"))
+    isaac_sim_proven = bool(owner_gpu_proof.get("isaac_sim_execution_proven"))
+    isaac_robot_asset_proven = bool(owner_gpu_proof.get("isaac_robot_asset_execution_proven"))
+    mujoco_g1_asset_proven = bool(owner_gpu_proof.get("mujoco_g1_asset_execution_proven"))
+    handoff_claim_boundary = _proof_aware_claim_boundary(
+        simulators_run=owner_gpu_proven,
+        simulator_execution_proven=owner_gpu_proven,
+        owner_gpu_simulator_execution_proven=owner_gpu_proven,
+        isaac_sim_execution_proven=isaac_sim_proven,
+        isaac_robot_asset_execution_proven=isaac_robot_asset_proven,
+        mujoco_g1_asset_execution_proven=mujoco_g1_asset_proven,
+        owner_gpu_default_policy_execution_proven=default_policy_proven,
+        owner_gpu_sim_robot_pov_evidence_proven=sim_robot_pov_proven,
+    )
     recommended_backends = _gpu_backend_recommendations(
         inventory=inventory,
         collider_proxy_plan=collider_proxy_plan,
@@ -2740,7 +3116,14 @@ def _build_gpu_handoff_artifacts(
         "ready_for_owner_gpu_preflight": bool(cpu_preflight.get("ready_for_owner_gpu_preflight")),
         "owner_gpu_simulator_execution_proven": owner_gpu_proven,
         "simulator_execution_proven": owner_gpu_proven,
+        "owner_gpu_default_policy_execution_proven": default_policy_proven,
+        "default_sim_policy_execution_proven": default_policy_proven,
+        "owner_gpu_sim_robot_pov_evidence_proven": sim_robot_pov_proven,
+        "real_robot_pov_evidence_proven": False,
         "robot_readiness_proven": False,
+        "isaac_sim_execution_proven": isaac_sim_proven,
+        "isaac_robot_asset_execution_proven": isaac_robot_asset_proven,
+        "mujoco_g1_asset_execution_proven": mujoco_g1_asset_proven,
         "cpu_checked": pre_gpu_summary.get("cpu_checked") or [],
         "cpu_artifacts": {
             "scene_asset_inventory": "scene_asset_inventory.json",
@@ -2813,6 +3196,9 @@ def _build_gpu_handoff_artifacts(
             "scene_load_trace",
             "spawn_pose_trace",
             "action_or_policy_trace",
+            "default_smoke_policy",
+            "policy_execution_trace",
+            "sim_robot_pov_evidence",
             "artifact_manifest",
             "owner_attestation",
         ],
@@ -2826,6 +3212,8 @@ def _build_gpu_handoff_artifacts(
                 "command exits 0 before timeout",
                 "owner proof schema is complete",
                 "scene load trace identifies backend, scene asset, and spawn pose",
+                "default walk-to-target policy trace records an attempted action",
+                "simulator robot POV evidence manifest records camera/video/frame evidence",
             ],
             "fail": [
                 "nonzero exit",
@@ -2841,11 +3229,14 @@ def _build_gpu_handoff_artifacts(
             "owner_simulator_stderr.log",
             "owner_scene_load_trace.json",
             "owner_spawn_pose_trace.json",
+            "owner_default_smoke_policy.json",
+            "owner_action_or_policy_trace.json",
+            "owner_sim_robot_pov_evidence_manifest.json",
             "owner_artifact_manifest.json",
         ],
         "timeout_seconds": simulator_timeout_seconds,
         "blockers": blockers,
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "claim_boundary": handoff_claim_boundary,
     }
     blocked_manifest = {
         "schema_version": OWNER_GPU_BLOCKED_MANIFEST_SCHEMA_VERSION,
@@ -2859,7 +3250,7 @@ def _build_gpu_handoff_artifacts(
         "disallowed_workaround": "Do not mark simulator, robot readiness, contact, policy, or safety proof from CPU-only artifacts.",
         "pre_gpu_blocker_details": blocker_details,
         "next_artifacts": packet["output_artifacts_expected"],
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "claim_boundary": handoff_claim_boundary,
     }
     write_json(automation_dir / "gpu_owner_system_proof_schema.json", proof_schema)
     write_json(automation_dir / "gpu_handoff_packet.json", packet)
@@ -3008,10 +3399,14 @@ def build_simulation_automation(
         if owner_gpu_proof_path.is_file()
         else {}
     )
+    local_mujoco_g1_smoke = _read_optional_mapping(
+        automation_dir / "mujoco_g1_local_smoke" / "mujoco_g1_local_smoke_manifest.json"
+    )
     proof_boundary = _proof_boundary(
         simulator_execution=simulator_execution,
         training=training,
         owner_gpu_proof=owner_gpu_proof,
+        local_mujoco_g1_smoke=local_mujoco_g1_smoke,
         generated_at=generated_at,
     )
     gpu_handoff = _build_gpu_handoff_artifacts(
@@ -3052,6 +3447,31 @@ def build_simulation_automation(
         str(training.get("status") or ""),
     ]
     status = "completed" if all(item == "completed" for item in status_inputs) else "blocked"
+    run_claim_boundary = _proof_aware_claim_boundary(
+        simulators_run=bool(simulator_execution.get("simulators_run")),
+        simulator_execution_proven=bool(proof_boundary.get("simulator_execution_proven")),
+        owner_gpu_simulator_execution_proven=bool(
+            owner_gpu_proof.get("owner_gpu_simulator_execution_proven")
+        ),
+        isaac_sim_execution_proven=bool(proof_boundary.get("isaac_sim_execution_proven")),
+        isaac_robot_asset_execution_proven=bool(
+            proof_boundary.get("isaac_robot_asset_execution_proven")
+        ),
+        mujoco_g1_asset_execution_proven=bool(
+            proof_boundary.get("mujoco_g1_asset_execution_proven")
+        ),
+        local_mujoco_g1_asset_execution_proven=bool(
+            proof_boundary.get("local_mujoco_g1_asset_execution_proven")
+        ),
+        owner_gpu_default_policy_execution_proven=bool(
+            owner_gpu_proof.get("owner_gpu_default_policy_execution_proven")
+        ),
+        owner_gpu_sim_robot_pov_evidence_proven=bool(
+            owner_gpu_proof.get("owner_gpu_sim_robot_pov_evidence_proven")
+        ),
+        gpu_training_run=bool(training.get("gpu_training_run")),
+        training_proof_available=str(training.get("status") or "") == "completed",
+    )
     run_manifest = {
         "schema_version": SIMULATION_AUTOMATION_RUN_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -3086,6 +3506,11 @@ def build_simulation_automation(
             if owner_gpu_proof
             else None
         ),
+        "local_mujoco_g1_smoke_manifest_path": (
+            "mujoco_g1_local_smoke/mujoco_g1_local_smoke_manifest.json"
+            if local_mujoco_g1_smoke
+            else None
+        ),
         "gpu_run_checklist_path": "gpu_run_checklist.md",
         "owner_gpu_simulator_execution_blocked_manifest_path": (
             "owner_gpu_simulator_execution_blocked_manifest.json"
@@ -3112,14 +3537,35 @@ def build_simulation_automation(
         "owner_gpu_simulator_execution_proven": bool(
             owner_gpu_proof.get("owner_gpu_simulator_execution_proven")
         ),
+        "owner_gpu_default_policy_execution_proven": bool(
+            owner_gpu_proof.get("owner_gpu_default_policy_execution_proven")
+        ),
+        "default_sim_policy_execution_proven": bool(
+            owner_gpu_proof.get("default_sim_policy_execution_proven")
+        ),
+        "owner_gpu_sim_robot_pov_evidence_proven": bool(
+            owner_gpu_proof.get("owner_gpu_sim_robot_pov_evidence_proven")
+        ),
+        "isaac_sim_execution_proven": bool(owner_gpu_proof.get("isaac_sim_execution_proven")),
+        "isaac_robot_asset_execution_proven": bool(
+            owner_gpu_proof.get("isaac_robot_asset_execution_proven")
+        ),
+        "unitree_g1_asset_spawned": bool(owner_gpu_proof.get("unitree_g1_asset_spawned")),
+        "mujoco_g1_asset_execution_proven": bool(
+            owner_gpu_proof.get("mujoco_g1_asset_execution_proven")
+        ),
+        "local_mujoco_g1_asset_execution_proven": bool(
+            proof_boundary.get("local_mujoco_g1_asset_execution_proven")
+        ),
+        "real_robot_pov_evidence_proven": False,
         "live_provider_calls_performed": False,
-        "remote_asset_downloads_performed": False,
+        "remote_asset_downloads_performed": bool(local_mujoco_g1_smoke.get("asset_source_manifest")),
         "local_cpu_preflight_smoke_ran": bool(
             _read_optional_mapping(
                 automation_dir / "cpu_simulator_preflight_manifest.json"
             ).get("local_cpu_smoke_ran")
         ),
-        "simulators_run": bool(simulator_execution.get("simulators_run")),
+        "simulators_run": bool(run_claim_boundary.get("simulators_run")),
         "gpu_training_run": bool(training.get("gpu_training_run")),
         "messages_sent": False,
         "payments_touched": False,
@@ -3127,15 +3573,7 @@ def build_simulation_automation(
         "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
-        "claim_boundary": {
-            **dict(CLAIM_BOUNDARY),
-            "simulators_run": bool(simulator_execution.get("simulators_run")),
-            "gpu_training_run": bool(training.get("gpu_training_run")),
-            "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
-            "owner_gpu_simulator_execution_proven": bool(
-                owner_gpu_proof.get("owner_gpu_simulator_execution_proven")
-            ),
-        },
+        "claim_boundary": run_claim_boundary,
     }
 
     write_json(automation_dir / "simulation_automation_plan.json", plan)

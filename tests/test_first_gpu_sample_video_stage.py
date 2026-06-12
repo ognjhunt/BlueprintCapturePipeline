@@ -43,10 +43,20 @@ def test_stage_first_gpu_sample_video_writes_preflightable_bundle(tmp_path: Path
     manifest = json.loads((capture_root / "raw" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["requested_outputs"] == [
         "qualification",
+        "preview_simulation",
         "robot_eval_dataset",
         "task_evaluation_run",
     ]
     assert manifest["capture_capabilities"]["camera_pose"] is False
+    assert manifest["capture_rights"] == {
+        "derived_scene_generation_allowed": False,
+        "data_licensing_allowed": False,
+        "capture_contributor_payout_eligible": False,
+        "consent_status": "unknown",
+        "permission_document_uri": None,
+        "consent_scope": [],
+        "consent_notes": [],
+    }
     preflight = build_capture_preflight_report(capture_root)
     assert preflight["missing_required_inputs"] == []
     assert preflight["video_candidates"] == ["walkthrough.mp4"]
@@ -85,6 +95,63 @@ def test_stage_first_gpu_sample_video_cli_writes_manifest(tmp_path: Path) -> Non
     assert Path(payload["capture_root"]).is_dir()
     assert payload["source_video_preflight_path"].endswith("source_video_preflight_manifest.json")
     assert payload["claim_boundary"]["gpu_provisioning_performed"] is False
+
+
+def test_stage_first_gpu_sample_video_can_carry_owner_rights_scope(tmp_path: Path) -> None:
+    source_video = tmp_path / "sample.mp4"
+    source_video.write_bytes(b"fake-video")
+
+    result = stage_first_gpu_sample_video(
+        source_video=source_video,
+        storage_root=tmp_path / "storage",
+        bucket="local-blueprint",
+        scene_id="sample-scene",
+        capture_id="sample-capture",
+        derived_scene_generation_allowed=True,
+        data_licensing_allowed=False,
+        consent_status="documented",
+        permission_document_uri="codex-thread://owner-run-approval/2026-06-12",
+        consent_scope=[
+            "owner_gpu_smoke",
+            "worldlabs_generation_for_this_capture",
+        ],
+        consent_notes=["Owner explicitly requested this isolated first-GPU smoke."],
+    )
+
+    capture_root = Path(result["capture_root"])
+    manifest = json.loads((capture_root / "raw" / "manifest.json").read_text(encoding="utf-8"))
+    rights = manifest["capture_rights"]
+    assert rights["derived_scene_generation_allowed"] is True
+    assert rights["data_licensing_allowed"] is False
+    assert rights["consent_status"] == "documented"
+    assert rights["permission_document_uri"] == (
+        "codex-thread://owner-run-approval/2026-06-12"
+    )
+    assert rights["consent_scope"] == [
+        "owner_gpu_smoke",
+        "worldlabs_generation_for_this_capture",
+    ]
+    assert result["capture_rights"] == rights
+
+    preflight = build_capture_preflight_report(capture_root)
+    descriptor_rights = preflight["descriptor_preview"]["metadata"]["capture_rights"]
+    assert descriptor_rights["derived_scene_generation_allowed"] is True
+    assert descriptor_rights["consent_status"] == "documented"
+    assert descriptor_rights["permission_document_uri"] == (
+        "codex-thread://owner-run-approval/2026-06-12"
+    )
+    intake_packet = json.loads((capture_root / "raw" / "intake_packet.json").read_text(encoding="utf-8"))
+    upload_complete = json.loads(
+        (capture_root / "raw" / "capture_upload_complete.json").read_text(encoding="utf-8")
+    )
+    assert intake_packet["capture_rights"] == rights
+    assert intake_packet["owner_approval"]["status"] == "documented"
+    assert upload_complete["capture_rights"] == rights
+    assert upload_complete["owner_approval"]["approved_scope"] == [
+        "owner_gpu_smoke",
+        "worldlabs_generation_for_this_capture",
+    ]
+    assert upload_complete["source_video_sha256"] == manifest["source_video"]["sha256"]
 
 
 def test_stage_first_gpu_sample_video_can_write_gpu_handoff_summary(tmp_path: Path) -> None:

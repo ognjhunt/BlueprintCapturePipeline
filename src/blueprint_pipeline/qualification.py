@@ -35,6 +35,7 @@ from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, res
 from .launch_bundle import build_buyer_trust_score, build_launch_qualification_bundle
 from .launch_proof_policy import (
     production_forces_false,
+    production_forces_true,
     production_launch_mode,
     relative_artifact_checksum,
 )
@@ -67,6 +68,14 @@ class QualificationGate:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"name": self.name, "passed": self.passed, "detail": self.detail}
+
+
+def _webapp_sync_failure_requires_stage_failure() -> bool:
+    return (
+        production_forces_true("PIPELINE_SYNC_REQUIRED", default=False)
+        or bool(str(os.getenv("PIPELINE_SYNC_WEBAPP_URL") or "").strip())
+        or bool(str(os.getenv("PIPELINE_SYNC_TOKEN") or "").strip())
+    )
 
 
 def _local_file_pointer(path: Path) -> Dict[str, Any]:
@@ -2874,7 +2883,58 @@ def _prepare_worldlabs_input_video(
 
     source_path = _resolve_optional_uri_to_path(source_uri, storage_root)
     if not source_path or not source_path.is_file():
-        raise StageError("worldlabs_input_prep", f"source_video_missing:{source_uri}")
+        source_manifest_uri = str(privacy_processing.get("privacy_manifest_uri") or "").strip() or None
+        source_is_final_walkthrough = source_uri.rstrip("/").endswith(
+            "/privacy/final_walkthrough.mov"
+        ) or source_uri.rstrip("/").endswith("/privacy/final_walkthrough.mp4")
+        derived_from_final_walkthrough = bool(
+            source_is_final_walkthrough
+            or str(privacy_processing.get("privacy_processed_video_uri") or "").strip().rstrip("/")
+            == source_uri.rstrip("/")
+            or str(privacy_processing.get("world_model_video_uri") or "").strip().rstrip("/")
+            == source_uri.rstrip("/")
+        )
+        payload = {
+            "schema_version": "v1",
+            "status": "blocked",
+            "generated_at": utc_now_iso(),
+            "reason": "source_video_missing",
+            "selected_video_source_id": source_id or None,
+            "selected_video_uri": source_uri,
+            "video_candidates": selection.get("candidates") if isinstance(selection, Mapping) else [],
+            "input_labeling": input_labeling,
+            "output_video_uri": None,
+        }
+        audit_payload = {
+            "schema_version": "v1",
+            "status": "blocked",
+            "generated_at": payload["generated_at"],
+            "reason": "source_video_missing",
+            "privacy_safe_input": False,
+            "selected_video_source_id": source_id or None,
+            "selected_video_uri": source_uri,
+            "source_manifest_uri": source_manifest_uri,
+            "source_is_final_walkthrough": source_is_final_walkthrough,
+            "derivative_of_final_walkthrough": derived_from_final_walkthrough,
+            "output_video_uri": None,
+            "output_manifest_uri": manifest_uri,
+            "input_labeling": input_labeling,
+        }
+        write_json(manifest_path, payload)
+        write_json(audit_path, audit_payload)
+        if production_launch_mode():
+            raise StageError("worldlabs_input_prep", f"source_video_missing:{source_uri}")
+        return {
+            "status": "blocked",
+            "manifest_uri": manifest_uri,
+            "audit_uri": audit_uri,
+            "output_video_uri": None,
+            "manifest_path": str(manifest_path),
+            "audit_path": str(audit_path),
+            "output_path": None,
+            "input_labeling": input_labeling,
+            "audit_payload": audit_payload,
+        }
 
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -3098,7 +3158,13 @@ def _build_world_model_fit_summary(
     if (
         review_status == "succeeded"
         and rights["derived_scene_generation_allowed"]
-        and privacy_status in {"no_people_detected", "person_removed", "face_anonymized_fallback"}
+        and privacy_status
+        in {
+            "no_people_detected",
+            "person_removed",
+            "face_anonymized_fallback",
+            "full_frame_redacted_local_proof",
+        }
     ):
         if coverage_score >= 0.7 and world_model_fitness >= 0.72 and descriptor.evidence_tier != "pre_screen_video":
             fit_status = "good_candidate"
@@ -4438,7 +4504,13 @@ def run_qualification_pipeline(
             QualificationGate(
                 "privacy_postprocess_gate",
                 str(privacy_processing.get("status") or "").strip().lower()
-                in {"not_run", "no_people_detected", "person_removed", "face_anonymized_fallback"},
+                in {
+                    "not_run",
+                    "no_people_detected",
+                    "person_removed",
+                    "face_anonymized_fallback",
+                    "full_frame_redacted_local_proof",
+                },
                 f"privacy_status={privacy_processing.get('status')}",
             )
         )
@@ -4459,9 +4531,10 @@ def run_qualification_pipeline(
             str(value or "").strip().lower() in {"preview_simulation", "preview"}
             for value in descriptor.requested_outputs
         )
+        privacy_descriptor = CaptureDescriptor.from_dict(descriptor_payload)
         worldlabs_input = (
             _prepare_worldlabs_input_video(
-                descriptor=descriptor,
+                descriptor=privacy_descriptor,
                 privacy_processing=privacy_processing,
                 storage_root=storage_root,
                 pipeline_dir=pipeline_dir,
@@ -4716,6 +4789,7 @@ def run_qualification_pipeline(
             "no_people_detected",
             "person_removed",
             "face_anonymized_fallback",
+            "full_frame_redacted_local_proof",
         }
         scene_memory_artifacts = (
             _write_scene_memory_bundle(
@@ -5214,8 +5288,9 @@ def run_qualification_pipeline(
                 "reason": str(exc),
                 "blocker": "webapp_sync_requires_upstream_request_job_bootstrap",
             }
-            write_json(webapp_sync_result_path, webapp_sync_result)
-            raise StageError("webapp_sync", str(exc)) from exc
+            if _webapp_sync_failure_requires_stage_failure():
+                write_json(webapp_sync_result_path, webapp_sync_result)
+                raise StageError("webapp_sync", str(exc)) from exc
         if webapp_sync_result is None:
             webapp_sync_result = {"status": "skipped", "reason": "sync_returned_none"}
         write_pipeline_sync_result(

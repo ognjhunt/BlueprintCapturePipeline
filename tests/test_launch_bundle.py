@@ -186,6 +186,41 @@ def test_worldlabs_preview_provider_labels_non_production_raw_bypass() -> None:
     assert "unredacted-raw-input" in payload["generation_request"]["tags"]
 
 
+def test_worldlabs_preview_provider_truncates_tags_to_provider_limit() -> None:
+    provider = WorldLabsPreviewProvider()
+
+    payload = provider._build_request_manifest(
+        descriptor={
+            "scene_id": "first-gpu-walkthrough-2",
+            "capture_id": "downloads-walkthrough2-20260611",
+        },
+        capture_root=Path("/tmp/capture-root"),
+        provider_adapter_input={
+            "status": "review_required",
+            "conditioning_inputs": {
+                "rgb_video": {
+                    "uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4",
+                    "labeling": {"non_production": True, "unredacted_input": True},
+                }
+            },
+            "generation": {
+                "display_name": "first-gpu-walkthrough-2",
+                "text_prompt": "First GPU humanoid navigation smoke",
+                "tags": [
+                    "First GPU humanoid navigation smoke",
+                    "provider-adapter-input",
+                    "canonical-site-package",
+                ],
+            },
+        },
+    )
+
+    tags = payload["generation_request"]["tags"]
+    assert tags
+    assert all(len(tag) <= 32 for tag in tags)
+    assert "First GPU humanoid navigation sm" in tags
+
+
 def test_worldlabs_preview_provider_production_requires_privacy_audit(monkeypatch) -> None:
     monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
     provider = WorldLabsPreviewProvider()
@@ -314,6 +349,44 @@ def test_worldlabs_preview_provider_blocks_blocked_provider_adapter_input() -> N
     assert payload["generation_source_type"] is None
 
 
+def test_worldlabs_preview_provider_retains_privacy_input_for_blocked_adapter() -> None:
+    provider = WorldLabsPreviewProvider()
+    input_uri = "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4"
+
+    payload = provider._build_request_manifest(
+        descriptor={"scene_id": "scene-1", "capture_id": "capture-1", "metadata": {}},
+        capture_root=Path("/tmp/capture-root"),
+        provider_adapter_input={
+            "schema_version": "v1",
+            "adapter_input_type": "ProviderAdapterInput",
+            "provider": "world_labs",
+            "adapter": "marble",
+            "status": "blocked",
+            "blockers": ["rights_provenance_review_blocked"],
+            "canonical_site_package_uri": "gs://bucket/pipeline/site_package/canonical_site_package.json",
+            "provider_adapter_input_uri": "gs://bucket/pipeline/site_package/provider_adapter_inputs/world_labs_marble.json",
+            "conditioning_inputs": {
+                "rgb_video": {
+                    "uri": input_uri,
+                    "source_id": "privacy_safe_world_model_input",
+                    "privacy_safe": True,
+                    "checksum_sha256": "abc123",
+                    "source_checksum_sha256": "def456",
+                    "source_manifest_uri": "gs://bucket/pipeline/privacy_processing_manifest.json",
+                    "input_audit_uri": "gs://bucket/pipeline/worldlabs_input_audit.json",
+                }
+            },
+            "labeling": {"privacy_safe_input": True, "raw_video_bypass_used": False},
+        },
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["selected_video_uri"] == input_uri
+    assert payload["privacy_safe_input"] is True
+    assert payload["adapter_input_status"] == "blocked"
+    assert "rights_provenance_review_blocked" in payload["blockers"]
+
+
 def test_worldlabs_poll_reads_world_from_operation_response(monkeypatch) -> None:
     provider = WorldLabsPreviewProvider()
     launch_url = "https://marble.worldlabs.ai/worlds/world-1"
@@ -373,6 +446,68 @@ def test_worldlabs_api_request_preserves_slash_after_base_url(monkeypatch) -> No
 
     assert result == {"ok": True}
     assert captured["url"] == "https://api.worldlabs.ai/marble/v1/media-assets:prepare_upload"
+
+
+def test_worldlabs_submit_reads_local_staged_gs_uri_for_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
+    video_path = capture_root / "pipeline" / "worldlabs_input" / "worldlabs_input.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"local-video-bytes")
+    provider = WorldLabsPreviewProvider()
+    uploaded: dict[str, object] = {}
+
+    def _fake_worldlabs_api_request(path: str, *, method: str = "GET", body=None) -> dict[str, object]:
+        if path == "/marble/v1/media-assets:prepare_upload":
+            return {
+                "media_asset": {"media_asset_id": "media-1"},
+                "upload_info": {"upload_url": "https://upload.example/video", "upload_method": "PUT"},
+            }
+        if path == "/marble/v1/worlds:generate":
+            assert body["world_prompt"]["video_prompt"]["media_asset_id"] == "media-1"
+            return {"id": "op-1"}
+        raise AssertionError(path)
+
+    def _fake_presigned_upload(upload_url, *, method, content_type, data, required_headers=None):  # type: ignore[no-untyped-def]
+        uploaded["upload_url"] = upload_url
+        uploaded["method"] = method
+        uploaded["content_type"] = content_type
+        uploaded["data"] = data
+        uploaded["required_headers"] = required_headers or {}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.provider_preview._worldlabs_api_request",
+        _fake_worldlabs_api_request,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.provider_preview._presigned_upload",
+        _fake_presigned_upload,
+    )
+
+    result = provider.submit(
+        descriptor={"scene_id": "scene-1", "capture_id": "capture-1"},
+        capture_root=capture_root,
+        provider_adapter_input={
+            "status": "review_required",
+            "conditioning_inputs": {
+                "rgb_video": {
+                    "uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4",
+                    "source_id": "raw_video_uri",
+                    "privacy_safe": False,
+                    "labeling": {"raw_video_bypass_used": True, "non_production": True},
+                }
+            },
+            "generation": {"display_name": "first gpu sample", "text_prompt": "load scene"},
+            "labeling": {"raw_video_bypass_used": True, "non_production": True},
+        },
+    )
+
+    assert result["status"] == "processing"
+    assert result["provider_run_id"] == "op-1"
+    assert uploaded["data"] == b"local-video-bytes"
+    assert uploaded["content_type"] == "video/mp4"
 
 
 def test_run_preview_provider_persists_worldlabs_launch_url_aliases(tmp_path: Path, monkeypatch) -> None:

@@ -69,7 +69,13 @@ def build_rights_provenance_review(
     )
     privacy_state = (
         "cleared"
-        if privacy_status in {"no_people_detected", "person_removed", "face_anonymized_fallback"}
+        if privacy_status
+        in {
+            "no_people_detected",
+            "person_removed",
+            "face_anonymized_fallback",
+            "full_frame_redacted_local_proof",
+        }
         else "blocked"
         if privacy_status == "failed_closed"
         else "needs_review"

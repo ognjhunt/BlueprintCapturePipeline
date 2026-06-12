@@ -36,6 +36,7 @@ dependencies = [
 [project.optional-dependencies]
 cloud = [
     "google-cloud-storage>=2.10.0",
+    "boto3>=1.34.0",
 ]
 runtime = [
     "opencv-python-headless>=4.10.0",
@@ -81,6 +82,10 @@ blueprint-build-robot-eval-dataset = "blueprint_pipeline.robot_eval_dataset:main
 blueprint-run-simulation-automation = "blueprint_pipeline.simulation_automation:main"
 blueprint-run-site-eval-director = "blueprint_pipeline.site_eval_director:main"
 blueprint-run-robot-eval-job = "blueprint_pipeline.robot_eval_job_orchestrator:main"
+blueprint-run-robot-eval-worker = "blueprint_pipeline.robot_eval_worker:main"
+blueprint-run-gpu-provider-launcher = "blueprint_pipeline.robot_eval_provider_launcher:main"
+blueprint-run-runpod-provider-adapter = "blueprint_pipeline.runpod_provider_adapter:main"
+blueprint-audit-robot-eval-startup-architecture = "blueprint_pipeline.robot_eval_startup_architecture_audit:main"
 blueprint-ingest-arena-results = "blueprint_pipeline.arena_result_ingest:main"
 blueprint-audit-arena-package = "blueprint_pipeline.arena_package_audit:main"
 blueprint-smoke-arena-package-local = "blueprint_pipeline.arena_fixture_smoke:main"
@@ -103,6 +108,7 @@ blueprint-validate-provider-preview-packet = "blueprint_pipeline.provider_previe
 blueprint-build-production-handoff-readiness = "blueprint_pipeline.production_handoff_readiness:main"
 blueprint-audit-first-gpu-e2e-readiness = "blueprint_pipeline.first_gpu_e2e_readiness:main"
 blueprint-run-owner-gpu-proof = "blueprint_pipeline.owner_gpu_proof_runner:main"
+blueprint-write-owner-gpu-default-smoke-artifacts = "blueprint_pipeline.owner_gpu_default_smoke_artifacts:main"
 blueprint-build-first-gpu-run-packet = "blueprint_pipeline.first_gpu_run_packet:main"
 blueprint-audit-first-gpu-candidates = "blueprint_pipeline.first_gpu_candidate_audit:main"
 blueprint-audit-first-gpu-sample-video = "blueprint_pipeline.first_gpu_sample_video_preflight:main"

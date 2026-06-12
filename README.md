@@ -139,7 +139,20 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/job_validation.json`
 - `robot_eval_jobs/<job_id>/job_plan.json`
 - `robot_eval_jobs/<job_id>/agent_orchestration_plan.json`
+- `robot_eval_jobs/<job_id>/scheduler_decision.json`
+- `robot_eval_jobs/<job_id>/worker_launch_plan.json`
+- `robot_eval_jobs/<job_id>/worker_manifest.json`
 - `robot_eval_jobs/<job_id>/gpu_provisioning_request.json`
+- `robot_eval_jobs/<job_id>/gpu_provider_launch_request.json`
+- `robot_eval_jobs/<job_id>/gpu_provider_launcher_result.json` when
+  `blueprint-run-gpu-provider-launcher` is run
+- `robot_eval_jobs/<job_id>/gpu_provider_launcher.stdout.log` when
+  `blueprint-run-gpu-provider-launcher` is run
+- `robot_eval_jobs/<job_id>/gpu_provider_launcher.stderr.log` when
+  `blueprint-run-gpu-provider-launcher` is run
+- `robot_eval_jobs/<job_id>/runpod_provider_adapter_result.json` when
+  `blueprint-run-runpod-provider-adapter` is run
+- `robot_eval_jobs/<job_id>/gpu_cost_control_ledger.json`
 - `robot_eval_jobs/<job_id>/gpu_provisioning_result.json`
 - `robot_eval_jobs/<job_id>/simulator_service_request.json`
 - `robot_eval_jobs/<job_id>/simulator_service_result.json`
@@ -199,6 +212,9 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/archive_manifest.json`
 - `robot_eval_jobs/<job_id>/post_training_data_package_export_manifest.json`
 - `robot_eval_jobs/<job_id>/proof_boundary.json`
+- `robot_eval_jobs/<job_id>/startup_architecture_audit.json`
+- `robot_eval_jobs/<job_id>/worker_runtime_manifest.json` when run by
+  `blueprint-run-robot-eval-worker`
 - `robot_eval_jobs/<job_id>/job_run_manifest.json`
 - `robot_eval_jobs/<job_id>/blocked_manifest.json` when blocked
 - `robot_eval_job_requests/inbox_run_manifest.json` when a request inbox is consumed
@@ -489,8 +505,13 @@ request, whether `WORLDLABS_API_KEY` and
 `BLUEPRINT_ALLOW_WORLDLABS_PROVIDER_SUBMISSION=true` are configured, and that
 the generated provider-submission script remains before GPU spend,
 `first_gpu_webapp_handoff` files that pin the upstream-ID,
-forwarding-env, staged-request, and local-rehearsal boundary; the cross-repo
-audit keeps `gpu_spend_decision.gpu_rental_recommended_now=false` when
+forwarding-env, optional WebApp forwarding preflight report, staged-request,
+and local-rehearsal boundary; the run-packet builder and cross-repo audit can
+consume a redacted `ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT` to prove
+URL/token/capture-root configuration evidence without copying secrets into
+Pipeline artifacts, and the generated handoff verifier carries that report
+instead of requiring the forwarding token in shell output. It
+keeps `gpu_spend_decision.gpu_rental_recommended_now=false` when
 `local_webapp_rehearsal_only_observed=true`, so a dry-run WebApp request cannot
 be mistaken for the real WebApp-forwarded full-E2E gate,
 `gpu_vm_runtime_preflight` files that check the GPU VM mount, `nvidia-smi`,
@@ -749,6 +770,122 @@ explicit environment and CLI gates are present.
 Live SDK operators log every decision, tool-call summary, command chosen,
 refusal, blocker, and proof effect; deterministic accepted artifacts remain the
 only source for true proof booleans.
+
+Prepared worker images live under
+`deploy/docker/robot_eval_worker/{isaac,mujoco}/`. They run
+`blueprint-run-robot-eval-worker`, which loads `BLUEPRINT_EVAL_MANIFEST_URI`,
+delegates to the job orchestrator, and copies artifacts before shutdown when an
+artifact output URI is provided. Worker manifest input supports local/file,
+HTTP(S), GCS, S3, and R2; live RunPod/Vast/GCP workers require a remote
+`BLUEPRINT_EVAL_MANIFEST_URI` using `https://`, `gs://`, `s3://`, or `r2://`
+because a local path is only a staging artifact. Artifact output supports
+local/file, GCS, S3, and R2.
+For live/non-fixture provider jobs, the worker fails closed before orchestration
+unless `artifact_output_uri` or `--artifact-output-uri` is present, because the
+startup contract requires a finalizer destination before GPU time is useful.
+Fixture/local workers may opt into the same strict rule with
+`artifact_output_uri_required=true` or `--require-artifact-output-uri`.
+Live provider workers also require the queued manifest envelope to use
+`schema_version: "robot_eval_worker_manifest.v1"` and carry an embedded
+`job_request`; a raw job request JSON is not accepted as a provider worker
+manifest.
+For non-fixture simulators, the manifest also carries a
+`runtime_preflight_contract` that must run before scene load and cannot upgrade
+proof by itself. Isaac contracts require NVIDIA inventory, driver, Vulkan/RTX,
+headless launch, blank-scene load, and test-frame checks; MuJoCo contracts keep
+the cheaper path with import/headless/EGL-when-rendering/rollout checks.
+`blueprint-run-robot-eval-worker` writes `worker_runtime_preflight.json`; when
+simulator execution is explicitly allowed for a non-fixture worker, a missing or
+failing runtime preflight command blocks before scene work. The command can be
+provided in the worker manifest as `runtime_preflight_command`,
+`runtime_preflight_commands.<simulator>`, or through
+`BLUEPRINT_RUNTIME_PREFLIGHT_COMMAND`. Preflight stdout/stderr are written as
+`worker_runtime_preflight.stdout.log` and
+`worker_runtime_preflight.stderr.log`; if preflight blocks before the job
+orchestrator runs, the worker still copies those worker-level failure artifacts
+to the configured artifact output URI when one is available.
+`blueprint-run-robot-eval-job` writes that strict `worker_manifest.json` beside
+the provider launch request. For live providers, upload that manifest to object
+storage and set `BLUEPRINT_EVAL_MANIFEST_URI` before the provider launcher can
+be ready; `gpu_provider_launch_request.json` records both the local staging path
+and the fetchable manifest URI plus runtime-preflight contracts.
+When the worker runs, it writes `worker_runtime_manifest.json` into the worker
+scratch directory, the job directory, and the configured artifact output
+destination so the finalizer status travels with the job bundle.
+Live provider plans now fail closed unless the selected simulator has a
+configured versioned worker image ref, for example
+`BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF=registry.example/blueprint/isaac-eval-worker:2026-06-12`
+or `BLUEPRINT_MUJOCO_EVAL_WORKER_IMAGE_REF=...`; the generic fallback is
+`BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF`. They also require
+`BLUEPRINT_EVAL_MANIFEST_URI` for the queued worker manifest and
+`BLUEPRINT_ARTIFACT_OUTPUT_URI` for the finalizer destination. A Dockerfile path
+alone is build scaffolding, and a local `worker_manifest.json` path alone is not
+a provider-launchable input.
+Each job writes `gpu_provider_launch_request.json` as a dry-run provider envelope
+with worker image, command, env-var names, GPU constraints, timeout, max-worker,
+idle-shutdown, and artifact-finalizer requirements. It never stores provider
+secret values and does not mean a live GPU provider call happened. These images
+and launch requests are startup/runtime scaffolds only; provider-native GPU
+evidence remains required for simulator proof.
+
+When `gpu_provider_launch_request.json` reaches `request_manifest_ready`, run a
+separate provider launcher instead of teaching the website or job orchestrator
+to call RunPod/Vast/GCP directly. The launcher is fail-closed until both
+`BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true` and `--allow-provider-launch` are
+present, and it only runs the command supplied through
+`BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND` or `--provider-launch-command`:
+
+```bash
+BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
+BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND="/path/to/provider-launch-adapter" \
+blueprint-run-gpu-provider-launcher \
+  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID" \
+  --allow-provider-launch
+```
+
+That command receives non-secret context such as
+`BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST`, `BLUEPRINT_EVAL_MANIFEST_URI`,
+`BLUEPRINT_ARTIFACT_OUTPUT_URI`, `BLUEPRINT_WORKER_IMAGE_REF`, and the timeout
+limits. The launcher writes `gpu_provider_launcher_result.json` plus
+`gpu_provider_launcher.stdout.log` and `.stderr.log`, stores no raw command or
+secret values, redacts known secret env values from captured stdout/stderr logs,
+and does not upgrade simulator, allocation, or robot-readiness proof by itself.
+For RunPod, the repo-owned adapter command is
+`blueprint-run-runpod-provider-adapter`. It defaults to `--mode dry-run` and
+writes `runpod_provider_adapter_result.json` with the serverless `/run` and
+GraphQL on-demand Pod request shapes but no API call. Live modes
+`--mode serverless-run` and `--mode on-demand-pod` require
+`BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true`, `RUNPOD_API_KEY`, and
+`--allow-runpod-api-call`; they still only submit/allocate provider work and do
+not prove simulator execution, robot readiness, safety, or public claim
+upgrades. The adapter also records a `cost_control_policy`: serverless `/run`
+payloads can set per-request `executionTimeout`, `ttl`, and `lowPriority`, but
+RunPod active workers, max workers, and idle timeout are endpoint-level settings
+that must be configured on the endpoint. On-demand Pods do not get provider-native
+idle shutdown from the request payload, so the adapter carries the worker env
+shutdown controls and requires an external watchdog/owner terminator posture.
+
+Each job also writes `gpu_cost_control_ledger.json` with requested budget,
+maximum billable GPU seconds, max workers, timeout, idle-shutdown/watchdog
+requirements, concrete idle timeout, concrete external watchdog TTL, estimated
+GPU seconds, actual GPU seconds when owner-runtime evidence exists, and the
+blockers preventing allocation. A blocked scheduler or missing provider gate
+records zero estimated GPU seconds and no live provider calls.
+
+Run `blueprint-audit-robot-eval-startup-architecture --job-dir
+<capture-root>/pipeline/robot_eval_jobs/<job_id>` after a job pass to verify the
+startup contract in one place. The read-only audit checks the async WebApp queue
+boundary, Pipeline scheduler ownership, CPU-preflight gate, worker image/cache
+contract, runtime preflight before scene load, provider dry-run envelope,
+no-secret policy, timeout/idle-shutdown limits, cost-control ledger, and proof
+ceilings without running providers or simulators. `blueprint-run-robot-eval-job`
+now writes the same
+`startup_architecture_audit.json` into every job directory and surfaces its
+status/path in `job_run_manifest.json`; the standalone command remains useful
+for re-auditing edited or externally produced job artifacts. When
+`worker_runtime_manifest.json` is present after a worker run, the audit also
+validates the matching `worker_runtime_preflight.json` schema, status, and
+proof-boundary fields.
 
 Each robot-eval job also writes `scenario_eval_matrix.json`. It expands the
 requested site/task/scenario scope into concrete scenario-family variation runs

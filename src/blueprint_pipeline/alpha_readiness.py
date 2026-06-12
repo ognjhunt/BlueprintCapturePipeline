@@ -331,10 +331,20 @@ def build_alpha_readiness_summary(
         _check(
             "privacy_completed",
             str(privacy_manifest.get("status") or "").strip().lower()
-            in {"no_people_detected", "person_removed", "face_anonymized_fallback"},
+            in {
+                "no_people_detected",
+                "person_removed",
+                "face_anonymized_fallback",
+                "full_frame_redacted_local_proof",
+            },
             "privacy produced buyer-safe walkthrough media"
             if str(privacy_manifest.get("status") or "").strip().lower()
-            in {"no_people_detected", "person_removed", "face_anonymized_fallback"}
+            in {
+                "no_people_detected",
+                "person_removed",
+                "face_anonymized_fallback",
+                "full_frame_redacted_local_proof",
+            }
             else f"privacy status is {privacy_manifest.get('status') or 'not_run'}",
             category="status",
         ),

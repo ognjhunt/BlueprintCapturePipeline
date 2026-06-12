@@ -25,6 +25,7 @@ class PipelineReviewArtifacts:
     scene_graph: Dict[str, Any]
     route_graph: Dict[str, Any]
     geometry_evidence: Dict[str, Any]
+    supplemental_geometry: list[Dict[str, Any]]
     capability_checks: Dict[str, Any]
     blocker_register: Dict[str, Any]
     readiness_decision: Dict[str, Any]
@@ -46,6 +47,24 @@ def _read_required_json(path: Path, label: str) -> Dict[str, Any]:
     if not path.is_file():
         raise PipelineError(f"Missing required pipeline artifact: {label} at {path}")
     return read_json(path)
+
+
+def _supplemental_geometry_artifacts(pipeline_root: Path) -> list[Dict[str, Any]]:
+    candidates = (
+        ("geometry_summary", pipeline_root / "geometry" / "geometry_summary.json"),
+        ("geometry_manifest", pipeline_root / "geometry" / "geometry_manifest.json"),
+        ("advanced_geometry_bundle", pipeline_root / "advanced_geometry" / "advanced_geometry_bundle.json"),
+        ("worldlabs_export_manifest", pipeline_root / "worldlabs_export_manifest.json"),
+        (
+            "worldlabs_materialized_assets",
+            pipeline_root / "worldlabs_assets" / "materialized_assets_manifest.json",
+        ),
+    )
+    artifacts: list[Dict[str, Any]] = []
+    for label, path in candidates:
+        if path.is_file():
+            artifacts.append({"label": label, "path": str(path), "exists": True})
+    return artifacts
 
 
 def load_pipeline_review_artifacts(capture_root: str | Path) -> PipelineReviewArtifacts:
@@ -83,6 +102,7 @@ def load_pipeline_review_artifacts(capture_root: str | Path) -> PipelineReviewAr
             context.pipeline_root / "geometry_evidence.json",
             "geometry_evidence",
         ),
+        supplemental_geometry=_supplemental_geometry_artifacts(context.pipeline_root),
         capability_checks=_read_required_json(
             context.pipeline_root / "capability_checks.json",
             "capability_checks",

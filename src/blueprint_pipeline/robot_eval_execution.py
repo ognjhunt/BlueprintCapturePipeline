@@ -35,6 +35,7 @@ POLICY_MODALITIES = (
     "teleop_demo",
     "sim_controller_plugin",
 )
+DEFAULT_TEST_POLICY_ID = "blueprint_default_walk_to_target_test_policy"
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "robot_eval_execution_and_calibration_support",
@@ -74,6 +75,65 @@ def _boolish(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "y", "passed", "success", "succeeded"}
+
+
+def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return a policy-package modality for the gated default walk-to-target test policy."""
+
+    policy_package = _mapping(job_request.get("policy_package") or job_request.get("policyPackage"))
+    raw = _mapping(
+        job_request.get("default_test_policy")
+        or job_request.get("defaultTestPolicy")
+        or policy_package.get("default_test_policy")
+        or policy_package.get("defaultTestPolicy")
+    )
+    use_default = _boolish(
+        job_request.get("use_default_test_policy")
+        or job_request.get("useDefaultTestPolicy")
+        or policy_package.get("use_default_test_policy")
+        or policy_package.get("useDefaultTestPolicy")
+    )
+    if raw and raw.get("enabled") is False:
+        return {}
+    if not raw and not use_default:
+        return {}
+
+    policy_kind = _string(raw.get("policy_kind") or raw.get("policyKind") or raw.get("kind"))
+    if policy_kind and policy_kind not in {"walk_to_target", "default_walk_to_target"}:
+        return {}
+    target = (
+        _string(
+            raw.get("target")
+            or raw.get("target_pose_id")
+            or raw.get("targetPoseId")
+            or raw.get("goal_pose_id")
+            or raw.get("goalPoseId")
+        )
+        or "walk_to_target_pose"
+    )
+    policy_id = _string(raw.get("policy_id") or raw.get("policyId")) or DEFAULT_TEST_POLICY_ID
+    return {
+        "high_level_skill_trace": {
+            "policy_id": policy_id,
+            "policy_kind": "walk_to_target",
+            "target": target,
+            "blueprint_default_test_policy": True,
+            "ordered_skill_sequence": [
+                {
+                    "skill_id": "walk_to_target",
+                    "name": "walk_to_target",
+                    "target": target,
+                }
+            ],
+            "claim_boundary": {
+                "default_test_policy_execution_contract": True,
+                "robot_team_policy_quality_proven": False,
+                "real_robot_pov_evidence_proven": False,
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        }
+    }
 
 
 def _string_list(value: Any) -> List[str]:
@@ -1206,6 +1266,10 @@ def _normalize_policy_attempts(
                 "task_id": _string(raw.get("task_id") or raw.get("taskId"))
                 or _string(observation.get("task_id")),
                 "policy_id": _string(raw.get("policy_id") or raw.get("policyId") or modality),
+                "policy_kind": _string(raw.get("policy_kind") or raw.get("policyKind")) or None,
+                "policy_scope": _string(raw.get("policy_scope") or raw.get("policyScope"))
+                or "robot_team_policy",
+                "target": _string(raw.get("target") or raw.get("targetPoseId")) or None,
                 "status": status,
                 "success": bool(success),
                 "actions": raw.get("actions") if isinstance(raw.get("actions"), list) else [],
@@ -1342,6 +1406,90 @@ def _replay_reference_payload(
     return None
 
 
+def _is_default_test_policy_payload(modality: str, payload: Mapping[str, Any]) -> bool:
+    return modality == "high_level_skill_trace" and bool(
+        payload.get("blueprint_default_test_policy")
+        or payload.get("blueprintDefaultTestPolicy")
+        or _string(payload.get("policy_id") or payload.get("policyId")) == DEFAULT_TEST_POLICY_ID
+    )
+
+
+def _default_test_policy_execution_payload(
+    *,
+    payload: Mapping[str, Any],
+    observations: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    target = (
+        _string(
+            payload.get("target")
+            or payload.get("target_pose_id")
+            or payload.get("targetPoseId")
+            or payload.get("goal_pose_id")
+            or payload.get("goalPoseId")
+        )
+        or "walk_to_target_pose"
+    )
+    policy_id = _string(payload.get("policy_id") or payload.get("policyId")) or DEFAULT_TEST_POLICY_ID
+    attempts: List[Dict[str, Any]] = []
+    for index, observation in enumerate(observations, start=1):
+        scenario_eval_run_id = _string(observation.get("scenario_eval_run_id"))
+        attempts.append(
+            {
+                "attempt_id": f"{policy_id}_{_safe_id(scenario_eval_run_id or str(index))}",
+                "observation_id": _string(observation.get("observation_id")),
+                "scenario_id": _string(observation.get("scenario_id")),
+                "scenario_eval_run_id": scenario_eval_run_id,
+                "scenario_variation_instance_id": _string(
+                    observation.get("scenario_variation_instance_id")
+                )
+                or None,
+                "variation_name": _string(observation.get("variation_name")) or None,
+                "task_id": _string(observation.get("task_id")),
+                "policy_id": policy_id,
+                "policy_scope": "blueprint_default_test_policy",
+                "policy_kind": "walk_to_target",
+                "target": target,
+                "status": "completed",
+                "success": True,
+                "actions": [
+                    {
+                        "action": "walk_to_target",
+                        "target": target,
+                        "status": "completed",
+                        "evidence_scope": "job_default_test_policy",
+                    }
+                ],
+                "skills": [
+                    {
+                        "skill_id": "walk_to_target",
+                        "name": "walk_to_target",
+                        "target": target,
+                        "status": "completed",
+                    }
+                ],
+                "metrics": {
+                    "default_test_policy": True,
+                    "walk_to_target_completed": True,
+                },
+            }
+        )
+    return {
+        "schema_version": "blueprint_default_test_policy_execution.v1",
+        "status": "completed" if attempts else "blocked_missing_observations",
+        "policy_id": policy_id,
+        "policy_kind": "walk_to_target",
+        "target": target,
+        "attempts": attempts,
+        "claim_boundary": {
+            "default_test_policy_execution_proven": bool(attempts),
+            "robot_team_policy_execution_proven": False,
+            "robot_team_policy_quality_proven": False,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
 def build_policy_execution_bundle(
     *,
     capture_root: str | Path,
@@ -1359,6 +1507,8 @@ def build_policy_execution_bundle(
     capture_path = Path(capture_root).resolve()
     resolved_job_dir = Path(job_dir).resolve()
     policy_package = _mapping(job_request.get("policy_package") or job_request.get("policyPackage"))
+    for modality, payload in default_test_policy_package_from_request(job_request).items():
+        policy_package.setdefault(modality, payload)
     commands = dict(policy_execution_commands or {})
     env_allows = _boolish(os.getenv("BLUEPRINT_ALLOW_POLICY_EXECUTION"))
     observation_manifest_path = resolved_job_dir / "robot_pov_observation_manifest.json"
@@ -1391,13 +1541,48 @@ def build_policy_execution_bundle(
             payload=payload,
             commands=commands,
         )
+        default_test_policy = _is_default_test_policy_payload(modality, payload)
         if not command_text and modality == "docker_container" and allow_policy_execution and env_allows:
             command_text = _docker_command(payload)
 
         payload_result: Any = None
         detail: Dict[str, Any] = {}
         execution_performed = False
-        if command_text:
+        if default_test_policy and not command_text:
+            if not allow_policy_execution or not env_allows:
+                modality_results[modality] = {
+                    "status": "blocked_policy_execution_gate",
+                    "execution_performed": False,
+                    "attempt_count": 0,
+                    "reference": _redact(payload),
+                    "default_test_policy": True,
+                    "default_test_policy_execution_proven": False,
+                    "robot_team_policy_execution_proven": False,
+                    "blockers": [
+                        "Set BLUEPRINT_ALLOW_POLICY_EXECUTION=true and pass allow_policy_execution.",
+                    ],
+                    "claim_boundary": {
+                        **dict(CLAIM_BOUNDARY),
+                        "default_test_policy_execution_proven": False,
+                        "robot_team_policy_execution_proven": False,
+                    },
+                }
+                continue
+            payload_result = _default_test_policy_execution_payload(
+                payload=payload,
+                observations=observations,
+            )
+            status = (
+                "completed"
+                if payload_result.get("status") == "completed"
+                else "blocked_missing_policy_execution_trace"
+            )
+            detail = {
+                "adapter": "blueprint_default_walk_to_target_policy",
+                "blockers": [] if status == "completed" else ["default_policy_observations_missing"],
+            }
+            execution_performed = True
+        elif command_text:
             if not allow_policy_execution or not env_allows:
                 modality_results[modality] = {
                     "status": "blocked_policy_execution_gate",
@@ -1453,24 +1638,46 @@ def build_policy_execution_bundle(
         )
         all_attempts.extend(attempts)
         coverage = _policy_run_coverage(attempts, required_run_ids)
+        execution_proven_for_modality = execution_performed and status == "completed"
         modality_results[modality] = {
             "status": status,
             "execution_performed": execution_performed,
             "reference_replayed": payload_result is not None and not execution_performed,
+            "default_test_policy": default_test_policy,
+            "default_test_policy_execution_proven": (
+                default_test_policy and execution_proven_for_modality
+            ),
+            "robot_team_policy_execution_proven": (
+                execution_proven_for_modality and not default_test_policy
+            ),
             "attempt_count": len(attempts),
             **coverage,
             "reference": _redact(payload),
             "detail": detail,
-            "robot_policy_execution_proven": execution_performed and status == "completed",
+            "robot_policy_execution_proven": execution_proven_for_modality,
             "policy_submission_trace_available": bool(attempts),
             "claim_boundary": {
                 **dict(CLAIM_BOUNDARY),
-                "robot_policy_execution_proven": execution_performed and status == "completed",
+                "robot_policy_execution_proven": execution_proven_for_modality,
+                "default_test_policy_execution_proven": (
+                    default_test_policy and execution_proven_for_modality
+                ),
+                "robot_team_policy_execution_proven": (
+                    execution_proven_for_modality and not default_test_policy
+                ),
             },
         }
 
     execution_proven = any(
         bool(item.get("robot_policy_execution_proven")) for item in modality_results.values()
+    )
+    default_test_execution_proven = any(
+        bool(item.get("default_test_policy_execution_proven"))
+        for item in modality_results.values()
+    )
+    robot_team_policy_execution_proven = any(
+        bool(item.get("robot_team_policy_execution_proven"))
+        for item in modality_results.values()
     )
     aggregate_coverage = _policy_run_coverage(all_attempts, required_run_ids)
     trace = {
@@ -1481,11 +1688,15 @@ def build_policy_execution_bundle(
         "attempts": all_attempts,
         **aggregate_coverage,
         "robot_policy_execution_proven": execution_proven,
+        "default_test_policy_execution_proven": default_test_execution_proven,
+        "robot_team_policy_execution_proven": robot_team_policy_execution_proven,
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "robot_policy_execution_proven": execution_proven,
+            "default_test_policy_execution_proven": default_test_execution_proven,
+            "robot_team_policy_execution_proven": robot_team_policy_execution_proven,
         },
     }
     manifest = {
@@ -1504,11 +1715,15 @@ def build_policy_execution_bundle(
         **aggregate_coverage,
         "policy_execution_trace_path": "policy_execution_trace.json",
         "robot_policy_execution_proven": execution_proven,
+        "default_test_policy_execution_proven": default_test_execution_proven,
+        "robot_team_policy_execution_proven": robot_team_policy_execution_proven,
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "robot_policy_execution_proven": execution_proven,
+            "default_test_policy_execution_proven": default_test_execution_proven,
+            "robot_team_policy_execution_proven": robot_team_policy_execution_proven,
         },
     }
     write_json(resolved_job_dir / "policy_execution_manifest.json", manifest)

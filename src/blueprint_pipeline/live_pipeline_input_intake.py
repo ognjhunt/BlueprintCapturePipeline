@@ -33,6 +33,7 @@ LIVE_CLOSURE_EVIDENCE_ARTIFACT_NAME = "live_eval_closure_evidence.json"
 DEPLOYMENT_OUTCOME_ARTIFACT_NAME = "deployment_outcome.json"
 POLICY_PACKAGE_ARTIFACT_NAME = "policy_package.json"
 REAL_ROBOT_POV_ARTIFACT_NAME = "real_robot_pov_manifest.json"
+LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND = "local_first_gpu_rehearsal_request"
 POLICY_MODALITY_ORDER = (
     "policy_api_endpoint",
     "docker_container",
@@ -131,6 +132,16 @@ def _request_from_payload(payload: Mapping[str, Any]) -> Dict[str, Any] | None:
     return None
 
 
+def _source_kind_from_request(request: Mapping[str, Any]) -> str:
+    source = _mapping(request.get("source"))
+    selection = _mapping(source.get("selection_state"))
+    for candidate in (request, source, selection):
+        source_kind = _string(candidate.get("source_kind"))
+        if source_kind:
+            return source_kind
+    return ""
+
+
 def _field_value(request: Mapping[str, Any], field: str) -> str | None:
     source = _mapping(request.get("source"))
     source_selection = _mapping(source.get("selection_state"))
@@ -197,6 +208,12 @@ def _audit_webapp_request(
             "blockers": ["not_robot_eval_job_request_v1_or_queue_envelope"],
             "sha256": _sha_file(request_path),
         }
+    source_kind = _string(payload.get("source_kind")) or _source_kind_from_request(request)
+    local_rehearsal_only = (
+        bool(payload.get("local_rehearsal_only"))
+        or bool(request.get("local_rehearsal_only"))
+        or source_kind == LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND
+    )
     site_package = _mapping(request.get("site_package"))
     request_capture_root = _string(site_package.get("capture_root")) or None
     fields_present = {
@@ -226,11 +243,14 @@ def _audit_webapp_request(
         "request_capture_root_matches_control_plane": capture_root_matches,
         "configured_capture_root": str(expected_capture_root) if expected_capture_root else None,
         "configured_inbox": str(configured_inbox) if configured_inbox else None,
+        "source_kind": source_kind or None,
+        "local_rehearsal_only": local_rehearsal_only,
         "blockers": blockers,
         "metadata_only": True,
         "proof_boundary": (
-            "Valid WebApp request metadata proves handoff shape only; the control plane still "
-            "owns scheduling and proof-boundary enforcement."
+            "Valid WebApp request metadata proves handoff shape only; local rehearsal "
+            "requests are not live WebApp forwarding proof. The control plane still owns "
+            "scheduling and proof-boundary enforcement."
         ),
     }
 
@@ -1445,6 +1465,8 @@ def _write_staged_inputs(
         "generated_at": utc_now_iso(),
         "source_intake_manifest_path": str(manifest_path),
         "configured_capture_root": str(capture_root) if capture_root else None,
+        "source_kind": webapp_audit.get("source_kind"),
+        "local_rehearsal_only": bool(webapp_audit.get("local_rehearsal_only")),
         "webapp_request": {
             "ready": webapp_ready and webapp_staged,
             "staged": webapp_staged,
@@ -1452,6 +1474,8 @@ def _write_staged_inputs(
             "path": webapp_audit.get("path"),
             "target_path": webapp_staging.get("target_path"),
             "sha256": webapp_staging.get("sha256") or webapp_audit.get("sha256"),
+            "source_kind": webapp_audit.get("source_kind"),
+            "local_rehearsal_only": bool(webapp_audit.get("local_rehearsal_only")),
         },
         "arena_results": {
             "ready": arena_ready if stage_arena_results else False,
@@ -1556,6 +1580,8 @@ def _write_staged_inputs(
         },
         "proof_boundary": {
             "staged_inputs_are_pointers_only": True,
+            "local_webapp_rehearsal_only": bool(webapp_audit.get("local_rehearsal_only")),
+            "live_webapp_forwarding_proven": False,
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
             "robot_pov_evidence_proven": False,
@@ -1774,6 +1800,9 @@ def build_live_pipeline_input_intake(
     elif stage_real_robot_pov and real_robot_pov_staging.get("performed"):
         status = "staged_for_control_plane"
 
+    webapp_request_metadata_valid = bool(webapp_audit.get("ready"))
+    local_webapp_rehearsal_only = bool(webapp_audit.get("local_rehearsal_only"))
+    webapp_truth_proven = webapp_request_metadata_valid and not local_webapp_rehearsal_only
     if output_path:
         path = Path(output_path).resolve()
     else:
@@ -1817,6 +1846,9 @@ def build_live_pipeline_input_intake(
         "manifest_path": str(resolved_manifest_path),
         "configured_capture_root": str(capture_root) if capture_root else None,
         "configured_job_request_inbox": str(inbox) if inbox else None,
+        "webapp_request_metadata_valid": webapp_request_metadata_valid,
+        "local_webapp_rehearsal_only": local_webapp_rehearsal_only,
+        "webapp_truth_proven": webapp_truth_proven,
         "webapp_job_request": webapp_audit,
         "arena_results": arena_audit,
         "live_closure_evidence": live_closure_evidence_audit,
@@ -1837,7 +1869,10 @@ def build_live_pipeline_input_intake(
         ],
         "proof_boundary": {
             "intake_performs_live_actions": False,
-            "webapp_truth_proven": bool(webapp_audit.get("ready")),
+            "webapp_request_metadata_valid": webapp_request_metadata_valid,
+            "webapp_truth_proven": webapp_truth_proven,
+            "local_webapp_rehearsal_only": local_webapp_rehearsal_only,
+            "live_webapp_forwarding_proven": False,
             "arena_results_ready_for_ingest": bool(arena_audit.get("ready")),
             "live_closure_evidence_ready_for_closure_audit": bool(
                 live_closure_evidence_audit.get("ready")
@@ -1907,6 +1942,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"[live-pipeline-input-intake] audit={result['output_path']}")
     print(f"[live-pipeline-input-intake] status={result['status']}")
+    print(
+        "[live-pipeline-input-intake] webapp_request_metadata_valid="
+        f"{str(bool(result.get('webapp_request_metadata_valid'))).lower()}"
+    )
+    print(
+        "[live-pipeline-input-intake] local_webapp_rehearsal_only="
+        f"{str(bool(result.get('local_webapp_rehearsal_only'))).lower()}"
+    )
+    print(
+        "[live-pipeline-input-intake] webapp_truth_proven="
+        f"{str(bool(result.get('webapp_truth_proven'))).lower()}"
+    )
     if result["input_blockers"]:
         print(f"[live-pipeline-input-intake] blockers={len(result['input_blockers'])}")
     return 0 if not result["input_blockers"] else 1

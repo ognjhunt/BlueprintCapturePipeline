@@ -25,7 +25,12 @@ LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION = "blueprint_live_pipeline_staged_inp
 WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = "robot_eval_job_request_inbox.v1"
 WEBAPP_JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
 LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND = "local_first_gpu_rehearsal_request"
-REQUESTED_OUTPUTS = ["qualification", "robot_eval_dataset", "task_evaluation_run"]
+REQUESTED_OUTPUTS = [
+    "qualification",
+    "preview_simulation",
+    "robot_eval_dataset",
+    "task_evaluation_run",
+]
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v"}
 
 
@@ -106,7 +111,46 @@ def _manifest_payload(
     request_id: str | None,
     buyer_request_id: str | None,
     capture_job_id: str | None,
+    derived_scene_generation_allowed: bool = False,
+    data_licensing_allowed: bool = False,
+    capture_contributor_payout_eligible: bool = False,
+    consent_status: str = "unknown",
+    permission_document_uri: str | None = None,
+    consent_scope: Sequence[str] = (),
+    consent_notes: Sequence[str] = (),
 ) -> Dict[str, Any]:
+    rights_scope = {
+        "derived_scene_generation_allowed": bool(derived_scene_generation_allowed),
+        "data_licensing_allowed": bool(data_licensing_allowed),
+        "capture_contributor_payout_eligible": bool(
+            capture_contributor_payout_eligible
+        ),
+        "consent_status": _string(consent_status) or "unknown",
+        "permission_document_uri": _optional_id(permission_document_uri),
+        "consent_scope": [_string(item) for item in consent_scope if _string(item)],
+        "consent_notes": [_string(item) for item in consent_notes if _string(item)],
+    }
+    owner_approval = {
+        "status": (
+            "documented"
+            if rights_scope["consent_status"] == "documented"
+            and rights_scope["permission_document_uri"]
+            else "not_documented"
+        ),
+        "approved_scope": list(rights_scope["consent_scope"]),
+        "permission_document_uri": rights_scope["permission_document_uri"],
+        "derived_scene_generation_allowed": rights_scope["derived_scene_generation_allowed"],
+        "data_licensing_allowed": rights_scope["data_licensing_allowed"],
+        "capture_contributor_payout_eligible": rights_scope[
+            "capture_contributor_payout_eligible"
+        ],
+        "customer_publication_allowed": False,
+        "physical_robot_readiness_claim_allowed": False,
+        "proof_boundary": (
+            "Owner approval on a staged sample scopes simulator/world-model smoke work only; "
+            "it does not prove unrestricted licensing, customer publication, or physical robot readiness."
+        ),
+    }
     return {
         "schema_version": "capture_raw_manifest.v1",
         "scene_id": scene_id,
@@ -132,6 +176,8 @@ def _manifest_payload(
         "request_id": request_id,
         "buyer_request_id": buyer_request_id,
         "capture_job_id": capture_job_id,
+        "capture_rights": rights_scope,
+        "owner_approval": owner_approval,
         "proof_boundary": (
             "Single-video staging preserves raw walkthrough truth only. Missing pose, depth, "
             "intrinsics, WebApp upstream IDs, policy packages, and GPU proof must remain blocked "
@@ -277,6 +323,13 @@ def stage_first_gpu_sample_video(
     request_id: str | None = None,
     buyer_request_id: str | None = None,
     capture_job_id: str | None = None,
+    derived_scene_generation_allowed: bool = False,
+    data_licensing_allowed: bool = False,
+    capture_contributor_payout_eligible: bool = False,
+    consent_status: str = "unknown",
+    permission_document_uri: str | None = None,
+    consent_scope: Sequence[str] = (),
+    consent_notes: Sequence[str] = (),
     stage_local_webapp_rehearsal_request: bool = False,
     local_webapp_job_id: str | None = None,
     require_source_video_preflight: bool = False,
@@ -364,7 +417,22 @@ def stage_first_gpu_sample_video(
         request_id=request,
         buyer_request_id=buyer_request,
         capture_job_id=capture_job,
+        derived_scene_generation_allowed=derived_scene_generation_allowed,
+        data_licensing_allowed=data_licensing_allowed,
+        capture_contributor_payout_eligible=capture_contributor_payout_eligible,
+        consent_status=consent_status,
+        permission_document_uri=permission_document_uri,
+        consent_scope=consent_scope,
+        consent_notes=consent_notes,
     )
+    source_video_metadata = {
+        "source_path": str(source),
+        "raw_video_path": str(raw_root / video_name),
+        "raw_video_uri": f"gs://{resolved_bucket}/scenes/{safe_scene_id}/captures/{safe_capture_id}/raw/{video_name}",
+        "sha256": _sha_file(raw_root / video_name),
+        "staging_mode": mode,
+    }
+    manifest["source_video"] = dict(source_video_metadata)
     capture_context = {
         **manifest,
         "schema_version": "v1",
@@ -379,6 +447,10 @@ def stage_first_gpu_sample_video(
         "taskSteps": steps,
         "zone": zone,
         "owner": owner,
+        "capture_rights": dict(manifest["capture_rights"]),
+        "owner_approval": dict(manifest["owner_approval"]),
+        "source_video": dict(source_video_metadata),
+        "proof_boundary": manifest["proof_boundary"],
         "successCriteria": [
             "scene load trace exists",
             "spawn pose trace exists",
@@ -397,6 +469,11 @@ def stage_first_gpu_sample_video(
         "scene_id": safe_scene_id,
         "capture_id": safe_capture_id,
         "raw_prefix": f"scenes/{safe_scene_id}/captures/{safe_capture_id}/raw",
+        "raw_video_uri": source_video_metadata["raw_video_uri"],
+        "source_video_sha256": source_video_metadata["sha256"],
+        "capture_rights": dict(manifest["capture_rights"]),
+        "owner_approval": dict(manifest["owner_approval"]),
+        "proof_boundary": manifest["proof_boundary"],
         "completed_at": generated_at,
     }
 
@@ -456,6 +533,7 @@ def stage_first_gpu_sample_video(
             "buyer_request_id": bool(buyer_request),
             "capture_job_id": bool(capture_job),
         },
+        "capture_rights": dict(manifest["capture_rights"]),
         "preflight_status": preflight.get("status"),
         "preflight_missing_required_inputs": preflight.get("missing_required_inputs") or [],
         "candidate_audit_path": str(candidate_audit_path),
@@ -575,6 +653,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--buyer-request-id", default=None)
     parser.add_argument("--capture-job-id", default=None)
     parser.add_argument(
+        "--allow-derived-scene-generation",
+        action="store_true",
+        help=(
+            "Mark this staged sample as explicitly allowed for derived scene generation. "
+            "Omit to keep rights fail-closed."
+        ),
+    )
+    parser.add_argument(
+        "--allow-data-licensing",
+        action="store_true",
+        help="Mark this staged sample as explicitly allowed for downstream data licensing.",
+    )
+    parser.add_argument(
+        "--capture-contributor-payout-eligible",
+        action="store_true",
+        help="Mark the staged sample as payout-eligible under the supplied rights scope.",
+    )
+    parser.add_argument("--consent-status", default="unknown")
+    parser.add_argument("--permission-document-uri", default=None)
+    parser.add_argument("--consent-scope", action="append", default=[])
+    parser.add_argument("--consent-note", action="append", default=[])
+    parser.add_argument(
         "--require-source-video-preflight",
         action="store_true",
         help=(
@@ -634,6 +734,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             request_id=args.request_id,
             buyer_request_id=args.buyer_request_id,
             capture_job_id=args.capture_job_id,
+            derived_scene_generation_allowed=args.allow_derived_scene_generation,
+            data_licensing_allowed=args.allow_data_licensing,
+            capture_contributor_payout_eligible=args.capture_contributor_payout_eligible,
+            consent_status=args.consent_status,
+            permission_document_uri=args.permission_document_uri,
+            consent_scope=args.consent_scope,
+            consent_notes=args.consent_note,
             require_source_video_preflight=args.require_source_video_preflight,
             max_video_duration_seconds=args.max_video_duration_seconds,
             max_video_size_bytes=args.max_video_size_bytes,

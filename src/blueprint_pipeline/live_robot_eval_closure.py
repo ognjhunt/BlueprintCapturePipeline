@@ -144,11 +144,21 @@ OWNER_GPU_PROOF_REQUIRED_EVIDENCE_FLAGS = (
     "spawn_pose_loaded",
     "action_or_policy_trace_present",
     "action_or_policy_trace_valid",
+    "default_smoke_policy_present",
+    "default_smoke_policy_valid",
+    "policy_execution_trace_present",
+    "default_policy_execution_trace_valid",
+    "sim_robot_pov_evidence_present",
+    "sim_robot_pov_evidence_valid",
     "artifact_manifest_present",
     "artifact_manifest_valid",
+    "robot_asset_trace_present",
+    "robot_asset_matches_proof",
     "operator_attestation_present",
     "pass_fail_criteria_passed",
 )
+
+ISAAC_LIVE_SIMULATOR_FRAMEWORKS = {"isaac_sim", "isaac_lab_arena"}
 
 REPO_LOCAL_GATES = (
     "site_capture",
@@ -1179,6 +1189,13 @@ def _owner_gpu_proof_manifest_audit(manifest: Mapping[str, Any]) -> Dict[str, An
         "blockers": blockers,
         "missing_required_fields": missing_required_fields,
         "exit_code": exit_code,
+        "simulator_backend": manifest.get("simulator_backend"),
+        "isaac_sim_execution_proven": bool(manifest.get("isaac_sim_execution_proven")),
+        "isaac_robot_asset_execution_proven": bool(
+            manifest.get("isaac_robot_asset_execution_proven")
+        ),
+        "unitree_g1_asset_spawned": bool(manifest.get("unitree_g1_asset_spawned")),
+        "robot_asset": _mapping(manifest.get("robot_asset")),
         "manifest_blockers": manifest_blockers,
         "missing_inputs": missing_inputs,
         "missing_evidence_flags": missing_evidence_flags,
@@ -3001,6 +3018,7 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
         bool(sim_result.get("simulator_execution_proven"))
         or bool(sim_result.get("simulators_run"))
     ) and non_fixture_simulator
+    simulator_framework = _string(sim_result.get("framework"))
     sim_completed = (
         bool(sim_result.get("simulator_execution_proven"))
         and bool(sim_result.get("simulators_run"))
@@ -3008,9 +3026,32 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
         and simulator_status == "completed"
     )
     owner_accepted = bool(owner_proof_audit["accepted"])
+    service_isaac_asset_proven = (
+        simulator_framework in ISAAC_LIVE_SIMULATOR_FRAMEWORKS
+        and sim_completed
+        and bool(
+            sim_result.get("isaac_sim_execution_proven")
+            or sim_result.get("isaac_robot_asset_execution_proven")
+        )
+        and bool(
+            sim_result.get("unitree_g1_asset_spawned")
+            or sim_result.get("unitree_g1_robot_asset_spawned")
+        )
+    )
+    owner_isaac_asset_proven = (
+        owner_accepted
+        and _string(owner_proof.get("simulator_backend")) in ISAAC_LIVE_SIMULATOR_FRAMEWORKS
+        and bool(owner_proof.get("isaac_sim_execution_proven"))
+        and bool(owner_proof.get("isaac_robot_asset_execution_proven"))
+        and bool(owner_proof.get("unitree_g1_asset_spawned"))
+    )
     blockers = []
     if not sim_completed and not owner_accepted:
         blockers.append("live_simulator_execution_not_proven")
+    if (sim_completed or owner_accepted) and not (
+        service_isaac_asset_proven or owner_isaac_asset_proven
+    ):
+        blockers.append("isaac_sim_unitree_g1_execution_not_proven")
     if (
         owner_path.is_file()
         and (
@@ -3041,11 +3082,13 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
             "simulator_framework": sim_result.get("framework"),
             "simulators_run": bool(sim_result.get("simulators_run")),
             "simulator_execution_proven": bool(sim_result.get("simulator_execution_proven")),
+            "service_isaac_unitree_g1_execution_proven": service_isaac_asset_proven,
             "attempt_count": int(trace.get("attempt_count") or 0),
             "scenario_eval_run_count": run_count,
             "covered_scenario_eval_run_count": len(covered_run_ids),
             "owner_gpu_proof_manifest": _artifact(owner_path, base_dir=job_dir),
             "owner_gpu_proof_status": owner_proof.get("status"),
+            "owner_isaac_unitree_g1_execution_proven": owner_isaac_asset_proven,
             "owner_gpu_proof_audit": owner_proof_audit,
         },
     )
@@ -3133,6 +3176,12 @@ def _live_policy_execution_gate(job_dir: Path) -> Dict[str, Any]:
                 or trace.get("missing_scenario_eval_run_ids")
             ),
             "selected_modalities": manifest.get("selected_modalities") or [],
+            "default_test_policy_execution_proven": bool(
+                manifest.get("default_test_policy_execution_proven")
+            ),
+            "robot_team_policy_execution_proven": bool(
+                manifest.get("robot_team_policy_execution_proven")
+            ),
         },
     )
 

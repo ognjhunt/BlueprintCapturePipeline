@@ -13,6 +13,13 @@ from .provider_preview_qa import validate_provider_preview_packet
 
 PRODUCTION_HANDOFF_READINESS_SCHEMA_VERSION = "production_handoff_readiness_manifest.v1"
 OWNER_GPU_BLOCKER = "owner_gpu_simulator_execution_not_run"
+NOT_CURRENT_PROVIDER_STATUSES = {
+    "not_run",
+    "not_run_after_privacy_safe_reselection",
+    "stale_after_privacy_safe_reselection",
+    "blocked",
+    "failed",
+}
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "capture_to_worldlabs_to_gpu_handoff_readiness_summary",
@@ -98,6 +105,15 @@ def build_production_handoff_readiness(
     worldlabs_request = _read_optional_mapping(pipeline_dir / "worldlabs_request_manifest.json")
     operation_manifest = _read_optional_mapping(pipeline_dir / "worldlabs_operation_manifest.json")
     world_manifest = _read_optional_mapping(pipeline_dir / "worldlabs_world_manifest.json")
+    operation_status = _string(operation_manifest.get("status")).lower()
+    world_status = _string(world_manifest.get("status")).lower()
+    worldlabs_generation_manifested = bool(
+        operation_manifest
+        and world_manifest
+        and _string(world_manifest.get("world_id") or world_manifest.get("id"))
+        and operation_status not in NOT_CURRENT_PROVIDER_STATUSES
+        and world_status not in NOT_CURRENT_PROVIDER_STATUSES
+    )
     materialization_manifest = _read_optional_mapping(
         pipeline_dir / "worldlabs_assets" / "materialized_assets_manifest.json"
     )
@@ -114,8 +130,41 @@ def build_production_handoff_readiness(
     arena_packet = _read_optional_mapping(automation_dir / "arena_environment_packet.json")
     gpu_handoff = _read_optional_mapping(automation_dir / "gpu_handoff_packet.json")
     gpu_proof_schema = _read_optional_mapping(automation_dir / "gpu_owner_system_proof_schema.json")
+    first_gpu_run_packet = _read_optional_mapping(
+        pipeline_dir / "first_gpu_e2e_run_packet" / "first_gpu_run_packet.json"
+    )
     owner_gpu_blocked = _read_optional_mapping(
         automation_dir / "owner_gpu_simulator_execution_blocked_manifest.json"
+    )
+    owner_gpu_proof = _read_optional_mapping(
+        automation_dir / "owner_gpu_simulator_execution_proof_manifest.json"
+    )
+    generic_owner_gpu_proven = (
+        owner_gpu_proof.get("status") == "accepted"
+        and bool(owner_gpu_proof.get("owner_gpu_simulator_execution_proven"))
+        and bool(gpu_handoff.get("owner_gpu_simulator_execution_proven"))
+    )
+    expected_owner_simulator = _string(first_gpu_run_packet.get("simulator"))
+    expected_isaac_simulator = expected_owner_simulator in {"isaac_sim", "isaac_lab_arena"}
+    expected_mujoco_simulator = expected_owner_simulator == "mujoco"
+    isaac_unitree_g1_execution_proven = bool(
+        owner_gpu_proof.get("isaac_sim_execution_proven")
+        and owner_gpu_proof.get("isaac_robot_asset_execution_proven")
+        and owner_gpu_proof.get("unitree_g1_asset_spawned")
+    )
+    mujoco_unitree_g1_execution_proven = bool(
+        owner_gpu_proof.get("mujoco_g1_asset_execution_proven")
+        and owner_gpu_proof.get("mujoco_g1_asset_spawned")
+    )
+    selected_simulator_execution_proven = (
+        mujoco_unitree_g1_execution_proven
+        if expected_mujoco_simulator
+        else isaac_unitree_g1_execution_proven
+        if expected_isaac_simulator
+        else True
+    )
+    owner_gpu_proven = generic_owner_gpu_proven and (
+        selected_simulator_execution_proven
     )
 
     blockers: List[str] = []
@@ -145,8 +194,12 @@ def build_production_handoff_readiness(
 
     if not operation_manifest:
         blockers.append("worldlabs_operation_manifest_missing")
+    elif operation_status in NOT_CURRENT_PROVIDER_STATUSES:
+        blockers.append("worldlabs_operation_not_current_for_privacy_safe_input")
     if not world_manifest:
         blockers.append("worldlabs_world_manifest_missing")
+    elif world_status in NOT_CURRENT_PROVIDER_STATUSES:
+        blockers.append("worldlabs_world_not_current_for_privacy_safe_input")
     elif not _string(world_manifest.get("world_id") or world_manifest.get("id")):
         blockers.append("worldlabs_world_id_missing")
 
@@ -199,31 +252,60 @@ def build_production_handoff_readiness(
         if bool(gpu_handoff.get("robot_readiness_proven")):
             blockers.append("gpu_handoff_illegally_marks_robot_readiness")
         handoff_blockers = _string_list(gpu_handoff.get("blockers"))
-        if handoff_blockers != [OWNER_GPU_BLOCKER]:
+        if owner_gpu_proven or generic_owner_gpu_proven:
             for blocker in handoff_blockers:
-                if blocker != OWNER_GPU_BLOCKER:
-                    blockers.append(blocker)
-            if OWNER_GPU_BLOCKER not in handoff_blockers:
-                blockers.append("gpu_handoff_missing_owner_gpu_blocker")
+                blockers.append(blocker)
         else:
-            warnings.append(OWNER_GPU_BLOCKER)
+            if handoff_blockers != [OWNER_GPU_BLOCKER]:
+                for blocker in handoff_blockers:
+                    if blocker != OWNER_GPU_BLOCKER:
+                        blockers.append(blocker)
+                if OWNER_GPU_BLOCKER not in handoff_blockers:
+                    blockers.append("gpu_handoff_missing_owner_gpu_blocker")
+            else:
+                warnings.append(OWNER_GPU_BLOCKER)
 
     if not gpu_proof_schema:
         blockers.append("gpu_owner_system_proof_schema_missing")
-    if not owner_gpu_blocked:
-        blockers.append("owner_gpu_blocked_manifest_missing")
-    elif owner_gpu_blocked.get("blocker_id") != OWNER_GPU_BLOCKER:
-        blockers.append("owner_gpu_blocked_manifest_wrong_blocker")
+    if owner_gpu_proven:
+        if not owner_gpu_proof:
+            blockers.append("owner_gpu_proof_manifest_missing")
+        if expected_isaac_simulator and not isaac_unitree_g1_execution_proven:
+            blockers.append("isaac_sim_unitree_g1_execution_not_proven")
+        if expected_mujoco_simulator and not mujoco_unitree_g1_execution_proven:
+            blockers.append("mujoco_g1_execution_not_proven")
+    else:
+        if expected_isaac_simulator and generic_owner_gpu_proven and not isaac_unitree_g1_execution_proven:
+            blockers.append("isaac_sim_unitree_g1_execution_not_proven")
+        if expected_mujoco_simulator and generic_owner_gpu_proven and not mujoco_unitree_g1_execution_proven:
+            blockers.append("mujoco_g1_execution_not_proven")
+        if not owner_gpu_blocked:
+            blockers.append("owner_gpu_blocked_manifest_missing")
+        elif owner_gpu_blocked.get("blocker_id") != OWNER_GPU_BLOCKER:
+            blockers.append("owner_gpu_blocked_manifest_wrong_blocker")
 
     unique_blockers: List[str] = []
     _append_unique(unique_blockers, blockers)
     non_owner_blockers = [item for item in unique_blockers if item != OWNER_GPU_BLOCKER]
-    status = (
-        "ready_except_owner_gpu_simulator_execution"
-        if not non_owner_blockers
-        else "blocked_before_owner_gpu_handoff"
+    if non_owner_blockers:
+        status = (
+            "blocked_after_owner_gpu_handoff"
+            if owner_gpu_proven or generic_owner_gpu_proven
+            else "blocked_before_owner_gpu_handoff"
+        )
+    else:
+        status = (
+            "ready_after_owner_gpu_simulator_execution"
+            if owner_gpu_proven
+            else "ready_except_owner_gpu_simulator_execution"
+        )
+    remaining_unproven_steps = (
+        []
+        if status == "ready_after_owner_gpu_simulator_execution"
+        else [OWNER_GPU_BLOCKER]
+        if status == "ready_except_owner_gpu_simulator_execution"
+        else unique_blockers
     )
-    remaining_unproven_steps = [OWNER_GPU_BLOCKER] if status.startswith("ready_") else unique_blockers
 
     manifest = {
         "schema_version": PRODUCTION_HANDOFF_READINESS_SCHEMA_VERSION,
@@ -232,7 +314,9 @@ def build_production_handoff_readiness(
         "capture_id": context.capture_id,
         "mode": normalized_mode,
         "status": status,
-        "owner_gpu_simulator_execution_is_only_unproven_step": status.startswith("ready_"),
+        "owner_gpu_simulator_execution_is_only_unproven_step": (
+            status == "ready_except_owner_gpu_simulator_execution"
+        ),
         "remaining_unproven_steps": remaining_unproven_steps,
         "blockers": unique_blockers,
         "warnings": warnings,
@@ -242,7 +326,7 @@ def build_production_handoff_readiness(
             "webapp_upstream_links_verified": bool(
                 webapp_sync_projection.get("upstream_links_verified")
             ),
-            "worldlabs_generation_manifested": bool(operation_manifest and world_manifest),
+            "worldlabs_generation_manifested": worldlabs_generation_manifested,
             "worldlabs_assets_materialized": bool(materialization_manifest and export_manifest),
             "marble_sim_asset_handoff_manifested": bool(marble_asset_manifest and marble_bridge),
             "scene_asset_preflight_manifested": bool(scene_inventory and scene_preflight),
@@ -252,7 +336,24 @@ def build_production_handoff_readiness(
             "arena_environment_packet_manifested": bool(arena_packet),
             "gpu_handoff_packet_ready": gpu_handoff.get("status")
             == "ready_for_owner_gpu_preflight_handoff",
-            "owner_gpu_simulator_execution_proven": False,
+            "owner_gpu_simulator_execution_proven": owner_gpu_proven,
+            "generic_owner_gpu_simulator_execution_proven": generic_owner_gpu_proven,
+            "owner_gpu_simulator_execution_proof_accepted": bool(
+                owner_gpu_proof.get("status") == "accepted"
+            ),
+            "expected_owner_simulator": expected_owner_simulator or None,
+            "isaac_sim_execution_proven": bool(owner_gpu_proof.get("isaac_sim_execution_proven")),
+            "isaac_robot_asset_execution_proven": bool(
+                owner_gpu_proof.get("isaac_robot_asset_execution_proven")
+            ),
+            "unitree_g1_asset_spawned": bool(owner_gpu_proof.get("unitree_g1_asset_spawned")),
+            "isaac_unitree_g1_execution_proven": isaac_unitree_g1_execution_proven,
+            "mujoco_g1_asset_execution_proven": bool(
+                owner_gpu_proof.get("mujoco_g1_asset_execution_proven")
+            ),
+            "mujoco_g1_asset_spawned": bool(owner_gpu_proof.get("mujoco_g1_asset_spawned")),
+            "mujoco_unitree_g1_execution_proven": mujoco_unitree_g1_execution_proven,
+            "selected_simulator_execution_proven": selected_simulator_execution_proven,
             "robot_readiness_proven": False,
         },
         "artifacts": {
@@ -281,11 +382,25 @@ def build_production_handoff_readiness(
             "gpu_owner_system_proof_schema": _artifact(
                 automation_dir / "gpu_owner_system_proof_schema.json"
             ),
+            "first_gpu_run_packet": _artifact(
+                pipeline_dir / "first_gpu_e2e_run_packet" / "first_gpu_run_packet.json"
+            ),
             "owner_gpu_blocked_manifest": _artifact(
                 automation_dir / "owner_gpu_simulator_execution_blocked_manifest.json"
             ),
+            "owner_gpu_proof_manifest": _artifact(
+                automation_dir / "owner_gpu_simulator_execution_proof_manifest.json"
+            ),
         },
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "claim_boundary": dict(
+            CLAIM_BOUNDARY,
+            owner_gpu_simulator_execution_proven=owner_gpu_proven,
+            simulator_execution_proven=owner_gpu_proven,
+            isaac_sim_execution_proven=isaac_unitree_g1_execution_proven,
+            isaac_robot_asset_execution_proven=isaac_unitree_g1_execution_proven,
+            mujoco_g1_asset_execution_proven=mujoco_unitree_g1_execution_proven,
+            mujoco_g1_asset_spawned=bool(owner_gpu_proof.get("mujoco_g1_asset_spawned")),
+        ),
     }
     write_json(pipeline_dir / "production_handoff_readiness_manifest.json", manifest)
     return manifest
@@ -311,7 +426,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{Path(args.capture_root) / 'pipeline' / 'production_handoff_readiness_manifest.json'}"
     )
     print(f"[production-handoff-readiness] status={result['status']}")
-    if result["status"] != "ready_except_owner_gpu_simulator_execution":
+    if result["status"] not in {
+        "ready_except_owner_gpu_simulator_execution",
+        "ready_after_owner_gpu_simulator_execution",
+    }:
         print(f"[production-handoff-readiness] blockers={','.join(result.get('blockers') or [])}")
         return 1
     return 0

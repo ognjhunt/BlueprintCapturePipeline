@@ -23,6 +23,13 @@ WEBAPP_UPSTREAM_ID_FIELDS = (
     "buyer_request_id",
     "capture_job_id",
 )
+NOT_CURRENT_PROVIDER_STATUSES = {
+    "not_run",
+    "not_run_after_privacy_safe_reselection",
+    "stale_after_privacy_safe_reselection",
+    "blocked",
+    "failed",
+}
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "local_provider_preview_packet_qa_only",
@@ -93,6 +100,7 @@ def _status_is_complete(value: Any) -> bool:
         "no_people_detected",
         "verified",
         "succeeded",
+        "full_frame_redacted_local_proof",
     }
 
 
@@ -162,6 +170,29 @@ def _webapp_attachment_payload(
     return payload
 
 
+def _webapp_route_forwarding_attachment_payload(
+    route_proof: Mapping[str, Any],
+) -> Dict[str, Any]:
+    job_request = _mapping(route_proof.get("job_request"))
+    site_package = _mapping(job_request.get("site_package"))
+    owner_system = _mapping(job_request.get("owner_system"))
+    source = _mapping(job_request.get("source"))
+    selection_state = _mapping(source.get("selection_state"))
+    payload: Dict[str, Any] = {}
+    sources = (job_request, site_package, owner_system, selection_state)
+    for field in WEBAPP_UPSTREAM_ID_FIELDS:
+        for candidate in sources:
+            value = _string(candidate.get(field))
+            if value:
+                payload[field] = value
+                break
+        else:
+            payload[field] = ""
+    if not _string(payload.get("request_id")):
+        payload["request_id"] = _string(job_request.get("request_id") or job_request.get("job_id"))
+    return payload
+
+
 def _placeholder_upstream_id(value: Any) -> bool:
     text = _string(value).lower()
     if not text:
@@ -212,6 +243,9 @@ def validate_provider_preview_packet(
         "provider_preview_status": pipeline_dir / "provider_preview_status.json",
         "provider_run_manifest": pipeline_dir / "provider_run_manifest.json",
         "webapp_sync_result": pipeline_dir / "webapp_sync_result.json",
+        "webapp_route_forwarding_proof": (
+            pipeline_dir / "webapp_route_forwarding_proof" / "webapp_route_forwarding_proof.json"
+        ),
         "worldlabs_operation_manifest": pipeline_dir / "worldlabs_operation_manifest.json",
         "worldlabs_world_manifest": pipeline_dir / "worldlabs_world_manifest.json",
         "geometry_summary": pipeline_dir / "geometry" / "geometry_summary.json",
@@ -228,6 +262,7 @@ def validate_provider_preview_packet(
     provider_status = _read_optional_mapping(paths["provider_preview_status"])
     provider_run = _read_optional_mapping(paths["provider_run_manifest"])
     webapp_sync = _read_optional_mapping(paths["webapp_sync_result"])
+    webapp_route_forwarding_proof = _read_optional_mapping(paths["webapp_route_forwarding_proof"])
     operation_manifest = _read_optional_mapping(paths["worldlabs_operation_manifest"])
     world_manifest = _read_optional_mapping(paths["worldlabs_world_manifest"])
     geometry_summary = _read_optional_mapping(paths["geometry_summary"])
@@ -324,6 +359,10 @@ def validate_provider_preview_packet(
         blockers.append("worldlabs_selected_checksum_mismatch")
     if not audit_output_checksum or not selected_checksum:
         blockers.append("missing_worldlabs_input_checksum")
+    request_status = _string(request_manifest.get("status")).lower()
+    if request_manifest and request_status == "blocked":
+        blockers.append("worldlabs_request_blocked")
+        _append_unique(blockers, _string_list(request_manifest.get("blockers")))
 
     canonical_rgb_uri = _canonical_rgb_uri(canonical_package)
     adapter_rgb_uri = _adapter_rgb_uri(adapter_input)
@@ -349,11 +388,29 @@ def validate_provider_preview_packet(
         warnings.append("geometry_present_but_not_live_ready")
 
     latest_webapp_sync = _latest_webapp_sync_stage(webapp_sync)
+    route_forwarding_payload = _webapp_route_forwarding_attachment_payload(
+        webapp_route_forwarding_proof
+    )
+    route_forwarding_boundary = _mapping(webapp_route_forwarding_proof.get("proof_boundary"))
+    local_route_forwarding_proven = bool(
+        route_forwarding_boundary.get("local_webapp_route_forwarding_proven")
+    )
+    pipeline_intake_staged_request_proven = bool(
+        route_forwarding_boundary.get("pipeline_intake_staged_request_proven")
+    )
+    production_live_webapp_forwarding_proven = bool(
+        route_forwarding_boundary.get("production_live_webapp_forwarding_proven")
+    )
     webapp_attachment_payload = _webapp_attachment_payload(
         webapp_sync=webapp_sync,
         provider_status=provider_status,
         provider_run=provider_run,
-        fallback_sources=(capture_descriptor, opportunity_handoff, raw_manifest),
+        fallback_sources=(
+            route_forwarding_payload,
+            capture_descriptor,
+            opportunity_handoff,
+            raw_manifest,
+        ),
     )
     webapp_upstream_ids = {
         field: _string(webapp_attachment_payload.get(field))
@@ -378,10 +435,12 @@ def validate_provider_preview_packet(
     if require_webapp_sync:
         if not webapp_sync:
             blockers.append("missing_webapp_sync_result")
-        if webapp_sync_status == "failed":
+        if webapp_sync_status == "failed" and not local_route_forwarding_proven:
             blockers.append("webapp_sync_failed")
-        if webapp_sync and not webapp_sync_succeeded:
+        if webapp_sync and not webapp_sync_succeeded and not local_route_forwarding_proven:
             blockers.append("webapp_sync_not_succeeded")
+        if local_route_forwarding_proven and not production_live_webapp_forwarding_proven:
+            blockers.append("production_live_webapp_forwarding_not_proven")
         if missing_webapp_upstream_ids:
             blockers.append("webapp_sync_missing_real_upstream_ids")
             _append_unique(
@@ -401,11 +460,22 @@ def validate_provider_preview_packet(
     elif not webapp_sync:
         warnings.append("webapp_sync_not_required_or_not_present")
 
+    operation_status = _string(operation_manifest.get("status")).lower()
+    world_status = _string(world_manifest.get("status")).lower()
+    operation_current = bool(
+        operation_manifest
+        and world_manifest
+        and _string(world_manifest.get("world_id") or provider_status.get("world_id"))
+        and operation_status not in NOT_CURRENT_PROVIDER_STATUSES
+        and world_status not in NOT_CURRENT_PROVIDER_STATUSES
+    )
     provider_operation_proof = {
         "operation_manifest_present": bool(operation_manifest),
         "world_manifest_present": bool(world_manifest),
         "world_id": _string(world_manifest.get("world_id") or provider_status.get("world_id")),
-        "status": "proven" if operation_manifest and world_manifest else "pending",
+        "operation_status": operation_status or None,
+        "world_status": world_status or None,
+        "status": "proven" if operation_current else "pending",
     }
     hosted_proof = {
         "status": "pending",
@@ -505,6 +575,15 @@ def validate_provider_preview_packet(
             "upstream_ids": webapp_upstream_ids,
             "reason": latest_webapp_sync.get("reason") or webapp_sync.get("reason"),
             "blocker": latest_webapp_sync.get("blocker") or webapp_sync.get("blocker"),
+        },
+        "webapp_route_forwarding_projection": {
+            "present": bool(webapp_route_forwarding_proof),
+            "path": str(paths["webapp_route_forwarding_proof"]),
+            "status": webapp_route_forwarding_proof.get("status"),
+            "local_webapp_route_forwarding_proven": local_route_forwarding_proven,
+            "pipeline_intake_staged_request_proven": pipeline_intake_staged_request_proven,
+            "production_live_webapp_forwarding_proven": production_live_webapp_forwarding_proven,
+            "upstream_ids": route_forwarding_payload,
         },
         "provider_operation_proof": provider_operation_proof,
         "hosted_proof": hosted_proof,

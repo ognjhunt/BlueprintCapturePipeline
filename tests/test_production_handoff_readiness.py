@@ -260,6 +260,260 @@ def test_production_handoff_readiness_is_ready_except_owner_gpu(tmp_path: Path) 
     assert manifest["status"] == result["status"]
 
 
+def test_production_handoff_readiness_accepts_post_owner_gpu_proof(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_and_worldlabs(root)
+    build_marble_sim_assets(capture_root=root)
+    build_simulation_automation(capture_root=root)
+    automation_dir = root / "pipeline" / "simulation_automation"
+    _write_json(
+        automation_dir / "gpu_handoff_packet.json",
+        {
+            "schema_version": "gpu_handoff_packet.v1",
+            "status": "ready_for_owner_gpu_preflight_handoff",
+            "ready_for_owner_gpu_preflight": True,
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_proof_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_proof_manifest.v1",
+            "status": "accepted",
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_blocked_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_blocked_manifest.v1",
+            "status": "resolved",
+            "blocker_id": "owner_gpu_simulator_execution_not_run",
+        },
+    )
+
+    result = build_production_handoff_readiness(capture_root=root, mode="production")
+
+    assert result["status"] == "ready_after_owner_gpu_simulator_execution"
+    assert result["owner_gpu_simulator_execution_is_only_unproven_step"] is False
+    assert result["remaining_unproven_steps"] == []
+    assert result["proof_summary"]["owner_gpu_simulator_execution_proven"] is True
+    assert result["claim_boundary"]["owner_gpu_simulator_execution_proven"] is True
+    assert "gpu_handoff_missing_owner_gpu_blocker" not in result["blockers"]
+
+
+def test_production_handoff_readiness_blocks_isaac_packet_with_generic_owner_proof(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_and_worldlabs(root)
+    build_marble_sim_assets(capture_root=root)
+    build_simulation_automation(capture_root=root)
+    automation_dir = root / "pipeline" / "simulation_automation"
+    _write_json(
+        root / "pipeline" / "first_gpu_e2e_run_packet" / "first_gpu_run_packet.json",
+        {
+            "schema_version": "first_gpu_run_packet.v1",
+            "simulator": "isaac_sim",
+        },
+    )
+    _write_json(
+        automation_dir / "gpu_handoff_packet.json",
+        {
+            "schema_version": "gpu_handoff_packet.v1",
+            "status": "ready_for_owner_gpu_preflight_handoff",
+            "ready_for_owner_gpu_preflight": True,
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_proof_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_proof_manifest.v1",
+            "status": "accepted",
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "simulator_backend": "mujoco",
+            "isaac_sim_execution_proven": False,
+            "isaac_robot_asset_execution_proven": False,
+            "unitree_g1_asset_spawned": False,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_blocked_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_blocked_manifest.v1",
+            "status": "resolved",
+            "blocker_id": "owner_gpu_simulator_execution_not_run",
+        },
+    )
+
+    result = build_production_handoff_readiness(capture_root=root, mode="production")
+
+    assert result["status"] == "blocked_after_owner_gpu_handoff"
+    assert "isaac_sim_unitree_g1_execution_not_proven" in result["blockers"]
+    assert result["proof_summary"]["expected_owner_simulator"] == "isaac_sim"
+    assert result["proof_summary"]["generic_owner_gpu_simulator_execution_proven"] is True
+    assert result["proof_summary"]["owner_gpu_simulator_execution_proven"] is False
+    assert result["proof_summary"]["isaac_unitree_g1_execution_proven"] is False
+    assert result["claim_boundary"]["owner_gpu_simulator_execution_proven"] is False
+    assert result["claim_boundary"]["isaac_sim_execution_proven"] is False
+
+
+def test_production_handoff_readiness_accepts_mujoco_packet_with_mujoco_g1_proof(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_and_worldlabs(root)
+    build_marble_sim_assets(capture_root=root)
+    build_simulation_automation(capture_root=root)
+    automation_dir = root / "pipeline" / "simulation_automation"
+    _write_json(
+        root / "pipeline" / "first_gpu_e2e_run_packet" / "first_gpu_run_packet.json",
+        {
+            "schema_version": "first_gpu_run_packet.v1",
+            "simulator": "mujoco",
+        },
+    )
+    _write_json(
+        automation_dir / "gpu_handoff_packet.json",
+        {
+            "schema_version": "gpu_handoff_packet.v1",
+            "status": "ready_for_owner_gpu_preflight_handoff",
+            "ready_for_owner_gpu_preflight": True,
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_proof_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_proof_manifest.v1",
+            "status": "accepted",
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "simulator_backend": "mujoco",
+            "mujoco_g1_asset_execution_proven": True,
+            "mujoco_g1_asset_spawned": True,
+            "isaac_sim_execution_proven": False,
+            "isaac_robot_asset_execution_proven": False,
+            "unitree_g1_asset_spawned": False,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_blocked_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_blocked_manifest.v1",
+            "status": "resolved",
+            "blocker_id": "owner_gpu_simulator_execution_not_run",
+        },
+    )
+
+    result = build_production_handoff_readiness(capture_root=root, mode="production")
+
+    assert result["status"] == "ready_after_owner_gpu_simulator_execution"
+    assert result["remaining_unproven_steps"] == []
+    assert result["proof_summary"]["expected_owner_simulator"] == "mujoco"
+    assert result["proof_summary"]["generic_owner_gpu_simulator_execution_proven"] is True
+    assert result["proof_summary"]["mujoco_unitree_g1_execution_proven"] is True
+    assert result["proof_summary"]["selected_simulator_execution_proven"] is True
+    assert result["proof_summary"]["owner_gpu_simulator_execution_proven"] is True
+    assert result["claim_boundary"]["owner_gpu_simulator_execution_proven"] is True
+    assert result["claim_boundary"]["mujoco_g1_asset_execution_proven"] is True
+    assert result["claim_boundary"]["mujoco_g1_asset_spawned"] is True
+    assert result["claim_boundary"]["robot_readiness_proven"] is False
+    assert "isaac_sim_unitree_g1_execution_not_proven" not in result["blockers"]
+    assert "mujoco_g1_execution_not_proven" not in result["blockers"]
+
+
+def test_production_handoff_readiness_blocks_mujoco_packet_without_mujoco_g1_proof(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_and_worldlabs(root)
+    build_marble_sim_assets(capture_root=root)
+    build_simulation_automation(capture_root=root)
+    automation_dir = root / "pipeline" / "simulation_automation"
+    _write_json(
+        root / "pipeline" / "first_gpu_e2e_run_packet" / "first_gpu_run_packet.json",
+        {
+            "schema_version": "first_gpu_run_packet.v1",
+            "simulator": "mujoco",
+        },
+    )
+    _write_json(
+        automation_dir / "gpu_handoff_packet.json",
+        {
+            "schema_version": "gpu_handoff_packet.v1",
+            "status": "ready_for_owner_gpu_preflight_handoff",
+            "ready_for_owner_gpu_preflight": True,
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_proof_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_proof_manifest.v1",
+            "status": "accepted",
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "simulator_backend": "mujoco",
+            "mujoco_g1_asset_execution_proven": False,
+            "mujoco_g1_asset_spawned": False,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_blocked_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_blocked_manifest.v1",
+            "status": "resolved",
+            "blocker_id": "owner_gpu_simulator_execution_not_run",
+        },
+    )
+
+    result = build_production_handoff_readiness(capture_root=root, mode="production")
+
+    assert result["status"] == "blocked_after_owner_gpu_handoff"
+    assert "mujoco_g1_execution_not_proven" in result["blockers"]
+    assert result["proof_summary"]["expected_owner_simulator"] == "mujoco"
+    assert result["proof_summary"]["generic_owner_gpu_simulator_execution_proven"] is True
+    assert result["proof_summary"]["mujoco_unitree_g1_execution_proven"] is False
+    assert result["proof_summary"]["selected_simulator_execution_proven"] is False
+    assert result["proof_summary"]["owner_gpu_simulator_execution_proven"] is False
+    assert result["claim_boundary"]["owner_gpu_simulator_execution_proven"] is False
+    assert result["claim_boundary"]["mujoco_g1_asset_execution_proven"] is False
+
+
 def test_production_handoff_readiness_blocks_before_gpu_when_worldlabs_missing(
     tmp_path: Path,
 ) -> None:

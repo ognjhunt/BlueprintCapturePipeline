@@ -13,6 +13,7 @@ from typing import Any, Dict, Mapping, Sequence
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .first_gpu_e2e_readiness import (
     CLAIM_BOUNDARY,
+    FORWARD_PREFLIGHT_REPORT_ENV,
     PROVISIONERS,
     SIMULATOR_COMMAND_LOCATIONS,
     build_first_gpu_e2e_readiness,
@@ -58,6 +59,10 @@ OWNER_COMMAND_TRACE_ENV_VARS = (
     "BLUEPRINT_SCENE_LOAD_TRACE",
     "BLUEPRINT_SPAWN_TRACE",
     "BLUEPRINT_ACTION_OR_POLICY_TRACE",
+    "BLUEPRINT_DEFAULT_SMOKE_POLICY",
+    "BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET",
+    "BLUEPRINT_POLICY_EXECUTION_TRACE",
+    "BLUEPRINT_SIM_ROBOT_POV_EVIDENCE",
     "BLUEPRINT_ARTIFACT_MANIFEST",
     "BLUEPRINT_OWNER_STDOUT",
     "BLUEPRINT_OWNER_STDERR",
@@ -67,11 +72,29 @@ OWNER_COMMAND_REQUIRED_OUTPUTS = (
     "pipeline/simulation_automation/owner_gpu_simulator_execution_proof_manifest.json",
     "pipeline/simulation_automation/owner_gpu_proof/owner_scene_load_trace.json",
     "pipeline/simulation_automation/owner_gpu_proof/owner_spawn_pose_trace.json",
+    "pipeline/simulation_automation/owner_gpu_proof/owner_default_smoke_policy.json",
     "pipeline/simulation_automation/owner_gpu_proof/owner_action_or_policy_trace.json",
+    "pipeline/simulation_automation/owner_gpu_proof/owner_sim_robot_pov_evidence_manifest.json",
     "pipeline/simulation_automation/owner_gpu_proof/owner_artifact_manifest.json",
     "pipeline/simulation_automation/owner_gpu_proof/owner_simulator_stdout.log",
     "pipeline/simulation_automation/owner_gpu_proof/owner_simulator_stderr.log",
 )
+OWNER_DEFAULT_SMOKE_HELPER_COMMAND = "blueprint-write-owner-gpu-default-smoke-artifacts"
+DEFAULT_ISAAC_G1_ASSET = {
+    "name": "Unitree G1",
+    "uri_or_path": "Robots/Unitree/G1/g1.usd",
+    "source": "isaac_sim_robot_assets",
+    "asset_class": "humanoid",
+}
+DEFAULT_MUJOCO_G1_MODEL_ROOT = (
+    "output/external_assets/mujoco_menagerie/unitree_g1"
+)
+DEFAULT_MUJOCO_G1_ASSET = {
+    "name": "Unitree G1",
+    "uri_or_path": f"{DEFAULT_MUJOCO_G1_MODEL_ROOT}/g1.xml",
+    "source": "google_deepmind_mujoco_menagerie",
+    "asset_class": "humanoid_mjcf",
+}
 
 
 def _string(value: Any) -> str:
@@ -87,8 +110,111 @@ def _unique_strings(values: Sequence[Any]) -> list[str]:
     return unique
 
 
+def _gpu_vm_runtime_preflight_result_summary(result_path: Path) -> Dict[str, Any]:
+    blockers: list[str] = []
+    if not result_path.is_file():
+        return {
+            "path": str(result_path),
+            "exists": False,
+            "status": None,
+            "ready_for_owner_command_attempt": False,
+            "blockers": ["gpu_vm_runtime_preflight_result_missing"],
+        }
+    try:
+        payload = read_json_any(result_path)
+    except Exception as exc:  # pragma: no cover - emitted as packet evidence
+        return {
+            "path": str(result_path),
+            "exists": True,
+            "status": None,
+            "ready_for_owner_command_attempt": False,
+            "blockers": [
+                f"gpu_vm_runtime_preflight_result_invalid_json:{exc.__class__.__name__}"
+            ],
+        }
+    if not isinstance(payload, Mapping):
+        return {
+            "path": str(result_path),
+            "exists": True,
+            "status": None,
+            "ready_for_owner_command_attempt": False,
+            "blockers": [
+                f"gpu_vm_runtime_preflight_result_invalid_payload:{type(payload).__name__}"
+            ],
+        }
+    status = _string(payload.get("status"))
+    for blocker in payload.get("blockers") or []:
+        blockers.append(f"gpu_vm_runtime_preflight_result_blocker:{blocker}")
+    if status != "ready_for_owner_command_attempt":
+        blockers.append(
+            f"gpu_vm_runtime_preflight_result_status:{status or 'unknown'}"
+        )
+    return {
+        "path": str(result_path),
+        "exists": True,
+        "status": status or None,
+        "ready_for_owner_command_attempt": not blockers,
+        "blockers": _unique_strings(blockers),
+    }
+
+
 def _default_output_dir(capture_root: Path) -> Path:
     return capture_root / "pipeline" / "first_gpu_e2e_run_packet"
+
+
+def _default_webapp_forwarding_preflight_path(capture_root: Path) -> Path:
+    return capture_root / "pipeline" / "webapp_forwarding_preflight.json"
+
+
+def _selected_webapp_forwarding_preflight_path(
+    capture_root: Path,
+    explicit: str | Path | None,
+) -> Path | None:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    configured = _string(os.getenv(FORWARD_PREFLIGHT_REPORT_ENV))
+    if configured:
+        return Path(configured).expanduser().resolve()
+    candidate = _default_webapp_forwarding_preflight_path(capture_root)
+    if candidate.is_file():
+        return candidate.resolve()
+    return None
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _robot_asset_for_simulator(simulator: str) -> Dict[str, str]:
+    if simulator == "mujoco":
+        return dict(DEFAULT_MUJOCO_G1_ASSET)
+    return dict(DEFAULT_ISAAC_G1_ASSET)
+
+
+def _mujoco_g1_model_root_path() -> Path:
+    configured = _string(os.getenv("BLUEPRINT_MUJOCO_G1_MODEL_ROOT"))
+    candidate = Path(configured or DEFAULT_MUJOCO_G1_MODEL_ROOT)
+    if not candidate.is_absolute():
+        candidate = (_repo_root() / candidate).resolve()
+    return candidate
+
+
+def _mujoco_g1_asset_files() -> list[Path]:
+    root = _mujoco_g1_model_root_path()
+    files = [
+        root / "g1.xml",
+        root / "scene.xml",
+        root / "LICENSE",
+        root / "README.md",
+    ]
+    assets_dir = root / "assets"
+    if assets_dir.is_dir():
+        files.extend(sorted(assets_dir.glob("*")))
+    return files
+
+
+def _generated_mujoco_owner_command(packet_dir: Path) -> str:
+    return f"bash {shlex.quote(str(packet_dir / 'run_mujoco_unitree_g1_smoke.sh'))}"
 
 
 def _default_owner_command(simulator: str) -> str:
@@ -171,18 +297,35 @@ def _capture_root_by_site_json(*, site_slug: str, capture_root: Path) -> str:
 def _env_example(
     *,
     capture_root: Path,
+    packet_dir: Path,
     webapp_site_slug: str,
     webapp_staged_inputs_path: Path,
+    webapp_forwarding_preflight_path: Path | None,
     simulator: str,
     provisioner: str,
     owner_command: str,
 ) -> str:
     proof_dir = capture_root / "pipeline" / "simulation_automation" / "owner_gpu_proof"
+    binding_path = packet_dir / "owner_default_smoke_command_binding.sh"
+    robot_asset = _robot_asset_for_simulator(simulator)
+    use_generated_smoke = simulator in {"isaac_sim", "isaac_lab_arena", "mujoco"}
+    use_binding_default = "false" if use_generated_smoke else "true"
+    if simulator in {"isaac_sim", "isaac_lab_arena"}:
+        owner_command_line = 'export OWNER_SIMULATOR_COMMAND="$ISAAC_UNITREE_G1_SMOKE_COMMAND"'
+    elif simulator == "mujoco":
+        owner_command_line = 'export OWNER_SIMULATOR_COMMAND="$MUJOCO_UNITREE_G1_SMOKE_COMMAND"'
+    else:
+        owner_command_line = 'export OWNER_SIMULATOR_COMMAND="bash $OWNER_DEFAULT_SMOKE_COMMAND_BINDING"'
     lines = [
         "# Source this file after replacing placeholders. It intentionally contains no secrets.",
         _shell_export("CAPTURE_ROOT", str(capture_root)),
+        _shell_export("PACKET_DIR", str(packet_dir)),
         _shell_export("WEBAPP_SITE_SLUG", webapp_site_slug or "<webapp-site-slug>"),
         _shell_export("GPU_PROOF_DIR", str(proof_dir)),
+        _shell_export(
+            FORWARD_PREFLIGHT_REPORT_ENV,
+            str(webapp_forwarding_preflight_path or _default_webapp_forwarding_preflight_path(capture_root)),
+        ),
         _shell_export(
             "ROBOT_EVAL_JOB_REQUEST_FORWARD_URL",
             "https://<pipeline-host>/api/live-pipeline/job-requests",
@@ -202,9 +345,27 @@ def _env_example(
         _shell_export("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true"),
         _shell_export("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true"),
         _shell_export("BLUEPRINT_OWNER_SIMULATOR", simulator),
+        _shell_export("BLUEPRINT_ROBOT_ASSET_NAME", robot_asset["name"]),
+        _shell_export("BLUEPRINT_ROBOT_ASSET_URI_OR_PATH", robot_asset["uri_or_path"]),
+        _shell_export("BLUEPRINT_ROBOT_ASSET_SOURCE", robot_asset["source"]),
+        _shell_export("BLUEPRINT_ROBOT_ASSET_CLASS", robot_asset["asset_class"]),
+        _shell_export("BLUEPRINT_MUJOCO_G1_MODEL_ROOT", str(_mujoco_g1_model_root_path())),
         _shell_export("BLUEPRINT_GPU_PROVISIONER", provisioner),
-        _shell_export("OWNER_SIMULATOR_COMMAND", owner_command),
-        _shell_export("ISAAC_OWNER_COMMAND", owner_command),
+        _shell_export("OWNER_RAW_SIMULATOR_COMMAND", owner_command),
+        'export ISAAC_SMOKE_SCRIPT="$PACKET_DIR/isaac_unitree_g1_smoke.py"',
+        'export ISAAC_UNITREE_G1_SMOKE_COMMAND="bash $PACKET_DIR/run_isaac_unitree_g1_smoke.sh"',
+        'export MUJOCO_UNITREE_G1_SMOKE_SCRIPT="$PACKET_DIR/mujoco_unitree_g1_smoke.py"',
+        'export MUJOCO_UNITREE_G1_SMOKE_COMMAND="bash $PACKET_DIR/run_mujoco_unitree_g1_smoke.sh"',
+        'export OWNER_DEFAULT_SMOKE_COMMAND_BINDING="$PACKET_DIR/owner_default_smoke_command_binding.sh"',
+        _shell_export("BLUEPRINT_USE_DEFAULT_SMOKE_BINDING", use_binding_default),
+        owner_command_line,
+        'export ISAAC_OWNER_COMMAND="$OWNER_SIMULATOR_COMMAND"',
+        _shell_export("OWNER_SCENE_LOAD_COMMAND", "<command-that-loads-scene-and-writes-BLUEPRINT_SCENE_LOAD_TRACE>"),
+        _shell_export("OWNER_ROBOT_SPAWN_COMMAND", "<command-that-spawns-robot-and-writes-BLUEPRINT_SPAWN_TRACE>"),
+        _shell_export("OWNER_WALK_TO_TARGET_COMMAND", "<command-that-runs-default-walk-to-target-policy>"),
+        _shell_export("SIM_ROBOT_POV_FRAME_PATH", "<simulator-pov-frame-path>"),
+        _shell_export("SIM_ROBOT_POV_VIDEO_PATH", ""),
+        _shell_export("DEFAULT_POLICY_TARGET", "walk_to_target_pose"),
         _shell_export("OWNER_SYSTEM_ID", f"{provisioner}-<instance-id>"),
         _shell_export("SIMULATOR_VERSION", "<simulator-version>"),
         _shell_export("GPU_MODEL", "<gpu-model-from-nvidia-smi>"),
@@ -215,6 +376,17 @@ def _env_example(
         ),
         _shell_export("SIMULATOR_TIMEOUT_SECONDS", "1800"),
         "",
+        "# For the generated Isaac Unitree G1 smoke, set:",
+        "# export BLUEPRINT_USE_DEFAULT_SMOKE_BINDING=false",
+        "# export OWNER_SIMULATOR_COMMAND=\"$ISAAC_UNITREE_G1_SMOKE_COMMAND\"",
+        "# For the generated MuJoCo Menagerie Unitree G1 smoke, set:",
+        "# export BLUEPRINT_USE_DEFAULT_SMOKE_BINDING=false",
+        "# export OWNER_SIMULATOR_COMMAND=\"$MUJOCO_UNITREE_G1_SMOKE_COMMAND\"",
+        "# To use the split command binding instead, set:",
+        "# export BLUEPRINT_USE_DEFAULT_SMOKE_BINDING=true",
+        "# export OWNER_SIMULATOR_COMMAND=\"bash $OWNER_DEFAULT_SMOKE_COMMAND_BINDING\"",
+        f"# Generated binding path: {binding_path}",
+        "",
     ]
     return "\n".join(lines)
 
@@ -224,6 +396,7 @@ def _local_preflight_commands(
     capture_root: Path,
     webapp_site_slug: str,
     webapp_staged_inputs_path: Path,
+    webapp_forwarding_preflight_path: Path | None,
     simulator: str,
     provisioner: str,
     owner_command: str,
@@ -240,7 +413,13 @@ set -euo pipefail
 {_shell_default_assignment("CAPTURE_ROOT", str(capture_root))}
 {_shell_default_assignment("WEBAPP_SITE_SLUG", slug_default)}
 {_shell_default_assignment("BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH", str(webapp_staged_inputs_path))}
+{_shell_default_assignment(FORWARD_PREFLIGHT_REPORT_ENV, str(webapp_forwarding_preflight_path or _default_webapp_forwarding_preflight_path(capture_root)))}
 {_shell_default_assignment("OWNER_SIMULATOR_COMMAND", owner_command)}
+
+FORWARDING_PREFLIGHT_ARGS=()
+if [[ -f "${{{FORWARD_PREFLIGHT_REPORT_ENV}}}" ]]; then
+  FORWARDING_PREFLIGHT_ARGS=(--webapp-forwarding-preflight "${{{FORWARD_PREFLIGHT_REPORT_ENV}}}")
+fi
 
 blueprint-preflight-capture --capture-root "$CAPTURE_ROOT"
 
@@ -257,6 +436,7 @@ blueprint-audit-first-gpu-e2e-readiness \\
   --capture-root "$CAPTURE_ROOT" \\
   --webapp-site-slug "$WEBAPP_SITE_SLUG" \\
   --webapp-staged-inputs "$BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH" \\
+  "${{FORWARDING_PREFLIGHT_ARGS[@]}}" \\
   --simulator {shlex.quote(simulator)} \\
   --provisioner {shlex.quote(provisioner)} \\
 {local_rehearsal_flag}  --simulator-command "$OWNER_SIMULATOR_COMMAND" \\
@@ -267,19 +447,45 @@ blueprint-audit-first-gpu-e2e-readiness \\
 def _gpu_vm_commands(
     *,
     capture_root: Path,
+    packet_dir: Path,
     simulator: str,
     owner_command: str,
 ) -> str:
+    robot_asset = _robot_asset_for_simulator(simulator)
+    use_binding_default = "false" if simulator in {"isaac_sim", "isaac_lab_arena", "mujoco"} else "true"
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
 {_shell_default_assignment("CAPTURE_ROOT", str(capture_root))}
+{_shell_default_assignment("PACKET_DIR", str(packet_dir))}
 GPU_PROOF_DIR="${{GPU_PROOF_DIR:-$CAPTURE_ROOT/pipeline/simulation_automation/owner_gpu_proof}}"
+OWNER_DEFAULT_SMOKE_COMMAND_BINDING="${{OWNER_DEFAULT_SMOKE_COMMAND_BINDING:-$PACKET_DIR/owner_default_smoke_command_binding.sh}}"
+ISAAC_SMOKE_SCRIPT="${{ISAAC_SMOKE_SCRIPT:-$PACKET_DIR/isaac_unitree_g1_smoke.py}}"
+ISAAC_UNITREE_G1_SMOKE_COMMAND="${{ISAAC_UNITREE_G1_SMOKE_COMMAND:-bash $PACKET_DIR/run_isaac_unitree_g1_smoke.sh}}"
+MUJOCO_UNITREE_G1_SMOKE_SCRIPT="${{MUJOCO_UNITREE_G1_SMOKE_SCRIPT:-$PACKET_DIR/mujoco_unitree_g1_smoke.py}}"
+MUJOCO_UNITREE_G1_SMOKE_COMMAND="${{MUJOCO_UNITREE_G1_SMOKE_COMMAND:-bash $PACKET_DIR/run_mujoco_unitree_g1_smoke.sh}}"
+BLUEPRINT_MUJOCO_G1_MODEL_ROOT="${{BLUEPRINT_MUJOCO_G1_MODEL_ROOT:-{shlex.quote(str(_mujoco_g1_model_root_path()))}}}"
+BLUEPRINT_USE_DEFAULT_SMOKE_BINDING="${{BLUEPRINT_USE_DEFAULT_SMOKE_BINDING:-{use_binding_default}}}"
+{_shell_default_assignment("OWNER_RAW_SIMULATOR_COMMAND", owner_command)}
 OWNER_SIMULATOR_COMMAND="${{OWNER_SIMULATOR_COMMAND:-${{ISAAC_OWNER_COMMAND:-}}}}"
-if [[ -z "${{OWNER_SIMULATOR_COMMAND}}" ]]; then
-  OWNER_SIMULATOR_COMMAND={shlex.quote(owner_command)}
+if [[ "$BLUEPRINT_USE_DEFAULT_SMOKE_BINDING" == "true" ]]; then
+  OWNER_SIMULATOR_COMMAND="bash $OWNER_DEFAULT_SMOKE_COMMAND_BINDING"
+elif [[ -z "${{OWNER_SIMULATOR_COMMAND}}" ]]; then
+  if [[ {shlex.quote(simulator)} == "isaac_sim" || {shlex.quote(simulator)} == "isaac_lab_arena" ]]; then
+    OWNER_SIMULATOR_COMMAND="$ISAAC_UNITREE_G1_SMOKE_COMMAND"
+  elif [[ {shlex.quote(simulator)} == "mujoco" ]]; then
+    OWNER_SIMULATOR_COMMAND="$MUJOCO_UNITREE_G1_SMOKE_COMMAND"
+  else
+    OWNER_SIMULATOR_COMMAND="$OWNER_RAW_SIMULATOR_COMMAND"
+  fi
 fi
+export OWNER_SIMULATOR_COMMAND
 SIMULATOR_TIMEOUT_SECONDS="${{SIMULATOR_TIMEOUT_SECONDS:-1800}}"
+DEFAULT_POLICY_TARGET="${{DEFAULT_POLICY_TARGET:-walk_to_target_pose}}"
+BLUEPRINT_ROBOT_ASSET_NAME="${{BLUEPRINT_ROBOT_ASSET_NAME:-{robot_asset["name"]}}}"
+BLUEPRINT_ROBOT_ASSET_URI_OR_PATH="${{BLUEPRINT_ROBOT_ASSET_URI_OR_PATH:-{robot_asset["uri_or_path"]}}}"
+BLUEPRINT_ROBOT_ASSET_SOURCE="${{BLUEPRINT_ROBOT_ASSET_SOURCE:-{robot_asset["source"]}}}"
+BLUEPRINT_ROBOT_ASSET_CLASS="${{BLUEPRINT_ROBOT_ASSET_CLASS:-{robot_asset["asset_class"]}}}"
 : "${{OWNER_SYSTEM_ID:?Set OWNER_SYSTEM_ID to the GPU instance or pod id}}"
 : "${{SIMULATOR_VERSION:?Set SIMULATOR_VERSION from the installed simulator}}"
 : "${{GPU_MODEL:?Set GPU_MODEL from nvidia-smi}}"
@@ -296,7 +502,12 @@ blueprint-run-owner-gpu-proof \\
   --gpu-model "$GPU_MODEL" \\
   --operator-id "$OPERATOR_ID" \\
   --operator-attestation "$OPERATOR_ATTESTATION" \\
-  --timeout-seconds "$SIMULATOR_TIMEOUT_SECONDS"
+  --timeout-seconds "$SIMULATOR_TIMEOUT_SECONDS" \\
+  --default-policy-target "$DEFAULT_POLICY_TARGET" \\
+  --robot-asset-name "$BLUEPRINT_ROBOT_ASSET_NAME" \\
+  --robot-asset-uri-or-path "$BLUEPRINT_ROBOT_ASSET_URI_OR_PATH" \\
+  --robot-asset-source "$BLUEPRINT_ROBOT_ASSET_SOURCE" \\
+  --robot-asset-class "$BLUEPRINT_ROBOT_ASSET_CLASS"
 
 BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true \\
 blueprint-run-simulation-automation \\
@@ -307,6 +518,468 @@ blueprint-run-simulation-automation \\
 """
 
 
+def _owner_command_binding_template(*, simulator: str) -> str:
+    quoted_simulator = shlex.quote(simulator)
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+
+# Fail-closed template for OWNER_SIMULATOR_COMMAND.
+# Run this through blueprint-run-owner-gpu-proof after replacing the three
+# OWNER_*_COMMAND values with commands that operate the selected simulator.
+
+: "${{BLUEPRINT_CAPTURE_ROOT:?Set by blueprint-run-owner-gpu-proof}}"
+: "${{BLUEPRINT_SCENE_LOAD_TRACE:?Set by blueprint-run-owner-gpu-proof}}"
+: "${{BLUEPRINT_SPAWN_TRACE:?Set by blueprint-run-owner-gpu-proof}}"
+: "${{BLUEPRINT_POLICY_EXECUTION_TRACE:?Set by blueprint-run-owner-gpu-proof}}"
+: "${{BLUEPRINT_SIM_ROBOT_POV_EVIDENCE:?Set by blueprint-run-owner-gpu-proof}}"
+: "${{BLUEPRINT_ARTIFACT_MANIFEST:?Set by blueprint-run-owner-gpu-proof}}"
+: "${{BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET:?Set by blueprint-run-owner-gpu-proof}}"
+if [[ {quoted_simulator} == "isaac_sim" || {quoted_simulator} == "isaac_lab_arena" ]]; then
+  : "${{BLUEPRINT_ROBOT_ASSET_NAME:?Set by blueprint-run-owner-gpu-proof; expected Unitree G1}}"
+  : "${{BLUEPRINT_ROBOT_ASSET_URI_OR_PATH:?Set by blueprint-run-owner-gpu-proof; expected Robots/Unitree/G1/g1.usd}}"
+  : "${{BLUEPRINT_ROBOT_ASSET_SOURCE:?Set by blueprint-run-owner-gpu-proof; expected isaac_sim_robot_assets}}"
+fi
+: "${{OWNER_SCENE_LOAD_COMMAND:?Set a command that loads the scene and writes BLUEPRINT_SCENE_LOAD_TRACE}}"
+: "${{OWNER_ROBOT_SPAWN_COMMAND:?Set a command that spawns the robot and writes BLUEPRINT_SPAWN_TRACE}}"
+: "${{OWNER_WALK_TO_TARGET_COMMAND:?Set a command that runs the default walk_to_target policy}}"
+
+if [[ -z "${{SIM_ROBOT_POV_FRAME_PATH:-}}" && -z "${{SIM_ROBOT_POV_VIDEO_PATH:-}}" ]]; then
+  echo "Set SIM_ROBOT_POV_FRAME_PATH or SIM_ROBOT_POV_VIDEO_PATH to evidence emitted by the simulator." >&2
+  exit 11
+fi
+
+echo "[owner-binding] loading scene"
+bash -lc "$OWNER_SCENE_LOAD_COMMAND"
+test -s "$BLUEPRINT_SCENE_LOAD_TRACE"
+
+echo "[owner-binding] spawning robot"
+bash -lc "$OWNER_ROBOT_SPAWN_COMMAND"
+test -s "$BLUEPRINT_SPAWN_TRACE"
+
+echo "[owner-binding] running default walk_to_target policy"
+bash -lc "$OWNER_WALK_TO_TARGET_COMMAND"
+
+helper_args=(
+  --simulator {quoted_simulator}
+  --target "$BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET"
+)
+if [[ -n "${{SIM_ROBOT_POV_FRAME_PATH:-}}" ]]; then
+  test -s "$SIM_ROBOT_POV_FRAME_PATH"
+  helper_args+=(--sim-pov-frame "$SIM_ROBOT_POV_FRAME_PATH")
+fi
+if [[ -n "${{SIM_ROBOT_POV_VIDEO_PATH:-}}" ]]; then
+  test -s "$SIM_ROBOT_POV_VIDEO_PATH"
+  helper_args+=(--sim-pov-video "$SIM_ROBOT_POV_VIDEO_PATH")
+fi
+
+"${{PYTHON:-python}}" -m blueprint_pipeline.owner_gpu_default_smoke_artifacts "${{helper_args[@]}}"
+test -s "$BLUEPRINT_POLICY_EXECUTION_TRACE"
+test -s "$BLUEPRINT_SIM_ROBOT_POV_EVIDENCE"
+test -s "$BLUEPRINT_ARTIFACT_MANIFEST"
+echo "[owner-binding] default smoke policy and simulator POV artifacts written"
+"""
+
+
+def _isaac_unitree_g1_smoke_script() -> str:
+    return r'''#!/usr/bin/env python3
+"""Isaac Sim Unitree G1 owner proof smoke for Blueprint first-GPU packets."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def write_json(path: str | Path, payload: dict[str, Any]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def required_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"missing required environment variable {name}")
+    return value
+
+
+def find_scene_glb(capture_root: Path) -> Path:
+    candidates = [
+        capture_root / "pipeline" / "worldlabs_assets" / "worldlabs_collider.glb",
+        capture_root / "pipeline" / "worldlabs_assets" / "scene.glb",
+        capture_root / "pipeline" / "marble_sim_assets" / "portable_collider.glb",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    matches = sorted((capture_root / "pipeline").glob("**/*.glb"))
+    if matches:
+        return matches[0]
+    raise FileNotFoundError(f"no GLB scene asset found under {capture_root / 'pipeline'}")
+
+
+def asset_candidates(asset_path: str) -> list[str]:
+    candidates: list[str] = []
+    raw = asset_path.strip()
+    if raw:
+        candidates.append(raw)
+    assets_root = ""
+    try:
+        from isaacsim.storage.native import get_assets_root_path
+
+        assets_root = get_assets_root_path() or ""
+    except Exception:
+        try:
+            from omni.isaac.core.utils.nucleus import get_assets_root_path
+
+            assets_root = get_assets_root_path() or ""
+        except Exception:
+            assets_root = ""
+    if assets_root and raw and not raw.startswith(("omniverse://", "http://", "https://", "/")):
+        candidates.append(assets_root.rstrip("/") + "/Isaac/" + raw.lstrip("/"))
+        candidates.append(assets_root.rstrip("/") + "/" + raw.lstrip("/"))
+    return list(dict.fromkeys(candidates))
+
+
+async def convert_glb_to_usd(glb_path: Path, output_usd: Path) -> dict[str, Any]:
+    try:
+        import omni.kit.app
+
+        extension_manager = omni.kit.app.get_app().get_extension_manager()
+        extension_manager.set_extension_enabled_immediate("omni.kit.asset_converter", True)
+    except Exception as exc:
+        print(f"[asset-converter] extension enable warning: {exc}", flush=True)
+    import omni.kit.asset_converter
+
+    output_usd.parent.mkdir(parents=True, exist_ok=True)
+    context = omni.kit.asset_converter.AssetConverterContext()
+    context.ignore_materials = False
+    context.ignore_camera = False
+    context.ignore_light = False
+    context.export_preview_surface = True
+    context.use_meter_as_world_unit = True
+    context.create_world_as_default_root_prim = False
+    context.merge_all_meshes = False
+    task = omni.kit.asset_converter.get_instance().create_converter_task(
+        str(glb_path),
+        str(output_usd),
+        lambda current, total: print(f"[asset-converter] {current}/{total}", flush=True),
+        context,
+    )
+    success = await task.wait_until_finished()
+    status = getattr(task, "get_status", lambda: None)()
+    error = getattr(task, "get_error_message", lambda: "")()
+    if not success:
+        raise RuntimeError(f"World Labs GLB to USD conversion failed: status={status} error={error}")
+    return {
+        "status": "converted",
+        "source_glb": str(glb_path),
+        "converted_usd": str(output_usd),
+        "converter": "omni.kit.asset_converter",
+        "converter_status": str(status),
+    }
+
+
+def import_simulation_app():
+    try:
+        from isaacsim import SimulationApp
+
+        return SimulationApp
+    except Exception:
+        from omni.isaac.kit import SimulationApp
+
+        return SimulationApp
+
+
+def import_add_reference_to_stage():
+    try:
+        from isaacsim.core.utils.stage import add_reference_to_stage
+
+        return add_reference_to_stage
+    except Exception:
+        from omni.isaac.core.utils.stage import add_reference_to_stage
+
+        return add_reference_to_stage
+
+
+def import_world():
+    try:
+        from isaacsim.core.api import World
+
+        return World
+    except Exception:
+        from omni.isaac.core import World
+
+        return World
+
+
+def render_camera_frame(camera: Any, frame_path: Path) -> str:
+    from PIL import Image
+
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    image = None
+    for method_name in ("get_rgba", "get_rgb"):
+        method = getattr(camera, method_name, None)
+        if callable(method):
+            image = method()
+            if image is not None:
+                break
+    if image is None:
+        raise RuntimeError("Isaac camera did not return RGB/RGBA data")
+    Image.fromarray(image).save(frame_path)
+    return str(frame_path)
+
+
+def main() -> int:
+    capture_root = Path(required_env("BLUEPRINT_CAPTURE_ROOT"))
+    proof_dir = Path(os.environ.get("BLUEPRINT_GPU_PROOF_DIR", capture_root / "pipeline" / "simulation_automation" / "owner_gpu_proof"))
+    proof_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir = proof_dir / "isaac_sim_frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    scene_trace_path = required_env("BLUEPRINT_SCENE_LOAD_TRACE")
+    spawn_trace_path = required_env("BLUEPRINT_SPAWN_TRACE")
+    policy_trace_path = required_env("BLUEPRINT_POLICY_EXECUTION_TRACE")
+    pov_manifest_path = required_env("BLUEPRINT_SIM_ROBOT_POV_EVIDENCE")
+    artifact_manifest_path = required_env("BLUEPRINT_ARTIFACT_MANIFEST")
+    target_label = os.environ.get("BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET", "walk_to_target_pose")
+    robot_asset = {
+        "name": os.environ.get("BLUEPRINT_ROBOT_ASSET_NAME", "Unitree G1"),
+        "uri_or_path": os.environ.get("BLUEPRINT_ROBOT_ASSET_URI_OR_PATH", "Robots/Unitree/G1/g1.usd"),
+        "source": os.environ.get("BLUEPRINT_ROBOT_ASSET_SOURCE", "isaac_sim_robot_assets"),
+        "asset_class": os.environ.get("BLUEPRINT_ROBOT_ASSET_CLASS", "humanoid"),
+    }
+
+    SimulationApp = import_simulation_app()
+    simulation_app = SimulationApp(
+        {
+            "headless": True,
+            "renderer": os.environ.get("ISAAC_RENDERER", "RayTracedLighting"),
+            "width": int(os.environ.get("ISAAC_RENDER_WIDTH", "1280")),
+            "height": int(os.environ.get("ISAAC_RENDER_HEIGHT", "720")),
+        }
+    )
+    try:
+        import numpy as np
+        from pxr import Gf, UsdGeom
+
+        add_reference_to_stage = import_add_reference_to_stage()
+        World = import_world()
+
+        scene_glb = find_scene_glb(capture_root)
+        converted_scene_usd = proof_dir / "worldlabs_scene_converted.usd"
+        conversion = asyncio.get_event_loop().run_until_complete(
+            convert_glb_to_usd(scene_glb, converted_scene_usd)
+        )
+        world = World(stage_units_in_meters=1.0)
+        add_reference_to_stage(usd_path=str(converted_scene_usd), prim_path="/World/BlueprintWorldLabsScene")
+
+        selected_asset_path = None
+        asset_errors: list[str] = []
+        for candidate in asset_candidates(robot_asset["uri_or_path"]):
+            try:
+                add_reference_to_stage(usd_path=candidate, prim_path="/World/UnitreeG1")
+                selected_asset_path = candidate
+                break
+            except Exception as exc:
+                asset_errors.append(f"{candidate}: {exc}")
+        if not selected_asset_path:
+            raise RuntimeError("Unable to reference Unitree G1 USD asset: " + "; ".join(asset_errors))
+        robot_asset["resolved_uri_or_path"] = selected_asset_path
+
+        stage = world.stage
+        camera_prim_path = "/World/BlueprintSimRobotPOV"
+        camera_prim = UsdGeom.Camera.Define(stage, camera_prim_path)
+        camera_prim.GetFocalLengthAttr().Set(18.0)
+        camera_xform = UsdGeom.Xformable(camera_prim.GetPrim())
+        camera_xform.AddTranslateOp().Set(Gf.Vec3d(-1.1, -1.4, 1.35))
+        camera_xform.AddRotateXYZOp().Set(Gf.Vec3f(68.0, 0.0, -38.0))
+
+        world.reset()
+        try:
+            from isaacsim.sensors.camera import Camera
+        except Exception:
+            from omni.isaac.sensor import Camera
+
+        camera = Camera(prim_path=camera_prim_path, resolution=(1280, 720))
+        camera.initialize()
+
+        start = np.array([-0.8, 0.0, 0.793])
+        target = np.array([0.8, 0.0, 0.793])
+        steps = int(os.environ.get("BLUEPRINT_ISAAC_SMOKE_STEPS", "48"))
+        actions: list[dict[str, Any]] = []
+        frame_paths: list[str] = []
+        for step in range(steps):
+            alpha = 0.0 if steps <= 1 else step / float(steps - 1)
+            pose = (start + (target - start) * alpha).tolist()
+            robot_prim = stage.GetPrimAtPath("/World/UnitreeG1")
+            if robot_prim.IsValid():
+                xform = UsdGeom.Xformable(robot_prim)
+                if not xform.GetOrderedXformOps():
+                    xform.AddTranslateOp()
+                xform.GetOrderedXformOps()[0].Set(Gf.Vec3d(*pose))
+            world.step(render=True)
+            actions.append({"step": step, "root_position": pose, "target": target.tolist()})
+            if step in {0, max(0, steps // 2), max(0, steps - 1)}:
+                frame_paths.append(render_camera_frame(camera, frames_dir / f"isaac_robot_pov_{step:04d}.png"))
+
+        scene_trace = {
+            "schema_version": "owner_gpu_scene_load_trace.v1",
+            "status": "loaded",
+            "scene_loaded": True,
+            "simulator_backend": "isaac_sim",
+            "source_scene_glb": str(scene_glb),
+            "converted_scene_usd": str(converted_scene_usd),
+            "conversion": conversion,
+            "robot_asset": robot_asset,
+            "recorded_at": now(),
+        }
+        spawn_trace = {
+            "schema_version": "owner_gpu_spawn_pose_trace.v1",
+            "status": "validated",
+            "spawn_pose_loaded": True,
+            "simulator_backend": "isaac_sim",
+            "robot_asset": robot_asset,
+            "spawn_pose": start.tolist(),
+            "target_pose": target.tolist(),
+            "recorded_at": now(),
+        }
+        policy_trace = {
+            "schema_version": "owner_gpu_policy_execution_trace.v1",
+            "status": "completed",
+            "policy_id": "blueprint_default_walk_to_target_smoke_policy",
+            "policy_kind": "walk_to_target",
+            "policy_source": "repo_generated_default_smoke_policy",
+            "policy_downloaded_from_online": False,
+            "target_label": target_label,
+            "default_policy_executed": True,
+            "policy_execution_completed": True,
+            "policy_semantics": "kinematic_root_pose_smoke_not_balanced_humanoid_locomotion_controller",
+            "actions": actions,
+            "recorded_at": now(),
+        }
+        pov_manifest = {
+            "schema_version": "owner_gpu_sim_robot_pov_evidence.v1",
+            "status": "complete",
+            "simulator_backend": "isaac_sim",
+            "sim_robot_pov_captured": True,
+            "frames": [{"camera": "BlueprintSimRobotPOV", "path": path} for path in frame_paths],
+            "frame_count": len(frame_paths),
+            "camera_boundary": "Isaac Sim virtual camera evidence, not physical robot POV.",
+            "recorded_at": now(),
+        }
+        artifact_manifest = {
+            "schema_version": "owner_gpu_artifact_manifest.v1",
+            "status": "complete",
+            "simulator_backend": "isaac_sim",
+            "robot_asset": robot_asset,
+            "artifacts": {
+                "scene_trace": scene_trace_path,
+                "spawn_trace": spawn_trace_path,
+                "policy_trace": policy_trace_path,
+                "sim_robot_pov_evidence": pov_manifest_path,
+                "source_scene_glb": str(scene_glb),
+                "converted_scene_usd": str(converted_scene_usd),
+                "frames": frame_paths,
+            },
+            "files": [str(converted_scene_usd), *frame_paths],
+            "recorded_at": now(),
+        }
+        write_json(scene_trace_path, scene_trace)
+        write_json(spawn_trace_path, spawn_trace)
+        write_json(policy_trace_path, policy_trace)
+        write_json(pov_manifest_path, pov_manifest)
+        write_json(artifact_manifest_path, artifact_manifest)
+    finally:
+        simulation_app.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def _isaac_unitree_g1_smoke_launcher() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PACKET_DIR:?Set PACKET_DIR to the first_gpu_e2e_run_packet directory}"
+: "${BLUEPRINT_CAPTURE_ROOT:?Set by blueprint-run-owner-gpu-proof}"
+
+ISAAC_SMOKE_SCRIPT="${ISAAC_SMOKE_SCRIPT:-$PACKET_DIR/isaac_unitree_g1_smoke.py}"
+if [[ ! -s "$ISAAC_SMOKE_SCRIPT" ]]; then
+  echo "Missing Isaac smoke script: $ISAAC_SMOKE_SCRIPT" >&2
+  exit 12
+fi
+
+if [[ -n "${ISAAC_PYTHON:-}" ]]; then
+  exec "$ISAAC_PYTHON" "$ISAAC_SMOKE_SCRIPT"
+fi
+if command -v python.sh >/dev/null 2>&1; then
+  exec python.sh "$ISAAC_SMOKE_SCRIPT"
+fi
+if [[ -x "/isaac-sim/python.sh" ]]; then
+  exec /isaac-sim/python.sh "$ISAAC_SMOKE_SCRIPT"
+fi
+if [[ -x "/workspace/isaac-sim/python.sh" ]]; then
+  exec /workspace/isaac-sim/python.sh "$ISAAC_SMOKE_SCRIPT"
+fi
+
+echo "Set ISAAC_PYTHON to Isaac Sim python.sh, or run inside an Isaac Sim container exposing python.sh." >&2
+exit 13
+"""
+
+
+def _mujoco_unitree_g1_smoke_script() -> str:
+    script_path = _repo_root() / "scripts" / "owner_gpu_mujoco_walk_to_target_smoke.py"
+    if script_path.is_file():
+        return script_path.read_text(encoding="utf-8")
+    return """#!/usr/bin/env python3
+import sys
+
+raise SystemExit(
+    "owner_gpu_mujoco_walk_to_target_smoke.py was not available when this packet was built; "
+    "regenerate the packet from the BlueprintCapturePipeline repo."
+)
+"""
+
+
+def _mujoco_unitree_g1_smoke_launcher() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PACKET_DIR:?Set PACKET_DIR to the first_gpu_e2e_run_packet directory}"
+: "${BLUEPRINT_CAPTURE_ROOT:?Set by blueprint-run-owner-gpu-proof}"
+
+MUJOCO_UNITREE_G1_SMOKE_SCRIPT="${MUJOCO_UNITREE_G1_SMOKE_SCRIPT:-$PACKET_DIR/mujoco_unitree_g1_smoke.py}"
+BLUEPRINT_MUJOCO_G1_MODEL_ROOT="${BLUEPRINT_MUJOCO_G1_MODEL_ROOT:-}"
+if [[ -z "$BLUEPRINT_MUJOCO_G1_MODEL_ROOT" ]]; then
+  BLUEPRINT_MUJOCO_G1_MODEL_ROOT="output/external_assets/mujoco_menagerie/unitree_g1"
+fi
+if [[ ! -s "$MUJOCO_UNITREE_G1_SMOKE_SCRIPT" ]]; then
+  echo "Missing MuJoCo smoke script: $MUJOCO_UNITREE_G1_SMOKE_SCRIPT" >&2
+  exit 12
+fi
+if [[ ! -s "$BLUEPRINT_MUJOCO_G1_MODEL_ROOT/g1.xml" ]]; then
+  echo "Missing MuJoCo Menagerie Unitree G1 model: $BLUEPRINT_MUJOCO_G1_MODEL_ROOT/g1.xml" >&2
+  exit 14
+fi
+
+exec "${PYTHON:-python}" "$MUJOCO_UNITREE_G1_SMOKE_SCRIPT" \
+  --capture-root "$BLUEPRINT_CAPTURE_ROOT" \
+  --g1-model-root "$BLUEPRINT_MUJOCO_G1_MODEL_ROOT"
+"""
+
+
 def _gpu_vm_runtime_preflight_commands(
     *,
     capture_root: Path,
@@ -314,6 +987,7 @@ def _gpu_vm_runtime_preflight_commands(
     simulator: str,
     owner_command: str,
 ) -> str:
+    use_binding_default = "false" if simulator in {"isaac_sim", "isaac_lab_arena", "mujoco"} else "true"
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
@@ -321,16 +995,32 @@ set -euo pipefail
 {_shell_default_assignment("PACKET_DIR", str(packet_dir))}
 GPU_VM_SYNC_MANIFEST="${{GPU_VM_SYNC_MANIFEST:-$PACKET_DIR/gpu_vm_sync_manifest.json}}"
 GPU_VM_PREFLIGHT_OUTPUT="${{GPU_VM_PREFLIGHT_OUTPUT:-$PACKET_DIR/gpu_vm_runtime_preflight_result.json}}"
+OWNER_DEFAULT_SMOKE_COMMAND_BINDING="${{OWNER_DEFAULT_SMOKE_COMMAND_BINDING:-$PACKET_DIR/owner_default_smoke_command_binding.sh}}"
+ISAAC_UNITREE_G1_SMOKE_COMMAND="${{ISAAC_UNITREE_G1_SMOKE_COMMAND:-bash $PACKET_DIR/run_isaac_unitree_g1_smoke.sh}}"
+MUJOCO_UNITREE_G1_SMOKE_COMMAND="${{MUJOCO_UNITREE_G1_SMOKE_COMMAND:-bash $PACKET_DIR/run_mujoco_unitree_g1_smoke.sh}}"
+BLUEPRINT_MUJOCO_G1_MODEL_ROOT="${{BLUEPRINT_MUJOCO_G1_MODEL_ROOT:-{shlex.quote(str(_mujoco_g1_model_root_path()))}}}"
+BLUEPRINT_USE_DEFAULT_SMOKE_BINDING="${{BLUEPRINT_USE_DEFAULT_SMOKE_BINDING:-{use_binding_default}}}"
+{_shell_default_assignment("OWNER_RAW_SIMULATOR_COMMAND", owner_command)}
 OWNER_SIMULATOR_COMMAND="${{OWNER_SIMULATOR_COMMAND:-${{ISAAC_OWNER_COMMAND:-}}}}"
-if [[ -z "${{OWNER_SIMULATOR_COMMAND}}" ]]; then
-  OWNER_SIMULATOR_COMMAND={shlex.quote(owner_command)}
+if [[ "$BLUEPRINT_USE_DEFAULT_SMOKE_BINDING" == "true" ]]; then
+  OWNER_SIMULATOR_COMMAND="bash $OWNER_DEFAULT_SMOKE_COMMAND_BINDING"
+elif [[ -z "${{OWNER_SIMULATOR_COMMAND}}" ]]; then
+  if [[ {shlex.quote(simulator)} == "isaac_sim" || {shlex.quote(simulator)} == "isaac_lab_arena" ]]; then
+    OWNER_SIMULATOR_COMMAND="$ISAAC_UNITREE_G1_SMOKE_COMMAND"
+  elif [[ {shlex.quote(simulator)} == "mujoco" ]]; then
+    OWNER_SIMULATOR_COMMAND="$MUJOCO_UNITREE_G1_SMOKE_COMMAND"
+  else
+    OWNER_SIMULATOR_COMMAND="$OWNER_RAW_SIMULATOR_COMMAND"
+  fi
 fi
+export OWNER_SIMULATOR_COMMAND
 
 python - "$CAPTURE_ROOT" "$PACKET_DIR" "$GPU_VM_SYNC_MANIFEST" "$GPU_VM_PREFLIGHT_OUTPUT" "$OWNER_SIMULATOR_COMMAND" <<'PY'
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import shlex
 import shutil
@@ -401,6 +1091,100 @@ def run_probe(command: list[str], timeout_seconds: int = 20) -> dict:
     )
 
 
+def _unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
+def _version_tuple(value: str) -> tuple[int, int, int]:
+    parts: list[int] = []
+    for token in str(value or "").strip().split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def _nvidia_smi_rows(probe: dict) -> list[dict]:
+    rows: list[dict] = []
+    for line in str(probe.get("stdout") or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3:
+            continue
+        rows.append(dict(name=parts[0], memory_total=parts[1], driver_version=parts[2]))
+    return rows
+
+
+def isaac_runtime_probe(simulator: str, nvidia_smi_probe: dict) -> dict:
+    if simulator not in ("isaac_sim", "isaac_lab_arena"):
+        return dict(status="not_applicable", blockers=[], warnings=[])
+    minimum_driver = os.getenv("BLUEPRINT_ISAAC_MIN_DRIVER_VERSION", "580.65.06")
+    blockers: list[str] = []
+    warnings: list[str] = []
+    rows = _nvidia_smi_rows(nvidia_smi_probe)
+    if not rows:
+        blockers.append("isaac_gpu_query_missing")
+    for row in rows:
+        gpu_name = str(row.get("name") or "")
+        upper_name = gpu_name.upper()
+        if "A100" in upper_name or "H100" in upper_name:
+            blockers.append("isaac_unsupported_non_rt_core_gpu:" + gpu_name)
+        driver_version = str(row.get("driver_version") or "")
+        if _version_tuple(driver_version) < _version_tuple(minimum_driver):
+            blockers.append(
+                "isaac_driver_below_minimum:" + driver_version + "<" + minimum_driver
+            )
+    vulkaninfo = run_probe(["vulkaninfo", "--summary"], timeout_seconds=30)
+    if not vulkaninfo.get("found"):
+        blockers.append("vulkaninfo_missing_for_isaac_runtime_preflight")
+    elif vulkaninfo.get("returncode") != 0:
+        blockers.append("vulkaninfo_failed_for_isaac_runtime_preflight")
+    if "llvmpipe" in str(vulkaninfo.get("stdout") or "").lower():
+        blockers.append("vulkaninfo_reports_cpu_renderer_for_isaac_runtime")
+    if not shutil.which("docker"):
+        warnings.append("docker_missing_for_official_isaac_container_path")
+    return dict(
+        status="ready" if not blockers else "blocked",
+        minimum_driver_version=minimum_driver,
+        nvidia_gpu_rows=rows,
+        vulkaninfo=vulkaninfo,
+        blockers=_unique(blockers),
+        warnings=_unique(warnings),
+    )
+
+
+def mujoco_runtime_probe(simulator: str) -> dict:
+    if simulator != "mujoco":
+        return dict(status="not_applicable", blockers=[], warnings=[])
+    python_exe = os.getenv("PYTHON") or sys.executable
+    mujoco_import = run_probe(
+        [python_exe, "-c", "import mujoco; print(getattr(mujoco, '__version__', 'unknown'))"],
+        timeout_seconds=30,
+    )
+    g1_root = Path(os.getenv("BLUEPRINT_MUJOCO_G1_MODEL_ROOT", "")).expanduser()
+    g1_xml = g1_root / "g1.xml" if str(g1_root) else Path()
+    blockers = []
+    if mujoco_import.get("blockers"):
+        blockers.append("mujoco_python_import_failed")
+    if not g1_xml.is_file():
+        blockers.append("mujoco_menagerie_unitree_g1_xml_missing")
+    return dict(
+        status="ready" if not blockers else "blocked",
+        python=python_exe,
+        mujoco_import=mujoco_import,
+        g1_model_root=str(g1_root) if str(g1_root) else None,
+        g1_xml_exists=g1_xml.is_file() if str(g1_root) else False,
+        blockers=_unique(blockers),
+        warnings=[],
+    )
+
+
 def verify_sync_manifest(path: Path) -> dict:
     if not path.is_file():
         return dict(
@@ -461,6 +1245,8 @@ packet_dir = Path(sys.argv[2])
 sync_manifest_path = Path(sys.argv[3])
 output_path = Path(sys.argv[4])
 owner_command = sys.argv[5]
+simulator_name = {json.dumps(simulator)}
+requires_gpu_probe = simulator_name in ("isaac_sim", "isaac_lab_arena", "newton")
 
 nvidia_smi = run_probe(
     ["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader"]
@@ -468,6 +1254,8 @@ nvidia_smi = run_probe(
 docker = run_probe(["docker", "--version"])
 owner_command_status = command_probe(owner_command)
 sync_status = verify_sync_manifest(sync_manifest_path)
+isaac_runtime = isaac_runtime_probe(simulator_name, nvidia_smi)
+mujoco_runtime = mujoco_runtime_probe(simulator_name)
 
 blockers = []
 warnings = []
@@ -475,8 +1263,16 @@ if not capture_root.is_dir():
     blockers.append("capture_root_missing_on_gpu_vm")
 if not packet_dir.is_dir():
     blockers.append("packet_dir_missing_on_gpu_vm")
-for source in (nvidia_smi, owner_command_status, sync_status):
+for source in (owner_command_status, sync_status):
     blockers.extend(source.get("blockers") or [])
+if requires_gpu_probe:
+    blockers.extend(nvidia_smi.get("blockers") or [])
+elif nvidia_smi.get("blockers"):
+    warnings.extend("optional_gpu_probe:" + item for item in nvidia_smi.get("blockers") or [])
+blockers.extend(isaac_runtime.get("blockers") or [])
+blockers.extend(mujoco_runtime.get("blockers") or [])
+warnings.extend(isaac_runtime.get("warnings") or [])
+warnings.extend(mujoco_runtime.get("warnings") or [])
 if docker.get("blockers"):
     warnings.extend(docker.get("blockers") or [])
 
@@ -494,6 +1290,9 @@ payload = dict(
     docker=docker,
     owner_command=owner_command_status,
     sync_manifest=sync_status,
+    isaac_runtime=isaac_runtime,
+    mujoco_runtime=mujoco_runtime,
+    requires_gpu_probe=requires_gpu_probe,
     claim_boundary=dict(
         artifact_purpose="gpu_vm_runtime_preflight_result",
         simulator_execution_performed=False,
@@ -686,12 +1485,13 @@ def _webapp_handoff_verification_commands(
     capture_root: Path,
     webapp_site_slug: str,
     webapp_staged_inputs_path: Path,
+    webapp_forwarding_preflight_path: Path | None,
     result_path: Path,
     allow_local_webapp_rehearsal: bool,
 ) -> str:
     allow_rehearsal = "true" if allow_local_webapp_rehearsal else "false"
     python_block = r'''
-python - "$CAPTURE_ROOT" "$WEBAPP_SITE_SLUG" "$BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH" "$CAPTURE_ROOT_OVERRIDE_JSON" "$CAPTURE_ROOT_OVERRIDE_GLOBAL" "$WEBAPP_HANDOFF_VERIFICATION_OUTPUT" "$ALLOW_LOCAL_WEBAPP_REHEARSAL" <<'PY'
+python - "$CAPTURE_ROOT" "$WEBAPP_SITE_SLUG" "$BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH" "$CAPTURE_ROOT_OVERRIDE_JSON" "$CAPTURE_ROOT_OVERRIDE_GLOBAL" "$WEBAPP_HANDOFF_VERIFICATION_OUTPUT" "$ALLOW_LOCAL_WEBAPP_REHEARSAL" "$ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT" <<'PY'
 from __future__ import annotations
 
 import json
@@ -705,6 +1505,7 @@ LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION = "blueprint_live_pipeline_staged_inp
 WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = "robot_eval_job_request_inbox.v1"
 WEBAPP_JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
 LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND = "local_first_gpu_rehearsal_request"
+FORWARD_PREFLIGHT_SCHEMA_VERSION = "blueprint.webapp.robot_eval_forwarding_readiness.v1"
 WEBAPP_UPSTREAM_REQUIRED_FIELDS = (
     "site_submission_id",
     "request_id",
@@ -757,9 +1558,111 @@ override_json = string(sys.argv[4])
 override_global = string(sys.argv[5])
 output_path = Path(sys.argv[6]).expanduser()
 allow_local_rehearsal = string(sys.argv[7]).lower() == "true"
+forwarding_preflight_path_text = string(sys.argv[8])
 
 blockers: list[str] = []
 warnings: list[str] = []
+forwarding_preflight = {
+    "configured": bool(forwarding_preflight_path_text),
+    "path": forwarding_preflight_path_text or None,
+    "ready": False,
+    "status": "not_configured",
+    "site_slug_covered": False,
+    "single_capture_root_override_configured": False,
+    "probe_status": None,
+    "blockers": [],
+}
+if forwarding_preflight_path_text:
+    preflight_path = Path(forwarding_preflight_path_text).expanduser()
+    preflight_blockers: list[str] = []
+    if not preflight_path.is_file():
+        preflight_blockers.append("webapp_forwarding_preflight_report_missing")
+        forwarding_preflight.update(
+            {
+                "status": "blocked",
+                "blockers": sorted(set(preflight_blockers)),
+            }
+        )
+    else:
+        try:
+            preflight_payload = json.loads(preflight_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            preflight_payload = {}
+            preflight_blockers.append(
+                f"webapp_forwarding_preflight_report_read_failed:{type(exc).__name__}"
+            )
+        if not isinstance(preflight_payload, Mapping):
+            preflight_payload = {}
+            preflight_blockers.append("webapp_forwarding_preflight_report_not_json_object")
+        if preflight_payload.get("schema_version") != FORWARD_PREFLIGHT_SCHEMA_VERSION:
+            preflight_blockers.append("webapp_forwarding_preflight_schema_mismatch")
+        preflight_status = string(preflight_payload.get("status"))
+        if preflight_status not in {
+            "ready_for_required_forwarding",
+            "ready_for_required_forwarding_with_probe",
+            "ready_for_optional_forwarding",
+            "ready_for_optional_forwarding_with_probe",
+        }:
+            preflight_blockers.append(
+                "webapp_forwarding_preflight_status:" + (preflight_status or "unknown")
+            )
+        configured_env = mapping(preflight_payload.get("configured_env"))
+        forward_url = mapping(configured_env.get("forward_url"))
+        if forward_url.get("valid") is not True:
+            preflight_blockers.append("webapp_forwarding_preflight_forward_url_invalid")
+        forward_token = mapping(configured_env.get("forward_token"))
+        if forward_token.get("configured") is not True:
+            preflight_blockers.append("webapp_forwarding_preflight_token_not_configured")
+        if forward_token.get("redacted") is not True:
+            preflight_blockers.append("webapp_forwarding_preflight_token_not_redacted")
+        capture_root_by_site = mapping(configured_env.get("capture_root_by_site_json"))
+        site_slugs = {
+            string(item)
+            for item in capture_root_by_site.get("site_slugs") or []
+            if string(item)
+        }
+        single_override = mapping(configured_env.get("single_capture_root_override"))
+        single_override_configured = single_override.get("configured") is True
+        site_slug_covered = bool(site_slug and site_slug in site_slugs)
+        if site_slug and not site_slug_covered and not single_override_configured:
+            preflight_blockers.append("webapp_forwarding_preflight_missing_site_slug")
+        report_blockers = [
+            string(item) for item in preflight_payload.get("blockers") or [] if string(item)
+        ]
+        if report_blockers:
+            preflight_blockers.append("webapp_forwarding_preflight_report_has_blockers")
+        proof_boundary = mapping(preflight_payload.get("proof_boundary"))
+        for field in (
+            "command_is_read_only",
+            "no_job_queued",
+            "no_pipeline_mutation_requested",
+            "no_gpu_allocated",
+            "no_simulator_execution_proven",
+            "no_robot_readiness_proven",
+            "no_public_claim_upgrade_allowed",
+        ):
+            if proof_boundary.get(field) is not True:
+                preflight_blockers.append(
+                    "webapp_forwarding_preflight_boundary_missing:" + field
+                )
+        probe = mapping(preflight_payload.get("probe"))
+        if probe.get("requested") is True and probe.get("status") != "reachable":
+            preflight_blockers.append("webapp_forwarding_preflight_probe_not_reachable")
+        forwarding_preflight.update(
+            {
+                "ready": not preflight_blockers,
+                "status": "ready" if not preflight_blockers else "blocked",
+                "preflight_status": preflight_status or None,
+                "site_slug_covered": site_slug_covered,
+                "site_slugs": sorted(site_slugs),
+                "single_capture_root_override_configured": single_override_configured,
+                "probe_status": probe.get("status"),
+                "blockers": sorted(set(preflight_blockers)),
+            }
+        )
+    blockers.extend(forwarding_preflight["blockers"])
+
+preflight_ready = bool(forwarding_preflight["ready"])
 override_source = None
 override_value = ""
 if override_json:
@@ -782,10 +1685,20 @@ if override_json:
 elif override_global:
     override_value = override_global
     override_source = "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT"
+elif preflight_ready and (
+    forwarding_preflight["site_slug_covered"]
+    or forwarding_preflight["single_capture_root_override_configured"]
+):
+    override_value = "<redacted-preflight-report>"
+    override_source = "ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT"
 else:
     blockers.append("missing_capture_root_override_env")
 
-if override_value and not path_matches(override_value, capture_root):
+if (
+    override_value
+    and override_source != "ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT"
+    and not path_matches(override_value, capture_root)
+):
     blockers.append("capture_root_override_does_not_match_capture_root")
 
 request_path_text = ""
@@ -873,9 +1786,16 @@ payload = {
     "forwarding": {
         "forward_url_configured": bool(os.getenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL")),
         "forward_token_configured": bool(os.getenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN")),
+        "forward_url_evidence_present": (
+            bool(os.getenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL")) or preflight_ready
+        ),
+        "forward_token_evidence_present": (
+            bool(os.getenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN")) or preflight_ready
+        ),
         "forward_token_value_redacted": True,
         "capture_root_override_source": override_source,
         "capture_root_override_configured": bool(override_value),
+        "forwarding_preflight": forwarding_preflight,
     },
     "staged_request": {
         "path": str(staged_inputs_path),
@@ -909,15 +1829,16 @@ set -euo pipefail
 {_shell_default_assignment("CAPTURE_ROOT", str(capture_root))}
 {_shell_default_assignment("WEBAPP_SITE_SLUG", webapp_site_slug or "<webapp-site-slug>")}
 {_shell_default_assignment(WEBAPP_STAGED_INPUTS_ENV, str(webapp_staged_inputs_path))}
+{_shell_default_assignment(FORWARD_PREFLIGHT_REPORT_ENV, str(webapp_forwarding_preflight_path or ""))}
 {_shell_default_assignment("WEBAPP_HANDOFF_VERIFICATION_OUTPUT", str(result_path))}
 {_shell_default_assignment("ALLOW_LOCAL_WEBAPP_REHEARSAL", allow_rehearsal)}
 
-if [[ -z "${{{WEBAPP_FORWARD_URL_ENV}:-}}" ]]; then
+if [[ -z "${{{WEBAPP_FORWARD_URL_ENV}:-}}" && ! -f "${{{FORWARD_PREFLIGHT_REPORT_ENV}:-}}" ]]; then
   echo "{WEBAPP_FORWARD_URL_ENV} must be set to the Pipeline intake endpoint." >&2
   exit 2
 fi
 
-if [[ -z "${{{WEBAPP_FORWARD_TOKEN_ENV}:-}}" ]]; then
+if [[ -z "${{{WEBAPP_FORWARD_TOKEN_ENV}:-}}" && ! -f "${{{FORWARD_PREFLIGHT_REPORT_ENV}:-}}" ]]; then
   echo "{WEBAPP_FORWARD_TOKEN_ENV} must be set in shell state; do not write it into packet artifacts." >&2
   exit 2
 fi
@@ -949,6 +1870,50 @@ def _gpu_provider_bootstrap_manifest(
             "avoid_for_isaac_sim": ["A100", "H100"],
             "avoid_reason": "Isaac Sim rendering requires RT cores; data-center tensor GPUs are not the first smoke target.",
         }
+        recommended_provider_path = (
+            "Use a RunPod Pod or equivalent interactive GPU VM for the first smoke. "
+            "Do not use serverless inference for simulator bring-up."
+        )
+        first_smoke_path = {
+            "primary_simulator_lane": simulator,
+            "cheapest_serious_path": False,
+            "requires_paid_gpu_for_owner_runtime": True,
+            "local_cpu_preflight_available": False,
+            "reason": (
+                "Isaac is the richer USD/renderer path, but it requires an owner "
+                "runtime with RT-core GPU and Vulkan proof."
+            ),
+        }
+    elif simulator == "mujoco":
+        gpu_guidance = {
+            "recommended_gpu_class": "CPU-first MuJoCo runtime; GPU optional for rendering acceleration",
+            "minimum_vram_gb": 0,
+            "preferred_vram_gb": 0,
+            "good_first_smoke_examples": [
+                "local workstation CPU",
+                "low-cost CPU VM",
+                "low-cost interactive GPU VM only if owner isolation is required",
+            ],
+            "avoid_for_isaac_sim": [],
+            "avoid_reason": None,
+        }
+        recommended_provider_path = (
+            "Run local CPU MuJoCo first. If owner-runtime isolation is required, use "
+            "the cheapest interactive VM that can install the mujoco Python package "
+            "and sync the Menagerie Unitree G1 assets; no serverless inference path is needed."
+        )
+        first_smoke_path = {
+            "primary_simulator_lane": "mujoco",
+            "cheapest_serious_path": True,
+            "requires_paid_gpu_for_owner_runtime": False,
+            "local_cpu_preflight_available": True,
+            "robot_asset": dict(DEFAULT_MUJOCO_G1_ASSET),
+            "required_asset_root": str(_mujoco_g1_model_root_path()),
+            "reason": (
+                "MuJoCo is free/open source and the selected smoke uses the real "
+                "MuJoCo Menagerie Unitree G1 MJCF asset before any Isaac spend."
+            ),
+        }
     else:
         gpu_guidance = {
             "recommended_gpu_class": "CUDA-capable NVIDIA GPU sized for selected simulator",
@@ -958,22 +1923,31 @@ def _gpu_provider_bootstrap_manifest(
             "avoid_for_isaac_sim": [],
             "avoid_reason": None,
         }
+        recommended_provider_path = (
+            "Use an interactive owner runtime for the selected simulator. Do not use "
+            "serverless inference for simulator bring-up."
+        )
+        first_smoke_path = {
+            "primary_simulator_lane": simulator,
+            "cheapest_serious_path": False,
+            "requires_paid_gpu_for_owner_runtime": simulator in {"newton"},
+            "local_cpu_preflight_available": simulator in {"pybullet"},
+            "reason": "Selected simulator requires owner-command-specific validation.",
+        }
     return {
         "schema_version": GPU_PROVIDER_BOOTSTRAP_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
         "capture_root": str(capture_root),
         "simulator": simulator,
         "provisioner": provisioner,
-        "recommended_provider_path": (
-            "Use a RunPod Pod or equivalent interactive GPU VM for the first smoke. "
-            "Do not use serverless inference for simulator bring-up."
-        ),
+        "recommended_provider_path": recommended_provider_path,
+        "first_smoke_path": first_smoke_path,
         "gpu_guidance": gpu_guidance,
         "nvidia_nim_boundary": {
             "primary_for_first_smoke": False,
             "role": (
                 "Optional model inference service for later VLM/LLM/perception/policy "
-                "endpoints; not the Isaac/physics simulator runtime."
+                f"endpoints; not the {simulator}/physics simulator runtime."
             ),
         },
         "required_mounts_or_sync": [
@@ -984,9 +1958,11 @@ def _gpu_provider_bootstrap_manifest(
         "required_vm_checks": [
             "nvidia-smi returns the selected GPU and driver",
             "Docker and NVIDIA Container Toolkit can run a GPU container",
+            "MuJoCo-selected packets can run CPU-first, but the mujoco Python package and Menagerie Unitree G1 MJCF assets must be present",
             "capture_root is mounted or synchronized at the same path used by the wrapper",
             "scene assets referenced by gpu_handoff_packet.json exist on the GPU VM",
-            "owner simulator command exits nonzero when scene load, spawn, action trace, or proof files are missing",
+            "owner simulator command exits nonzero when scene load, spawn, default policy trace, simulator POV evidence, or proof files are missing",
+            f"{OWNER_DEFAULT_SMOKE_HELPER_COMMAND} is installed if the owner command relies on the repo helper for default policy and simulator POV manifests",
         ],
         "owner_command": owner_command,
         "owner_command_location": owner_command_location,
@@ -994,8 +1970,10 @@ def _gpu_provider_bootstrap_manifest(
         "first_smoke_success_criteria": [
             "owner_scene_load_trace.json exists and reports scene_loaded=true",
             "owner_spawn_pose_trace.json exists and reports spawn_pose_loaded=true",
-            "owner_action_or_policy_trace.json exists and contains at least one attempted action",
-            "owner_artifact_manifest.json exists and lists logs or rendered artifacts",
+            "owner_default_smoke_policy.json exists and defines the walk_to_target policy",
+            "owner_action_or_policy_trace.json exists and contains at least one walk_to_target action attempt",
+            "owner_sim_robot_pov_evidence_manifest.json exists and references simulator camera/video/frame evidence",
+            "owner_artifact_manifest.json exists and lists logs, policy traces, and rendered POV artifacts",
             "gpu_owner_system_proof.json validates after wrapper execution",
         ],
         "hard_stop_conditions": [
@@ -1027,12 +2005,26 @@ def _gpu_provider_bootstrap_markdown(payload: Mapping[str, Any]) -> str:
     examples = ", ".join(str(item) for item in guidance.get("good_first_smoke_examples", []))
     avoid = ", ".join(str(item) for item in guidance.get("avoid_for_isaac_sim", []))
     avoid_line = f"\nAvoid for Isaac Sim first smoke: {avoid}." if avoid else ""
+    first_smoke_path = (
+        payload.get("first_smoke_path")
+        if isinstance(payload.get("first_smoke_path"), Mapping)
+        else {}
+    )
     return f"""# GPU Provider Bootstrap
 
-Use a RunPod Pod or equivalent interactive GPU VM for the first owner-GPU smoke.
+{payload.get("recommended_provider_path")}
+
 Serverless inference and NVIDIA NIM are not the primary simulator runtime for
 this milestone. NIM can be useful later for model inference endpoints, but this
-run needs an owner-controlled GPU VM that can execute `{payload.get("wrapper_command")}`.
+run needs an owner-controlled runtime that can execute `{payload.get("wrapper_command")}`.
+
+## Cheapest Serious Path
+
+- Primary simulator lane: `{first_smoke_path.get("primary_simulator_lane")}`
+- Cheapest serious path: `{first_smoke_path.get("cheapest_serious_path")}`
+- Requires paid GPU for owner runtime: `{first_smoke_path.get("requires_paid_gpu_for_owner_runtime")}`
+- Local CPU preflight available: `{first_smoke_path.get("local_cpu_preflight_available")}`
+- Reason: {first_smoke_path.get("reason")}
 
 ## GPU Selection
 
@@ -1114,18 +2106,25 @@ def _simulator_path_details(framework: str) -> Dict[str, Any]:
             ],
         },
         "mujoco": {
-            "lane": "cpu_or_lightweight_physics_preflight",
+            "lane": "cpu_first_unitree_g1_mjcf_scene_smoke",
             "execution_environment": "local_or_owner_runtime",
             "can_run_without_gpu_preflight": True,
             "recommended_first_gpu_smoke": False,
-            "proof_role": "Useful for generated MJCF/proxy fixture checks and control sanity; not rich USD scene proof by default.",
+            "proof_role": (
+                "Cheapest serious primary lane when selected: load the staged scene "
+                "with the real MuJoCo Menagerie Unitree G1 MJCF and run the default "
+                "walk_to_target smoke through the owner proof contract."
+            ),
             "requires": [
-                "MJCF-compatible scene or proxy export",
-                "MuJoCo package or owner MuJoCo install",
+                "mujoco Python package or owner MuJoCo install",
+                "MuJoCo Menagerie unitree_g1/g1.xml and mesh assets",
+                "staged World Labs GLB or compatible scene asset converted to MJCF/OBJ support",
             ],
             "not_a_substitute_for": [
                 "Isaac Sim rich-scene rendering proof",
-                "owner GPU scene-load trace unless selected and run through the owner proof contract",
+                "real robot POV evidence",
+                "balanced humanoid locomotion policy quality",
+                "physics/contact/safety validation",
             ],
         },
         "pybullet": {
@@ -1181,6 +2180,9 @@ def _simulator_path_matrix_manifest(
     paths: list[Dict[str, Any]] = []
     for framework in SIMULATOR_FRAMEWORKS:
         details = _simulator_path_details(framework)
+        recommended_first_smoke = bool(details.get("recommended_first_gpu_smoke"))
+        if simulator == "mujoco":
+            recommended_first_smoke = framework == "mujoco"
         paths.append(
             {
                 "framework": framework,
@@ -1190,9 +2192,7 @@ def _simulator_path_matrix_manifest(
                 "can_run_without_gpu_preflight": bool(
                     details.get("can_run_without_gpu_preflight")
                 ),
-                "recommended_first_gpu_smoke": bool(
-                    details.get("recommended_first_gpu_smoke")
-                ),
+                "recommended_first_gpu_smoke": recommended_first_smoke,
                 "proof_role": details.get("proof_role"),
                 "requires": details.get("requires") or [],
                 "not_a_substitute_for": details.get("not_a_substitute_for") or [],
@@ -1230,11 +2230,19 @@ def _simulator_path_matrix_manifest(
             ],
         },
         "first_gpu_recommendation": {
-            "recommended_first_path": "isaac_sim",
-            "selected_matches_recommendation": simulator == "isaac_sim",
+            "recommended_first_path": "mujoco" if simulator == "mujoco" else "isaac_sim",
+            "selected_matches_recommendation": (
+                simulator == ("mujoco" if simulator == "mujoco" else "isaac_sim")
+            ),
             "reason": (
-                "The first smoke should prove rich scene load, spawn, and trace capture "
-                "before Arena/policy or lightweight physics paths are treated as evidence."
+                "MuJoCo is selected as the cheapest serious primary lane for now: "
+                "prove real Menagerie Unitree G1 MJCF load, scene conversion, "
+                "default walk_to_target execution, and simulator POV before GPU spend."
+                if simulator == "mujoco"
+                else (
+                    "The first smoke should prove rich scene load, spawn, and trace capture "
+                    "before Arena/policy or lightweight physics paths are treated as evidence."
+                )
             ),
         },
         "safe_commands": [
@@ -1324,6 +2332,7 @@ def _gpu_vm_runtime_preflight_plan_manifest(
     vm_sync_manifest: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     readiness_blockers = [str(item) for item in readiness.get("blockers") or []]
+    result_summary = _gpu_vm_runtime_preflight_result_summary(result_path)
     sync_status = _string(vm_sync_manifest.get("status")) if vm_sync_manifest else "not_generated"
     sync_blockers = [
         f"gpu_vm_sync_manifest:{item}" for item in (vm_sync_manifest or {}).get("blockers") or []
@@ -1340,6 +2349,26 @@ def _gpu_vm_runtime_preflight_plan_manifest(
     hard_stop_blockers.extend(sync_blockers)
     if not owner_command_supplied and "owner_command_not_supplied_to_run_packet" not in hard_stop_blockers:
         hard_stop_blockers.append("owner_command_not_supplied_to_run_packet")
+    if simulator == "mujoco":
+        runtime_checks = [
+            "CAPTURE_ROOT exists on the owner runtime at the same path used by the packet",
+            "PACKET_DIR exists on the owner runtime",
+            "mujoco imports from the selected Python interpreter",
+            "BLUEPRINT_MUJOCO_G1_MODEL_ROOT contains unitree_g1/g1.xml and mesh assets",
+            "docker --version is optional unless the owner runtime depends on containers",
+            "OWNER_SIMULATOR_COMMAND resolves to the generated MuJoCo Unitree G1 smoke or another executable owner MuJoCo command",
+            "gpu_vm_sync_manifest.json files exist and SHA-256 values match after mount or copy",
+        ]
+    else:
+        runtime_checks = [
+            "CAPTURE_ROOT exists on the GPU VM at the same path used by the packet",
+            "PACKET_DIR exists on the GPU VM",
+            "nvidia-smi exists and can query GPU name, memory, and driver",
+            "Isaac Sim/Lab paths require an RT-core GPU, driver >= 580.65.06 by default, and a working Vulkan probe",
+            "docker --version is available when the owner runtime depends on containers",
+            "OWNER_SIMULATOR_COMMAND or ISAAC_OWNER_COMMAND resolves to an executable on the GPU VM",
+            "gpu_vm_sync_manifest.json files exist and SHA-256 values match after mount or copy",
+        ]
     status = (
         "blocked_for_owner_gpu_attempt"
         if hard_stop_blockers
@@ -1360,20 +2389,14 @@ def _gpu_vm_runtime_preflight_plan_manifest(
         "status": status,
         "hard_stop_blockers": hard_stop_blockers,
         "full_e2e_blockers": readiness_blockers,
+        "result": result_summary,
         "script": {
             "path": str(script_path),
             "default_result_path": str(result_path),
             "safe_to_run_on_gpu_vm": not hard_stop_blockers,
             "runs_owner_simulator_command": False,
         },
-        "inputs_checked_when_script_runs": [
-            "CAPTURE_ROOT exists on the GPU VM at the same path used by the packet",
-            "PACKET_DIR exists on the GPU VM",
-            "nvidia-smi exists and can query GPU name, memory, and driver",
-            "docker --version is available when the owner runtime depends on containers",
-            "OWNER_SIMULATOR_COMMAND or ISAAC_OWNER_COMMAND resolves to an executable on the GPU VM",
-            "gpu_vm_sync_manifest.json files exist and SHA-256 values match after mount or copy",
-        ],
+        "inputs_checked_when_script_runs": runtime_checks,
         "ordered_next_steps": [
             "Copy or mount the capture root and run packet to the GPU VM.",
             "Set OWNER_SIMULATOR_COMMAND to the real simulator command on the GPU VM.",
@@ -2106,6 +3129,17 @@ def _first_gpu_launch_order_manifest(
     vm_runtime_blockers = [str(item) for item in gpu_vm_runtime_preflight_plan.get("hard_stop_blockers") or []]
     if vm_sync_blockers:
         vm_runtime_blockers.append("gpu_vm_sync_not_ready")
+    runtime_result = (
+        gpu_vm_runtime_preflight_plan.get("result")
+        if isinstance(gpu_vm_runtime_preflight_plan.get("result"), Mapping)
+        else {}
+    )
+    if not bool(runtime_result.get("ready_for_owner_command_attempt")):
+        vm_runtime_blockers.append("gpu_vm_runtime_preflight_result_not_ready")
+        vm_runtime_blockers.extend(
+            f"gpu_vm_runtime_preflight_result:{item}"
+            for item in runtime_result.get("blockers") or []
+        )
     owner_setup_blockers = ["gpu_vm_runtime_preflight_not_ready"] if vm_runtime_blockers else []
 
     steps = [
@@ -2386,6 +3420,18 @@ def _gpu_vm_sync_manifest(
         if role in {"gpu_vm_sync_manifest", "gpu_vm_sync_markdown"}:
             continue
         _append_file_entry(entries, Path(path), role=f"run_packet_{role}")
+
+    selected_simulator = _string(readiness.get("simulator"))
+    if selected_simulator == "mujoco":
+        for index, asset_path in enumerate(_mujoco_g1_asset_files()):
+            role = "mujoco_menagerie_unitree_g1_asset"
+            if asset_path.name == "g1.xml":
+                role = "mujoco_menagerie_unitree_g1_g1_xml"
+            elif asset_path.name == "scene.xml":
+                role = "mujoco_menagerie_unitree_g1_scene_xml"
+            elif asset_path.name == "LICENSE":
+                role = "mujoco_menagerie_unitree_g1_license"
+            _append_file_entry(entries, asset_path, role=f"{role}_{index:03d}")
 
     blockers = [
         blocker
@@ -2849,11 +3895,24 @@ def _webapp_handoff_manifest(
     request_path = _string(staged.get("request_path"))
     forward_url_configured = bool(forwarding.get("forward_url_configured"))
     forward_token_configured = bool(forwarding.get("forward_token_configured"))
+    forward_url_evidence_present = bool(
+        forwarding.get("forward_url_evidence_present", forward_url_configured)
+    )
+    forward_token_evidence_present = bool(
+        forwarding.get("forward_token_evidence_present", forward_token_configured)
+    )
     capture_root_override_configured = bool(forwarding.get("capture_root_override_configured"))
+    forwarding_preflight = (
+        forwarding.get("forwarding_preflight")
+        if isinstance(forwarding.get("forwarding_preflight"), Mapping)
+        else {}
+    )
+    forwarding_preflight_path = _string(forwarding_preflight.get("path"))
+    forwarding_preflight_ready = bool(forwarding_preflight.get("ready"))
     missing_env: list[str] = []
-    if not forward_url_configured:
+    if not forward_url_evidence_present:
         missing_env.append(WEBAPP_FORWARD_URL_ENV)
-    if not forward_token_configured:
+    if not forward_token_evidence_present:
         missing_env.append(WEBAPP_FORWARD_TOKEN_ENV)
     if not capture_root_override_configured:
         missing_env.append(
@@ -2871,16 +3930,24 @@ def _webapp_handoff_manifest(
         "forwarding": {
             "forward_url_configured": forward_url_configured,
             "forward_token_configured": forward_token_configured,
+            "forward_url_evidence_present": forward_url_evidence_present,
+            "forward_token_evidence_present": forward_token_evidence_present,
             "forward_token_value_redacted": True,
             "capture_root_override_configured": capture_root_override_configured,
             "capture_root_override_source": forwarding.get("capture_root_override_source"),
+            "forwarding_preflight": dict(forwarding_preflight),
             "expected_capture_root": str(capture_root),
         },
         "verification": {
             "requires_env": [
-                WEBAPP_FORWARD_URL_ENV,
-                WEBAPP_FORWARD_TOKEN_ENV,
-                f"{WEBAPP_FORWARD_CAPTURE_ROOT_BY_SITE_ENV} or {WEBAPP_FORWARD_CAPTURE_ROOT_ENV}",
+                (
+                    f"{WEBAPP_FORWARD_URL_ENV} and {WEBAPP_FORWARD_TOKEN_ENV}, "
+                    f"or {FORWARD_PREFLIGHT_REPORT_ENV}"
+                ),
+                (
+                    f"{WEBAPP_FORWARD_CAPTURE_ROOT_BY_SITE_ENV} or "
+                    f"{WEBAPP_FORWARD_CAPTURE_ROOT_ENV}, or {FORWARD_PREFLIGHT_REPORT_ENV}"
+                ),
             ],
             "missing_env": missing_env,
             "required_env_status": {
@@ -2901,6 +3968,12 @@ def _webapp_handoff_manifest(
                     "configured": bool(_string(os.getenv(WEBAPP_FORWARD_CAPTURE_ROOT_ENV))),
                     "value_redacted": True,
                 },
+                FORWARD_PREFLIGHT_REPORT_ENV: {
+                    "configured": bool(forwarding_preflight_path),
+                    "path": forwarding_preflight_path or None,
+                    "ready": forwarding_preflight_ready,
+                    "value_redacted": False,
+                },
             },
             "script": {
                 "path": str(verification_script_path),
@@ -2908,7 +3981,7 @@ def _webapp_handoff_manifest(
                 "safe_to_run_now": True,
                 "runs_live_webapp_call": False,
                 "stages_request": False,
-                "requires_forwarding_token_in_shell": True,
+                "requires_forwarding_token_in_shell": not forwarding_preflight_ready,
             },
         },
         "staged_request": {
@@ -2953,10 +4026,21 @@ def _webapp_handoff_manifest(
                         ),
                     ),
                     _shell_export(
+                        FORWARD_PREFLIGHT_REPORT_ENV,
+                        forwarding_preflight_path
+                        or str(_default_webapp_forwarding_preflight_path(capture_root)),
+                    ),
+                    _shell_export(
                         "BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH",
                         str(webapp_staged_inputs_path),
                     ),
                 ]
+            ),
+            "write_webapp_forwarding_preflight_report": (
+                "cd /Users/nijelhunt_1/workspace/Blueprint-WebApp && "
+                "npm run pipeline:forwarding:preflight -- --require-forwarding "
+                "--probe-intake-audit "
+                f"--output {shlex.quote(forwarding_preflight_path or str(_default_webapp_forwarding_preflight_path(capture_root)))}"
             ),
             "start_pipeline_intake_service": "\n".join(
                 [
@@ -2975,6 +4059,7 @@ def _webapp_handoff_manifest(
                 f"--capture-root {shlex.quote(str(capture_root))} "
                 f"--webapp-site-slug {shlex.quote(webapp_site_slug or '<webapp-site-slug>')} "
                 f"--webapp-staged-inputs {shlex.quote(str(webapp_staged_inputs_path))} "
+                f"--webapp-forwarding-preflight {shlex.quote(forwarding_preflight_path or str(_default_webapp_forwarding_preflight_path(capture_root)))} "
                 f"--simulator {shlex.quote(simulator)} --provisioner {shlex.quote(provisioner)} "
                 "--simulator-command \"$OWNER_SIMULATOR_COMMAND\" "
                 f"--simulator-command-location {shlex.quote(owner_command_location)}"
@@ -3065,18 +4150,75 @@ def _webapp_handoff_markdown(payload: Mapping[str, Any]) -> str:
 
 
 def _owner_command_contract(*, simulator: str) -> str:
+    robot_asset = _robot_asset_for_simulator(simulator)
+    if simulator == "mujoco":
+        selected_smoke = """For MuJoCo packets, the run packet includes a concrete smoke command:
+
+```bash
+export PACKET_DIR="<packet-dir>"
+export BLUEPRINT_MUJOCO_G1_MODEL_ROOT="<repo>/output/external_assets/mujoco_menagerie/unitree_g1"
+export OWNER_SIMULATOR_COMMAND="bash $PACKET_DIR/run_mujoco_unitree_g1_smoke.sh"
+```
+
+That launcher runs `mujoco_unitree_g1_smoke.py` with the canonical MuJoCo Python
+bindings. The script loads the staged World Labs GLB as converted OBJ support,
+loads the real MuJoCo Menagerie Unitree G1 MJCF and mesh assets, runs the default
+kinematic walk-to-target smoke, captures MuJoCo renderer frames, and writes the
+trace files named above. It still does not create physical robot POV,
+robot-team policy proof, contact/safety proof, or deployment readiness.
+"""
+    else:
+        selected_smoke = """For Isaac Sim packets, the run packet also includes a concrete smoke command:
+
+```bash
+export PACKET_DIR="<packet-dir>"
+export OWNER_SIMULATOR_COMMAND="bash $PACKET_DIR/run_isaac_unitree_g1_smoke.sh"
+```
+
+That launcher runs `isaac_unitree_g1_smoke.py` inside Isaac Sim Python. The script
+converts the staged World Labs GLB to USD with `omni.kit.asset_converter`, references
+the Unitree G1 USD asset, runs the default kinematic walk-to-target smoke, captures
+Isaac Sim virtual camera frames, and writes the trace files named above. It still
+does not create real robot POV or robot-team policy proof.
+"""
     return f"""# Owner GPU Command Contract
 
-The command passed to `blueprint-run-owner-gpu-proof --command` must run inside the GPU VM
-and write the trace files named by these environment variables:
+The command passed to `blueprint-run-owner-gpu-proof --command` must run inside the
+selected owner runtime and write the trace files named by these environment variables:
 
 - `BLUEPRINT_CAPTURE_ROOT`: staged capture root.
 - `BLUEPRINT_GPU_PROOF_DIR`: folder for owner proof support files.
 - `BLUEPRINT_SCENE_LOAD_TRACE`: JSON trace proving the simulator loaded the scene.
 - `BLUEPRINT_SPAWN_TRACE`: JSON trace proving the robot spawn pose was attempted and validated.
+- `BLUEPRINT_DEFAULT_SMOKE_POLICY`: wrapper-written JSON spec for the default walk-to-target smoke policy.
+- `BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET`: target label or pose id for the default smoke policy.
+- `BLUEPRINT_ROBOT_ASSET_NAME`: expected robot asset name; defaults to `{robot_asset["name"]}` for `{simulator}`.
+- `BLUEPRINT_ROBOT_ASSET_URI_OR_PATH`: expected robot asset path; defaults to `{robot_asset["uri_or_path"]}`.
+- `BLUEPRINT_ROBOT_ASSET_SOURCE`: expected source; defaults to `{robot_asset["source"]}`.
 - `BLUEPRINT_ACTION_OR_POLICY_TRACE`: JSON trace for the action, policy, or scripted task attempt.
+- `BLUEPRINT_POLICY_EXECUTION_TRACE`: same required trace path, named explicitly for policy execution.
+- `BLUEPRINT_SIM_ROBOT_POV_EVIDENCE`: JSON manifest for simulator robot POV video or frame evidence.
 - `BLUEPRINT_ARTIFACT_MANIFEST`: JSON manifest for rendered frames, logs, USD files, and other outputs.
 - `BLUEPRINT_OWNER_STDOUT` and `BLUEPRINT_OWNER_STDERR`: wrapper-owned log paths.
+
+After the command loads the scene, spawns the robot, and captures at least one simulator
+robot camera frame or video, it may call the repo helper to write the default policy and
+simulator POV artifacts:
+
+```bash
+{OWNER_DEFAULT_SMOKE_HELPER_COMMAND} \\
+  --simulator {simulator} \\
+  --sim-pov-frame "$SIM_ROBOT_POV_FRAME_PATH"
+```
+
+The helper writes `BLUEPRINT_POLICY_EXECUTION_TRACE`, `BLUEPRINT_SIM_ROBOT_POV_EVIDENCE`,
+and merges those outputs into `BLUEPRINT_ARTIFACT_MANIFEST`. It requires a real simulator
+frame or video path from the owner command and does not write scene-load or spawn proof.
+The generated run packet also includes `owner_default_smoke_command_binding.sh`, a
+fail-closed shell template that wires owner-provided scene-load, spawn, and
+walk-to-target commands to this helper.
+
+{selected_smoke}
 
 Minimum trace shape:
 
@@ -3085,19 +4227,284 @@ Minimum trace shape:
 ```
 
 ```json
-{{"status":"validated","spawn_pose_loaded":true,"robot_asset":"<asset-or-placeholder>"}}
+{{"status":"validated","spawn_pose_loaded":true,"robot_asset":{{"name":"{robot_asset["name"]}","uri_or_path":"{robot_asset["uri_or_path"]}","source":"{robot_asset["source"]}","asset_class":"{robot_asset["asset_class"]}"}}}}
 ```
 
 ```json
-{{"status":"completed","actions":[{{"name":"<task-step>","status":"attempted"}}]}}
+{{"status":"completed","default_policy_executed":true,"actions":[{{"name":"walk_to_target","target":"<BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET>","status":"attempted"}}]}}
+```
+
+```json
+{{"status":"complete","sim_robot_pov_captured":true,"frames":[{{"camera":"front_rgbd","path":"<path>"}}]}}
 ```
 
 ```json
 {{"status":"complete","artifacts":[{{"kind":"log","path":"<path>"}}]}}
 ```
 
-The wrapper can accept simulator execution proof from this command, but that still does not prove
-robot readiness, safety, physics contact validity, policy quality, or public claim upgrades.
+The wrapper can accept simulator execution, default smoke-policy execution, and simulator POV
+evidence from this command. That still does not prove real robot POV, robot readiness,
+safety, physics contact validity, robot-team policy quality, or public claim upgrades.
+For `{simulator}`, launch-level selected-asset proof requires the wrapper robot asset
+and spawn trace robot asset to match. A procedural humanoid proxy can be recorded as
+fallback simulator evidence, but it does not clear the selected Unitree G1 asset proof.
+"""
+
+
+def _live_policy_execution_contract() -> str:
+    return """# Live Policy Execution Contract
+
+The first owner-GPU smoke can prove default simulator policy execution only:
+`owner_gpu_default_policy_execution_proven=true` / `default_sim_policy_execution_proven=true`.
+That is not robot-team policy execution proof.
+
+Live robot-team policy execution is proven only by the robot-eval job artifacts:
+
+- `pipeline/robot_eval_jobs/<job_id>/policy_execution_manifest.json`
+- `pipeline/robot_eval_jobs/<job_id>/policy_execution_trace.json`
+
+Required manifest evidence:
+
+```json
+{
+  "status": "completed",
+  "selected_modalities": ["policy_api_endpoint"],
+  "robot_policy_execution_proven": true,
+  "modality_results": {
+    "policy_api_endpoint": {
+      "status": "completed",
+      "execution_performed": true,
+      "reference_replayed": false,
+      "robot_policy_execution_proven": true
+    }
+  }
+}
+```
+
+Required trace evidence:
+
+```json
+{
+  "status": "completed",
+  "robot_policy_execution_proven": true,
+  "scenario_eval_run_coverage_complete": true,
+  "attempts": [
+    {
+      "scenario_eval_run_id": "<scenario-eval-run-id>",
+      "scenario_variation_instance_id": "<variation-id>",
+      "status": "completed",
+      "actions": [{"action": "walk_to_target"}]
+    }
+  ]
+}
+```
+
+The closure audit rejects reference replay, empty traces, missing action or skill
+traces, missing selected modality results, and incomplete scenario-eval-run coverage.
+To run a live policy command through the job orchestrator, both are required:
+
+- `BLUEPRINT_ALLOW_POLICY_EXECUTION=true`
+- the job call passes `allow_policy_execution=True` or `--allow-policy-execution`
+
+For a default test run without a robot-team policy package, stage the request with
+an explicit default policy:
+
+```json
+{
+  "default_test_policy": {
+    "policy_kind": "walk_to_target",
+    "target": "<scene-target-or-pose-id>"
+  }
+}
+```
+
+With the same `BLUEPRINT_ALLOW_POLICY_EXECUTION=true` gate, the job orchestrator
+runs the built-in default `walk_to_target` adapter and writes:
+
+```json
+{
+  "status": "completed",
+  "selected_modalities": ["high_level_skill_trace"],
+  "robot_policy_execution_proven": true,
+  "default_test_policy_execution_proven": true,
+  "robot_team_policy_execution_proven": false,
+  "scenario_eval_run_coverage_complete": true
+}
+```
+
+This proves only the default Blueprint test policy for that job. It is useful for
+the first controlled run, but it is still not proof of robot-team policy quality.
+
+Policy package intake alone is not proof. It only stages robot-team references for
+the later gated execution bundle. Generated/default smoke policy artifacts are also
+not proof of robot-team policy quality or physical deployment readiness.
+"""
+
+
+def _default_test_robot_eval_job_request_template(
+    *,
+    capture_root: Path,
+    webapp_site_slug: str,
+    simulator: str,
+) -> Dict[str, Any]:
+    robot_asset = _robot_asset_for_simulator(simulator)
+    return {
+        "schema_version": "robot_eval_job_request.v1",
+        "job_id": "<real-webapp-job-id>",
+        "customer": {
+            "id": "<real-robot-team-id>",
+            "name": "<real-robot-team-name>",
+        },
+        "site_package": {
+            "capture_root": str(capture_root),
+            "site_slug": webapp_site_slug or "<webapp-site-slug>",
+            "site_submission_id": "<real-site-submission-id>",
+            "request_id": "<real-webapp-request-id>",
+            "buyer_request_id": "<real-buyer-request-id>",
+            "capture_job_id": "<real-capture-job-id>",
+            "package_uri": "<pipeline-or-storage-package-uri>",
+        },
+        "requested_tasks": [
+            {
+                "task_id": "<task-id-from-real-request>",
+                "scenario_ids": ["<scenario-id-from-evaluation-prep>"],
+            }
+        ],
+        "requested_scenario_eval_runs": [
+            {
+                "scenario_eval_run_id": "<scenario-eval-run-id>",
+                "scenario_variation_instance_id": "<scenario-variation-instance-id>",
+                "task_id": "<task-id-from-real-request>",
+                "scenario_id": "<scenario-id-from-evaluation-prep>",
+                "variation_name": "<variation-name>",
+            }
+        ],
+        "robot_profile": {
+            "robot_profile_id": "<robot-profile-id>",
+            "embodiment": "<robot-embodiment>",
+            "sensors": ["rgb", "depth"],
+            "simulator_robot_asset": {
+                "name": robot_asset["name"],
+                "uri_or_path": robot_asset["uri_or_path"],
+                "source": robot_asset["source"],
+                "asset_class": robot_asset["asset_class"],
+                "fail_closed_if_missing": True,
+            },
+        },
+        "default_test_policy": {
+            "policy_kind": "walk_to_target",
+            "target": "walk_to_target_pose",
+        },
+        "operation": "evaluate_only",
+        "simulator_preference": simulator,
+        "rights_privacy_scope": {
+            "status": "cleared_for_robot_eval",
+            "external_use_allowed": True,
+            "privacy_scope": "<approved-privacy-scope>",
+        },
+        "owner_system": {
+            "name": "<real-owner-system-name>",
+            "request_id": "<real-webapp-request-id>",
+        },
+        "provenance": {
+            "submitted_at": "<webapp-submitted-at-iso8601>",
+            "timestamp_alignment": "trace_timestamps_aligned_to_capture",
+        },
+        "claim_boundary": {
+            "template_only": True,
+            "default_test_policy_execution_requested": True,
+            "robot_team_policy_execution_requested": False,
+            "real_robot_pov_required_separately": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
+def _real_robot_pov_manifest_template() -> Dict[str, Any]:
+    return {
+        "schema_version": "real_robot_pov_manifest.v1",
+        "job_id": "<real-webapp-job-id>",
+        "owner_system": "<physical-robot-owner-system>",
+        "timestamp_alignment": "aligned_to_scenario_eval_run",
+        "records": [
+            {
+                "evidence_id": "<real-pov-evidence-id>",
+                "task_id": "<task-id-from-real-request>",
+                "scenario_id": "<scenario-id-from-evaluation-prep>",
+                "scenario_eval_run_id": "<scenario-eval-run-id>",
+                "scenario_variation_instance_id": "<scenario-variation-instance-id>",
+                "variation_name": "<variation-name>",
+                "robot_camera_video_uri": "<owner-system-robot-camera-video-uri>",
+                "action_log_uri": "<owner-system-action-log-uri>",
+                "robot_state_log_uri": "<owner-system-robot-state-log-uri>",
+                "owner_evidence_refs": {
+                    "camera": "<owner-system-robot-camera-video-uri>",
+                    "action_log": "<owner-system-action-log-uri>",
+                },
+                "operator_attestation": {
+                    "attested_by": "<operator-id>",
+                    "attestation": (
+                        "Robot POV video and action log are from the physical robot "
+                        "run for this exact scenario eval run."
+                    ),
+                },
+            }
+        ],
+        "claim_boundary": {
+            "template_only": True,
+            "real_robot_pov_evidence_required": True,
+            "generated_or_simulator_pov_not_accepted": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
+def _live_input_staging_commands(
+    *,
+    capture_root: Path,
+    packet_dir: Path,
+    webapp_job_request_template_path: Path,
+    real_robot_pov_template_path: Path,
+    webapp_staged_inputs_path: Path,
+) -> str:
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+
+{_shell_default_assignment("CAPTURE_ROOT", str(capture_root))}
+{_shell_default_assignment("PACKET_DIR", str(packet_dir))}
+{_shell_default_assignment("WEBAPP_JOB_REQUEST_PATH", str(webapp_job_request_template_path))}
+{_shell_default_assignment("REAL_ROBOT_POV_MANIFEST_PATH", str(real_robot_pov_template_path))}
+{_shell_default_assignment("BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH", str(webapp_staged_inputs_path))}
+: "${{BLUEPRINT_LIVE_PIPELINE_CONTROL_PLANE_MANIFEST:?Set the live control-plane manifest path}}"
+: "${{BLUEPRINT_ALLOW_STAGING_FIRST_GPU_LIVE_INPUTS:?Set true only after replacing template placeholders with real WebApp and robot POV evidence}}"
+
+if [[ "$BLUEPRINT_ALLOW_STAGING_FIRST_GPU_LIVE_INPUTS" != "true" ]]; then
+  echo "Refusing to stage first-GPU live inputs without BLUEPRINT_ALLOW_STAGING_FIRST_GPU_LIVE_INPUTS=true" >&2
+  exit 2
+fi
+
+python - "$WEBAPP_JOB_REQUEST_PATH" "$REAL_ROBOT_POV_MANIFEST_PATH" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+for raw in sys.argv[1:]:
+    path = Path(raw).expanduser()
+    payload = path.read_text(encoding="utf-8")
+    json.loads(payload)
+    if "<" in payload or ">" in payload:
+        raise SystemExit(f"placeholder values remain in {{path}}")
+PY
+
+blueprint-intake-live-pipeline-inputs \\
+  --manifest-path "$BLUEPRINT_LIVE_PIPELINE_CONTROL_PLANE_MANIFEST" \\
+  --webapp-job-request "$WEBAPP_JOB_REQUEST_PATH" \\
+  --real-robot-pov "$REAL_ROBOT_POV_MANIFEST_PATH" \\
+  --stage-webapp-request \\
+  --stage-real-robot-pov \\
+  --staged-inputs-path "$BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH"
 """
 
 
@@ -3106,6 +4513,7 @@ def build_first_gpu_run_packet(
     capture_root: str | Path,
     webapp_site_slug: str = "",
     webapp_staged_inputs_path: str | Path | None = None,
+    webapp_forwarding_preflight_path: str | Path | None = None,
     simulator: str = "isaac_sim",
     provisioner: str = "runpod",
     owner_command: str | None = None,
@@ -3119,16 +4527,17 @@ def build_first_gpu_run_packet(
     context = resolve_local_capture_context(capture_root)
     selected_simulator = _string(simulator) or "isaac_sim"
     selected_provisioner = _string(provisioner) or "runpod"
-    owner_command_was_supplied = bool(_string(owner_command))
-    selected_owner_command = _string(owner_command) or _default_owner_command(selected_simulator)
     selected_owner_command_location = _string(owner_command_location) or "remote"
     if selected_owner_command_location not in SIMULATOR_COMMAND_LOCATIONS:
         selected_owner_command_location = "remote"
-    readiness_owner_command = selected_owner_command if owner_command_was_supplied else ""
     selected_staged_inputs_path = (
         Path(webapp_staged_inputs_path).expanduser().resolve()
         if webapp_staged_inputs_path
         else context.capture_root / "pipeline" / "live_pipeline_staged_inputs.json"
+    )
+    selected_forwarding_preflight_path = _selected_webapp_forwarding_preflight_path(
+        context.capture_root,
+        webapp_forwarding_preflight_path,
     )
     packet_dir = (
         Path(output_dir).expanduser().resolve()
@@ -3136,12 +4545,22 @@ def build_first_gpu_run_packet(
         else _default_output_dir(context.capture_root)
     )
     ensure_dir(packet_dir)
+    owner_command_was_supplied = bool(_string(owner_command))
+    owner_command_generated_by_packet = selected_simulator == "mujoco" and not owner_command_was_supplied
+    selected_owner_command = (
+        _string(owner_command)
+        or (_generated_mujoco_owner_command(packet_dir) if selected_simulator == "mujoco" else "")
+        or _default_owner_command(selected_simulator)
+    )
+    owner_command_available = owner_command_was_supplied or owner_command_generated_by_packet
+    readiness_owner_command = selected_owner_command if owner_command_available else ""
 
     readiness_path = packet_dir / "first_gpu_e2e_readiness_manifest.json"
     readiness = build_first_gpu_e2e_readiness(
         capture_root=context.capture_root,
         webapp_site_slug=webapp_site_slug,
         webapp_staged_inputs_path=selected_staged_inputs_path,
+        webapp_forwarding_preflight_path=selected_forwarding_preflight_path,
         simulator=selected_simulator,
         provisioner=selected_provisioner,
         simulator_command=readiness_owner_command,
@@ -3172,6 +4591,17 @@ def build_first_gpu_run_packet(
     )
     gpu_commands_path = packet_dir / "gpu_vm_commands.sh"
     owner_contract_path = packet_dir / "owner_command_contract.md"
+    owner_command_binding_template_path = packet_dir / "owner_default_smoke_command_binding.sh"
+    isaac_unitree_g1_smoke_script_path = packet_dir / "isaac_unitree_g1_smoke.py"
+    isaac_unitree_g1_smoke_launcher_path = packet_dir / "run_isaac_unitree_g1_smoke.sh"
+    mujoco_unitree_g1_smoke_script_path = packet_dir / "mujoco_unitree_g1_smoke.py"
+    mujoco_unitree_g1_smoke_launcher_path = packet_dir / "run_mujoco_unitree_g1_smoke.sh"
+    live_policy_execution_contract_path = packet_dir / "live_policy_execution_contract.md"
+    default_test_job_request_template_path = (
+        packet_dir / "default_test_robot_eval_job_request.template.json"
+    )
+    real_robot_pov_template_path = packet_dir / "real_robot_pov_manifest.template.json"
+    live_input_staging_commands_path = packet_dir / "stage_first_gpu_live_inputs.sh"
     provider_bootstrap_path = packet_dir / "gpu_provider_bootstrap.md"
     provider_bootstrap_manifest_path = packet_dir / "gpu_provider_bootstrap.json"
     blocker_resolution_path = packet_dir / "first_gpu_blocker_resolution.json"
@@ -3216,7 +4646,7 @@ def build_first_gpu_run_packet(
         provisioner=selected_provisioner,
         owner_command=selected_owner_command,
         owner_command_location=selected_owner_command_location,
-        owner_command_supplied=owner_command_was_supplied,
+        owner_command_supplied=owner_command_available,
     )
     blocker_resolution = _blocker_resolution_manifest(
         capture_root=context.capture_root,
@@ -3258,15 +4688,17 @@ def build_first_gpu_run_packet(
         webapp_staged_inputs_path=selected_staged_inputs_path,
         simulator=selected_simulator,
         provisioner=selected_provisioner,
-        owner_command_supplied=owner_command_was_supplied,
+        owner_command_supplied=owner_command_available,
     )
 
     write_text(
         env_path,
         _env_example(
             capture_root=context.capture_root,
+            packet_dir=packet_dir,
             webapp_site_slug=webapp_site_slug,
             webapp_staged_inputs_path=selected_staged_inputs_path,
+            webapp_forwarding_preflight_path=selected_forwarding_preflight_path,
             simulator=selected_simulator,
             provisioner=selected_provisioner,
             owner_command=selected_owner_command,
@@ -3278,6 +4710,7 @@ def build_first_gpu_run_packet(
             capture_root=context.capture_root,
             webapp_site_slug=webapp_site_slug,
             webapp_staged_inputs_path=selected_staged_inputs_path,
+            webapp_forwarding_preflight_path=selected_forwarding_preflight_path,
             simulator=selected_simulator,
             provisioner=selected_provisioner,
             owner_command=selected_owner_command,
@@ -3302,6 +4735,7 @@ def build_first_gpu_run_packet(
             capture_root=context.capture_root,
             webapp_site_slug=webapp_site_slug,
             webapp_staged_inputs_path=selected_staged_inputs_path,
+            webapp_forwarding_preflight_path=selected_forwarding_preflight_path,
             result_path=webapp_handoff_verification_result_path,
             allow_local_webapp_rehearsal=allow_local_webapp_rehearsal,
         ),
@@ -3310,6 +4744,7 @@ def build_first_gpu_run_packet(
         gpu_commands_path,
         _gpu_vm_commands(
             capture_root=context.capture_root,
+            packet_dir=packet_dir,
             simulator=selected_simulator,
             owner_command=selected_owner_command,
         ),
@@ -3323,7 +4758,35 @@ def build_first_gpu_run_packet(
             owner_command=selected_owner_command,
         ),
     )
+    write_text(
+        owner_command_binding_template_path,
+        _owner_command_binding_template(simulator=selected_simulator),
+    )
+    write_text(isaac_unitree_g1_smoke_script_path, _isaac_unitree_g1_smoke_script())
+    write_text(isaac_unitree_g1_smoke_launcher_path, _isaac_unitree_g1_smoke_launcher())
+    write_text(mujoco_unitree_g1_smoke_script_path, _mujoco_unitree_g1_smoke_script())
+    write_text(mujoco_unitree_g1_smoke_launcher_path, _mujoco_unitree_g1_smoke_launcher())
     write_text(owner_contract_path, _owner_command_contract(simulator=selected_simulator))
+    write_text(live_policy_execution_contract_path, _live_policy_execution_contract())
+    write_json(
+        default_test_job_request_template_path,
+        _default_test_robot_eval_job_request_template(
+            capture_root=context.capture_root,
+            webapp_site_slug=webapp_site_slug,
+            simulator=selected_simulator,
+        ),
+    )
+    write_json(real_robot_pov_template_path, _real_robot_pov_manifest_template())
+    write_text(
+        live_input_staging_commands_path,
+        _live_input_staging_commands(
+            capture_root=context.capture_root,
+            packet_dir=packet_dir,
+            webapp_job_request_template_path=default_test_job_request_template_path,
+            real_robot_pov_template_path=real_robot_pov_template_path,
+            webapp_staged_inputs_path=selected_staged_inputs_path,
+        ),
+    )
     write_text(provider_bootstrap_path, _gpu_provider_bootstrap_markdown(provider_bootstrap))
     write_json(provider_bootstrap_manifest_path, provider_bootstrap)
     write_json(simulator_path_matrix_path, simulator_path_matrix)
@@ -3365,6 +4828,17 @@ def build_first_gpu_run_packet(
         "gpu_vm_runtime_preflight_script": str(gpu_vm_runtime_preflight_script_path),
         "gpu_vm_runtime_preflight_plan": str(gpu_vm_runtime_preflight_plan_path),
         "gpu_vm_runtime_preflight_markdown": str(gpu_vm_runtime_preflight_markdown_path),
+        "owner_command_binding_template": str(owner_command_binding_template_path),
+        "isaac_unitree_g1_smoke_script": str(isaac_unitree_g1_smoke_script_path),
+        "isaac_unitree_g1_smoke_launcher": str(isaac_unitree_g1_smoke_launcher_path),
+        "mujoco_unitree_g1_smoke_script": str(mujoco_unitree_g1_smoke_script_path),
+        "mujoco_unitree_g1_smoke_launcher": str(mujoco_unitree_g1_smoke_launcher_path),
+        "live_policy_execution_contract": str(live_policy_execution_contract_path),
+        "default_test_robot_eval_job_request_template": str(
+            default_test_job_request_template_path
+        ),
+        "real_robot_pov_manifest_template": str(real_robot_pov_template_path),
+        "live_input_staging_commands": str(live_input_staging_commands_path),
         "simulator_path_matrix": str(simulator_path_matrix_path),
         "simulator_path_matrix_markdown": str(simulator_path_matrix_markdown_path),
         "launch_order": str(launch_order_path),
@@ -3390,10 +4864,17 @@ def build_first_gpu_run_packet(
         "capture_id": context.capture_id,
         "webapp_site_slug": webapp_site_slug or None,
         "webapp_staged_inputs_path": str(selected_staged_inputs_path),
+        "webapp_forwarding_preflight_path": (
+            str(selected_forwarding_preflight_path)
+            if selected_forwarding_preflight_path
+            else None
+        ),
         "simulator": selected_simulator,
         "provisioner": selected_provisioner,
         "owner_command_placeholder": selected_owner_command,
         "owner_command_supplied": owner_command_was_supplied,
+        "owner_command_generated_by_packet": owner_command_generated_by_packet,
+        "owner_command_available_for_selected_path": owner_command_available,
         "owner_command_location": selected_owner_command_location,
         "allow_local_webapp_rehearsal": allow_local_webapp_rehearsal,
         "readiness_status": readiness.get("status"),
@@ -3404,6 +4885,7 @@ def build_first_gpu_run_packet(
         "generated_files": generated_files,
         "provider_guidance": {
             "recommended_provider_path": provider_bootstrap["recommended_provider_path"],
+            "first_smoke_path": provider_bootstrap["first_smoke_path"],
             "gpu_guidance": provider_bootstrap["gpu_guidance"],
             "nvidia_nim_boundary": provider_bootstrap["nvidia_nim_boundary"],
         },
@@ -3429,7 +4911,7 @@ def build_first_gpu_run_packet(
         provisioner=selected_provisioner,
         owner_command=selected_owner_command,
         owner_command_location=selected_owner_command_location,
-        owner_command_supplied=owner_command_was_supplied,
+        owner_command_supplied=owner_command_available,
         vm_sync_manifest=vm_sync_manifest,
     )
     write_json(gpu_vm_runtime_preflight_plan_path, gpu_vm_runtime_preflight_plan)
@@ -3449,7 +4931,7 @@ def build_first_gpu_run_packet(
         webapp_staged_inputs_path=selected_staged_inputs_path,
         simulator=selected_simulator,
         provisioner=selected_provisioner,
-        owner_command_supplied=owner_command_was_supplied,
+        owner_command_supplied=owner_command_available,
         vm_sync_manifest=vm_sync_manifest,
     )
     write_json(launch_order_path, launch_order)
@@ -3481,6 +4963,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--capture-root", required=True)
     parser.add_argument("--webapp-site-slug", default="")
     parser.add_argument("--webapp-staged-inputs", default=None)
+    parser.add_argument("--webapp-forwarding-preflight", default=None)
     parser.add_argument("--simulator", choices=SIMULATOR_FRAMEWORKS, default="isaac_sim")
     parser.add_argument("--provisioner", choices=PROVISIONERS, default="runpod")
     parser.add_argument("--owner-command", default=None)
@@ -3504,6 +4987,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         capture_root=args.capture_root,
         webapp_site_slug=args.webapp_site_slug,
         webapp_staged_inputs_path=args.webapp_staged_inputs,
+        webapp_forwarding_preflight_path=args.webapp_forwarding_preflight,
         simulator=args.simulator,
         provisioner=args.provisioner,
         owner_command=args.owner_command,

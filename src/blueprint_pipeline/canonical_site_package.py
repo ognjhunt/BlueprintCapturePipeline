@@ -144,20 +144,25 @@ def _world_labs_readiness(
     status = _string(worldlabs_input.get("status")).lower()
     audit = _as_dict(worldlabs_input.get("audit_payload"))
     labeling = _as_dict(worldlabs_input.get("input_labeling"))
+    raw_bypass_used = bool(audit.get("raw_video_bypass_used") or labeling.get("raw_video_bypass_used"))
     if not output_video_uri:
         blockers.append("missing_privacy_safe_world_model_input")
     if status and status != "ready":
         blockers.append(f"worldlabs_input_status:{status}")
-    if not bool(audit.get("privacy_safe_input") or labeling.get("privacy_safe_input")):
+    if not bool(audit.get("privacy_safe_input") or labeling.get("privacy_safe_input")) and not raw_bypass_used:
         blockers.append("privacy_safe_world_model_input_not_verified")
-    if bool(audit.get("raw_video_bypass_used") or labeling.get("raw_video_bypass_used")):
+    if raw_bypass_used:
         warnings.append("raw_video_bypass_input_non_production")
     privacy_status = _string(privacy_processing.get("status")).lower()
-    if privacy_status == "failed_closed":
+    if privacy_status == "failed_closed" and not raw_bypass_used:
         blockers.append("privacy_processing_failed_closed")
+    elif privacy_status == "failed_closed":
+        warnings.append("privacy_processing_failed_closed_raw_bypass")
     rights_status = _string(rights_review.get("status")).lower()
-    if rights_status == "blocked":
+    if rights_status == "blocked" and not raw_bypass_used:
         blockers.append("rights_provenance_review_blocked")
+    elif rights_status == "blocked":
+        warnings.append("rights_provenance_review_blocked_raw_bypass")
     elif rights_status and rights_status != "cleared":
         warnings.append(f"rights_provenance_review:{rights_status}")
     provenance_status = _string(provenance_summary.get("status")).lower()

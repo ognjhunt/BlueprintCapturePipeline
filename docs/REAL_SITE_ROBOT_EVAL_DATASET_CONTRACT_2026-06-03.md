@@ -74,6 +74,15 @@ system, provenance, and timestamp alignment. The job layer validates and
 orchestrates around this dataset contract; it does not replace Site, Task,
 Scenario, or Eval Cards as the deterministic evidence surface.
 
+WebApp-created `robot_eval_job_request.v1` envelopes carry a simulator routing
+policy instead of selecting a live runtime by themselves. The current policy is
+`mujoco_first_unless_proof_requires_isaac`: Pipeline should recommend MuJoCo for
+the first cheap real simulator pass unless the request names richer USD/OpenUSD,
+Isaac robot-asset, RTX sensor, contact/physics, or batch Arena proof classes.
+Isaac Sim and Isaac Lab/Arena remain escalation backends for those proof classes.
+MuJoCo proof does not clear Isaac-specific gates, real robot POV, safety/contact,
+delivery, or public-claim upgrades.
+
 ## Outputs
 
 The writer emits:
@@ -132,7 +141,12 @@ pipeline/robot_eval_jobs/<job_id>/
   job_validation.json
   job_plan.json
   agent_orchestration_plan.json
+  scheduler_decision.json
+  worker_launch_plan.json
+  worker_manifest.json
   gpu_provisioning_request.json
+  gpu_provider_launch_request.json
+  gpu_cost_control_ledger.json
   gpu_provisioning_result.json
   simulator_service_request.json
   simulator_service_result.json
@@ -147,6 +161,7 @@ pipeline/robot_eval_jobs/<job_id>/
   calibration_report.json
   breakage_library.json
   proof_boundary.json
+  startup_architecture_audit.json
   job_run_manifest.json
   blocked_manifest.json
 

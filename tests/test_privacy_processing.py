@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from blueprint_pipeline.privacy_processing import (
     _deepprivacy_command_template,
@@ -13,6 +17,35 @@ from blueprint_pipeline.privacy_processing import (
 def _write_video(path: Path, payload: bytes = b"fake-video") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
+
+
+def _write_real_test_video(path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg not installed")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=96x64:rate=5",
+            "-t",
+            "1",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"ffmpeg test source failed: {proc.stderr[-200:]}")
 
 
 def _depth_anything_result() -> dict[str, object]:
@@ -113,6 +146,44 @@ def test_privacy_postprocess_placeholder_runner_url_fails_closed(
     assert result["reason"] == "runner_url_invalid_or_placeholder"
     assert manifest["status"] == "failed_closed"
     assert verification["initial_detection"]["reason"] == "runner_url_invalid_or_placeholder"
+
+
+def test_privacy_postprocess_local_full_frame_redaction_writes_final_walkthrough(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "cap-1"
+    pipeline_dir = capture_root / "pipeline"
+    raw_video = capture_root / "raw" / "walkthrough.mov"
+    _write_real_test_video(raw_video)
+
+    monkeypatch.setenv("PRIVACY_PIPELINE_ENABLED", "true")
+    monkeypatch.setenv("PRIVACY_LOCAL_FULL_FRAME_REDACTION_ENABLED", "true")
+    monkeypatch.setattr(
+        "blueprint_pipeline.privacy_processing._run_sam3",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("SAM3 should not run")),
+    )
+
+    result = run_privacy_postprocess(
+        bucket="bucket",
+        scene_id="scene-1",
+        capture_id="cap-1",
+        capture_root=capture_root,
+        pipeline_dir=pipeline_dir,
+        raw_video_path=raw_video,
+    )
+
+    assert result["status"] == "full_frame_redacted_local_proof"
+    assert result["mode"] == "full_frame_redaction"
+    assert result["local_repo_proof_only"] is True
+    assert result["production_review_required"] is True
+    assert result["proof_boundary"]["local_full_frame_redaction_executed"] is True
+    assert result["proof_boundary"]["live_privacy_service_proven"] is False
+    assert (capture_root / "privacy" / "final_walkthrough.mov").is_file()
+    manifest = json.loads((pipeline_dir / "privacy_processing_manifest.json").read_text(encoding="utf-8"))
+    verification = json.loads((pipeline_dir / "privacy_verification_report.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "full_frame_redacted_local_proof"
+    assert verification["status"] == "full_frame_redacted_local_proof"
 
 
 def test_privacy_postprocess_uses_anonymized_fallback(monkeypatch, tmp_path: Path) -> None:

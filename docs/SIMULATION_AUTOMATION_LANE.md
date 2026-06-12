@@ -146,7 +146,11 @@ pipeline/robot_eval_jobs/<job_id>/
   job_validation.json
   job_plan.json
   agent_orchestration_plan.json
+  scheduler_decision.json
+  worker_launch_plan.json
   gpu_provisioning_request.json
+  gpu_provider_launch_request.json
+  gpu_cost_control_ledger.json
   gpu_provisioning_result.json
   simulator_service_request.json
   simulator_service_result.json
@@ -252,10 +256,60 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
 - `gpu_handoff_packet.json`, `gpu_owner_system_proof_schema.json`, and
   `gpu_run_checklist.md` tell the owner system what backend to run, what env vars
   and commands to use, what logs to capture, and what pass/fail criteria apply.
+- Per-job `scheduler_decision.json` records the WebApp execution request, the
+  selected simulator/provisioner, CPU-preflight gate, on-demand versus warm-pool
+  GPU posture, persistent-cache recommendations, and all scheduler blockers
+  before provisioning. It does not allocate GPU time, call providers, or prove
+  simulator execution. A WebApp/request payload cannot disable CPU preflight for
+  GPU or external-provider launch paths; that attempt is recorded as a scheduler
+  blocker before any provider request can become launchable.
+- Per-job `worker_launch_plan.json` converts that scheduler choice into the
+  prepared-worker contract: image family, GPU class constraints, cache targets,
+  timeout and idle-shutdown controls, upload-before-shutdown rules, and provider
+  credential env names with a no-secret-artifact policy. It remains local proof
+  until explicit provider and simulator gates are supplied.
+- Per-job `gpu_provider_launch_request.json` converts the generic provisioning
+  request and worker launch plan into a dry-run provider envelope: provider
+  operation, worker image/entrypoint, required runtime env names, secret env
+  names only, GPU class constraints, max-worker and timeout controls,
+  idle-shutdown posture, and artifact-finalizer requirements. It is the request
+  shape a future launcher can consume, but it never performs a live provider
+  call and never stores provider secret values.
+- Per-job `gpu_cost_control_ledger.json` records requested budget, maximum
+  billable GPU seconds, max workers, customer-concurrency requirement,
+  idle-shutdown/watchdog requirements, estimated GPU seconds, actual GPU seconds
+  when owner-runtime evidence exists, and allocation blockers. It is the
+  machine-readable cost-control proof for the hard rule that no GPU starts until
+  CPU preflight, budget, gates, and launch constraints pass.
+- `blueprint-audit-robot-eval-startup-architecture --job-dir
+  <capture-root>/pipeline/robot_eval_jobs/<job_id>` is the read-only verifier
+  for the startup architecture. It checks the async queue boundary, Pipeline
+  scheduler ownership, CPU-preflight gate, prepared worker contract, provider
+  dry-run request, RunPod adapter cost-control policy, no-secret policy,
+  timeout/idle-shutdown controls, cost ledger, and proof ceilings. It can pass a
+  locally blocked rehearsal when the startup controls are correct, but it never
+  performs provider calls, simulator runs, or proof upgrades.
+  The repo-local prepared image scaffolds are
+  `deploy/docker/robot_eval_worker/isaac/Dockerfile` and
+  `deploy/docker/robot_eval_worker/mujoco/Dockerfile`, both using
+  `blueprint-run-robot-eval-worker` as the queued manifest entrypoint.
+  The worker entrypoint can read manifests from local/file, HTTP(S), GCS, S3, or
+  R2 and copy artifacts to local/file, GCS, S3, or R2. Object-storage secrets must
+  come from runtime env/secret injection, not job manifests.
 - If `gpu_owner_system_proof.json` is supplied, the lane validates simulator
-  logs, scene load trace, spawn trace, action/policy trace, artifact manifest,
-  pass/fail criteria, and owner attestation before writing
-  `owner_gpu_simulator_execution_proof_manifest.json`.
+  logs, scene load trace, spawn trace, default `walk_to_target` policy trace,
+  simulator robot POV evidence, artifact manifest, pass/fail criteria, and owner
+  attestation before writing `owner_gpu_simulator_execution_proof_manifest.json`.
+  Owner commands that already loaded the scene, spawned the robot, and captured a
+  simulator camera frame can call `blueprint-write-owner-gpu-default-smoke-artifacts --sim-pov-frame <frame>`
+  to write the default policy trace and simulator POV manifest. That helper does
+  not write scene/spawn proof or real robot POV evidence. First-GPU run packets
+  also generate `owner_default_smoke_command_binding.sh`, a fail-closed template
+  that binds owner-provided scene-load, spawn, and walk-to-target commands to the
+  helper. The generated GPU VM command defaults to running this binding through
+  `bash $OWNER_DEFAULT_SMOKE_COMMAND_BINDING`; set
+  `BLUEPRINT_USE_DEFAULT_SMOKE_BINDING=false` only when an owner-maintained
+  simulator wrapper writes the same proof artifacts itself.
 - `owner_gpu_simulator_execution_blocked_manifest.json` is intentionally present
   until owner-system GPU simulator proof is supplied.
 
@@ -281,6 +335,22 @@ The optional smoke runner uses only local CPU paths: PyBullet `DIRECT` and
 MuJoCo compile/step. A passing local CPU smoke may be displayed only as
 `local CPU preflight smoke`; it is not owner-system simulator execution, robot
 readiness, policy success, physics/contact validation, or safety proof.
+
+For a local humanoid asset proof, `scripts/local_mujoco_g1_walk_to_target_smoke.py`
+loads the staged World Labs GLB as a converted OBJ plus the official MuJoCo
+Menagerie Unitree G1 MJCF, then runs the repo default `walk_to_target` smoke.
+Its manifest lives at
+`simulation_automation/mujoco_g1_local_smoke/mujoco_g1_local_smoke_manifest.json`.
+That artifact can set `local_mujoco_g1_asset_execution_proven=true`; it does not
+set `owner_gpu_simulator_execution_proven`, `isaac_sim_execution_proven`,
+`isaac_robot_asset_execution_proven`, `real_robot_pov_evidence_proven`, or
+robot/contact/safety readiness booleans.
+
+For Isaac packets, `blueprint-build-first-gpu-run-packet` now emits
+`isaac_unitree_g1_smoke.py` and `run_isaac_unitree_g1_smoke.sh`. The launcher is
+the default `OWNER_SIMULATOR_COMMAND` for `isaac_sim` packets. It must still run
+inside an Isaac Sim Python environment on an owner GPU VM before any Isaac proof
+booleans can change.
 
 The GPU handoff packet generally recommends Isaac Sim first when rich USD or
 OpenUSD-like scene assets exist. `isaac_lab_arena` appears as an optional

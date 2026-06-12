@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
+from urllib.parse import urlparse
 
 from .agent_operator_runtime import (
     LIVE_AGENTS_SDK_ENV,
@@ -46,6 +47,7 @@ from .robot_eval_execution import (
     build_policy_execution_bundle,
     build_robot_pov_observation_bundle,
     build_simulator_command_artifacts,
+    default_test_policy_package_from_request,
     fingerprint_execution_artifacts,
 )
 from .robot_eval_dataset import build_real_site_robot_eval_dataset
@@ -60,9 +62,14 @@ JOB_PLAN_SCHEMA_VERSION = "robot_eval_job_plan.v1"
 AGENT_ORCHESTRATION_PLAN_SCHEMA_VERSION = "robot_eval_agent_orchestration_plan.v1"
 GPU_PROVISIONING_REQUEST_SCHEMA_VERSION = "robot_eval_gpu_provisioning_request.v1"
 GPU_PROVISIONING_RESULT_SCHEMA_VERSION = "robot_eval_gpu_provisioning_result.v1"
+SCHEDULER_DECISION_SCHEMA_VERSION = "robot_eval_execution_scheduler_decision.v1"
+WORKER_LAUNCH_PLAN_SCHEMA_VERSION = "robot_eval_worker_launch_plan.v1"
+GPU_PROVIDER_LAUNCH_REQUEST_SCHEMA_VERSION = "robot_eval_gpu_provider_launch_request.v1"
+GPU_COST_CONTROL_LEDGER_SCHEMA_VERSION = "robot_eval_gpu_cost_control_ledger.v1"
 SIMULATOR_SERVICE_REQUEST_SCHEMA_VERSION = "robot_eval_simulator_service_request.v1"
 SIMULATOR_SERVICE_RESULT_SCHEMA_VERSION = "robot_eval_simulator_service_result.v1"
 SIMULATOR_PROVIDER_ADAPTER_SCHEMA_VERSION = "robot_eval_simulator_provider_adapter_manifest.v1"
+SIMULATOR_SELECTION_POLICY_SCHEMA_VERSION = "robot_eval_simulator_selection_policy.v1"
 POLICY_PACKAGE_MANIFEST_SCHEMA_VERSION = "robot_eval_policy_package_manifest.v1"
 TRAINING_REQUEST_SCHEMA_VERSION = "robot_eval_training_request.v1"
 TRAINING_RESULT_SCHEMA_VERSION = "robot_eval_training_result.v1"
@@ -91,7 +98,58 @@ PROVISIONERS = (
     "gcp",
 )
 SIMULATORS = ("fixture", "mujoco", "pybullet", "newton", "isaac_sim", "isaac_lab_arena")
+ISAAC_SIMULATORS = {"isaac_sim", "isaac_lab_arena"}
+DEFAULT_SIMULATOR_SELECTION_POLICY_MODE = "mujoco_first_unless_proof_requires_isaac"
+DEFAULT_MUJOCO_FIRST_REASONS = [
+    "cheapest_first_real_simulator_pass",
+    "fast_cpu_or_low_cost_owner_runtime",
+    "compatible_mjcf_robot_asset_or_default_unitree_g1_smoke",
+    "early_policy_and_spawn_smoke_before_gpu_spend",
+]
+DEFAULT_ISAAC_ESCALATION_REASONS = [
+    "rich_usd_or_openusd_scene_load_required",
+    "isaac_robot_asset_proof_required",
+    "rtx_sensor_or_camera_rendering_required",
+    "contact_or_physics_validation_requires_isaac_stack",
+]
+DEFAULT_ARENA_ESCALATION_REASONS = [
+    "isaac_lab_arena_batch_rollouts_required",
+    "large_scenario_matrix_or_sharded_eval_required",
+    "owner_arena_result_ingest_required",
+]
+DEFAULT_STARTUP_EXPECTED_OUTPUTS = [
+    "scheduler_decision",
+    "worker_launch_plan",
+    "worker_manifest",
+    "gpu_provider_launch_request",
+    "gpu_provider_launcher_result",
+    "runpod_provider_adapter_result",
+    "gpu_cost_control_ledger",
+    "startup_architecture_audit",
+    "worker_runtime_manifest",
+    "worker_runtime_preflight",
+    "job_run_manifest",
+    "proof_boundary",
+    "metrics",
+    "trace",
+    "simulator_pov",
+    "stdout_log",
+    "stderr_log",
+]
 OPERATIONS = ("evaluate_only", "train_only", "train_then_evaluate")
+LIVE_GPU_PROVISIONERS = {"vast", "runpod", "gcp"}
+WORKER_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_manifest.v1"
+WORKER_MANIFEST_URI_ENV = "BLUEPRINT_EVAL_MANIFEST_URI"
+WORKER_ARTIFACT_OUTPUT_URI_ENV = "BLUEPRINT_ARTIFACT_OUTPUT_URI"
+REMOTE_WORKER_MANIFEST_URI_SCHEMES = {"http", "https", "gs", "s3", "r2"}
+GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
+WORKER_IMAGE_REF_ENV_BY_SIMULATOR = {
+    "isaac_sim": "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+    "isaac_lab_arena": "BLUEPRINT_ISAAC_ARENA_EVAL_WORKER_IMAGE_REF",
+    "mujoco": "BLUEPRINT_MUJOCO_EVAL_WORKER_IMAGE_REF",
+    "pybullet": "BLUEPRINT_PYBULLET_EVAL_WORKER_IMAGE_REF",
+    "newton": "BLUEPRINT_NEWTON_EVAL_WORKER_IMAGE_REF",
+}
 
 SIMULATOR_PROVIDER_PROFILES: Dict[str, Dict[str, Any]] = {
     "fixture": {
@@ -433,6 +491,13 @@ def _number(value: Any, default: float | None = None) -> float | None:
         return default
 
 
+def _number_field(payload: Mapping[str, Any], *keys: str, default: float | None = None) -> float | None:
+    for key in keys:
+        if key in payload and payload.get(key) not in (None, ""):
+            return _number(payload.get(key), default)
+    return default
+
+
 def _string_list(value: Any) -> List[str]:
     if value is None:
         values: Iterable[Any] = []
@@ -450,6 +515,172 @@ def _string_list(value: Any) -> List[str]:
             seen.add(text)
             out.append(text)
     return out
+
+
+def _first_allowed_backend(candidates: Sequence[str], allowed_backends: Sequence[str]) -> str:
+    allowed = set(allowed_backends or SIMULATORS)
+    for candidate in candidates:
+        if candidate in SIMULATORS and candidate in allowed:
+            return candidate
+    for fallback in ("mujoco", "isaac_sim", "isaac_lab_arena", "pybullet", "fixture"):
+        if fallback in allowed:
+            return fallback
+    return "fixture"
+
+
+def _routing_backend(value: Any) -> str:
+    backend = _string(value)
+    return backend if backend in SIMULATORS else ""
+
+
+def _simulator_role(simulator: str, recommended_backend: str, routing: Mapping[str, Any]) -> str:
+    if simulator == recommended_backend:
+        return "recommended_policy_backend"
+    proxy_backends = set(_string_list(routing.get("proxy_backends") or routing.get("proxyBackends")))
+    escalation_backends = set(
+        _string_list(routing.get("escalation_backends") or routing.get("escalationBackends"))
+    )
+    if simulator == "fixture":
+        return "fixture_local_orchestration_only"
+    if simulator in proxy_backends or simulator in {"mujoco", "pybullet"}:
+        return "proxy_or_owner_accepted_backend"
+    if simulator in escalation_backends or simulator in ISAAC_SIMULATORS:
+        return "isaac_escalation_backend"
+    return "operator_selected_backend"
+
+
+def _required_proof_classes(
+    *,
+    request: Mapping[str, Any],
+    routing: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> List[str]:
+    values: List[str] = []
+    for source in (
+        routing.get("required_proof_classes"),
+        routing.get("requiredProofClasses"),
+        policy.get("required_proof_classes"),
+        policy.get("requiredProofClasses"),
+        request.get("required_proof_classes"),
+        request.get("requiredProofClasses"),
+    ):
+        values.extend(_string_list(source))
+    return _dedupe(values)
+
+
+def resolve_simulator_selection_policy(
+    request: Mapping[str, Any],
+    *,
+    selected_simulator: str = "fixture",
+) -> Dict[str, Any]:
+    """Resolve the request's simulator routing intent without running a simulator."""
+
+    execution_request = _mapping(request.get("execution_request"))
+    routing = _mapping(execution_request.get("simulator_routing"))
+    policy = _mapping(routing.get("selection_policy") or routing.get("selectionPolicy"))
+    policy_mode = _string(policy.get("mode")) or DEFAULT_SIMULATOR_SELECTION_POLICY_MODE
+    allowed_backends = _string_list(routing.get("allowed_backends") or routing.get("allowedBackends"))
+    if not allowed_backends:
+        allowed_backends = list(SIMULATORS)
+    requested_backend = _routing_backend(
+        routing.get("requested_backend") or routing.get("requestedBackend")
+    )
+    request_simulator_preference = _string(
+        request.get("simulator_preference") or request.get("simulatorPreference")
+    )
+    explicit_simulator_preference = _routing_backend(request_simulator_preference)
+    default_first_pass_backend = _routing_backend(
+        policy.get("first_pass_backend")
+        or policy.get("firstPassBackend")
+        or routing.get("default_first_pass_backend")
+        or routing.get("defaultFirstPassBackend")
+        or routing.get("default_first_gpu_backend")
+        or routing.get("defaultFirstGpuBackend")
+    )
+    if not default_first_pass_backend:
+        default_first_pass_backend = "mujoco"
+
+    required_classes = _required_proof_classes(
+        request=request,
+        routing=routing,
+        policy=policy,
+    )
+    normalized_classes = {item.lower() for item in required_classes}
+    arena_reasons = _string_list(
+        policy.get("use_isaac_lab_arena_when") or policy.get("useIsaacLabArenaWhen")
+    ) or list(DEFAULT_ARENA_ESCALATION_REASONS)
+    isaac_reasons = _string_list(
+        policy.get("escalate_to_isaac_when") or policy.get("escalateToIsaacWhen")
+    ) or list(DEFAULT_ISAAC_ESCALATION_REASONS)
+    mujoco_reasons = _string_list(
+        policy.get("use_mujoco_when") or policy.get("useMujocoWhen")
+    ) or list(DEFAULT_MUJOCO_FIRST_REASONS)
+    arena_reason_set = {item.lower() for item in arena_reasons}
+    isaac_reason_set = {item.lower() for item in isaac_reasons}
+
+    escalation_required = False
+    recommendation_reasons: List[str] = []
+    if normalized_classes.intersection(arena_reason_set):
+        recommended_backend = _first_allowed_backend(
+            ["isaac_lab_arena", "isaac_sim", default_first_pass_backend],
+            allowed_backends,
+        )
+        escalation_required = recommended_backend in ISAAC_SIMULATORS
+        recommendation_reasons = sorted(normalized_classes.intersection(arena_reason_set))
+    elif normalized_classes.intersection(isaac_reason_set):
+        recommended_backend = _first_allowed_backend(
+            ["isaac_sim", "isaac_lab_arena", default_first_pass_backend],
+            allowed_backends,
+        )
+        escalation_required = recommended_backend in ISAAC_SIMULATORS
+        recommendation_reasons = sorted(normalized_classes.intersection(isaac_reason_set))
+    elif requested_backend and requested_backend != "fixture":
+        recommended_backend = _first_allowed_backend([requested_backend], allowed_backends)
+        recommendation_reasons = ["explicit_requested_backend"]
+    elif explicit_simulator_preference and explicit_simulator_preference != "fixture":
+        recommended_backend = _first_allowed_backend([explicit_simulator_preference], allowed_backends)
+        recommendation_reasons = ["explicit_simulator_preference"]
+    else:
+        recommended_backend = _first_allowed_backend([default_first_pass_backend], allowed_backends)
+        recommendation_reasons = list(mujoco_reasons if recommended_backend == "mujoco" else [])
+
+    selected_allowed = selected_simulator in allowed_backends
+    warnings: List[str] = []
+    if selected_simulator != recommended_backend:
+        warnings.append("selected_simulator_differs_from_request_policy_recommendation")
+    if selected_simulator == "fixture" and recommended_backend != "fixture":
+        warnings.append("fixture_local_loop_does_not_satisfy_customer_eval_backend_policy")
+    if not selected_allowed:
+        warnings.append("selected_simulator_not_allowed_by_request_policy")
+
+    return {
+        "schema_version": SIMULATOR_SELECTION_POLICY_SCHEMA_VERSION,
+        "mode": policy_mode,
+        "requested_backend": requested_backend or _string(routing.get("requested_backend")) or None,
+        "request_simulator_preference": request_simulator_preference or None,
+        "allowed_backends": list(allowed_backends),
+        "selected_backend": selected_simulator,
+        "recommended_backend": recommended_backend,
+        "selected_backend_allowed_by_request": selected_allowed,
+        "selected_backend_matches_recommendation": selected_simulator == recommended_backend,
+        "selected_backend_role": _simulator_role(selected_simulator, recommended_backend, routing),
+        "default_first_pass_backend": default_first_pass_backend,
+        "mujoco_first_applies": recommended_backend == "mujoco" and not escalation_required,
+        "escalation_required": escalation_required,
+        "required_proof_classes": required_classes,
+        "recommendation_reasons": recommendation_reasons,
+        "use_mujoco_when": mujoco_reasons,
+        "escalate_to_isaac_when": isaac_reasons,
+        "use_isaac_lab_arena_when": arena_reasons,
+        "non_blocking_warnings": _dedupe(warnings),
+        "proof_boundary": {
+            "webapp_request_selects_policy_not_execution": True,
+            "mujoco_proof_does_not_clear_isaac_sim_gate": True,
+            "isaac_sim_proof_does_not_clear_real_robot_or_safety_gate": True,
+            "simulator_execution_proven_by_this_policy": False,
+            "robot_readiness_proven_by_this_policy": False,
+        },
+    }
 
 
 def _boolish(value: Any) -> bool:
@@ -486,9 +717,8 @@ def _read_job_request(job_request: str | Path | Mapping[str, Any]) -> Dict[str, 
         payload = read_json_any(Path(job_request))
     if not isinstance(payload, Mapping):
         raise ValueError(f"Expected job request JSON object at {job_request}")
-    if (
-        payload.get("queue_contract") == "robot_eval_job_request_inbox.v1"
-        and isinstance(payload.get("job_request"), Mapping)
+    if payload.get("queue_contract") == "robot_eval_job_request_inbox.v1" and isinstance(
+        payload.get("job_request"), Mapping
     ):
         return dict(payload["job_request"])
     return dict(payload)
@@ -510,9 +740,7 @@ ACTUAL_OUTCOME_REQUEST_KEYS = (
 
 def _request_without_actual_outcomes(request: Mapping[str, Any]) -> Dict[str, Any]:
     return {
-        key: value
-        for key, value in dict(request).items()
-        if key not in ACTUAL_OUTCOME_REQUEST_KEYS
+        key: value for key, value in dict(request).items() if key not in ACTUAL_OUTCOME_REQUEST_KEYS
     }
 
 
@@ -632,14 +860,17 @@ def _build_real_world_validation_followup_request_queue(
 
 def _policy_package_from_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     policy_package = _mapping(payload.get("policy_package") or payload.get("policyPackage"))
-    if policy_package:
-        return policy_package
+    merged = dict(policy_package)
     direct = {
         modality: _modality_payload(payload, modality)
         for modality in POLICY_MODALITY_ORDER
         if _modality_payload(payload, modality)
     }
-    return direct
+    for modality, value in direct.items():
+        merged.setdefault(modality, value)
+    for modality, value in default_test_policy_package_from_request(payload).items():
+        merged.setdefault(modality, value)
+    return merged
 
 
 def _load_staged_policy_package(*, capture_root: Path, job_id: str) -> Dict[str, Any]:
@@ -743,9 +974,7 @@ def _validate_policy_modality(
     elif modality == "teleop_demo":
         if not _string(_field(payload, "demo_artifact_uri", "demoArtifactUri")):
             missing.append("policy_package.teleop_demo.demo_artifact_uri")
-        if not _string(
-            _field(payload, "rights_privacy_attestation", "rightsPrivacyAttestation")
-        ):
+        if not _string(_field(payload, "rights_privacy_attestation", "rightsPrivacyAttestation")):
             missing.append("policy_package.teleop_demo.rights_privacy_attestation")
     elif modality == "sim_controller_plugin":
         if not _string(_field(payload, "simulator_framework", "simulatorFramework")):
@@ -800,7 +1029,7 @@ def _policy_package_manifest(
     request: Mapping[str, Any],
     generated_at: str,
 ) -> tuple[Dict[str, Any], List[str], List[str]]:
-    policy_package = _mapping(request.get("policy_package") or request.get("policyPackage"))
+    policy_package = _policy_package_from_payload(request)
     modalities: Dict[str, Dict[str, Any]] = {}
     missing_inputs: List[str] = []
     missing_statuses: List[str] = []
@@ -818,9 +1047,7 @@ def _policy_package_manifest(
             "status": status,
             "selected": selected,
             "missing_inputs": missing,
-            "missing_evidence_status": (
-                POLICY_MODALITY_STATUSES[modality] if missing else None
-            ),
+            "missing_evidence_status": (POLICY_MODALITY_STATUSES[modality] if missing else None),
             "reference": dict(payload),
             "download_performed": False,
             "owner_system_review_required": status not in {"blocked", "not_selected"},
@@ -873,7 +1100,9 @@ def _request_rights_blocked(request: Mapping[str, Any]) -> bool:
 
 def _site_card_rights_blocked(pipeline_dir: Path) -> bool:
     site_card = _read_optional_mapping(pipeline_dir / "robot_eval_dataset" / "site_card.json")
-    rights = _mapping(_mapping(site_card.get("provenance_rights_review_status")).get("rights_privacy"))
+    rights = _mapping(
+        _mapping(site_card.get("provenance_rights_review_status")).get("rights_privacy")
+    )
     return bool(rights.get("blocked"))
 
 
@@ -991,6 +1220,974 @@ def _agent_plan(
     return dict(plan)
 
 
+def _execution_worker_profile(simulator: str) -> Dict[str, Any]:
+    if simulator in {"isaac_sim", "isaac_lab_arena"}:
+        return {
+            "worker_image_family": (
+                "isaac-arena-eval-worker" if simulator == "isaac_lab_arena" else "isaac-eval-worker"
+            ),
+            "dockerfile_path": "deploy/docker/robot_eval_worker/isaac/Dockerfile",
+            "entrypoint": "blueprint-run-robot-eval-worker",
+            "preferred_gpu_class": "rtx_rt_core_24gb_or_larger",
+            "disallowed_gpu_classes": ["a100", "h100"],
+            "persistent_cache_targets": [
+                "docker_layers",
+                "isaac_kit_cache",
+                "isaac_extension_cache",
+                "robot_usd_assets",
+                "converted_scene_assets",
+                "policy_bundles",
+            ],
+            "cold_start_sensitive": True,
+        }
+    if simulator == "mujoco":
+        return {
+            "worker_image_family": "mujoco-eval-worker",
+            "dockerfile_path": "deploy/docker/robot_eval_worker/mujoco/Dockerfile",
+            "entrypoint": "blueprint-run-robot-eval-worker",
+            "preferred_gpu_class": "cpu_or_low_cost_gpu_when_rendering",
+            "persistent_cache_targets": ["docker_layers", "mjcf_assets", "policy_bundles"],
+            "cold_start_sensitive": False,
+        }
+    if simulator == "pybullet":
+        return {
+            "worker_image_family": "pybullet-eval-worker",
+            "dockerfile_path": None,
+            "entrypoint": "blueprint-run-robot-eval-worker",
+            "preferred_gpu_class": "cpu_or_low_cost_gpu_when_rendering",
+            "persistent_cache_targets": ["docker_layers", "urdf_assets", "policy_bundles"],
+            "cold_start_sensitive": False,
+        }
+    if simulator == "newton":
+        return {
+            "worker_image_family": "newton-eval-worker",
+            "dockerfile_path": None,
+            "entrypoint": "blueprint-run-robot-eval-worker",
+            "preferred_gpu_class": "gpu_physics_worker",
+            "persistent_cache_targets": ["docker_layers", "scene_assets", "policy_bundles"],
+            "cold_start_sensitive": True,
+        }
+    return {
+        "worker_image_family": "repo-local-fixture",
+        "dockerfile_path": None,
+        "entrypoint": "blueprint-run-robot-eval-worker",
+        "preferred_gpu_class": "none",
+        "persistent_cache_targets": [],
+        "cold_start_sensitive": False,
+    }
+
+
+def _required_scheduler_artifact_paths(
+    automation_dir: Path,
+    required_artifacts: Sequence[str],
+) -> Dict[str, Path]:
+    known = {
+        "scene_asset_inventory": automation_dir / "scene_asset_inventory.json",
+        "scene_asset_dependency_audit": automation_dir / "scene_asset_dependency_audit.json",
+        "cpu_preflight_scorecard": automation_dir / "cpu_preflight_scorecard.json",
+        "episode_spec_manifest": automation_dir / "episode_spec_manifest.json",
+        "gpu_handoff_packet": automation_dir / "gpu_handoff_packet.json",
+    }
+    return {artifact: known[artifact] for artifact in required_artifacts if artifact in known}
+
+
+def _build_scheduler_decision(
+    *,
+    request: Mapping[str, Any],
+    job_id: str,
+    provisioner: str,
+    simulator: str,
+    pipeline_dir: Path,
+    cpu_preflight: Mapping[str, Any],
+    budget_usd: float | None,
+    timeout_seconds: int,
+    generated_at: str,
+) -> Dict[str, Any]:
+    execution_request = _mapping(request.get("execution_request"))
+    queueing = _mapping(execution_request.get("queueing"))
+    preflight = _mapping(execution_request.get("preflight"))
+    gpu_allocation = _mapping(execution_request.get("gpu_allocation"))
+    artifact_contract = _mapping(execution_request.get("artifact_contract"))
+    request_budget = _mapping(request.get("budget"))
+    required_artifacts = _string_list(
+        preflight.get("required_artifacts")
+        or [
+            "scene_asset_inventory",
+            "scene_asset_dependency_audit",
+            "cpu_preflight_scorecard",
+            "episode_spec_manifest",
+            "gpu_handoff_packet",
+        ]
+    )
+    automation_dir = pipeline_dir / "simulation_automation"
+    required_paths = _required_scheduler_artifact_paths(automation_dir, required_artifacts)
+    artifact_status = {
+        artifact: {
+            "path": _relative_to(pipeline_dir, path),
+            "present": path.is_file(),
+        }
+        for artifact, path in required_paths.items()
+    }
+    execution_request_present = bool(execution_request)
+    requested_cpu_preflight_required = bool(
+        preflight.get("cpu_preflight_required_before_gpu") is not False
+    )
+    gpu_or_external_simulator = simulator not in {"fixture", "mujoco", "pybullet"}
+    external_provisioner = provisioner != "fixture_local"
+    gpu_allocation_requested = gpu_or_external_simulator or external_provisioner
+    cpu_preflight_required = requested_cpu_preflight_required or gpu_allocation_requested
+    ready_for_owner_gpu_preflight = bool(cpu_preflight.get("ready_for_owner_gpu_preflight"))
+    simulator_selection_policy = resolve_simulator_selection_policy(
+        request,
+        selected_simulator=simulator,
+    )
+    allowed_backends = _string_list(simulator_selection_policy.get("allowed_backends"))
+    blockers: List[str] = []
+    if execution_request_present:
+        if execution_request.get("webapp_role") != "queue_and_forward_only":
+            blockers.append("execution_request_webapp_role_not_queue_only")
+        if execution_request.get("scheduler_owner") != "BlueprintCapturePipeline":
+            blockers.append("execution_request_scheduler_owner_not_pipeline")
+        if allowed_backends and simulator not in allowed_backends:
+            blockers.append("scheduler_selected_simulator_not_allowed_by_execution_request")
+        if gpu_allocation_requested and not requested_cpu_preflight_required:
+            blockers.append("execution_request_cpu_preflight_gate_disabled_for_gpu")
+        if (
+            cpu_preflight_required
+            and gpu_allocation_requested
+            and not ready_for_owner_gpu_preflight
+        ):
+            blockers.append("scheduler_cpu_preflight_not_ready_for_gpu")
+        missing_required = [
+            artifact
+            for artifact, status in artifact_status.items()
+            if not bool(status.get("present"))
+        ]
+        if cpu_preflight_required and gpu_allocation_requested and missing_required:
+            blockers.append("scheduler_required_preflight_artifacts_missing")
+        if gpu_allocation.get("allocation_allowed_by_webapp") is not False:
+            blockers.append("execution_request_webapp_gpu_allocation_boundary_missing")
+        if gpu_allocation.get("gpu_spend_approved") is not False:
+            blockers.append("execution_request_must_not_approve_gpu_spend")
+        if artifact_contract.get("public_claim_upgrade_allowed") is not False:
+            blockers.append("execution_request_public_claim_upgrade_boundary_missing")
+    requested_budget = (
+        budget_usd
+        if budget_usd is not None
+        else _number_field(request_budget, "budget_usd", "budgetUsd")
+    )
+    status = (
+        "blocked"
+        if blockers
+        else "local_fixture_only"
+        if simulator == "fixture" and provisioner == "fixture_local"
+        else "awaiting_explicit_gpu_and_simulator_gates"
+        if gpu_allocation_requested
+        else "ready_for_cpu_proxy_execution_gate"
+    )
+    recommended_action = (
+        "do_not_allocate_gpu"
+        if blockers or not gpu_allocation_requested
+        else "wait_for_explicit_owner_gpu_gate"
+    )
+    return {
+        "schema_version": SCHEDULER_DECISION_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "job_id": job_id,
+        "status": status,
+        "source_execution_request_present": execution_request_present,
+        "webapp_role": execution_request.get("webapp_role") or "queue_and_forward_only",
+        "scheduler_owner": execution_request.get("scheduler_owner") or "BlueprintCapturePipeline",
+        "queueing": {
+            "mode": queueing.get("mode") or "async_job",
+            "customer_response": queueing.get("customer_response") or "job_id_and_status_only",
+            "web_request_must_not_wait_for_simulator": bool(
+                queueing.get("web_request_must_not_wait_for_simulator") is not False
+            ),
+        },
+        "selection": {
+            "provisioner": provisioner,
+            "simulator": simulator,
+            "request_simulator_preference": request.get("simulator_preference")
+            or request.get("simulatorPreference"),
+            "recommended_simulator": simulator_selection_policy.get("recommended_backend"),
+            "simulator_selection_policy_mode": simulator_selection_policy.get("mode"),
+            "selected_simulator_matches_request_policy": bool(
+                simulator_selection_policy.get("selected_backend_matches_recommendation")
+            ),
+            "request_operation": request.get("operation") or "evaluate_only",
+            "worker_profile": _execution_worker_profile(simulator),
+        },
+        "simulator_selection_policy": simulator_selection_policy,
+        "cpu_preflight_gate": {
+            "required_before_gpu": cpu_preflight_required,
+            "blocks_gpu_when_missing": bool(preflight.get("blocks_gpu_when_missing") is not False),
+            "ready_for_owner_gpu_preflight": ready_for_owner_gpu_preflight,
+            "status": cpu_preflight.get("status"),
+            "hard_preflight_blockers": _string_list(cpu_preflight.get("hard_preflight_blockers")),
+            "required_artifact_status": artifact_status,
+        },
+        "gpu_allocation": {
+            "mode": gpu_allocation.get("mode") or "on_demand_with_optional_warm_pool",
+            "allocation_owner": (
+                gpu_allocation.get("allocation_owner")
+                or "BlueprintCapturePipeline_or_owner_gpu_worker"
+            ),
+            "allocation_allowed_by_webapp": bool(
+                gpu_allocation.get("allocation_allowed_by_webapp") is True
+            ),
+            "gpu_spend_approved_by_webapp": bool(gpu_allocation.get("gpu_spend_approved") is True),
+            "requested_budget_usd": requested_budget,
+            "hard_timeout_seconds": int(
+                _number(gpu_allocation.get("hard_timeout_seconds"), timeout_seconds)
+                or timeout_seconds
+            ),
+            "idle_shutdown_required": bool(
+                gpu_allocation.get("idle_shutdown_required") is not False
+            ),
+            "persistent_cache_recommended": bool(
+                gpu_allocation.get("persistent_cache_recommended") is not False
+            ),
+            "live_provider_calls_allowed_by_default": False,
+            "recommended_action": recommended_action,
+        },
+        "artifact_contract": {
+            "expected_outputs": (
+                _dedupe(
+                    [
+                        *_string_list(artifact_contract.get("expected_outputs")),
+                        *DEFAULT_STARTUP_EXPECTED_OUTPUTS,
+                    ]
+                )
+            ),
+            "simulator_execution_proven_by_webapp": bool(
+                artifact_contract.get("simulator_execution_proven_by_webapp") is True
+            ),
+            "public_claim_upgrade_allowed": bool(
+                artifact_contract.get("public_claim_upgrade_allowed") is True
+            ),
+        },
+        "blockers": _dedupe(blockers),
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _provider_credential_env_vars(provisioner: str) -> List[str]:
+    if provisioner == "runpod":
+        return ["RUNPOD_API_KEY"]
+    if provisioner == "vast":
+        return ["VAST_API_KEY"]
+    if provisioner == "gcp":
+        return ["GOOGLE_APPLICATION_CREDENTIALS"]
+    return []
+
+
+def _provider_launch_operation(provisioner: str) -> str:
+    if provisioner == "runpod":
+        return "enqueue_runpod_serverless_or_on_demand_worker"
+    if provisioner == "vast":
+        return "create_vast_instance_and_run_worker"
+    if provisioner == "gcp":
+        return "create_gcp_gpu_worker_and_run_job"
+    if provisioner == "docker_local":
+        return "start_local_docker_worker"
+    if provisioner == "local_process":
+        return "start_local_process_worker"
+    return "no_provider_launch_required"
+
+
+def _worker_image_ref_env_var(simulator: str) -> str:
+    return WORKER_IMAGE_REF_ENV_BY_SIMULATOR.get(
+        simulator,
+        GENERIC_WORKER_IMAGE_REF_ENV,
+    )
+
+
+def _configured_worker_image_ref(simulator: str) -> tuple[str, str]:
+    env_var = _worker_image_ref_env_var(simulator)
+    image_ref = _string(os.getenv(env_var))
+    if image_ref:
+        return image_ref, env_var
+    generic_image_ref = _string(os.getenv(GENERIC_WORKER_IMAGE_REF_ENV))
+    if generic_image_ref:
+        return generic_image_ref, GENERIC_WORKER_IMAGE_REF_ENV
+    return "", env_var
+
+
+def _worker_image_ref_is_versioned(image_ref: str) -> bool:
+    if not image_ref:
+        return False
+    if "@sha256:" in image_ref:
+        return True
+    name = image_ref.rsplit("/", 1)[-1]
+    if ":" not in name:
+        return False
+    tag = name.rsplit(":", 1)[-1].strip().lower()
+    return bool(tag and tag not in {"latest", "local", "dev", "test"})
+
+
+def _configured_worker_artifact_output_uri() -> str:
+    return _string(os.getenv(WORKER_ARTIFACT_OUTPUT_URI_ENV))
+
+
+def _configured_worker_manifest_uri() -> str:
+    return _string(os.getenv(WORKER_MANIFEST_URI_ENV))
+
+
+def _uri_scheme(uri: str) -> str:
+    parsed = urlparse(uri)
+    return parsed.scheme or "local"
+
+
+def _worker_manifest_uri_is_fetchable_by_provider(
+    uri: str,
+    *,
+    live_gpu_provider: bool,
+) -> bool:
+    if not uri:
+        return False
+    scheme = _uri_scheme(uri)
+    if live_gpu_provider:
+        return scheme in REMOTE_WORKER_MANIFEST_URI_SCHEMES
+    return scheme in {"local", "file", *REMOTE_WORKER_MANIFEST_URI_SCHEMES}
+
+
+def _runtime_preflight_contract(
+    *,
+    simulator: str,
+    provisioner: str,
+    worker_profile: Mapping[str, Any],
+) -> Dict[str, Any]:
+    runtime_required = simulator != "fixture"
+    live_gpu_provider = provisioner in LIVE_GPU_PROVISIONERS and simulator != "fixture"
+    requires_gpu_inventory = bool(
+        live_gpu_provider or simulator in {"isaac_sim", "isaac_lab_arena", "newton"}
+    )
+    if simulator in ISAAC_SIMULATORS:
+        required_checks = [
+            "nvidia_smi_gpu_inventory",
+            "driver_version",
+            "vulkan_device",
+            "rtx_renderer_available",
+            "isaac_headless_launch",
+            "blank_scene_load",
+            "test_frame_render",
+            "shader_cache_writable",
+        ]
+        renderer_context = "vulkan_rtx"
+    elif simulator == "mujoco":
+        required_checks = [
+            "python_import_mujoco",
+            "headless_context_selection",
+            "egl_context_when_rendering",
+            "blank_model_or_scene_load",
+            "short_rollout_smoke",
+        ]
+        renderer_context = "egl_when_rendering"
+    elif simulator == "pybullet":
+        required_checks = [
+            "python_import_pybullet",
+            "headless_connection",
+            "tiny_renderer_or_egl_smoke",
+            "blank_scene_load",
+            "short_rollout_smoke",
+        ]
+        renderer_context = "tiny_renderer_or_egl_when_rendering"
+    elif simulator == "newton":
+        required_checks = [
+            "nvidia_smi_gpu_inventory",
+            "driver_version",
+            "gpu_physics_runtime_import",
+            "blank_scene_load",
+            "short_rollout_smoke",
+        ]
+        renderer_context = "gpu_physics_runtime"
+    else:
+        required_checks = []
+        renderer_context = "not_required"
+    return {
+        "required_before_scene_load": runtime_required,
+        "required_for_provider": runtime_required and provisioner != "fixture_local",
+        "worker_blocks_scene_load_on_failed_preflight": runtime_required,
+        "executed_by": "blueprint-run-robot-eval-worker",
+        "result_artifact": "worker_runtime_preflight.json",
+        "run_before": "scene_load_and_policy_execution",
+        "simulator": simulator,
+        "worker_image_family": worker_profile.get("worker_image_family"),
+        "requires_gpu_inventory": requires_gpu_inventory,
+        "renderer_context": renderer_context,
+        "required_checks": required_checks,
+        "nvidia_smi_required": requires_gpu_inventory,
+        "vulkan_required": simulator in ISAAC_SIMULATORS,
+        "egl_required_when_rendering": simulator in {"mujoco", "pybullet"},
+        "blank_scene_or_model_load_required": runtime_required,
+        "test_frame_render_required": simulator in ISAAC_SIMULATORS,
+        "runtime_preflight_is_not_simulator_proof": True,
+        "public_claim_upgrade_allowed": False,
+    }
+
+
+def _build_worker_launch_plan(
+    *,
+    request: Mapping[str, Any],
+    job_id: str,
+    provisioner: str,
+    simulator: str,
+    scheduler_decision: Mapping[str, Any],
+    timeout_seconds: int,
+    generated_at: str,
+) -> Dict[str, Any]:
+    selection = _mapping(scheduler_decision.get("selection"))
+    worker_profile = _mapping(selection.get("worker_profile"))
+    gpu_allocation = _mapping(scheduler_decision.get("gpu_allocation"))
+    artifact_contract = _mapping(scheduler_decision.get("artifact_contract"))
+    scheduler_blockers = _string_list(scheduler_decision.get("blockers"))
+    external_provider = provisioner != "fixture_local"
+    live_gpu_provider = provisioner in LIVE_GPU_PROVISIONERS and simulator != "fixture"
+    image_ref, image_ref_env_var = _configured_worker_image_ref(simulator)
+    image_ref_versioned = _worker_image_ref_is_versioned(image_ref)
+    worker_manifest_uri = _configured_worker_manifest_uri()
+    worker_manifest_uri_required = external_provider
+    worker_manifest_uri_fetchable = _worker_manifest_uri_is_fetchable_by_provider(
+        worker_manifest_uri,
+        live_gpu_provider=live_gpu_provider,
+    )
+    artifact_output_uri = _configured_worker_artifact_output_uri()
+    artifact_output_required = external_provider
+    hard_timeout_seconds = int(
+        _number(gpu_allocation.get("hard_timeout_seconds"), timeout_seconds)
+        or timeout_seconds
+    )
+    shutdown_grace_seconds = int(
+        _number(gpu_allocation.get("shutdown_grace_seconds"), 60) or 60
+    )
+    idle_timeout_seconds = int(
+        _number(gpu_allocation.get("idle_timeout_seconds"), 60) or 60
+    )
+    external_watchdog_ttl_seconds = int(
+        _number(
+            gpu_allocation.get("external_watchdog_ttl_seconds"),
+            hard_timeout_seconds + shutdown_grace_seconds,
+        )
+        or hard_timeout_seconds + shutdown_grace_seconds
+    )
+    runtime_preflight_contract = _runtime_preflight_contract(
+        simulator=simulator,
+        provisioner=provisioner,
+        worker_profile=worker_profile,
+    )
+    image_blockers: List[str] = []
+    if live_gpu_provider and not image_ref:
+        image_blockers.append("missing_prebuilt_worker_image_ref")
+    elif live_gpu_provider and not image_ref_versioned:
+        image_blockers.append("prebuilt_worker_image_ref_not_versioned")
+    artifact_blockers: List[str] = []
+    if artifact_output_required and not artifact_output_uri:
+        artifact_blockers.append("missing_worker_artifact_output_uri")
+    manifest_uri_blockers: List[str] = []
+    if worker_manifest_uri_required and not worker_manifest_uri:
+        manifest_uri_blockers.append("missing_worker_manifest_uri")
+    elif worker_manifest_uri_required and not worker_manifest_uri_fetchable:
+        manifest_uri_blockers.append("worker_manifest_uri_not_fetchable_by_provider")
+    blockers = _dedupe(
+        [
+            *scheduler_blockers,
+            *image_blockers,
+            *manifest_uri_blockers,
+            *artifact_blockers,
+        ]
+    )
+    status = (
+        "blocked_by_scheduler"
+        if scheduler_blockers
+        else "blocked_missing_prebuilt_worker_image_ref"
+        if image_blockers
+        else "blocked_missing_worker_manifest_uri"
+        if "missing_worker_manifest_uri" in manifest_uri_blockers
+        else "blocked_invalid_worker_manifest_uri"
+        if manifest_uri_blockers
+        else "blocked_missing_worker_artifact_output_uri"
+        if artifact_blockers
+        else "not_required_for_fixture_local"
+        if not external_provider and simulator == "fixture"
+        else "awaiting_explicit_provider_gate"
+        if external_provider
+        else "planned_for_local_execution"
+    )
+    credential_env_vars = _provider_credential_env_vars(provisioner)
+    image_family = _string(worker_profile.get("worker_image_family")) or "repo-local-fixture"
+    expected_outputs = (
+        _dedupe(
+            [
+                *_string_list(artifact_contract.get("expected_outputs")),
+                *DEFAULT_STARTUP_EXPECTED_OUTPUTS,
+            ]
+        )
+    )
+    return {
+        "schema_version": WORKER_LAUNCH_PLAN_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "job_id": job_id,
+        "status": status,
+        "provider": provisioner,
+        "simulator": simulator,
+        "live_provider_calls_allowed_by_default": False,
+        "live_provider_calls_performed": False,
+        "scheduler_decision_path": "scheduler_decision.json",
+        "scheduler_decision_status": scheduler_decision.get("status"),
+        "scheduler_blockers": scheduler_blockers,
+        "worker_image": {
+            "image_family": image_family,
+            "dockerfile_path": worker_profile.get("dockerfile_path"),
+            "entrypoint": worker_profile.get("entrypoint") or "blueprint-run-robot-eval-worker",
+            "version_pin_required": True,
+            "prebuilt_image_required": external_provider or simulator != "fixture",
+            "published_image_ref_required": live_gpu_provider,
+            "image_ref_env_var": image_ref_env_var,
+            "configured_image_ref": image_ref or None,
+            "configured_image_ref_present": bool(image_ref),
+            "configured_image_ref_is_versioned": image_ref_versioned,
+            "runtime_dependency_install_disallowed": True,
+            "runtime_asset_guessing_disallowed": True,
+        },
+        "gpu_selection": {
+            "preferred_gpu_class": worker_profile.get("preferred_gpu_class"),
+            "disallowed_gpu_classes": _string_list(worker_profile.get("disallowed_gpu_classes")),
+            "cheap_cpu_or_gpu_allowed": simulator in {"mujoco", "pybullet", "fixture"},
+        },
+        "launch_mode": {
+            "mode": gpu_allocation.get("mode") or "on_demand_with_optional_warm_pool",
+            "scale_to_zero_default": True,
+            "warm_pool_allowed_when_explicitly_requested": True,
+            "max_active_workers": int(_number(gpu_allocation.get("max_active_workers"), 1) or 1),
+            "idle_shutdown_required": bool(
+                gpu_allocation.get("idle_shutdown_required") is not False
+            ),
+            "idle_timeout_seconds": idle_timeout_seconds,
+            "hard_timeout_seconds": hard_timeout_seconds,
+            "shutdown_grace_seconds": shutdown_grace_seconds,
+            "external_watchdog_ttl_required": external_provider,
+            "external_watchdog_ttl_seconds": external_watchdog_ttl_seconds,
+            "external_watchdog_owner": "provider_launcher_or_owner_control_plane",
+        },
+        "cache_plan": {
+            "persistent_cache_recommended": bool(
+                gpu_allocation.get("persistent_cache_recommended") is not False
+            ),
+            "targets": _string_list(worker_profile.get("persistent_cache_targets")),
+            "install_simulator_during_customer_job": False,
+            "install_python_dependencies_during_customer_job": False,
+        },
+        "runtime_preflight_contract": runtime_preflight_contract,
+        "worker_entrypoint_contract": {
+            "job_manifest_env": WORKER_MANIFEST_URI_ENV,
+            "expected_command_shape": (
+                "blueprint-run-robot-eval-worker --manifest ${BLUEPRINT_EVAL_MANIFEST_URI}"
+            ),
+            "package_console_script": "blueprint-run-robot-eval-worker",
+            "delegates_to_console_script": "blueprint-run-robot-eval-job",
+            "web_request_waits_for_worker": False,
+        },
+        "input_bundle": {
+            "job_request_path": "job_request.json",
+            "scenario_eval_matrix_path": "scenario_eval_matrix.json",
+            "policy_package_manifest_path": "policy_package_manifest.json",
+            "scene_asset_preflight_path": "../simulation_automation/scene_asset_preflight.json",
+            "gpu_handoff_packet_path": "../simulation_automation/gpu_handoff_packet.json",
+            "original_customer_request_id": request.get("request_id")
+            or request.get("requestId")
+            or None,
+        },
+        "worker_manifest_input_contract": {
+            "worker_manifest_path": "worker_manifest.json",
+            "worker_manifest_schema": WORKER_MANIFEST_SCHEMA_VERSION,
+            "worker_manifest_uri_env_var": WORKER_MANIFEST_URI_ENV,
+            "worker_manifest_uri_required_for_provider": worker_manifest_uri_required,
+            "configured_worker_manifest_uri": worker_manifest_uri or None,
+            "configured_worker_manifest_uri_present": bool(worker_manifest_uri),
+            "worker_manifest_uri_scheme": _uri_scheme(worker_manifest_uri)
+            if worker_manifest_uri
+            else None,
+            "worker_manifest_uri_fetchable_by_provider": worker_manifest_uri_fetchable,
+            "live_provider_remote_uri_required": live_gpu_provider,
+            "allowed_uri_schemes": [
+                "file",
+                "http",
+                "https",
+                "gs",
+                "s3",
+                "r2",
+            ],
+            "remote_provider_uri_schemes": sorted(REMOTE_WORKER_MANIFEST_URI_SCHEMES),
+            "local_path_only_disallowed_for_live_provider": live_gpu_provider,
+        },
+        "artifact_upload_contract": {
+            "destination_required": True,
+            "destination_ref": "job-scoped-object-storage-prefix",
+            "configured_artifact_output_uri": artifact_output_uri or None,
+            "configured_artifact_output_uri_present": bool(artifact_output_uri),
+            "artifact_output_uri_env_var": WORKER_ARTIFACT_OUTPUT_URI_ENV,
+            "artifact_output_uri_required_for_provider": artifact_output_required,
+            "manifest_input_uri_schemes": ["file", "http", "https", "gs", "s3", "r2"],
+            "artifact_output_uri_schemes": ["file", "gs", "s3", "r2"],
+            "s3_compatible_storage_supported": True,
+            "r2_requires_endpoint_env": True,
+            "expected_outputs": expected_outputs,
+            "upload_before_shutdown_required": True,
+        },
+        "approval_gates": {
+            "env_BLUEPRINT_ALLOW_GPU_PROVISIONING_required": external_provider,
+            "cli_allow_gpu_provisioning_required": external_provider,
+            "env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION_required": simulator != "fixture",
+            "cli_allow_simulator_execution_required": simulator != "fixture",
+            "allowed_simulator_flag_required": simulator != "fixture",
+        },
+        "secret_policy": {
+            "provider_credential_env_vars": credential_env_vars,
+            "store_provider_credentials_in_artifacts": False,
+            "redact_provider_tokens_from_logs": True,
+            "customer_visible_provider_secrets_allowed": False,
+        },
+        "cost_controls": {
+            "requested_budget_usd": gpu_allocation.get("requested_budget_usd"),
+            "budget_required_before_live_allocation": external_provider,
+            "customer_concurrency_limit_required": True,
+            "record_actual_gpu_time_required": True,
+            "finalizer_must_upload_artifacts_before_shutdown": True,
+        },
+        "blockers": blockers,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _build_worker_manifest(
+    *,
+    request: Mapping[str, Any],
+    job_id: str,
+    capture_root: Path,
+    provisioner: str,
+    simulator: str,
+    worker_launch_plan: Mapping[str, Any],
+    allowed_simulators: Sequence[str],
+    simulator_commands: Mapping[str, str],
+    timeout_seconds: int,
+    budget_usd: float | None,
+    generated_at: str,
+) -> Dict[str, Any]:
+    artifact_contract = _mapping(worker_launch_plan.get("artifact_upload_contract"))
+    manifest_input_contract = _mapping(
+        worker_launch_plan.get("worker_manifest_input_contract")
+    )
+    runtime_preflight_contract = _mapping(
+        worker_launch_plan.get("runtime_preflight_contract")
+    )
+    worker_manifest_uri = _string(
+        manifest_input_contract.get("configured_worker_manifest_uri")
+    )
+    worker_manifest_uri_required = bool(
+        manifest_input_contract.get("worker_manifest_uri_required_for_provider")
+    )
+    worker_manifest_uri_fetchable = bool(
+        manifest_input_contract.get("worker_manifest_uri_fetchable_by_provider")
+    )
+    artifact_output_uri = _string(artifact_contract.get("configured_artifact_output_uri"))
+    artifact_output_required = bool(
+        artifact_contract.get("artifact_output_uri_required_for_provider")
+    )
+    blockers: List[str] = []
+    if worker_manifest_uri_required and not worker_manifest_uri:
+        blockers.append("missing_worker_manifest_uri")
+    elif worker_manifest_uri_required and not worker_manifest_uri_fetchable:
+        blockers.append("worker_manifest_uri_not_fetchable_by_provider")
+    if artifact_output_required and not artifact_output_uri:
+        blockers.append("missing_worker_artifact_output_uri")
+    return {
+        "schema_version": WORKER_MANIFEST_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "job_id": job_id,
+        "status": "blocked" if blockers else "ready_for_worker_upload",
+        "capture_root": str(capture_root),
+        "provisioner": provisioner,
+        "simulator": simulator,
+        "timeout_seconds": timeout_seconds,
+        "budget_usd": budget_usd,
+        "allowed_simulators": list(allowed_simulators),
+        "simulator_commands": dict(simulator_commands),
+        "worker_manifest_uri": worker_manifest_uri or None,
+        "worker_manifest_uri_required": worker_manifest_uri_required,
+        "worker_manifest_uri_env_var": WORKER_MANIFEST_URI_ENV,
+        "worker_manifest_uri_fetchable_by_provider": worker_manifest_uri_fetchable,
+        "worker_manifest_uri_scheme": manifest_input_contract.get(
+            "worker_manifest_uri_scheme"
+        ),
+        "runtime_preflight_contract": runtime_preflight_contract,
+        "artifact_output_uri": artifact_output_uri or None,
+        "artifact_output_uri_required": artifact_output_required,
+        "artifact_output_uri_env_var": WORKER_ARTIFACT_OUTPUT_URI_ENV,
+        "worker_launch_plan_path": "worker_launch_plan.json",
+        "job_request": dict(request),
+        "blockers": blockers,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _build_gpu_provider_launch_request(
+    *,
+    request_manifest: Mapping[str, Any],
+    scheduler_decision: Mapping[str, Any],
+    worker_launch_plan: Mapping[str, Any],
+    worker_manifest: Mapping[str, Any],
+    allow_gpu_provisioning: bool,
+    generated_at: str,
+) -> Dict[str, Any]:
+    provider = _string(request_manifest.get("provider")) or "fixture_local"
+    job_id = _string(request_manifest.get("job_id"))
+    worker_image = _mapping(worker_launch_plan.get("worker_image"))
+    gpu_selection = _mapping(worker_launch_plan.get("gpu_selection"))
+    launch_mode = _mapping(worker_launch_plan.get("launch_mode"))
+    entrypoint_contract = _mapping(worker_launch_plan.get("worker_entrypoint_contract"))
+    manifest_input_contract = _mapping(
+        worker_launch_plan.get("worker_manifest_input_contract")
+    )
+    runtime_preflight_contract = _mapping(
+        worker_launch_plan.get("runtime_preflight_contract")
+    )
+    artifact_upload_contract = _mapping(worker_launch_plan.get("artifact_upload_contract"))
+    cost_controls = _mapping(worker_launch_plan.get("cost_controls"))
+    scheduler_blockers = _string_list(scheduler_decision.get("blockers"))
+    worker_blockers = _string_list(worker_launch_plan.get("blockers"))
+    worker_manifest_blockers = _string_list(worker_manifest.get("blockers"))
+    external_provider = provider != "fixture_local"
+    env_allowed = _env_truthy("BLUEPRINT_ALLOW_GPU_PROVISIONING")
+    approval_blockers: List[str] = []
+    if external_provider:
+        if not env_allowed:
+            approval_blockers.append("missing_env_BLUEPRINT_ALLOW_GPU_PROVISIONING")
+        if not allow_gpu_provisioning:
+            approval_blockers.append("missing_cli_allow_gpu_provisioning")
+    blockers = _dedupe(
+        [
+            *scheduler_blockers,
+            *worker_blockers,
+            *worker_manifest_blockers,
+            *approval_blockers,
+        ]
+    )
+    status = (
+        "blocked_by_scheduler"
+        if scheduler_blockers
+        else "not_required_for_fixture_local"
+        if provider == "fixture_local"
+        else "blocked_by_worker_plan"
+        if worker_blockers
+        else "blocked_by_worker_manifest"
+        if worker_manifest_blockers
+        else "blocked_by_explicit_provider_gate"
+        if approval_blockers
+        else "request_manifest_ready"
+    )
+    storage_secret_env_vars = [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    ]
+    plaintext_env_vars = [
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "BLUEPRINT_WORKER_DIR",
+        "BLUEPRINT_ARTIFACT_OUTPUT_URI",
+        "BLUEPRINT_ALLOW_GPU_PROVISIONING",
+        "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION",
+        "BLUEPRINT_ALLOWED_SIMULATORS",
+        "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL",
+        "AWS_ENDPOINT_URL",
+    ]
+    return {
+        "schema_version": GPU_PROVIDER_LAUNCH_REQUEST_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "job_id": job_id,
+        "provider": provider,
+        "status": status,
+        "reason": (
+            "scheduler_decision_blocked"
+            if scheduler_blockers
+            else "fixture_local_does_not_require_gpu_provider"
+            if provider == "fixture_local"
+            else "worker_launch_plan_blocked"
+            if worker_blockers
+            else "worker_manifest_blocked"
+            if worker_manifest_blockers
+            else "explicit_provider_gate_required"
+            if approval_blockers
+            else "provider_launch_request_ready_for_explicit_launcher"
+        ),
+        "operation": _provider_launch_operation(provider),
+        "live_provider_calls_allowed_by_default": False,
+        "live_provider_calls_performed": False,
+        "scheduler_decision_path": "scheduler_decision.json",
+        "scheduler_decision_status": scheduler_decision.get("status"),
+        "worker_launch_plan_path": "worker_launch_plan.json",
+        "worker_launch_plan_status": worker_launch_plan.get("status"),
+        "worker_manifest_path": "worker_manifest.json",
+        "worker_manifest_status": worker_manifest.get("status"),
+        "gpu_provisioning_request_path": "gpu_provisioning_request.json",
+        "provider_request_shape": {
+            "provider_api": provider,
+            "api_payload_is_provider_adapter_template": True,
+            "api_payload_values_are_redacted": True,
+            "operation": _provider_launch_operation(provider),
+            "image": {
+                "image_family": worker_image.get("image_family"),
+                "owner_published_image_ref_required": bool(
+                    worker_image.get("published_image_ref_required")
+                ),
+                "configured_image_ref": worker_image.get("configured_image_ref"),
+                "image_ref_env_var": worker_image.get("image_ref_env_var"),
+                "configured_image_ref_present": bool(
+                    worker_image.get("configured_image_ref_present")
+                ),
+                "configured_image_ref_is_versioned": bool(
+                    worker_image.get("configured_image_ref_is_versioned")
+                ),
+                "dockerfile_path": worker_image.get("dockerfile_path"),
+                "entrypoint": worker_image.get("entrypoint"),
+                "runtime_dependency_install_disallowed": bool(
+                    worker_image.get("runtime_dependency_install_disallowed")
+                ),
+            },
+            "command": entrypoint_contract.get("expected_command_shape"),
+            "environment": {
+                "plaintext_env_var_names": plaintext_env_vars,
+                "secret_env_var_names": _dedupe(
+                    [
+                        *_provider_credential_env_vars(provider),
+                        *storage_secret_env_vars,
+                    ]
+                ),
+                "secret_values_in_artifact": False,
+                "customer_visible_secret_values_allowed": False,
+            },
+            "inputs": {
+                "manifest_env_var": entrypoint_contract.get("job_manifest_env"),
+                "manifest_uri_required": True,
+                "manifest_uri_required_for_provider": bool(
+                    manifest_input_contract.get(
+                        "worker_manifest_uri_required_for_provider"
+                    )
+                ),
+                "manifest_uri": worker_manifest.get("worker_manifest_uri"),
+                "manifest_uri_env_var": WORKER_MANIFEST_URI_ENV,
+                "manifest_uri_configured": bool(worker_manifest.get("worker_manifest_uri")),
+                "manifest_uri_fetchable_by_provider": bool(
+                    worker_manifest.get("worker_manifest_uri_fetchable_by_provider")
+                ),
+                "manifest_uri_scheme": worker_manifest.get("worker_manifest_uri_scheme"),
+                "worker_manifest_path": "worker_manifest.json",
+                "worker_manifest_schema": worker_manifest.get("schema_version"),
+                "worker_manifest_local_path_ready": worker_manifest.get("status")
+                == "ready_for_worker_upload",
+                "artifact_output_uri_required": bool(
+                    artifact_upload_contract.get("destination_required")
+                ),
+                "artifact_output_uri": worker_manifest.get("artifact_output_uri"),
+                "manifest_input_uri_schemes": _string_list(
+                    artifact_upload_contract.get("manifest_input_uri_schemes")
+                ),
+                "artifact_output_uri_schemes": _string_list(
+                    artifact_upload_contract.get("artifact_output_uri_schemes")
+                ),
+            },
+            "runtime_preflight": {
+                "required_before_scene_load": bool(
+                    runtime_preflight_contract.get("required_before_scene_load")
+                ),
+                "required_for_provider": bool(
+                    runtime_preflight_contract.get("required_for_provider")
+                ),
+                "worker_blocks_scene_load_on_failed_preflight": bool(
+                    runtime_preflight_contract.get(
+                        "worker_blocks_scene_load_on_failed_preflight"
+                    )
+                ),
+                "executed_by": runtime_preflight_contract.get("executed_by"),
+                "result_artifact": runtime_preflight_contract.get("result_artifact"),
+                "run_before": runtime_preflight_contract.get("run_before"),
+                "simulator": runtime_preflight_contract.get("simulator"),
+                "renderer_context": runtime_preflight_contract.get("renderer_context"),
+                "required_checks": _string_list(
+                    runtime_preflight_contract.get("required_checks")
+                ),
+                "nvidia_smi_required": bool(
+                    runtime_preflight_contract.get("nvidia_smi_required")
+                ),
+                "vulkan_required": bool(
+                    runtime_preflight_contract.get("vulkan_required")
+                ),
+                "egl_required_when_rendering": bool(
+                    runtime_preflight_contract.get("egl_required_when_rendering")
+                ),
+                "blank_scene_or_model_load_required": bool(
+                    runtime_preflight_contract.get(
+                        "blank_scene_or_model_load_required"
+                    )
+                ),
+                "test_frame_render_required": bool(
+                    runtime_preflight_contract.get("test_frame_render_required")
+                ),
+                "runtime_preflight_is_not_simulator_proof": bool(
+                    runtime_preflight_contract.get(
+                        "runtime_preflight_is_not_simulator_proof"
+                    )
+                ),
+            },
+            "gpu": {
+                "preferred_gpu_class": gpu_selection.get("preferred_gpu_class"),
+                "disallowed_gpu_classes": _string_list(
+                    gpu_selection.get("disallowed_gpu_classes")
+                ),
+                "cheap_cpu_or_gpu_allowed": bool(gpu_selection.get("cheap_cpu_or_gpu_allowed")),
+            },
+            "limits": {
+                "max_active_workers": launch_mode.get("max_active_workers"),
+                "hard_timeout_seconds": launch_mode.get("hard_timeout_seconds")
+                or request_manifest.get("timeout_seconds"),
+                "idle_timeout_seconds": launch_mode.get("idle_timeout_seconds"),
+                "idle_shutdown_required": bool(launch_mode.get("idle_shutdown_required")),
+                "scale_to_zero_default": bool(launch_mode.get("scale_to_zero_default")),
+                "shutdown_grace_seconds": launch_mode.get("shutdown_grace_seconds"),
+                "external_watchdog_ttl_required": bool(
+                    launch_mode.get("external_watchdog_ttl_required")
+                ),
+                "external_watchdog_ttl_seconds": launch_mode.get(
+                    "external_watchdog_ttl_seconds"
+                ),
+                "external_watchdog_owner": launch_mode.get("external_watchdog_owner"),
+                "requested_budget_usd": request_manifest.get("requested_budget_usd")
+                if request_manifest.get("requested_budget_usd") is not None
+                else cost_controls.get("requested_budget_usd"),
+            },
+            "artifact_finalizer": {
+                "upload_before_shutdown_required": bool(
+                    artifact_upload_contract.get("upload_before_shutdown_required")
+                ),
+                "record_actual_gpu_time_required": bool(
+                    cost_controls.get("record_actual_gpu_time_required")
+                ),
+            },
+        },
+        "gate_requirements": {
+            "env_BLUEPRINT_ALLOW_GPU_PROVISIONING_required": external_provider,
+            "env_BLUEPRINT_ALLOW_GPU_PROVISIONING_present": env_allowed,
+            "cli_allow_gpu_provisioning_required": external_provider,
+            "cli_allow_gpu_provisioning_present": bool(allow_gpu_provisioning),
+            "provider_credential_env_vars": _provider_credential_env_vars(provider),
+            "provider_secret_values_in_artifact": False,
+        },
+        "blockers": blockers,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
 def _gpu_provisioning_request(
     *,
     request: Mapping[str, Any],
@@ -1009,7 +2206,7 @@ def _gpu_provisioning_request(
         "status": "planned",
         "requested_budget_usd": budget_usd
         if budget_usd is not None
-        else _number(budget.get("budget_usd") or budget.get("budgetUsd")),
+        else _number_field(budget, "budget_usd", "budgetUsd"),
         "timeout_seconds": timeout_seconds,
         "execution_allowed_by_default": False,
         "live_provider_calls_allowed_by_default": False,
@@ -1021,10 +2218,22 @@ def _gpu_provisioning_result(
     *,
     request_manifest: Mapping[str, Any],
     validation: Mapping[str, Any],
+    scheduler_decision: Mapping[str, Any],
+    worker_launch_plan: Mapping[str, Any],
+    provider_launch_request: Mapping[str, Any],
     allow_gpu_provisioning: bool,
     generated_at: str,
 ) -> Dict[str, Any]:
     provider = _string(request_manifest.get("provider")) or "fixture_local"
+    scheduler_blockers = _string_list(scheduler_decision.get("blockers"))
+    worker_blockers = _string_list(worker_launch_plan.get("blockers"))
+    env_allowed = _env_truthy("BLUEPRINT_ALLOW_GPU_PROVISIONING")
+    approval_blockers: List[str] = []
+    if provider != "fixture_local":
+        if not env_allowed:
+            approval_blockers.append("missing_env_BLUEPRINT_ALLOW_GPU_PROVISIONING")
+        if not allow_gpu_provisioning:
+            approval_blockers.append("missing_cli_allow_gpu_provisioning")
     if validation.get("status") == "blocked":
         return {
             "schema_version": GPU_PROVISIONING_RESULT_SCHEMA_VERSION,
@@ -1033,6 +2242,46 @@ def _gpu_provisioning_result(
             "status": "blocked",
             "reason": "job_validation_blocked",
             "blockers": _string_list(validation.get("blockers")),
+            "worker_launch_plan_path": "worker_launch_plan.json",
+            "worker_launch_plan_status": worker_launch_plan.get("status"),
+            "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+            "gpu_provider_launch_request_status": provider_launch_request.get("status"),
+            "execution_performed": False,
+            "live_provider_calls_performed": False,
+            "claim_boundary": dict(CLAIM_BOUNDARY),
+        }
+    if scheduler_blockers:
+        blockers = _dedupe([*scheduler_blockers, *approval_blockers])
+        return {
+            "schema_version": GPU_PROVISIONING_RESULT_SCHEMA_VERSION,
+            "generated_at": generated_at,
+            "provider": provider,
+            "status": "blocked",
+            "reason": "scheduler_decision_blocked",
+            "blockers": blockers,
+            "scheduler_decision_path": "scheduler_decision.json",
+            "worker_launch_plan_path": "worker_launch_plan.json",
+            "worker_launch_plan_status": worker_launch_plan.get("status"),
+            "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+            "gpu_provider_launch_request_status": provider_launch_request.get("status"),
+            "execution_performed": False,
+            "live_provider_calls_performed": False,
+            "claim_boundary": dict(CLAIM_BOUNDARY),
+        }
+    if worker_blockers:
+        blockers = _dedupe([*worker_blockers, *approval_blockers])
+        return {
+            "schema_version": GPU_PROVISIONING_RESULT_SCHEMA_VERSION,
+            "generated_at": generated_at,
+            "provider": provider,
+            "status": "blocked",
+            "reason": "worker_launch_plan_blocked",
+            "blockers": blockers,
+            "scheduler_decision_path": "scheduler_decision.json",
+            "worker_launch_plan_path": "worker_launch_plan.json",
+            "worker_launch_plan_status": worker_launch_plan.get("status"),
+            "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+            "gpu_provider_launch_request_status": provider_launch_request.get("status"),
             "execution_performed": False,
             "live_provider_calls_performed": False,
             "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -1047,15 +2296,14 @@ def _gpu_provisioning_result(
             "gpu_class": "fixture",
             "execution_performed": True,
             "live_provider_calls_performed": False,
+            "worker_launch_plan_path": "worker_launch_plan.json",
+            "worker_launch_plan_status": worker_launch_plan.get("status"),
+            "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+            "gpu_provider_launch_request_status": provider_launch_request.get("status"),
             "cost_usd": 0.0,
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
-    env_allowed = _env_truthy("BLUEPRINT_ALLOW_GPU_PROVISIONING")
-    blockers: List[str] = []
-    if not env_allowed:
-        blockers.append("missing_env_BLUEPRINT_ALLOW_GPU_PROVISIONING")
-    if not allow_gpu_provisioning:
-        blockers.append("missing_cli_allow_gpu_provisioning")
+    blockers = approval_blockers
     return {
         "schema_version": GPU_PROVISIONING_RESULT_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1063,8 +2311,187 @@ def _gpu_provisioning_result(
         "status": "blocked" if blockers else "request_manifest_ready",
         "reason": "approval_required" if blockers else "explicitly_gated_request_ready",
         "blockers": blockers,
+        "scheduler_decision_path": "scheduler_decision.json",
+        "worker_launch_plan_path": "worker_launch_plan.json",
+        "worker_launch_plan_status": worker_launch_plan.get("status"),
+        "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+        "gpu_provider_launch_request_status": provider_launch_request.get("status"),
         "execution_performed": False,
         "live_provider_calls_performed": False,
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _gpu_cost_control_ledger(
+    *,
+    request: Mapping[str, Any],
+    scheduler_decision: Mapping[str, Any],
+    worker_launch_plan: Mapping[str, Any],
+    provider_launch_request: Mapping[str, Any],
+    gpu_result: Mapping[str, Any],
+    sim_result: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    provider = _string(gpu_result.get("provider")) or _string(
+        provider_launch_request.get("provider")
+    ) or "fixture_local"
+    job_id = _string(provider_launch_request.get("job_id")) or _string(gpu_result.get("job_id"))
+    gpu_allocation = _mapping(scheduler_decision.get("gpu_allocation"))
+    launch_mode = _mapping(worker_launch_plan.get("launch_mode"))
+    cost_controls = _mapping(worker_launch_plan.get("cost_controls"))
+    provider_shape = _mapping(provider_launch_request.get("provider_request_shape"))
+    provider_limits = _mapping(provider_shape.get("limits"))
+    artifact_finalizer = _mapping(provider_shape.get("artifact_finalizer"))
+    gate_requirements = _mapping(provider_launch_request.get("gate_requirements"))
+    budget = _mapping(request.get("budget"))
+    hard_timeout_seconds = int(
+        _number(
+            provider_limits.get("hard_timeout_seconds")
+            or launch_mode.get("hard_timeout_seconds")
+            or gpu_allocation.get("hard_timeout_seconds")
+            or budget.get("timeout_seconds")
+            or budget.get("timeoutSeconds"),
+            0,
+        )
+        or 0
+    )
+    requested_budget_usd = (
+        _number(provider_limits.get("requested_budget_usd"))
+        if provider_limits.get("requested_budget_usd") is not None
+        else _number(gpu_allocation.get("requested_budget_usd"))
+        if gpu_allocation.get("requested_budget_usd") is not None
+        else _number_field(budget, "budget_usd", "budgetUsd")
+    )
+    external_watchdog_ttl_seconds = int(
+        _number(
+            provider_limits.get("external_watchdog_ttl_seconds")
+            or launch_mode.get("external_watchdog_ttl_seconds"),
+            hard_timeout_seconds + int(_number(launch_mode.get("shutdown_grace_seconds"), 60) or 60),
+        )
+        or 0
+    )
+    provider_blockers = _string_list(provider_launch_request.get("blockers"))
+    provisioning_blockers = _string_list(gpu_result.get("blockers"))
+    scheduler_blockers = _string_list(scheduler_decision.get("blockers"))
+    live_provider_calls = bool(
+        provider_launch_request.get("live_provider_calls_performed")
+        or gpu_result.get("live_provider_calls_performed")
+        or sim_result.get("live_provider_calls_performed")
+    )
+    external_provider = provider != "fixture_local"
+    actual_gpu_seconds: float | None = None
+    actual_gpu_time_source = "not_observed"
+    if provider == "fixture_local":
+        actual_gpu_seconds = 0.0
+        actual_gpu_time_source = "fixture_local_no_gpu"
+    elif live_provider_calls and gpu_result.get("actual_gpu_seconds") is not None:
+        actual_gpu_seconds = _number(gpu_result.get("actual_gpu_seconds"), 0.0)
+        actual_gpu_time_source = "gpu_provisioning_result"
+    blockers = _dedupe([*scheduler_blockers, *provider_blockers, *provisioning_blockers])
+    status = (
+        "blocked_before_allocation"
+        if blockers
+        else "fixture_local_no_gpu"
+        if provider == "fixture_local"
+        else "ready_for_explicit_provider_launcher"
+        if gpu_result.get("status") == "request_manifest_ready"
+        else _string(gpu_result.get("status")) or "planned"
+    )
+    estimated_gpu_seconds = (
+        0
+        if status in {"blocked_before_allocation", "fixture_local_no_gpu"}
+        else hard_timeout_seconds
+    )
+    return {
+        "schema_version": GPU_COST_CONTROL_LEDGER_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "job_id": job_id,
+        "provider": provider,
+        "status": status,
+        "scheduler_decision_path": "scheduler_decision.json",
+        "worker_launch_plan_path": "worker_launch_plan.json",
+        "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+        "gpu_provisioning_result_path": "gpu_provisioning_result.json",
+        "simulator_service_result_path": "simulator_service_result.json",
+        "live_provider_calls_performed": live_provider_calls,
+        "execution_performed": bool(gpu_result.get("execution_performed")),
+        "budget": {
+            "requested_budget_usd": requested_budget_usd,
+            "budget_required_before_live_allocation": bool(
+                cost_controls.get("budget_required_before_live_allocation")
+            ),
+            "gpu_spend_approved_by_webapp": bool(
+                gpu_allocation.get("gpu_spend_approved_by_webapp")
+            ),
+            "allocation_allowed_by_webapp": bool(
+                gpu_allocation.get("allocation_allowed_by_webapp")
+            ),
+        },
+        "worker_limits": {
+            "max_active_workers": int(
+                _number(provider_limits.get("max_active_workers") or launch_mode.get("max_active_workers"), 1)
+                or 1
+            ),
+            "customer_concurrency_limit_required": bool(
+                cost_controls.get("customer_concurrency_limit_required")
+            ),
+            "hard_timeout_seconds": hard_timeout_seconds,
+            "max_billable_gpu_seconds": hard_timeout_seconds,
+            "idle_timeout_seconds": int(
+                _number(
+                    provider_limits.get("idle_timeout_seconds")
+                    or launch_mode.get("idle_timeout_seconds"),
+                    0,
+                )
+                or 0
+            ),
+            "idle_shutdown_required": bool(
+                provider_limits.get("idle_shutdown_required")
+                or launch_mode.get("idle_shutdown_required")
+            ),
+            "scale_to_zero_default": bool(provider_limits.get("scale_to_zero_default")),
+            "external_watchdog_ttl_required": bool(
+                provider_limits.get("external_watchdog_ttl_required")
+                or launch_mode.get("external_watchdog_ttl_required")
+            ),
+            "external_watchdog_ttl_seconds": external_watchdog_ttl_seconds,
+            "external_watchdog_owner": provider_limits.get("external_watchdog_owner")
+            or launch_mode.get("external_watchdog_owner"),
+        },
+        "gpu_time": {
+            "estimated_gpu_seconds": estimated_gpu_seconds,
+            "actual_gpu_seconds": actual_gpu_seconds,
+            "actual_gpu_time_source": actual_gpu_time_source,
+            "actual_gpu_time_record_required": bool(
+                artifact_finalizer.get("record_actual_gpu_time_required")
+                or cost_controls.get("record_actual_gpu_time_required")
+            ),
+            "actual_gpu_time_record_present": actual_gpu_seconds is not None,
+        },
+        "artifact_finalizer": {
+            "upload_before_shutdown_required": bool(
+                artifact_finalizer.get("upload_before_shutdown_required")
+                or cost_controls.get("finalizer_must_upload_artifacts_before_shutdown")
+            ),
+            "artifact_upload_contract_path": "worker_launch_plan.json",
+            "shutdown_after_artifacts_required": external_provider,
+        },
+        "gate_requirements": {
+            "env_BLUEPRINT_ALLOW_GPU_PROVISIONING_required": bool(
+                gate_requirements.get("env_BLUEPRINT_ALLOW_GPU_PROVISIONING_required")
+            ),
+            "env_BLUEPRINT_ALLOW_GPU_PROVISIONING_present": bool(
+                gate_requirements.get("env_BLUEPRINT_ALLOW_GPU_PROVISIONING_present")
+            ),
+            "cli_allow_gpu_provisioning_required": bool(
+                gate_requirements.get("cli_allow_gpu_provisioning_required")
+            ),
+            "cli_allow_gpu_provisioning_present": bool(
+                gate_requirements.get("cli_allow_gpu_provisioning_present")
+            ),
+            "provider_secret_values_in_artifact": False,
+        },
+        "blockers": blockers,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -1090,9 +2517,7 @@ def _simulator_request(
         "required_variation_names": list(
             scenario_eval_matrix.get("required_variation_names") or []
         ),
-        "variation_names_covered": list(
-            scenario_eval_matrix.get("variation_names_covered") or []
-        ),
+        "variation_names_covered": list(scenario_eval_matrix.get("variation_names_covered") or []),
         "scenario_variation_instances_path": (
             "../simulation_automation/scenario_variation_instances.json"
             if scenario_eval_matrix.get("variation_instance_count")
@@ -1303,13 +2728,24 @@ def _run_command_simulator(
             simulator_output_payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
             simulator_output_payload = None
+    output_mapping = _mapping(simulator_output_payload)
+    isaac_sim_execution_proven = bool(output_mapping.get("isaac_sim_execution_proven"))
+    isaac_robot_asset_execution_proven = bool(
+        output_mapping.get("isaac_robot_asset_execution_proven")
+    )
+    unitree_g1_asset_spawned = bool(
+        output_mapping.get("unitree_g1_asset_spawned")
+        or output_mapping.get("unitree_g1_robot_asset_spawned")
+    )
     return {
         "schema_version": SIMULATOR_SERVICE_RESULT_SCHEMA_VERSION,
         "generated_at": generated_at,
         "framework": simulator,
         "status": status,
         "reason": None if status == "completed" else f"simulator_exit_code:{completed.returncode}",
-        "blockers": [] if status == "completed" else [f"simulator_exit_code:{completed.returncode}"],
+        "blockers": []
+        if status == "completed"
+        else [f"simulator_exit_code:{completed.returncode}"],
         "command": command,
         "raw_command": command_text,
         "execution_performed": True,
@@ -1323,15 +2759,26 @@ def _run_command_simulator(
         "simulator_output_payload": simulator_output_payload,
         "simulators_run": True,
         "simulator_execution_proven": status == "completed",
+        "isaac_sim_execution_proven": status == "completed" and isaac_sim_execution_proven,
+        "isaac_robot_asset_execution_proven": (
+            status == "completed" and isaac_robot_asset_execution_proven
+        ),
+        "unitree_g1_asset_spawned": status == "completed" and unitree_g1_asset_spawned,
         "robot_policy_execution_proven": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "simulator_execution_proven": status == "completed",
+            "isaac_sim_execution_proven": status == "completed" and isaac_sim_execution_proven,
+            "isaac_robot_asset_execution_proven": (
+                status == "completed" and isaac_robot_asset_execution_proven
+            ),
         },
     }
 
 
-def _copy_site_eval_artifacts(*, pipeline_dir: Path, job_dir: Path, generated_at: str) -> Dict[str, Dict[str, Any]]:
+def _copy_site_eval_artifacts(
+    *, pipeline_dir: Path, job_dir: Path, generated_at: str
+) -> Dict[str, Dict[str, Any]]:
     automation_dir = pipeline_dir / "simulation_automation"
     sources = {
         "normalized_attempt_trace": automation_dir / "normalized_simulator_attempt_trace.json",
@@ -1409,12 +2856,8 @@ def _attempt_for_matrix_run(
     task_id = _string(matrix_run.get("task_id") or matrix_run.get("taskId"))
     scenario_id = _string(matrix_run.get("scenario_id") or matrix_run.get("scenarioId"))
     for attempt in attempts:
-        if (
-            _string(attempt.get("scenario_id") or attempt.get("scenarioId")) == scenario_id
-            and (
-                not task_id
-                or _string(attempt.get("task_id") or attempt.get("taskId")) == task_id
-            )
+        if _string(attempt.get("scenario_id") or attempt.get("scenarioId")) == scenario_id and (
+            not task_id or _string(attempt.get("task_id") or attempt.get("taskId")) == task_id
         ):
             return attempt
     return attempts[fallback_index % len(attempts)]
@@ -1453,7 +2896,9 @@ def _expand_fixture_artifacts_to_scenario_eval_runs(
             fallback_index=index,
         )
         run_id = _string(matrix_run.get("scenario_eval_run_id"))
-        source_attempt_id = _string(source.get("attempt_id") or source.get("attemptId")) or "fixture_attempt"
+        source_attempt_id = (
+            _string(source.get("attempt_id") or source.get("attemptId")) or "fixture_attempt"
+        )
         expanded = {
             **dict(source),
             "attempt_id": f"{source_attempt_id}__{run_id}",
@@ -1463,7 +2908,9 @@ def _expand_fixture_artifacts_to_scenario_eval_runs(
                 or matrix_run.get("scenarioVariationInstanceId")
             )
             or None,
-            "variation_name": _string(matrix_run.get("variation_name") or matrix_run.get("variationName"))
+            "variation_name": _string(
+                matrix_run.get("variation_name") or matrix_run.get("variationName")
+            )
             or None,
             "task_id": _string(matrix_run.get("task_id") or matrix_run.get("taskId")),
             "scenario_id": _string(matrix_run.get("scenario_id") or matrix_run.get("scenarioId")),
@@ -1626,7 +3073,9 @@ def _run_fixture_simulator(
     blockers = _string_list(trace.get("blockers"))
     if not blockers:
         blocked_manifest = _read_optional_mapping(
-            pipeline_dir / "simulation_automation" / "site_eval_fixture_runner_blocked_manifest.json"
+            pipeline_dir
+            / "simulation_automation"
+            / "site_eval_fixture_runner_blocked_manifest.json"
         )
         blockers = _string_list(blocked_manifest.get("blockers"))
     if _string(trace.get("status")) == "completed":
@@ -1837,7 +3286,11 @@ def _run_simulator(
         reason=_string(result.get("reason")) or None,
     )
     result = _attach_simulator_provider_manifest(result)
-    return result, copied, ["simulator_service_blocked"] if result.get("status") == "blocked" else []
+    return (
+        result,
+        copied,
+        ["simulator_service_blocked"] if result.get("status") == "blocked" else [],
+    )
 
 
 def _training_request(
@@ -1847,8 +3300,7 @@ def _training_request(
 ) -> Dict[str, Any]:
     operation = _string(request.get("operation") or "evaluate_only")
     preference = _mapping(
-        request.get("cosmos_training_preference")
-        or request.get("cosmosTrainingPreference")
+        request.get("cosmos_training_preference") or request.get("cosmosTrainingPreference")
     )
     if operation == "evaluate_only":
         status = "not_requested"
@@ -2054,9 +3506,7 @@ def _standard_policy_scorecard(attempts: Sequence[Mapping[str, Any]]) -> Dict[st
     return {
         "success_rate": round(successes / float(attempt_count), 6),
         "cycle_time": {
-            "mean_seconds": round(sum(cycle_times) / len(cycle_times), 6)
-            if cycle_times
-            else None,
+            "mean_seconds": round(sum(cycle_times) / len(cycle_times), 6) if cycle_times else None,
             "sample_count": len(cycle_times),
         },
         "intervention_rate": round(intervention_count / float(attempt_count), 6),
@@ -2098,9 +3548,7 @@ def _evaluation_result(
         blockers = _string_list(simulator_result.get("blockers"))
     else:
         trace = _mapping(copied_artifacts.get("normalized_attempt_trace"))
-        attempts = [
-            item for item in trace.get("attempts", []) or [] if isinstance(item, Mapping)
-        ]
+        attempts = [item for item in trace.get("attempts", []) or [] if isinstance(item, Mapping)]
         trace_status = _string(trace.get("status"))
         if trace_status.startswith("blocked") or trace_status in {"not_available", "missing"}:
             status = "blocked"
@@ -2202,7 +3650,7 @@ def _write_robot_eval_report(
     live_closure: Mapping[str, Any],
     proof_boundary: Mapping[str, Any],
     generated_at: str,
-    ) -> Dict[str, Any]:
+) -> Dict[str, Any]:
     deployment_ledger = _mapping(deployment_validation.get("ledger"))
     calibration = _mapping(deployment_validation.get("calibration_report"))
     followup_plan = _mapping(deployment_validation.get("followup_plan"))
@@ -2265,9 +3713,7 @@ def _write_robot_eval_report(
             "real_world_outcome_records_present": bool(
                 deployment_ledger.get("real_world_outcome_records_present")
             ),
-            "real_world_outcome_proven": bool(
-                deployment_ledger.get("real_world_outcome_proven")
-            ),
+            "real_world_outcome_proven": bool(deployment_ledger.get("real_world_outcome_proven")),
             "owner_evidence_record_count": int(
                 deployment_ledger.get("owner_evidence_record_count") or 0
             ),
@@ -2291,9 +3737,7 @@ def _write_robot_eval_report(
         },
         "predicted_vs_actual": {
             "sim_vs_real_calibration_status": calibration.get("status"),
-            "sim_vs_real_calibration_score": calibration.get(
-                "sim_vs_real_calibration_score"
-            ),
+            "sim_vs_real_calibration_score": calibration.get("sim_vs_real_calibration_score"),
             "prediction_vs_actual_deployment_summary_path": (
                 "prediction_vs_actual_deployment_summary.json"
             ),
@@ -2312,31 +3756,21 @@ def _write_robot_eval_report(
             "requirement_count": _mapping(live_closure.get("requirement_coverage")).get(
                 "requirement_count"
             ),
-            "passed_count": _mapping(live_closure.get("requirement_coverage")).get(
-                "passed_count"
-            ),
+            "passed_count": _mapping(live_closure.get("requirement_coverage")).get("passed_count"),
             "blocked_count": _mapping(live_closure.get("requirement_coverage")).get(
                 "blocked_count"
             ),
             "blocked_requirement_ids": _string_list(
-                _mapping(live_closure.get("requirement_coverage")).get(
-                    "blocked_requirement_ids"
-                )
+                _mapping(live_closure.get("requirement_coverage")).get("blocked_requirement_ids")
             ),
         },
         "proof_boundary": {
-            "simulator_execution_proven": bool(
-                proof_boundary.get("simulator_execution_proven")
-            ),
+            "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
             "robot_policy_execution_proven": bool(
                 proof_boundary.get("robot_policy_execution_proven")
             ),
-            "real_world_outcome_proven": bool(
-                proof_boundary.get("real_world_outcome_proven")
-            ),
-            "physics_contact_validated": bool(
-                proof_boundary.get("physics_contact_validated")
-            ),
+            "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
+            "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
             "safety_validated": bool(proof_boundary.get("safety_validated")),
             "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
             "public_claim_upgrade_allowed": bool(
@@ -2352,9 +3786,7 @@ def _write_robot_eval_report(
             "prediction_vs_actual_deployment_summary": (
                 "prediction_vs_actual_deployment_summary.json"
             ),
-            "real_world_validation_followup_plan": (
-                "real_world_validation_followup_plan.json"
-            ),
+            "real_world_validation_followup_plan": ("real_world_validation_followup_plan.json"),
             "real_world_validation_followup_request_queue": (
                 "real_world_validation_followup_request_queue.json"
             ),
@@ -2378,7 +3810,9 @@ def _proof_boundary(
     generated_at: str,
 ) -> Dict[str, Any]:
     training_completed = bool(training_result.get("training_completed"))
-    simulator_proven = bool(simulator_result.get("simulator_execution_proven")) and simulator != "fixture"
+    simulator_proven = (
+        bool(simulator_result.get("simulator_execution_proven")) and simulator != "fixture"
+    )
     policy_execution_proven = bool(
         _mapping(policy_execution_manifest).get("robot_policy_execution_proven")
     )
@@ -2500,6 +3934,11 @@ def _job_plan(
             "request_loaded",
             "validation",
             "agent_orchestration_plan",
+            "scheduler_decision",
+            "worker_launch_plan",
+        "gpu_provider_launch_request",
+        "worker_manifest",
+        "gpu_cost_control_ledger",
             "gpu_provisioning",
             "simulator_service",
             "training",
@@ -2559,7 +3998,16 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "job_validation.json",
         "job_plan.json",
         "agent_orchestration_plan.json",
+        "scheduler_decision.json",
+        "worker_launch_plan.json",
         "gpu_provisioning_request.json",
+        "gpu_provider_launch_request.json",
+        "gpu_provider_launcher_result.json",
+        "gpu_provider_launcher.stdout.log",
+        "gpu_provider_launcher.stderr.log",
+        "runpod_provider_adapter_result.json",
+        "worker_manifest.json",
+        "gpu_cost_control_ledger.json",
         "gpu_provisioning_result.json",
         "simulator_service_request.json",
         "simulator_service_result.json",
@@ -2609,6 +4057,11 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "delivery_manifest.json",
         "signed_access_manifest.json",
         "live_operator_ledger.json",
+        "startup_architecture_audit.json",
+        "worker_runtime_manifest.json",
+        "worker_runtime_preflight.json",
+        "worker_runtime_preflight.stdout.log",
+        "worker_runtime_preflight.stderr.log",
         "dataset_card.json",
         "license_manifest.json",
         "package_index.json",
@@ -2698,6 +4151,10 @@ def build_robot_eval_job(
         cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
         allow_cpu_preflight_render=allow_cpu_preflight_render,
     )
+    owner_gpu_cpu_preflight = (
+        _read_optional_mapping(pipeline_dir / "simulation_automation" / "cpu_preflight_manifest.json")
+        or cpu_preflight
+    )
     scenario_eval_matrix = build_scenario_eval_matrix(
         capture_root=context.capture_root,
         job_dir=job_dir,
@@ -2748,6 +4205,7 @@ def build_robot_eval_job(
         "scene_preflight": scene_preflight,
         "episode_specs": episode_specs,
         "cpu_preflight": cpu_preflight,
+        "owner_gpu_cpu_preflight": owner_gpu_cpu_preflight,
         "simulation_automation": simulation_automation,
         "scenario_eval_matrix": scenario_eval_matrix,
         "robot_pov_observation_manifest": robot_pov_manifest,
@@ -2772,6 +4230,19 @@ def build_robot_eval_job(
     )
     _write_job_json(job_dir, "job_plan.json", job_plan)
 
+    scheduler_decision = _build_scheduler_decision(
+        request=request,
+        job_id=job_id,
+        provisioner=provisioner,
+        simulator=simulator,
+        pipeline_dir=pipeline_dir,
+        cpu_preflight=owner_gpu_cpu_preflight,
+        budget_usd=budget_usd,
+        timeout_seconds=timeout_seconds,
+        generated_at=generated_at,
+    )
+    _write_job_json(job_dir, "scheduler_decision.json", scheduler_decision)
+
     gpu_request = _gpu_provisioning_request(
         request=request,
         job_id=job_id,
@@ -2781,9 +4252,45 @@ def build_robot_eval_job(
         generated_at=generated_at,
     )
     _write_job_json(job_dir, "gpu_provisioning_request.json", gpu_request)
+    worker_launch_plan = _build_worker_launch_plan(
+        request=request,
+        job_id=job_id,
+        provisioner=provisioner,
+        simulator=simulator,
+        scheduler_decision=scheduler_decision,
+        timeout_seconds=timeout_seconds,
+        generated_at=generated_at,
+    )
+    _write_job_json(job_dir, "worker_launch_plan.json", worker_launch_plan)
+    worker_manifest = _build_worker_manifest(
+        request=request,
+        job_id=job_id,
+        capture_root=context.capture_root,
+        provisioner=provisioner,
+        simulator=simulator,
+        worker_launch_plan=worker_launch_plan,
+        allowed_simulators=allowed_simulators,
+        simulator_commands=dict(simulator_commands or {}),
+        timeout_seconds=timeout_seconds,
+        budget_usd=budget_usd,
+        generated_at=generated_at,
+    )
+    _write_job_json(job_dir, "worker_manifest.json", worker_manifest)
+    provider_launch_request = _build_gpu_provider_launch_request(
+        request_manifest=gpu_request,
+        scheduler_decision=scheduler_decision,
+        worker_launch_plan=worker_launch_plan,
+        worker_manifest=worker_manifest,
+        allow_gpu_provisioning=allow_gpu_provisioning,
+        generated_at=generated_at,
+    )
+    _write_job_json(job_dir, "gpu_provider_launch_request.json", provider_launch_request)
     gpu_result = _gpu_provisioning_result(
         request_manifest=gpu_request,
         validation=validation,
+        scheduler_decision=scheduler_decision,
+        worker_launch_plan=worker_launch_plan,
+        provider_launch_request=provider_launch_request,
         allow_gpu_provisioning=allow_gpu_provisioning,
         generated_at=generated_at,
     )
@@ -2844,9 +4351,7 @@ def build_robot_eval_job(
             allow_live_agents_sdk=allow_live_agents_sdk,
             allow_live_codex_sdk=allow_live_codex_sdk,
         )
-        copied_artifacts["normalized_attempt_trace"] = _mapping(
-            arena_ingest.get("attempt_trace")
-        )
+        copied_artifacts["normalized_attempt_trace"] = _mapping(arena_ingest.get("attempt_trace"))
         copied_artifacts["failure_labels"] = _mapping(arena_ingest.get("failure_labels"))
         copied_artifacts["arena_eval_metrics"] = _mapping(arena_ingest.get("metrics"))
         if (
@@ -2871,6 +4376,23 @@ def build_robot_eval_job(
             }
             simulator_blockers = []
             _write_job_json(job_dir, "simulator_service_result.json", sim_result)
+
+    gpu_cost_ledger = _gpu_cost_control_ledger(
+        request=request,
+        scheduler_decision=scheduler_decision,
+        worker_launch_plan=worker_launch_plan,
+        provider_launch_request=provider_launch_request,
+        gpu_result=gpu_result,
+        sim_result=sim_result,
+        generated_at=generated_at,
+    )
+    _write_job_json(job_dir, "gpu_cost_control_ledger.json", gpu_cost_ledger)
+    gpu_result = {
+        **dict(gpu_result),
+        "gpu_cost_control_ledger_path": "gpu_cost_control_ledger.json",
+        "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),
+    }
+    _write_job_json(job_dir, "gpu_provisioning_result.json", gpu_result)
 
     robot_pov_manifest = build_robot_pov_observation_bundle(
         capture_root=context.capture_root,
@@ -2955,29 +4477,33 @@ def build_robot_eval_job(
     missing_inputs: List[str] = []
     evidence: Dict[str, Any] = {
         "job_validation_status": validation.get("status"),
+        "scheduler_decision_status": scheduler_decision.get("status"),
+        "scheduler_decision_blockers": _string_list(scheduler_decision.get("blockers")),
+        "worker_launch_plan_status": worker_launch_plan.get("status"),
+        "worker_launch_plan_blockers": _string_list(worker_launch_plan.get("blockers")),
+        "gpu_provider_launch_request_status": provider_launch_request.get("status"),
+        "gpu_provider_launch_request_blockers": _string_list(
+            provider_launch_request.get("blockers")
+        ),
+        "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),
+        "gpu_cost_control_ledger_blockers": _string_list(gpu_cost_ledger.get("blockers")),
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
         "robot_pov_status": robot_pov_manifest.get("status"),
-        "robot_pov_evidence_proven": bool(
-            robot_pov_manifest.get("robot_pov_evidence_proven")
-        ),
+        "robot_pov_evidence_proven": bool(robot_pov_manifest.get("robot_pov_evidence_proven")),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "deployment_outcome_status": _mapping(deployment_validation.get("ledger")).get("status"),
         "real_world_validation_followup_plan_status": _mapping(
             deployment_validation.get("followup_plan")
         ).get("status"),
         "real_world_outcome_records_present": bool(
-            _mapping(deployment_validation.get("ledger")).get(
-                "real_world_outcome_records_present"
-            )
+            _mapping(deployment_validation.get("ledger")).get("real_world_outcome_records_present")
         ),
         "owner_evidence_record_count": int(
             _mapping(deployment_validation.get("ledger")).get("owner_evidence_record_count") or 0
         ),
         "missing_owner_evidence_record_ids": _string_list(
-            _mapping(deployment_validation.get("ledger")).get(
-                "missing_owner_evidence_record_ids"
-            )
+            _mapping(deployment_validation.get("ledger")).get("missing_owner_evidence_record_ids")
         ),
         "sim_vs_real_calibration_status": _mapping(
             deployment_validation.get("calibration_report")
@@ -3096,15 +4622,21 @@ def build_robot_eval_job(
         "cpu_simulator_preflight_status": cpu_preflight.get("status"),
         "simulation_automation_status": simulation_automation.get("status"),
         "validation_status": validation.get("status"),
+        "scheduler_decision_status": scheduler_decision.get("status"),
+        "scheduler_decision_path": "scheduler_decision.json",
+        "worker_launch_plan_status": worker_launch_plan.get("status"),
+        "worker_launch_plan_path": "worker_launch_plan.json",
+        "gpu_provider_launch_request_status": provider_launch_request.get("status"),
+        "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+        "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),
+        "gpu_cost_control_ledger_path": "gpu_cost_control_ledger.json",
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
         "scenario_eval_matrix_status": scenario_eval_matrix.get("status"),
         "scenario_eval_run_count": scenario_eval_matrix.get("scenario_eval_run_count"),
         "scenario_variation_names_covered": scenario_eval_matrix.get("variation_names_covered"),
         "robot_pov_observation_status": robot_pov_manifest.get("status"),
-        "robot_pov_evidence_proven": bool(
-            robot_pov_manifest.get("robot_pov_evidence_proven")
-        ),
+        "robot_pov_evidence_proven": bool(robot_pov_manifest.get("robot_pov_evidence_proven")),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "arena_result_ingest_status": _mapping(arena_ingest.get("run_manifest")).get("status")
         if arena_ingest
@@ -3190,15 +4722,18 @@ def build_robot_eval_job(
             "policy_execution_manifest": "policy_execution_manifest.json",
             "policy_execution_trace": "policy_execution_trace.json",
             "policy_execution_trace_jsonl": "policy_execution_trace.jsonl",
+            "scheduler_decision": "scheduler_decision.json",
+            "worker_launch_plan": "worker_launch_plan.json",
+            "gpu_provider_launch_request": "gpu_provider_launch_request.json",
+            "worker_manifest": "worker_manifest.json",
+            "gpu_cost_control_ledger": "gpu_cost_control_ledger.json",
             "deployment_outcome_intake_manifest": "deployment_outcome_intake_manifest.json",
             "deployment_outcome_ledger": "deployment_outcome_ledger.json",
             "sim_vs_real_calibration_report": "sim_vs_real_calibration_report.json",
             "prediction_vs_actual_deployment_summary": (
                 "prediction_vs_actual_deployment_summary.json"
             ),
-            "real_world_validation_followup_plan": (
-                "real_world_validation_followup_plan.json"
-            ),
+            "real_world_validation_followup_plan": ("real_world_validation_followup_plan.json"),
             "real_world_validation_followup_request_queue": (
                 "real_world_validation_followup_request_queue.json"
             ),
@@ -3227,15 +4762,11 @@ def build_robot_eval_job(
         "payments_touched": False,
         "deployments_performed": False,
         "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
-        "robot_policy_execution_proven": bool(
-            proof_boundary.get("robot_policy_execution_proven")
-        ),
+        "robot_policy_execution_proven": bool(proof_boundary.get("robot_policy_execution_proven")),
         "real_world_outcome_records_present": bool(
             proof_boundary.get("real_world_outcome_records_present")
         ),
-        "owner_evidence_record_count": int(
-            proof_boundary.get("owner_evidence_record_count") or 0
-        ),
+        "owner_evidence_record_count": int(proof_boundary.get("owner_evidence_record_count") or 0),
         "missing_owner_evidence_record_ids": _string_list(
             proof_boundary.get("missing_owner_evidence_record_ids")
         ),
@@ -3269,6 +4800,10 @@ def build_robot_eval_job(
         {
             "job_id": job_id,
             "validation": validation,
+            "scheduler_decision": scheduler_decision,
+            "worker_launch_plan": worker_launch_plan,
+            "provider_launch_request": provider_launch_request,
+            "gpu_cost_control_ledger": gpu_cost_ledger,
             "gpu_result": gpu_result,
             "sim_result": sim_result,
             "robot_pov_manifest": robot_pov_manifest,
@@ -3293,6 +4828,19 @@ def build_robot_eval_job(
         }
     )
     _write_job_json(job_dir, "job_run_manifest.json", run_manifest)
+    from .robot_eval_startup_architecture_audit import (
+        build_robot_eval_startup_architecture_audit,
+    )
+
+    startup_architecture_audit = build_robot_eval_startup_architecture_audit(
+        job_dir=job_dir,
+        output_path=job_dir / "startup_architecture_audit.json",
+    )
+    run_manifest["startup_architecture_audit_status"] = startup_architecture_audit.get("status")
+    run_manifest["startup_architecture_audit_path"] = "startup_architecture_audit.json"
+    run_manifest["startup_architecture_compliant"] = bool(
+        startup_architecture_audit.get("architecture_compliant")
+    )
     run_manifest["artifacts"] = _artifact_paths(job_dir)
     _write_job_json(job_dir, "job_run_manifest.json", run_manifest)
 
@@ -3318,6 +4866,42 @@ def _job_id_from_request(path: Path, request: Mapping[str, Any]) -> str:
     )
     cleaned = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in raw)
     return cleaned.strip("-_") or path.stem
+
+
+def _webapp_request_identity(request: Mapping[str, Any]) -> tuple[str, ...] | None:
+    site_package = _mapping(request.get("site_package") or request.get("sitePackage"))
+    source = _mapping(request.get("source"))
+    selection = _mapping(source.get("selection_state") or source.get("selectionState"))
+    source_kind = _string(
+        request.get("source_kind") or source.get("source_kind") or selection.get("source_kind")
+    )
+    identity = (
+        _string(request.get("buyer_request_id") or request.get("buyerRequestId")),
+        _string(site_package.get("site_submission_id") or site_package.get("siteSubmissionId") or selection.get("site_submission_id")),
+        _string(site_package.get("capture_job_id") or site_package.get("captureJobId") or selection.get("capture_job_id")),
+        _string(site_package.get("capture_id") or site_package.get("captureId") or selection.get("capture_id")),
+        _string(site_package.get("site_slug") or site_package.get("siteSlug") or selection.get("site_slug")),
+        source_kind,
+    )
+    if not any(identity):
+        return None
+    if source_kind == "webapp_route_forwarding_proof":
+        return (
+            "webapp_route_forwarding_proof",
+            _string(site_package.get("capture_root") or site_package.get("captureRoot")),
+            identity[3],
+            identity[4],
+            identity[5],
+        )
+    return identity
+
+
+def _inbox_request_sort_key(path: Path) -> tuple[int, str]:
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    return (mtime_ns, path.name)
 
 
 def run_robot_eval_job_request_inbox(
@@ -3360,12 +4944,45 @@ def run_robot_eval_job_request_inbox(
     ensure_dir(queue_root)
     generated_at = utc_now_iso()
     request_paths = sorted(
-        path for path in inbox_path.glob("*.json") if path.is_file() and not path.name.startswith(".")
+        path
+        for path in inbox_path.glob("*.json")
+        if path.is_file() and not path.name.startswith(".")
     )
-    jobs: List[Dict[str, Any]] = []
+    loaded_requests: List[Dict[str, Any]] = []
     for request_path in request_paths:
         request = _read_job_request(request_path)
         request.setdefault("schema_version", JOB_REQUEST_SCHEMA_VERSION)
+        loaded_requests.append(
+            {
+                "path": request_path,
+                "request": request,
+                "identity": _webapp_request_identity(request),
+                "sort_key": _inbox_request_sort_key(request_path),
+            }
+        )
+    selected_requests: List[Dict[str, Any]] = []
+    selected_by_identity: Dict[tuple[str, ...], Dict[str, Any]] = {}
+    superseded_requests: List[Dict[str, Any]] = []
+    for item in loaded_requests:
+        identity = item.get("identity")
+        if identity is None:
+            selected_requests.append(item)
+            continue
+        previous = selected_by_identity.get(identity)
+        if previous is None:
+            selected_by_identity[identity] = item
+            continue
+        if item["sort_key"] >= previous["sort_key"]:
+            superseded_requests.append(previous)
+            selected_by_identity[identity] = item
+        else:
+            superseded_requests.append(item)
+    selected_requests.extend(selected_by_identity.values())
+    selected_requests = sorted(selected_requests, key=lambda item: str(item["path"]))
+    jobs: List[Dict[str, Any]] = []
+    for item in selected_requests:
+        request_path = item["path"]
+        request = dict(item["request"])
         job_id = _job_id_from_request(request_path, request)
         request["job_id"] = job_id
         request["capture_root"] = str(context.capture_root)
@@ -3425,7 +5042,18 @@ def run_robot_eval_job_request_inbox(
         "capture_root": str(context.capture_root),
         "inbox_dir": str(inbox_path),
         "queue_root": str(queue_root),
+        "input_request_count": len(loaded_requests),
         "processed_count": len(jobs),
+        "superseded_request_count": len(superseded_requests),
+        "superseded_requests": [
+            {
+                "source_request_path": str(item["path"]),
+                "job_id": _job_id_from_request(item["path"], item["request"]),
+                "identity": list(item["identity"]) if item.get("identity") else None,
+                "reason": "superseded_by_newer_webapp_request_for_same_identity",
+            }
+            for item in sorted(superseded_requests, key=lambda entry: str(entry["path"]))
+        ],
         "jobs": jobs,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -3460,7 +5088,9 @@ def _parse_policy_execution_commands(values: Sequence[str] | None) -> Dict[str, 
     return commands
 
 
-def _agent_adapter_from_mode(mode: str, *, allow_live_operator: bool) -> RobotEvalJobAgentAdapter | None:
+def _agent_adapter_from_mode(
+    mode: str, *, allow_live_operator: bool
+) -> RobotEvalJobAgentAdapter | None:
     if mode == "fake":
         return FakeRobotEvalJobAgentAdapter()
     if mode == "agents-sdk":
@@ -3585,9 +5215,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         simulator_commands = _parse_simulator_commands(args.simulator_command)
-        policy_execution_commands = _parse_policy_execution_commands(
-            args.policy_execution_command
-        )
+        policy_execution_commands = _parse_policy_execution_commands(args.policy_execution_command)
         if args.job_request_inbox:
             result = run_robot_eval_job_request_inbox(
                 capture_root=args.capture_root,
@@ -3633,7 +5261,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[robot-eval-job] processed_count={result['processed_count']}")
             return 0
         if not args.job_request or not args.job_id:
-            raise ValueError("--job-request and --job-id are required unless --job-request-inbox is provided")
+            raise ValueError(
+                "--job-request and --job-id are required unless --job-request-inbox is provided"
+            )
         result = build_robot_eval_job(
             capture_root=args.capture_root,
             job_request=args.job_request,

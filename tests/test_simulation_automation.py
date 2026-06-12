@@ -261,6 +261,8 @@ def _write_valid_owner_gpu_proof(capture_root: Path) -> Path:
     scene_load = proof_root / "owner_scene_load_trace.json"
     spawn_trace = proof_root / "owner_spawn_pose_trace.json"
     action_trace = proof_root / "owner_action_policy_trace.json"
+    default_policy = proof_root / "owner_default_smoke_policy.json"
+    sim_robot_pov = proof_root / "owner_sim_robot_pov_evidence_manifest.json"
     artifact_manifest = proof_root / "owner_artifact_manifest.json"
     stdout.write_text("loaded scene\n", encoding="utf-8")
     stderr.write_text("", encoding="utf-8")
@@ -271,6 +273,12 @@ def _write_valid_owner_gpu_proof(capture_root: Path) -> Path:
             "scene_loaded": True,
             "simulator_backend": "isaac_sim",
             "scene_asset": "worldlabs_collider.glb",
+            "robot_asset": {
+                "name": "Unitree G1",
+                "uri_or_path": "Robots/Unitree/G1/g1.usd",
+                "source": "isaac_sim_robot_assets",
+                "asset_class": "humanoid",
+            },
         },
     )
     _write_json(
@@ -279,21 +287,57 @@ def _write_valid_owner_gpu_proof(capture_root: Path) -> Path:
             "status": "validated",
             "spawn_pose_loaded": True,
             "spawn_pose_id": "spawn-1",
+            "robot_asset": {
+                "name": "Unitree G1",
+                "uri_or_path": "Robots/Unitree/G1/g1.usd",
+                "source": "isaac_sim_robot_assets",
+                "asset_class": "humanoid",
+            },
         },
     )
     _write_json(
         action_trace,
         {
             "status": "completed",
-            "actions": [{"t": 0.0, "action": "noop"}],
-            "policy_id": "owner-policy-a",
+            "default_policy_executed": True,
+            "actions": [
+                {
+                    "t": 0.0,
+                    "name": "walk_to_target",
+                    "target": "walk_to_target_pose",
+                    "status": "attempted",
+                }
+            ],
+            "policy_id": "blueprint_default_walk_to_target_smoke_policy",
+        },
+    )
+    _write_json(
+        default_policy,
+        {
+            "schema_version": "owner_default_smoke_policy.v1",
+            "policy_id": "blueprint_default_walk_to_target_smoke_policy",
+            "policy_kind": "walk_to_target",
+            "target": "walk_to_target_pose",
+        },
+    )
+    _write_json(
+        sim_robot_pov,
+        {
+            "schema_version": "owner_sim_robot_pov_evidence_manifest.v1",
+            "status": "complete",
+            "sim_robot_pov_captured": True,
+            "frames": [{"camera": "front_rgbd", "path": "owner-pov-frame-0001.png"}],
         },
     )
     _write_json(
         artifact_manifest,
         {
             "status": "complete",
-            "artifacts": [{"kind": "scene_load_trace", "path": str(scene_load)}],
+            "artifacts": [
+                {"kind": "scene_load_trace", "path": str(scene_load)},
+                {"kind": "policy_trace", "path": str(action_trace)},
+                {"kind": "sim_robot_pov", "path": str(sim_robot_pov)},
+            ],
         },
     )
     proof_path = automation_root / "gpu_owner_system_proof.json"
@@ -305,6 +349,12 @@ def _write_valid_owner_gpu_proof(capture_root: Path) -> Path:
             "simulator_backend": "isaac_sim",
             "simulator_version": "2026.1",
             "gpu_model": "RTX-6000",
+            "robot_asset": {
+                "name": "Unitree G1",
+                "uri_or_path": "Robots/Unitree/G1/g1.usd",
+                "source": "isaac_sim_robot_assets",
+                "asset_class": "humanoid",
+            },
             "command": "isaac-sim --headless --scene worldlabs_collider.glb",
             "started_at": "2026-06-06T10:00:00Z",
             "completed_at": "2026-06-06T10:04:00Z",
@@ -314,6 +364,9 @@ def _write_valid_owner_gpu_proof(capture_root: Path) -> Path:
             "scene_load_trace_uri_or_path": str(scene_load),
             "spawn_pose_validation_uri_or_path": str(spawn_trace),
             "action_or_policy_trace_uri_or_path": str(action_trace),
+            "default_smoke_policy_uri_or_path": str(default_policy),
+            "policy_execution_trace_uri_or_path": str(action_trace),
+            "sim_robot_pov_evidence_uri_or_path": str(sim_robot_pov),
             "artifact_manifest_uri_or_path": str(artifact_manifest),
             "pass_fail_criteria": {"passed": True},
             "operator_attestation": {
@@ -344,13 +397,94 @@ def test_owner_gpu_proof_ingestion_validates_required_artifacts_without_robot_cl
     assert validation["status"] == "accepted"
     assert proof_manifest["status"] == "accepted"
     assert proof_manifest["owner_gpu_simulator_execution_proven"] is True
+    assert proof_manifest["owner_gpu_default_policy_execution_proven"] is True
+    assert proof_manifest["owner_gpu_sim_robot_pov_evidence_proven"] is True
+    assert proof_manifest["isaac_sim_execution_proven"] is True
+    assert proof_manifest["isaac_robot_asset_execution_proven"] is True
+    assert proof_manifest["real_robot_pov_evidence_proven"] is False
     assert proof_manifest["robot_readiness_proven"] is False
     assert gpu_handoff["owner_gpu_simulator_execution_proven"] is True
+    assert gpu_handoff["owner_gpu_default_policy_execution_proven"] is True
+    assert gpu_handoff["owner_gpu_sim_robot_pov_evidence_proven"] is True
+    assert gpu_handoff["real_robot_pov_evidence_proven"] is False
     assert "owner_gpu_simulator_execution_not_run" not in gpu_handoff["blockers"]
+    assert gpu_handoff["claim_boundary"]["simulator_execution_proven"] is True
+    assert gpu_handoff["claim_boundary"]["owner_gpu_simulator_execution_proven"] is True
+    assert gpu_handoff["claim_boundary"]["owner_gpu_default_policy_execution_proven"] is True
+    assert gpu_handoff["claim_boundary"]["owner_gpu_sim_robot_pov_evidence_proven"] is True
+    assert gpu_handoff["claim_boundary"]["robot_readiness_proven"] is False
+    assert "simulator_execution_completed" not in gpu_handoff["claim_boundary"]["disallowed_claims"]
+    assert "robot_ready" in gpu_handoff["claim_boundary"]["disallowed_claims"]
+    assert "simulator load trace" not in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
+    assert "action or policy logs" not in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
+    assert "physics/contact validation logs" in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
     assert proof_boundary["simulator_execution_proven"] is True
+    assert proof_boundary["isaac_sim_execution_proven"] is True
+    assert proof_boundary["isaac_robot_asset_execution_proven"] is True
+    assert proof_boundary["owner_gpu_default_policy_execution_proven"] is True
+    assert proof_boundary["owner_gpu_sim_robot_pov_evidence_proven"] is True
     assert proof_boundary["robot_readiness_proven"] is False
+    assert "simulator_execution_completed" not in proof_boundary["claim_boundary"]["disallowed_claims"]
+    assert "robot-team policy/action logs beyond the default smoke policy" in proof_boundary["claim_boundary"]["proof_upgrade_requires"]
     assert run_manifest["owner_gpu_simulator_execution_proven"] is True
+    assert run_manifest["simulators_run"] is True
+    assert run_manifest["isaac_sim_execution_proven"] is True
+    assert run_manifest["isaac_robot_asset_execution_proven"] is True
+    assert run_manifest["owner_gpu_default_policy_execution_proven"] is True
+    assert run_manifest["owner_gpu_sim_robot_pov_evidence_proven"] is True
+    assert "simulator_execution_completed" not in run_manifest["claim_boundary"]["disallowed_claims"]
     assert result["claim_boundary"]["robot_readiness_proven"] is False
+
+
+def test_simulation_automation_surfaces_local_mujoco_g1_without_isaac_claim(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_worldlabs_and_marble_artifacts(capture_root)
+    local_smoke_dir = (
+        capture_root / "pipeline" / "simulation_automation" / "mujoco_g1_local_smoke"
+    )
+    _write_json(
+        local_smoke_dir / "mujoco_g1_local_smoke_manifest.json",
+        {
+            "schema_version": "local_mujoco_g1_walk_to_target_smoke_manifest.v1",
+            "status": "complete",
+            "simulator_backend": "mujoco",
+            "robot_asset": {
+                "name": "Unitree G1",
+                "uri_or_path": "output/external_assets/mujoco_menagerie/unitree_g1/g1.xml",
+                "source": "google_deepmind_mujoco_menagerie",
+                "asset_class": "humanoid_mjcf",
+            },
+            "asset_source_manifest": {
+                "source": "google_deepmind_mujoco_menagerie",
+                "policy_downloaded_from_online": False,
+            },
+            "local_cpu_mujoco_execution_proven": True,
+            "mujoco_g1_asset_execution_proven": True,
+            "unitree_g1_asset_spawned": True,
+            "default_sim_policy_execution_proven": True,
+            "sim_robot_pov_evidence_proven": True,
+            "isaac_sim_execution_proven": False,
+            "isaac_robot_asset_execution_proven": False,
+        },
+    )
+
+    build_simulation_automation(capture_root=capture_root)
+
+    automation_root = capture_root / "pipeline" / "simulation_automation"
+    proof_boundary = _read_json(automation_root / "proof_boundary.json")
+    run_manifest = _read_json(automation_root / "simulation_automation_run_manifest.json")
+
+    assert proof_boundary["local_mujoco_g1_asset_execution_proven"] is True
+    assert proof_boundary["mujoco_g1_asset_execution_proven"] is False
+    assert proof_boundary["isaac_sim_execution_proven"] is False
+    assert proof_boundary["isaac_robot_asset_execution_proven"] is False
+    assert run_manifest["local_mujoco_g1_asset_execution_proven"] is True
+    assert run_manifest["mujoco_g1_asset_execution_proven"] is False
+    assert run_manifest["remote_asset_downloads_performed"] is True
+    assert run_manifest["claim_boundary"]["local_mujoco_g1_asset_execution_proven"] is True
+    assert run_manifest["claim_boundary"]["isaac_sim_execution_proven"] is False
 
 
 def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path) -> None:

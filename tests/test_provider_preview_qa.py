@@ -220,6 +220,25 @@ def test_provider_preview_qa_passes_privacy_safe_worldlabs_input_packet(tmp_path
     assert manifest["status"] == "passed"
 
 
+def test_provider_preview_qa_accepts_local_full_frame_redaction_status(tmp_path: Path) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_safe_packet(root)
+    privacy_manifest = _read_json(root / "pipeline" / "privacy_processing_manifest.json")
+    privacy_manifest["status"] = "full_frame_redacted_local_proof"
+    privacy_manifest["mode"] = "full_frame_redaction"
+    privacy_manifest["local_repo_proof_only"] = True
+    privacy_manifest["production_review_required"] = True
+    _write_json(root / "pipeline" / "privacy_processing_manifest.json", privacy_manifest)
+    verification = _read_json(root / "pipeline" / "privacy_verification_report.json")
+    verification["status"] = "full_frame_redacted_local_proof"
+    _write_json(root / "pipeline" / "privacy_verification_report.json", verification)
+
+    result = validate_provider_preview_packet(capture_root=root, mode="production")
+
+    assert result["status"] == "passed"
+    assert result["redaction_proof"]["privacy_completed"] is True
+
+
 def test_provider_preview_qa_blocks_raw_bypass_in_production(tmp_path: Path, monkeypatch) -> None:
     root = _capture_root(tmp_path)
     _write_privacy_safe_packet(root)
@@ -283,6 +302,21 @@ def test_provider_preview_qa_requires_final_walkthrough_derivative_audit(
 
     assert result["status"] == "blocked"
     assert "worldlabs_input_not_final_walkthrough_derivative" in result["blockers"]
+
+
+def test_provider_preview_qa_propagates_blocked_worldlabs_request(tmp_path: Path) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_safe_packet(root)
+    request = _read_json(root / "pipeline" / "worldlabs_request_manifest.json")
+    request["status"] = "blocked"
+    request["blockers"] = ["rights_provenance_review_blocked"]
+    _write_json(root / "pipeline" / "worldlabs_request_manifest.json", request)
+
+    result = validate_provider_preview_packet(capture_root=root, mode="production")
+
+    assert result["status"] == "blocked"
+    assert "worldlabs_request_blocked" in result["blockers"]
+    assert "rights_provenance_review_blocked" in result["blockers"]
 
 
 def test_provider_preview_qa_requires_real_webapp_upstream_ids(tmp_path: Path) -> None:
@@ -408,3 +442,87 @@ def test_provider_preview_qa_uses_descriptor_fallback_for_failed_sync_payload(
     ]
     assert "missing_webapp_buyer_request_id" in result["blockers"]
     assert "missing_webapp_site_submission_id" not in result["blockers"]
+
+
+def test_provider_preview_qa_uses_webapp_route_proof_ids_without_live_claim(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_safe_packet(root)
+    _write_json(
+        root / "pipeline" / "provider_preview_status.json",
+        {
+            "schema_version": "v1",
+            "status": "ready_for_generation",
+            "provider_name": "world_labs",
+        },
+    )
+    _write_json(
+        root / "pipeline" / "provider_run_manifest.json",
+        {
+            "schema_version": "v1",
+            "status": "ready_for_generation",
+            "provider_name": "world_labs",
+        },
+    )
+    _write_json(
+        root / "pipeline" / "webapp_sync_result.json",
+        {
+            "status": "failed",
+            "reason": "site_submission_id or request_id is required",
+            "blocker": "webapp_sync_requires_upstream_request_job_bootstrap",
+        },
+    )
+    _write_json(
+        root / "pipeline" / "webapp_route_forwarding_proof" / "webapp_route_forwarding_proof.json",
+        {
+            "schema_version": "blueprint_webapp_route_forwarding_proof.v1",
+            "status": "forwarded_to_pipeline_intake",
+            "job_request": {
+                "job_id": "robot-eval-route-proof-1",
+                "buyer_request_id": "buyer-request-route-proof-1",
+                "site_package": {
+                    "site_submission_id": "site-submission-route-proof-1",
+                    "capture_job_id": "capture-job-route-proof-1",
+                },
+            },
+            "proof_boundary": {
+                "local_webapp_route_forwarding_proven": True,
+                "pipeline_intake_staged_request_proven": True,
+                "production_live_webapp_forwarding_proven": False,
+                "simulator_execution_proven": False,
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        },
+    )
+
+    result = validate_provider_preview_packet(
+        capture_root=root,
+        mode="production",
+        require_webapp_sync=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["webapp_sync_projection"]["sync_succeeded"] is False
+    assert result["webapp_sync_projection"]["upstream_ids"] == {
+        "site_submission_id": "site-submission-route-proof-1",
+        "request_id": "robot-eval-route-proof-1",
+        "buyer_request_id": "buyer-request-route-proof-1",
+        "capture_job_id": "capture-job-route-proof-1",
+    }
+    assert result["webapp_sync_projection"]["missing_upstream_ids"] == []
+    assert result["webapp_route_forwarding_projection"][
+        "local_webapp_route_forwarding_proven"
+    ] is True
+    assert result["webapp_route_forwarding_projection"][
+        "production_live_webapp_forwarding_proven"
+    ] is False
+    assert "missing_webapp_site_submission_id" not in result["blockers"]
+    assert "missing_webapp_request_id" not in result["blockers"]
+    assert "missing_webapp_buyer_request_id" not in result["blockers"]
+    assert "missing_webapp_capture_job_id" not in result["blockers"]
+    assert "webapp_sync_failed" not in result["blockers"]
+    assert "webapp_sync_not_succeeded" not in result["blockers"]
+    assert "production_live_webapp_forwarding_not_proven" in result["blockers"]
+    assert "webapp_sync_upstream_links_not_verified" in result["blockers"]

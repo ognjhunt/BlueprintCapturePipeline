@@ -161,6 +161,74 @@ def _write_staged_webapp_request(capture_root: Path, *, local_rehearsal: bool = 
     return staged_path
 
 
+def _write_webapp_forwarding_preflight_report(
+    path: Path,
+    *,
+    site_slug: str = "site-1",
+    status: str = "ready_for_required_forwarding_with_probe",
+    site_slugs: list[str] | None = None,
+) -> Path:
+    if site_slugs is None:
+        site_slugs = [site_slug]
+    _write_json(
+        path,
+        {
+            "schema_version": "blueprint.webapp.robot_eval_forwarding_readiness.v1",
+            "status": status,
+            "forwarding_required": True,
+            "endpoint_configured": True,
+            "configured_env": {
+                "forward_url": {
+                    "configured": True,
+                    "valid": True,
+                    "protocol": "https",
+                    "origin": "https://pipeline.example",
+                    "pathname": "/api/live-pipeline/job-requests",
+                    "query_present": False,
+                    "credentials_present": False,
+                },
+                "forward_token": {
+                    "configured": True,
+                    "redacted": True,
+                },
+                "forward_timeout_ms": {
+                    "configured": True,
+                    "value": 10000,
+                    "valid": True,
+                },
+                "capture_root_by_site_json": {
+                    "configured": True,
+                    "valid": True,
+                    "site_count": len(site_slugs),
+                    "site_slugs": site_slugs,
+                },
+                "single_capture_root_override": {
+                    "configured": False,
+                },
+            },
+            "probe": {
+                "requested": True,
+                "attempted": True,
+                "status": "reachable",
+                "http_status": 200,
+                "audit_status": "staged_for_control_plane",
+            },
+            "blockers": [],
+            "warnings": [],
+            "proof_boundary": {
+                "command_is_read_only": True,
+                "no_job_queued": True,
+                "no_pipeline_mutation_requested": True,
+                "no_gpu_allocated": True,
+                "no_simulator_execution_proven": True,
+                "no_robot_readiness_proven": True,
+                "no_public_claim_upgrade_allowed": True,
+            },
+        },
+    )
+    return path
+
+
 def test_first_gpu_readiness_blocks_missing_runtime_and_webapp_setup(tmp_path: Path) -> None:
     capture_root = _capture_root(tmp_path, with_requested_outputs=False)
 
@@ -222,6 +290,77 @@ def test_first_gpu_readiness_accepts_ready_attempt_with_missing_owner_proof(
     assert "simulator_runtime:runpod_allocation_is_external_or_request_manifest_only" in result["warnings"]
 
 
+def test_first_gpu_readiness_uses_staged_webapp_request_for_upstream_truth(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _write_json(
+        capture_root / "capture_descriptor.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "requested_outputs": ["qualification", "robot_eval_dataset", "task_evaluation_run"],
+            "site_submission_id": "capture-1",
+            "request_id": "capture-1",
+            "buyer_request_id": "capture-1",
+            "capture_job_id": "capture-1",
+        },
+    )
+    _write_json(
+        capture_root / "raw" / "manifest.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "video_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw/walkthrough.mov",
+            "capture_capabilities": {"camera_pose": True},
+            "requested_outputs": ["qualification", "robot_eval_dataset", "task_evaluation_run"],
+            "site_submission_id": "capture-1",
+            "request_id": "capture-1",
+            "buyer_request_id": "capture-1",
+            "capture_job_id": "capture-1",
+        },
+    )
+    _write_gpu_handoff_artifacts(capture_root)
+    staged_path = _write_staged_webapp_request(capture_root)
+    command = tmp_path / "run_isaac_gpu_proof.sh"
+    command.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL", "https://pipeline.example/intake")
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", "secret-token")
+    monkeypatch.setenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        json.dumps({"site-1": str(capture_root.resolve())}),
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+
+    result = build_first_gpu_e2e_readiness(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        webapp_staged_inputs_path=staged_path,
+        simulator_command=f"{command} --capture-root {capture_root}",
+    )
+
+    upstream = result["stages"]["webapp_upstream_truth"]
+    assert upstream["ready"] is True
+    assert upstream["staged_webapp_request_used"] is True
+    assert upstream["fields"] == {
+        "site_submission_id": True,
+        "request_id": True,
+        "buyer_request_id": True,
+        "capture_job_id": True,
+    }
+    assert all(
+        source == "pipeline/live_pipeline_staged_inputs.json robot_eval_job_request.v1"
+        for source in upstream["source_artifacts"].values()
+    )
+    assert not [
+        blocker
+        for blocker in result["blockers"]
+        if blocker.startswith("webapp_upstream_truth:")
+    ]
+
+
 def test_first_gpu_readiness_accepts_remote_owner_command_without_local_executable(
     tmp_path: Path,
     monkeypatch,
@@ -256,6 +395,84 @@ def test_first_gpu_readiness_accepts_remote_owner_command_without_local_executab
     assert "simulator_runtime:simulator_command_executable_not_checked_remote_vm" in result[
         "warnings"
     ]
+
+
+def test_first_gpu_readiness_accepts_webapp_forwarding_preflight_report_without_shell_secret(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _write_gpu_handoff_artifacts(capture_root)
+    _write_staged_webapp_request(capture_root)
+    command = tmp_path / "run_isaac_gpu_proof.sh"
+    command.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    preflight_path = _write_webapp_forwarding_preflight_report(
+        tmp_path / "forwarding_preflight.json",
+    )
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL", raising=False)
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", raising=False)
+    monkeypatch.delenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        raising=False,
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+
+    result = build_first_gpu_e2e_readiness(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        webapp_forwarding_preflight_path=preflight_path,
+        simulator_command=f"{command} --capture-root {capture_root}",
+    )
+
+    stage = result["stages"]["webapp_forwarding"]
+    assert result["status"] == "ready_for_owner_gpu_attempt"
+    assert result["ready_for_first_gpu_attempt"] is True
+    assert stage["forward_url_configured"] is False
+    assert stage["forward_token_configured"] is False
+    assert stage["forward_url_evidence_present"] is True
+    assert stage["forward_token_evidence_present"] is True
+    assert stage["capture_root_override_source"] == "ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT"
+    assert stage["forwarding_preflight"]["ready"] is True
+    assert stage["forwarding_preflight"]["site_slug_covered"] is True
+    assert stage["forwarding_preflight"]["probe_status"] == "reachable"
+    assert "secret-token" not in json.dumps(result)
+
+
+def test_first_gpu_readiness_blocks_bad_webapp_forwarding_preflight_report(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _write_gpu_handoff_artifacts(capture_root)
+    _write_staged_webapp_request(capture_root)
+    command = tmp_path / "run_isaac_gpu_proof.sh"
+    command.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    preflight_path = _write_webapp_forwarding_preflight_report(
+        tmp_path / "forwarding_preflight.json",
+        site_slugs=["other-site"],
+    )
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL", "https://pipeline.example/intake")
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", "secret-token")
+    monkeypatch.setenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        json.dumps({"site-1": str(capture_root.resolve())}),
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+
+    result = build_first_gpu_e2e_readiness(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        webapp_forwarding_preflight_path=preflight_path,
+        simulator_command=f"{command} --capture-root {capture_root}",
+    )
+
+    assert result["status"] == "blocked"
+    assert "webapp_forwarding:webapp_forwarding_preflight_missing_site_slug" in result[
+        "blockers"
+    ]
+    assert result["stages"]["webapp_forwarding"]["forwarding_preflight"]["ready"] is False
 
 
 def test_first_gpu_readiness_blocks_local_rehearsal_by_default(

@@ -30,6 +30,7 @@ COMPLETE_STATUSES = {
     "person_removed",
     "no_people_detected",
     "face_anonymized_fallback",
+    "full_frame_redacted_local_proof",
     "export_ready_review_required",
 }
 

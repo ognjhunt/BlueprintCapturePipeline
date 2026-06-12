@@ -101,6 +101,16 @@ def _webapp_site_library_request(
     }
 
 
+def _local_webapp_rehearsal_request(capture_root: Path) -> dict[str, object]:
+    envelope = _webapp_site_library_request(capture_root)
+    envelope["source_kind"] = "local_first_gpu_rehearsal_request"
+    envelope["local_rehearsal_only"] = True
+    job_request = envelope["job_request"]
+    assert isinstance(job_request, dict)
+    job_request["source_kind"] = "local_first_gpu_rehearsal_request"
+    return envelope
+
+
 def _arena_results(results_dir: Path) -> Path:
     _write_json(
         results_dir / "rollout_manifest.json",
@@ -279,6 +289,39 @@ def test_live_pipeline_input_intake_stages_valid_webapp_request(tmp_path: Path) 
     assert Path(str(result["staged_inputs"]["path"])).is_file()
     assert target_path.is_file()
     assert json.loads(target_path.read_text(encoding="utf-8"))["job_id"] == "webapp-job-1"
+
+
+def test_live_pipeline_input_intake_preserves_local_rehearsal_boundary(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    request_path = tmp_path / "incoming" / "webapp-rehearsal.json"
+    _write_json(request_path, _local_webapp_rehearsal_request(capture_root))
+
+    result = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        webapp_job_request=request_path,
+        stage_webapp_request=True,
+    )
+
+    staged_inputs_path = Path(str(result["staged_inputs"]["path"]))
+    staged_inputs = json.loads(staged_inputs_path.read_text(encoding="utf-8"))
+    assert result["status"] == "staged_for_control_plane"
+    assert result["webapp_job_request"]["status"] == "ready"
+    assert result["webapp_job_request"]["local_rehearsal_only"] is True
+    assert result["webapp_request_metadata_valid"] is True
+    assert result["webapp_truth_proven"] is False
+    assert result["local_webapp_rehearsal_only"] is True
+    assert result["proof_boundary"]["webapp_request_metadata_valid"] is True
+    assert result["proof_boundary"]["webapp_truth_proven"] is False
+    assert result["proof_boundary"]["local_webapp_rehearsal_only"] is True
+    assert result["proof_boundary"]["live_webapp_forwarding_proven"] is False
+    assert staged_inputs["local_rehearsal_only"] is True
+    assert staged_inputs["source_kind"] == "local_first_gpu_rehearsal_request"
+    assert staged_inputs["webapp_request"]["source_kind"] == "local_first_gpu_rehearsal_request"
+    assert staged_inputs["proof_boundary"]["local_webapp_rehearsal_only"] is True
+    assert staged_inputs["proof_boundary"]["live_webapp_forwarding_proven"] is False
 
 
 def test_live_pipeline_input_intake_accepts_webapp_site_library_id_locations(
@@ -941,9 +984,15 @@ def test_live_pipeline_input_intake_module_cli(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert "status=ready_for_control_plane" in completed.stdout
+    assert "webapp_request_metadata_valid=true" in completed.stdout
+    assert "local_webapp_rehearsal_only=false" in completed.stdout
+    assert "webapp_truth_proven=true" in completed.stdout
     audit = json.loads(
         (tmp_path / "control" / "live_pipeline_input_intake_audit.json").read_text(
             encoding="utf-8"
         )
     )
     assert audit["status"] == "ready_for_control_plane"
+    assert audit["webapp_request_metadata_valid"] is True
+    assert audit["local_webapp_rehearsal_only"] is False
+    assert audit["webapp_truth_proven"] is True

@@ -65,6 +65,52 @@ def _read_json_mapping(path: Path) -> tuple[Dict[str, Any] | None, str | None]:
     return dict(payload), None
 
 
+def _runtime_preflight_result_summary(result_path: str | Path | None) -> Dict[str, Any]:
+    path_text = _string(result_path)
+    if not path_text:
+        return {
+            "path": None,
+            "exists": False,
+            "status": None,
+            "ready_for_owner_command_attempt": False,
+            "blockers": ["gpu_vm_runtime_preflight_result_path_missing"],
+        }
+    path = Path(path_text)
+    if not path.is_file():
+        return {
+            "path": path_text,
+            "exists": False,
+            "status": None,
+            "ready_for_owner_command_attempt": False,
+            "blockers": ["gpu_vm_runtime_preflight_result_missing"],
+        }
+    payload, error = _read_json_mapping(path)
+    if error or payload is None:
+        return {
+            "path": path_text,
+            "exists": True,
+            "status": None,
+            "ready_for_owner_command_attempt": False,
+            "blockers": [error or "gpu_vm_runtime_preflight_result_invalid"],
+        }
+    status = _string(payload.get("status"))
+    blockers = [
+        f"gpu_vm_runtime_preflight_result_blocker:{item}"
+        for item in payload.get("blockers") or []
+    ]
+    if status != "ready_for_owner_command_attempt":
+        blockers.append(
+            f"gpu_vm_runtime_preflight_result_status:{status or 'unknown'}"
+        )
+    return {
+        "path": path_text,
+        "exists": True,
+        "status": status or None,
+        "ready_for_owner_command_attempt": not blockers,
+        "blockers": _string_list_unique(blockers),
+    }
+
+
 def _file_contains_check(
     root: Path,
     relative_path: str,
@@ -235,6 +281,35 @@ def _webapp_request_phase(webapp_repo: Path) -> Dict[str, Any]:
                 ),
             ],
         ),
+        "webapp_local_rehearsal_exporter": _file_contains_check(
+            webapp_repo,
+            "scripts/pipeline/export-first-gpu-webapp-rehearsal-request.ts",
+            required=[
+                ("uses_webapp_request_builder", "buildRobotEvalJobRequest"),
+                ("validates_webapp_request", "validateRobotEvalJobRequest"),
+                ("local_rehearsal_marker", "local_first_gpu_rehearsal_request"),
+                ("live_forwarding_blocked", "live_webapp_forwarding_proven: false"),
+            ],
+        ),
+        "webapp_forwarding_preflight": _file_contains_check(
+            webapp_repo,
+            "scripts/pipeline/audit-robot-eval-forwarding-readiness.ts",
+            required=[
+                (
+                    "preflight_schema",
+                    "blueprint.webapp.robot_eval_forwarding_readiness.v1",
+                ),
+                (
+                    "token_env_checked",
+                    "ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN",
+                ),
+                ("read_only_probe_flag", "probe-intake-audit"),
+                ("token_redacted", "redacted: true"),
+                ("no_job_queued_boundary", "no_job_queued"),
+                ("no_gpu_boundary", "no_gpu_allocated"),
+                ("no_simulator_boundary", "no_simulator_execution_proven"),
+            ],
+        ),
     }
     return _phase("webapp_to_pipeline", checks)
 
@@ -249,6 +324,10 @@ def _pipeline_return_phase(pipeline_repo: Path) -> Dict[str, Any]:
                 ("first_gpu_readiness_cli", "blueprint-audit-first-gpu-e2e-readiness"),
                 ("first_gpu_stage_cli", "blueprint-stage-first-gpu-sample-video"),
                 ("owner_gpu_proof_cli", "blueprint-run-owner-gpu-proof"),
+                (
+                    "owner_default_smoke_artifacts_cli",
+                    "blueprint-write-owner-gpu-default-smoke-artifacts",
+                ),
                 ("first_gpu_run_packet_cli", "blueprint-build-first-gpu-run-packet"),
             ],
         ),
@@ -268,6 +347,10 @@ def _pipeline_return_phase(pipeline_repo: Path) -> Dict[str, Any]:
             required=[
                 ("requires_staged_request", "missing_webapp_staged_inputs"),
                 ("blocks_local_rehearsal_by_default", "webapp_staged_inputs_local_rehearsal_only"),
+                (
+                    "webapp_forwarding_preflight_env",
+                    "ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT",
+                ),
                 ("owner_gpu_blocker", "owner_gpu_simulator_execution_not_run"),
                 ("gpu_gate", "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"),
             ],
@@ -284,6 +367,18 @@ def _pipeline_return_phase(pipeline_repo: Path) -> Dict[str, Any]:
                 ),
                 ("nvidia_nim_boundary", "nvidia_nim_boundary"),
                 ("isaac_sim_gpu_avoid_list", "avoid_for_isaac_sim"),
+                (
+                    "owner_default_smoke_helper",
+                    "blueprint-write-owner-gpu-default-smoke-artifacts",
+                ),
+                ("owner_command_binding_template", "owner_default_smoke_command_binding.sh"),
+                ("live_policy_execution_contract", "live_policy_execution_contract.md"),
+                (
+                    "default_test_job_request_template",
+                    "default_test_robot_eval_job_request.template.json",
+                ),
+                ("real_robot_pov_template", "real_robot_pov_manifest.template.json"),
+                ("live_input_staging_script", "stage_first_gpu_live_inputs.sh"),
             ],
         ),
         "owner_gpu_proof_runner": _file_contains_check(
@@ -293,6 +388,9 @@ def _pipeline_return_phase(pipeline_repo: Path) -> Dict[str, Any]:
                 ("scene_load_trace_env", "BLUEPRINT_SCENE_LOAD_TRACE"),
                 ("spawn_trace_env", "BLUEPRINT_SPAWN_TRACE"),
                 ("action_trace_env", "BLUEPRINT_ACTION_OR_POLICY_TRACE"),
+                ("default_policy_env", "BLUEPRINT_DEFAULT_SMOKE_POLICY"),
+                ("policy_execution_trace_env", "BLUEPRINT_POLICY_EXECUTION_TRACE"),
+                ("sim_robot_pov_env", "BLUEPRINT_SIM_ROBOT_POV_EVIDENCE"),
                 ("proof_manifest", "owner_gpu_simulator_execution_proof_manifest.json"),
             ],
         ),
@@ -315,6 +413,7 @@ def _runtime_capture_phase(
     capture_root: str | Path | None,
     webapp_site_slug: str,
     webapp_staged_inputs_path: str | Path | None,
+    webapp_forwarding_preflight_path: str | Path | None,
     simulator: str,
     provisioner: str,
     simulator_command: str | None,
@@ -342,6 +441,7 @@ def _runtime_capture_phase(
             capture_root=capture_root,
             webapp_site_slug=webapp_site_slug,
             webapp_staged_inputs_path=webapp_staged_inputs_path,
+            webapp_forwarding_preflight_path=webapp_forwarding_preflight_path,
             simulator=simulator,
             provisioner=provisioner,
             simulator_command=simulator_command,
@@ -477,6 +577,72 @@ def _run_packet_phase(*, capture_root: str | Path | None) -> Dict[str, Any]:
                 ),
             }
         )
+        owner_binding_template_path = _string(
+            generated_files.get("owner_command_binding_template")
+        )
+        if not owner_binding_template_path:
+            owner_binding_template_path = str(
+                packet_dir / "owner_default_smoke_command_binding.sh"
+            )
+        owner_binding_template_exists = bool(owner_binding_template_path) and Path(
+            owner_binding_template_path
+        ).is_file()
+        checks["first_gpu_run_packet"].update(
+            {
+                "owner_command_binding_template_path": owner_binding_template_path,
+                "owner_command_binding_template_exists": owner_binding_template_exists,
+            }
+        )
+        if not owner_binding_template_exists:
+            blocker = "owner_command_binding_template_missing"
+            blockers.append(blocker)
+            checks["first_gpu_run_packet"]["blockers"].append(blocker)
+        live_policy_contract_path = _string(
+            generated_files.get("live_policy_execution_contract")
+        )
+        if not live_policy_contract_path:
+            live_policy_contract_path = str(packet_dir / "live_policy_execution_contract.md")
+        live_policy_contract_exists = bool(live_policy_contract_path) and Path(
+            live_policy_contract_path
+        ).is_file()
+        checks["first_gpu_run_packet"].update(
+            {
+                "live_policy_execution_contract_path": live_policy_contract_path,
+                "live_policy_execution_contract_exists": live_policy_contract_exists,
+            }
+        )
+        if not live_policy_contract_exists:
+            blocker = "live_policy_execution_contract_missing"
+            blockers.append(blocker)
+            checks["first_gpu_run_packet"]["blockers"].append(blocker)
+        generated_required_files = {
+            "default_test_robot_eval_job_request_template": (
+                "default_test_robot_eval_job_request.template.json",
+                "default_test_robot_eval_job_request_template_missing",
+            ),
+            "real_robot_pov_manifest_template": (
+                "real_robot_pov_manifest.template.json",
+                "real_robot_pov_manifest_template_missing",
+            ),
+            "live_input_staging_commands": (
+                "stage_first_gpu_live_inputs.sh",
+                "live_input_staging_commands_missing",
+            ),
+        }
+        for key, (fallback_name, missing_blocker) in generated_required_files.items():
+            generated_path = _string(generated_files.get(key))
+            if not generated_path:
+                generated_path = str(packet_dir / fallback_name)
+            generated_exists = bool(generated_path) and Path(generated_path).is_file()
+            checks["first_gpu_run_packet"].update(
+                {
+                    f"{key}_path": generated_path,
+                    f"{key}_exists": generated_exists,
+                }
+            )
+            if not generated_exists:
+                blockers.append(missing_blocker)
+                checks["first_gpu_run_packet"]["blockers"].append(missing_blocker)
 
     blocker_resolution = payloads.get("blocker_resolution", {})
     operator_actions: list[Dict[str, Any]] = []
@@ -691,6 +857,14 @@ def _run_packet_phase(*, capture_root: str | Path | None) -> Dict[str, Any]:
         hard_stops = [
             str(item) for item in runtime_preflight.get("hard_stop_blockers") or []
         ]
+        plan_result = (
+            runtime_preflight.get("result")
+            if isinstance(runtime_preflight.get("result"), Mapping)
+            else {}
+        )
+        result_summary = dict(plan_result) if plan_result else _runtime_preflight_result_summary(
+            runtime_script.get("default_result_path")
+        )
         if not safe_to_run:
             blockers.append("gpu_vm_runtime_preflight_plan_blocks_vm_preflight")
             checks["gpu_vm_runtime_preflight_plan"]["blockers"].append(
@@ -700,11 +874,24 @@ def _run_packet_phase(*, capture_root: str | Path | None) -> Dict[str, Any]:
             blocker = f"gpu_vm_runtime_preflight_hard_stop:{hard_stop}"
             blockers.append(blocker)
             checks["gpu_vm_runtime_preflight_plan"]["blockers"].append(blocker)
+        if not bool(result_summary.get("ready_for_owner_command_attempt")):
+            blockers.append("gpu_vm_runtime_preflight_result_not_ready")
+            checks["gpu_vm_runtime_preflight_plan"]["blockers"].append(
+                "gpu_vm_runtime_preflight_result_not_ready"
+            )
+            for result_blocker in result_summary.get("blockers") or []:
+                blocker = f"gpu_vm_runtime_preflight_result:{result_blocker}"
+                blockers.append(blocker)
+                checks["gpu_vm_runtime_preflight_plan"]["blockers"].append(blocker)
         checks["gpu_vm_runtime_preflight_plan"].update(
             {
                 "status": runtime_preflight.get("status"),
                 "script_path": runtime_script.get("path"),
                 "script_default_result_path": runtime_script.get("default_result_path"),
+                "result": result_summary,
+                "result_ready_for_owner_command_attempt": bool(
+                    result_summary.get("ready_for_owner_command_attempt")
+                ),
                 "safe_to_run_on_gpu_vm": safe_to_run,
                 "runs_owner_simulator_command": bool(
                     runtime_script.get("runs_owner_simulator_command")
@@ -872,6 +1059,25 @@ def _remediation_for_blocker(blocker: str) -> Dict[str, Any]:
                 "can_be_rehearsed_locally": False,
             }
         )
+    elif "webapp_forwarding_preflight" in blocker:
+        action.update(
+            {
+                "category": "webapp_forwarding_env",
+                "next_action": (
+                    "Regenerate the WebApp forwarding preflight report with the intended "
+                    "URL, token, site slug, and capture-root mapping."
+                ),
+                "evidence_required": (
+                    "ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT points at a ready, "
+                    "redacted WebApp forwarding preflight report covering the selected site slug."
+                ),
+                "safe_command": (
+                    "npm run pipeline:forwarding:preflight -- --require-forwarding "
+                    "--probe-intake-audit --output <capture-root>/pipeline/webapp_forwarding_preflight.json"
+                ),
+                "can_be_rehearsed_locally": True,
+            }
+        )
     elif "missing_webapp_staged_inputs" in blocker:
         action.update(
             {
@@ -1035,6 +1241,26 @@ def _remediation_for_blocker(blocker: str) -> Dict[str, Any]:
                 "can_be_rehearsed_locally": False,
             }
         )
+    elif "owner_command_binding_template_missing" in blocker:
+        action.update(
+            {
+                "category": "owner_gpu_command",
+                "next_action": (
+                    "Regenerate the first-GPU run packet so it includes the "
+                    "fail-closed owner command binding template."
+                ),
+                "evidence_required": (
+                    "pipeline/first_gpu_e2e_run_packet/"
+                    "owner_default_smoke_command_binding.sh exists and is included "
+                    "in generated_files."
+                ),
+                "safe_command": (
+                    "blueprint-build-first-gpu-run-packet --capture-root "
+                    "<capture-root> --owner-command <real-command>"
+                ),
+                "can_be_rehearsed_locally": True,
+            }
+        )
     elif "missing_simulator_command" in blocker:
         action.update(
             {
@@ -1074,6 +1300,32 @@ def _remediation_for_blocker(blocker: str) -> Dict[str, Any]:
             }
         )
     elif (
+        "missing_gpu_vm_runtime_preflight_plan" in blocker
+        or "gpu_vm_runtime_preflight_plan_blocks_vm_preflight" in blocker
+        or "gpu_vm_runtime_preflight_hard_stop:" in blocker
+        or "gpu_vm_runtime_preflight_result_not_ready" in blocker
+        or "gpu_vm_runtime_preflight_result:" in blocker
+        or "launch_order_blocked_step:gpu_vm_runtime_preflight" in blocker
+    ):
+        action.update(
+            {
+                "category": "gpu_vm_runtime_preflight",
+                "next_action": (
+                    "Run the GPU VM runtime preflight script after syncing the packet "
+                    "onto the selected GPU VM, then regenerate the packet/audit so the "
+                    "result is bound into launch readiness."
+                ),
+                "evidence_required": (
+                    "gpu_vm_runtime_preflight_result.json has "
+                    "status=ready_for_owner_command_attempt."
+                ),
+                "safe_command": (
+                    "GPU_VM_PREFLIGHT_OUTPUT=<result-json> "
+                    "bash <packet-dir>/gpu_vm_runtime_preflight.sh"
+                ),
+            }
+        )
+    elif (
         "missing_first_gpu_run_packet" in blocker
         or "missing_first_gpu_blocker_resolution" in blocker
         or "missing_first_gpu_launch_order" in blocker
@@ -1099,28 +1351,6 @@ def _remediation_for_blocker(blocker: str) -> Dict[str, Any]:
                     "blueprint-build-first-gpu-run-packet --capture-root <capture-root> "
                     "--webapp-site-slug <site-slug> --simulator isaac_sim --provisioner runpod "
                     "--owner-command <remote-owner-command> --owner-command-location remote"
-                ),
-            }
-        )
-    elif (
-        "missing_gpu_vm_runtime_preflight_plan" in blocker
-        or "gpu_vm_runtime_preflight_plan_blocks_vm_preflight" in blocker
-        or "gpu_vm_runtime_preflight_hard_stop:" in blocker
-    ):
-        action.update(
-            {
-                "category": "gpu_vm_runtime_preflight",
-                "next_action": (
-                    "Clear packet hard stops, then regenerate the packet so the GPU VM "
-                    "runtime preflight plan is safe before any owner command runs."
-                ),
-                "evidence_required": (
-                    "gpu_vm_runtime_preflight_plan.json has script.safe_to_run_on_gpu_vm=true."
-                ),
-                "safe_command": (
-                    "blueprint-build-first-gpu-run-packet --capture-root <capture-root> "
-                    "--webapp-site-slug <site-slug> --owner-command <remote-owner-command> "
-                    "--owner-command-location remote"
                 ),
             }
         )
@@ -1215,6 +1445,7 @@ def _build_gpu_spend_decision(
     simulator: str,
     provisioner: str,
 ) -> Dict[str, Any]:
+    simulator_label = "Isaac" if simulator == "isaac_sim" else simulator
     categories = remediation_plan.get("categories")
     category_names = list(categories.keys()) if isinstance(categories, Mapping) else []
     runtime_ready = bool(runtime_phase.get("ready"))
@@ -1266,7 +1497,7 @@ def _build_gpu_spend_decision(
         ),
         "nvidia_nim_role": (
             "NVIDIA NIM can support model inference services later; it is not the primary "
-            "Isaac/physics simulator runtime for this first owner-GPU smoke."
+            f"{simulator_label}/physics simulator runtime for this first owner-runtime smoke."
         ),
         "pre_spend_blocker_categories": category_names,
         "minimum_evidence_before_gpu_spend": minimum_evidence,
@@ -1498,6 +1729,45 @@ def _external_input_catalog(
                     "secret": False,
                     "source": f"owner {simulator} runtime on {provisioner}",
                 },
+                {
+                    "name": "owner_default_smoke_command_binding.sh",
+                    "kind": "artifact",
+                    "secret": False,
+                    "source": "first-GPU run packet generated owner command binding template",
+                },
+                {
+                    "name": "OWNER_SCENE_LOAD_COMMAND",
+                    "kind": "env",
+                    "secret": False,
+                    "source": (
+                        "owner simulator runtime command that writes "
+                        "BLUEPRINT_SCENE_LOAD_TRACE"
+                    ),
+                },
+                {
+                    "name": "OWNER_ROBOT_SPAWN_COMMAND",
+                    "kind": "env",
+                    "secret": False,
+                    "source": (
+                        "owner simulator runtime command that writes "
+                        "BLUEPRINT_SPAWN_TRACE"
+                    ),
+                },
+                {
+                    "name": "OWNER_WALK_TO_TARGET_COMMAND",
+                    "kind": "env",
+                    "secret": False,
+                    "source": (
+                        "owner simulator runtime command that runs the default "
+                        "walk_to_target policy"
+                    ),
+                },
+                {
+                    "name": "SIM_ROBOT_POV_FRAME_PATH or SIM_ROBOT_POV_VIDEO_PATH",
+                    "kind": "path",
+                    "secret": False,
+                    "source": "simulator robot camera evidence emitted by the owner command",
+                },
             ],
         },
         "owner_gpu_gate": {
@@ -1522,6 +1792,119 @@ def _external_input_catalog(
                     "source": "source repo audit",
                 },
             ],
+        },
+    }
+
+
+def _first_gpu_proof_scope(
+    run_packet_phase: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    checks = (
+        run_packet_phase.get("checks")
+        if isinstance(run_packet_phase, Mapping)
+        and isinstance(run_packet_phase.get("checks"), Mapping)
+        else {}
+    )
+    packet_check = (
+        checks.get("first_gpu_run_packet")
+        if isinstance(checks.get("first_gpu_run_packet"), Mapping)
+        else {}
+    )
+    owner_binding_path = _string(packet_check.get("owner_command_binding_template_path"))
+    live_policy_contract_path = _string(
+        packet_check.get("live_policy_execution_contract_path")
+    )
+    default_job_template_path = _string(
+        packet_check.get("default_test_robot_eval_job_request_template_path")
+    )
+    real_robot_pov_template_path = _string(
+        packet_check.get("real_robot_pov_manifest_template_path")
+    )
+    live_input_staging_script_path = _string(
+        packet_check.get("live_input_staging_commands_path")
+    )
+    return {
+        "default_simulator_smoke": {
+            "status": "not_run_by_this_audit",
+            "policy": "walk_to_target",
+            "can_prove_after_successful_owner_gpu_run": [
+                "scene loaded in the owner simulator",
+                "robot spawned in the owner simulator",
+                "default walk_to_target smoke policy executed",
+                "simulator robot POV frame or video captured",
+            ],
+            "required_artifacts_after_owner_gpu_run": [
+                (
+                    "pipeline/simulation_automation/owner_gpu_proof/"
+                    "owner_default_smoke_policy.json"
+                ),
+                (
+                    "pipeline/simulation_automation/owner_gpu_proof/"
+                    "owner_policy_execution_trace.json"
+                ),
+                (
+                    "pipeline/simulation_automation/owner_gpu_proof/"
+                    "owner_sim_robot_pov_evidence_manifest.json"
+                ),
+                (
+                    "pipeline/simulation_automation/"
+                    "owner_gpu_simulator_execution_proof_manifest.json"
+                ),
+            ],
+            "owner_binding_template_path": owner_binding_path or None,
+            "owner_binding_template_exists": bool(
+                owner_binding_path and Path(owner_binding_path).is_file()
+            ),
+        },
+        "not_proven_by_first_gpu_smoke": [
+            {
+                "claim": "live_robot_team_policy_execution",
+                "reason": (
+                    "The first smoke executes Blueprint's default walk_to_target "
+                    "policy, not a robot-team policy package or API."
+                ),
+                "proof_required": [
+                    "pipeline/robot_eval_jobs/<job_id>/policy_execution_manifest.json",
+                    "pipeline/robot_eval_jobs/<job_id>/policy_execution_trace.json",
+                    "BLUEPRINT_ALLOW_POLICY_EXECUTION=true for the gated job execution",
+                ],
+            },
+            {
+                "claim": "real_robot_pov_evidence",
+                "reason": (
+                    "Simulator camera evidence is not physical robot camera evidence. "
+                    "Generated POV support and simulator POV stay separate from real POV."
+                ),
+                "proof_required": [
+                    "pipeline/robot_eval_inputs/real_robot_pov_manifest.json",
+                    "robot_camera_video_uri for each required scenario eval run",
+                    "action_log_uri aligned to each required scenario eval run",
+                ],
+            },
+        ],
+        "contract_artifacts": {
+            "live_policy_execution_contract_path": live_policy_contract_path or None,
+            "live_policy_execution_contract_exists": bool(
+                live_policy_contract_path and Path(live_policy_contract_path).is_file()
+            ),
+        },
+        "live_input_templates": {
+            "default_test_robot_eval_job_request_template_path": (
+                default_job_template_path or None
+            ),
+            "default_test_robot_eval_job_request_template_exists": bool(
+                default_job_template_path and Path(default_job_template_path).is_file()
+            ),
+            "real_robot_pov_manifest_template_path": real_robot_pov_template_path or None,
+            "real_robot_pov_manifest_template_exists": bool(
+                real_robot_pov_template_path and Path(real_robot_pov_template_path).is_file()
+            ),
+            "live_input_staging_script_path": live_input_staging_script_path or None,
+            "live_input_staging_script_exists": bool(
+                live_input_staging_script_path
+                and Path(live_input_staging_script_path).is_file()
+            ),
+            "staging_gate": "BLUEPRINT_ALLOW_STAGING_FIRST_GPU_LIVE_INPUTS=true",
         },
     }
 
@@ -1679,6 +2062,26 @@ def _guarded_commands_by_category(
         ),
     )
 
+    owner_binding_template_path = _string(
+        packet_check.get("owner_command_binding_template_path")
+    )
+    _append_guarded_command(
+        guarded,
+        "owner_gpu_command",
+        name="owner_command_binding_template_syntax_check",
+        path=owner_binding_template_path,
+        command=f"bash -n {shlex.quote(owner_binding_template_path)}"
+        if owner_binding_template_path
+        else None,
+        safe_to_run_now=bool(owner_binding_template_path)
+        and Path(owner_binding_template_path).is_file(),
+        runs_owner_simulator_command=False,
+        proof_boundary=(
+            "Checks the generated fail-closed owner command binding template syntax only; "
+            "it does not run owner scene-load, spawn, policy, simulator, or GPU commands."
+        ),
+    )
+
     launch_check = (
         checks.get("launch_order")
         if isinstance(checks.get("launch_order"), Mapping)
@@ -1686,7 +2089,9 @@ def _guarded_commands_by_category(
     )
     gpu_vm_commands_path = _string(runtime_check.get("gpu_vm_commands_path"))
     if not gpu_vm_commands_path and _string(run_packet_phase.get("packet_dir")):
-        gpu_vm_commands_path = str(Path(_string(run_packet_phase.get("packet_dir"))) / "gpu_vm_commands.sh")
+        gpu_vm_commands_path = str(
+            Path(_string(run_packet_phase.get("packet_dir"))) / "gpu_vm_commands.sh"
+        )
     gpu_command_safe = bool(launch_check.get("gpu_execution_allowed")) and bool(
         runtime_check.get("safe_to_run_on_gpu_vm")
     )
@@ -1788,6 +2193,7 @@ def _build_first_gpu_external_input_packet(
         "forbidden_actions_until_ready": list(
             gpu_spend_decision.get("must_not_do_until_ready") or []
         ),
+        "first_gpu_proof_scope": _first_gpu_proof_scope(run_packet_phase),
         "claim_boundary": {
             "artifact_purpose": "first_gpu_external_input_packet",
             "external_inputs_collected": False,
@@ -1795,6 +2201,10 @@ def _build_first_gpu_external_input_packet(
             "webapp_requests_submitted": False,
             "gpu_provisioning_performed": False,
             "simulator_execution_performed": False,
+            "default_sim_policy_execution_proven": False,
+            "sim_robot_pov_evidence_proven": False,
+            "robot_policy_execution_proven": False,
+            "real_robot_pov_evidence_proven": False,
             "robot_readiness_proven": False,
             "public_claim_upgrade_allowed": False,
         },
@@ -1838,6 +2248,96 @@ def _first_gpu_external_input_packet_markdown(packet: Mapping[str, Any]) -> str:
     if forbidden:
         lines.extend(["", "## Forbidden Until Ready", ""])
         lines.extend(f"- `{item}`" for item in forbidden)
+    proof_scope = (
+        packet.get("first_gpu_proof_scope")
+        if isinstance(packet.get("first_gpu_proof_scope"), Mapping)
+        else {}
+    )
+    default_smoke = (
+        proof_scope.get("default_simulator_smoke")
+        if isinstance(proof_scope.get("default_simulator_smoke"), Mapping)
+        else {}
+    )
+    lines.extend(["", "## Proof Scope", ""])
+    lines.append(
+        "- Default owner-GPU smoke status: "
+        f"`{default_smoke.get('status') or 'not_run_by_this_audit'}`"
+    )
+    if default_smoke.get("policy"):
+        lines.append(f"- Default smoke policy: `{default_smoke.get('policy')}`")
+    can_prove = [
+        str(item)
+        for item in default_smoke.get("can_prove_after_successful_owner_gpu_run") or []
+    ]
+    if can_prove:
+        lines.append("- Can prove after a successful gated owner-GPU run:")
+        lines.extend(f"  - {item}" for item in can_prove)
+    required_after_run = [
+        str(item)
+        for item in default_smoke.get("required_artifacts_after_owner_gpu_run") or []
+    ]
+    if required_after_run:
+        lines.append("- Required artifacts after owner-GPU run:")
+        lines.extend(f"  - `{item}`" for item in required_after_run)
+    if default_smoke.get("owner_binding_template_path"):
+        lines.append(
+            "- Owner binding template: "
+            f"`{default_smoke.get('owner_binding_template_path')}` "
+            f"(exists=`{default_smoke.get('owner_binding_template_exists')}`)"
+        )
+    contract_artifacts = (
+        proof_scope.get("contract_artifacts")
+        if isinstance(proof_scope.get("contract_artifacts"), Mapping)
+        else {}
+    )
+    if contract_artifacts.get("live_policy_execution_contract_path"):
+        lines.append(
+            "- Live policy contract: "
+            f"`{contract_artifacts.get('live_policy_execution_contract_path')}` "
+            f"(exists=`{contract_artifacts.get('live_policy_execution_contract_exists')}`)"
+        )
+    live_input_templates = (
+        proof_scope.get("live_input_templates")
+        if isinstance(proof_scope.get("live_input_templates"), Mapping)
+        else {}
+    )
+    if live_input_templates:
+        lines.append("- Live input templates:")
+        template_fields = (
+            (
+                "default_test_robot_eval_job_request_template_path",
+                "default_test_robot_eval_job_request_template_exists",
+            ),
+            (
+                "real_robot_pov_manifest_template_path",
+                "real_robot_pov_manifest_template_exists",
+            ),
+            ("live_input_staging_script_path", "live_input_staging_script_exists"),
+        )
+        for path_field, exists_field in template_fields:
+            if live_input_templates.get(path_field):
+                lines.append(
+                    f"  - `{live_input_templates.get(path_field)}` "
+                    f"(exists=`{live_input_templates.get(exists_field)}`)"
+                )
+        if live_input_templates.get("staging_gate"):
+            lines.append(
+                "- Live input staging gate: "
+                f"`{live_input_templates.get('staging_gate')}`"
+            )
+    not_proven = [
+        item
+        for item in proof_scope.get("not_proven_by_first_gpu_smoke") or []
+        if isinstance(item, Mapping)
+    ]
+    if not_proven:
+        lines.append("- Not proven by the first-GPU default smoke:")
+        for item in not_proven:
+            lines.append(f"  - `{item.get('claim')}`: {item.get('reason')}")
+            proof_required = [str(value) for value in item.get("proof_required") or []]
+            if proof_required:
+                lines.append("    Required proof:")
+                lines.extend(f"    - `{value}`" for value in proof_required)
     lines.extend(["", "## Missing Inputs", ""])
     missing_inputs = [
         item for item in packet.get("missing_inputs") or [] if isinstance(item, Mapping)
@@ -1937,6 +2437,7 @@ def build_cross_repo_first_gpu_readiness(
     capture_root: str | Path | None = None,
     webapp_site_slug: str = "",
     webapp_staged_inputs_path: str | Path | None = None,
+    webapp_forwarding_preflight_path: str | Path | None = None,
     simulator: str = "isaac_sim",
     provisioner: str = "runpod",
     simulator_command: str | None = None,
@@ -1964,6 +2465,7 @@ def build_cross_repo_first_gpu_readiness(
             capture_root=capture_root,
             webapp_site_slug=webapp_site_slug,
             webapp_staged_inputs_path=webapp_staged_inputs_path,
+            webapp_forwarding_preflight_path=webapp_forwarding_preflight_path,
             simulator=simulator,
             provisioner=provisioner,
             simulator_command=simulator_command,
@@ -2007,6 +2509,7 @@ def build_cross_repo_first_gpu_readiness(
         simulator=simulator,
         provisioner=provisioner,
     )
+    simulator_label = "Isaac" if simulator == "isaac_sim" else simulator
     first_gpu_external_input_packet = _build_first_gpu_external_input_packet(
         capture_root=capture_root,
         webapp_site_slug=webapp_site_slug,
@@ -2040,8 +2543,8 @@ def build_cross_repo_first_gpu_readiness(
             "selected_provisioner": provisioner,
             "selected_simulator": simulator,
             "nvidia_nim_role": (
-                "optional model inference microservices; not the primary Isaac/physics "
-                "simulator runtime for the first owner-GPU smoke"
+                "optional model inference microservices; not the primary "
+                f"{simulator_label}/physics simulator runtime for the first owner-runtime smoke"
             ),
             "first_smoke_scope": (
                 "scene load, robot spawn, and task/action trace proof through the owner GPU "
@@ -2065,7 +2568,10 @@ def build_cross_repo_first_gpu_readiness(
             "webapp_requests_submitted": False,
             "simulator_execution_performed": False,
             "gpu_provisioning_performed": False,
+            "default_sim_policy_execution_proven": False,
+            "sim_robot_pov_evidence_proven": False,
             "robot_policy_execution_proven": False,
+            "real_robot_pov_evidence_proven": False,
             "robot_readiness_proven": False,
             "public_claim_upgrade_allowed": False,
         },
@@ -2099,6 +2605,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--capture-root", default=None)
     parser.add_argument("--webapp-site-slug", default="")
     parser.add_argument("--webapp-staged-inputs", default=None)
+    parser.add_argument("--webapp-forwarding-preflight", default=None)
     parser.add_argument("--simulator", choices=SIMULATOR_FRAMEWORKS, default="isaac_sim")
     parser.add_argument("--provisioner", choices=PROVISIONERS, default="runpod")
     parser.add_argument("--simulator-command", default=None)
@@ -2124,6 +2631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         capture_root=args.capture_root,
         webapp_site_slug=args.webapp_site_slug,
         webapp_staged_inputs_path=args.webapp_staged_inputs,
+        webapp_forwarding_preflight_path=args.webapp_forwarding_preflight,
         simulator=args.simulator,
         provisioner=args.provisioner,
         simulator_command=args.simulator_command,

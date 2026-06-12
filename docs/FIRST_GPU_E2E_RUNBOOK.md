@@ -29,18 +29,30 @@ Do not treat NVIDIA NIMs as the primary simulator runtime. NIMs are useful later
 for model inference services, but they do not replace Isaac Sim or Isaac Lab
 execution.
 
-For the first proof run:
+For customer-requested eval routing:
 
-- Prefer `isaac_sim` when the goal is rich USD/OpenUSD scene load, robot spawn,
-  sensor/action smoke, and proof artifact collection.
+- Prefer `mujoco` for the first cheap real simulator pass when the requested
+  proof is policy/spawn/default-task smoke and the owner accepts MuJoCo as the
+  backend for that proof.
+- Use `isaac_sim` when the goal is rich USD/OpenUSD scene load, Isaac robot
+  asset proof, RTX sensor/camera rendering, contact/physics validation, or
+  proof artifacts that must be Isaac-specific.
 - Use `isaac_lab_arena` after the scene, robot profile, task binding, and Arena
   packet are ready for scalable scenario evaluation.
-- Keep MuJoCo, PyBullet, or Newton as fast proxy checks unless the owner accepts
-  them as the selected simulator backend for a specific proof.
-- Pick an RTX/RT-core GPU. Isaac Sim requires RT-core capable GPUs; A100/H100 are
-  not the right first target even though they are strong training/inference GPUs.
-  L40S 48GB or RTX 6000 Ada 48GB are the preferred first targets. RTX 4090 24GB
-  is acceptable for a cheaper smoke if the scene is small.
+- Keep PyBullet, Newton, or fixture paths as proxy/local checks unless the owner
+  accepts them as the selected simulator backend for a specific proof.
+- For Isaac paths, pick an RTX/RT-core GPU. Isaac Sim requires RT-core capable
+  GPUs; A100/H100 are not the right first target even though they are strong
+  training/inference GPUs. L40S 48GB or RTX 6000 Ada 48GB are the preferred
+  first targets. RTX 4090 24GB is acceptable for a cheaper smoke if the scene is
+  small.
+- For current Isaac Sim / Isaac Lab paths, require a recent NVIDIA production
+  branch driver before running the owner command. The generated
+  `gpu_vm_runtime_preflight.sh` defaults to `BLUEPRINT_ISAAC_MIN_DRIVER_VERSION=580.65.06`
+  and also requires `vulkaninfo --summary` to succeed for `isaac_sim` or
+  `isaac_lab_arena`. This is a hard preflight because RTX hardware with an older
+  550-series driver can run CUDA/EGL proxy checks while still failing Isaac's
+  Vulkan renderer.
 
 Reference docs:
 
@@ -124,6 +136,50 @@ local `robot_eval_job_request.v1` queue envelope plus
 `local_first_gpu_rehearsal_request`. The first-GPU readiness audit still blocks
 that evidence by default; pass `--allow-local-webapp-rehearsal` only for a
 local rehearsal and do not treat it as WebApp forwarding proof.
+
+To prove the request envelope is built by WebApp code rather than Pipeline
+fixture code, export the local rehearsal request from `Blueprint-WebApp`:
+
+```bash
+WEBAPP_REPO=/Users/nijelhunt_1/workspace/Blueprint-WebApp
+WEBAPP_REHEARSAL_REQUEST="$CAPTURE_ROOT/pipeline/robot_eval_job_requests/webapp_rehearsal/webapp-built-local-rehearsal.json"
+
+(
+  cd "$WEBAPP_REPO"
+  npx tsx scripts/pipeline/export-first-gpu-webapp-rehearsal-request.ts \
+    --capture-root "$CAPTURE_ROOT" \
+    --output "$WEBAPP_REHEARSAL_REQUEST" \
+    --site-slug "$WEBAPP_SITE_SLUG" \
+    --site-submission-id "<real-or-local-rehearsal-site-submission-id>" \
+    --capture-job-id "<real-or-local-rehearsal-capture-job-id>" \
+    --capture-id "$CAPTURE_ID" \
+    --buyer-request-id "<real-or-local-rehearsal-buyer-request-id>"
+)
+```
+
+Then stage that WebApp-built envelope through Pipeline intake:
+
+```bash
+blueprint-run-live-pipeline-control-plane \
+  --capture-root "$CAPTURE_ROOT" \
+  --job-request-inbox "$CAPTURE_ROOT/pipeline/robot_eval_job_requests/intake_inbox" \
+  --no-process-inbox \
+  --no-load-env-files \
+  --output-path "$CAPTURE_ROOT/pipeline/live_pipeline_control_plane/live_pipeline_control_plane_manifest.json"
+
+blueprint-intake-live-pipeline-inputs \
+  --manifest-path "$CAPTURE_ROOT/pipeline/live_pipeline_control_plane/live_pipeline_control_plane_manifest.json" \
+  --webapp-job-request "$WEBAPP_REHEARSAL_REQUEST" \
+  --stage-webapp-request \
+  --overwrite \
+  --output-path "$CAPTURE_ROOT/pipeline/live_pipeline_control_plane/live_pipeline_input_intake_audit.json" \
+  --staged-inputs-path "$CAPTURE_ROOT/pipeline/live_pipeline_staged_inputs.json"
+```
+
+The intake audit must show `webapp_request_metadata_valid=true`,
+`local_webapp_rehearsal_only=true`, and `webapp_truth_proven=false` for rehearsal
+requests. Only a request submitted and forwarded from a real WebApp runtime with
+verified upstream IDs may clear the live WebApp proof gate.
 
 The staging command preserves the video as a `pre_screen_video` bundle. It can
 write local simulation automation artifacts, but it does not infer camera pose,
@@ -294,6 +350,7 @@ the first-GPU run packet:
 blueprint-build-first-gpu-run-packet \
   --capture-root "$CAPTURE_ROOT" \
   --webapp-site-slug "$WEBAPP_SITE_SLUG" \
+  --webapp-forwarding-preflight "$ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT" \
   --simulator isaac_sim \
   --provisioner runpod
 ```
@@ -344,8 +401,12 @@ video preflight before it can call World Labs. Only then does the status become
 `ready_to_submit_worldlabs_request`; GPU rental remains blocked until the
 generated world and local materialized scene asset exist. The
 WebApp handoff files restate the exact upstream-ID, forwarding env, staged
-request, and local-rehearsal proof boundary that must clear before the WebApp
-return leg is claimable. The GPU VM runtime preflight script checks the VM-side
+request, optional redacted forwarding-preflight report, and local-rehearsal
+proof boundary that must clear before the WebApp return leg is claimable. When
+`--webapp-forwarding-preflight` is provided, the generated handoff verifier can
+use that report as URL/token/capture-root configuration evidence without
+requiring the forwarding token to be copied into Pipeline shell output. The GPU
+VM runtime preflight script checks the VM-side
 mount, `nvidia-smi`, owner command executable, Docker availability, and sync
 manifest SHA-256 values before the owner command is run; its plan also blocks
 when `gpu_vm_sync_manifest.json` is blocked. The GPU VM sync files
@@ -381,6 +442,28 @@ export ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON='{"'"$WEBAPP_SIT
 export BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH="$CAPTURE_ROOT/pipeline/live_pipeline_staged_inputs.json"
 ```
 
+Before using any live provider launcher, publish the selected worker image and
+export a versioned image ref. A Dockerfile path in the packet is not sufficient
+for RunPod/Vast/GCP:
+
+```bash
+export BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF="registry.example/blueprint/isaac-eval-worker:2026-06-12"
+```
+
+From the WebApp repo, write the redacted forwarding preflight report before
+submitting a request:
+
+```bash
+npm run pipeline:forwarding:preflight -- --require-forwarding --probe-intake-audit \
+  --output "$CAPTURE_ROOT/pipeline/webapp_forwarding_preflight.json"
+export ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT="$CAPTURE_ROOT/pipeline/webapp_forwarding_preflight.json"
+```
+
+That report may satisfy the Pipeline readiness audit's forwarding-config
+evidence when it is ready, redacted, covers `$WEBAPP_SITE_SLUG`, and has no
+blockers. It still does not submit a request, stage WebApp inputs, allocate a
+GPU, run Isaac/MuJoCo, or prove robot readiness.
+
 On the Pipeline host, run the authenticated intake service:
 
 ```bash
@@ -415,6 +498,7 @@ blueprint-audit-first-gpu-e2e-readiness \
   --capture-root "$CAPTURE_ROOT" \
   --webapp-site-slug "$WEBAPP_SITE_SLUG" \
   --webapp-staged-inputs "$BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH" \
+  --webapp-forwarding-preflight "$ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT" \
   --simulator isaac_sim \
   --provisioner runpod \
   --simulator-command "$OWNER_SIMULATOR_COMMAND" \
@@ -453,21 +537,29 @@ On the GPU VM or pod:
 
 1. Install Docker and NVIDIA Container Toolkit.
 2. Confirm `nvidia-smi` works.
-3. Pull or build the selected Isaac Sim / Isaac Lab container.
-4. Run the Isaac Sim compatibility checker.
-5. Mount or sync `$CAPTURE_ROOT` and any materialized scene assets.
-6. Warm shader/cache paths before timing the proof command.
+3. Confirm the selected VM reports an RTX/RT-core GPU, not A100/H100.
+4. Confirm the NVIDIA driver meets the packet's Isaac minimum. Override
+   `BLUEPRINT_ISAAC_MIN_DRIVER_VERSION` only when intentionally running an older
+   pinned Isaac release whose official requirements you have checked.
+5. Install `vulkan-tools` or equivalent and confirm `vulkaninfo --summary`
+   succeeds on the VM before starting Isaac.
+6. Pull or build the selected Isaac Sim / Isaac Lab container.
+7. Run the Isaac Sim compatibility checker.
+8. Mount or sync `$CAPTURE_ROOT` and any materialized scene assets.
+9. Warm shader/cache paths before timing the proof command.
 
 The proof wrapper writes:
 
 - `owner_simulator_stdout.log`
 - `owner_simulator_stderr.log`
+- `owner_default_smoke_policy.json`
 
 The owner simulator command must write:
 
 - `owner_scene_load_trace.json`
 - `owner_spawn_pose_trace.json`
 - `owner_action_or_policy_trace.json`
+- `owner_sim_robot_pov_evidence_manifest.json`
 - `owner_artifact_manifest.json`
 
 The command must also exit nonzero on missing scene assets, failed load, failed
@@ -481,14 +573,96 @@ receives these environment variables:
 - `BLUEPRINT_SCENE_LOAD_TRACE`
 - `BLUEPRINT_SPAWN_TRACE`
 - `BLUEPRINT_ACTION_OR_POLICY_TRACE`
+- `BLUEPRINT_DEFAULT_SMOKE_POLICY`
+- `BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET`
+- `BLUEPRINT_ROBOT_ASSET_NAME`
+- `BLUEPRINT_ROBOT_ASSET_URI_OR_PATH`
+- `BLUEPRINT_ROBOT_ASSET_SOURCE`
+- `BLUEPRINT_ROBOT_ASSET_CLASS`
+- `BLUEPRINT_POLICY_EXECUTION_TRACE`
+- `BLUEPRINT_SIM_ROBOT_POV_EVIDENCE`
 - `BLUEPRINT_ARTIFACT_MANIFEST`
 
-The owner command must write those trace/manifest files. The wrapper captures
-stdout/stderr, writes `gpu_owner_system_proof.json`, runs the Pipeline validator,
-and exits nonzero if proof is incomplete.
+For the default `isaac_sim` first run, the robot asset target is Unitree G1 from
+the Isaac Sim robot assets catalog:
 
 ```bash
-export ISAAC_OWNER_COMMAND="/opt/blueprint/run_isaac_gpu_proof.sh"
+export BLUEPRINT_ROBOT_ASSET_NAME="Unitree G1"
+export BLUEPRINT_ROBOT_ASSET_URI_OR_PATH="Robots/Unitree/G1/g1.usd"
+export BLUEPRINT_ROBOT_ASSET_SOURCE="isaac_sim_robot_assets"
+export BLUEPRINT_ROBOT_ASSET_CLASS="humanoid"
+```
+
+The spawn trace must include the same asset mapping. A procedural humanoid proxy
+may be recorded as fallback simulator evidence, but it does not clear
+`isaac_sim_execution_proven` or `isaac_robot_asset_execution_proven`.
+
+For a cheaper local asset check before renting a GPU, run the MuJoCo G1 smoke:
+
+```bash
+python scripts/local_mujoco_g1_walk_to_target_smoke.py \
+  --capture-root "$CAPTURE_ROOT" \
+  --g1-model-root "$REPO_ROOT/output/external_assets/mujoco_menagerie/unitree_g1"
+```
+
+That command uses the official MuJoCo Menagerie Unitree G1 MJCF and the repo
+default `walk_to_target` smoke policy. It writes
+`simulation_automation/mujoco_g1_local_smoke/mujoco_g1_local_smoke_manifest.json`
+with `local_mujoco_g1_asset_execution_proven=true`, but it is still local CPU
+MuJoCo evidence. It does not clear the Isaac Sim/Lab gate, owner-GPU gate, real
+robot POV gate, robot-team policy gate, contact/safety gate, or delivery gate.
+
+For the first Isaac owner proof, the generated packet now includes a concrete
+Unitree G1 smoke:
+
+```bash
+export PACKET_DIR="$CAPTURE_ROOT/pipeline/first_gpu_e2e_run_packet"
+export ISAAC_OWNER_COMMAND="bash $PACKET_DIR/run_isaac_unitree_g1_smoke.sh"
+export BLUEPRINT_USE_DEFAULT_SMOKE_BINDING=false
+```
+
+`run_isaac_unitree_g1_smoke.sh` runs `isaac_unitree_g1_smoke.py` inside Isaac
+Sim Python. The script converts the staged World Labs GLB to USD with
+`omni.kit.asset_converter`, references the Unitree G1 USD asset, runs the repo
+default kinematic `walk_to_target` smoke, captures Isaac virtual camera frames,
+and writes the owner proof traces. Set `ISAAC_PYTHON` if the VM does not expose
+`python.sh` on `PATH` or under `/isaac-sim`.
+
+If the generated Isaac smoke is not compatible with the VM image, the owner
+command may instead write the scene-load and spawn traces directly. After it
+captures at least one simulator robot camera frame or video, it can write the
+default policy trace and simulator POV manifest directly or call the repo helper:
+
+```bash
+blueprint-write-owner-gpu-default-smoke-artifacts \
+  --simulator isaac_sim \
+  --sim-pov-frame "$SIM_ROBOT_POV_FRAME_PATH"
+```
+
+The helper writes `BLUEPRINT_POLICY_EXECUTION_TRACE`, `BLUEPRINT_SIM_ROBOT_POV_EVIDENCE`,
+and merges those outputs into `BLUEPRINT_ARTIFACT_MANIFEST`. It requires a real
+simulator frame or video path from that owner command. It does not write scene-load
+or spawn proof, and it does not create physical robot POV evidence.
+The generated packet also includes `owner_default_smoke_command_binding.sh`, a
+fail-closed fallback template that runs owner-provided scene-load, spawn, and
+default walk-to-target commands before invoking the helper.
+
+The wrapper captures stdout/stderr, writes `gpu_owner_system_proof.json`, runs the
+Pipeline validator, and exits nonzero if proof is incomplete.
+
+```bash
+export PACKET_DIR="$CAPTURE_ROOT/pipeline/first_gpu_e2e_run_packet"
+export OWNER_DEFAULT_SMOKE_COMMAND_BINDING="$PACKET_DIR/owner_default_smoke_command_binding.sh"
+export BLUEPRINT_USE_DEFAULT_SMOKE_BINDING=false
+export ISAAC_OWNER_COMMAND="bash $PACKET_DIR/run_isaac_unitree_g1_smoke.sh"
+export OWNER_SCENE_LOAD_COMMAND="<command-that-loads-scene-and-writes-BLUEPRINT_SCENE_LOAD_TRACE>"
+export OWNER_ROBOT_SPAWN_COMMAND="<command-that-spawns-robot-and-writes-BLUEPRINT_SPAWN_TRACE>"
+export OWNER_WALK_TO_TARGET_COMMAND="<command-that-runs-default-walk-to-target-policy>"
+export SIM_ROBOT_POV_FRAME_PATH="<simulator-pov-frame-path>"
+export BLUEPRINT_ROBOT_ASSET_NAME="Unitree G1"
+export BLUEPRINT_ROBOT_ASSET_URI_OR_PATH="Robots/Unitree/G1/g1.usd"
+export BLUEPRINT_ROBOT_ASSET_SOURCE="isaac_sim_robot_assets"
+export BLUEPRINT_ROBOT_ASSET_CLASS="humanoid"
 
 blueprint-run-owner-gpu-proof \
   --capture-root "$CAPTURE_ROOT" \
@@ -500,8 +674,20 @@ blueprint-run-owner-gpu-proof \
   --operator-id "<operator-id>" \
   --operator-attestation "I ran this command on the owner GPU VM and the referenced traces are from that run." \
   --timeout-seconds 1800 \
+  --default-policy-target "walk_to_target_pose" \
+  --robot-asset-name "$BLUEPRINT_ROBOT_ASSET_NAME" \
+  --robot-asset-uri-or-path "$BLUEPRINT_ROBOT_ASSET_URI_OR_PATH" \
+  --robot-asset-source "$BLUEPRINT_ROBOT_ASSET_SOURCE" \
+  --robot-asset-class "$BLUEPRINT_ROBOT_ASSET_CLASS" \
   --command "$ISAAC_OWNER_COMMAND"
 ```
+
+To use the split fallback binding instead of the generated Isaac smoke, set
+`BLUEPRINT_USE_DEFAULT_SMOKE_BINDING=true` and point `OWNER_SCENE_LOAD_COMMAND`,
+`OWNER_ROBOT_SPAWN_COMMAND`, and `OWNER_WALK_TO_TARGET_COMMAND` at
+owner-maintained simulator commands. Those commands must still write the same
+scene-load, spawn, policy, simulator POV, artifact, and log outputs defined in
+`owner_command_contract.md`.
 
 Then rerun simulation automation to ingest the validated proof and refresh the
 GPU handoff packet:
@@ -512,7 +698,47 @@ blueprint-run-simulation-automation \
 ```
 
 That proves only that the owner command ran and returned the required simulator
-evidence. Robot readiness remains false.
+evidence, default `walk_to_target` smoke-policy trace, and simulator POV evidence.
+Real robot POV, robot-team policy quality, contact/safety validation, and robot
+readiness remain false.
+
+The generated packet also includes `live_policy_execution_contract.md`. Use it to
+distinguish the default smoke policy from live robot-team policy proof. Live policy
+proof requires job-level `policy_execution_manifest.json` and
+`policy_execution_trace.json` with an executed modality, non-reference execution,
+complete scenario-eval-run coverage, and action or skill traces. Policy package
+staging alone and default smoke traces do not satisfy that gate.
+
+For a first controlled job run without a robot-team package, the staged
+`robot_eval_job_request.v1` can ask for Blueprint's default test policy:
+
+```json
+{
+  "default_test_policy": {
+    "policy_kind": "walk_to_target",
+    "target": "walk_to_target_pose"
+  }
+}
+```
+
+Run the job orchestrator with `BLUEPRINT_ALLOW_POLICY_EXECUTION=true` and
+`--allow-policy-execution`. The resulting `policy_execution_manifest.json` should
+show `robot_policy_execution_proven=true`,
+`default_test_policy_execution_proven=true`,
+`robot_team_policy_execution_proven=false`, and
+`scenario_eval_run_coverage_complete=true`. This proves the default test policy
+ran for the job's eval matrix; it does not prove a robot-team policy package.
+
+The first-GPU run packet now writes editable starter files for this path:
+
+- `default_test_robot_eval_job_request.template.json`
+- `real_robot_pov_manifest.template.json`
+- `stage_first_gpu_live_inputs.sh`
+
+Replace every placeholder in both JSON templates with real WebApp IDs,
+scenario-eval-run keys, robot camera video refs, and action log refs. The staging
+script refuses to run while placeholders remain and also requires
+`BLUEPRINT_ALLOW_STAGING_FIRST_GPU_LIVE_INPUTS=true`.
 
 If you specifically want `simulation_automation/simulator_execution_manifest.json`
 to show a command-managed simulator run, set `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true`
@@ -532,6 +758,9 @@ path records a gated request manifest; it does not allocate RunPod by API.
 ```bash
 export BLUEPRINT_ALLOW_GPU_PROVISIONING=true
 export BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true
+export PACKET_DIR="$CAPTURE_ROOT/pipeline/first_gpu_e2e_run_packet"
+export OWNER_DEFAULT_SMOKE_COMMAND_BINDING="$PACKET_DIR/owner_default_smoke_command_binding.sh"
+export ISAAC_OWNER_COMMAND="bash $OWNER_DEFAULT_SMOKE_COMMAND_BINDING"
 export ISAAC_PROOF_WRAPPER="blueprint-run-owner-gpu-proof --capture-root $CAPTURE_ROOT --proof-dir $GPU_PROOF_DIR --owner-system-id runpod-<pod-id> --simulator-backend isaac_sim --simulator-version <isaac-sim-version> --gpu-model <gpu-model-from-nvidia-smi> --operator-id <operator-id> --operator-attestation owner_gpu_vm_run_attested --timeout-seconds 1800 --command $ISAAC_OWNER_COMMAND"
 
 blueprint-run-robot-eval-job \
@@ -550,14 +779,90 @@ blueprint-run-robot-eval-job \
 Expected job artifacts:
 
 - `pipeline/robot_eval_job_requests/inbox_run_manifest.json`
+- `pipeline/robot_eval_jobs/<job_id>/scheduler_decision.json`
+- `pipeline/robot_eval_jobs/<job_id>/worker_launch_plan.json`
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provisioning_request.json`
+- `pipeline/robot_eval_jobs/<job_id>/gpu_provider_launch_request.json`
+- `pipeline/robot_eval_jobs/<job_id>/gpu_provider_launcher_result.json` after
+  an explicitly gated provider launcher command runs
+- `pipeline/robot_eval_jobs/<job_id>/gpu_cost_control_ledger.json`
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provisioning_result.json`
-- `pipeline/robot_eval_jobs/<job_id>/simulator_result.json`
+- `pipeline/robot_eval_jobs/<job_id>/simulator_service_result.json`
 - `pipeline/robot_eval_jobs/<job_id>/live_eval_closure_manifest.json`
 
-The closure should still block unless live policy execution, real robot POV,
-deployment outcomes, signed delivery, safety/contact proof, and review
-acceptance are also supplied.
+If `gpu_provider_launch_request.json` is `request_manifest_ready`, launch the
+remote worker through an owner-supplied provider adapter rather than from the
+website request path:
+
+```bash
+BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
+BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND="/path/to/provider-launch-adapter" \
+blueprint-run-gpu-provider-launcher \
+  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID" \
+  --allow-provider-launch \
+  --timeout-seconds 300
+```
+
+The launcher passes the provider adapter the request path, manifest URI,
+artifact-output URI, worker image ref, provider name, job id, timeout, idle
+timeout, and watchdog TTL through environment variables. It records
+`gpu_provider_launcher_result.json` plus stdout/stderr logs, but stores no raw
+command or provider secret values and does not prove GPU allocation, simulator
+execution, or robot readiness without provider/runtime evidence.
+
+For RunPod, use the repo-owned adapter as the provider command. Start with the
+dry-run request-shape proof:
+
+```bash
+blueprint-run-runpod-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode dry-run \
+  --endpoint-id "${BLUEPRINT_RUNPOD_ENDPOINT_ID:-<existing-endpoint-id>}"
+```
+
+Live RunPod API calls are separate and explicitly gated:
+
+```bash
+BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
+BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
+RUNPOD_API_KEY="<set-in-shell-not-artifact>" \
+BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND="blueprint-run-runpod-provider-adapter --mode on-demand-pod --allow-runpod-api-call" \
+blueprint-run-gpu-provider-launcher \
+  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID" \
+  --allow-provider-launch \
+  --timeout-seconds 300
+```
+
+Use `--mode serverless-run --endpoint-id "$BLUEPRINT_RUNPOD_ENDPOINT_ID"` only
+when an existing RunPod Serverless endpoint already points at the prepared
+worker image. For first simulator bring-up, prefer `--mode on-demand-pod` or an
+interactive GPU VM/pod so Vulkan/RTX/Isaac failures can be inspected directly.
+The adapter writes `runpod_provider_adapter_result.json`; that artifact proves
+request submission shape or API submission only, not simulator execution. Its
+`cost_control_policy` separates RunPod `/run` request policy
+(`executionTimeout`, `ttl`, `lowPriority`) from endpoint-level controls
+(active workers, max workers, idle timeout) and from on-demand Pod shutdown,
+which still needs a worker finalizer plus external watchdog/owner terminator.
+
+Then verify the startup architecture contract:
+
+```bash
+blueprint-audit-robot-eval-startup-architecture \
+  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID"
+```
+
+This read-only audit checks the async WebApp queue boundary, Pipeline scheduler
+ownership, CPU-preflight gate, prepared-worker contract, provider dry-run
+envelope, provider-fetchable worker manifest URI, pre-scene runtime preflight
+contract, no-secret policy, concrete idle timeout, concrete external watchdog
+TTL, cost ledger, and proof ceilings. For Isaac, the runtime-preflight contract includes NVIDIA
+inventory, driver, Vulkan/RTX, headless launch, blank-scene load, and test-frame
+checks before scene work. A local rehearsal can pass this audit while still
+blocking live WebApp truth, simulator execution, or robot-readiness proof.
+
+The closure should still block unless robot-team policy execution beyond the
+default smoke policy, real robot POV, deployment outcomes, signed delivery,
+safety/contact proof, and review acceptance are also supplied.
 
 ## Phase 5: Proof Audit And Stop Rules
 

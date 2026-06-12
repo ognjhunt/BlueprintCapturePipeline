@@ -433,6 +433,18 @@ def test_episode_spec_and_cpu_preflight_emit_review_required_optional_dependency
     assert manifest["simulator_execution_proven"] is False
     assert manifest["robot_readiness_proven"] is False
 
+    build_simulation_automation(
+        capture_root=capture_root,
+        scene_assets=[ply_path],
+        allow_cpu_simulator_preflight=True,
+        cpu_preflight_backends=["mujoco", "pybullet"],
+    )
+    gpu_handoff = _read_json(automation_dir / "gpu_handoff_packet.json")
+    assert gpu_handoff["hard_preflight_blockers"] == []
+    assert "spawn_outside_scene_bounds" not in {
+        detail["blocker_id"] for detail in gpu_handoff["pre_gpu_blocker_details"]
+    }
+
 
 def test_usd_collision_labels_are_split_for_dataset_and_proof_boundaries(
     tmp_path: Path,

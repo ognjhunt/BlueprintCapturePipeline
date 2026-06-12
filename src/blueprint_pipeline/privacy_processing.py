@@ -190,6 +190,69 @@ def _copy_or_remux_video(source: Path, destination: Path) -> Dict[str, Any]:
     return {"status": "succeeded", "mode": "copy"}
 
 
+def _local_full_frame_redaction_enabled() -> bool:
+    return _env_flag("PRIVACY_LOCAL_FULL_FRAME_REDACTION_ENABLED", default=False) or _env_flag(
+        "BLUEPRINT_PRIVACY_LOCAL_FULL_FRAME_REDACTION",
+        default=False,
+    )
+
+
+def _run_local_full_frame_redaction(source: Path, destination: Path) -> Dict[str, Any]:
+    """Create an explicitly local, full-frame deidentified walkthrough."""
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return {"status": "failed", "reason": "ffmpeg_not_found"}
+    ensure_dir(destination.parent)
+    width = max(24, int(os.getenv("PRIVACY_LOCAL_REDACTION_PIXEL_WIDTH") or "96"))
+    blur = max(2, int(os.getenv("PRIVACY_LOCAL_REDACTION_BLUR") or "16"))
+    vf = (
+        f"scale={width}:-2,"
+        f"boxblur={blur}:1,"
+        "scale=trunc(iw*8/2)*2:trunc(ih*8/2)*2:flags=neighbor,"
+        "format=yuv420p"
+    )
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-vf",
+            vf,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "32",
+            "-movflags",
+            "+faststart",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not destination.is_file():
+        return {
+            "status": "failed",
+            "reason": f"ffmpeg_redaction_failed:{proc.returncode}",
+            "stderr": proc.stderr[-4000:],
+        }
+    return {
+        "status": "succeeded",
+        "mode": "full_frame_pixelation_blur",
+        "audio_removed": True,
+        "pixel_width": width,
+        "blur_radius": blur,
+        "output_video": str(destination),
+    }
+
+
 def _sam3_command_template() -> str:
     return str(os.getenv("PRIVACY_SAM3_COMMAND") or os.getenv("SAM3_COMMAND") or "").strip()
 
@@ -689,6 +752,73 @@ def run_privacy_postprocess(
                 result_mode=payload["mode"],
             ),
         )
+        return payload
+
+    if _local_full_frame_redaction_enabled():
+        redaction_result = _run_local_full_frame_redaction(raw_video_path, final_video_path)
+        payload["steps"].append({"name": "local_full_frame_redaction", "result": dict(redaction_result)})
+        payload["mode"] = "full_frame_redaction"
+        payload["fallback_used"] = True
+        payload["people_detection_performed"] = False
+        payload["people_detector"] = None
+        payload["privacy_method"] = "local_full_frame_pixelation_blur"
+        payload["production_review_required"] = True
+        payload["local_repo_proof_only"] = True
+        payload["limitations"] = [
+            "Full-frame pixelation/blur removes inspectable visual identity detail but is not model-based person segmentation.",
+            "This artifact proves privacy-safe final-walkthrough selection for local pipeline rehearsal only.",
+            "Production customer delivery still requires configured privacy runners or human review acceptance.",
+        ]
+        payload["proof_boundary"] = {
+            "privacy_safe_final_walkthrough_selected": False,
+            "local_full_frame_redaction_executed": False,
+            "model_based_person_removal_proven": False,
+            "live_privacy_service_proven": False,
+            "production_review_required": True,
+            "raw_video_bypass_used": False,
+            "public_claim_upgrade_allowed": False,
+        }
+        if str(redaction_result.get("status") or "").strip().lower() != "succeeded":
+            payload["status"] = "failed_closed"
+            payload["reason"] = str(redaction_result.get("reason") or "local_full_frame_redaction_failed")
+            write_json(manifest_path, payload)
+            report = _verification_report(
+                initial_detection={
+                    "status": "not_run",
+                    "reason": "local_full_frame_redaction_does_not_run_person_detector",
+                },
+                vip_verification=None,
+                fallback_verification=redaction_result,
+                result_status=payload["status"],
+                result_mode=payload["mode"],
+            )
+            report["local_full_frame_redaction"] = dict(redaction_result)
+            report["proof_boundary"] = dict(payload["proof_boundary"])
+            write_json(verification_path, report)
+            return payload
+
+        payload["status"] = "full_frame_redacted_local_proof"
+        payload["privacy_processed_video_uri"] = final_video_uri
+        payload["world_model_video_uri"] = final_video_uri
+        payload["proof_boundary"] = {
+            **dict(payload["proof_boundary"]),
+            "privacy_safe_final_walkthrough_selected": True,
+            "local_full_frame_redaction_executed": True,
+        }
+        write_json(manifest_path, payload)
+        report = _verification_report(
+            initial_detection={
+                "status": "not_run",
+                "reason": "local_full_frame_redaction_does_not_run_person_detector",
+            },
+            vip_verification={"status": "not_run", "reason": "local_full_frame_redaction_used"},
+            fallback_verification=redaction_result,
+            result_status=payload["status"],
+            result_mode=payload["mode"],
+        )
+        report["local_full_frame_redaction"] = dict(redaction_result)
+        report["proof_boundary"] = dict(payload["proof_boundary"])
+        write_json(verification_path, report)
         return payload
 
     initial_detection = _run_sam3(

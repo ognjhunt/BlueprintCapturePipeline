@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, resolve_requested_lanes, run_capture_pipeline
+from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
 from blueprint_pipeline.qualification import _requested_downstream_lanes
@@ -146,6 +148,85 @@ def test_materialization_does_not_fabricate_missing_upstream_ids(tmp_path: Path)
     assert descriptor["metadata"]["site_submission_id"] is None
     assert descriptor["metadata"]["buyer_request_id"] is None
     assert descriptor["metadata"]["capture_job_id"] is None
+
+
+def test_qualification_records_missing_webapp_bootstrap_without_failing_local_run(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root, descriptor_uri = _build_staged_capture(tmp_path)
+
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_REQUIRED", raising=False)
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        lambda **_kwargs: _successful_capture_review(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _successful_privacy_processing(),
+    )
+
+    def _missing_webapp_bootstrap(**_kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("site_submission_id or request_id is required")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        _missing_webapp_bootstrap,
+    )
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        lane="qualification",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    pipeline_root = capture_root / "pipeline"
+    webapp_sync = json.loads((pipeline_root / "webapp_sync_result.json").read_text(encoding="utf-8"))
+
+    assert result["status"] == "completed"
+    assert webapp_sync["status"] == "failed"
+    assert webapp_sync["latest_stage"] == "qualification"
+    assert webapp_sync["syncs"]["qualification"]["blocker"] == (
+        "webapp_sync_requires_upstream_request_job_bootstrap"
+    )
+    assert not (pipeline_root / ".qualification_pipeline_failed.json").exists()
+    assert (pipeline_root / ".qualification_pipeline_complete").is_file()
+
+
+def test_qualification_required_webapp_sync_failure_still_blocks(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _capture_root, descriptor_uri = _build_staged_capture(tmp_path)
+
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.setenv("PIPELINE_SYNC_REQUIRED", "true")
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        lambda **_kwargs: _successful_capture_review(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        lambda **_kwargs: _successful_privacy_processing(),
+    )
+
+    def _missing_webapp_bootstrap(**_kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("site_submission_id or request_id is required")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        _missing_webapp_bootstrap,
+    )
+
+    with pytest.raises(PipelineError, match="site_submission_id or request_id is required"):
+        run_capture_pipeline(
+            descriptor_gcs_uri=descriptor_uri,
+            lane="qualification",
+            config=PipelineConfig(gcs_root=tmp_path),
+        )
 
 
 def _successful_capture_review() -> dict[str, object]:
@@ -405,6 +486,7 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
 def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_staged_capture(tmp_path, requested_outputs=["preview_simulation"])
     sync_calls: list[dict[str, object]] = []
+    worldlabs_descriptor_privacy_uris: list[str | None] = []
     worldlabs_input_uri = "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4"
 
     monkeypatch.setattr(
@@ -419,9 +501,11 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
         "blueprint_pipeline.qualification.run_privacy_postprocess",
         lambda **_kwargs: _successful_privacy_processing(),
     )
-    monkeypatch.setattr(
-        "blueprint_pipeline.qualification._prepare_worldlabs_input_video",
-        lambda **_kwargs: {
+    def _fake_prepare_worldlabs_input_video(**kwargs: object) -> dict[str, object]:
+        descriptor = kwargs["descriptor"]
+        assert isinstance(descriptor, CaptureDescriptor)
+        worldlabs_descriptor_privacy_uris.append(descriptor.privacy_processed_video_uri)
+        return {
             "status": "ready",
             "manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input_manifest.json",
             "output_video_uri": worldlabs_input_uri,
@@ -440,7 +524,11 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
                 "output_checksum_sha256": "worldlabs-output-sha",
                 "source_checksum_sha256": "privacy-source-sha",
             },
-        },
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.qualification._prepare_worldlabs_input_video",
+        _fake_prepare_worldlabs_input_video,
     )
     monkeypatch.setenv("BLUEPRINT_PREVIEW_PROVIDER", "world_labs")
 
@@ -458,6 +546,9 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
     worldlabs_request = json.loads((pipeline_root / "worldlabs_request_manifest.json").read_text(encoding="utf-8"))
 
     assert metadata["worldlabs_request_manifest_uri"].endswith("/pipeline/worldlabs_request_manifest.json")
+    assert worldlabs_descriptor_privacy_uris == [
+        "gs://local-blueprint/scenes/scene-1/captures/capture-1/privacy/final_walkthrough.mov"
+    ]
     assert metadata["worldlabs_input_manifest_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input_manifest.json")
     assert metadata["worldlabs_input_video_uri"].endswith("/pipeline/worldlabs_input/worldlabs_input.mp4")
     assert metadata["canonical_site_package_uri"].endswith("/pipeline/site_package/canonical_site_package.json")
@@ -720,10 +811,23 @@ def test_qualification_allows_labeled_raw_worldlabs_bypass(monkeypatch, tmp_path
 
     provider_preview_status = json.loads((capture_root / "pipeline" / "provider_preview_status.json").read_text(encoding="utf-8"))
     descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    adapter_input = json.loads(
+        (
+            capture_root
+            / "pipeline"
+            / "site_package"
+            / "provider_adapter_inputs"
+            / "world_labs_marble.json"
+        ).read_text(encoding="utf-8")
+    )
 
     assert provider_preview_status["status"] == "ready"
     assert provider_preview_status["labeling"]["non_production"] is True
     assert provider_preview_status["labeling"]["unredacted_input"] is True
+    assert adapter_input["status"] == "review_required"
+    assert adapter_input["blockers"] == []
+    assert "raw_video_bypass_input_non_production" in adapter_input["warnings"]
+    assert "rights_provenance_review_blocked_raw_bypass" in adapter_input["warnings"]
     assert descriptor["metadata"]["worldlabs_input_labeling"]["raw_video_bypass_used"] is True
     assert sync_calls
     assert sync_calls[0]["deployment_readiness"]["provider_preview_labeling"]["non_production"] is True

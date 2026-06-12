@@ -20,6 +20,28 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     _write(path, json.dumps(payload, indent=2))
 
 
+def _write_gpu_vm_runtime_preflight_result(capture_root: Path) -> None:
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "first_gpu_e2e_run_packet"
+        / "gpu_vm_runtime_preflight_result.json",
+        {
+            "schema_version": "first_gpu_vm_runtime_preflight_result.v1",
+            "status": "ready_for_owner_command_attempt",
+            "blockers": [],
+            "warnings": [],
+            "nvidia_smi": {"status": "ready"},
+            "owner_command": {"status": "ready"},
+            "sync_manifest": {"status": "ready"},
+            "claim_boundary": {
+                "simulator_execution_performed": False,
+                "robot_readiness_proven": False,
+            },
+        },
+    )
+
+
 def _pipeline_repo(tmp_path: Path) -> Path:
     root = tmp_path / "BlueprintCapturePipeline"
     _write(
@@ -29,6 +51,7 @@ def _pipeline_repo(tmp_path: Path) -> Path:
                 "blueprint-audit-first-gpu-e2e-readiness",
                 "blueprint-stage-first-gpu-sample-video",
                 "blueprint-run-owner-gpu-proof",
+                "blueprint-write-owner-gpu-default-smoke-artifacts",
                 "blueprint-build-first-gpu-run-packet",
             ]
         ),
@@ -50,6 +73,7 @@ def _pipeline_repo(tmp_path: Path) -> Path:
             [
                 "missing_webapp_staged_inputs",
                 "webapp_staged_inputs_local_rehearsal_only",
+                "ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT",
                 "owner_gpu_simulator_execution_not_run",
                 "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION",
             ]
@@ -64,6 +88,12 @@ def _pipeline_repo(tmp_path: Path) -> Path:
                 "webapp_handoff_verification_commands",
                 "nvidia_nim_boundary",
                 "avoid_for_isaac_sim",
+                "blueprint-write-owner-gpu-default-smoke-artifacts",
+                "owner_default_smoke_command_binding.sh",
+                "live_policy_execution_contract.md",
+                "default_test_robot_eval_job_request.template.json",
+                "real_robot_pov_manifest.template.json",
+                "stage_first_gpu_live_inputs.sh",
             ]
         ),
     )
@@ -74,6 +104,9 @@ def _pipeline_repo(tmp_path: Path) -> Path:
                 "BLUEPRINT_SCENE_LOAD_TRACE",
                 "BLUEPRINT_SPAWN_TRACE",
                 "BLUEPRINT_ACTION_OR_POLICY_TRACE",
+                "BLUEPRINT_DEFAULT_SMOKE_POLICY",
+                "BLUEPRINT_POLICY_EXECUTION_TRACE",
+                "BLUEPRINT_SIM_ROBOT_POV_EVIDENCE",
                 "owner_gpu_simulator_execution_proof_manifest.json",
             ]
         ),
@@ -189,6 +222,31 @@ def _webapp_repo(tmp_path: Path) -> Path:
                 "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
                 "ready_for_owner_gpu_preflight: false",
                 "missing_pipeline_capture_root_override_for_webapp_synced_artifact",
+            ]
+        ),
+    )
+    _write(
+        root / "scripts/pipeline/export-first-gpu-webapp-rehearsal-request.ts",
+        "\n".join(
+            [
+                "buildRobotEvalJobRequest",
+                "validateRobotEvalJobRequest",
+                "local_first_gpu_rehearsal_request",
+                "live_webapp_forwarding_proven: false",
+            ]
+        ),
+    )
+    _write(
+        root / "scripts/pipeline/audit-robot-eval-forwarding-readiness.ts",
+        "\n".join(
+            [
+                "blueprint.webapp.robot_eval_forwarding_readiness.v1",
+                "ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN",
+                "probe-intake-audit",
+                "redacted: true",
+                "no_job_queued",
+                "no_gpu_allocated",
+                "no_simulator_execution_proven",
             ]
         ),
     )
@@ -330,6 +388,66 @@ def _write_staged_webapp_request(capture_root: Path, *, local_rehearsal: bool = 
         staged_payload["webapp_request"]["source_kind"] = "local_first_gpu_rehearsal_request"
     _write_json(staged_path, staged_payload)
     return staged_path
+
+
+def _write_webapp_forwarding_preflight_report(path: Path, *, site_slug: str = "site-1") -> Path:
+    _write_json(
+        path,
+        {
+            "schema_version": "blueprint.webapp.robot_eval_forwarding_readiness.v1",
+            "status": "ready_for_required_forwarding_with_probe",
+            "forwarding_required": True,
+            "endpoint_configured": True,
+            "configured_env": {
+                "forward_url": {
+                    "configured": True,
+                    "valid": True,
+                    "protocol": "https",
+                    "origin": "https://pipeline.example",
+                    "pathname": "/api/live-pipeline/job-requests",
+                    "query_present": False,
+                    "credentials_present": False,
+                },
+                "forward_token": {
+                    "configured": True,
+                    "redacted": True,
+                },
+                "forward_timeout_ms": {
+                    "configured": True,
+                    "value": 10000,
+                    "valid": True,
+                },
+                "capture_root_by_site_json": {
+                    "configured": True,
+                    "valid": True,
+                    "site_count": 1,
+                    "site_slugs": [site_slug],
+                },
+                "single_capture_root_override": {
+                    "configured": False,
+                },
+            },
+            "probe": {
+                "requested": True,
+                "attempted": True,
+                "status": "reachable",
+                "http_status": 200,
+                "audit_status": "staged_for_control_plane",
+            },
+            "blockers": [],
+            "warnings": [],
+            "proof_boundary": {
+                "command_is_read_only": True,
+                "no_job_queued": True,
+                "no_pipeline_mutation_requested": True,
+                "no_gpu_allocated": True,
+                "no_simulator_execution_proven": True,
+                "no_robot_readiness_proven": True,
+                "no_public_claim_upgrade_allowed": True,
+            },
+        },
+    )
+    return path
 
 
 def _write_scene_asset_artifacts(capture_root: Path) -> None:
@@ -556,6 +674,53 @@ def test_cross_repo_first_gpu_remediation_groups_runtime_blockers(
     assert {
         item["name"] for item in missing_by_category["owner_gpu_gate"]["required_inputs"]
     } == {"BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"}
+    owner_command_inputs = missing_by_category["owner_gpu_command"]
+    assert {
+        item["name"] for item in owner_command_inputs["required_inputs"]
+    } >= {
+        "OWNER_SIMULATOR_COMMAND",
+        "owner_default_smoke_command_binding.sh",
+        "OWNER_SCENE_LOAD_COMMAND",
+        "OWNER_ROBOT_SPAWN_COMMAND",
+        "OWNER_WALK_TO_TARGET_COMMAND",
+        "SIM_ROBOT_POV_FRAME_PATH or SIM_ROBOT_POV_VIDEO_PATH",
+    }
+    owner_command_guarded = owner_command_inputs["guarded_commands"]
+    assert any(
+        item["name"] == "owner_command_binding_template_syntax_check"
+        and item["safe_to_run_now"] is True
+        and item["runs_owner_simulator_command"] is False
+        for item in owner_command_guarded
+    )
+    proof_scope = external_inputs["first_gpu_proof_scope"]
+    assert proof_scope["default_simulator_smoke"]["policy"] == "walk_to_target"
+    assert proof_scope["default_simulator_smoke"][
+        "owner_binding_template_exists"
+    ] is True
+    assert proof_scope["contract_artifacts"][
+        "live_policy_execution_contract_exists"
+    ] is True
+    assert proof_scope["live_input_templates"][
+        "default_test_robot_eval_job_request_template_exists"
+    ] is True
+    assert proof_scope["live_input_templates"][
+        "real_robot_pov_manifest_template_exists"
+    ] is True
+    assert proof_scope["live_input_templates"]["live_input_staging_script_exists"] is True
+    assert proof_scope["live_input_templates"]["staging_gate"] == (
+        "BLUEPRINT_ALLOW_STAGING_FIRST_GPU_LIVE_INPUTS=true"
+    )
+    not_proven_claims = {
+        item["claim"] for item in proof_scope["not_proven_by_first_gpu_smoke"]
+    }
+    assert not_proven_claims == {
+        "live_robot_team_policy_execution",
+        "real_robot_pov_evidence",
+    }
+    assert external_inputs["claim_boundary"]["default_sim_policy_execution_proven"] is False
+    assert external_inputs["claim_boundary"]["sim_robot_pov_evidence_proven"] is False
+    assert external_inputs["claim_boundary"]["robot_policy_execution_proven"] is False
+    assert external_inputs["claim_boundary"]["real_robot_pov_evidence_proven"] is False
     upstream_guarded = missing_by_category["webapp_upstream_truth"]["guarded_commands"]
     assert upstream_guarded[0]["name"] == "webapp_upstream_truth_verification_commands"
     assert upstream_guarded[0]["path"].endswith(
@@ -600,6 +765,58 @@ def test_cross_repo_first_gpu_spend_blocks_when_ready_runtime_has_no_run_packet(
     assert "first_gpu_run_packet" in spend_decision["pre_spend_blocker_categories"]
     assert "gpu_vm_sync" in spend_decision["pre_spend_blocker_categories"]
     assert "gpu_vm_runtime_preflight" in spend_decision["pre_spend_blocker_categories"]
+
+
+def test_cross_repo_first_gpu_uses_webapp_forwarding_preflight_report(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _runtime_capture_root(tmp_path)
+    _write_gpu_handoff_artifacts(capture_root)
+    _write_staged_webapp_request(capture_root)
+    preflight_path = _write_webapp_forwarding_preflight_report(
+        tmp_path / "forwarding_preflight.json",
+    )
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL", raising=False)
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", raising=False)
+    monkeypatch.delenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        raising=False,
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+
+    result = build_cross_repo_first_gpu_readiness(
+        pipeline_repo=_pipeline_repo(tmp_path),
+        capture_repo=_capture_repo(tmp_path),
+        webapp_repo=_webapp_repo(tmp_path),
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        webapp_forwarding_preflight_path=preflight_path,
+        simulator_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        simulator_command_location="remote",
+        output_path=tmp_path / "cross-repo-with-preflight-report.json",
+    )
+
+    runtime = result["phases"]["runtime_capture"]
+    forwarding = runtime["readiness"]["stages"]["webapp_forwarding"]
+    assert runtime["ready"] is True
+    assert forwarding["forward_url_configured"] is False
+    assert forwarding["forward_url_evidence_present"] is True
+    assert forwarding["forward_token_configured"] is False
+    assert forwarding["forward_token_evidence_present"] is True
+    assert forwarding["capture_root_override_source"] == (
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT"
+    )
+    assert forwarding["forwarding_preflight"]["ready"] is True
+    assert forwarding["forwarding_preflight"]["probe_status"] == "reachable"
+    assert not [
+        blocker
+        for blocker in result["blockers"]
+        if "missing_env_ROBOT_EVAL_JOB_REQUEST_FORWARD" in blocker
+    ]
+    assert result["status"] == "blocked"
+    assert "run_packet:missing_first_gpu_run_packet" in result["blockers"]
 
 
 def test_cross_repo_first_gpu_surfaces_run_packet_operator_actions(
@@ -787,6 +1004,14 @@ def test_cross_repo_first_gpu_surfaces_run_packet_operator_actions(
     assert "webapp_handoff_verification_commands.sh" in markdown
     assert "gpu_vm_runtime_preflight.sh" in markdown
     assert "gpu_vm_commands.sh" in markdown
+    assert "Default smoke policy: `walk_to_target`" in markdown
+    assert "`live_robot_team_policy_execution`" in markdown
+    assert "`real_robot_pov_evidence`" in markdown
+    assert "live_policy_execution_contract.md" in markdown
+    assert "default_test_robot_eval_job_request.template.json" in markdown
+    assert "real_robot_pov_manifest.template.json" in markdown
+    assert "stage_first_gpu_live_inputs.sh" in markdown
+    assert "BLUEPRINT_ALLOW_STAGING_FIRST_GPU_LIVE_INPUTS=true" in markdown
     assert "secret-token" not in markdown
     assert "secret-worldlabs-key" not in markdown
 
@@ -832,6 +1057,131 @@ def test_cross_repo_first_gpu_spend_blocks_when_run_packet_sync_is_blocked(
     assert result["gpu_spend_decision"]["status"] == "do_not_rent_gpu_yet"
 
 
+def test_cross_repo_first_gpu_spend_blocks_when_live_policy_contract_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _runtime_capture_root(tmp_path)
+    _make_runtime_ready(capture_root, monkeypatch)
+    _write_scene_asset_artifacts(capture_root)
+
+    build_first_gpu_run_packet(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        owner_command_location="remote",
+    )
+    (
+        capture_root
+        / "pipeline"
+        / "first_gpu_e2e_run_packet"
+        / "live_policy_execution_contract.md"
+    ).unlink()
+
+    result = build_cross_repo_first_gpu_readiness(
+        pipeline_repo=_pipeline_repo(tmp_path),
+        capture_repo=_capture_repo(tmp_path),
+        webapp_repo=_webapp_repo(tmp_path),
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        simulator_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        simulator_command_location="remote",
+    )
+
+    assert result["status"] == "blocked"
+    assert "run_packet:live_policy_execution_contract_missing" in result["blockers"]
+    packet_check = result["phases"]["run_packet"]["checks"]["first_gpu_run_packet"]
+    assert packet_check["live_policy_execution_contract_exists"] is False
+    assert result["first_gpu_external_input_packet"]["first_gpu_proof_scope"][
+        "contract_artifacts"
+    ]["live_policy_execution_contract_exists"] is False
+    assert result["gpu_spend_decision"]["status"] == "do_not_rent_gpu_yet"
+
+
+def test_cross_repo_first_gpu_spend_blocks_when_live_input_staging_script_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _runtime_capture_root(tmp_path)
+    _make_runtime_ready(capture_root, monkeypatch)
+    _write_scene_asset_artifacts(capture_root)
+
+    build_first_gpu_run_packet(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        owner_command_location="remote",
+    )
+    (
+        capture_root
+        / "pipeline"
+        / "first_gpu_e2e_run_packet"
+        / "stage_first_gpu_live_inputs.sh"
+    ).unlink()
+
+    result = build_cross_repo_first_gpu_readiness(
+        pipeline_repo=_pipeline_repo(tmp_path),
+        capture_repo=_capture_repo(tmp_path),
+        webapp_repo=_webapp_repo(tmp_path),
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        simulator_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        simulator_command_location="remote",
+    )
+
+    assert result["status"] == "blocked"
+    assert "run_packet:live_input_staging_commands_missing" in result["blockers"]
+    packet_check = result["phases"]["run_packet"]["checks"]["first_gpu_run_packet"]
+    assert packet_check["live_input_staging_commands_exists"] is False
+    assert result["first_gpu_external_input_packet"]["first_gpu_proof_scope"][
+        "live_input_templates"
+    ]["live_input_staging_script_exists"] is False
+    assert result["gpu_spend_decision"]["status"] == "do_not_rent_gpu_yet"
+
+
+def test_cross_repo_first_gpu_spend_blocks_when_gpu_vm_preflight_result_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _runtime_capture_root(tmp_path)
+    _make_runtime_ready(capture_root, monkeypatch)
+    _write_scene_asset_artifacts(capture_root)
+
+    build_first_gpu_run_packet(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        owner_command_location="remote",
+    )
+
+    result = build_cross_repo_first_gpu_readiness(
+        pipeline_repo=_pipeline_repo(tmp_path),
+        capture_repo=_capture_repo(tmp_path),
+        webapp_repo=_webapp_repo(tmp_path),
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        simulator_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        simulator_command_location="remote",
+    )
+
+    assert result["status"] == "blocked"
+    assert "run_packet:gpu_vm_runtime_preflight_result_not_ready" in result["blockers"]
+    assert (
+        "run_packet:gpu_vm_runtime_preflight_result:"
+        "gpu_vm_runtime_preflight_result_missing"
+    ) in result["blockers"]
+    runtime_check = result["phases"]["run_packet"]["checks"][
+        "gpu_vm_runtime_preflight_plan"
+    ]
+    assert runtime_check["safe_to_run_on_gpu_vm"] is True
+    assert runtime_check["result_ready_for_owner_command_attempt"] is False
+    assert runtime_check["result"]["exists"] is False
+    external_inputs = result["first_gpu_external_input_packet"]
+    missing_categories = {item["category_id"] for item in external_inputs["missing_inputs"]}
+    assert "gpu_vm_runtime_preflight" in missing_categories
+    assert result["gpu_spend_decision"]["status"] == "do_not_rent_gpu_yet"
+
+
 def test_cross_repo_first_gpu_spend_allows_ready_runtime_and_ready_run_packet(
     tmp_path: Path,
     monkeypatch,
@@ -840,6 +1190,13 @@ def test_cross_repo_first_gpu_spend_allows_ready_runtime_and_ready_run_packet(
     _make_runtime_ready(capture_root, monkeypatch)
     _write_scene_asset_artifacts(capture_root)
 
+    build_first_gpu_run_packet(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        owner_command_location="remote",
+    )
+    _write_gpu_vm_runtime_preflight_result(capture_root)
     build_first_gpu_run_packet(
         capture_root=capture_root,
         webapp_site_slug="site-1",
@@ -866,6 +1223,9 @@ def test_cross_repo_first_gpu_spend_allows_ready_runtime_and_ready_run_packet(
     assert result["phases"]["run_packet"]["ready"] is True
     assert result["phases"]["run_packet"]["checks"]["launch_order"][
         "gpu_execution_allowed"
+    ] is True
+    assert result["phases"]["run_packet"]["checks"]["gpu_vm_runtime_preflight_plan"][
+        "result_ready_for_owner_command_attempt"
     ] is True
     assert result["first_gpu_operator_action_count"] == 0
     assert result["first_gpu_operator_actions"] == []
@@ -901,6 +1261,14 @@ def test_cross_repo_first_gpu_spend_blocks_local_webapp_rehearsal_even_when_allo
     monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
 
+    build_first_gpu_run_packet(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        owner_command_location="remote",
+        allow_local_webapp_rehearsal=True,
+    )
+    _write_gpu_vm_runtime_preflight_result(capture_root)
     build_first_gpu_run_packet(
         capture_root=capture_root,
         webapp_site_slug="site-1",

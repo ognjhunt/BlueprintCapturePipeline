@@ -1199,6 +1199,22 @@ def robot_eval_job_evaluation_prep_surface(
         "proof_boundary": "proof_boundary.json",
         "blocked_manifest": "blocked_manifest.json",
         "job_validation": "job_validation.json",
+        "scheduler_decision": "scheduler_decision.json",
+        "worker_launch_plan": "worker_launch_plan.json",
+        "worker_manifest": "worker_manifest.json",
+        "gpu_provisioning_request": "gpu_provisioning_request.json",
+        "gpu_provider_launch_request": "gpu_provider_launch_request.json",
+        "gpu_provider_launcher_result": "gpu_provider_launcher_result.json",
+        "gpu_provider_launcher_stdout_log": "gpu_provider_launcher.stdout.log",
+        "gpu_provider_launcher_stderr_log": "gpu_provider_launcher.stderr.log",
+        "runpod_provider_adapter_result": "runpod_provider_adapter_result.json",
+        "gpu_cost_control_ledger": "gpu_cost_control_ledger.json",
+        "gpu_provisioning_result": "gpu_provisioning_result.json",
+        "startup_architecture_audit": "startup_architecture_audit.json",
+        "worker_runtime_manifest": "worker_runtime_manifest.json",
+        "worker_runtime_preflight": "worker_runtime_preflight.json",
+        "worker_runtime_preflight_stdout_log": "worker_runtime_preflight.stdout.log",
+        "worker_runtime_preflight_stderr_log": "worker_runtime_preflight.stderr.log",
         "policy_package_manifest": "policy_package_manifest.json",
         "scenario_eval_matrix": "scenario_eval_matrix.json",
         "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
@@ -1309,6 +1325,30 @@ def robot_eval_job_evaluation_prep_surface(
             "run_manifest_uri": "robot_eval_job_run_manifest_uri",
             "proof_boundary_uri": "robot_eval_job_proof_boundary_uri",
             "blocked_manifest_uri": "robot_eval_job_blocked_manifest_uri",
+            "worker_manifest_uri": "robot_eval_job_worker_manifest_uri",
+            "gpu_provider_launcher_result_uri": (
+                "robot_eval_job_gpu_provider_launcher_result_uri"
+            ),
+            "gpu_provider_launcher_stdout_log_uri": (
+                "robot_eval_job_gpu_provider_launcher_stdout_log_uri"
+            ),
+            "gpu_provider_launcher_stderr_log_uri": (
+                "robot_eval_job_gpu_provider_launcher_stderr_log_uri"
+            ),
+            "runpod_provider_adapter_result_uri": (
+                "robot_eval_job_runpod_provider_adapter_result_uri"
+            ),
+            "startup_architecture_audit_uri": (
+                "robot_eval_job_startup_architecture_audit_uri"
+            ),
+            "worker_runtime_manifest_uri": "robot_eval_job_worker_runtime_manifest_uri",
+            "worker_runtime_preflight_uri": "robot_eval_job_worker_runtime_preflight_uri",
+            "worker_runtime_preflight_stdout_log_uri": (
+                "robot_eval_job_worker_runtime_preflight_stdout_log_uri"
+            ),
+            "worker_runtime_preflight_stderr_log_uri": (
+                "robot_eval_job_worker_runtime_preflight_stderr_log_uri"
+            ),
             "evaluation_result_uri": "robot_eval_job_evaluation_result_uri",
             "scenario_eval_matrix_uri": "robot_eval_job_scenario_eval_matrix_uri",
             "deployment_outcome_ledger_uri": "robot_eval_job_deployment_outcome_ledger_uri",
@@ -1331,6 +1371,24 @@ def robot_eval_job_evaluation_prep_surface(
             ),
         }
         for source_key, alias_key in alias_map.items():
+            value = latest_artifact_uris.get(source_key)
+            if isinstance(value, str) and value:
+                artifact_uris[alias_key] = value
+        startup_alias_map = {
+            "scheduler_decision_uri": "robot_eval_scheduler_decision_uri",
+            "worker_launch_plan_uri": "robot_eval_worker_launch_plan_uri",
+            "worker_manifest_uri": "robot_eval_worker_manifest_uri",
+            "gpu_provider_launch_request_uri": "robot_eval_gpu_provider_launch_request_uri",
+            "gpu_provider_launcher_result_uri": "robot_eval_gpu_provider_launcher_result_uri",
+            "runpod_provider_adapter_result_uri": (
+                "robot_eval_runpod_provider_adapter_result_uri"
+            ),
+            "gpu_cost_control_ledger_uri": "robot_eval_gpu_cost_control_ledger_uri",
+            "startup_architecture_audit_uri": "robot_eval_startup_architecture_audit_uri",
+            "worker_runtime_manifest_uri": "robot_eval_worker_runtime_manifest_uri",
+            "worker_runtime_preflight_uri": "robot_eval_worker_runtime_preflight_uri",
+        }
+        for source_key, alias_key in startup_alias_map.items():
             value = latest_artifact_uris.get(source_key)
             if isinstance(value, str) and value:
                 artifact_uris[alias_key] = value

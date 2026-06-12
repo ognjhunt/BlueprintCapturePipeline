@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Protocol
-from .common import utc_now_iso, write_json
+from .common import resolve_gs_uri_to_path, utc_now_iso, write_json
 from .launch_proof_policy import production_launch_mode
+from .local_capture import resolve_local_capture_context
 
 # ---------------------------------------------------------------------------
 # World Labs API helpers
@@ -22,6 +23,7 @@ from .launch_proof_policy import production_launch_mode
 _WORLDLABS_BASE_URL = "https://api.worldlabs.ai"
 _WORLDLABS_POLL_INTERVAL_SECONDS = 15
 _WORLDLABS_POLL_MAX_ATTEMPTS = 80  # up to ~20 minutes
+_WORLDLABS_TAG_MAX_CHARS = 32
 
 
 def _worldlabs_api_key() -> str:
@@ -80,8 +82,16 @@ def _presigned_upload(
         raise RuntimeError(f"worldlabs_upload_failed:url_error:{exc.reason}") from exc
 
 
-def _read_uri_bytes(uri: str) -> bytes:
+def _read_uri_bytes(uri: str, *, capture_root: Path | None = None) -> bytes:
     if uri.startswith("gs://"):
+        if capture_root is not None:
+            try:
+                context = resolve_local_capture_context(capture_root)
+                local_path = resolve_gs_uri_to_path(uri, context.storage_root)
+                if local_path.is_file():
+                    return local_path.read_bytes()
+            except Exception:
+                pass
         try:
             from google.cloud import storage as _gcs  # type: ignore[import-untyped]
         except ImportError as exc:
@@ -121,6 +131,14 @@ def _mime_for_extension(ext: str) -> str:
         "mkv": "video/x-matroska",
         "avi": "video/x-msvideo",
     }.get(ext.lower(), "video/mp4")
+
+
+def _worldlabs_tag(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) <= _WORLDLABS_TAG_MAX_CHARS:
+        return text
+    shortened = text[:_WORLDLABS_TAG_MAX_CHARS].rstrip(" -_/")
+    return shortened or text[:_WORLDLABS_TAG_MAX_CHARS]
 
 
 def _normalize_permission(value: Any) -> Dict[str, Any]:
@@ -372,7 +390,12 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             adapter_source.get("provider_adapter_input_uri")
             or adapter_input.get("provider_adapter_input_uri")
         )
-        if adapter_input and adapter_status == "blocked":
+        blocked_adapter_selected_video = bool(
+            adapter_input
+            and adapter_status == "blocked"
+            and self._adapter_prompt_candidates(adapter_input).get("selected")
+        )
+        if adapter_input and adapter_status == "blocked" and not blocked_adapter_selected_video:
             return {
                 "schema_version": "v1",
                 "provider_name": self.provider_name,
@@ -470,27 +493,30 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         )
         prompt_text = self._string(adapter_generation.get("text_prompt")) or scene_summary or _DEFAULT_WORLDLABS_TEXT_PROMPT
         tags = [
-            value
-            for value in [
-                self._string(descriptor.get("scene_id")),
-                self._string(descriptor.get("capture_id")),
-                self._string(descriptor.get("site_submission_id")),
-                site_name,
-                industry,
-                task_lane,
+            tag
+            for tag in [
+                _worldlabs_tag(value)
+                for value in [
+                    self._string(descriptor.get("scene_id")),
+                    self._string(descriptor.get("capture_id")),
+                    self._string(descriptor.get("site_submission_id")),
+                    site_name,
+                    industry,
+                    task_lane,
+                ]
             ]
-            if value
+            if tag
         ]
         adapter_tags = [
-            str(item).strip()
+            _worldlabs_tag(item)
             for item in (adapter_generation.get("tags") or [])
             if str(item).strip()
         ]
         tags.extend(item for item in adapter_tags if item not in tags)
         if bool(input_labeling.get("non_production")):
-            tags.append("non-production-preview")
+            tags.append(_worldlabs_tag("non-production-preview"))
         if bool(input_labeling.get("unredacted_input")):
-            tags.append("unredacted-raw-input")
+            tags.append(_worldlabs_tag("unredacted-raw-input"))
         keyframe_uri = self._string(descriptor.get("keyframe_uri"))
         frames_index_uri = self._string(descriptor.get("frames_index_uri"))
         arkit_poses_uri = self._string(descriptor.get("arkit_poses_uri"))
@@ -537,6 +563,13 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         if prompt_text:
             generation_request["world_prompt"]["text_prompt"] = prompt_text
 
+        request_status = (
+            "blocked"
+            if adapter_input and adapter_status == "blocked"
+            else "ready_for_generation"
+            if selected_video_uri
+            else "blocked"
+        )
         return {
             "schema_version": "v1",
             "provider_name": self.provider_name,
@@ -546,7 +579,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             "site_submission_id": descriptor.get("site_submission_id"),
             "buyer_request_id": descriptor.get("buyer_request_id"),
             "generated_at": utc_now_iso(),
-            "status": "ready_for_generation" if selected_video_uri else "blocked",
+            "status": request_status,
             "display_name": generation_request["display_name"],
             "generation_source_type": generation_source_type,
             "generation_request": generation_request,
@@ -581,6 +614,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         video_uri: str,
         *,
         descriptor: Mapping[str, Any],
+        capture_root: Path,
     ) -> Dict[str, Any]:
         """Upload video to World Labs media assets. Returns upload proof fields."""
         ext = _extension_from_uri(video_uri)
@@ -609,7 +643,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         upload_url = str(upload_info.get("upload_url") or "").strip()
         if not upload_url:
             raise RuntimeError("worldlabs_upload_url_missing")
-        video_bytes = _read_uri_bytes(video_uri)
+        video_bytes = _read_uri_bytes(video_uri, capture_root=capture_root)
         _presigned_upload(
             upload_url,
             method=str(upload_info.get("upload_method") or "PUT"),
@@ -687,7 +721,11 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 video_prompt["uri"] = selected_video_uri
                 video_prompt.pop("media_asset_id", None)
             else:
-                upload_proof = self._upload_video_as_media_asset(selected_video_uri, descriptor=descriptor)
+                upload_proof = self._upload_video_as_media_asset(
+                    selected_video_uri,
+                    descriptor=descriptor,
+                    capture_root=capture_root,
+                )
                 media_asset_id = str(upload_proof.get("media_asset_id") or "").strip()
                 upload_id = str(upload_proof.get("upload_id") or media_asset_id).strip()
                 upload_payload = dict(upload_proof.get("upload_payload") or {})

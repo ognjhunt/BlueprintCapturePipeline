@@ -15,6 +15,19 @@ from .simulation_automation import SIMULATOR_FRAMEWORKS, validate_owner_gpu_syst
 
 
 OWNER_GPU_PROOF_SCHEMA_VERSION = "gpu_owner_system_proof.v1"
+OWNER_DEFAULT_SMOKE_POLICY_SCHEMA_VERSION = "owner_default_smoke_policy.v1"
+OWNER_SIM_ROBOT_POV_SCHEMA_VERSION = "owner_sim_robot_pov_evidence_manifest.v1"
+DEFAULT_ISAAC_ROBOT_ASSET_NAME = "Unitree G1"
+DEFAULT_ISAAC_ROBOT_ASSET_URI_OR_PATH = "Robots/Unitree/G1/g1.usd"
+DEFAULT_ISAAC_ROBOT_ASSET_SOURCE = "isaac_sim_robot_assets"
+DEFAULT_ISAAC_ROBOT_ASSET_CLASS = "humanoid"
+DEFAULT_MUJOCO_ROBOT_ASSET_NAME = "Unitree G1"
+DEFAULT_MUJOCO_ROBOT_ASSET_URI_OR_PATH = (
+    "output/external_assets/mujoco_menagerie/unitree_g1/g1.xml"
+)
+DEFAULT_MUJOCO_ROBOT_ASSET_SOURCE = "google_deepmind_mujoco_menagerie"
+DEFAULT_MUJOCO_ROBOT_ASSET_CLASS = "humanoid_mjcf"
+ISAAC_SIMULATOR_BACKENDS = {"isaac_sim", "isaac_lab_arena"}
 
 
 def _string(value: Any) -> str:
@@ -47,6 +60,98 @@ def _owner_attestation(*, operator_id: str, statement: str) -> Dict[str, str]:
     }
 
 
+def _default_smoke_policy(
+    *,
+    scene_id: str,
+    capture_id: str,
+    target: str,
+    generated_at: str,
+) -> Dict[str, Any]:
+    return {
+        "schema_version": OWNER_DEFAULT_SMOKE_POLICY_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "policy_id": "blueprint_default_walk_to_target_smoke_policy",
+        "policy_kind": "walk_to_target",
+        "target": target,
+        "success_criteria": [
+            "simulator command loads the scene",
+            "robot spawn pose is valid",
+            "policy trace records at least one walk_to_target action",
+            "simulator robot POV evidence manifest records camera/video/frame evidence",
+        ],
+        "required_owner_command_env": {
+            "policy_trace": "BLUEPRINT_POLICY_EXECUTION_TRACE",
+            "sim_robot_pov_evidence": "BLUEPRINT_SIM_ROBOT_POV_EVIDENCE",
+            "policy_target": "BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET",
+            "robot_asset_name": "BLUEPRINT_ROBOT_ASSET_NAME",
+            "robot_asset_uri_or_path": "BLUEPRINT_ROBOT_ASSET_URI_OR_PATH",
+            "robot_asset_source": "BLUEPRINT_ROBOT_ASSET_SOURCE",
+        },
+        "claim_boundary": {
+            "default_policy_execution_contract": True,
+            "robot_team_policy_quality_proven": False,
+            "real_robot_pov_evidence_proven": False,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
+def _default_robot_asset(
+    *,
+    simulator_backend: str,
+    robot_asset_name: str = "",
+    robot_asset_uri_or_path: str = "",
+    robot_asset_source: str = "",
+    robot_asset_class: str = "",
+) -> Dict[str, Any]:
+    backend = _string(simulator_backend)
+    default_to_isaac_g1 = backend in ISAAC_SIMULATOR_BACKENDS
+    default_to_mujoco_g1 = backend == "mujoco"
+    name = _string(robot_asset_name) or (
+        DEFAULT_ISAAC_ROBOT_ASSET_NAME
+        if default_to_isaac_g1
+        else DEFAULT_MUJOCO_ROBOT_ASSET_NAME
+        if default_to_mujoco_g1
+        else ""
+    )
+    uri_or_path = _string(robot_asset_uri_or_path) or (
+        DEFAULT_ISAAC_ROBOT_ASSET_URI_OR_PATH
+        if default_to_isaac_g1
+        else DEFAULT_MUJOCO_ROBOT_ASSET_URI_OR_PATH
+        if default_to_mujoco_g1
+        else ""
+    )
+    source = _string(robot_asset_source) or (
+        DEFAULT_ISAAC_ROBOT_ASSET_SOURCE
+        if default_to_isaac_g1
+        else DEFAULT_MUJOCO_ROBOT_ASSET_SOURCE
+        if default_to_mujoco_g1
+        else "owner_command"
+    )
+    asset_class = _string(robot_asset_class) or (
+        DEFAULT_ISAAC_ROBOT_ASSET_CLASS
+        if default_to_isaac_g1
+        else DEFAULT_MUJOCO_ROBOT_ASSET_CLASS
+        if default_to_mujoco_g1
+        else "robot"
+    )
+    asset = {
+        "name": name,
+        "uri_or_path": uri_or_path,
+        "source": source,
+        "asset_class": asset_class,
+        "isaac_robot_asset_required": default_to_isaac_g1,
+        "default_isaac_asset_target": default_to_isaac_g1,
+    }
+    if default_to_isaac_g1:
+        asset["catalog_reference"] = "Isaac Sim Robot Assets: Robots/Unitree/G1/g1.usd"
+        asset["expected_usd_path_suffix"] = DEFAULT_ISAAC_ROBOT_ASSET_URI_OR_PATH
+    return asset
+
+
 def run_owner_gpu_proof(
     *,
     capture_root: str | Path,
@@ -60,6 +165,11 @@ def run_owner_gpu_proof(
     proof_dir: str | Path | None = None,
     timeout_seconds: int = 1800,
     extra_env: Mapping[str, str] | None = None,
+    default_policy_target: str = "walk_to_target_pose",
+    robot_asset_name: str = "",
+    robot_asset_uri_or_path: str = "",
+    robot_asset_source: str = "",
+    robot_asset_class: str = "",
 ) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     resolved_proof_dir = Path(proof_dir).expanduser().resolve() if proof_dir else _default_proof_dir(context.capture_root)
@@ -70,6 +180,8 @@ def run_owner_gpu_proof(
     scene_load_trace_path = resolved_proof_dir / "owner_scene_load_trace.json"
     spawn_trace_path = resolved_proof_dir / "owner_spawn_pose_trace.json"
     action_trace_path = resolved_proof_dir / "owner_action_or_policy_trace.json"
+    default_policy_path = resolved_proof_dir / "owner_default_smoke_policy.json"
+    sim_robot_pov_path = resolved_proof_dir / "owner_sim_robot_pov_evidence_manifest.json"
     artifact_manifest_path = resolved_proof_dir / "owner_artifact_manifest.json"
     proof_path = context.capture_root / "pipeline" / "simulation_automation" / "gpu_owner_system_proof.json"
     validation_path = (
@@ -77,6 +189,25 @@ def run_owner_gpu_proof(
         / "pipeline"
         / "simulation_automation"
         / "owner_gpu_simulator_execution_proof_manifest.json"
+    )
+
+    started_at = utc_now_iso()
+    policy_target = _string(default_policy_target) or "walk_to_target_pose"
+    robot_asset = _default_robot_asset(
+        simulator_backend=simulator_backend,
+        robot_asset_name=robot_asset_name,
+        robot_asset_uri_or_path=robot_asset_uri_or_path,
+        robot_asset_source=robot_asset_source,
+        robot_asset_class=robot_asset_class,
+    )
+    write_json(
+        default_policy_path,
+        _default_smoke_policy(
+            scene_id=context.scene_id,
+            capture_id=context.capture_id,
+            target=policy_target,
+            generated_at=started_at,
+        ),
     )
 
     env = os.environ.copy()
@@ -88,13 +219,20 @@ def run_owner_gpu_proof(
             "BLUEPRINT_SCENE_LOAD_TRACE": str(scene_load_trace_path),
             "BLUEPRINT_SPAWN_TRACE": str(spawn_trace_path),
             "BLUEPRINT_ACTION_OR_POLICY_TRACE": str(action_trace_path),
+            "BLUEPRINT_DEFAULT_SMOKE_POLICY": str(default_policy_path),
+            "BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET": policy_target,
+            "BLUEPRINT_POLICY_EXECUTION_TRACE": str(action_trace_path),
+            "BLUEPRINT_SIM_ROBOT_POV_EVIDENCE": str(sim_robot_pov_path),
             "BLUEPRINT_ARTIFACT_MANIFEST": str(artifact_manifest_path),
             "BLUEPRINT_OWNER_STDOUT": str(stdout_path),
             "BLUEPRINT_OWNER_STDERR": str(stderr_path),
+            "BLUEPRINT_ROBOT_ASSET_NAME": _string(robot_asset.get("name")),
+            "BLUEPRINT_ROBOT_ASSET_URI_OR_PATH": _string(robot_asset.get("uri_or_path")),
+            "BLUEPRINT_ROBOT_ASSET_SOURCE": _string(robot_asset.get("source")),
+            "BLUEPRINT_ROBOT_ASSET_CLASS": _string(robot_asset.get("asset_class")),
         }
     )
 
-    started_at = utc_now_iso()
     try:
         completed = subprocess.run(
             _command_list(command),
@@ -140,6 +278,7 @@ def run_owner_gpu_proof(
         "simulator_backend": simulator_backend,
         "simulator_version": simulator_version,
         "gpu_model": gpu_model,
+        "robot_asset": robot_asset,
         "command": command,
         "started_at": started_at,
         "completed_at": completed_at,
@@ -154,14 +293,28 @@ def run_owner_gpu_proof(
             spawn_trace_path,
             base=proof_path.parent,
         ),
+        "default_smoke_policy_uri_or_path": _relative_or_absolute(
+            default_policy_path,
+            base=proof_path.parent,
+        ),
         "action_or_policy_trace_uri_or_path": _relative_or_absolute(
             action_trace_path,
+            base=proof_path.parent,
+        ),
+        "policy_execution_trace_uri_or_path": _relative_or_absolute(
+            action_trace_path,
+            base=proof_path.parent,
+        ),
+        "sim_robot_pov_evidence_uri_or_path": _relative_or_absolute(
+            sim_robot_pov_path,
             base=proof_path.parent,
         ),
         "artifact_manifest_uri_or_path": _relative_or_absolute(
             artifact_manifest_path,
             base=proof_path.parent,
         ),
+        "default_policy_target": policy_target,
+        "default_policy_execution_scope": "owner_gpu_default_walk_to_target_smoke_policy",
         "pass_fail_criteria": pass_fail_criteria,
         "operator_attestation": _owner_attestation(
             operator_id=operator_id,
@@ -169,6 +322,11 @@ def run_owner_gpu_proof(
         ),
         "robot_readiness_proven": False,
         "robot_policy_execution_proven": False,
+        "owner_gpu_default_policy_execution_proven": False,
+        "owner_gpu_sim_robot_pov_evidence_proven": False,
+        "isaac_robot_asset_execution_proven": False,
+        "isaac_sim_execution_proven": False,
+        "real_robot_pov_evidence_proven": False,
         "physics_contact_validated": False,
         "safety_validated": False,
         "public_claim_upgrade_allowed": False,
@@ -208,6 +366,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--operator-id", required=True)
     parser.add_argument("--operator-attestation", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument(
+        "--default-policy-target",
+        default="walk_to_target_pose",
+        help="Target label or pose id for the built-in walk-to-target smoke policy.",
+    )
+    parser.add_argument(
+        "--robot-asset-name",
+        default="",
+        help="Robot asset display name; defaults to Unitree G1 for Isaac backends.",
+    )
+    parser.add_argument(
+        "--robot-asset-uri-or-path",
+        default="",
+        help=(
+            "Robot asset URI or content-browser path; defaults to "
+            "Robots/Unitree/G1/g1.usd for Isaac backends."
+        ),
+    )
+    parser.add_argument(
+        "--robot-asset-source",
+        default="",
+        help="Robot asset catalog/source; defaults to isaac_sim_robot_assets for Isaac backends.",
+    )
+    parser.add_argument(
+        "--robot-asset-class",
+        default="",
+        help="Robot asset class; defaults to humanoid for Isaac backends.",
+    )
     args = parser.parse_args(argv)
 
     result = run_owner_gpu_proof(
@@ -221,6 +407,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         operator_id=args.operator_id,
         operator_attestation=args.operator_attestation,
         timeout_seconds=args.timeout_seconds,
+        default_policy_target=args.default_policy_target,
+        robot_asset_name=args.robot_asset_name,
+        robot_asset_uri_or_path=args.robot_asset_uri_or_path,
+        robot_asset_source=args.robot_asset_source,
+        robot_asset_class=args.robot_asset_class,
     )
     print(f"[owner-gpu-proof] validation_status={result['validation_status']}")
     print(f"[owner-gpu-proof] proof_path={result['proof_path']}")
