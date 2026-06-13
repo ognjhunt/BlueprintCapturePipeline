@@ -159,6 +159,8 @@ OWNER_GPU_PROOF_REQUIRED_EVIDENCE_FLAGS = (
 )
 
 ISAAC_LIVE_SIMULATOR_FRAMEWORKS = {"isaac_sim", "isaac_lab_arena"}
+MUJOCO_LIVE_SIMULATOR_FRAMEWORKS = {"mujoco"}
+LIVE_SIMULATOR_FRAMEWORKS = ISAAC_LIVE_SIMULATOR_FRAMEWORKS | MUJOCO_LIVE_SIMULATOR_FRAMEWORKS
 
 REPO_LOCAL_GATES = (
     "site_capture",
@@ -2994,9 +2996,15 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
     sim_path = job_dir / "simulator_service_result.json"
     trace_path = job_dir / "normalized_attempt_trace.json"
     matrix_path = job_dir / "scenario_eval_matrix.json"
+    job_request_path = job_dir / "job_request.json"
+    worker_manifest_path = job_dir / "worker_manifest.json"
+    job_run_manifest_path = job_dir / "job_run_manifest.json"
     sim_result = _read_optional_mapping(sim_path)
     trace = _read_optional_mapping(trace_path)
     matrix = _read_optional_mapping(matrix_path)
+    job_request = _read_optional_mapping(job_request_path)
+    worker_manifest = _read_optional_mapping(worker_manifest_path)
+    job_run_manifest = _read_optional_mapping(job_run_manifest_path)
     owner_path = capture_root / "pipeline" / "simulation_automation" / "owner_gpu_simulator_execution_proof_manifest.json"
     owner_proof = _read_optional_mapping(owner_path)
     owner_proof_audit = _owner_gpu_proof_manifest_audit(owner_proof)
@@ -3019,6 +3027,30 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
         or bool(sim_result.get("simulators_run"))
     ) and non_fixture_simulator
     simulator_framework = _string(sim_result.get("framework"))
+    expected_simulator_candidates = [
+        _string(worker_manifest.get("simulator")),
+        _string(job_run_manifest.get("simulator")),
+        _string(job_request.get("simulator")),
+        _string(job_request.get("requested_simulator")),
+        _string(job_request.get("simulator_backend")),
+        _string(job_request.get("simulator_preference")),
+        simulator_framework,
+        _string(owner_proof.get("simulator_backend")),
+    ]
+    expected_simulator = ""
+    for candidate in expected_simulator_candidates:
+        normalized = candidate.lower().strip()
+        if normalized in LIVE_SIMULATOR_FRAMEWORKS:
+            expected_simulator = normalized
+            break
+        if normalized in {"mujoco_first", "mujoco-first", "default_mujoco"}:
+            expected_simulator = "mujoco"
+            break
+        if normalized in {"isaac_first", "isaac-first", "isaac"}:
+            expected_simulator = "isaac_sim"
+            break
+    if not expected_simulator:
+        expected_simulator = "mujoco"
     sim_completed = (
         bool(sim_result.get("simulator_execution_proven"))
         and bool(sim_result.get("simulators_run"))
@@ -3038,6 +3070,16 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
             or sim_result.get("unitree_g1_robot_asset_spawned")
         )
     )
+    service_mujoco_asset_proven = (
+        simulator_framework in MUJOCO_LIVE_SIMULATOR_FRAMEWORKS
+        and sim_completed
+        and bool(
+            sim_result.get("mujoco_g1_asset_execution_proven")
+            or sim_result.get("mujoco_g1_asset_spawned")
+            or sim_result.get("unitree_g1_asset_spawned")
+            or sim_result.get("unitree_g1_robot_asset_spawned")
+        )
+    )
     owner_isaac_asset_proven = (
         owner_accepted
         and _string(owner_proof.get("simulator_backend")) in ISAAC_LIVE_SIMULATOR_FRAMEWORKS
@@ -3045,13 +3087,33 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
         and bool(owner_proof.get("isaac_robot_asset_execution_proven"))
         and bool(owner_proof.get("unitree_g1_asset_spawned"))
     )
+    owner_mujoco_asset_proven = (
+        owner_accepted
+        and _string(owner_proof.get("simulator_backend")) in MUJOCO_LIVE_SIMULATOR_FRAMEWORKS
+        and bool(
+            owner_proof.get("mujoco_g1_asset_execution_proven")
+            or _mapping(owner_proof.get("robot_asset")).get("mujoco_g1_asset_execution_proven")
+        )
+        and bool(
+            owner_proof.get("mujoco_g1_asset_spawned")
+            or _mapping(owner_proof.get("evidence")).get("mujoco_g1_asset_spawned")
+        )
+    )
     blockers = []
     if not sim_completed and not owner_accepted:
         blockers.append("live_simulator_execution_not_proven")
-    if (sim_completed or owner_accepted) and not (
-        service_isaac_asset_proven or owner_isaac_asset_proven
+    if (
+        expected_simulator in ISAAC_LIVE_SIMULATOR_FRAMEWORKS
+        and (sim_completed or owner_accepted)
+        and not (service_isaac_asset_proven or owner_isaac_asset_proven)
     ):
         blockers.append("isaac_sim_unitree_g1_execution_not_proven")
+    if (
+        expected_simulator in MUJOCO_LIVE_SIMULATOR_FRAMEWORKS
+        and (sim_completed or owner_accepted)
+        and not (service_mujoco_asset_proven or owner_mujoco_asset_proven)
+    ):
+        blockers.append("mujoco_g1_execution_not_proven")
     if (
         owner_path.is_file()
         and (
@@ -3063,7 +3125,7 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
         blockers.extend(_string_list(owner_proof_audit["blockers"]))
     if simulator_proof_claimed and simulator_status != "completed":
         blockers.append("simulator_service_result_not_completed")
-    if trace_path.is_file() and trace_status != "completed":
+    if trace_path.is_file() and trace_status != "completed" and not owner_accepted:
         blockers.append("normalized_attempt_trace_not_completed")
     if run_count > 0 and int(trace.get("attempt_count") or 0) < run_count:
         blockers.append("simulator_execution_missing_scenario_variation_run_coverage")
@@ -3080,15 +3142,18 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
             "simulator_status": sim_result.get("status"),
             "normalized_attempt_trace_status": trace_status or None,
             "simulator_framework": sim_result.get("framework"),
+            "expected_simulator": expected_simulator,
             "simulators_run": bool(sim_result.get("simulators_run")),
             "simulator_execution_proven": bool(sim_result.get("simulator_execution_proven")),
             "service_isaac_unitree_g1_execution_proven": service_isaac_asset_proven,
+            "service_mujoco_unitree_g1_execution_proven": service_mujoco_asset_proven,
             "attempt_count": int(trace.get("attempt_count") or 0),
             "scenario_eval_run_count": run_count,
             "covered_scenario_eval_run_count": len(covered_run_ids),
             "owner_gpu_proof_manifest": _artifact(owner_path, base_dir=job_dir),
             "owner_gpu_proof_status": owner_proof.get("status"),
             "owner_isaac_unitree_g1_execution_proven": owner_isaac_asset_proven,
+            "owner_mujoco_unitree_g1_execution_proven": owner_mujoco_asset_proven,
             "owner_gpu_proof_audit": owner_proof_audit,
         },
     )

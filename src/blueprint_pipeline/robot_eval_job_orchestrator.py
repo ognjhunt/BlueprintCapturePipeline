@@ -141,6 +141,7 @@ LIVE_GPU_PROVISIONERS = {"vast", "runpod", "gcp"}
 WORKER_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_manifest.v1"
 WORKER_MANIFEST_URI_ENV = "BLUEPRINT_EVAL_MANIFEST_URI"
 WORKER_ARTIFACT_OUTPUT_URI_ENV = "BLUEPRINT_ARTIFACT_OUTPUT_URI"
+WORKER_CAPTURE_ROOT_BUNDLE_URI_ENV = "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI"
 REMOTE_WORKER_MANIFEST_URI_SCHEMES = {"http", "https", "gs", "s3", "r2"}
 GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
 WORKER_IMAGE_REF_ENV_BY_SIMULATOR = {
@@ -1114,11 +1115,30 @@ def _missing_robot_eval_inputs(pipeline_dir: Path) -> List[str]:
     ]
 
 
+def _empty_robot_eval_card_inputs(pipeline_dir: Path) -> List[str]:
+    empty: List[str] = []
+    card_inputs = {
+        "robot_eval_task_cards_empty": "robot_eval_dataset/task_cards.json",
+        "robot_eval_scenario_cards_empty": "robot_eval_dataset/scenario_cards.json",
+    }
+    for key, relative_path in card_inputs.items():
+        path = pipeline_dir / relative_path
+        if not path.is_file():
+            continue
+        payload = _read_optional_mapping(path)
+        cards = payload.get("cards")
+        count = _number(payload.get("task_card_count") or payload.get("scenario_card_count"))
+        if count == 0 or (isinstance(cards, list) and not cards):
+            empty.append(key)
+    return empty
+
+
 def _ensure_robot_eval_cards(*, capture_root: Path, pipeline_dir: Path) -> List[str]:
     missing = _missing_robot_eval_inputs(pipeline_dir)
-    if missing:
+    empty = _empty_robot_eval_card_inputs(pipeline_dir)
+    if missing or empty:
         build_real_site_robot_eval_dataset(capture_root=capture_root)
-    return _missing_robot_eval_inputs(pipeline_dir)
+    return [*_missing_robot_eval_inputs(pipeline_dir), *_empty_robot_eval_card_inputs(pipeline_dir)]
 
 
 def _job_validation(
@@ -1246,7 +1266,19 @@ def _execution_worker_profile(simulator: str) -> Dict[str, Any]:
             "dockerfile_path": "deploy/docker/robot_eval_worker/mujoco/Dockerfile",
             "entrypoint": "blueprint-run-robot-eval-worker",
             "preferred_gpu_class": "cpu_or_low_cost_gpu_when_rendering",
-            "persistent_cache_targets": ["docker_layers", "mjcf_assets", "policy_bundles"],
+            "disallowed_gpu_classes": [
+                "a100",
+                "h100",
+                "rtx_a6000_unless_render_or_latency_policy_requires_it",
+                "rtx_6000_ada_unless_render_or_latency_policy_requires_it",
+            ],
+            "persistent_cache_targets": [
+                "docker_layers",
+                "mjcf_assets",
+                "policy_bundles",
+                "converted_scenes",
+                "worker_deps",
+            ],
             "cold_start_sensitive": False,
         }
     if simulator == "pybullet":
@@ -1448,6 +1480,11 @@ def _build_scheduler_decision(
             "persistent_cache_recommended": bool(
                 gpu_allocation.get("persistent_cache_recommended") is not False
             ),
+            "provider_gpu_priority_fallback_list": _provider_gpu_priority_for_simulator(
+                simulator,
+                gpu_allocation,
+            ),
+            "warm_pool_policy": _warm_pool_policy(gpu_allocation=gpu_allocation),
             "live_provider_calls_allowed_by_default": False,
             "recommended_action": recommended_action,
         },
@@ -1526,12 +1563,25 @@ def _worker_image_ref_is_versioned(image_ref: str) -> bool:
     return bool(tag and tag not in {"latest", "local", "dev", "test"})
 
 
+def _worker_image_ref_is_provider_fetchable(image_ref: str, *, versioned: bool) -> bool:
+    if not image_ref or not versioned:
+        return False
+    lowered = image_ref.lower()
+    if any(marker in lowered for marker in ("placeholder", "<", ">", "candidate")):
+        return False
+    return True
+
+
 def _configured_worker_artifact_output_uri() -> str:
     return _string(os.getenv(WORKER_ARTIFACT_OUTPUT_URI_ENV))
 
 
 def _configured_worker_manifest_uri() -> str:
     return _string(os.getenv(WORKER_MANIFEST_URI_ENV))
+
+
+def _configured_capture_root_bundle_uri() -> str:
+    return _string(os.getenv(WORKER_CAPTURE_ROOT_BUNDLE_URI_ENV))
 
 
 def _uri_scheme(uri: str) -> str:
@@ -1550,6 +1600,124 @@ def _worker_manifest_uri_is_fetchable_by_provider(
     if live_gpu_provider:
         return scheme in REMOTE_WORKER_MANIFEST_URI_SCHEMES
     return scheme in {"local", "file", *REMOTE_WORKER_MANIFEST_URI_SCHEMES}
+
+
+def _provider_uri_is_fetchable(uri: str, *, live_gpu_provider: bool) -> bool:
+    if not uri:
+        return False
+    scheme = _uri_scheme(uri)
+    if live_gpu_provider:
+        return scheme in REMOTE_WORKER_MANIFEST_URI_SCHEMES
+    return scheme in {"local", "file", *REMOTE_WORKER_MANIFEST_URI_SCHEMES}
+
+
+def _persistent_cache_paths(simulator: str) -> Dict[str, str]:
+    root = _string(os.getenv("BLUEPRINT_PROVIDER_CACHE_ROOT")) or "/opt/blueprint/cache"
+    if simulator == "mujoco":
+        return {
+            "mujoco_assets": _string(os.getenv("BLUEPRINT_MUJOCO_ASSET_CACHE"))
+            or f"{root}/mujoco_assets",
+            "policy_files": _string(os.getenv("BLUEPRINT_POLICY_CACHE"))
+            or f"{root}/policy_files",
+            "converted_scenes": _string(os.getenv("BLUEPRINT_CONVERTED_SCENE_CACHE"))
+            or f"{root}/converted_scenes",
+            "worker_deps": _string(os.getenv("BLUEPRINT_WORKER_DEPS_CACHE"))
+            or f"{root}/worker_deps",
+        }
+    return {
+        "scene_assets": f"{root}/scene_assets",
+        "policy_files": f"{root}/policy_files",
+        "worker_deps": f"{root}/worker_deps",
+    }
+
+
+def _provider_gpu_priority_for_simulator(
+    simulator: str,
+    gpu_allocation: Mapping[str, Any],
+) -> List[str]:
+    explicit = _string_list(
+        gpu_allocation.get("provider_gpu_priority")
+        or gpu_allocation.get("gpu_priority_fallback_list")
+        or gpu_allocation.get("runpod_gpu_priority")
+    )
+    if explicit:
+        return explicit
+    if simulator == "mujoco":
+        return [
+            "NVIDIA L4",
+            "NVIDIA RTX 4000 Ada Generation",
+            "NVIDIA RTX A4000",
+            "NVIDIA RTX 3090",
+            "NVIDIA RTX A5000",
+        ]
+    if simulator in ISAAC_SIMULATORS:
+        return [
+            "NVIDIA RTX 4090",
+            "NVIDIA RTX A6000",
+            "NVIDIA RTX 6000 Ada Generation",
+        ]
+    return []
+
+
+def _warm_pool_policy(
+    *,
+    gpu_allocation: Mapping[str, Any],
+    launch_limits: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    launch_limits = launch_limits or {}
+    warm_config = _mapping(
+        gpu_allocation.get("warm_pool_policy") or gpu_allocation.get("warm_pool")
+    )
+    latency_slo_seconds = _number(
+        warm_config.get("latency_slo_seconds")
+        or gpu_allocation.get("latency_slo_seconds")
+    )
+    estimated_idle_cost = _number(warm_config.get("estimated_idle_cost_usd_per_hour"), 0.0) or 0.0
+    max_idle_cost = _number(
+        warm_config.get("max_idle_cost_usd_per_hour")
+        or gpu_allocation.get("max_idle_cost_usd_per_hour"),
+        0.0,
+    ) or 0.0
+    warm_requested = bool(
+        warm_config.get("enabled") is True
+        or gpu_allocation.get("prefer_warm_gpu") is True
+        or _string(gpu_allocation.get("mode")) in {"warm_pool", "active_worker"}
+    )
+    latency_justifies_idle = bool(
+        warm_config.get("latency_justifies_idle_cost") is True
+        or (latency_slo_seconds is not None and latency_slo_seconds <= 60)
+    )
+    idle_cost_allowed = estimated_idle_cost <= max_idle_cost
+    warm_recommended = bool(warm_requested and latency_justifies_idle and idle_cost_allowed)
+    max_active_workers = int(
+        _number(
+            warm_config.get("max_active_workers")
+            or gpu_allocation.get("max_active_workers")
+            or launch_limits.get("max_active_workers"),
+            1,
+        )
+        or 1
+    )
+    reasons: List[str] = []
+    if not warm_requested:
+        reasons.append("warm_pool_not_requested")
+    if warm_requested and not latency_justifies_idle:
+        reasons.append("latency_policy_does_not_justify_idle_cost")
+    if warm_requested and not idle_cost_allowed:
+        reasons.append("warm_idle_cost_exceeds_policy")
+    if warm_recommended:
+        reasons.append("latency_policy_justifies_idle_cost")
+    return {
+        "decision": "warm_active_worker" if warm_recommended else "scale_to_zero_on_demand",
+        "warm_worker_recommended": warm_recommended,
+        "active_worker_target": 1 if warm_recommended else 0,
+        "max_active_workers": max(1, max_active_workers),
+        "scale_to_zero_default": not warm_recommended,
+        "latency_slo_seconds": latency_slo_seconds,
+        "estimated_idle_cost_usd_per_hour": estimated_idle_cost,
+        "max_idle_cost_usd_per_hour": max_idle_cost,
+        "decision_reasons": reasons,
+    }
 
 
 def _runtime_preflight_contract(
@@ -1605,12 +1773,14 @@ def _runtime_preflight_contract(
     else:
         required_checks = []
         renderer_context = "not_required"
+    runtime_command = _runtime_preflight_command_for_simulator(simulator)
     return {
         "required_before_scene_load": runtime_required,
         "required_for_provider": runtime_required and provisioner != "fixture_local",
         "worker_blocks_scene_load_on_failed_preflight": runtime_required,
         "executed_by": "blueprint-run-robot-eval-worker",
         "result_artifact": "worker_runtime_preflight.json",
+        "command": runtime_command or None,
         "run_before": "scene_load_and_policy_execution",
         "simulator": simulator,
         "worker_image_family": worker_profile.get("worker_image_family"),
@@ -1625,6 +1795,12 @@ def _runtime_preflight_contract(
         "runtime_preflight_is_not_simulator_proof": True,
         "public_claim_upgrade_allowed": False,
     }
+
+
+def _runtime_preflight_command_for_simulator(simulator: str) -> str:
+    if simulator == "mujoco":
+        return "python -m blueprint_pipeline.mujoco_worker_runtime_preflight --smoke-steps 2"
+    return ""
 
 
 def _build_worker_launch_plan(
@@ -1646,10 +1822,20 @@ def _build_worker_launch_plan(
     live_gpu_provider = provisioner in LIVE_GPU_PROVISIONERS and simulator != "fixture"
     image_ref, image_ref_env_var = _configured_worker_image_ref(simulator)
     image_ref_versioned = _worker_image_ref_is_versioned(image_ref)
+    image_ref_fetchable = _worker_image_ref_is_provider_fetchable(
+        image_ref,
+        versioned=image_ref_versioned,
+    )
     worker_manifest_uri = _configured_worker_manifest_uri()
     worker_manifest_uri_required = external_provider
     worker_manifest_uri_fetchable = _worker_manifest_uri_is_fetchable_by_provider(
         worker_manifest_uri,
+        live_gpu_provider=live_gpu_provider,
+    )
+    capture_root_bundle_uri = _configured_capture_root_bundle_uri()
+    capture_root_bundle_required = live_gpu_provider
+    capture_root_bundle_fetchable = _provider_uri_is_fetchable(
+        capture_root_bundle_uri,
         live_gpu_provider=live_gpu_provider,
     )
     artifact_output_uri = _configured_worker_artifact_output_uri()
@@ -1671,6 +1857,13 @@ def _build_worker_launch_plan(
         )
         or hard_timeout_seconds + shutdown_grace_seconds
     )
+    launch_limits = {
+        "max_active_workers": int(_number(gpu_allocation.get("max_active_workers"), 1) or 1),
+    }
+    warm_policy = _warm_pool_policy(
+        gpu_allocation=gpu_allocation,
+        launch_limits=launch_limits,
+    )
     runtime_preflight_contract = _runtime_preflight_contract(
         simulator=simulator,
         provisioner=provisioner,
@@ -1681,6 +1874,8 @@ def _build_worker_launch_plan(
         image_blockers.append("missing_prebuilt_worker_image_ref")
     elif live_gpu_provider and not image_ref_versioned:
         image_blockers.append("prebuilt_worker_image_ref_not_versioned")
+    elif live_gpu_provider and not image_ref_fetchable:
+        image_blockers.append("prebuilt_worker_image_ref_not_provider_fetchable")
     artifact_blockers: List[str] = []
     if artifact_output_required and not artifact_output_uri:
         artifact_blockers.append("missing_worker_artifact_output_uri")
@@ -1689,11 +1884,17 @@ def _build_worker_launch_plan(
         manifest_uri_blockers.append("missing_worker_manifest_uri")
     elif worker_manifest_uri_required and not worker_manifest_uri_fetchable:
         manifest_uri_blockers.append("worker_manifest_uri_not_fetchable_by_provider")
+    input_bundle_blockers: List[str] = []
+    if capture_root_bundle_required and not capture_root_bundle_uri:
+        input_bundle_blockers.append("missing_capture_root_bundle_uri")
+    elif capture_root_bundle_required and not capture_root_bundle_fetchable:
+        input_bundle_blockers.append("capture_root_bundle_uri_not_fetchable_by_provider")
     blockers = _dedupe(
         [
             *scheduler_blockers,
             *image_blockers,
             *manifest_uri_blockers,
+            *input_bundle_blockers,
             *artifact_blockers,
         ]
     )
@@ -1702,10 +1903,17 @@ def _build_worker_launch_plan(
         if scheduler_blockers
         else "blocked_missing_prebuilt_worker_image_ref"
         if image_blockers
+        and "prebuilt_worker_image_ref_not_provider_fetchable" not in image_blockers
+        else "blocked_unfetchable_prebuilt_worker_image_ref"
+        if "prebuilt_worker_image_ref_not_provider_fetchable" in image_blockers
         else "blocked_missing_worker_manifest_uri"
         if "missing_worker_manifest_uri" in manifest_uri_blockers
         else "blocked_invalid_worker_manifest_uri"
         if manifest_uri_blockers
+        else "blocked_missing_capture_root_bundle_uri"
+        if "missing_capture_root_bundle_uri" in input_bundle_blockers
+        else "blocked_invalid_capture_root_bundle_uri"
+        if input_bundle_blockers
         else "blocked_missing_worker_artifact_output_uri"
         if artifact_blockers
         else "not_required_for_fixture_local"
@@ -1747,6 +1955,7 @@ def _build_worker_launch_plan(
             "configured_image_ref": image_ref or None,
             "configured_image_ref_present": bool(image_ref),
             "configured_image_ref_is_versioned": image_ref_versioned,
+            "configured_image_ref_fetchable_by_provider": image_ref_fetchable,
             "runtime_dependency_install_disallowed": True,
             "runtime_asset_guessing_disallowed": True,
         },
@@ -1754,11 +1963,18 @@ def _build_worker_launch_plan(
             "preferred_gpu_class": worker_profile.get("preferred_gpu_class"),
             "disallowed_gpu_classes": _string_list(worker_profile.get("disallowed_gpu_classes")),
             "cheap_cpu_or_gpu_allowed": simulator in {"mujoco", "pybullet", "fixture"},
+            "provider_gpu_priority_fallback_list": _provider_gpu_priority_for_simulator(
+                simulator,
+                gpu_allocation,
+            ),
+            "requires_isaac_class_gpu": simulator in ISAAC_SIMULATORS,
         },
         "launch_mode": {
             "mode": gpu_allocation.get("mode") or "on_demand_with_optional_warm_pool",
             "scale_to_zero_default": True,
             "warm_pool_allowed_when_explicitly_requested": True,
+            "warm_pool_policy": warm_policy,
+            "active_worker_target": warm_policy.get("active_worker_target"),
             "max_active_workers": int(_number(gpu_allocation.get("max_active_workers"), 1) or 1),
             "idle_shutdown_required": bool(
                 gpu_allocation.get("idle_shutdown_required") is not False
@@ -1775,6 +1991,7 @@ def _build_worker_launch_plan(
                 gpu_allocation.get("persistent_cache_recommended") is not False
             ),
             "targets": _string_list(worker_profile.get("persistent_cache_targets")),
+            "paths": _persistent_cache_paths(simulator),
             "install_simulator_during_customer_job": False,
             "install_python_dependencies_during_customer_job": False,
         },
@@ -1794,6 +2011,15 @@ def _build_worker_launch_plan(
             "policy_package_manifest_path": "policy_package_manifest.json",
             "scene_asset_preflight_path": "../simulation_automation/scene_asset_preflight.json",
             "gpu_handoff_packet_path": "../simulation_automation/gpu_handoff_packet.json",
+            "capture_root_bundle_uri_env_var": WORKER_CAPTURE_ROOT_BUNDLE_URI_ENV,
+            "capture_root_bundle_uri": capture_root_bundle_uri or None,
+            "capture_root_bundle_uri_required_for_provider": capture_root_bundle_required,
+            "capture_root_bundle_uri_fetchable_by_provider": capture_root_bundle_fetchable,
+            "capture_root_bundle_uri_scheme": _uri_scheme(capture_root_bundle_uri)
+            if capture_root_bundle_uri
+            else None,
+            "capture_root_local_path_disallowed_for_live_provider": live_gpu_provider,
+            "capture_root_bundle_expected_format": "zip_or_tar_with_capture_descriptor_json",
             "original_customer_request_id": request.get("request_id")
             or request.get("requestId")
             or None,
@@ -1875,12 +2101,14 @@ def _build_worker_manifest(
     generated_at: str,
 ) -> Dict[str, Any]:
     artifact_contract = _mapping(worker_launch_plan.get("artifact_upload_contract"))
+    input_bundle = _mapping(worker_launch_plan.get("input_bundle"))
     manifest_input_contract = _mapping(
         worker_launch_plan.get("worker_manifest_input_contract")
     )
     runtime_preflight_contract = _mapping(
         worker_launch_plan.get("runtime_preflight_contract")
     )
+    runtime_preflight_command = _string(runtime_preflight_contract.get("command"))
     worker_manifest_uri = _string(
         manifest_input_contract.get("configured_worker_manifest_uri")
     )
@@ -1894,6 +2122,7 @@ def _build_worker_manifest(
     artifact_output_required = bool(
         artifact_contract.get("artifact_output_uri_required_for_provider")
     )
+    capture_root_bundle_uri = _string(input_bundle.get("capture_root_bundle_uri"))
     blockers: List[str] = []
     if worker_manifest_uri_required and not worker_manifest_uri:
         blockers.append("missing_worker_manifest_uri")
@@ -1913,6 +2142,9 @@ def _build_worker_manifest(
         "budget_usd": budget_usd,
         "allowed_simulators": list(allowed_simulators),
         "simulator_commands": dict(simulator_commands),
+        "input_bundle": dict(input_bundle),
+        "capture_root_bundle_uri": capture_root_bundle_uri or None,
+        "capture_root_bundle_uri_env_var": WORKER_CAPTURE_ROOT_BUNDLE_URI_ENV,
         "worker_manifest_uri": worker_manifest_uri or None,
         "worker_manifest_uri_required": worker_manifest_uri_required,
         "worker_manifest_uri_env_var": WORKER_MANIFEST_URI_ENV,
@@ -1921,6 +2153,7 @@ def _build_worker_manifest(
             "worker_manifest_uri_scheme"
         ),
         "runtime_preflight_contract": runtime_preflight_contract,
+        "runtime_preflight_command": runtime_preflight_command or None,
         "artifact_output_uri": artifact_output_uri or None,
         "artifact_output_uri_required": artifact_output_required,
         "artifact_output_uri_env_var": WORKER_ARTIFACT_OUTPUT_URI_ENV,
@@ -1945,6 +2178,7 @@ def _build_gpu_provider_launch_request(
     worker_image = _mapping(worker_launch_plan.get("worker_image"))
     gpu_selection = _mapping(worker_launch_plan.get("gpu_selection"))
     launch_mode = _mapping(worker_launch_plan.get("launch_mode"))
+    cache_plan = _mapping(worker_launch_plan.get("cache_plan"))
     entrypoint_contract = _mapping(worker_launch_plan.get("worker_entrypoint_contract"))
     manifest_input_contract = _mapping(
         worker_launch_plan.get("worker_manifest_input_contract")
@@ -1995,6 +2229,7 @@ def _build_gpu_provider_launch_request(
     plaintext_env_vars = [
         "BLUEPRINT_EVAL_MANIFEST_URI",
         "BLUEPRINT_WORKER_DIR",
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI",
         "BLUEPRINT_ARTIFACT_OUTPUT_URI",
         "BLUEPRINT_ALLOW_GPU_PROVISIONING",
         "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION",
@@ -2049,6 +2284,9 @@ def _build_gpu_provider_launch_request(
                 "configured_image_ref_is_versioned": bool(
                     worker_image.get("configured_image_ref_is_versioned")
                 ),
+                "configured_image_ref_fetchable_by_provider": bool(
+                    worker_image.get("configured_image_ref_fetchable_by_provider")
+                ),
                 "dockerfile_path": worker_image.get("dockerfile_path"),
                 "entrypoint": worker_image.get("entrypoint"),
                 "runtime_dependency_install_disallowed": bool(
@@ -2086,6 +2324,16 @@ def _build_gpu_provider_launch_request(
                 "worker_manifest_schema": worker_manifest.get("schema_version"),
                 "worker_manifest_local_path_ready": worker_manifest.get("status")
                 == "ready_for_worker_upload",
+                "capture_root_bundle_uri": worker_manifest.get("capture_root_bundle_uri"),
+                "capture_root_bundle_uri_env_var": WORKER_CAPTURE_ROOT_BUNDLE_URI_ENV,
+                "capture_root_bundle_uri_configured": bool(
+                    worker_manifest.get("capture_root_bundle_uri")
+                ),
+                "capture_root_bundle_uri_fetchable_by_provider": bool(
+                    _mapping(worker_manifest.get("input_bundle")).get(
+                        "capture_root_bundle_uri_fetchable_by_provider"
+                    )
+                ),
                 "artifact_output_uri_required": bool(
                     artifact_upload_contract.get("destination_required")
                 ),
@@ -2146,14 +2394,38 @@ def _build_gpu_provider_launch_request(
                     gpu_selection.get("disallowed_gpu_classes")
                 ),
                 "cheap_cpu_or_gpu_allowed": bool(gpu_selection.get("cheap_cpu_or_gpu_allowed")),
+                "provider_gpu_priority": _string_list(
+                    gpu_selection.get("provider_gpu_priority_fallback_list")
+                ),
+                "priority_fallback_list": _string_list(
+                    gpu_selection.get("provider_gpu_priority_fallback_list")
+                ),
+                "requires_isaac_class_gpu": bool(
+                    gpu_selection.get("requires_isaac_class_gpu")
+                ),
+            },
+            "cache": {
+                "persistent_cache_recommended": bool(
+                    cache_plan.get("persistent_cache_recommended")
+                ),
+                "targets": _string_list(cache_plan.get("targets")),
+                "paths": _mapping(cache_plan.get("paths")),
+                "install_simulator_during_customer_job": bool(
+                    cache_plan.get("install_simulator_during_customer_job")
+                ),
+                "install_python_dependencies_during_customer_job": bool(
+                    cache_plan.get("install_python_dependencies_during_customer_job")
+                ),
             },
             "limits": {
                 "max_active_workers": launch_mode.get("max_active_workers"),
+                "active_worker_target": launch_mode.get("active_worker_target"),
                 "hard_timeout_seconds": launch_mode.get("hard_timeout_seconds")
                 or request_manifest.get("timeout_seconds"),
                 "idle_timeout_seconds": launch_mode.get("idle_timeout_seconds"),
                 "idle_shutdown_required": bool(launch_mode.get("idle_shutdown_required")),
                 "scale_to_zero_default": bool(launch_mode.get("scale_to_zero_default")),
+                "warm_pool_policy": _mapping(launch_mode.get("warm_pool_policy")),
                 "shutdown_grace_seconds": launch_mode.get("shutdown_grace_seconds"),
                 "external_watchdog_ttl_required": bool(
                     launch_mode.get("external_watchdog_ttl_required")
@@ -2397,6 +2669,21 @@ def _gpu_cost_control_ledger(
         if gpu_result.get("status") == "request_manifest_ready"
         else _string(gpu_result.get("status")) or "planned"
     )
+    lifecycle_state = (
+        "blocked-before-allocation"
+        if status == "blocked_before_allocation"
+        else "completed"
+        if status in {"provider_runtime_observed", "fixture_local_no_gpu"}
+        or sim_result.get("status") in {"completed", "simulator_command_completed"}
+        else "failed"
+        if _string(sim_result.get("status")).startswith("failed")
+        or _string(gpu_result.get("status")).startswith("failed")
+        else "running"
+        if live_provider_calls and actual_gpu_seconds is None
+        else "stopped"
+        if _string(status) == "stopped"
+        else "planned"
+    )
     estimated_gpu_seconds = (
         0
         if status in {"blocked_before_allocation", "fixture_local_no_gpu"}
@@ -2408,6 +2695,14 @@ def _gpu_cost_control_ledger(
         "job_id": job_id,
         "provider": provider,
         "status": status,
+        "lifecycle_state": lifecycle_state,
+        "supported_lifecycle_states": [
+            "blocked-before-allocation",
+            "running",
+            "completed",
+            "failed",
+            "stopped",
+        ],
         "scheduler_decision_path": "scheduler_decision.json",
         "worker_launch_plan_path": "worker_launch_plan.json",
         "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
@@ -4008,6 +4303,11 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "runpod_provider_adapter_result.json",
         "worker_manifest.json",
         "gpu_cost_control_ledger.json",
+        "sim_only_provider_execution_plan.json",
+        "sim_only_provider_preflight.json",
+        "sim_only_provider_runtime_manifest.json",
+        "sim_only_provider_cost_ledger.json",
+        "sim_only_provider_artifacts_manifest.json",
         "gpu_provisioning_result.json",
         "simulator_service_request.json",
         "simulator_service_result.json",
@@ -4841,6 +5141,37 @@ def build_robot_eval_job(
     run_manifest["startup_architecture_compliant"] = bool(
         startup_architecture_audit.get("architecture_compliant")
     )
+    sim_only_provider_plan: Dict[str, Any] = {}
+    if simulator == "mujoco" and provisioner in LIVE_GPU_PROVISIONERS:
+        from .sim_only_provider_execution_planner import (
+            build_sim_only_provider_execution_layer,
+        )
+
+        sim_only_provider_plan = build_sim_only_provider_execution_layer(
+            capture_root=context.capture_root,
+            job_id=job_id,
+            job_dir=job_dir,
+        )
+        run_manifest["sim_only_provider_execution_plan_status"] = (
+            sim_only_provider_plan.get("status")
+        )
+        run_manifest["sim_only_provider_execution_plan_path"] = (
+            "sim_only_provider_execution_plan.json"
+        )
+        run_manifest["sim_only_provider_preflight_status"] = _mapping(
+            sim_only_provider_plan.get("preflight")
+        ).get("status")
+        run_manifest["sim_only_provider_runtime_manifest_status"] = _mapping(
+            sim_only_provider_plan.get("runtime_manifest")
+        ).get("status")
+        run_manifest["sim_only_provider_cost_ledger_status"] = _mapping(
+            sim_only_provider_plan.get("cost_ledger")
+        ).get("status")
+        run_manifest["claim_boundary"] = {
+            **_mapping(run_manifest.get("claim_boundary")),
+            "simulator_beta_success_evaluated_by_sim_only_gate": True,
+            "physical_robot_readiness_claimed": False,
+        }
     run_manifest["artifacts"] = _artifact_paths(job_dir)
     _write_job_json(job_dir, "job_run_manifest.json", run_manifest)
 

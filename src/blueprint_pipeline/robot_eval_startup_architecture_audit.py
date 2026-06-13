@@ -1141,16 +1141,27 @@ def _startup_artifact_checks(
     proof_boundary = _mapping(run_manifest.get("proof_boundary"))
     if not claim_boundary and proof_boundary:
         claim_boundary = proof_boundary
+    simulator_execution_earned = (
+        _bool(claim_boundary, ("simulator_execution_proven",)) is True
+        and _string(run_manifest.get("status")) == "simulator_command_completed"
+        and _string(run_manifest.get("simulator_service_status")) == "completed"
+    )
     _append_check(
         checks,
         blockers,
         check_id="proof:no_unearned_claim_upgrades",
-        passed=_bool(claim_boundary, ("simulator_execution_proven",)) is False
+        passed=(
+            _bool(claim_boundary, ("simulator_execution_proven",)) is False
+            or simulator_execution_earned
+        )
         and _bool(claim_boundary, ("robot_readiness_proven",)) is False
         and _bool(claim_boundary, ("public_claim_upgrade_allowed",)) is False,
-        message="Startup path does not upgrade simulator, robot readiness, or public claims",
+        message="Startup path does not upgrade unearned simulator, robot readiness, or public claims",
         evidence={
             "simulator_execution_proven": claim_boundary.get("simulator_execution_proven"),
+            "simulator_execution_earned": simulator_execution_earned,
+            "job_status": run_manifest.get("status"),
+            "simulator_service_status": run_manifest.get("simulator_service_status"),
             "robot_readiness_proven": claim_boundary.get("robot_readiness_proven"),
             "public_claim_upgrade_allowed": claim_boundary.get(
                 "public_claim_upgrade_allowed"
@@ -1196,6 +1207,15 @@ def build_robot_eval_startup_architecture_audit(
     job_request = _mapping(artifacts.get("job_request"))
     scheduler = _mapping(artifacts.get("scheduler_decision"))
     ledger = _mapping(artifacts.get("gpu_cost_control_ledger"))
+    claim_boundary = _mapping(run_manifest.get("claim_boundary"))
+    run_proof_boundary = _mapping(run_manifest.get("proof_boundary"))
+    if not claim_boundary and run_proof_boundary:
+        claim_boundary = run_proof_boundary
+    simulator_execution_earned = (
+        _bool(claim_boundary, ("simulator_execution_proven",)) is True
+        and _string(run_manifest.get("status")) == "simulator_command_completed"
+        and _string(run_manifest.get("simulator_service_status")) == "completed"
+    )
     job_id = (
         _string(run_manifest.get("job_id"))
         or _string(job_request.get("job_id"))
@@ -1235,7 +1255,7 @@ def build_robot_eval_startup_architecture_audit(
             "live_provider_calls_performed_by_audit": False,
             "simulator_execution_performed_by_audit": False,
             "startup_architecture_compliant": not blockers,
-            "simulator_execution_proven": False,
+            "simulator_execution_proven": simulator_execution_earned and not blockers,
             "robot_readiness_proven": False,
             "public_claim_upgrade_allowed": False,
         },

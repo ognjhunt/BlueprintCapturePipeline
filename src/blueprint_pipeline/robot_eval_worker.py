@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import shutil
 import subprocess
+import tarfile
+import time
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
@@ -40,7 +44,12 @@ WORKER_RUNTIME_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_runtime_manifest.v1"
 WORKER_RUNTIME_PREFLIGHT_SCHEMA_VERSION = "robot_eval_worker_runtime_preflight.v1"
 WORKER_INPUT_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_manifest.v1"
 RUNTIME_PREFLIGHT_COMMAND_ENV = "BLUEPRINT_RUNTIME_PREFLIGHT_COMMAND"
+RUNTIME_PREFLIGHT_DETAIL_OUTPUT_ENV = "BLUEPRINT_RUNTIME_PREFLIGHT_DETAIL_OUTPUT"
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+SIGNED_URL_QUERY_PATTERN = re.compile(
+    r"([?&]x-goog-signature=)[^\s\"'&]+",
+    flags=re.IGNORECASE,
+)
 
 
 def _string(value: Any) -> str:
@@ -88,6 +97,10 @@ def _bool(value: Any) -> bool | None:
     return None
 
 
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _secret_env_var_names(payload: Mapping[str, Any]) -> List[str]:
     secret_policy = _mapping(payload.get("secret_policy"))
     explicit_names = [
@@ -129,7 +142,44 @@ def _redact_text(value: Any, secret_values: Mapping[str, str]) -> str:
         reverse=True,
     ):
         text = text.replace(secret_value, f"<redacted:{env_name}>")
-    return text
+    return _redact_signed_url_text(text)
+
+
+def _redact_signed_url_text(text: str) -> str:
+    if "x-goog-signature=" not in text.lower():
+        return text
+    return SIGNED_URL_QUERY_PATTERN.sub(r"\1<redacted:signed-url-signature>", text)
+
+
+def _redact_runtime_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_signed_url_text(value)
+    if isinstance(value, list):
+        return [_redact_runtime_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_runtime_value(item) for item in value]
+    if isinstance(value, Mapping):
+        return {str(key): _redact_runtime_value(item) for key, item in value.items()}
+    return value
+
+
+def _write_redacted_json(path: Path, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    redacted = _redact_runtime_value(payload)
+    if not isinstance(redacted, Mapping):  # pragma: no cover - defensive
+        redacted = dict(payload)
+    redacted_dict = dict(redacted)
+    write_json(path, redacted_dict)
+    return redacted_dict
+
+
+def _optional_json_mapping(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = read_json_any(path)
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
 
 
 def _log_redaction_summary(secret_values: Mapping[str, str]) -> Dict[str, Any]:
@@ -234,7 +284,7 @@ def _write_worker_runtime_preflight(
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         }
-        write_json(output_path, result)
+        result = _write_redacted_json(output_path, result)
         return result
     if not allow_simulator_execution:
         result = {
@@ -254,7 +304,7 @@ def _write_worker_runtime_preflight(
             "public_claim_upgrade_allowed": False,
             "blockers": ["missing_simulator_execution_gate_for_runtime_preflight"],
         }
-        write_json(output_path, result)
+        result = _write_redacted_json(output_path, result)
         return result
     command_text = _runtime_preflight_command(payload, simulator)
     if not command_text:
@@ -275,7 +325,7 @@ def _write_worker_runtime_preflight(
             "public_claim_upgrade_allowed": False,
             "blockers": ["missing_runtime_preflight_command"],
         }
-        write_json(output_path, result)
+        result = _write_redacted_json(output_path, result)
         return result
     try:
         argv = shlex.split(command_text)
@@ -298,12 +348,14 @@ def _write_worker_runtime_preflight(
             "public_claim_upgrade_allowed": False,
             "blockers": ["invalid_runtime_preflight_command"],
         }
-        write_json(output_path, result)
+        result = _write_redacted_json(output_path, result)
         return result
     stdout_path = work_dir / "worker_runtime_preflight.stdout.log"
     stderr_path = work_dir / "worker_runtime_preflight.stderr.log"
+    detail_path = work_dir / "worker_runtime_preflight_detail.json"
     env = os.environ.copy()
     env["BLUEPRINT_RUNTIME_PREFLIGHT_OUTPUT"] = str(output_path)
+    env[RUNTIME_PREFLIGHT_DETAIL_OUTPUT_ENV] = str(detail_path)
     env["BLUEPRINT_RUNTIME_PREFLIGHT_STDOUT"] = str(stdout_path)
     env["BLUEPRINT_RUNTIME_PREFLIGHT_STDERR"] = str(stderr_path)
     env["BLUEPRINT_CAPTURE_ROOT"] = capture_root
@@ -324,6 +376,7 @@ def _write_worker_runtime_preflight(
         )
         stdout_path.write_text(_redact_text(completed.stdout, secret_values), encoding="utf-8")
         stderr_path.write_text(_redact_text(completed.stderr, secret_values), encoding="utf-8")
+        detail_payload = _optional_json_mapping(detail_path)
         success = completed.returncode == 0
         result = {
             "schema_version": WORKER_RUNTIME_PREFLIGHT_SCHEMA_VERSION,
@@ -340,6 +393,12 @@ def _write_worker_runtime_preflight(
             "exit_code": completed.returncode,
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
+            "detail_path": str(detail_path) if detail_payload else None,
+            "detail_status": detail_payload.get("status") if detail_payload else None,
+            "detail_blockers": _string_list(detail_payload.get("blockers"))
+            if detail_payload
+            else [],
+            "detail_artifact": detail_payload or None,
             "secret_values_in_artifact": False,
             **redaction_summary,
             "simulator_execution_proven": False,
@@ -391,8 +450,7 @@ def _write_worker_runtime_preflight(
             "public_claim_upgrade_allowed": False,
             "blockers": ["runtime_preflight_command_timeout"],
         }
-    write_json(output_path, result)
-    return result
+    return _write_redacted_json(output_path, result)
 
 
 def _parse_s3_compatible_uri(uri: str) -> Tuple[str, str, str]:
@@ -460,6 +518,118 @@ def _uri_to_local_path(uri: str, work_dir: Path) -> Path:
     if parsed.scheme in {"s3", "r2"}:
         return _download_s3_compatible_uri(uri, work_dir / "downloads" / "worker_manifest.json")
     raise ValueError(f"Unsupported worker manifest URI scheme: {parsed.scheme}")
+
+
+def _uri_to_local_file(uri: str, work_dir: Path, *, filename: str) -> Path:
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme in {"", "file"}:
+        return Path(urllib.request.url2pathname(parsed.path if parsed.scheme else uri))
+    target = work_dir / "downloads" / filename
+    ensure_dir(target.parent)
+    if parsed.scheme in {"http", "https"}:
+        with urllib.request.urlopen(uri, timeout=120) as response:
+            target.write_bytes(response.read())
+        return target
+    if parsed.scheme == "gs":
+        gcs_root = Path(os.getenv("BLUEPRINT_GCS_MOUNT_ROOT") or "/mnt/gcs")
+        return ensure_local_uri_path(uri, gcs_root=gcs_root, scratch_dir=target.parent)
+    if parsed.scheme in {"s3", "r2"}:
+        return _download_s3_compatible_uri(uri, target)
+    raise ValueError(f"Unsupported capture root bundle URI scheme: {parsed.scheme}")
+
+
+def _safe_archive_member(name: str) -> bool:
+    path = Path(name)
+    return not path.is_absolute() and ".." not in path.parts
+
+
+def _find_extracted_capture_root(extract_dir: Path) -> Path | None:
+    if (extract_dir / "capture_descriptor.json").is_file():
+        return extract_dir
+    direct_children = [path for path in extract_dir.iterdir() if path.is_dir()]
+    for child in direct_children:
+        if (child / "capture_descriptor.json").is_file():
+            return child
+    for descriptor in extract_dir.rglob("capture_descriptor.json"):
+        return descriptor.parent
+    return None
+
+
+def _extract_capture_root_bundle(uri: str, work_dir: Path) -> Dict[str, Any]:
+    archive_name = Path(urllib.parse.urlparse(uri).path).name or "capture-root-bundle.zip"
+    archive_path = _uri_to_local_file(uri, work_dir, filename=archive_name)
+    extract_dir = work_dir / "capture_root_bundle"
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir)
+    ensure_dir(extract_dir)
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path) as archive:
+            unsafe = [name for name in archive.namelist() if not _safe_archive_member(name)]
+            if unsafe:
+                raise ValueError("capture root bundle contains unsafe zip paths")
+            archive.extractall(extract_dir)
+    elif tarfile.is_tarfile(archive_path):
+        with tarfile.open(archive_path) as archive:
+            members = archive.getmembers()
+            unsafe = [member.name for member in members if not _safe_archive_member(member.name)]
+            if unsafe:
+                raise ValueError("capture root bundle contains unsafe tar paths")
+            archive.extractall(extract_dir)
+    else:
+        raise ValueError("capture root bundle must be a .zip or .tar archive")
+    capture_root = _find_extracted_capture_root(extract_dir)
+    if capture_root is None:
+        raise ValueError("capture root bundle did not contain capture_descriptor.json")
+    manifest = {
+        "schema_version": "robot_eval_worker_capture_root_bundle.v1",
+        "source_uri": uri,
+        "archive_path": str(archive_path),
+        "extract_dir": str(extract_dir),
+        "capture_root": str(capture_root),
+        "status": "extracted",
+    }
+    return _write_redacted_json(work_dir / "capture_root_bundle_manifest.json", manifest)
+
+
+def _replace_capture_root_prefix(value: Any, *, old_root: str, new_root: str) -> Any:
+    if isinstance(value, str):
+        return new_root + value[len(old_root) :] if old_root and value.startswith(old_root) else value
+    if isinstance(value, list):
+        return [
+            _replace_capture_root_prefix(item, old_root=old_root, new_root=new_root)
+            for item in value
+        ]
+    if isinstance(value, Mapping):
+        return {
+            key: _replace_capture_root_prefix(item, old_root=old_root, new_root=new_root)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _rebase_job_request_capture_root(
+    job_request: Mapping[str, Any],
+    *,
+    selected_capture_root: str,
+) -> Dict[str, Any]:
+    request = dict(job_request)
+    site_package = _mapping(request.get("site_package"))
+    original_root = (
+        _string(site_package.get("capture_root"))
+        or _string(request.get("capture_root"))
+    )
+    if original_root and original_root != selected_capture_root:
+        request = _replace_capture_root_prefix(
+            request,
+            old_root=original_root,
+            new_root=selected_capture_root,
+        )
+        site_package = _mapping(request.get("site_package"))
+    request["capture_root"] = selected_capture_root
+    if site_package:
+        site_package["capture_root"] = selected_capture_root
+        request["site_package"] = site_package
+    return request
 
 
 def _load_manifest(uri: str, work_dir: Path) -> Dict[str, Any]:
@@ -572,6 +742,73 @@ def _copy_runtime_manifest_to_artifact_output(
     }
 
 
+def _upload_runtime_manifest_to_signed_put_url(runtime_manifest_path: Path) -> Dict[str, Any]:
+    signed_put_url = os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "").strip()
+    if not signed_put_url:
+        return {"status": "not_configured"}
+    request = urllib.request.Request(
+        signed_put_url,
+        data=runtime_manifest_path.read_bytes(),
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        status_code = int(getattr(response, "status", 200))
+    return {
+        "status": "completed" if 200 <= status_code < 300 else "blocked",
+        "http_status_code": status_code,
+        "destination": "signed_put_url",
+        "signed_url_stored": False,
+    }
+
+
+def _write_runtime_manifest_with_signed_put(
+    runtime_manifest_path: Path,
+    runtime_manifest: Dict[str, Any],
+) -> Dict[str, Any]:
+    runtime_manifest = _write_redacted_json(runtime_manifest_path, runtime_manifest)
+    if not os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "").strip():
+        return runtime_manifest
+    try:
+        signed_put_upload = _upload_runtime_manifest_to_signed_put_url(runtime_manifest_path)
+    except Exception as exc:
+        signed_put_upload = {
+            "status": "blocked",
+            "destination": "signed_put_url",
+            "blockers": [f"signed_put_upload_failed:{type(exc).__name__}"],
+        }
+    runtime_manifest["signed_put_runtime_manifest_upload"] = signed_put_upload
+    if signed_put_upload.get("status") == "blocked":
+        runtime_manifest["status"] = "blocked"
+        runtime_manifest["blockers"] = _dedupe(
+            [
+                *_string_list(runtime_manifest.get("blockers")),
+                *_string_list(signed_put_upload.get("blockers")),
+            ]
+        )
+    runtime_manifest = _write_redacted_json(runtime_manifest_path, runtime_manifest)
+    if signed_put_upload.get("status") == "completed":
+        try:
+            final_upload = _upload_runtime_manifest_to_signed_put_url(runtime_manifest_path)
+            runtime_manifest["signed_put_runtime_manifest_upload"] = {
+                **signed_put_upload,
+                "final_manifest_reupload_status": final_upload.get("status"),
+                "final_manifest_reupload_http_status_code": final_upload.get(
+                    "http_status_code"
+                ),
+            }
+        except Exception as exc:
+            runtime_manifest["signed_put_runtime_manifest_upload"] = {
+                **signed_put_upload,
+                "final_manifest_reupload_status": "blocked",
+                "final_manifest_reupload_blockers": [
+                    f"signed_put_final_upload_failed:{type(exc).__name__}"
+                ],
+            }
+        runtime_manifest = _write_redacted_json(runtime_manifest_path, runtime_manifest)
+    return runtime_manifest
+
+
 def _copy_worker_runtime_files_to_artifact_output(
     *,
     work_dir: Path,
@@ -642,13 +879,61 @@ def _copy_worker_runtime_files_to_artifact_output(
 
 def _copy_worker_runtime_files_to_job_dir(*, worker_dir: Path, job_dir: Path) -> None:
     for relative_path in (
+        "capture_root_bundle_manifest.json",
         "worker_runtime_preflight.json",
+        "worker_runtime_preflight_detail.json",
         "worker_runtime_preflight.stdout.log",
         "worker_runtime_preflight.stderr.log",
     ):
         source = worker_dir / relative_path
         if source.is_file():
             shutil.copy2(source, job_dir / relative_path)
+
+
+def _record_provider_runtime_gpu_time(
+    *,
+    job_dir: Path,
+    started_monotonic: float,
+    generated_at: str,
+) -> Dict[str, Any]:
+    if not _env_truthy("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME"):
+        return {"status": "not_provider_runtime"}
+    ledger_path = job_dir / "gpu_cost_control_ledger.json"
+    if not ledger_path.is_file():
+        return {"status": "blocked", "blockers": ["missing_gpu_cost_control_ledger"]}
+    payload = read_json_any(ledger_path)
+    if not isinstance(payload, Mapping):
+        return {"status": "blocked", "blockers": ["invalid_gpu_cost_control_ledger"]}
+    ledger = dict(payload)
+    gpu_time = _mapping(ledger.get("gpu_time"))
+    elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
+    gpu_time.update(
+        {
+            "actual_gpu_seconds": round(elapsed_seconds, 3),
+            "actual_gpu_time_source": "worker_runtime_wall_clock_seconds",
+            "actual_gpu_time_record_required": True,
+            "actual_gpu_time_record_present": True,
+            "actual_gpu_time_recorded_at": generated_at,
+            "actual_gpu_time_is_provider_billing_record": False,
+            "actual_gpu_time_claim_boundary": (
+                "worker wall-clock runtime inside provider pod; use provider invoice "
+                "or pod lifecycle records for billing reconciliation"
+            ),
+        }
+    )
+    ledger["gpu_time"] = gpu_time
+    ledger["status"] = "provider_runtime_observed"
+    ledger["live_provider_calls_performed"] = True
+    ledger["execution_performed"] = True
+    ledger["provider_runtime_accounting"] = {
+        "status": "recorded",
+        "source": "blueprint-run-robot-eval-worker",
+        "generated_at": generated_at,
+        "wall_clock_seconds": round(elapsed_seconds, 3),
+        "provider_billing_record": False,
+    }
+    write_json(ledger_path, ledger)
+    return dict(ledger["provider_runtime_accounting"])
 
 
 def _refresh_job_startup_audit_with_worker_runtime(job_dir: Path) -> Dict[str, Any]:
@@ -669,9 +954,11 @@ def _refresh_job_startup_audit_with_worker_runtime(job_dir: Path) -> Dict[str, A
     run_manifest = dict(payload)
     artifacts = dict(_mapping(run_manifest.get("artifacts")))
     for relative_path in (
+        "capture_root_bundle_manifest.json",
         "startup_architecture_audit.json",
         "worker_runtime_manifest.json",
         "worker_runtime_preflight.json",
+        "worker_runtime_preflight_detail.json",
         "worker_runtime_preflight.stdout.log",
         "worker_runtime_preflight.stderr.log",
     ):
@@ -694,13 +981,17 @@ def _attach_worker_failure_artifact_upload(
     artifact_output_uri: str | None,
 ) -> Dict[str, Any]:
     if not artifact_output_uri:
-        return runtime_manifest
+        return _write_runtime_manifest_with_signed_put(
+            work_dir / "worker_runtime_manifest.json",
+            runtime_manifest,
+        )
     try:
         artifact_upload = _copy_worker_runtime_files_to_artifact_output(
             work_dir=work_dir,
             artifact_output_uri=artifact_output_uri,
             relative_paths=[
                 "worker_runtime_preflight.json",
+                "worker_runtime_preflight_detail.json",
                 "worker_runtime_preflight.stdout.log",
                 "worker_runtime_preflight.stderr.log",
                 "worker_runtime_manifest.json",
@@ -719,7 +1010,10 @@ def _attach_worker_failure_artifact_upload(
             *_string_list(artifact_upload.get("blockers")),
         ]
     )
-    write_json(work_dir / "worker_runtime_manifest.json", runtime_manifest)
+    runtime_manifest = _write_runtime_manifest_with_signed_put(
+        work_dir / "worker_runtime_manifest.json",
+        runtime_manifest,
+    )
     try:
         _copy_worker_runtime_files_to_artifact_output(
             work_dir=work_dir,
@@ -805,8 +1099,10 @@ def _blocked_runtime_manifest(
         "public_claim_upgrade_allowed": False,
     }
     runtime_manifest.update(dict(context or {}))
-    write_json(work_dir / "worker_runtime_manifest.json", runtime_manifest)
-    return runtime_manifest
+    return _write_runtime_manifest_with_signed_put(
+        work_dir / "worker_runtime_manifest.json",
+        runtime_manifest,
+    )
 
 
 def run_robot_eval_worker(
@@ -831,6 +1127,7 @@ def run_robot_eval_worker(
     artifact_output_uri_required: bool | None = None,
 ) -> Dict[str, Any]:
     generated_at = utc_now_iso()
+    worker_started_monotonic = time.monotonic()
     worker_dir = Path(work_dir or os.getenv("BLUEPRINT_WORKER_DIR") or "/tmp/blueprint-worker")
     ensure_dir(worker_dir)
     try:
@@ -844,8 +1141,34 @@ def run_robot_eval_worker(
         )
 
     job_request = _mapping(payload.get("job_request")) or _mapping(payload)
+    input_bundle = _mapping(payload.get("input_bundle"))
+    capture_root_bundle_uri = _string(
+        payload.get("capture_root_bundle_uri")
+        or input_bundle.get("capture_root_bundle_uri")
+    )
+    capture_root_bundle: Dict[str, Any] = {"status": "not_configured"}
+    bundle_capture_root = ""
+    if capture_root_bundle_uri and not capture_root:
+        try:
+            capture_root_bundle = _extract_capture_root_bundle(capture_root_bundle_uri, worker_dir)
+            bundle_capture_root = _string(capture_root_bundle.get("capture_root"))
+        except Exception as exc:
+            return _blocked_runtime_manifest(
+                work_dir=worker_dir,
+                manifest_uri=manifest_uri,
+                blockers=[f"capture_root_bundle_extract_failed:{type(exc).__name__}"],
+                generated_at=generated_at,
+                context={
+                    "capture_root_bundle_uri": capture_root_bundle_uri,
+                    "capture_root_bundle": {
+                        "status": "blocked",
+                        "source_uri": capture_root_bundle_uri,
+                    },
+                },
+            )
     selected_capture_root = (
         _string(capture_root)
+        or bundle_capture_root
         or _string(payload.get("capture_root"))
         or _string(job_request.get("capture_root"))
     )
@@ -873,6 +1196,13 @@ def run_robot_eval_worker(
 
     selected_provisioner = provisioner or _string(payload.get("provisioner")) or "fixture_local"
     selected_simulator = simulator or _string(payload.get("simulator")) or "fixture"
+    selected_robot = (
+        _string(payload.get("robot"))
+        or _string(payload.get("robot_model"))
+        or _string(job_request.get("robot"))
+        or _string(job_request.get("robot_model"))
+        or None
+    )
     live_provider_manifest_required = selected_provisioner != "fixture_local"
     payload_schema = _string(payload.get("schema_version"))
     if live_provider_manifest_required and payload_schema != WORKER_INPUT_MANIFEST_SCHEMA_VERSION:
@@ -884,6 +1214,8 @@ def run_robot_eval_worker(
             context={
                 "job_id": selected_job_id,
                 "capture_root": selected_capture_root,
+                "capture_root_bundle_uri": capture_root_bundle_uri or None,
+                "capture_root_bundle": capture_root_bundle,
                 "provisioner": selected_provisioner,
                 "simulator": selected_simulator,
                 "expected_worker_manifest_schema": WORKER_INPUT_MANIFEST_SCHEMA_VERSION,
@@ -899,6 +1231,8 @@ def run_robot_eval_worker(
             context={
                 "job_id": selected_job_id,
                 "capture_root": selected_capture_root,
+                "capture_root_bundle_uri": capture_root_bundle_uri or None,
+                "capture_root_bundle": capture_root_bundle,
                 "provisioner": selected_provisioner,
                 "simulator": selected_simulator,
                 "expected_worker_manifest_schema": WORKER_INPUT_MANIFEST_SCHEMA_VERSION,
@@ -947,6 +1281,8 @@ def run_robot_eval_worker(
             context={
                 "job_id": selected_job_id,
                 "capture_root": selected_capture_root,
+                "capture_root_bundle_uri": capture_root_bundle_uri or None,
+                "capture_root_bundle": capture_root_bundle,
                 "provisioner": selected_provisioner,
                 "simulator": selected_simulator,
                 "artifact_output_uri_required": True,
@@ -970,6 +1306,8 @@ def run_robot_eval_worker(
                 context={
                     "job_id": selected_job_id,
                     "capture_root": selected_capture_root,
+                    "capture_root_bundle_uri": capture_root_bundle_uri or None,
+                    "capture_root_bundle": capture_root_bundle,
                     "provisioner": selected_provisioner,
                     "simulator": selected_simulator,
                     "runtime_preflight_contract": runtime_preflight_contract,
@@ -1001,6 +1339,8 @@ def run_robot_eval_worker(
             context={
                 "job_id": selected_job_id,
                 "capture_root": selected_capture_root,
+                "capture_root_bundle_uri": capture_root_bundle_uri or None,
+                "capture_root_bundle": capture_root_bundle,
                 "provisioner": selected_provisioner,
                 "simulator": selected_simulator,
                 "runtime_preflight_manifest_path": str(
@@ -1018,6 +1358,10 @@ def run_robot_eval_worker(
             artifact_output_uri=selected_artifact_output_uri,
         )
 
+    job_request = _rebase_job_request_capture_root(
+        job_request,
+        selected_capture_root=selected_capture_root,
+    )
     request_path = worker_dir / "job_request.json"
     write_json(request_path, job_request)
     try:
@@ -1049,6 +1393,19 @@ def run_robot_eval_worker(
     job_dir = Path(_string(result.get("job_dir")))
     if job_dir:
         _copy_worker_runtime_files_to_job_dir(worker_dir=worker_dir, job_dir=job_dir)
+    provider_runtime_accounting = (
+        _record_provider_runtime_gpu_time(
+            job_dir=job_dir,
+            started_monotonic=worker_started_monotonic,
+            generated_at=generated_at,
+        )
+        if job_dir
+        else {"status": "not_available_missing_job_dir"}
+    )
+    job_result_manifest = _optional_json_mapping(
+        Path(_string(result.get("manifest_path")) or job_dir / "job_run_manifest.json")
+    )
+    job_result = {**dict(result), **job_result_manifest}
 
     artifact_upload = {"status": "not_requested"}
     worker_blockers: List[str] = []
@@ -1066,7 +1423,12 @@ def run_robot_eval_worker(
             }
         worker_blockers.extend(_string_list(artifact_upload.get("blockers")))
 
-    job_status = _string(result.get("status"))
+    job_status = _string(job_result.get("status"))
+    job_blockers = _string_list(job_result.get("blockers"))
+    job_missing_inputs = _string_list(job_result.get("missing_inputs"))
+    simulator_execution_proven = bool(job_result.get("simulator_execution_proven"))
+    robot_readiness_proven = bool(job_result.get("robot_readiness_proven"))
+    public_claim_upgrade_allowed = bool(job_result.get("public_claim_upgrade_allowed"))
     if worker_blockers:
         status = "blocked"
     elif job_status == "blocked":
@@ -1082,12 +1444,21 @@ def run_robot_eval_worker(
         "work_dir": str(worker_dir),
         "job_id": selected_job_id,
         "capture_root": selected_capture_root,
+        "capture_root_bundle_uri": capture_root_bundle_uri or None,
+        "capture_root_bundle": capture_root_bundle,
         "provisioner": selected_provisioner,
         "simulator": selected_simulator,
+        "robot": selected_robot,
         "job_status": job_status,
-        "job_dir": result.get("job_dir"),
-        "job_run_manifest_uri": result.get("manifest_path"),
+        "job_dir": job_result.get("job_dir"),
+        "job_run_manifest_uri": job_result.get("manifest_path"),
+        "job_blockers": job_blockers,
+        "job_missing_inputs": job_missing_inputs,
+        "scenario_eval_matrix_status": job_result.get("scenario_eval_matrix_status"),
+        "simulator_service_status": job_result.get("simulator_service_status"),
+        "evaluation_status": job_result.get("evaluation_status"),
         "artifact_upload": artifact_upload,
+        "provider_runtime_accounting": provider_runtime_accounting,
         "artifact_output_uri_required": selected_artifact_output_uri_required,
         "runtime_preflight_contract": runtime_preflight_contract,
         "runtime_preflight_manifest_path": "worker_runtime_preflight.json",
@@ -1100,21 +1471,24 @@ def run_robot_eval_worker(
         ),
         "blockers": worker_blockers,
         "live_provider_calls_performed": False,
-        "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
-        "public_claim_upgrade_allowed": False,
+        "simulator_execution_proven": simulator_execution_proven,
+        "robot_readiness_proven": robot_readiness_proven,
+        "public_claim_upgrade_allowed": public_claim_upgrade_allowed,
     }
     runtime_manifest_path = worker_dir / "worker_runtime_manifest.json"
-    write_json(runtime_manifest_path, runtime_manifest)
+    runtime_manifest = _write_redacted_json(runtime_manifest_path, runtime_manifest)
     job_runtime_manifest_path = job_dir / "worker_runtime_manifest.json"
-    write_json(job_runtime_manifest_path, runtime_manifest)
+    runtime_manifest = _write_redacted_json(job_runtime_manifest_path, runtime_manifest)
     startup_audit = _refresh_job_startup_audit_with_worker_runtime(job_dir)
     runtime_manifest["startup_architecture_audit_status"] = startup_audit.get("status")
     runtime_manifest["startup_architecture_compliant"] = bool(
         startup_audit.get("architecture_compliant")
     )
-    write_json(runtime_manifest_path, runtime_manifest)
-    write_json(job_runtime_manifest_path, runtime_manifest)
+    runtime_manifest["startup_architecture_blockers"] = _string_list(
+        startup_audit.get("blockers")
+    )
+    runtime_manifest = _write_redacted_json(runtime_manifest_path, runtime_manifest)
+    runtime_manifest = _write_redacted_json(job_runtime_manifest_path, runtime_manifest)
     if selected_artifact_output_uri and artifact_upload.get("status") == "completed":
         finalizer_refresh_upload: Dict[str, Any] = {"status": "not_attempted"}
         try:
@@ -1125,6 +1499,7 @@ def run_robot_eval_worker(
                     "job_run_manifest.json",
                     "startup_architecture_audit.json",
                     "worker_runtime_manifest.json",
+                    "worker_runtime_preflight_detail.json",
                 ],
             )
             runtime_manifest_upload = _copy_runtime_manifest_to_artifact_output(
@@ -1152,13 +1527,18 @@ def run_robot_eval_worker(
                     *_string_list(runtime_manifest_upload.get("blockers")),
                 ]
             )
-        write_json(runtime_manifest_path, runtime_manifest)
-        write_json(job_runtime_manifest_path, runtime_manifest)
+        runtime_manifest = _write_redacted_json(runtime_manifest_path, runtime_manifest)
+        runtime_manifest = _write_redacted_json(job_runtime_manifest_path, runtime_manifest)
         if runtime_manifest_upload.get("status") == "completed":
             _copy_runtime_manifest_to_artifact_output(
                 runtime_manifest_path=job_runtime_manifest_path,
                 artifact_output_uri=selected_artifact_output_uri,
             )
+    runtime_manifest = _write_runtime_manifest_with_signed_put(
+        job_runtime_manifest_path,
+        runtime_manifest,
+    )
+    runtime_manifest = _write_redacted_json(runtime_manifest_path, runtime_manifest)
     return runtime_manifest
 
 

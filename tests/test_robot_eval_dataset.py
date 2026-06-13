@@ -128,6 +128,54 @@ def _write_review_sources(capture_root: Path) -> None:
     )
 
 
+def test_robot_eval_dataset_uses_simulation_automation_task_proposals_when_eval_prep_empty(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_review_sources(capture_root)
+    _write_json(
+        capture_root / "pipeline" / "simulation_automation" / "task_anchor_proposal_manifest.json",
+        {
+            "schema_version": "task_anchor_proposal_manifest.v1",
+            "generated_at": "2026-06-12T00:00:00Z",
+            "status": "compiled_review_required",
+            "proposal_count": 1,
+            "proposals": [
+                {
+                    "proposal_id": "task_anchor_proposal_scene_anchor_black",
+                    "task_id": "scene_anchor_black",
+                    "task_text": "Review a robot task anchored near black",
+                    "task_category": "navigation",
+                    "target_object_ids": ["black"],
+                    "source": "scene_asset_semantic_hint",
+                    "review_required": True,
+                    "accepted": False,
+                }
+            ],
+        },
+    )
+
+    result = build_real_site_robot_eval_dataset(capture_root=capture_root)
+
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    manifest = json.loads((robot_eval_root / "robot_eval_dataset_manifest.json").read_text())
+    task_cards = json.loads((robot_eval_root / "task_cards.json").read_text())
+    scenario_cards = json.loads((robot_eval_root / "scenario_cards.json").read_text())
+
+    assert result["status"] == "capture_grounded_review_ready"
+    assert manifest["task_card_count"] == 1
+    assert manifest["scenario_card_count"] == 1
+    assert task_cards["cards"][0]["task_id"] == "scene_anchor_black"
+    assert task_cards["cards"][0]["task_evidence_source"] == (
+        "pipeline/simulation_automation/task_anchor_proposal_manifest.json"
+    )
+    assert scenario_cards["cards"][0]["scenario_id"] == "scenario_scene_anchor_black_unitree_g1"
+    assert scenario_cards["cards"][0]["robot_profile_id"] == "unitree_g1"
+    assert scenario_cards["cards"][0]["claim_boundary"] == (
+        "scenario_card_is_review_scope_not_simulator_or_pilot_result"
+    )
+
+
 def _write_recorded_trace_fixture(capture_root: Path) -> None:
     _write_json(
         capture_root / "pipeline" / "robot_eval_inputs" / "recorded_action_trace_manifest.json",

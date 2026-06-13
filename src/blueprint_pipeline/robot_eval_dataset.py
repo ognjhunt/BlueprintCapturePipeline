@@ -867,6 +867,11 @@ def _task_library(
                     "start_zone": _float_triplet(task.get("start_zone"), fallback=(0.0, 0.0, 0.0)),
                     "goal_zone": _float_triplet(task.get("goal_zone"), fallback=(0.0, 0.0, 0.0)),
                     "task_critical": bool(task.get("task_critical")),
+                    "source_artifact": _string(
+                        task.get("source_artifact")
+                        or task.get("sourceArtifact")
+                        or "pipeline/evaluation_prep/task_anchor_manifest.json"
+                    ),
                     "success_criteria": _success_criteria(task_category),
                     "required_evidence": [
                         "robot_pov_evidence",
@@ -885,6 +890,57 @@ def _task_library(
         "tasks": tasks,
         "source_policy": "task_anchor_manifest_is_primary_when_present",
         "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _task_anchor_from_simulation_automation(pipeline_dir: Path) -> Dict[str, Any]:
+    """Build review-required task anchors from simulation-automation proposals.
+
+    These proposals are capture-grounded review inputs. They are sufficient to
+    define a simulator eval scope, but they do not prove task acceptance,
+    simulator execution, robot policy performance, or deployment readiness.
+    """
+
+    proposal_manifest = _read_optional_mapping(
+        pipeline_dir / "simulation_automation" / "task_anchor_proposal_manifest.json"
+    )
+    proposals = proposal_manifest.get("proposals")
+    if not isinstance(proposals, list):
+        return {}
+    tasks: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, proposal in enumerate(proposals):
+        if not isinstance(proposal, Mapping):
+            continue
+        task_id = _string(proposal.get("task_id") or proposal.get("id") or f"task_{index}")
+        if not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        tasks.append(
+            {
+                "task_id": task_id,
+                "task_text": _string(proposal.get("task_text") or proposal.get("name") or task_id),
+                "task_category": _string(proposal.get("task_category") or "navigation"),
+                "target_object_ids": _string_list(proposal.get("target_object_ids")),
+                "start_zone": proposal.get("start_zone"),
+                "goal_zone": proposal.get("goal_zone"),
+                "task_critical": False,
+                "review_required": True,
+                "accepted": proposal.get("accepted") is True,
+                "source_artifact": "pipeline/simulation_automation/task_anchor_proposal_manifest.json",
+                "proposal_id": _string(proposal.get("proposal_id")),
+                "claim_boundary": "simulation_task_anchor_proposal_defines_review_scope_not_execution_proof",
+            }
+        )
+    if not tasks:
+        return {}
+    return {
+        "schema_version": "task_anchor_manifest.v1",
+        "generated_at": _string(proposal_manifest.get("generated_at")),
+        "status": "compiled_review_required",
+        "source_artifact": "pipeline/simulation_automation/task_anchor_proposal_manifest.json",
+        "tasks": tasks,
+        "claim_boundary": "simulation_automation_task_proposals_do_not_prove_robot_readiness",
     }
 
 
@@ -913,6 +969,17 @@ def _robot_profiles(
                 }
             )
     return sorted(profiles, key=lambda item: item["robot_profile_id"])
+
+
+def _default_unitree_g1_robot_profile() -> Dict[str, Any]:
+    return {
+        "robot_profile_id": "unitree_g1",
+        "display_name": "Unitree G1",
+        "embodiment_type": "humanoid",
+        "action_space": {},
+        "source": "blueprint_default_robot_profile",
+        "claim_boundary": "default_robot_profile_is_eval_scope_not_physical_robot_readiness",
+    }
 
 
 def _available_prediction_sources(
@@ -958,13 +1025,7 @@ def _scenario_library(
 ) -> Dict[str, Any]:
     scenarios: List[Dict[str, Any]] = []
     tasks = [task for task in task_library.get("tasks", []) if isinstance(task, Mapping)]
-    profiles = list(robot_profiles) or [
-        {
-            "robot_profile_id": "robot_profile_required",
-            "display_name": "Robot profile required",
-            "embodiment_type": "unknown",
-        }
-    ]
+    profiles = list(robot_profiles) or [_default_unitree_g1_robot_profile()]
     for task in tasks:
         task_id = _string(task.get("task_id"))
         for profile in profiles:
@@ -2449,7 +2510,8 @@ def _task_cards(*, task_library: Mapping[str, Any], generated_at: str) -> Dict[s
                     "sim_vs_real_calibration_score",
                     "placement_accuracy",
                 ],
-                "task_evidence_source": "pipeline/evaluation_prep/task_anchor_manifest.json",
+                "task_evidence_source": _string(task.get("source_artifact"))
+                or "pipeline/evaluation_prep/task_anchor_manifest.json",
                 "confidence": "capture_grounded_task_anchor_present",
                 "observed_vs_inferred_labels": {
                     "task_anchor": "derived",
@@ -3050,6 +3112,8 @@ def build_real_site_robot_eval_dataset(
         task_anchor_manifest
         or _read_optional_mapping(eval_dir / "task_anchor_manifest.json")
     )
+    if not isinstance(task_anchor.get("tasks"), list) or not task_anchor.get("tasks"):
+        task_anchor = _task_anchor_from_simulation_automation(pipeline_dir) or task_anchor
     site_world = dict(site_world_spec or _read_optional_mapping(eval_dir / "site_world_spec.json"))
     hosted_manifest = dict(
         hosted_session_runtime_manifest

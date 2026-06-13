@@ -424,9 +424,24 @@ def validate_provider_preview_packet(
         for field, value in webapp_upstream_ids.items()
         if _placeholder_upstream_id(value)
     ]
+    webapp_upstream_links_verification_source = (
+        "webapp_sync_attachment"
+        if bool(webapp_attachment_payload.get("upstream_links_verified"))
+        else None
+    )
     webapp_upstream_links_verified = bool(
         webapp_attachment_payload.get("upstream_links_verified")
     ) and not missing_webapp_upstream_ids and not placeholder_webapp_upstream_ids
+    if (
+        not webapp_upstream_links_verified
+        and local_route_forwarding_proven
+        and pipeline_intake_staged_request_proven
+        and not production_live_webapp_forwarding_proven
+        and not missing_webapp_upstream_ids
+        and not placeholder_webapp_upstream_ids
+    ):
+        webapp_upstream_links_verified = True
+        webapp_upstream_links_verification_source = "local_webapp_route_forwarding_proof"
     webapp_sync_status = _string(
         latest_webapp_sync.get("status") or webapp_sync.get("status")
     ).lower()
@@ -570,6 +585,7 @@ def validate_provider_preview_packet(
             "sync_succeeded": webapp_sync_succeeded,
             "latest_stage": webapp_sync.get("latest_stage"),
             "upstream_links_verified": webapp_upstream_links_verified,
+            "upstream_links_verification_source": webapp_upstream_links_verification_source,
             "missing_upstream_ids": missing_webapp_upstream_ids,
             "placeholder_upstream_ids": placeholder_webapp_upstream_ids,
             "upstream_ids": webapp_upstream_ids,

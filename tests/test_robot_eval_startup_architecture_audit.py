@@ -295,6 +295,33 @@ def test_robot_eval_startup_architecture_audit_passes_valid_startup_job(
     assert Path(str(result["output_path"])).is_file()
 
 
+def test_robot_eval_startup_architecture_audit_accepts_earned_simulator_execution(
+    tmp_path: Path,
+) -> None:
+    job_dir = _startup_job_dir(tmp_path)
+    run_manifest = json.loads((job_dir / "job_run_manifest.json").read_text(encoding="utf-8"))
+    run_manifest.update(
+        {
+            "status": "simulator_command_completed",
+            "simulator_service_status": "completed",
+            "claim_boundary": {
+                "simulator_execution_proven": True,
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        }
+    )
+    _write_json(job_dir / "job_run_manifest.json", run_manifest)
+
+    result = build_robot_eval_startup_architecture_audit(job_dir=job_dir)
+
+    assert result["status"] == "passed"
+    assert "proof:no_unearned_claim_upgrades" not in result["blockers"]
+    assert result["proof_boundary"]["simulator_execution_proven"] is True
+    assert result["proof_boundary"]["robot_readiness_proven"] is False
+    assert result["proof_boundary"]["public_claim_upgrade_allowed"] is False
+
+
 def test_robot_eval_startup_architecture_audit_blocks_missing_artifacts(
     tmp_path: Path,
 ) -> None:

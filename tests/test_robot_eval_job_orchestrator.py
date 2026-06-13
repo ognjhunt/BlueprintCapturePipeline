@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 import os
 import struct
+import subprocess
 import sys
+import zipfile
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import robot_eval_provider_input_setup as provider_input_setup
 from blueprint_pipeline.evaluation_prep_stage import robot_eval_job_evaluation_prep_surface
 from blueprint_pipeline.live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from blueprint_pipeline.robot_eval_job_orchestrator import (
@@ -15,6 +20,9 @@ from blueprint_pipeline.robot_eval_job_orchestrator import (
     build_robot_eval_job,
     resolve_simulator_selection_policy,
     run_robot_eval_job_request_inbox,
+)
+from blueprint_pipeline.robot_eval_provider_input_setup import (
+    prepare_robot_eval_provider_inputs,
 )
 from blueprint_pipeline.robot_eval_worker import run_robot_eval_worker
 
@@ -1413,6 +1421,15 @@ def test_live_robot_eval_closure_blocks_mujoco_owner_proof_for_isaac_requirement
 ) -> None:
     capture_root = _build_capture_root(tmp_path)
     job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-mujoco-owner-gpu-proof"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        job_dir / "worker_manifest.json",
+        {
+            "schema_version": "robot_eval_worker_manifest.v1",
+            "simulator": "isaac_sim",
+            "allowed_simulators": ["isaac_sim"],
+        },
+    )
     _write_json(
         capture_root
         / "pipeline"
@@ -1470,6 +1487,98 @@ def test_live_robot_eval_closure_blocks_mujoco_owner_proof_for_isaac_requirement
     assert "isaac_sim_unitree_g1_execution_not_proven" in gate["blockers"]
     assert gate["evidence"]["owner_gpu_proof_audit"]["accepted"] is True
     assert gate["evidence"]["owner_isaac_unitree_g1_execution_proven"] is False
+
+
+def test_live_robot_eval_closure_accepts_mujoco_owner_proof_for_mujoco_requirement(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-mujoco-owner-gpu-proof"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        job_dir / "worker_manifest.json",
+        {
+            "schema_version": "robot_eval_worker_manifest.v1",
+            "simulator": "mujoco",
+            "allowed_simulators": ["mujoco"],
+        },
+    )
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "schema_version": "normalized_attempt_trace.v1",
+            "status": "blocked",
+            "attempt_count": 0,
+        },
+    )
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "owner_gpu_simulator_execution_proof_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_proof_manifest.v1",
+            "status": "accepted",
+            "owner_system_id": "runpod-a6000",
+            "simulator_backend": "mujoco",
+            "simulator_version": "3.9.0",
+            "gpu_model": "NVIDIA RTX A6000",
+            "proof_path": "pipeline/simulation_automation/gpu_owner_system_proof.json",
+            "exit_code": 0,
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "isaac_sim_execution_proven": False,
+            "isaac_robot_asset_execution_proven": False,
+            "mujoco_g1_asset_execution_proven": True,
+            "mujoco_g1_asset_spawned": True,
+            "unitree_g1_asset_spawned": False,
+            "robot_asset": {
+                "name": "Unitree G1",
+                "source": "google_deepmind_mujoco_menagerie",
+                "mujoco_g1_asset_execution_proven": True,
+            },
+            "blockers": [],
+            "missing_inputs": [],
+            "evidence": {
+                "stdout_present": True,
+                "stderr_present": True,
+                "scene_load_trace_present": True,
+                "scene_loaded_in_owner_simulator": True,
+                "spawn_trace_present": True,
+                "spawn_pose_loaded": True,
+                "action_or_policy_trace_present": True,
+                "action_or_policy_trace_valid": True,
+                "default_smoke_policy_present": True,
+                "default_smoke_policy_valid": True,
+                "policy_execution_trace_present": True,
+                "default_policy_execution_trace_valid": True,
+                "sim_robot_pov_evidence_present": True,
+                "sim_robot_pov_evidence_valid": True,
+                "artifact_manifest_present": True,
+                "artifact_manifest_valid": True,
+                "robot_asset_trace_present": True,
+                "robot_asset_matches_proof": True,
+                "operator_attestation_present": True,
+                "pass_fail_criteria_passed": True,
+                "mujoco_g1_asset_spawned": True,
+                "mujoco_g1_asset_valid": True,
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["live_simulator_execution"]
+    assert gate["passed"] is True
+    assert "isaac_sim_unitree_g1_execution_not_proven" not in gate["blockers"]
+    assert "mujoco_g1_execution_not_proven" not in gate["blockers"]
+    assert gate["evidence"]["expected_simulator"] == "mujoco"
+    assert gate["evidence"]["owner_mujoco_unitree_g1_execution_proven"] is True
+    assert gate["evidence"]["owner_gpu_proof_audit"]["accepted"] is True
+    assert gate["evidence"]["normalized_attempt_trace_status"] == "blocked"
 
 
 def test_live_robot_eval_closure_accepts_camel_case_owner_attestations(
@@ -4693,6 +4802,101 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     assert run_manifest["robot_readiness_proven"] is False
 
 
+def test_packaged_mujoco_g1_simulator_command_is_available() -> None:
+    env = {**os.environ, "PYTHONPATH": str(Path("src").resolve())}
+    result = subprocess.run(
+        [sys.executable, "-m", "blueprint_pipeline.mujoco_g1_simulator_command", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "--capture-root" in result.stdout
+    assert "--g1-model-root" in result.stdout
+
+
+def test_robot_eval_job_runs_packaged_mujoco_g1_simulator_command(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pytest.importorskip("mujoco")
+    trimesh = pytest.importorskip("trimesh")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.delenv("MUJOCO_GL", raising=False)
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    scene_glb = capture_root / "pipeline" / "worldlabs_assets" / "worldlabs_collider.glb"
+    scene_glb.parent.mkdir(parents=True, exist_ok=True)
+    trimesh.creation.box(extents=(0.4, 0.3, 0.2)).export(scene_glb)
+    g1_root = tmp_path / "unitree_g1"
+    g1_root.mkdir(parents=True)
+    (g1_root / "g1.xml").write_text(
+        "\n".join(
+            [
+                '<mujoco model="unitree_g1_test">',
+                '  <option timestep="0.002"/>',
+                '  <worldbody>',
+                '    <body name="torso" pos="0 0 0.8">',
+                '      <freejoint name="floating_base_joint"/>',
+                '      <geom name="torso_geom" type="box" size="0.08 0.05 0.18"/>',
+                "    </body>",
+                "  </worldbody>",
+                '  <keyframe><key name="stand" qpos="0 0 0.8 1 0 0 0"/></keyframe>',
+                "</mujoco>",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    request_path = tmp_path / "job-request.json"
+    request = _full_job_request(capture_root)
+    request["simulator_preference"] = "mujoco"
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-mujoco-g1-command",
+        provisioner="fixture_local",
+        simulator="mujoco",
+        allow_simulator_execution=True,
+        allowed_simulators=["mujoco"],
+        simulator_commands={
+            "mujoco": (
+                f"{sys.executable} -m blueprint_pipeline.mujoco_g1_simulator_command "
+                f"--capture-root {capture_root} "
+                f"--g1-model-root {g1_root} "
+                "--steps 3 --skip-render-frames --no-fetch-g1-assets"
+            )
+        },
+    )
+
+    job_dir = Path(result["job_dir"])
+    simulator_result = _read_json(job_dir / "simulator_service_result.json")
+    trace = _read_json(job_dir / "normalized_attempt_trace.json")
+    eval_result = _read_json(job_dir / "evaluation_result.json")
+    proof_boundary = _read_json(job_dir / "proof_boundary.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert result["status"] == "simulator_command_completed"
+    assert simulator_result["status"] == "completed"
+    assert simulator_result["framework"] == "mujoco"
+    assert simulator_result["unitree_g1_asset_spawned"] is True
+    assert simulator_result["simulator_execution_proven"] is True
+    assert trace["attempt_count"] == 1
+    assert trace["attempts"][0]["policy_id"] == "blueprint_default_walk_to_target_smoke_policy"
+    assert trace["attempts"][0]["artifact_paths"]["scene_trace"].endswith(
+        "scene_load_trace.json"
+    )
+    assert eval_result["status"] == "completed"
+    assert proof_boundary["simulator_execution_proven"] is True
+    assert proof_boundary["robot_readiness_proven"] is False
+    assert run_manifest["simulator_execution_proven"] is True
+    assert run_manifest["robot_readiness_proven"] is False
+
+
 def test_robot_eval_job_ingests_real_robot_pov_and_action_logs_separate_from_generated_support(
     tmp_path: Path,
 ) -> None:
@@ -5723,6 +5927,71 @@ def test_live_provider_launch_blocks_without_worker_manifest_uri(
     assert "missing_worker_manifest_uri" in cost_ledger["blockers"]
 
 
+def test_live_provider_launch_blocks_without_capture_root_bundle_uri(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_cpu_preflight_ready_scene_asset(capture_root)
+    request = _full_job_request(capture_root)
+    request["execution_request"] = _webapp_execution_request()
+    request["budget"] = {"budget_usd": 10, "timeout_seconds": 120}
+    request_path = tmp_path / "webapp-job-request.json"
+    _write_json(request_path, request)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_ARTIFACT_OUTPUT_URI",
+        "r2://blueprint-artifacts/jobs/job-live-provider-missing-capture-bundle",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "r2://blueprint-artifacts/jobs/job-live-provider-missing-capture-bundle/worker_manifest.json",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+        "registry.example/blueprint/isaac-eval-worker:2026-06-12",
+    )
+    monkeypatch.delenv("BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI", raising=False)
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-live-provider-missing-capture-bundle",
+        provisioner="runpod",
+        simulator="isaac_sim",
+        allow_gpu_provisioning=True,
+        allow_simulator_execution=True,
+        allowed_simulators=["isaac_sim"],
+        simulator_commands={"isaac_sim": f"{sys.executable} -c \"print('isaac ok')\""},
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / (
+        "job-live-provider-missing-capture-bundle"
+    )
+    worker_plan = _read_json(job_dir / "worker_launch_plan.json")
+    worker_manifest = _read_json(job_dir / "worker_manifest.json")
+    provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+    provisioning = _read_json(job_dir / "gpu_provisioning_result.json")
+
+    assert worker_plan["status"] == "blocked_missing_capture_root_bundle_uri"
+    assert "missing_capture_root_bundle_uri" in worker_plan["blockers"]
+    assert worker_plan["input_bundle"][  # type: ignore[index]
+        "capture_root_bundle_uri_required_for_provider"
+    ] is True
+    assert worker_plan["input_bundle"][  # type: ignore[index]
+        "capture_root_bundle_uri_fetchable_by_provider"
+    ] is False
+    assert worker_manifest["capture_root_bundle_uri"] is None
+    assert provider_launch["status"] == "blocked_by_worker_plan"
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "capture_root_bundle_uri_configured"
+    ] is False
+    assert "missing_capture_root_bundle_uri" in provider_launch["blockers"]
+    assert "missing_capture_root_bundle_uri" in provisioning["blockers"]
+
+
 def test_live_provider_launch_blocks_when_cpu_preflight_gate_is_disabled(
     tmp_path: Path,
     monkeypatch,
@@ -5804,6 +6073,10 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
         "r2://blueprint-artifacts/jobs/job-live-provider-versioned-image-ref/worker_manifest.json",
     )
     monkeypatch.setenv(
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI",
+        "r2://blueprint-artifacts/jobs/job-live-provider-versioned-image-ref/capture-root.zip",
+    )
+    monkeypatch.setenv(
         "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
         "registry.example/blueprint/isaac-eval-worker:2026-06-12",
     )
@@ -5828,15 +6101,25 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
 
     assert worker_plan["status"] == "awaiting_explicit_provider_gate"
     assert worker_plan["blockers"] == []
+    assert worker_plan["input_bundle"]["capture_root_bundle_uri"] == (  # type: ignore[index]
+        "r2://blueprint-artifacts/jobs/job-live-provider-versioned-image-ref/capture-root.zip"
+    )
+    assert worker_plan["input_bundle"][  # type: ignore[index]
+        "capture_root_bundle_uri_fetchable_by_provider"
+    ] is True
     assert worker_plan["worker_image"]["configured_image_ref"] == (  # type: ignore[index]
         "registry.example/blueprint/isaac-eval-worker:2026-06-12"
     )
     assert worker_plan["worker_image"]["configured_image_ref_is_versioned"] is True  # type: ignore[index]
+    assert worker_plan["worker_image"]["configured_image_ref_fetchable_by_provider"] is True  # type: ignore[index]
     assert worker_plan["runtime_preflight_contract"]["required_before_scene_load"] is True  # type: ignore[index]
     assert worker_plan["runtime_preflight_contract"]["vulkan_required"] is True  # type: ignore[index]
     assert worker_manifest["status"] == "ready_for_worker_upload"
     assert worker_manifest["worker_manifest_uri"] == (
         "r2://blueprint-artifacts/jobs/job-live-provider-versioned-image-ref/worker_manifest.json"
+    )
+    assert worker_manifest["capture_root_bundle_uri"] == (
+        "r2://blueprint-artifacts/jobs/job-live-provider-versioned-image-ref/capture-root.zip"
     )
     assert worker_manifest["worker_manifest_uri_required"] is True
     assert worker_manifest["worker_manifest_uri_fetchable_by_provider"] is True
@@ -5849,6 +6132,9 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert provider_launch["provider_request_shape"]["image"]["configured_image_ref"] == (  # type: ignore[index]
         "registry.example/blueprint/isaac-eval-worker:2026-06-12"
     )
+    assert provider_launch["provider_request_shape"]["image"][  # type: ignore[index]
+        "configured_image_ref_fetchable_by_provider"
+    ] is True
     assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
         "worker_manifest_local_path_ready"
     ] is True
@@ -5857,6 +6143,12 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     )
     assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
         "manifest_uri_fetchable_by_provider"
+    ] is True
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "capture_root_bundle_uri"
+    ] == "r2://blueprint-artifacts/jobs/job-live-provider-versioned-image-ref/capture-root.zip"
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "capture_root_bundle_uri_fetchable_by_provider"
     ] is True
     assert provider_launch["provider_request_shape"]["runtime_preflight"][  # type: ignore[index]
         "vulkan_required"
@@ -5868,6 +6160,116 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert cost_ledger["status"] == "ready_for_explicit_provider_launcher"
     assert cost_ledger["gpu_time"]["estimated_gpu_seconds"] == 120  # type: ignore[index]
     assert cost_ledger["gpu_time"]["actual_gpu_seconds"] is None  # type: ignore[index]
+
+
+def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_cpu_preflight_ready_scene_asset(capture_root)
+    request = _full_job_request(capture_root)
+    request["execution_request"] = _webapp_execution_request()
+    request["budget"] = {"budget_usd": 10, "timeout_seconds": 120}
+    request_path = tmp_path / "webapp-job-request.json"
+    _write_json(request_path, request)
+
+    result = prepare_robot_eval_provider_inputs(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-provider-input-setup",
+        artifact_root_uri="r2://blueprint-artifacts/jobs/job-provider-input-setup",
+        simulator="mujoco",
+        provisioner="runpod",
+        image_ref="registry.example/blueprint/mujoco-eval-worker:2026-06-12",
+        output_dir=tmp_path / "provider_inputs",
+        upload=False,
+        allow_gpu_provisioning=True,
+        allow_simulator_execution=False,
+        timeout_seconds=600,
+        budget_usd=10,
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-provider-input-setup"
+    worker_plan = _read_json(job_dir / "worker_launch_plan.json")
+    worker_manifest = _read_json(job_dir / "worker_manifest.json")
+    provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+
+    assert result["status"] == "ready_for_provider_launcher_inputs"
+    assert result["blockers"] == []
+    assert result["bundle"]["raw_media_excluded_by_default"] is True  # type: ignore[index]
+    assert Path(result["bundle"]["path"]).is_file()  # type: ignore[index]
+    assert result["capture_root_bundle_uri"] == (
+        "r2://blueprint-artifacts/jobs/job-provider-input-setup/capture-root.zip"
+    )
+    assert result["worker_manifest_uri"] == (
+        "r2://blueprint-artifacts/jobs/job-provider-input-setup/worker_manifest.json"
+    )
+    assert result["artifact_output_uri"] == (
+        "r2://blueprint-artifacts/jobs/job-provider-input-setup/artifacts"
+    )
+    assert worker_plan["input_bundle"]["capture_root_bundle_uri"] == result[  # type: ignore[index]
+        "capture_root_bundle_uri"
+    ]
+    assert worker_manifest["capture_root_bundle_uri"] == result["capture_root_bundle_uri"]
+    assert worker_manifest["runtime_preflight_command"] == (
+        "python -m blueprint_pipeline.mujoco_worker_runtime_preflight --smoke-steps 2"
+    )
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "capture_root_bundle_uri_fetchable_by_provider"
+    ] is True
+    assert (tmp_path / "provider_inputs" / "provider_input_env.sh").is_file()
+    assert (tmp_path / "provider_inputs" / "provider_input_setup_manifest.json").is_file()
+    publish_script = tmp_path / "provider_inputs" / "provider_publish_resolution.sh"
+    assert publish_script.is_file()
+    publish_text = publish_script.read_text(encoding="utf-8")
+    assert "docker push" in publish_text
+    assert "aws s3 cp" in publish_text
+    assert "RUNPOD_API_KEY" not in publish_text
+
+
+def test_provider_input_upload_failure_is_recorded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "capture-root.zip"
+    source.write_text("zip-bytes", encoding="utf-8")
+
+    def _fail_upload(*args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("billing disabled")
+
+    monkeypatch.setattr(provider_input_setup, "_upload_file_to_gs", _fail_upload)
+
+    result = provider_input_setup.upload_file(
+        source,
+        "gs://blueprint-artifacts/jobs/job-1/capture-root.zip",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["storage_scheme"] == "gs"
+    assert result["blockers"] == ["upload_failed:RuntimeError"]
+    assert "billing disabled" in str(result["error"])
+
+
+def test_provider_input_upload_failure_classifies_disabled_gcs_billing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "capture-root.zip"
+    source.write_text("zip-bytes", encoding="utf-8")
+
+    def _fail_upload(*args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("The billing account for the owning project is disabled in state absent")
+
+    monkeypatch.setattr(provider_input_setup, "_upload_file_to_gs", _fail_upload)
+
+    result = provider_input_setup.upload_file(
+        source,
+        "gs://blueprint-artifacts/jobs/job-1/capture-root.zip",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["upload_failed:gs_billing_account_disabled"]
 
 
 def test_robot_eval_worker_runs_local_manifest_and_copies_artifacts(tmp_path: Path) -> None:
@@ -5918,6 +6320,145 @@ def test_robot_eval_worker_runs_local_manifest_and_copies_artifacts(tmp_path: Pa
     assert (artifact_output_dir / "worker_launch_plan.json").is_file()
     assert (artifact_output_dir / "gpu_provider_launch_request.json").is_file()
     assert (artifact_output_dir / "gpu_cost_control_ledger.json").is_file()
+
+
+def test_robot_eval_worker_runtime_manifest_propagates_command_simulator_proof(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    simulator_script = tmp_path / "write_simulator_output.py"
+    simulator_script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "out = os.environ['BLUEPRINT_SIMULATOR_OUTPUT']",
+                "payload = {",
+                "  'attempts': [{",
+                "    'attempt_id': 'worker-command-attempt-1',",
+                "    'task_id': 'place_return_in_bin',",
+                "    'scenario_id': 'scenario_place_return_in_bin_mobile',",
+                "    'policy_id': 'policy-command',",
+                "    'status': 'completed',",
+                "    'success': True,",
+                "    'metrics': {'cycle_time_seconds': 9.0, 'intervention_count': 0},",
+                "    'actions': [{'type': 'move_base', 'target': 'bin_approach'}]",
+                "  }]",
+                "}",
+                "open(out, 'w', encoding='utf-8').write(json.dumps(payload))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    preflight_script = tmp_path / "runtime_preflight.py"
+    preflight_script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "detail = os.environ.get('BLUEPRINT_RUNTIME_PREFLIGHT_DETAIL_OUTPUT')",
+                "if detail:",
+                "    open(detail, 'w', encoding='utf-8').write(json.dumps({'status': 'passed', 'blockers': []}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    request = _full_job_request(capture_root)
+    request["job_id"] = "worker-command-sim-job"
+    request["simulator_preference"] = "pybullet"
+    manifest_path = tmp_path / "worker_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": "robot_eval_worker_manifest.v1",
+            "capture_root": str(capture_root),
+            "job_id": "worker-command-sim-job",
+            "provisioner": "fixture_local",
+            "simulator": "pybullet",
+            "allowed_simulators": ["pybullet"],
+            "simulator_commands": {"pybullet": f"{sys.executable} {simulator_script}"},
+            "runtime_preflight_command": f"{sys.executable} {preflight_script}",
+            "job_request": request,
+        },
+    )
+
+    runtime = run_robot_eval_worker(
+        manifest_uri=str(manifest_path),
+        work_dir=tmp_path / "worker",
+        allow_simulator_execution=True,
+    )
+
+    worker_manifest = _read_json(tmp_path / "worker" / "worker_runtime_manifest.json")
+
+    assert runtime["status"] == "completed"
+    assert worker_manifest["job_status"] == "simulator_command_completed"
+    assert worker_manifest["simulator_execution_proven"] is True
+    assert worker_manifest["robot_readiness_proven"] is False
+    assert worker_manifest["public_claim_upgrade_allowed"] is False
+
+
+def test_robot_eval_worker_downloads_capture_root_bundle_before_running(
+    tmp_path: Path,
+) -> None:
+    source_capture_root = _build_capture_root(tmp_path / "source")
+    _write_robot_eval_cards(source_capture_root)
+    _write_fixture_attempts(source_capture_root, success=True)
+    request = _full_job_request(source_capture_root)
+    request["job_id"] = "worker-capture-bundle-job"
+    bundle_path = tmp_path / "capture-root.zip"
+    parts = source_capture_root.parts
+    archive_root = Path(*parts[: parts.index("scenes") - 1])
+    with zipfile.ZipFile(bundle_path, "w") as archive:
+        for source in sorted(source_capture_root.rglob("*")):
+            if source.is_file():
+                archive.write(source, source.relative_to(archive_root))
+    manifest_path = tmp_path / "worker_manifest.json"
+    artifact_output_dir = tmp_path / "worker_artifacts"
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": "robot_eval_worker_manifest.v1",
+            "capture_root_bundle_uri": str(bundle_path),
+            "job_id": "worker-capture-bundle-job",
+            "provisioner": "fixture_local",
+            "simulator": "fixture",
+            "job_request": request,
+            "artifact_output_uri": str(artifact_output_dir),
+        },
+    )
+
+    runtime = run_robot_eval_worker(
+        manifest_uri=str(manifest_path),
+        work_dir=tmp_path / "worker",
+    )
+
+    extracted_capture_root = (
+        tmp_path
+        / "worker"
+        / "capture_root_bundle"
+        / "local-blueprint"
+        / "scenes"
+        / "scene-1"
+        / "captures"
+        / "capture-1"
+    )
+    job_dir = (
+        extracted_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "worker-capture-bundle-job"
+    )
+    bundle_manifest = _read_json(job_dir / "capture_root_bundle_manifest.json")
+
+    assert runtime["status"] == "completed"
+    assert runtime["capture_root"] == str(extracted_capture_root)
+    assert runtime["capture_root_bundle_uri"] == str(bundle_path)
+    assert runtime["capture_root_bundle"]["status"] == "extracted"  # type: ignore[index]
+    assert bundle_manifest["capture_root"] == str(extracted_capture_root)
+    assert (job_dir / "job_run_manifest.json").is_file()
+    assert (artifact_output_dir / "capture_root_bundle_manifest.json").is_file()
+    assert (artifact_output_dir / "worker_runtime_manifest.json").is_file()
 
 
 def test_robot_eval_worker_blocks_without_capture_root(tmp_path: Path) -> None:
@@ -6126,6 +6667,7 @@ def test_robot_eval_worker_blocks_simulator_execution_without_runtime_preflight_
     runtime = run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
         allow_simulator_execution=True,
     )
 
@@ -6146,6 +6688,115 @@ def test_robot_eval_worker_blocks_simulator_execution_without_runtime_preflight_
     ).exists()
 
 
+def test_robot_eval_worker_signed_put_runs_on_missing_runtime_preflight_command(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    manifest_path = tmp_path / "worker_manifest.json"
+    signed_capture_bundle_url = (
+        "https://storage.example/capture-root.zip?"
+        "x-goog-signature=capture-secret-signature&x-goog-date=20260612"
+    )
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": "robot_eval_worker_manifest.v1",
+            "capture_root": str(capture_root),
+            "capture_root_bundle_uri": signed_capture_bundle_url,
+            "job_id": "worker-signed-put-runtime-preflight-blocked",
+            "provisioner": "runpod",
+            "simulator": "mujoco",
+            "artifact_output_uri_required": False,
+            "runtime_preflight_contract": {
+                "required_before_scene_load": True,
+                "worker_blocks_scene_load_on_failed_preflight": True,
+                "run_before": "scene_load_and_policy_execution",
+                "result_artifact": "worker_runtime_preflight.json",
+                "runtime_preflight_is_not_simulator_proof": True,
+                "nvidia_smi_required": False,
+                "egl_required_when_rendering": True,
+                "blank_scene_or_model_load_required": True,
+                "test_frame_render_required": False,
+                "required_checks": [
+                    "python_import_mujoco",
+                    "headless_context_selection",
+                    "egl_context_when_rendering",
+                    "blank_model_or_scene_load",
+                    "short_rollout_smoke",
+                ],
+            },
+            "job_request": {
+                "schema_version": "robot_eval_job_request.v1",
+                "job_id": "worker-signed-put-runtime-preflight-blocked",
+            },
+        },
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        (
+            "https://storage.example/signed-runtime-manifest?"
+            "x-goog-signature=runtime-put-secret-signature&x-goog-date=20260612"
+        ),
+    )
+    uploads: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return b""
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        uploads.append(
+            {
+                "url": request.full_url,
+                "method": request.get_method(),
+                "body": json.loads(request.data.decode("utf-8")),
+                "headers": dict(request.header_items()),
+            }
+        )
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    runtime = run_robot_eval_worker(
+        manifest_uri=str(manifest_path),
+        work_dir=tmp_path / "worker",
+        capture_root=capture_root,
+        allow_simulator_execution=True,
+    )
+
+    assert runtime["status"] == "blocked"
+    assert runtime["blockers"] == ["worker_runtime_preflight_blocked"]
+    assert runtime["runtime_preflight_blockers"] == ["missing_runtime_preflight_command"]
+    assert len(uploads) >= 2
+    assert uploads[0]["method"] == "PUT"
+    assert uploads[0]["url"] == (
+        "https://storage.example/signed-runtime-manifest?"
+        "x-goog-signature=runtime-put-secret-signature&x-goog-date=20260612"
+    )
+    assert "capture-secret-signature" not in json.dumps(uploads[-1]["body"])
+    assert "runtime-put-secret-signature" not in json.dumps(uploads[-1]["body"])
+    assert uploads[-1]["body"]["signed_put_runtime_manifest_upload"]["status"] == "completed"  # type: ignore[index]
+    persisted = _read_json(tmp_path / "worker" / "worker_runtime_manifest.json")
+    persisted_text = json.dumps(persisted)
+    assert "capture-secret-signature" not in persisted_text
+    assert "runtime-put-secret-signature" not in persisted_text
+    assert persisted["capture_root_bundle_uri"] == (
+        "https://storage.example/capture-root.zip?"
+        "x-goog-signature=<redacted:signed-url-signature>&x-goog-date=20260612"
+    )
+    assert persisted["signed_put_runtime_manifest_upload"]["status"] == "completed"
+    assert persisted["signed_put_runtime_manifest_upload"]["signed_url_stored"] is False
+
+
 def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
     tmp_path: Path,
     monkeypatch,
@@ -6157,6 +6808,11 @@ def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
     manifest_path = tmp_path / "worker_manifest.json"
     artifact_output_dir = tmp_path / "worker_artifacts"
     monkeypatch.setenv("RUNPOD_API_KEY", "runtime-preflight-secret-value")
+    monkeypatch.setenv("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+        "registry.example/blueprint/isaac-eval-worker:2026-06-12",
+    )
     _write_json(
         manifest_path,
         {
@@ -6165,6 +6821,7 @@ def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
             "job_id": "worker-runtime-preflight-logs",
             "provisioner": "runpod",
             "simulator": "isaac_sim",
+            "robot": "unitree_g1",
             "secret_env_var_names": ["RUNPOD_API_KEY"],
             "artifact_output_uri": str(artifact_output_dir),
             "runtime_preflight_contract": {
@@ -6206,6 +6863,7 @@ def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
     )
     preflight = _read_json(job_dir / "worker_runtime_preflight.json")
     assert runtime["status"] == "blocked"
+    assert runtime["robot"] == "unitree_g1"
     assert runtime["runtime_preflight_status"] == "passed"
     assert preflight["status"] == "passed"
     assert preflight["capture_root"] == str(capture_root)
@@ -6236,6 +6894,16 @@ def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
     assert (artifact_output_dir / "worker_runtime_manifest.json").is_file()
     refreshed_audit = _read_json(job_dir / "startup_architecture_audit.json")
     refreshed_run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    cost_ledger = _read_json(job_dir / "gpu_cost_control_ledger.json")
+    assert runtime["startup_architecture_blockers"] == refreshed_audit["blockers"]
+    assert runtime["provider_runtime_accounting"]["status"] == "recorded"
+    assert cost_ledger["status"] == "provider_runtime_observed"
+    assert cost_ledger["live_provider_calls_performed"] is True
+    assert cost_ledger["gpu_time"]["actual_gpu_time_record_present"] is True  # type: ignore[index]
+    assert cost_ledger["gpu_time"]["actual_gpu_time_source"] == (  # type: ignore[index]
+        "worker_runtime_wall_clock_seconds"
+    )
+    assert "cost:gpu_time_recorded_or_blocked" not in refreshed_audit["blockers"]
     redaction_check = next(
         check
         for check in refreshed_audit["checks"]

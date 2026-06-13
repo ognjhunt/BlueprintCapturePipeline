@@ -5,22 +5,42 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
+import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
+from urllib.parse import urlparse
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 
 
 RUNPOD_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "runpod_provider_adapter_result.v1"
 RUNPOD_API_KEY_ENV = "RUNPOD_API_KEY"
+RUNPOD_API_KEY_FILE_ENV = "RUNPOD_API_KEY_FILE"
+RUNPOD_CONFIG_FILE_ENV = "RUNPOD_CONFIG_FILE"
+DEFAULT_RUNPOD_CONFIG_FILE = "~/.runpod/config.toml"
 RUNPOD_ENDPOINT_ID_ENV = "BLUEPRINT_RUNPOD_ENDPOINT_ID"
 RUNPOD_API_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_API_CALLS"
 RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
+RUNPOD_REST_API_BASE = "https://rest.runpod.io/v1"
 RUNPOD_SERVERLESS_API_BASE = "https://api.runpod.ai/v2"
 PROVIDER_LAUNCH_REQUEST_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST"
 PROVIDER_ADAPTER_OUTPUT_ENV = "BLUEPRINT_GPU_PROVIDER_ADAPTER_OUTPUT"
+GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
+WORKER_IMAGE_REF_ENV_BY_SIMULATOR = {
+    "isaac_sim": "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+    "isaac_lab_arena": "BLUEPRINT_ISAAC_ARENA_EVAL_WORKER_IMAGE_REF",
+    "mujoco": "BLUEPRINT_MUJOCO_EVAL_WORKER_IMAGE_REF",
+    "pybullet": "BLUEPRINT_PYBULLET_EVAL_WORKER_IMAGE_REF",
+    "newton": "BLUEPRINT_NEWTON_EVAL_WORKER_IMAGE_REF",
+}
+SIGNED_URL_QUERY_PATTERN = re.compile(
+    r"([?&]x-goog-signature=)[^\s\"'&]+",
+    flags=re.IGNORECASE,
+)
 
 
 def _string(value: Any) -> str:
@@ -66,6 +86,64 @@ def _env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
+    env_value = _string(os.getenv(RUNPOD_API_KEY_ENV))
+    if env_value:
+        return env_value, {
+            "api_key_configured": True,
+            "api_key_source": RUNPOD_API_KEY_ENV,
+            "api_key_file_configured": False,
+        }
+    key_file = _string(os.getenv(RUNPOD_API_KEY_FILE_ENV))
+    if key_file:
+        try:
+            key = Path(key_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            return "", {
+                "api_key_configured": False,
+                "api_key_source": RUNPOD_API_KEY_FILE_ENV,
+                "api_key_file_configured": True,
+                "api_key_file_read_error": type(exc).__name__,
+            }
+        return key, {
+            "api_key_configured": bool(key),
+            "api_key_source": RUNPOD_API_KEY_FILE_ENV if key else None,
+            "api_key_file_configured": True,
+        }
+
+    config_file = Path(
+        _string(os.getenv(RUNPOD_CONFIG_FILE_ENV)) or DEFAULT_RUNPOD_CONFIG_FILE
+    ).expanduser()
+    if not config_file.is_file():
+        return "", {
+            "api_key_configured": False,
+            "api_key_source": None,
+            "api_key_file_configured": False,
+            "api_key_config_file": str(config_file),
+            "api_key_config_file_configured": False,
+        }
+    try:
+        payload = tomllib.loads(config_file.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return "", {
+            "api_key_configured": False,
+            "api_key_source": RUNPOD_CONFIG_FILE_ENV,
+            "api_key_file_configured": False,
+            "api_key_config_file": str(config_file),
+            "api_key_config_file_configured": True,
+            "api_key_config_file_read_error": type(exc).__name__,
+        }
+    default_section = _mapping(payload.get("default"))
+    key = _string(default_section.get("api_key") or payload.get("api_key"))
+    return key, {
+        "api_key_configured": bool(key),
+        "api_key_source": RUNPOD_CONFIG_FILE_ENV if key else None,
+        "api_key_file_configured": False,
+        "api_key_config_file": str(config_file),
+        "api_key_config_file_configured": True,
+    }
+
+
 def _provider_shape(request: Mapping[str, Any]) -> Dict[str, Any]:
     return _mapping(request.get("provider_request_shape"))
 
@@ -86,6 +164,10 @@ def _gpu(request: Mapping[str, Any]) -> Dict[str, Any]:
     return _mapping(_provider_shape(request).get("gpu"))
 
 
+def _cache(request: Mapping[str, Any]) -> Dict[str, Any]:
+    return _mapping(_provider_shape(request).get("cache"))
+
+
 def _environment(request: Mapping[str, Any]) -> Dict[str, Any]:
     return _mapping(_provider_shape(request).get("environment"))
 
@@ -97,6 +179,7 @@ def _timeout_ms(seconds: Any, default_seconds: int = 600) -> int:
 
 def _cost_control_policy(request: Mapping[str, Any]) -> Dict[str, Any]:
     limits = _limits(request)
+    warm_pool = _mapping(limits.get("warm_pool_policy"))
     hard_timeout_seconds = int(_number(limits.get("hard_timeout_seconds")) or 600)
     idle_timeout_seconds = int(_number(limits.get("idle_timeout_seconds")) or 60)
     watchdog_ttl_seconds = int(
@@ -109,6 +192,16 @@ def _cost_control_policy(request: Mapping[str, Any]) -> Dict[str, Any]:
         "idle_timeout_seconds": idle_timeout_seconds,
         "external_watchdog_ttl_seconds": watchdog_ttl_seconds,
         "max_active_workers": max_active_workers,
+        "warm_pool_policy": {
+            "decision": warm_pool.get("decision") or "scale_to_zero_on_demand",
+            "active_worker_target": int(_number(limits.get("active_worker_target")) or 0),
+            "warm_worker_recommended": bool(warm_pool.get("warm_worker_recommended")),
+            "scale_to_zero_default": bool(
+                limits.get("scale_to_zero_default") is not False
+                and not warm_pool.get("warm_worker_recommended")
+            ),
+            "decision_reasons": _string_list(warm_pool.get("decision_reasons")),
+        },
         "serverless_endpoint_controls": {
             "per_request_policy_fields": ["executionTimeout", "ttl", "lowPriority"],
             "endpoint_level_settings_required": [
@@ -146,8 +239,36 @@ def _cost_control_policy(request: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _redact_signed_url_text(text: str) -> str:
+    if "x-goog-signature=" not in text.lower():
+        return text
+    return SIGNED_URL_QUERY_PATTERN.sub(r"\1<redacted:signed-url-signature>", text)
+
+
 def _redact_text(text: str, api_key: str) -> str:
-    return text.replace(api_key, "<redacted:RUNPOD_API_KEY>") if api_key else text
+    redacted = text.replace(api_key, "<redacted:RUNPOD_API_KEY>") if api_key else text
+    return _redact_signed_url_text(redacted)
+
+
+def _redact_runtime_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if "x-goog-signature=" in value.lower():
+            return _redact_signed_url_text(value)
+        return value
+    if isinstance(value, list):
+        return [_redact_runtime_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_runtime_value(item) for item in value]
+    if isinstance(value, Mapping):
+        return {
+            str(key): "<redacted:signed-url>"
+            if str(key) == "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"
+            and isinstance(item, str)
+            and item
+            else _redact_runtime_value(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 def _request_summary(request: Mapping[str, Any]) -> Dict[str, Any]:
@@ -163,6 +284,10 @@ def _request_summary(request: Mapping[str, Any]) -> Dict[str, Any]:
         "worker_image_ref_present": bool(_string(image.get("configured_image_ref"))),
         "worker_image_ref_is_versioned": image.get("configured_image_ref_is_versioned")
         is True,
+        "worker_image_ref_fetchable_by_provider": image.get(
+            "configured_image_ref_fetchable_by_provider"
+        )
+        is not False,
         "manifest_uri_present": bool(_string(inputs.get("manifest_uri"))),
         "manifest_uri_fetchable_by_provider": inputs.get("manifest_uri_fetchable_by_provider")
         is True,
@@ -196,6 +321,7 @@ def _base_result(
         "provider_job_submitted": False,
         "secret_values_in_artifact": False,
         "raw_api_key_stored": False,
+        "signed_url_values_in_artifact": False,
         "simulator_execution_proven": False,
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
@@ -244,10 +370,19 @@ def _serverless_payload(
 def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
     inputs = _inputs(request)
     limits = _limits(request)
+    image_ref = _string(_image(request).get("configured_image_ref"))
+    runtime_preflight = _mapping(_provider_shape(request).get("runtime_preflight"))
+    simulator = (
+        _string(runtime_preflight.get("simulator"))
+        or _string(request.get("simulator"))
+        or _string(inputs.get("simulator"))
+    )
     env = {
         "BLUEPRINT_EVAL_MANIFEST_URI": _string(inputs.get("manifest_uri")),
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI": _string(inputs.get("capture_root_bundle_uri")),
         "BLUEPRINT_ARTIFACT_OUTPUT_URI": _string(inputs.get("artifact_output_uri")),
         "BLUEPRINT_ROBOT_EVAL_JOB_ID": _string(request.get("job_id")),
+        "BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME": "true",
         "BLUEPRINT_GPU_PROVIDER_HARD_TIMEOUT_SECONDS": str(
             int(_number(limits.get("hard_timeout_seconds")) or 600)
         ),
@@ -262,6 +397,29 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
             "all",
         ),
     }
+    signed_put_url = _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
+    if signed_put_url:
+        env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] = signed_put_url
+    if _env_truthy("BLUEPRINT_ALLOW_GPU_PROVISIONING"):
+        env["BLUEPRINT_ALLOW_GPU_PROVISIONING"] = "true"
+    if _env_truthy("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"):
+        env["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"] = "true"
+    if image_ref:
+        env[GENERIC_WORKER_IMAGE_REF_ENV] = image_ref
+        simulator_image_env = WORKER_IMAGE_REF_ENV_BY_SIMULATOR.get(simulator)
+        if simulator_image_env:
+            env[simulator_image_env] = image_ref
+    cache_paths = _mapping(_cache(request).get("paths"))
+    cache_env_by_key = {
+        "mujoco_assets": "BLUEPRINT_MUJOCO_ASSET_CACHE",
+        "policy_files": "BLUEPRINT_POLICY_CACHE",
+        "converted_scenes": "BLUEPRINT_CONVERTED_SCENE_CACHE",
+        "worker_deps": "BLUEPRINT_WORKER_DEPS_CACHE",
+    }
+    for cache_key, env_name in cache_env_by_key.items():
+        value = _string(cache_paths.get(cache_key))
+        if value:
+            env[env_name] = value
     return [{"key": key, "value": value} for key, value in env.items() if value]
 
 
@@ -274,38 +432,51 @@ def _pod_payload(
     image = _image(request)
     gpu = _gpu(request)
     limits = _limits(request)
+    priority = _string_list(
+        gpu.get("provider_gpu_priority")
+        or gpu.get("priority_fallback_list")
+        or gpu.get("gpu_type_priority")
+    )
     image_ref = _string(image.get("configured_image_ref"))
     selected_gpu = (
         _string(gpu_type_id)
         or _string(gpu.get("preferred_gpu_type_id"))
+        or (priority[0] if priority else "")
         or _string(gpu.get("preferred_gpu_class"))
         or "NVIDIA RTX A6000"
     )
     name = _string(pod_name) or f"blueprint-robot-eval-{_string(request.get('job_id'))}"
+    env = {item["key"]: item["value"] for item in _pod_env(request)}
+    command = _string(_provider_shape(request).get("command"))
+    start_cmd = []
+    if command:
+        parts = shlex.split(command)
+        start_cmd = parts[1:] if parts and parts[0] == "blueprint-run-robot-eval-worker" else parts
+        if start_cmd == ["--manifest", "${BLUEPRINT_EVAL_MANIFEST_URI}"]:
+            start_cmd = []
     input_payload = {
-        "cloudType": "ALL",
+        "cloudType": _string(os.getenv("BLUEPRINT_RUNPOD_CLOUD_TYPE")) or "SECURE",
+        "computeType": "GPU",
         "gpuCount": int(_number(gpu.get("gpu_count")) or 1),
+        "gpuTypeIds": [selected_gpu],
+        "gpuTypePriority": "availability",
+        "blueprintGpuTypePriority": priority or [selected_gpu],
         "volumeInGb": int(_number(gpu.get("volume_in_gb")) or 40),
         "containerDiskInGb": int(_number(gpu.get("container_disk_in_gb")) or 60),
-        "minVcpuCount": int(_number(gpu.get("min_vcpu_count")) or 4),
-        "minMemoryInGb": int(_number(gpu.get("min_memory_in_gb")) or 16),
-        "gpuTypeId": selected_gpu,
+        "minVCPUPerGPU": int(_number(gpu.get("min_vcpu_count")) or 4),
+        "minRAMPerGPU": int(_number(gpu.get("min_memory_in_gb")) or 16),
         "name": name,
         "imageName": image_ref,
-        "dockerArgs": _string(_provider_shape(request).get("command")),
-        "ports": "",
+        "dockerStartCmd": start_cmd,
+        "ports": [],
         "volumeMountPath": "/workspace",
-        "env": _pod_env(request),
+        "env": env,
     }
     return {
-        "url": RUNPOD_GRAPHQL_URL,
+        "url": f"{RUNPOD_REST_API_BASE}/pods",
         "method": "POST",
-        "query": (
-            "mutation BlueprintCreatePod($input: PodFindAndDeployOnDemandInput) { "
-            "podFindAndDeployOnDemand(input: $input) { id imageName machineId machine { podHostId } } "
-            "}"
-        ),
-        "variables": {"input": input_payload},
+        "body": input_payload,
+        "api_surface": "rest_pods",
         "idle_shutdown_expected_seconds": limits.get("idle_timeout_seconds"),
     }
 
@@ -328,18 +499,34 @@ def _request_blockers(
         blockers.append("provider_launch_request_not_runpod")
     if request.get("status") != "request_manifest_ready":
         blockers.append("provider_launch_request_not_ready")
+    provider_input_setup = request.get("provider_input_setup")
+    if isinstance(provider_input_setup, Mapping):
+        setup_blockers = _string_list(provider_input_setup.get("blockers"))
+        if setup_blockers:
+            blockers.append("provider_input_setup_blocked")
+            blockers.extend(setup_blockers)
     inputs = _inputs(request)
     image = _image(request)
+    artifact_output_uri = _string(inputs.get("artifact_output_uri"))
+    artifact_output_scheme = urlparse(artifact_output_uri).scheme or "local"
     if mode == "serverless-run" and not endpoint_id:
         blockers.append(f"missing_env_{RUNPOD_ENDPOINT_ID_ENV}")
     if mode == "on-demand-pod" and not _string(image.get("configured_image_ref")):
         blockers.append("missing_provider_worker_image_ref")
+    if _string(image.get("configured_image_ref")) and (
+        image.get("configured_image_ref_is_versioned") is not True
+    ):
+        blockers.append("prebuilt_worker_image_ref_not_versioned")
+    if image.get("configured_image_ref_fetchable_by_provider") is False:
+        blockers.append("prebuilt_worker_image_ref_not_provider_fetchable")
     if not _string(inputs.get("manifest_uri")):
         blockers.append("missing_provider_worker_manifest_uri")
     if inputs.get("manifest_uri_fetchable_by_provider") is not True:
         blockers.append("provider_worker_manifest_uri_not_fetchable")
-    if not _string(inputs.get("artifact_output_uri")):
+    if not artifact_output_uri:
         blockers.append("missing_provider_artifact_output_uri")
+    elif artifact_output_scheme not in {"gs", "s3", "r2", "file", "local"}:
+        blockers.append("provider_artifact_output_uri_not_writable")
     if not hard_timeout_seconds or hard_timeout_seconds <= 0:
         blockers.append("missing_provider_hard_timeout_seconds")
     if not idle_timeout_seconds or idle_timeout_seconds <= 0:
@@ -362,7 +549,9 @@ def _api_gate_blockers(*, allow_runpod_api_call: bool, api_key: str) -> list[str
     if not allow_runpod_api_call:
         blockers.append("missing_cli_allow_runpod_api_call")
     if not api_key:
-        blockers.append(f"missing_env_{RUNPOD_API_KEY_ENV}")
+        blockers.append(
+            f"missing_env_{RUNPOD_API_KEY_ENV}_or_{RUNPOD_API_KEY_FILE_ENV}_or_{RUNPOD_CONFIG_FILE_ENV}"
+        )
     return blockers
 
 
@@ -432,7 +621,8 @@ def run_runpod_provider_adapter(
         write_json(resolved_output, result)
         return result
 
-    api_key = _string(os.getenv(RUNPOD_API_KEY_ENV))
+    api_key, api_key_meta = _read_runpod_api_key()
+    result.update(api_key_meta)
     selected_endpoint_id = _string(endpoint_id) or _string(os.getenv(RUNPOD_ENDPOINT_ID_ENV))
     if mode == "auto":
         mode = "serverless-run" if selected_endpoint_id else "on-demand-pod"
@@ -466,7 +656,7 @@ def run_runpod_provider_adapter(
         request_blockers.append(f"unsupported_runpod_adapter_mode:{mode}")
         runpod_request = {}
 
-    result["runpod_request"] = runpod_request
+    result["runpod_request"] = _redact_runtime_value(runpod_request)
     result["request_blockers"] = request_blockers
     if request_blockers:
         result.update(
@@ -500,7 +690,7 @@ def run_runpod_provider_adapter(
                 "status": "blocked",
                 "reason": "runpod_api_gate_blocked",
                 "blockers": gate_blockers,
-                "api_key_configured": bool(api_key),
+                **api_key_meta,
             }
         )
         write_json(resolved_output, result)
@@ -516,15 +706,13 @@ def run_runpod_provider_adapter(
             )
         else:
             status_code, response = _http_json(
-                url=RUNPOD_GRAPHQL_URL,
-                payload={
-                    "query": runpod_request["query"],
-                    "variables": runpod_request["variables"],
-                },
+                url=str(runpod_request["url"]),
+                payload=dict(runpod_request["body"]),
                 api_key=api_key,
                 timeout_seconds=timeout_seconds,
             )
         response_text = _redact_text(json.dumps(response, sort_keys=True), api_key)
+        redacted_response = _redact_runtime_value(json.loads(response_text))
         result.update(
             {
                 "status": "submitted",
@@ -534,7 +722,7 @@ def run_runpod_provider_adapter(
                 "runpod_side_effects_may_have_occurred": True,
                 "provider_job_submitted": True,
                 "http_status_code": status_code,
-                "runpod_response": json.loads(response_text),
+                "runpod_response": redacted_response,
             }
         )
     except urllib.error.HTTPError as exc:

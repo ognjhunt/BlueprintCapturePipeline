@@ -505,6 +505,11 @@ def test_provider_preview_qa_uses_webapp_route_proof_ids_without_live_claim(
 
     assert result["status"] == "blocked"
     assert result["webapp_sync_projection"]["sync_succeeded"] is False
+    assert result["webapp_sync_projection"]["upstream_links_verified"] is True
+    assert (
+        result["webapp_sync_projection"]["upstream_links_verification_source"]
+        == "local_webapp_route_forwarding_proof"
+    )
     assert result["webapp_sync_projection"]["upstream_ids"] == {
         "site_submission_id": "site-submission-route-proof-1",
         "request_id": "robot-eval-route-proof-1",
@@ -518,6 +523,8 @@ def test_provider_preview_qa_uses_webapp_route_proof_ids_without_live_claim(
     assert result["webapp_route_forwarding_projection"][
         "production_live_webapp_forwarding_proven"
     ] is False
+    assert "webapp_sync_upstream_links_not_verified" not in result["blockers"]
+    assert "production_live_webapp_forwarding_not_proven" in result["blockers"]
     assert "missing_webapp_site_submission_id" not in result["blockers"]
     assert "missing_webapp_request_id" not in result["blockers"]
     assert "missing_webapp_buyer_request_id" not in result["blockers"]
@@ -525,4 +532,3 @@ def test_provider_preview_qa_uses_webapp_route_proof_ids_without_live_claim(
     assert "webapp_sync_failed" not in result["blockers"]
     assert "webapp_sync_not_succeeded" not in result["blockers"]
     assert "production_live_webapp_forwarding_not_proven" in result["blockers"]
-    assert "webapp_sync_upstream_links_not_verified" in result["blockers"]
