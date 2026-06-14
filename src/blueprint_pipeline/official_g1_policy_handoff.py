@@ -1227,6 +1227,10 @@ def build_official_g1_policy_handoff(
     base_positions: list[list[float]] = []
     finite_state = True
     finite_actions = True
+    initial_base_position_xy: np.ndarray | None = None
+    episode_termination_reason = "timeout"
+    episode_termination_step: int | None = None
+    episode_termination_time_s: float | None = None
     try:
         with torch.no_grad():
             for step in range(total_steps):
@@ -1265,6 +1269,26 @@ def build_official_g1_policy_handoff(
                 )
                 contacts, foot_contact_states = _contact_records(model, data, mujoco)
                 base_position = _as_float_list(data.qpos[0:3])
+                if initial_base_position_xy is None:
+                    initial_base_position_xy = np.asarray(base_position[:2], dtype=float)
+                base_displacement_xy = float(
+                    np.linalg.norm(
+                        np.asarray(base_position[:2], dtype=float) - initial_base_position_xy
+                    )
+                )
+                scene_contact_count = sum(
+                    1 for contact in contacts if contact.get("scene_collision_contact") is True
+                )
+                step_termination_reason: str | None = None
+                if scene_contact_count > 0:
+                    step_termination_reason = "scene_collision"
+                elif float(base_position[2]) < float(fall_height_threshold_m):
+                    step_termination_reason = "fall_height_below_threshold"
+                elif (
+                    target_displacement_m is not None
+                    and base_displacement_xy >= float(target_displacement_m)
+                ):
+                    step_termination_reason = "target_displacement_reached"
                 base_positions.append(base_position)
                 joint_positions = {
                     item["name"]: float(data.qpos[item["qpos_addr"]]) for item in joint_addresses
@@ -1310,6 +1334,13 @@ def build_official_g1_policy_handoff(
                     "command_xyz": _as_float_list(cmd),
                     "scenario_context": scenario_context["selected_run"],
                     "rendered_frame": step in sample_indices,
+                    "base_displacement_xy_m": base_displacement_xy,
+                    "scene_collision_contact_count": scene_contact_count,
+                    "fall_height_threshold_m": float(fall_height_threshold_m),
+                    "target_displacement_m": float(target_displacement_m)
+                    if target_displacement_m is not None
+                    else None,
+                    "episode_termination_candidate": step_termination_reason,
                 }
                 rows.append(row)
                 if policy_update_applied:
