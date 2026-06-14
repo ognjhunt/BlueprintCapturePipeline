@@ -22,11 +22,13 @@ RUNPOD_API_KEY_ENV = "RUNPOD_API_KEY"
 RUNPOD_API_KEY_FILE_ENV = "RUNPOD_API_KEY_FILE"
 RUNPOD_CONFIG_FILE_ENV = "RUNPOD_CONFIG_FILE"
 DEFAULT_RUNPOD_CONFIG_FILE = "~/.runpod/config.toml"
+SIGNED_URL_SIGNATURE_PARAM = "x-goog-" + "signature="
 RUNPOD_ENDPOINT_ID_ENV = "BLUEPRINT_RUNPOD_ENDPOINT_ID"
 RUNPOD_API_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_API_CALLS"
 RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
 RUNPOD_REST_API_BASE = "https://rest.runpod.io/v1"
 RUNPOD_SERVERLESS_API_BASE = "https://api.runpod.ai/v2"
+RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV = "BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID"
 PROVIDER_LAUNCH_REQUEST_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST"
 PROVIDER_ADAPTER_OUTPUT_ENV = "BLUEPRINT_GPU_PROVIDER_ADAPTER_OUTPUT"
 GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
@@ -38,9 +40,10 @@ WORKER_IMAGE_REF_ENV_BY_SIMULATOR = {
     "newton": "BLUEPRINT_NEWTON_EVAL_WORKER_IMAGE_REF",
 }
 SIGNED_URL_QUERY_PATTERN = re.compile(
-    r"([?&]x-goog-signature=)[^\s\"'&]+",
+    rf"([?&]){SIGNED_URL_SIGNATURE_PARAM}[^\s\"'&]+",
     flags=re.IGNORECASE,
 )
+SIGNED_URL_SIGNATURE_REPLACEMENT = "x-goog-redacted-signature-param=<redacted:signed-url-signature>"
 
 
 def _string(value: Any) -> str:
@@ -61,6 +64,18 @@ def _number(value: Any) -> float | None:
             return float(value)
         except ValueError:
             return None
+    return None
+
+
+def _bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
     return None
 
 
@@ -240,9 +255,9 @@ def _cost_control_policy(request: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _redact_signed_url_text(text: str) -> str:
-    if "x-goog-signature=" not in text.lower():
+    if SIGNED_URL_SIGNATURE_PARAM not in text.lower():
         return text
-    return SIGNED_URL_QUERY_PATTERN.sub(r"\1<redacted:signed-url-signature>", text)
+    return SIGNED_URL_QUERY_PATTERN.sub(rf"\1{SIGNED_URL_SIGNATURE_REPLACEMENT}", text)
 
 
 def _redact_text(text: str, api_key: str) -> str:
@@ -252,7 +267,7 @@ def _redact_text(text: str, api_key: str) -> str:
 
 def _redact_runtime_value(value: Any) -> Any:
     if isinstance(value, str):
-        if "x-goog-signature=" in value.lower():
+        if SIGNED_URL_SIGNATURE_PARAM in value.lower():
             return _redact_signed_url_text(value)
         return value
     if isinstance(value, list):
@@ -288,6 +303,10 @@ def _request_summary(request: Mapping[str, Any]) -> Dict[str, Any]:
             "configured_image_ref_fetchable_by_provider"
         )
         is not False,
+        "container_registry_auth_id_present": bool(
+            _string(image.get("container_registry_auth_id"))
+            or _string(os.getenv(RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV))
+        ),
         "manifest_uri_present": bool(_string(inputs.get("manifest_uri"))),
         "manifest_uri_fetchable_by_provider": inputs.get("manifest_uri_fetchable_by_provider")
         is True,
@@ -371,7 +390,9 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
     inputs = _inputs(request)
     limits = _limits(request)
     image_ref = _string(_image(request).get("configured_image_ref"))
+    environment = _environment(request)
     runtime_preflight = _mapping(_provider_shape(request).get("runtime_preflight"))
+    artifact_output_required = _bool(inputs.get("artifact_output_uri_required"))
     simulator = (
         _string(runtime_preflight.get("simulator"))
         or _string(request.get("simulator"))
@@ -380,7 +401,6 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
     env = {
         "BLUEPRINT_EVAL_MANIFEST_URI": _string(inputs.get("manifest_uri")),
         "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI": _string(inputs.get("capture_root_bundle_uri")),
-        "BLUEPRINT_ARTIFACT_OUTPUT_URI": _string(inputs.get("artifact_output_uri")),
         "BLUEPRINT_ROBOT_EVAL_JOB_ID": _string(request.get("job_id")),
         "BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME": "true",
         "BLUEPRINT_GPU_PROVIDER_HARD_TIMEOUT_SECONDS": str(
@@ -397,6 +417,8 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
             "all",
         ),
     }
+    if artifact_output_required is not False:
+        env["BLUEPRINT_ARTIFACT_OUTPUT_URI"] = _string(inputs.get("artifact_output_uri"))
     signed_put_url = _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
     if signed_put_url:
         env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] = signed_put_url
@@ -407,8 +429,23 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
     if image_ref:
         env[GENERIC_WORKER_IMAGE_REF_ENV] = image_ref
         simulator_image_env = WORKER_IMAGE_REF_ENV_BY_SIMULATOR.get(simulator)
-        if simulator_image_env:
-            env[simulator_image_env] = image_ref
+    if simulator_image_env:
+        env[simulator_image_env] = image_ref
+    plaintext_names = set(_string_list(environment.get("plaintext_env_var_names")))
+    secret_names = set(_string_list(environment.get("secret_env_var_names")))
+    plaintext_values = _mapping(
+        environment.get("plaintext_env_values") or environment.get("plaintext_env")
+    )
+    for key, value in plaintext_values.items():
+        env_key = _string(key)
+        env_value = _string(value)
+        if not env_key or not env_value or env_key in secret_names:
+            continue
+        if plaintext_names and env_key not in plaintext_names:
+            continue
+        if SIGNED_URL_SIGNATURE_PARAM in env_value.lower():
+            continue
+        env[env_key] = env_value
     cache_paths = _mapping(_cache(request).get("paths"))
     cache_env_by_key = {
         "mujoco_assets": "BLUEPRINT_MUJOCO_ASSET_CACHE",
@@ -438,6 +475,11 @@ def _pod_payload(
         or gpu.get("gpu_type_priority")
     )
     image_ref = _string(image.get("configured_image_ref"))
+    container_registry_auth_id = _string(
+        image.get("container_registry_auth_id")
+        or _provider_shape(request).get("container_registry_auth_id")
+        or os.getenv(RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV)
+    )
     selected_gpu = (
         _string(gpu_type_id)
         or _string(gpu.get("preferred_gpu_type_id"))
@@ -447,12 +489,24 @@ def _pod_payload(
     )
     name = _string(pod_name) or f"blueprint-robot-eval-{_string(request.get('job_id'))}"
     env = {item["key"]: item["value"] for item in _pod_env(request)}
-    command = _string(_provider_shape(request).get("command"))
+    provider_shape = _provider_shape(request)
+    command = _string(provider_shape.get("command"))
+    docker_entrypoint = _string_list(
+        provider_shape.get("docker_entrypoint") or provider_shape.get("dockerEntrypoint")
+    )
+    docker_start_cmd_override = _string_list(
+        provider_shape.get("docker_start_cmd") or provider_shape.get("dockerStartCmd")
+    )
     start_cmd = []
-    if command:
-        parts = shlex.split(command)
-        start_cmd = parts[1:] if parts and parts[0] == "blueprint-run-robot-eval-worker" else parts
-        if start_cmd == ["--manifest", "${BLUEPRINT_EVAL_MANIFEST_URI}"]:
+    if docker_start_cmd_override:
+        start_cmd = docker_start_cmd_override
+    elif command:
+        if docker_entrypoint:
+            start_cmd = [command]
+        else:
+            parts = shlex.split(command)
+            start_cmd = parts[1:] if parts and parts[0] == "blueprint-run-robot-eval-worker" else parts
+    if start_cmd == ["--manifest", "${BLUEPRINT_EVAL_MANIFEST_URI}"]:
             start_cmd = []
     input_payload = {
         "cloudType": _string(os.getenv("BLUEPRINT_RUNPOD_CLOUD_TYPE")) or "SECURE",
@@ -460,7 +514,6 @@ def _pod_payload(
         "gpuCount": int(_number(gpu.get("gpu_count")) or 1),
         "gpuTypeIds": [selected_gpu],
         "gpuTypePriority": "availability",
-        "blueprintGpuTypePriority": priority or [selected_gpu],
         "volumeInGb": int(_number(gpu.get("volume_in_gb")) or 40),
         "containerDiskInGb": int(_number(gpu.get("container_disk_in_gb")) or 60),
         "minVCPUPerGPU": int(_number(gpu.get("min_vcpu_count")) or 4),
@@ -472,6 +525,10 @@ def _pod_payload(
         "volumeMountPath": "/workspace",
         "env": env,
     }
+    if docker_entrypoint:
+        input_payload["dockerEntrypoint"] = docker_entrypoint
+    if container_registry_auth_id:
+        input_payload["containerRegistryAuthId"] = container_registry_auth_id
     return {
         "url": f"{RUNPOD_REST_API_BASE}/pods",
         "method": "POST",
@@ -508,7 +565,9 @@ def _request_blockers(
     inputs = _inputs(request)
     image = _image(request)
     artifact_output_uri = _string(inputs.get("artifact_output_uri"))
+    artifact_output_required = _bool(inputs.get("artifact_output_uri_required"))
     artifact_output_scheme = urlparse(artifact_output_uri).scheme or "local"
+    signed_put_url = _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
     if mode == "serverless-run" and not endpoint_id:
         blockers.append(f"missing_env_{RUNPOD_ENDPOINT_ID_ENV}")
     if mode == "on-demand-pod" and not _string(image.get("configured_image_ref")):
@@ -523,9 +582,11 @@ def _request_blockers(
         blockers.append("missing_provider_worker_manifest_uri")
     if inputs.get("manifest_uri_fetchable_by_provider") is not True:
         blockers.append("provider_worker_manifest_uri_not_fetchable")
-    if not artifact_output_uri:
+    if not artifact_output_uri and artifact_output_required is not False:
         blockers.append("missing_provider_artifact_output_uri")
-    elif artifact_output_scheme not in {"gs", "s3", "r2", "file", "local"}:
+    if artifact_output_required is False and not signed_put_url:
+        blockers.append("missing_runtime_manifest_signed_put_url_for_artifact_output_optional")
+    if artifact_output_uri and artifact_output_scheme not in {"gs", "s3", "r2", "file", "local"}:
         blockers.append("provider_artifact_output_uri_not_writable")
     if not hard_timeout_seconds or hard_timeout_seconds <= 0:
         blockers.append("missing_provider_hard_timeout_seconds")

@@ -1020,21 +1020,37 @@ def _startup_artifact_checks(
             ),
         },
     )
+    provider_command = _string(provider_shape.get("command"))
+    provider_command_ok = provider_command == (
+        "blueprint-run-robot-eval-worker --manifest ${BLUEPRINT_EVAL_MANIFEST_URI}"
+    ) or (
+        provider_command.startswith("blueprint-run-robot-eval-worker ")
+        and "--allow-simulator-execution" in provider_command
+        and "--simulator-command" in provider_command
+    )
+    provider_artifact_contract_ok = provider_inputs.get("artifact_output_uri_required") is True or (
+        provider_inputs.get("artifact_output_uri_required") is False
+        and provider_inputs.get("runtime_manifest_signed_put_required") is True
+    )
     _append_check(
         checks,
         blockers,
         check_id="provider:manifest_and_artifact_contract",
-        passed=provider_shape.get("command")
-        == "blueprint-run-robot-eval-worker --manifest ${BLUEPRINT_EVAL_MANIFEST_URI}"
+        passed=provider_command_ok
         and provider_inputs.get("manifest_uri_required") is True
-        and provider_inputs.get("artifact_output_uri_required") is True
+        and provider_artifact_contract_ok
         and provider_limits.get("idle_shutdown_required") is True
         and (_number(provider_limits.get("hard_timeout_seconds")) or 0) > 0,
-        message="Provider launch request includes manifest input, artifact output, timeout, and idle shutdown",
+        message="Provider launch request includes manifest input, artifact output or signed runtime manifest, timeout, and idle shutdown",
         evidence={
-            "command": provider_shape.get("command"),
+            "command": provider_command,
+            "command_ok": provider_command_ok,
             "manifest_uri_required": provider_inputs.get("manifest_uri_required"),
             "artifact_output_uri_required": provider_inputs.get("artifact_output_uri_required"),
+            "runtime_manifest_signed_put_required": provider_inputs.get(
+                "runtime_manifest_signed_put_required"
+            ),
+            "artifact_contract_ok": provider_artifact_contract_ok,
             "idle_shutdown_required": provider_limits.get("idle_shutdown_required"),
             "hard_timeout_seconds": provider_limits.get("hard_timeout_seconds"),
         },

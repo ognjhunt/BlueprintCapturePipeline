@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import shlex
 import subprocess
 import zipfile
 from pathlib import Path
@@ -35,6 +36,7 @@ DEFAULT_INCLUDE_PATHS = (
     "raw/capture_upload_complete.json",
     "pipeline/robot_eval_dataset",
     "pipeline/simulation_automation",
+    "pipeline/sim_only_beta_rehearsal",
     "pipeline/worldlabs_assets",
     "pipeline/provider_run_manifest.json",
     "pipeline/worldlabs_input_audit.json",
@@ -113,11 +115,18 @@ def build_capture_root_bundle(
     capture_root: str | Path,
     output_path: str | Path,
     include_raw_media: bool = False,
+    include_paths: Iterable[str] = DEFAULT_INCLUDE_PATHS,
 ) -> Dict[str, Any]:
     root = Path(capture_root).resolve()
     path = Path(output_path).resolve()
     ensure_dir(path.parent)
-    files = list(_iter_bundle_files(root, include_raw_media=include_raw_media))
+    files = list(
+        _iter_bundle_files(
+            root,
+            include_raw_media=include_raw_media,
+            include_paths=include_paths,
+        )
+    )
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for source in files:
             archive.write(source, _bundle_arcname(root, source))
@@ -283,6 +292,47 @@ def _storage_upload_commands(*, source: str, destination_uri: str) -> list[str]:
     return [f"# Upload {quoted_source} to provider-readable URI {quoted_destination}."]
 
 
+def _worker_entrypoint_command(
+    *,
+    allow_simulator_execution: bool,
+    allowed_simulators: Sequence[str],
+    simulator_commands: Mapping[str, str] | None,
+) -> str:
+    parts = ["blueprint-run-robot-eval-worker"]
+    if allow_simulator_execution:
+        parts.append("--allow-simulator-execution")
+    for simulator in allowed_simulators:
+        parts.extend(["--allowed-simulator", simulator])
+    for simulator, command in (simulator_commands or {}).items():
+        parts.extend(["--simulator-command", f"{simulator}={command}"])
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _rewrite_provider_launch_worker_command(
+    *,
+    path: Path,
+    allow_simulator_execution: bool,
+    allowed_simulators: Sequence[str],
+    simulator_commands: Mapping[str, str] | None,
+) -> Dict[str, Any]:
+    if not path.is_file():
+        return {"status": "not_available", "path": str(path)}
+    payload = read_json_any(path)
+    if not isinstance(payload, Mapping):
+        return {"status": "blocked", "path": str(path), "blockers": ["invalid_provider_launch_json"]}
+    updated = dict(payload)
+    provider_shape = dict(updated.get("provider_request_shape") or {})
+    command = _worker_entrypoint_command(
+        allow_simulator_execution=allow_simulator_execution,
+        allowed_simulators=allowed_simulators,
+        simulator_commands=simulator_commands,
+    )
+    provider_shape["command"] = command
+    updated["provider_request_shape"] = provider_shape
+    write_json(path, updated)
+    return {"status": "updated", "path": str(path), "command": command}
+
+
 def _write_publish_resolution_script(
     *,
     path: Path,
@@ -393,17 +443,10 @@ def prepare_robot_eval_provider_inputs(
         repo_root=repo_root,
     )
     bundle_path = out_dir / "capture-root.zip"
-    bundle = build_capture_root_bundle(
-        capture_root=root,
-        output_path=bundle_path,
-        include_raw_media=include_raw_media,
-    )
     bundle_uri = _uri_join(artifact_root_uri, "capture-root.zip")
     worker_manifest_uri = _uri_join(artifact_root_uri, "worker_manifest.json")
     artifact_output_uri = _uri_join(artifact_root_uri, "artifacts")
     upload_results: list[Dict[str, Any]] = []
-    if upload:
-        upload_results.append(upload_file(bundle_path, bundle_uri))
 
     image_env_var = WORKER_IMAGE_REF_ENV_BY_SIMULATOR.get(simulator, "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF")
     env_values = {
@@ -430,6 +473,24 @@ def prepare_robot_eval_provider_inputs(
         )
 
     job_dir = Path(_string(job_result.get("job_dir")) or root / "pipeline" / "robot_eval_jobs" / job_id)
+    provider_launch_command = _rewrite_provider_launch_worker_command(
+        path=job_dir / "gpu_provider_launch_request.json",
+        allow_simulator_execution=allow_simulator_execution,
+        allowed_simulators=list(allowed_simulators),
+        simulator_commands=simulator_commands,
+    )
+    bundle_include_paths = (
+        *DEFAULT_INCLUDE_PATHS,
+        f"pipeline/robot_eval_jobs/{job_id}",
+    )
+    bundle = build_capture_root_bundle(
+        capture_root=root,
+        output_path=bundle_path,
+        include_raw_media=include_raw_media,
+        include_paths=bundle_include_paths,
+    )
+    if upload:
+        upload_results.append(upload_file(bundle_path, bundle_uri))
     worker_manifest_path = job_dir / "worker_manifest.json"
     if upload and worker_manifest_path.is_file():
         upload_results.append(upload_file(worker_manifest_path, worker_manifest_uri))
@@ -451,6 +512,12 @@ def prepare_robot_eval_provider_inputs(
         blockers.extend(result.get("blockers", []))
     if upload and len(upload_results) < 2:
         blockers.append("worker_manifest_upload_missing")
+    external_provider = provisioner != "fixture_local"
+    provider_inputs_uploaded = upload and len(upload_results) >= 2 and not any(
+        result.get("blockers") for result in upload_results
+    )
+    if external_provider and not provider_inputs_uploaded:
+        blockers.append("provider_inputs_upload_not_proven")
     status = "ready_for_provider_launcher_inputs" if not blockers else "prepared_with_external_blockers"
     manifest = {
         "schema_version": PROVIDER_INPUT_SETUP_SCHEMA_VERSION,
@@ -478,6 +545,7 @@ def prepare_robot_eval_provider_inputs(
             "candidate_push_command": f"docker push {candidate_image_ref}",
         },
         "job_result": job_result,
+        "provider_launch_command": provider_launch_command,
         "worker_manifest_path": str(worker_manifest_path),
         "upload_requested": upload,
         "upload_results": upload_results,
@@ -486,7 +554,7 @@ def prepare_robot_eval_provider_inputs(
         "blockers": blockers,
         "proof_boundary": {
             "provider_inputs_prepared": True,
-            "provider_inputs_uploaded": upload and not any(result.get("blockers") for result in upload_results),
+            "provider_inputs_uploaded": provider_inputs_uploaded,
             "image_ref_published_proven": bool(selected_image_ref),
             "runpod_api_called": False,
             "simulator_execution_proven": False,

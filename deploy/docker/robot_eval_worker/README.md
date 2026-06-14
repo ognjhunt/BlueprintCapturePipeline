@@ -86,13 +86,19 @@ even if the finalizer never runs.
 ## MuJoCo Worker
 
 ```bash
-docker build \
-  -f deploy/docker/robot_eval_worker/mujoco/Dockerfile \
-  -t blueprint/mujoco-eval-worker:local .
+BLUEPRINT_MUJOCO_EVAL_WORKER_IMAGE_REF="registry.example/blueprint/mujoco-eval-worker:2026-06-14-matrix-batch" \
+BLUEPRINT_MUJOCO_WORKER_PLATFORM=linux/amd64 \
+./scripts/build_push_mujoco_worker_image.sh
 ```
 
 The MuJoCo image is the cheaper CPU/low-cost GPU lane. It installs MuJoCo and
 uses `MUJOCO_GL=egl` for headless rendering when a renderer is needed.
+The helper refuses `latest`, `local`, `dev`, and `test` tags. Set
+`BLUEPRINT_ALLOW_MUJOCO_WORKER_IMAGE_PUSH=true` only when Docker is authenticated
+to the target registry and the image ref is intended to be provider-fetchable.
+The default image intentionally does not install Torch or an official locomotion
+policy runtime. Use a separate policy-worker image before claiming balanced G1
+walking-controller or training-grade rollout proof.
 
 ## Isaac Worker
 

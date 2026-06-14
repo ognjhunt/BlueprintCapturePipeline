@@ -1605,13 +1605,19 @@ class NativeWorldModelRuntimeStore:
                     lookahead_ref_uris=lookahead_ref_uris,
                 )
             )
+            result_video_path = str(result.get("video_path") or "").strip()
+            result_output_path = Path(str(result.get("output_path") or refined_png).strip())
             refined_video_path = (
-                Path(str(result.get("video_path") or "").strip())
-                if str(result.get("video_path") or "").strip()
+                Path(result_video_path)
+                if result_video_path
+                else result_output_path
+                if result_output_path.is_file() and result_output_path.suffix.lower() == ".png"
                 else refined_png.with_suffix(".mp4")
             )
             refinement_is_png = False
-            if not refined_video_path.is_file():
+            if refined_video_path.is_file() and refined_video_path.suffix.lower() == ".png":
+                refinement_is_png = True
+            elif not refined_video_path.is_file():
                 if not refined_png.is_file():
                     raise RuntimeError(str(result.get("reason") or "refined_video_chunk_generation_failed"))
                 if not self._image_to_mp4(

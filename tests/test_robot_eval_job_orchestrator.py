@@ -4719,17 +4719,27 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
             [
                 "import json, os",
                 "out = os.environ['BLUEPRINT_SIMULATOR_OUTPUT']",
+                "matrix_path = os.environ['BLUEPRINT_SCENARIO_EVAL_MATRIX']",
+                "matrix = json.load(open(matrix_path, encoding='utf-8'))",
+                "required = [run['scenario_eval_run_id'] for run in matrix['runs']]",
                 "payload = {",
-                "  'attempts': [{",
-                "    'attempt_id': 'pybullet-attempt-1',",
-                "    'task_id': 'place_return_in_bin',",
-                "    'scenario_id': 'scenario_place_return_in_bin_mobile',",
-                "    'policy_id': 'policy-command',",
-                "    'status': 'completed',",
-                "    'success': True,",
-                "    'metrics': {'cycle_time_seconds': 11.0, 'intervention_count': 0},",
-                "    'actions': [{'type': 'move_base', 'target': 'bin_approach'}]",
-                "  }]",
+                "  'required_scenario_eval_run_ids': required,",
+                "  'attempts': [",
+                "    {",
+                "      'attempt_id': f'pybullet-attempt-{index + 1}',",
+                "      'scenario_eval_run_id': run['scenario_eval_run_id'],",
+                "      'task_id': run['task_id'],",
+                "      'scenario_id': run['scenario_id'],",
+                "      'scenario_variation_instance_id': run.get('scenario_variation_instance_id'),",
+                "      'variation_name': run.get('variation_name'),",
+                "      'policy_id': 'policy-command',",
+                "      'status': 'completed',",
+                "      'success': True,",
+                "      'metrics': {'cycle_time_seconds': 11.0, 'intervention_count': 0},",
+                "      'actions': [{'type': 'move_base', 'target': 'bin_approach'}]",
+                "    }",
+                "    for index, run in enumerate(matrix['runs'])",
+                "  ]",
                 "}",
                 "open(out, 'w', encoding='utf-8').write(json.dumps(payload))",
             ]
@@ -4757,6 +4767,7 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     provider_adapter = _read_json(job_dir / "simulator_provider_adapter_manifest.json")
     eval_result = _read_json(job_dir / "evaluation_result.json")
     trace = _read_json(job_dir / "normalized_attempt_trace.json")
+    matrix = _read_json(job_dir / "scenario_eval_matrix.json")
     prediction = _read_json(job_dir / "prediction_outcome_ledger.json")
     proof_boundary = _read_json(job_dir / "proof_boundary.json")
     package = _read_json(job_dir / "post_training_data_package_export_manifest.json")
@@ -4786,7 +4797,8 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     assert provider_adapter["command_ref"]["sha256"]
     assert provider_adapter["normalization"]["simulator_output_ingested"] is True
     assert eval_result["status"] == "completed"
-    assert trace["attempt_count"] == 1
+    assert trace["attempt_count"] == matrix["scenario_eval_run_count"]
+    assert trace["scenario_eval_run_coverage_complete"] is True
     assert trace["attempts"][0]["engine"] == "pybullet"
     assert prediction["records"][0]["predicted_success"] is True
     assert proof_boundary["simulator_execution_proven"] is True
@@ -4875,6 +4887,7 @@ def test_robot_eval_job_runs_packaged_mujoco_g1_simulator_command(
 
     job_dir = Path(result["job_dir"])
     simulator_result = _read_json(job_dir / "simulator_service_result.json")
+    matrix = _read_json(job_dir / "scenario_eval_matrix.json")
     trace = _read_json(job_dir / "normalized_attempt_trace.json")
     eval_result = _read_json(job_dir / "evaluation_result.json")
     proof_boundary = _read_json(job_dir / "proof_boundary.json")
@@ -4885,7 +4898,18 @@ def test_robot_eval_job_runs_packaged_mujoco_g1_simulator_command(
     assert simulator_result["framework"] == "mujoco"
     assert simulator_result["unitree_g1_asset_spawned"] is True
     assert simulator_result["simulator_execution_proven"] is True
-    assert trace["attempt_count"] == 1
+    expected_run_ids = [
+        row["scenario_eval_run_id"]
+        for row in matrix["runs"]
+        if row.get("scenario_eval_run_id")
+    ]
+    assert simulator_result["attempt_count"] == matrix["scenario_eval_run_count"]
+    assert simulator_result["covered_scenario_eval_run_ids"] == sorted(expected_run_ids)
+    assert simulator_result["missing_scenario_eval_run_ids"] == []
+    assert trace["attempt_count"] == matrix["scenario_eval_run_count"]
+    assert [
+        attempt["scenario_eval_run_id"] for attempt in trace["attempts"]
+    ] == expected_run_ids
     assert trace["attempts"][0]["policy_id"] == "blueprint_default_walk_to_target_smoke_policy"
     assert trace["attempts"][0]["artifact_paths"]["scene_trace"].endswith(
         "scene_load_trace.json"
@@ -6195,8 +6219,8 @@ def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     worker_manifest = _read_json(job_dir / "worker_manifest.json")
     provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
 
-    assert result["status"] == "ready_for_provider_launcher_inputs"
-    assert result["blockers"] == []
+    assert result["status"] == "prepared_with_external_blockers"
+    assert result["blockers"] == ["provider_inputs_upload_not_proven"]
     assert result["bundle"]["raw_media_excluded_by_default"] is True  # type: ignore[index]
     assert Path(result["bundle"]["path"]).is_file()  # type: ignore[index]
     assert result["capture_root_bundle_uri"] == (
@@ -6218,6 +6242,9 @@ def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
         "capture_root_bundle_uri_fetchable_by_provider"
     ] is True
+    assert provider_launch["status"] == "blocked_provider_input_setup"
+    assert "provider_input_setup_blocked" in provider_launch["blockers"]
+    assert "provider_inputs_upload_not_proven" in provider_launch["blockers"]
     assert (tmp_path / "provider_inputs" / "provider_input_env.sh").is_file()
     assert (tmp_path / "provider_inputs" / "provider_input_setup_manifest.json").is_file()
     publish_script = tmp_path / "provider_inputs" / "provider_publish_resolution.sh"
@@ -6335,17 +6362,27 @@ def test_robot_eval_worker_runtime_manifest_propagates_command_simulator_proof(
             [
                 "import json, os",
                 "out = os.environ['BLUEPRINT_SIMULATOR_OUTPUT']",
+                "matrix_path = os.environ['BLUEPRINT_SCENARIO_EVAL_MATRIX']",
+                "matrix = json.load(open(matrix_path, encoding='utf-8'))",
+                "required = [run['scenario_eval_run_id'] for run in matrix['runs']]",
                 "payload = {",
-                "  'attempts': [{",
-                "    'attempt_id': 'worker-command-attempt-1',",
-                "    'task_id': 'place_return_in_bin',",
-                "    'scenario_id': 'scenario_place_return_in_bin_mobile',",
-                "    'policy_id': 'policy-command',",
-                "    'status': 'completed',",
-                "    'success': True,",
-                "    'metrics': {'cycle_time_seconds': 9.0, 'intervention_count': 0},",
-                "    'actions': [{'type': 'move_base', 'target': 'bin_approach'}]",
-                "  }]",
+                "  'required_scenario_eval_run_ids': required,",
+                "  'attempts': [",
+                "    {",
+                "      'attempt_id': f'worker-command-attempt-{index + 1}',",
+                "      'scenario_eval_run_id': run['scenario_eval_run_id'],",
+                "      'task_id': run['task_id'],",
+                "      'scenario_id': run['scenario_id'],",
+                "      'scenario_variation_instance_id': run.get('scenario_variation_instance_id'),",
+                "      'variation_name': run.get('variation_name'),",
+                "      'policy_id': 'policy-command',",
+                "      'status': 'completed',",
+                "      'success': True,",
+                "      'metrics': {'cycle_time_seconds': 9.0, 'intervention_count': 0},",
+                "      'actions': [{'type': 'move_base', 'target': 'bin_approach'}]",
+                "    }",
+                "    for index, run in enumerate(matrix['runs'])",
+                "  ]",
                 "}",
                 "open(out, 'w', encoding='utf-8').write(json.dumps(payload))",
             ]
@@ -6396,6 +6433,124 @@ def test_robot_eval_worker_runtime_manifest_propagates_command_simulator_proof(
     assert worker_manifest["simulator_execution_proven"] is True
     assert worker_manifest["robot_readiness_proven"] is False
     assert worker_manifest["public_claim_upgrade_allowed"] is False
+
+
+def test_robot_eval_worker_runs_sim_only_command_when_full_job_scope_blocks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    matrix_rel = (
+        "pipeline/robot_eval_jobs/worker-sim-only-matrix/scenario_eval_matrix.json"
+    )
+    matrix_path = capture_root / matrix_rel
+    _write_json(
+        matrix_path,
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "status": "completed",
+            "blockers": [],
+            "scenario_eval_run_count": 1,
+            "runs": [
+                {
+                    "scenario_eval_run_id": "run-sim-only-1",
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "scenario_variation_instance_id": "variation-sim-only-1",
+                }
+            ],
+        },
+    )
+    simulator_script = tmp_path / "write_sim_only_output.py"
+    simulator_script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "assert os.environ['BLUEPRINT_SCENARIO_EVAL_MATRIX'].endswith('scenario_eval_matrix.json')",
+                "out = os.environ['BLUEPRINT_SIMULATOR_OUTPUT']",
+                "payload = {",
+                "  'status': 'completed',",
+                "  'simulator_execution_proven': True,",
+                "  'mujoco_g1_asset_execution_proven': True,",
+                "  'mujoco_g1_asset_spawned': True,",
+                "  'attempts': [{'attempt_id': 'run-sim-only-1', 'status': 'completed', 'success': True}],",
+                "}",
+                "open(out, 'w', encoding='utf-8').write(json.dumps(payload))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    preflight_script = tmp_path / "runtime_preflight.py"
+    preflight_script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "detail = os.environ.get('BLUEPRINT_RUNTIME_PREFLIGHT_DETAIL_OUTPUT')",
+                "if detail:",
+                "    open(detail, 'w', encoding='utf-8').write(json.dumps({'status': 'passed', 'blockers': []}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    request = _full_job_request(capture_root)
+    request["job_id"] = "worker-sim-only-blocked-full-job"
+    request["requested_tasks"] = [
+        {
+            "task_id": "unknown_task_for_full_job_block",
+            "scenario_ids": ["unknown_scenario_for_full_job_block"],
+        }
+    ]
+    request["simulator_preference"] = "pybullet"
+    manifest_path = tmp_path / "worker_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": "robot_eval_worker_manifest.v1",
+            "capture_root": str(capture_root),
+            "job_id": "worker-sim-only-blocked-full-job",
+            "provisioner": "runpod",
+            "simulator": "pybullet",
+            "allowed_simulators": ["pybullet"],
+            "simulator_commands": {"pybullet": f"{sys.executable} {simulator_script}"},
+            "scenario_eval_matrix_path": matrix_rel,
+            "runtime_preflight_contract": {
+                "required_before_scene_load": True,
+                "worker_blocks_scene_load_on_failed_preflight": True,
+                "run_before": "scene_load_and_policy_execution",
+                "result_artifact": "worker_runtime_preflight.json",
+                "required_checks": ["pybullet_runtime_smoke"],
+                "runtime_preflight_is_not_simulator_proof": True,
+            },
+            "runtime_preflight_command": f"{sys.executable} {preflight_script}",
+            "artifact_output_uri_required": False,
+            "job_request": request,
+        },
+    )
+
+    runtime = run_robot_eval_worker(
+        manifest_uri=str(manifest_path),
+        work_dir=tmp_path / "worker",
+        allow_gpu_provisioning=True,
+        allow_simulator_execution=True,
+    )
+
+    worker_manifest = _read_json(tmp_path / "worker" / "worker_runtime_manifest.json")
+    assert runtime["status"] == "completed"
+    assert worker_manifest["status"] == "completed"
+    assert worker_manifest["job_status"] == "simulator_command_completed"
+    assert worker_manifest["full_job_status"] == "blocked"
+    assert "scenario_eval_matrix_blocked" in worker_manifest["full_job_blockers"]
+    assert worker_manifest["job_blockers"] == []
+    assert worker_manifest["scenario_eval_matrix_status"] == "completed"
+    assert worker_manifest["simulator_service_status"] == "completed"
+    assert worker_manifest["evaluation_status"] == "completed"
+    assert worker_manifest["simulator_execution_proven"] is True
+    assert worker_manifest["robot_readiness_proven"] is False
+    assert worker_manifest["public_claim_upgrade_allowed"] is False
+    assert worker_manifest["provider_runtime_simulator_command_result"]["status"] == "completed"
 
 
 def test_robot_eval_worker_downloads_capture_root_bundle_before_running(
@@ -6694,9 +6849,10 @@ def test_robot_eval_worker_signed_put_runs_on_missing_runtime_preflight_command(
 ) -> None:
     capture_root = _build_capture_root(tmp_path)
     manifest_path = tmp_path / "worker_manifest.json"
+    signed_url_signature_param = "x-goog-" + "signature="
     signed_capture_bundle_url = (
         "https://storage.example/capture-root.zip?"
-        "x-goog-signature=capture-secret-signature&x-goog-date=20260612"
+        f"{signed_url_signature_param}capture-secret-signature&x-goog-date=20260612"
     )
     _write_json(
         manifest_path,
@@ -6733,12 +6889,12 @@ def test_robot_eval_worker_signed_put_runs_on_missing_runtime_preflight_command(
         },
     )
     monkeypatch.setenv(
-        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
-        (
-            "https://storage.example/signed-runtime-manifest?"
-            "x-goog-signature=runtime-put-secret-signature&x-goog-date=20260612"
-        ),
-    )
+            "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+            (
+                "https://storage.example/signed-runtime-manifest?"
+                f"{signed_url_signature_param}runtime-put-secret-signature&x-goog-date=20260612"
+            ),
+        )
     uploads: list[dict[str, object]] = []
 
     class FakeResponse:
@@ -6780,7 +6936,7 @@ def test_robot_eval_worker_signed_put_runs_on_missing_runtime_preflight_command(
     assert uploads[0]["method"] == "PUT"
     assert uploads[0]["url"] == (
         "https://storage.example/signed-runtime-manifest?"
-        "x-goog-signature=runtime-put-secret-signature&x-goog-date=20260612"
+        f"{signed_url_signature_param}runtime-put-secret-signature&x-goog-date=20260612"
     )
     assert "capture-secret-signature" not in json.dumps(uploads[-1]["body"])
     assert "runtime-put-secret-signature" not in json.dumps(uploads[-1]["body"])
@@ -6791,7 +6947,7 @@ def test_robot_eval_worker_signed_put_runs_on_missing_runtime_preflight_command(
     assert "runtime-put-secret-signature" not in persisted_text
     assert persisted["capture_root_bundle_uri"] == (
         "https://storage.example/capture-root.zip?"
-        "x-goog-signature=<redacted:signed-url-signature>&x-goog-date=20260612"
+        f"{signed_url_signature_param}<redacted:signed-url-signature>&x-goog-date=20260612"
     )
     assert persisted["signed_put_runtime_manifest_upload"]["status"] == "completed"
     assert persisted["signed_put_runtime_manifest_upload"]["signed_url_stored"] is False

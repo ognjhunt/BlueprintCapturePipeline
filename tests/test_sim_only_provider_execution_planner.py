@@ -96,6 +96,8 @@ def _seed_mujoco_beta_artifacts(capture_root: Path) -> None:
                 "sim_time_s": 4.0,
                 "steps": 2000,
                 "control_updates": 200,
+                "command_xyz": [0.5, 0.0, 0.0],
+                "final_base_position_xyz": [1.75, -0.08, 0.77],
             },
             "proof_boundary": {
                 "non_default_policy_execution_trace_proven": True,

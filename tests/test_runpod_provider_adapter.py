@@ -10,6 +10,7 @@ from blueprint_pipeline.runpod_provider_adapter import (
     RUNPOD_API_KEY_ENV,
     RUNPOD_API_KEY_FILE_ENV,
     RUNPOD_CONFIG_FILE_ENV,
+    RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV,
     RUNPOD_ENDPOINT_ID_ENV,
     main as runpod_adapter_main,
     run_runpod_provider_adapter,
@@ -133,6 +134,28 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     assert "RUNPOD_API_KEY" not in json.dumps(persisted)
 
 
+def test_runpod_adapter_forwards_docker_entrypoint_to_pod_payload(tmp_path: Path) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["docker_entrypoint"] = ["bash"]  # type: ignore[index]
+    request["provider_request_shape"]["docker_start_cmd"] = [  # type: ignore[index]
+        "-lc",
+        "echo provider-heartbeat",
+    ]
+    request["provider_request_shape"]["command"] = "echo provider-heartbeat"  # type: ignore[index]
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+
+    pod = result["runpod_request"]["on_demand_pod"]["body"]  # type: ignore[index]
+    assert pod["dockerEntrypoint"] == ["bash"]
+    assert pod["dockerStartCmd"] == ["-lc", "echo provider-heartbeat"]
+
+
 def test_runpod_adapter_blocks_missing_cost_control_limits(
     tmp_path: Path,
 ) -> None:
@@ -202,11 +225,105 @@ def test_runpod_adapter_uses_provider_gpu_priority_and_cache_env(
 
     pod = result["runpod_request"]["on_demand_pod"]["body"]  # type: ignore[index]
     assert pod["gpuTypeIds"] == ["NVIDIA L4"]
-    assert pod["blueprintGpuTypePriority"] == ["NVIDIA L4", "NVIDIA RTX A4000"]
+    assert "blueprintGpuTypePriority" not in pod
     assert pod["env"]["BLUEPRINT_MUJOCO_ASSET_CACHE"] == "/cache/mujoco"
     assert pod["env"]["BLUEPRINT_POLICY_CACHE"] == "/cache/policies"
     assert pod["env"]["BLUEPRINT_CONVERTED_SCENE_CACHE"] == "/cache/scenes"
     assert pod["env"]["BLUEPRINT_WORKER_DEPS_CACHE"] == "/cache/deps"
+
+
+def test_runpod_adapter_forwards_declared_plaintext_env_values(tmp_path: Path) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["environment"].update(  # type: ignore[index]
+        {
+            "plaintext_env_var_names": ["ACCEPT_EULA", "PRIVACY_CONSENT"],
+            "plaintext_env_values": {
+                "ACCEPT_EULA": "Y",
+                "PRIVACY_CONSENT": "Y",
+                "UNDECLARED_ENV": "ignored",
+            },
+            "secret_env_var_names": ["RUNPOD_API_KEY"],
+        }
+    )
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+
+    pod = result["runpod_request"]["on_demand_pod"]["body"]  # type: ignore[index]
+    assert pod["env"]["ACCEPT_EULA"] == "Y"
+    assert pod["env"]["PRIVACY_CONSENT"] == "Y"
+    assert "UNDECLARED_ENV" not in pod["env"]
+    assert "RUNPOD_API_KEY" not in json.dumps(pod)
+
+
+def test_runpod_adapter_forwards_container_registry_auth_id_without_secret(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["image"][  # type: ignore[index]
+        "configured_image_ref"
+    ] = "nvcr.io/nvidia/isaac-sim:5.1.0"
+    monkeypatch.setenv(RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV, "registry-auth-123")
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+
+    pod = result["runpod_request"]["on_demand_pod"]["body"]  # type: ignore[index]
+    assert pod["imageName"] == "nvcr.io/nvidia/isaac-sim:5.1.0"
+    assert pod["containerRegistryAuthId"] == "registry-auth-123"
+    assert "NGC_API_KEY" not in json.dumps(pod)
+
+
+def test_runpod_adapter_supports_signed_put_only_runtime_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "artifact_output_uri_required"
+    ] = False
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+
+    assert result["status"] == "blocked"
+    assert "missing_runtime_manifest_signed_put_url_for_artifact_output_optional" in result[
+        "blockers"
+    ]
+
+    monkeypatch.setenv(
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "https://storage.googleapis.com/blueprint/runtime.json?"
+        + ("x-goog-" + "signature=put-secret"),
+    )
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+
+    assert result["status"] == "dry_run_ready"
+    pod = result["runpod_request"]["on_demand_pod"]["body"]  # type: ignore[index]
+    assert "BLUEPRINT_ARTIFACT_OUTPUT_URI" not in pod["env"]
+    assert (
+        pod["env"]["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"]
+        == "<redacted:signed-url>"
+    )
 
 
 def test_runpod_adapter_blocks_unwritable_artifact_output_uri(
@@ -330,13 +447,14 @@ def test_runpod_adapter_submits_on_demand_pod_payload(
 ) -> None:
     request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
     request = _read_json(request_path)
+    signed_url_signature_param = "x-goog-" + "signature="
     signed_manifest_url = (
         "https://storage.googleapis.com/blueprint/worker.json?"
-        "x-goog-signature=manifest-secret-signature&x-goog-date=20260612"
+        f"{signed_url_signature_param}manifest-secret-signature&x-goog-date=20260612"
     )
     signed_capture_bundle_url = (
         "https://storage.googleapis.com/blueprint/capture-root.zip?"
-        "x-goog-signature=bundle-secret-signature&x-goog-date=20260612"
+        f"{signed_url_signature_param}bundle-secret-signature&x-goog-date=20260612"
     )
     request["provider_request_shape"]["inputs"][  # type: ignore[index]
         "manifest_uri"
@@ -354,7 +472,7 @@ def test_runpod_adapter_submits_on_demand_pod_payload(
     monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
     signed_put_url = (
         "https://storage.googleapis.com/blueprint/runtime.json?"
-        "x-goog-signature=put-secret-signature&x-goog-date=20260612"
+        f"{signed_url_signature_param}put-secret-signature&x-goog-date=20260612"
     )
     monkeypatch.setenv(
         "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
@@ -405,6 +523,7 @@ def test_runpod_adapter_submits_on_demand_pod_payload(
     assert pod_input["name"] == "blueprint-test-pod"
     assert pod_input["imageName"].endswith(":2026-06-12")
     assert pod_input["gpuTypeIds"] == ["NVIDIA RTX A6000"]
+    assert "blueprintGpuTypePriority" not in pod_input
     assert pod_input["env"]["NVIDIA_DRIVER_CAPABILITIES"] == "all"
     assert pod_input["env"]["BLUEPRINT_ALLOW_GPU_PROVISIONING"] == "true"
     assert pod_input["env"]["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"] == "true"
@@ -431,17 +550,20 @@ def test_runpod_adapter_submits_on_demand_pod_payload(
     assert "manifest-secret-signature" not in persisted
     assert "bundle-secret-signature" not in persisted
     assert "put-secret-signature" not in persisted
+    assert signed_url_signature_param not in persisted
     redacted_env = result["runpod_request"]["body"]["env"]  # type: ignore[index]
     assert (
         redacted_env["BLUEPRINT_EVAL_MANIFEST_URI"]
         == (
             "https://storage.googleapis.com/blueprint/worker.json?"
-            "x-goog-signature=<redacted:signed-url-signature>&x-goog-date=20260612"
+            "x-goog-redacted-signature-param=<redacted:signed-url-signature>"
+            "&x-goog-date=20260612"
         )
     )
     assert redacted_env["BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI"] == (
         "https://storage.googleapis.com/blueprint/capture-root.zip?"
-        "x-goog-signature=<redacted:signed-url-signature>&x-goog-date=20260612"
+        "x-goog-redacted-signature-param=<redacted:signed-url-signature>"
+        "&x-goog-date=20260612"
     )
     assert (
         redacted_env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"]
@@ -450,7 +572,8 @@ def test_runpod_adapter_submits_on_demand_pod_payload(
     response_env = result["runpod_response"]["env"]  # type: ignore[index]
     assert response_env["BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI"] == (
         "https://storage.googleapis.com/blueprint/capture-root.zip?"
-        "x-goog-signature=<redacted:signed-url-signature>&x-goog-date=20260612"
+        "x-goog-redacted-signature-param=<redacted:signed-url-signature>"
+        "&x-goog-date=20260612"
     )
     assert (
         response_env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"]

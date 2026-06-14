@@ -1836,6 +1836,69 @@ def build_simulator_command_artifacts(
         simulator=simulator,
         generated_at=generated_at,
     )
+    simulator_payload = _mapping(simulator_output)
+    required_scenario_eval_run_ids = _string_list(
+        simulator_payload.get("required_scenario_eval_run_ids")
+    )
+    if not required_scenario_eval_run_ids:
+        matrix_path = resolved_job_dir / "scenario_eval_matrix.json"
+        if matrix_path.is_file():
+            try:
+                matrix_payload = _mapping(read_json_any(matrix_path))
+            except Exception:
+                matrix_payload = {}
+            raw_runs = matrix_payload.get("runs")
+            if isinstance(raw_runs, Sequence) and not isinstance(raw_runs, (str, bytes)):
+                required_scenario_eval_run_ids = [
+                    run_id
+                    for run_id in (
+                        _string(_mapping(raw_run).get("scenario_eval_run_id"))
+                        for raw_run in raw_runs
+                    )
+                    if run_id
+                ]
+    covered_scenario_eval_run_ids = sorted(
+        {
+            _string(attempt.get("scenario_eval_run_id"))
+            for attempt in attempts
+            if _string(attempt.get("scenario_eval_run_id"))
+        }
+    )
+    duplicate_scenario_eval_run_ids = sorted(
+        {
+            run_id
+            for run_id in required_scenario_eval_run_ids
+            if required_scenario_eval_run_ids.count(run_id) > 1
+        }
+    )
+    missing_scenario_eval_run_ids = sorted(
+        set(required_scenario_eval_run_ids) - set(covered_scenario_eval_run_ids)
+    )
+    if not required_scenario_eval_run_ids:
+        missing_scenario_eval_run_ids = _string_list(
+            simulator_payload.get("missing_scenario_eval_run_ids")
+        )
+    attempt_count_matches_matrix_count = (
+        not required_scenario_eval_run_ids
+        or len(attempts) == len(required_scenario_eval_run_ids)
+    )
+    scenario_eval_run_id_coverage_exact = (
+        not required_scenario_eval_run_ids
+        or (
+            set(covered_scenario_eval_run_ids) == set(required_scenario_eval_run_ids)
+            and len(covered_scenario_eval_run_ids) == len(required_scenario_eval_run_ids)
+        )
+    )
+    scenario_eval_run_coverage_complete = (
+        bool(required_scenario_eval_run_ids)
+        and attempt_count_matches_matrix_count
+        and scenario_eval_run_id_coverage_exact
+        and not missing_scenario_eval_run_ids
+        and not duplicate_scenario_eval_run_ids
+    )
+    status = "completed" if attempts else "blocked_missing_simulator_attempts"
+    if attempts and required_scenario_eval_run_ids and not scenario_eval_run_coverage_complete:
+        status = "blocked_incomplete_scenario_eval_run_coverage"
     failures = [attempt for attempt in attempts if not bool(attempt.get("success"))]
     failed_attempt_ids = sorted(
         _string(attempt.get("attempt_id")) for attempt in failures if _string(attempt.get("attempt_id"))
@@ -1848,9 +1911,19 @@ def build_simulator_command_artifacts(
     trace = {
         "schema_version": "robot_eval_simulator_command_normalized_attempt_trace.v1",
         "generated_at": generated_at,
-        "status": "completed" if attempts else "blocked_missing_simulator_attempts",
+        "status": status,
         "backend": simulator,
         "attempt_count": len(attempts),
+        "required_scenario_eval_run_count": len(required_scenario_eval_run_ids),
+        "covered_scenario_eval_run_count": len(covered_scenario_eval_run_ids),
+        "missing_scenario_eval_run_count": len(missing_scenario_eval_run_ids),
+        "attempt_count_matches_matrix_count": attempt_count_matches_matrix_count,
+        "scenario_eval_run_id_coverage_exact": scenario_eval_run_id_coverage_exact,
+        "duplicate_scenario_eval_run_ids": duplicate_scenario_eval_run_ids,
+        "required_scenario_eval_run_ids": required_scenario_eval_run_ids,
+        "covered_scenario_eval_run_ids": covered_scenario_eval_run_ids,
+        "missing_scenario_eval_run_ids": missing_scenario_eval_run_ids,
+        "scenario_eval_run_coverage_complete": scenario_eval_run_coverage_complete,
         "attempts": attempts,
         "result_ingested": bool(attempts),
         "simulator_execution_proven": bool(attempts),
@@ -1948,9 +2021,16 @@ def build_simulator_command_artifacts(
     manifest = {
         "schema_version": SIMULATOR_COMMAND_ARTIFACTS_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "completed" if attempts else "blocked_missing_simulator_attempts",
+        "status": status,
         "simulator": simulator,
         "attempt_count": len(attempts),
+        "required_scenario_eval_run_count": len(required_scenario_eval_run_ids),
+        "covered_scenario_eval_run_count": len(covered_scenario_eval_run_ids),
+        "missing_scenario_eval_run_count": len(missing_scenario_eval_run_ids),
+        "attempt_count_matches_matrix_count": attempt_count_matches_matrix_count,
+        "scenario_eval_run_id_coverage_exact": scenario_eval_run_id_coverage_exact,
+        "duplicate_scenario_eval_run_ids": duplicate_scenario_eval_run_ids,
+        "scenario_eval_run_coverage_complete": scenario_eval_run_coverage_complete,
         "artifact_paths": {
             "normalized_attempt_trace": "normalized_attempt_trace.json",
             "failure_labels": "failure_labels.json",

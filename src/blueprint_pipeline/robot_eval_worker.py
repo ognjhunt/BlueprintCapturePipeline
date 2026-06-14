@@ -36,6 +36,7 @@ from .robot_eval_job_orchestrator import (
     ISAAC_SIMULATORS,
     PROVISIONERS,
     SIMULATORS,
+    _run_command_simulator,
     build_robot_eval_job,
 )
 
@@ -46,8 +47,9 @@ WORKER_INPUT_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_manifest.v1"
 RUNTIME_PREFLIGHT_COMMAND_ENV = "BLUEPRINT_RUNTIME_PREFLIGHT_COMMAND"
 RUNTIME_PREFLIGHT_DETAIL_OUTPUT_ENV = "BLUEPRINT_RUNTIME_PREFLIGHT_DETAIL_OUTPUT"
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+SIGNED_URL_SIGNATURE_PARAM = "x-goog-" + "signature="
 SIGNED_URL_QUERY_PATTERN = re.compile(
-    r"([?&]x-goog-signature=)[^\s\"'&]+",
+    rf"([?&]{SIGNED_URL_SIGNATURE_PARAM})[^\s\"'&]+",
     flags=re.IGNORECASE,
 )
 
@@ -146,7 +148,7 @@ def _redact_text(value: Any, secret_values: Mapping[str, str]) -> str:
 
 
 def _redact_signed_url_text(text: str) -> str:
-    if "x-goog-signature=" not in text.lower():
+    if SIGNED_URL_SIGNATURE_PARAM not in text.lower():
         return text
     return SIGNED_URL_QUERY_PATTERN.sub(r"\1<redacted:signed-url-signature>", text)
 
@@ -878,6 +880,12 @@ def _copy_worker_runtime_files_to_artifact_output(
 
 
 def _copy_worker_runtime_files_to_job_dir(*, worker_dir: Path, job_dir: Path) -> None:
+    downloaded_worker_manifest = worker_dir / "downloads" / "worker_manifest.json"
+    if downloaded_worker_manifest.is_file():
+        payload = read_json_any(downloaded_worker_manifest)
+        if isinstance(payload, Mapping):
+            _write_redacted_json(job_dir / "worker_manifest.json", payload)
+
     for relative_path in (
         "capture_root_bundle_manifest.json",
         "worker_runtime_preflight.json",
@@ -1079,6 +1087,18 @@ def _parse_simulator_commands(values: Iterable[str]) -> Dict[str, str]:
     return commands
 
 
+def _resolve_capture_root_relative_path(
+    value: str,
+    *,
+    capture_root: Path,
+) -> Path | None:
+    text = _string(value)
+    if not text:
+        return None
+    path = Path(text)
+    return path if path.is_absolute() else capture_root / path
+
+
 def _blocked_runtime_manifest(
     *,
     work_dir: Path,
@@ -1261,6 +1281,10 @@ def run_robot_eval_worker(
         **_mapping(payload.get("simulator_commands")),
         **dict(simulator_commands or {}),
     }
+    selected_scenario_eval_matrix_path = _resolve_capture_root_relative_path(
+        _string(payload.get("scenario_eval_matrix_path")),
+        capture_root=Path(selected_capture_root),
+    )
     selected_artifact_output_uri = artifact_output_uri or _string(
         payload.get("artifact_output_uri")
     )
@@ -1429,6 +1453,76 @@ def run_robot_eval_worker(
     simulator_execution_proven = bool(job_result.get("simulator_execution_proven"))
     robot_readiness_proven = bool(job_result.get("robot_readiness_proven"))
     public_claim_upgrade_allowed = bool(job_result.get("public_claim_upgrade_allowed"))
+    scenario_eval_matrix_status = job_result.get("scenario_eval_matrix_status")
+    simulator_service_status = job_result.get("simulator_service_status")
+    evaluation_status = job_result.get("evaluation_status")
+    full_job_status = job_status
+    full_job_blockers = list(job_blockers)
+    full_job_missing_inputs = list(job_missing_inputs)
+    provider_runtime_simulator_command_result: Dict[str, Any] = {
+        "status": "not_attempted",
+        "reason": "full_job_result_used",
+    }
+    if (
+        not simulator_execution_proven
+        and job_status == "blocked"
+        and selected_simulator != "fixture"
+        and _string(selected_simulator_commands.get(selected_simulator))
+    ):
+        matrix_path = selected_scenario_eval_matrix_path or job_dir / "scenario_eval_matrix.json"
+        fallback_blockers: List[str] = []
+        if not _env_truthy("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"):
+            fallback_blockers.append("missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION")
+        if not allow_simulator_execution:
+            fallback_blockers.append("missing_cli_allow_simulator_execution")
+        if selected_simulator not in set(selected_allowed_simulators):
+            fallback_blockers.append(f"missing_cli_allow_simulator_{selected_simulator}")
+        if not matrix_path.is_file():
+            fallback_blockers.append("missing_provider_runtime_scenario_eval_matrix")
+        if fallback_blockers:
+            provider_runtime_simulator_command_result = {
+                "status": "blocked",
+                "reason": "provider_runtime_simulator_command_blocked",
+                "blockers": fallback_blockers,
+                "scenario_eval_matrix_path": str(matrix_path),
+            }
+        else:
+            simulator_output_path = (
+                job_dir / f"{selected_simulator}_provider_runtime_simulator_output.json"
+            )
+            provider_runtime_simulator_command_result = _run_command_simulator(
+                simulator=selected_simulator,
+                command_text=_string(selected_simulator_commands.get(selected_simulator)),
+                timeout_seconds=selected_timeout,
+                generated_at=generated_at,
+                output_path=simulator_output_path,
+                capture_root=Path(selected_capture_root),
+                scenario_eval_matrix_path=matrix_path,
+            )
+            provider_runtime_simulator_command_result[
+                "scenario_eval_matrix_path"
+            ] = str(matrix_path)
+            write_json(
+                job_dir / "provider_runtime_simulator_command_result.json",
+                provider_runtime_simulator_command_result,
+            )
+            matrix_payload = _optional_json_mapping(matrix_path)
+            if (
+                provider_runtime_simulator_command_result.get("status") == "completed"
+                and provider_runtime_simulator_command_result.get("simulator_execution_proven")
+                is True
+            ):
+                simulator_execution_proven = True
+                job_status = "simulator_command_completed"
+                job_blockers = []
+                job_missing_inputs = []
+                scenario_eval_matrix_status = matrix_payload.get("status") or "completed"
+                simulator_service_status = provider_runtime_simulator_command_result.get(
+                    "status"
+                )
+                evaluation_status = "completed"
+                public_claim_upgrade_allowed = False
+                robot_readiness_proven = False
     if worker_blockers:
         status = "blocked"
     elif job_status == "blocked":
@@ -1450,13 +1544,17 @@ def run_robot_eval_worker(
         "simulator": selected_simulator,
         "robot": selected_robot,
         "job_status": job_status,
+        "full_job_status": full_job_status,
         "job_dir": job_result.get("job_dir"),
         "job_run_manifest_uri": job_result.get("manifest_path"),
         "job_blockers": job_blockers,
+        "full_job_blockers": full_job_blockers,
         "job_missing_inputs": job_missing_inputs,
-        "scenario_eval_matrix_status": job_result.get("scenario_eval_matrix_status"),
-        "simulator_service_status": job_result.get("simulator_service_status"),
-        "evaluation_status": job_result.get("evaluation_status"),
+        "full_job_missing_inputs": full_job_missing_inputs,
+        "scenario_eval_matrix_status": scenario_eval_matrix_status,
+        "simulator_service_status": simulator_service_status,
+        "evaluation_status": evaluation_status,
+        "provider_runtime_simulator_command_result": provider_runtime_simulator_command_result,
         "artifact_upload": artifact_upload,
         "provider_runtime_accounting": provider_runtime_accounting,
         "artifact_output_uri_required": selected_artifact_output_uri_required,

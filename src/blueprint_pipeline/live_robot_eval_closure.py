@@ -3127,10 +3127,17 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
         blockers.append("simulator_service_result_not_completed")
     if trace_path.is_file() and trace_status != "completed" and not owner_accepted:
         blockers.append("normalized_attempt_trace_not_completed")
-    if run_count > 0 and int(trace.get("attempt_count") or 0) < run_count:
+    attempt_count = int(trace.get("attempt_count") or 0)
+    if run_count > 0 and attempt_count != run_count:
         blockers.append("simulator_execution_missing_scenario_variation_run_coverage")
     if required_run_ids and not required_run_ids.issubset(covered_run_ids):
         blockers.append("simulator_execution_missing_required_scenario_eval_run_ids")
+    required_trace_count = int(trace.get("required_scenario_eval_run_count") or 0)
+    if (
+        trace.get("scenario_eval_run_coverage_complete") is False
+        and (required_run_ids or required_trace_count > 0)
+    ):
+        blockers.append("simulator_execution_incomplete_scenario_eval_run_coverage")
     return _gate(
         "live_simulator_execution",
         passed=not blockers,
@@ -3147,9 +3154,19 @@ def _live_simulator_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]
             "simulator_execution_proven": bool(sim_result.get("simulator_execution_proven")),
             "service_isaac_unitree_g1_execution_proven": service_isaac_asset_proven,
             "service_mujoco_unitree_g1_execution_proven": service_mujoco_asset_proven,
-            "attempt_count": int(trace.get("attempt_count") or 0),
+            "attempt_count": attempt_count,
             "scenario_eval_run_count": run_count,
+            "required_scenario_eval_run_count": required_trace_count,
             "covered_scenario_eval_run_count": len(covered_run_ids),
+            "scenario_eval_run_coverage_complete": trace.get(
+                "scenario_eval_run_coverage_complete"
+            ),
+            "attempt_count_matches_matrix_count": trace.get(
+                "attempt_count_matches_matrix_count"
+            ),
+            "scenario_eval_run_id_coverage_exact": trace.get(
+                "scenario_eval_run_id_coverage_exact"
+            ),
             "owner_gpu_proof_manifest": _artifact(owner_path, base_dir=job_dir),
             "owner_gpu_proof_status": owner_proof.get("status"),
             "owner_isaac_unitree_g1_execution_proven": owner_isaac_asset_proven,

@@ -18,6 +18,10 @@ DEFAULT_POLICY_EXECUTION_RELATIVE = (
     "pipeline/sim_only_beta_rehearsal/official_unitree_g1_policy_execution/"
     "official_unitree_g1_policy_execution_manifest.json"
 )
+DEFAULT_HANDOFF_RELATIVE = (
+    "pipeline/sim_only_beta_rehearsal/official_unitree_g1_policy_execution/"
+    "robot_team_handoff/robot_team_handoff_manifest.json"
+)
 
 
 def _string(value: Any) -> str:
@@ -223,14 +227,24 @@ def _mujoco_gate(path: Path, payload: Mapping[str, Any] | None) -> dict[str, Any
         evidence=evidence,
         blockers=blockers,
         claim_boundary=(
-            "Proves simulator-side Unitree G1 scene load, spawn, default walk_to_target "
-            "execution, and simulator POV frames. It does not claim physical robot readiness."
+            "Proves simulator-side Unitree G1 scene load, spawn, default smoke-policy "
+            "execution, and simulator POV frames. It does not prove balanced humanoid "
+            "walking, training-grade policy rollouts, or physical robot readiness."
         ),
         details={
             "simulator_backend": payload.get("simulator_backend"),
             "mujoco_version": payload.get("mujoco_version"),
             "simulated_step_count": metrics.get("simulated_step_count"),
             "frame_count": len(frames),
+            "locomotion_controller_integrated": payload.get(
+                "locomotion_controller_integrated"
+            )
+            is True,
+            "walking_motion_proven": payload.get("walking_motion_proven") is True,
+            "training_grade_policy_rollout_proven": payload.get(
+                "training_grade_policy_rollout_proven"
+            )
+            is True,
         },
     )
 
@@ -259,6 +273,22 @@ def _official_policy_gate(path: Path, payload: Mapping[str, Any] | None) -> dict
         blockers.append("official_policy_finite_state_not_true")
     if metrics.get("finite_actions") is not True:
         blockers.append("official_policy_finite_actions_not_true")
+    final_base_position = metrics.get("final_base_position_xyz")
+    base_displacement_xy = None
+    if isinstance(final_base_position, Sequence) and not isinstance(
+        final_base_position,
+        (str, bytes),
+    ):
+        try:
+            base_displacement_xy = (
+                float(final_base_position[0]) ** 2 + float(final_base_position[1]) ** 2
+            ) ** 0.5
+        except (TypeError, ValueError, IndexError):
+            base_displacement_xy = None
+    if base_displacement_xy is None or base_displacement_xy <= 0.10:
+        blockers.append("official_policy_base_displacement_missing_or_too_small")
+    if not _as_list(metrics.get("command_xyz")):
+        blockers.append("official_policy_command_profile_missing")
     if not trace_path.is_file():
         blockers.append(f"missing_policy_trace:{trace_path}")
         trace_rows = 0
@@ -282,6 +312,75 @@ def _official_policy_gate(path: Path, payload: Mapping[str, Any] | None) -> dict
             "steps": metrics.get("steps"),
             "control_updates": metrics.get("control_updates"),
             "trace_rows": trace_rows,
+            "base_displacement_xy_m": base_displacement_xy,
+            "command_xyz": metrics.get("command_xyz"),
+            "walking_motion_proven": not blockers,
+            "training_grade_policy_rollout_proven": False,
+        },
+    )
+
+
+def _handoff_gate(path: Path, payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return _proof_item(
+            proven=False,
+            status="missing_robot_team_handoff_dataset",
+            evidence=[],
+            blockers=[f"missing_file:{path}"],
+            claim_boundary=(
+                "Training-grade simulator rollout proof requires the enriched robot-team "
+                "handoff dataset, not the smoke command or thin official policy trace."
+            ),
+        )
+    artifacts = _mapping(payload.get("artifacts"))
+    blockers = [str(blocker) for blocker in _as_list(payload.get("blockers")) if _string(blocker)]
+    if payload.get("status") != "complete":
+        blockers.append(f"handoff_status:{_string(payload.get('status')) or 'missing'}")
+    if payload.get("robot_team_handoff_dataset_status") != "complete":
+        blockers.append("robot_team_handoff_dataset_not_complete")
+    if payload.get("simulated_robot_pov_status") != "complete":
+        blockers.append("simulated_robot_pov_not_complete")
+    if payload.get("high_quality_video_status") != "complete":
+        blockers.append("high_quality_video_not_complete")
+    if payload.get("training_grade_policy_rollout_proven") is not True:
+        blockers.append("training_grade_policy_rollout_not_proven_by_handoff_gate")
+    if int(payload.get("steps") or 0) <= 0:
+        blockers.append("handoff_steps_missing")
+    if int(payload.get("control_updates") or 0) <= 0:
+        blockers.append("handoff_control_updates_missing")
+    evidence = _existing_paths(
+        [
+            path,
+            artifacts.get("robot_team_timeseries"),
+            artifacts.get("policy_execution_trace_enriched"),
+            artifacts.get("sensor_stream_manifest"),
+            artifacts.get("camera_manifest"),
+            artifacts.get("contact_manifest"),
+            artifacts.get("robot_pov_manifest"),
+            artifacts.get("rendered_motion_manifest"),
+        ]
+    )
+    return _proof_item(
+        proven=not blockers,
+        status="proven" if not blockers else "blocked",
+        evidence=evidence,
+        blockers=blockers,
+        claim_boundary=(
+            "Proves a simulator-only robot-team handoff dataset with qpos/qvel, actuator, "
+            "contact, policy-observation, simulated robot POV, and high-quality video "
+            "streams. It does not prove physical robot readiness or real robot POV."
+        ),
+        details={
+            "robot_team_handoff_dataset_status": payload.get("robot_team_handoff_dataset_status"),
+            "simulated_robot_pov_status": payload.get("simulated_robot_pov_status"),
+            "high_quality_video_status": payload.get("high_quality_video_status"),
+            "steps": payload.get("steps"),
+            "control_updates": payload.get("control_updates"),
+            "walking_motion_proven": payload.get("walking_motion_proven") is True,
+            "training_grade_policy_rollout_proven": payload.get(
+                "training_grade_policy_rollout_proven"
+            )
+            is True,
         },
     )
 
@@ -368,6 +467,7 @@ def build_simulator_beta_readiness(
     output_dir: str | Path | None = None,
     mujoco_output_path: str | Path | None = None,
     official_policy_execution_path: str | Path | None = None,
+    handoff_manifest_path: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(capture_root).expanduser().resolve()
     out_dir = (
@@ -386,6 +486,11 @@ def build_simulator_beta_readiness(
         if official_policy_execution_path
         else root / DEFAULT_POLICY_EXECUTION_RELATIVE
     )
+    handoff_path = (
+        Path(handoff_manifest_path).expanduser().resolve()
+        if handoff_manifest_path
+        else root / DEFAULT_HANDOFF_RELATIVE
+    )
     runpod_path, runpod_payload = _select_runpod_live_execution_proof(root)
     webapp_path, webapp_payload = _select_webapp_route_forwarding_proof(root)
     gates = {
@@ -394,11 +499,28 @@ def build_simulator_beta_readiness(
             policy_path,
             optional_read_json(policy_path),
         ),
+        "official_policy_robot_team_handoff_dataset": _handoff_gate(
+            handoff_path,
+            optional_read_json(handoff_path),
+        ),
         "production_runpod_worker_execution": _runpod_gate(runpod_path, runpod_payload),
         "customer_website_to_pipeline_request": _webapp_gate(webapp_path, webapp_payload),
     }
+    infrastructure_gate_ids = [
+        "site_capture_mujoco_g1_run",
+        "official_unitree_g1_policy_execution",
+        "production_runpod_worker_execution",
+        "customer_website_to_pipeline_request",
+    ]
     blocking_gate_ids = [
-        gate_id for gate_id, gate in gates.items() if gate.get("proven") is not True
+        gate_id
+        for gate_id in infrastructure_gate_ids
+        if gates[gate_id].get("proven") is not True
+    ]
+    data_gate_ids = [
+        gate_id
+        for gate_id in ("official_policy_robot_team_handoff_dataset",)
+        if gates[gate_id].get("proven") is not True
     ]
     out_of_scope = {
         "physical_robot_readiness": "out_of_scope_for_simulator_beta",
@@ -421,6 +543,7 @@ def build_simulator_beta_readiness(
             "simulator_backend": "mujoco",
         },
         "blocking_gate_ids": blocking_gate_ids,
+        "data_gate_ids": data_gate_ids,
         "gates": gates,
         "out_of_scope_gates": out_of_scope,
         "claim_boundary": {
@@ -436,12 +559,25 @@ def build_simulator_beta_readiness(
                 "production_runpod_worker_execution"
             ].get("proven")
             is True,
+            "locomotion_controller_integrated": gates[
+                "official_unitree_g1_policy_execution"
+            ].get("proven")
+            is True,
+            "walking_motion_proven": gates["official_unitree_g1_policy_execution"].get(
+                "proven"
+            )
+            is True,
+            "training_grade_policy_rollout_proven": gates[
+                "official_policy_robot_team_handoff_dataset"
+            ].get("proven")
+            is True,
             "public_claim_upgrade_allowed": False,
         },
         "artifacts": {
             "manifest": str(manifest_path),
             "mujoco_output": str(mujoco_path),
             "official_policy_execution": str(policy_path),
+            "robot_team_handoff_manifest": str(handoff_path),
             "runpod_live_execution_proof": str(runpod_path),
             "webapp_route_forwarding_proof": str(webapp_path),
         },
@@ -456,12 +592,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir")
     parser.add_argument("--mujoco-output")
     parser.add_argument("--official-policy-execution")
+    parser.add_argument("--handoff-manifest")
     args = parser.parse_args(argv)
     manifest = build_simulator_beta_readiness(
         capture_root=args.capture_root,
         output_dir=args.output_dir,
         mujoco_output_path=args.mujoco_output,
         official_policy_execution_path=args.official_policy_execution,
+        handoff_manifest_path=args.handoff_manifest,
     )
     print(manifest["artifacts"]["manifest"])
     return 0 if manifest["ready_for_simulator_beta"] else 1

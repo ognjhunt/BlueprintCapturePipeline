@@ -40,6 +40,7 @@ cloud = [
 ]
 runtime = [
     "opencv-python-headless>=4.10.0",
+    "pycollada>=0.8",
     "trimesh>=4.4.0",
     "ultralytics>=8.3.0",
 ]
@@ -64,7 +65,9 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "jsonschema>=4.23.0",
+    "pycollada>=0.8",
     "ruff>=0.6.0",
+    "trimesh>=4.4.0",
 ]
 
 [project.scripts]
@@ -90,6 +93,9 @@ blueprint-collect-runpod-live-execution-proof = "blueprint_pipeline.runpod_live_
 blueprint-plan-sim-only-provider-execution = "blueprint_pipeline.sim_only_provider_execution_planner:main"
 blueprint-run-mujoco-worker-runtime-preflight = "blueprint_pipeline.mujoco_worker_runtime_preflight:main"
 blueprint-run-mujoco-g1-simulator-command = "blueprint_pipeline.mujoco_g1_simulator_command:main"
+blueprint-build-mujoco-scene-scenario-packet = "blueprint_pipeline.mujoco_scene_scenario_packet:main"
+blueprint-build-official-g1-policy-handoff = "blueprint_pipeline.official_g1_policy_handoff:main"
+blueprint-build-lightwheel-kitchen-isaac-scenarios = "blueprint_pipeline.lightwheel_kitchen_isaac_scenarios:main"
 blueprint-setup-g1-controlled-proof-run = "blueprint_pipeline.g1_controlled_proof_setup:main"
 blueprint-build-g1-field-run-capture-kit = "blueprint_pipeline.g1_field_run_capture:main"
 blueprint-assemble-g1-controlled-run-evidence = "blueprint_pipeline.g1_controlled_run_evidence:main"

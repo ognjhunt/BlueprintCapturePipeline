@@ -597,6 +597,7 @@ def build_sim_only_provider_execution_layer(
             "ready_for_simulator_beta": readiness_manifest.get("ready_for_simulator_beta"),
             "manifest_path": readiness_manifest.get("artifacts", {}).get("manifest"),
             "blocking_gate_ids": readiness_manifest.get("blocking_gate_ids"),
+            "data_gate_ids": readiness_manifest.get("data_gate_ids"),
         }
     plan = {
         "schema_version": SIM_ONLY_PROVIDER_EXECUTION_PLAN_SCHEMA_VERSION,

@@ -28,7 +28,50 @@ def _write_frame(path: Path) -> None:
     image.save(path)
 
 
-def _seed_ready_simulator_beta(capture_root: Path) -> None:
+def _seed_handoff(capture_root: Path) -> None:
+    handoff_dir = (
+        capture_root
+        / "pipeline"
+        / "sim_only_beta_rehearsal"
+        / "official_unitree_g1_policy_execution"
+        / "robot_team_handoff"
+    )
+    artifacts = {
+        "robot_team_timeseries": handoff_dir / "robot_team_timeseries.jsonl",
+        "policy_execution_trace_enriched": handoff_dir / "policy_execution_trace_enriched.jsonl",
+        "sensor_stream_manifest": handoff_dir / "sensor_stream_manifest.json",
+        "camera_manifest": handoff_dir / "camera_manifest.json",
+        "contact_manifest": handoff_dir / "contact_manifest.json",
+        "robot_pov_manifest": handoff_dir / "robot_pov_manifest.json",
+        "rendered_motion_manifest": handoff_dir / "rendered_motion_manifest.json",
+    }
+    artifacts["robot_team_timeseries"].parent.mkdir(parents=True, exist_ok=True)
+    artifacts["robot_team_timeseries"].write_text('{"qpos":[0],"qvel":[0]}\n', encoding="utf-8")
+    artifacts["policy_execution_trace_enriched"].write_text(
+        '{"qpos":[0],"qvel":[0]}\n',
+        encoding="utf-8",
+    )
+    for key, path in artifacts.items():
+        if path.suffix == ".json":
+            _write_json(path, {"status": "complete", "artifact": key})
+    _write_json(
+        handoff_dir / "robot_team_handoff_manifest.json",
+        {
+            "status": "complete",
+            "robot_team_handoff_dataset_status": "complete",
+            "simulated_robot_pov_status": "complete",
+            "high_quality_video_status": "complete",
+            "training_grade_policy_rollout_proven": True,
+            "walking_motion_proven": True,
+            "steps": 2000,
+            "control_updates": 200,
+            "blockers": [],
+            "artifacts": {key: str(path) for key, path in artifacts.items()},
+        },
+    )
+
+
+def _seed_ready_simulator_beta(capture_root: Path, *, include_handoff: bool = True) -> None:
     mujoco_dir = capture_root / "pipeline" / "sim_only_beta_rehearsal" / "mujoco_g1_command"
     overview = mujoco_dir / "frames" / "overview_0000.png"
     pov = mujoco_dir / "frames" / "sim_robot_follow_pov_0000.png"
@@ -97,6 +140,8 @@ def _seed_ready_simulator_beta(capture_root: Path) -> None:
                 "sim_time_s": 4.0,
                 "steps": 2000,
                 "control_updates": 200,
+                "command_xyz": [0.5, 0.0, 0.0],
+                "final_base_position_xyz": [1.75, -0.08, 0.77],
             },
             "proof_boundary": {
                 "non_default_policy_execution_trace_proven": True,
@@ -104,6 +149,8 @@ def _seed_ready_simulator_beta(capture_root: Path) -> None:
             },
         },
     )
+    if include_handoff:
+        _seed_handoff(capture_root)
 
     signed_dir = capture_root / "pipeline" / "g1_controlled_proof_setup" / "signed_runpod_io"
     runtime_manifest = signed_dir / "worker_runtime_manifest.json"
@@ -167,9 +214,50 @@ def test_simulator_beta_readiness_marks_physical_gates_out_of_scope(tmp_path: Pa
     assert gates["official_unitree_g1_policy_execution"]["proven"] is True
     assert gates["production_runpod_worker_execution"]["proven"] is True
     assert gates["customer_website_to_pipeline_request"]["proven"] is True
+    assert gates["official_policy_robot_team_handoff_dataset"]["proven"] is True
     assert manifest["claim_boundary"]["physical_robot_readiness_claimed"] is False
+    assert manifest["claim_boundary"]["walking_motion_proven"] is True
+    assert manifest["claim_boundary"]["training_grade_policy_rollout_proven"] is True
+    assert manifest["data_gate_ids"] == []
     persisted = _read_json(Path(manifest["artifacts"]["manifest"]))
     assert persisted["ready_for_simulator_beta"] is True
+
+
+def test_simulator_beta_readiness_does_not_promote_training_grade_without_handoff(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    _seed_ready_simulator_beta(capture_root, include_handoff=False)
+
+    manifest = build_simulator_beta_readiness(capture_root=capture_root)
+
+    assert manifest["status"] == "ready_for_simulator_beta"
+    assert manifest["ready_for_simulator_beta"] is True
+    assert manifest["blocking_gate_ids"] == []
+    assert manifest["data_gate_ids"] == ["official_policy_robot_team_handoff_dataset"]
+    assert manifest["claim_boundary"]["walking_motion_proven"] is True
+    assert manifest["claim_boundary"]["training_grade_policy_rollout_proven"] is False
+
+
+def test_smoke_command_cannot_satisfy_walking_motion_without_official_policy(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    _seed_ready_simulator_beta(capture_root, include_handoff=False)
+    (
+        capture_root
+        / "pipeline"
+        / "sim_only_beta_rehearsal"
+        / "official_unitree_g1_policy_execution"
+        / "official_unitree_g1_policy_execution_manifest.json"
+    ).unlink()
+
+    manifest = build_simulator_beta_readiness(capture_root=capture_root)
+
+    assert manifest["status"] == "blocked_simulator_beta"
+    assert "official_unitree_g1_policy_execution" in manifest["blocking_gate_ids"]
+    assert manifest["claim_boundary"]["walking_motion_proven"] is False
+    assert manifest["claim_boundary"]["training_grade_policy_rollout_proven"] is False
 
 
 def test_simulator_beta_readiness_blocks_missing_mujoco_output(tmp_path: Path) -> None:

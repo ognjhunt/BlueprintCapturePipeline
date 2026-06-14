@@ -9,6 +9,7 @@ from pathlib import Path
 from blueprint_pipeline.robot_eval_startup_architecture_audit import (
     build_robot_eval_startup_architecture_audit,
 )
+from blueprint_pipeline.robot_eval_worker import _copy_worker_runtime_files_to_job_dir
 
 
 EXPECTED_OUTPUTS = [
@@ -368,6 +369,47 @@ def test_robot_eval_startup_architecture_audit_blocks_required_worker_artifact_o
 
     assert result["status"] == "blocked"
     assert "worker_manifest:artifact_output_when_required" in result["blockers"]
+
+
+def test_worker_runtime_manifest_copy_allows_signed_put_only_startup_audit(
+    tmp_path: Path,
+) -> None:
+    job_dir = _startup_job_dir(tmp_path)
+    signed_url_signature_param = "x-goog-" + "signature="
+    worker_manifest = json.loads(
+        (job_dir / "worker_manifest.json").read_text(encoding="utf-8")
+    )
+    worker_manifest["artifact_output_uri_required"] = True
+    worker_manifest["artifact_output_uri"] = None
+    _write_json(job_dir / "worker_manifest.json", worker_manifest)
+
+    downloaded_manifest = dict(worker_manifest)
+    downloaded_manifest.update(
+        {
+            "artifact_output_uri_required": False,
+            "artifact_output_uri": "",
+            "capture_root_bundle_uri": (
+                "https://storage.googleapis.com/blueprint/capture-root.zip"
+                f"?{signed_url_signature_param}rawsignature&x-goog-date=20260613"
+            ),
+        }
+    )
+    worker_dir = tmp_path / "worker"
+    _write_json(worker_dir / "downloads" / "worker_manifest.json", downloaded_manifest)
+
+    _copy_worker_runtime_files_to_job_dir(worker_dir=worker_dir, job_dir=job_dir)
+
+    copied_manifest = json.loads(
+        (job_dir / "worker_manifest.json").read_text(encoding="utf-8")
+    )
+    copied_text = json.dumps(copied_manifest)
+    assert copied_manifest["artifact_output_uri_required"] is False
+    assert "rawsignature" not in copied_text
+    assert "<redacted:signed-url-signature>" in copied_text
+
+    result = build_robot_eval_startup_architecture_audit(job_dir=job_dir)
+    assert result["status"] == "passed"
+    assert "worker_manifest:artifact_output_when_required" not in result["blockers"]
 
 
 def test_robot_eval_startup_architecture_audit_blocks_live_provider_without_image_ref(
