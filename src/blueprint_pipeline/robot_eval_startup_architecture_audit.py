@@ -1021,12 +1021,8 @@ def _startup_artifact_checks(
         },
     )
     provider_command = _string(provider_shape.get("command"))
-    provider_command_ok = provider_command == (
+    provider_command_ok = provider_command.startswith(
         "blueprint-run-robot-eval-worker --manifest ${BLUEPRINT_EVAL_MANIFEST_URI}"
-    ) or (
-        provider_command.startswith("blueprint-run-robot-eval-worker ")
-        and "--allow-simulator-execution" in provider_command
-        and "--simulator-command" in provider_command
     )
     provider_artifact_contract_ok = provider_inputs.get("artifact_output_uri_required") is True or (
         provider_inputs.get("artifact_output_uri_required") is False

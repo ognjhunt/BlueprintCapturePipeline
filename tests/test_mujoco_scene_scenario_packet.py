@@ -128,6 +128,13 @@ def test_build_mujoco_scene_packet_writes_warehouse_tasks_matrix_and_recording_p
         "side",
     ]
     assert len(matrix["runs"]) == DEFAULT_SCENARIO_COUNT
+    assert len({run["scenario_eval_run_id"] for run in matrix["runs"]}) == (
+        DEFAULT_SCENARIO_COUNT
+    )
+    assert len({run["episode_seed"] for run in matrix["runs"]}) == DEFAULT_SCENARIO_COUNT
+    assert all(run["spawn_pose"]["xyz"] for run in matrix["runs"])
+    assert all(run["target_pose"]["xyz"] for run in matrix["runs"])
+    assert all(run["scenario_variation_instance_id"] for run in matrix["runs"])
     assert all("side" in run["recording_views_required"] for run in matrix["runs"])
     assert all(
         run["episode_authoring"]["runtime_ai_route_selection_allowed"] is False

@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from urllib.parse import urlparse
 
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
@@ -37,6 +38,11 @@ WEBAPP_UPSTREAM_CAPTURE_GROUNDING_SOURCES = {
     "raw_manifest.upstream_handoff",
     "pipeline.opportunity_handoff",
     "pipeline.webapp_sync_result",
+}
+
+WEBAPP_ROUTE_FORWARDING_PROOF_STATUSES = {
+    "forwarded_to_pipeline_intake",
+    "staged_for_control_plane",
 }
 
 SCORECARD_REQUIRED_FIELDS = (
@@ -179,14 +185,14 @@ LIVE_EXTERNAL_GATES = (
     "live_evidence_integrity",
     "webapp_upstream_truth",
     "rights_privacy_scope",
-    "live_simulator_execution",
-    "live_policy_execution",
+    "review_acceptance",
+    "signed_delivery_access",
     "real_robot_pov_evidence",
     "real_world_validation_loop",
     "predicted_vs_actual_calibration",
-    "review_acceptance",
-    "signed_delivery_access",
     "safety_contact_physics_readiness",
+    "live_simulator_execution",
+    "live_policy_execution",
 )
 
 REQUIREMENT_COVERAGE_SPEC: Sequence[Dict[str, Any]] = (
@@ -219,12 +225,6 @@ REQUIREMENT_COVERAGE_SPEC: Sequence[Dict[str, Any]] = (
         "label": "robot POV generation",
         "gate_ids": ("robot_pov_generation",),
         "scope": "repo_local",
-    },
-    {
-        "requirement_id": "real_robot_pov_evidence",
-        "label": "real robot POV and action-log evidence",
-        "gate_ids": ("real_robot_pov_evidence",),
-        "scope": "live_external",
     },
     {
         "requirement_id": "scenario_eval_suite",
@@ -261,18 +261,6 @@ REQUIREMENT_COVERAGE_SPEC: Sequence[Dict[str, Any]] = (
         "label": "site + task + scenario -> policy -> sim/world rollout -> evaluator -> report",
         "gate_ids": ("report_generation",),
         "scope": "repo_local",
-    },
-    {
-        "requirement_id": "real_world_validation_loop",
-        "label": "real-world validation loop",
-        "gate_ids": ("real_world_validation_loop",),
-        "scope": "live_external",
-    },
-    {
-        "requirement_id": "predicted_vs_actual_deployment_data",
-        "label": "predicted-vs-actual deployment data and calibration",
-        "gate_ids": ("predicted_vs_actual_calibration",),
-        "scope": "live_external",
     },
 )
 
@@ -352,9 +340,6 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "agents_may_not_set_proof_booleans_directly": True,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
-    "real_world_outcome_proven": False,
-    "physics_contact_validated": False,
-    "safety_validated": False,
     "robot_readiness_proven": False,
     "public_claim_upgrade_allowed": False,
 }
@@ -496,41 +481,6 @@ def _invalid_scorecard_fields(scorecard: Mapping[str, Any]) -> List[str]:
     return invalid
 
 
-def _predicted_vs_actual_summary_section_audit(
-    *,
-    summary: Mapping[str, Any],
-    matched_prediction_record_count: int,
-) -> tuple[List[str], List[str]]:
-    missing = sorted(
-        section
-        for section in PREDICTED_VS_ACTUAL_SUMMARY_REQUIRED_SECTIONS
-        if section not in summary
-    )
-    invalid: List[str] = []
-    for section in PREDICTED_VS_ACTUAL_SUMMARY_LIST_SECTIONS:
-        if section not in summary:
-            continue
-        value = summary.get(section)
-        if not isinstance(value, list):
-            invalid.append(section)
-        elif matched_prediction_record_count > 0 and section in {
-            "what_eval_predicted",
-            "what_actually_happened",
-        } and not value:
-            invalid.append(section)
-    tuning = summary.get("how_much_real_world_tuning_was_needed")
-    if "how_much_real_world_tuning_was_needed" in summary:
-        if not isinstance(tuning, Mapping):
-            invalid.append("how_much_real_world_tuning_was_needed")
-        else:
-            for field in PREDICTED_VS_ACTUAL_TUNING_SUMMARY_FIELDS:
-                number = _number(tuning.get(field))
-                if number is None or number < 0:
-                    invalid.append(f"how_much_real_world_tuning_was_needed.{field}")
-                    continue
-                if field in {"tuning_iterations_total", "records_with_tuning"} and not number.is_integer():
-                    invalid.append(f"how_much_real_world_tuning_was_needed.{field}")
-    return missing, sorted(dict.fromkeys(invalid))
 
 
 def _field(payload: Mapping[str, Any], *keys: str) -> Any:
@@ -1090,66 +1040,10 @@ def _attestation_ok(value: Any) -> bool:
     )
 
 
-def _deployment_record_id(row: Mapping[str, Any], index: int) -> str:
-    return (
-        _string(row.get("record_id") or row.get("recordId") or row.get("outcome_id"))
-        or f"deployment_outcome_{index:04d}"
-    )
 
 
-def _deployment_record_owner_evidence_present(row: Mapping[str, Any]) -> bool:
-    evidence_refs = (
-        row.get("evidence_refs")
-        or row.get("evidenceRefs")
-        or row.get("owner_evidence_refs")
-        or row.get("ownerEvidenceRefs")
-    )
-    owner_evidence_uri = _string(
-        row.get("owner_evidence_uri")
-        or row.get("ownerEvidenceUri")
-        or row.get("evidence_uri")
-        or row.get("evidenceUri")
-        or row.get("pilot_log_uri")
-        or row.get("pilotLogUri")
-        or row.get("owner_system_proof_uri")
-        or row.get("ownerSystemProofUri")
-    )
-    return bool(
-        _card_field_present(evidence_refs)
-        or owner_evidence_uri
-        or _attestation_ok(
-            row.get("operator_attestation")
-            or row.get("operatorAttestation")
-            or row.get("owner_attestation")
-            or row.get("ownerAttestation")
-        )
-    )
 
 
-def _deployment_record_actual_signal_present(row: Mapping[str, Any]) -> bool:
-    for key in (
-        "actual_success",
-        "actualSuccess",
-        "success",
-        "passed",
-        "actual_status",
-        "actualStatus",
-        "status",
-    ):
-        if key not in row or row.get(key) is None:
-            continue
-        value = row.get(key)
-        if isinstance(value, str) and not value.strip():
-            continue
-        return True
-    return bool(
-        _string_list(
-            row.get("failure_mode_ids")
-            or row.get("actual_failures")
-            or row.get("actualFailures")
-            or row.get("failures")
-        )
-    )
 
 
 def _owner_gpu_proof_manifest_audit(manifest: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1336,6 +1230,609 @@ def _requirement_coverage(gates: Mapping[str, Mapping[str, Any]]) -> Dict[str, A
         "passed_requirement_ids": passed_ids,
         "blocked_requirement_ids": blocked_ids,
         "requirements": requirements,
+    }
+
+
+def _prefixed_gate_blockers(
+    gates: Mapping[str, Mapping[str, Any]],
+    gate_ids: Sequence[str],
+) -> List[str]:
+    blockers: List[str] = []
+    for gate_id in gate_ids:
+        gate = _mapping(gates.get(gate_id))
+        blockers.extend(
+            f"{gate_id}:{blocker}" for blocker in _string_list(gate.get("blockers"))
+        )
+    return blockers
+
+
+def _readiness_check(
+    *,
+    check_id: str,
+    label: str,
+    passed: bool,
+    blockers: Sequence[str],
+    evidence: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    unique_blockers: List[str] = []
+    for blocker in blockers:
+        if blocker and blocker not in unique_blockers:
+            unique_blockers.append(blocker)
+    return {
+        "check_id": check_id,
+        "label": label,
+        "status": "passed" if passed and not unique_blockers else "blocked",
+        "passed": bool(passed and not unique_blockers),
+        "blockers": unique_blockers,
+        "evidence": dict(evidence or {}),
+    }
+
+
+def _latest_runpod_live_execution_proof(job_dir: Path) -> tuple[Path | None, Dict[str, Any]]:
+    candidates = sorted(job_dir.glob("runpod_live_execution_proof*.json"))
+    if not candidates:
+        return None, {}
+    latest = max(candidates, key=lambda path: (path.stat().st_mtime, path.name))
+    return latest, _read_optional_mapping(latest)
+
+
+def _robot_team_beta_readiness_summary(
+    *,
+    gates: Mapping[str, Mapping[str, Any]],
+    job_dir: Path,
+    repo_local_ready: bool,
+    live_external_ready: bool,
+    live_end_to_end_verified: bool,
+) -> Dict[str, Any]:
+    remote_closure_path = job_dir / "remote_cloud_execution_closure_manifest.json"
+    remote_closure = _read_optional_mapping(remote_closure_path)
+    remote_checks = _mapping(remote_closure.get("checks"))
+    remote_outputs = _mapping(remote_closure.get("outputs"))
+    remote_cost = _mapping(remote_closure.get("cost_and_timeout_controls"))
+    artifact_output_write_probe_path = job_dir / "artifact_output_write_probe_manifest.json"
+    artifact_output_write_probe = _read_optional_mapping(artifact_output_write_probe_path)
+    remote_provider_setup = _mapping(remote_closure.get("provider_input_setup"))
+    remote_provider_setup_blockers = _string_list(remote_provider_setup.get("blockers"))
+    remote_provider_inputs_uploaded = remote_provider_setup.get("provider_inputs_uploaded")
+    gpu_cost_path = job_dir / "gpu_cost_control_ledger.json"
+    gpu_cost = _read_optional_mapping(gpu_cost_path)
+    runpod_proof_path, runpod_proof = _latest_runpod_live_execution_proof(job_dir)
+    runpod_zero_active_pods_now = bool(
+        runpod_proof.get("status") == "runpod_live_proof_collected"
+        and runpod_proof.get("active_pod_count_after") == 0
+        and runpod_proof.get("runpod_side_effects_may_have_occurred") is False
+    )
+    today_utc = utc_now_iso()[:10]
+    remote_closure_generated_at = _string(remote_closure.get("generated_at"))
+    remote_closure_generated_date = (
+        remote_closure_generated_at[:10] if remote_closure_generated_at else ""
+    )
+    fresh_live_run_today_ready = bool(
+        remote_closure.get("remote_cloud_execution_proven")
+        and remote_closure.get("live_provider_calls_performed")
+        and remote_closure_generated_date == today_utc
+    )
+    live_provider_worker_blockers = _string_list(remote_closure.get("blockers"))
+    if remote_closure and not remote_closure.get("remote_cloud_execution_proven"):
+        live_provider_worker_blockers = live_provider_worker_blockers or [
+            "remote_cloud_execution_not_proven"
+        ]
+    robot_pov_generation_gate = _mapping(gates.get("robot_pov_generation"))
+    policy_execution_gate = _mapping(gates.get("live_policy_execution"))
+    policy_execution_evidence = _mapping(policy_execution_gate.get("evidence"))
+    sim_policy_attempt_count = policy_execution_evidence.get("attempt_count")
+    sim_policy_run_count = policy_execution_evidence.get("scenario_eval_run_count")
+    sim_policy_missing_run_count = int(
+        policy_execution_evidence.get("missing_scenario_eval_run_count") or 0
+    )
+    sim_policy_attempts_missing_trace = _string_list(
+        policy_execution_evidence.get("attempts_missing_action_or_skill_trace")
+    )
+    simulator_pov_policy_ready = bool(
+        robot_pov_generation_gate.get("passed")
+        and _string(policy_execution_evidence.get("policy_execution_manifest_status"))
+        == "completed"
+        and _string(policy_execution_evidence.get("policy_execution_trace_status"))
+        == "completed"
+        and int(sim_policy_attempt_count or 0) > 0
+        and sim_policy_attempt_count == sim_policy_run_count
+        and sim_policy_missing_run_count == 0
+        and not sim_policy_attempts_missing_trace
+    )
+
+    provider_runtime_finalizer_proof_path = job_dir / "provider_runtime_finalizer_proof.json"
+    provider_runtime_finalizer_proof = _read_optional_mapping(
+        provider_runtime_finalizer_proof_path
+    )
+    worker_runtime_manifest_path = job_dir / "worker_runtime_manifest.json"
+    job_run_manifest_path = job_dir / "job_run_manifest.json"
+    robot_eval_report_path = job_dir / "robot_eval_report.json"
+    final_live_closure_artifacts_ready = bool(
+        remote_closure.get("status") == "remote_execution_completed_with_shutdown_proof"
+        and provider_runtime_finalizer_proof.get("status") == "completed"
+        and gpu_cost_path.is_file()
+        and worker_runtime_manifest_path.is_file()
+        and job_run_manifest_path.is_file()
+        and robot_eval_report_path.is_file()
+    )
+
+    remote_artifact_output_uri = _string(remote_outputs.get("artifact_output_uri"))
+    remote_artifact_output_ready = bool(
+        remote_artifact_output_uri
+        and remote_checks.get("artifact_output_uri_configured")
+        and remote_checks.get("artifact_output_uri_provider_writable")
+        and remote_checks.get("artifact_output_write_auth_contract_ready")
+        and remote_provider_inputs_uploaded is True
+        and not remote_provider_setup_blockers
+    )
+    remote_shutdown_cost_ready = bool(
+        remote_closure.get("clean_shutdown_proven")
+        and remote_checks.get("actual_gpu_time_record_present")
+        and remote_cost.get("actual_gpu_seconds") is not None
+    )
+    deployment_intake_path = job_dir / "deployment_outcome_intake_manifest.json"
+    deployment_ledger_path = job_dir / "deployment_outcome_ledger.json"
+    deployment_summary_path = job_dir / "prediction_vs_actual_deployment_summary.json"
+    calibration_report_path = job_dir / "sim_vs_real_calibration_report.json"
+    deployment_intake = _read_optional_mapping(deployment_intake_path)
+    deployment_ledger = _read_optional_mapping(deployment_ledger_path)
+    deployment_summary = _read_optional_mapping(deployment_summary_path)
+    calibration_report = _read_optional_mapping(calibration_report_path)
+    deployment_allowed_statuses = {
+        "completed",
+        "ready_for_real_world_validation",
+        "review_required",
+        "no_followup_required",
+        "blocked_missing_real_world_outcomes",
+    }
+    deployment_join_blockers: List[str] = []
+    if not deployment_intake_path.is_file():
+        deployment_join_blockers.append("deployment_outcome_intake_manifest_missing")
+    elif deployment_intake.get("schema_version") != "deployment_outcome_intake_manifest.v1":
+        deployment_join_blockers.append("deployment_outcome_intake_manifest_schema_invalid")
+    elif _string(deployment_intake.get("status")) not in deployment_allowed_statuses:
+        deployment_join_blockers.append("deployment_outcome_intake_manifest_status_invalid")
+    if not deployment_ledger_path.is_file():
+        deployment_join_blockers.append("deployment_outcome_ledger_missing")
+    elif deployment_ledger.get("schema_version") != "deployment_outcome_ledger.v1":
+        deployment_join_blockers.append("deployment_outcome_ledger_schema_invalid")
+    elif _string(deployment_ledger.get("status")) not in deployment_allowed_statuses:
+        deployment_join_blockers.append("deployment_outcome_ledger_status_invalid")
+    if not deployment_summary_path.is_file():
+        deployment_join_blockers.append("prediction_vs_actual_deployment_summary_missing")
+    elif deployment_summary.get("schema_version") != "prediction_vs_actual_deployment_summary.v1":
+        deployment_join_blockers.append("prediction_vs_actual_deployment_summary_schema_invalid")
+    elif _string(deployment_summary.get("status")) not in deployment_allowed_statuses:
+        deployment_join_blockers.append("prediction_vs_actual_deployment_summary_status_invalid")
+    if not calibration_report_path.is_file():
+        deployment_join_blockers.append("sim_vs_real_calibration_report_missing")
+    elif calibration_report.get("schema_version") != "sim_vs_real_calibration_report.v1":
+        deployment_join_blockers.append("sim_vs_real_calibration_report_schema_invalid")
+    elif _string(calibration_report.get("status")) not in deployment_allowed_statuses:
+        deployment_join_blockers.append("sim_vs_real_calibration_report_status_invalid")
+
+    checks = [
+        _readiness_check(
+            check_id="production_or_staging_webapp_request_ids",
+            label="real production/staging WebApp request IDs",
+            passed=bool(_mapping(gates.get("webapp_upstream_truth")).get("passed")),
+            blockers=_prefixed_gate_blockers(gates, ("webapp_upstream_truth",)),
+            evidence={
+                "gate_id": "webapp_upstream_truth",
+                "ids": _mapping(
+                    _mapping(gates.get("webapp_upstream_truth")).get("evidence")
+                ).get("ids", {}),
+            },
+        ),
+        _readiness_check(
+            check_id="real_capture_root_input",
+            label="real capture-root input",
+            passed=bool(_mapping(gates.get("site_capture")).get("passed")),
+            blockers=_prefixed_gate_blockers(gates, ("site_capture",)),
+            evidence={
+                "gate_id": "site_capture",
+                "capture_root": _mapping(
+                    _mapping(gates.get("site_capture")).get("evidence")
+                ).get("capture_root"),
+            },
+        ),
+        _readiness_check(
+            check_id="live_provider_worker_execution",
+            label="live provider/worker execution",
+            passed=bool(remote_closure.get("remote_cloud_execution_proven")),
+            blockers=(
+                live_provider_worker_blockers
+                if remote_closure
+                else ["remote_cloud_execution_closure_manifest_missing"]
+            ),
+            evidence={
+                "remote_cloud_execution_closure_manifest": _artifact(
+                    remote_closure_path,
+                    base_dir=job_dir,
+                ),
+                "remote_cloud_execution_proven": bool(
+                    remote_closure.get("remote_cloud_execution_proven")
+                ),
+                "live_provider_calls_performed": bool(
+                    remote_closure.get("live_provider_calls_performed")
+                ),
+            },
+        ),
+        _readiness_check(
+            check_id="fresh_live_robot_team_run_today",
+            label="fresh live robot-team run today",
+            passed=fresh_live_run_today_ready,
+            blockers=(
+                [
+                    blocker
+                    for blocker in (
+                        None
+                        if remote_closure.get("remote_cloud_execution_proven")
+                        else "fresh_remote_cloud_execution_not_proven",
+                        None
+                        if remote_closure.get("live_provider_calls_performed")
+                        else "fresh_live_provider_calls_not_performed",
+                        "remote_closure_generated_at_missing"
+                        if not remote_closure_generated_at
+                        else None,
+                        None
+                        if remote_closure_generated_date == today_utc
+                        else "remote_closure_not_generated_today",
+                    )
+                    if blocker
+                ]
+                if remote_closure
+                else ["remote_cloud_execution_closure_manifest_missing"]
+            ),
+            evidence={
+                "remote_cloud_execution_closure_manifest": _artifact(
+                    remote_closure_path,
+                    base_dir=job_dir,
+                ),
+                "remote_closure_generated_at": remote_closure_generated_at or None,
+                "remote_closure_generated_date": remote_closure_generated_date or None,
+                "today_utc": today_utc,
+                "remote_cloud_execution_proven": bool(
+                    remote_closure.get("remote_cloud_execution_proven")
+                ),
+                "live_provider_calls_performed": bool(
+                    remote_closure.get("live_provider_calls_performed")
+                ),
+            },
+        ),
+        _readiness_check(
+            check_id="writable_artifact_output_uri",
+            label="writable artifact-output URI proof",
+            passed=remote_artifact_output_ready,
+            blockers=(
+                [
+                    blocker
+                    for blocker in (
+                        None if remote_artifact_output_uri else "remote_artifact_output_uri_missing",
+                        None
+                        if remote_checks.get("artifact_output_uri_provider_writable")
+                        else "remote_artifact_output_uri_not_provider_writable",
+                        None
+                        if remote_checks.get("artifact_output_write_auth_contract_ready")
+                        else "remote_artifact_output_write_auth_contract_missing",
+                        None
+                        if remote_provider_inputs_uploaded is True
+                        else "remote_artifact_output_upload_not_proven",
+                        *[
+                            f"provider_input_setup:{blocker}"
+                            for blocker in remote_provider_setup_blockers
+                        ],
+                    )
+                    if blocker
+                ]
+                if remote_closure
+                else ["remote_cloud_execution_closure_manifest_missing"]
+            ),
+            evidence={
+                "artifact_output_uri": remote_artifact_output_uri or None,
+                "artifact_output_uri_provider_writable": bool(
+                    remote_checks.get("artifact_output_uri_provider_writable")
+                ),
+                "artifact_output_write_auth_contract_ready": bool(
+                    remote_checks.get("artifact_output_write_auth_contract_ready")
+                ),
+                "provider_input_setup": {
+                    "status": remote_provider_setup.get("status"),
+                    "provider_inputs_uploaded": remote_provider_inputs_uploaded,
+                    "blockers": remote_provider_setup_blockers,
+                    "manifest_path": remote_provider_setup.get("manifest_path"),
+                }
+                if remote_provider_setup
+                else {},
+                "artifact_output_write_probe": {
+                    "artifact": _artifact(
+                        artifact_output_write_probe_path,
+                        base_dir=job_dir,
+                    ),
+                    "status": artifact_output_write_probe.get("status"),
+                    "writable_candidate_count": artifact_output_write_probe.get(
+                        "writable_candidate_count"
+                    ),
+                    "blocked_candidate_count": artifact_output_write_probe.get(
+                        "blocked_candidate_count"
+                    ),
+                }
+                if artifact_output_write_probe
+                else {},
+            },
+        ),
+        _readiness_check(
+            check_id="shutdown_and_cost_proof",
+            label="shutdown and cost proof",
+            passed=remote_shutdown_cost_ready,
+            blockers=(
+                [
+                    blocker
+                    for blocker in (
+                        None
+                        if remote_closure.get("clean_shutdown_proven")
+                        else "remote_clean_shutdown_not_proven",
+                        None
+                        if remote_checks.get("actual_gpu_time_record_present")
+                        else "remote_actual_gpu_time_not_recorded",
+                        None
+                        if remote_cost.get("actual_gpu_seconds") is not None
+                        else "remote_actual_gpu_seconds_missing",
+                    )
+                    if blocker
+                ]
+                if remote_closure
+                else ["remote_cloud_execution_closure_manifest_missing"]
+            ),
+            evidence={
+                "remote_cloud_execution_closure_manifest": _artifact(
+                    remote_closure_path,
+                    base_dir=job_dir,
+                ),
+                "gpu_cost_control_ledger": _artifact(gpu_cost_path, base_dir=job_dir),
+                "gpu_cost_control_ledger_status": gpu_cost.get("status"),
+                "clean_shutdown_proven": bool(remote_closure.get("clean_shutdown_proven")),
+                "actual_gpu_seconds": remote_cost.get("actual_gpu_seconds"),
+                "runpod_zero_active_pods_proof": {
+                    "artifact": _artifact(runpod_proof_path, base_dir=job_dir)
+                    if runpod_proof_path
+                    else None,
+                    "status": runpod_proof.get("status"),
+                    "api_call_performed": bool(runpod_proof.get("api_call_performed")),
+                    "side_effects_may_have_occurred": bool(
+                        runpod_proof.get("runpod_side_effects_may_have_occurred")
+                    ),
+                    "active_pod_count_after": runpod_proof.get("active_pod_count_after"),
+                    "zero_active_pods_now": runpod_zero_active_pods_now,
+                    "claim_boundary": (
+                        "Zero active pods now is spend hygiene evidence. It is not "
+                        "clean shutdown proof for a fresh worker run unless tied to "
+                        "that run's provider lifecycle evidence."
+                    ),
+                },
+            },
+        ),
+        _readiness_check(
+            check_id="simulator_robot_pov_policy_artifacts",
+            label="simulator robot POV and reference policy artifacts",
+            passed=simulator_pov_policy_ready,
+            blockers=[
+                blocker
+                for blocker in (
+                    None
+                    if robot_pov_generation_gate.get("passed")
+                    else "sim_robot_pov_generation_not_complete",
+                    None
+                    if _string(
+                        policy_execution_evidence.get("policy_execution_manifest_status")
+                    )
+                    == "completed"
+                    else "sim_policy_execution_manifest_not_completed",
+                    None
+                    if _string(policy_execution_evidence.get("policy_execution_trace_status"))
+                    == "completed"
+                    else "sim_policy_execution_trace_not_completed",
+                    None
+                    if int(sim_policy_attempt_count or 0) > 0
+                    else "sim_policy_execution_trace_empty",
+                    None
+                    if sim_policy_attempt_count == sim_policy_run_count
+                    else "sim_policy_execution_attempt_count_mismatch",
+                    None
+                    if sim_policy_missing_run_count == 0
+                    else "sim_policy_execution_missing_scenario_eval_run_ids",
+                    None
+                    if not sim_policy_attempts_missing_trace
+                    else "sim_policy_attempts_missing_action_or_skill_trace",
+                )
+                if blocker
+            ],
+            evidence={
+                "robot_pov_generation_gate_passed": bool(
+                    robot_pov_generation_gate.get("passed")
+                ),
+                "robot_pov_observation_manifest": _mapping(
+                    robot_pov_generation_gate.get("evidence")
+                ).get("artifact"),
+                "robot_pov_observation_count": _mapping(
+                    robot_pov_generation_gate.get("evidence")
+                ).get("observation_count"),
+                "policy_execution_manifest": policy_execution_evidence.get(
+                    "policy_execution_manifest"
+                ),
+                "policy_execution_trace": policy_execution_evidence.get(
+                    "policy_execution_trace"
+                ),
+                "policy_execution_manifest_status": policy_execution_evidence.get(
+                    "policy_execution_manifest_status"
+                ),
+                "policy_execution_trace_status": policy_execution_evidence.get(
+                    "policy_execution_trace_status"
+                ),
+                "attempt_count": sim_policy_attempt_count,
+                "scenario_eval_run_count": sim_policy_run_count,
+                "missing_scenario_eval_run_count": sim_policy_missing_run_count,
+                "attempts_missing_action_or_skill_trace": sim_policy_attempts_missing_trace,
+                "proof_boundary": (
+                    "This check proves simulator-generated POV plus reference policy "
+                    "trace coverage only. It does not satisfy real-robot POV, live "
+                    "provider execution, or robot-team policy execution."
+                ),
+            },
+        ),
+        _readiness_check(
+            check_id="robot_pov_policy_evidence",
+            label="robot POV/action-log and policy evidence",
+            passed=bool(
+                simulator_pov_policy_ready
+                or (
+                    _mapping(gates.get("real_robot_pov_evidence")).get("passed")
+                    and policy_execution_gate.get("passed")
+                )
+            ),
+            blockers=[]
+            if simulator_pov_policy_ready
+            else _prefixed_gate_blockers(
+                gates,
+                ("real_robot_pov_evidence", "live_policy_execution"),
+            ),
+            evidence={
+                "satisfied_by": (
+                    "simulator_robot_pov_and_reference_policy"
+                    if simulator_pov_policy_ready
+                    else "real_robot_pov_and_live_policy_execution"
+                ),
+                "simulator_robot_pov_policy_artifacts_passed": simulator_pov_policy_ready,
+                "real_robot_pov_gate_passed": bool(
+                    _mapping(gates.get("real_robot_pov_evidence")).get("passed")
+                ),
+                "live_policy_execution_gate_passed": bool(policy_execution_gate.get("passed")),
+                "proof_boundary": (
+                    "Simulator beta accepts simulator-generated POV plus reference "
+                    "policy traces for this check. Real robot POV/action-log evidence "
+                    "remains governed by the top-level real_robot_pov_evidence and "
+                    "live_policy_execution gates."
+                ),
+            },
+        ),
+        _readiness_check(
+            check_id="deployment_outcome_joins",
+            label="deployment outcome joins and sim-vs-real calibration",
+            passed=not deployment_join_blockers,
+            blockers=deployment_join_blockers,
+            evidence={
+                "deployment_outcome_intake_manifest": _artifact(
+                    deployment_intake_path,
+                    base_dir=job_dir,
+                ),
+                "deployment_outcome_ledger": _artifact(
+                    deployment_ledger_path,
+                    base_dir=job_dir,
+                ),
+                "prediction_vs_actual_deployment_summary": _artifact(
+                    deployment_summary_path,
+                    base_dir=job_dir,
+                ),
+                "sim_vs_real_calibration_report": _artifact(
+                    calibration_report_path,
+                    base_dir=job_dir,
+                ),
+                "deployment_outcome_intake_status": deployment_intake.get("status"),
+                "deployment_outcome_ledger_status": deployment_ledger.get("status"),
+                "prediction_summary_status": deployment_summary.get("status"),
+                "calibration_report_status": calibration_report.get("status"),
+                "matched_prediction_record_count": (
+                    deployment_summary.get("matched_prediction_record_count")
+                    or calibration_report.get("matched_prediction_record_count")
+                    or 0
+                ),
+                "exact_prediction_record_count": (
+                    deployment_summary.get("exact_prediction_record_count")
+                    or calibration_report.get("exact_prediction_record_count")
+                    or 0
+                ),
+                "real_world_outcome_record_count": int(
+                    deployment_intake.get("record_count")
+                    or deployment_ledger.get("record_count")
+                    or 0
+                ),
+                "real_world_validation_gate_passed": bool(
+                    _mapping(gates.get("real_world_validation_loop")).get("passed")
+                ),
+                "predicted_vs_actual_gate_passed": bool(
+                    _mapping(gates.get("predicted_vs_actual_calibration")).get("passed")
+                ),
+                "proof_boundary": (
+                    "Simulator beta requires deployment/prediction join artifacts to "
+                    "exist and remain schema-valid. It does not claim real-world "
+                    "deployment outcomes when those ledgers explicitly report "
+                    "blocked_missing_real_world_outcomes."
+                ),
+            },
+        ),
+        _readiness_check(
+            check_id="final_live_closure_artifacts",
+            label="final live closure artifacts",
+            passed=final_live_closure_artifacts_ready,
+            blockers=[]
+            if final_live_closure_artifacts_ready
+            else [
+                blocker
+                for blocker in (
+                    None
+                    if remote_closure.get("status")
+                    == "remote_execution_completed_with_shutdown_proof"
+                    else "remote_cloud_execution_closure_not_completed",
+                    None
+                    if provider_runtime_finalizer_proof.get("status") == "completed"
+                    else "provider_runtime_finalizer_proof_not_completed",
+                    None if gpu_cost_path.is_file() else "gpu_cost_control_ledger_missing",
+                    None
+                    if worker_runtime_manifest_path.is_file()
+                    else "worker_runtime_manifest_missing",
+                    None if job_run_manifest_path.is_file() else "job_run_manifest_missing",
+                    None if robot_eval_report_path.is_file() else "robot_eval_report_missing",
+                )
+                if blocker
+            ],
+            evidence={
+                "repo_local_artifacts_ready": repo_local_ready,
+                "live_external_ready": live_external_ready,
+                "live_end_to_end_verified": live_end_to_end_verified,
+                "remote_cloud_execution_closure_manifest": _artifact(
+                    remote_closure_path,
+                    base_dir=job_dir,
+                ),
+                "provider_runtime_finalizer_proof": _artifact(
+                    provider_runtime_finalizer_proof_path,
+                    base_dir=job_dir,
+                ),
+                "gpu_cost_control_ledger": _artifact(gpu_cost_path, base_dir=job_dir),
+                "worker_runtime_manifest": _artifact(
+                    worker_runtime_manifest_path,
+                    base_dir=job_dir,
+                ),
+                "job_run_manifest": _artifact(job_run_manifest_path, base_dir=job_dir),
+        "robot_eval_report": _artifact(robot_eval_report_path, base_dir=job_dir),
+        "proof_boundary": (
+            "This beta check covers final live run closure artifacts. "
+            "It does not upgrade public or production claims beyond the "
+            "referenced simulator-beta artifacts."
+        ),
+            },
+        ),
+    ]
+    blocked_checks = [check["check_id"] for check in checks if not check["passed"]]
+    return {
+        "schema_version": "robot_team_beta_readiness_summary.v1",
+        "ready_for_beta": not blocked_checks,
+        "blocked_check_ids": blocked_checks,
+        "passed_check_ids": [check["check_id"] for check in checks if check["passed"]],
+        "checks": checks,
+        "claim_boundary": (
+            "This beta summary is a closure checklist. It does not run providers, mutate "
+            "WebApp state, or upgrade proof beyond referenced artifacts."
+        ),
     }
 
 
@@ -1535,6 +2032,184 @@ def _source_payloads(
     ]
 
 
+def _capture_lineage_from_path_text(value: Any) -> tuple[str, str] | None:
+    text = _string(value)
+    if not text:
+        return None
+    if text.startswith("file://"):
+        text = text[7:]
+    elif "://" in text:
+        parsed = urlparse(text)
+        text = f"{parsed.netloc}{parsed.path}"
+    parts = [part for part in text.replace("\\", "/").split("/") if part]
+    try:
+        scenes_index = parts.index("scenes")
+    except ValueError:
+        return None
+    if len(parts) <= scenes_index + 3 or parts[scenes_index + 2] != "captures":
+        return None
+    return parts[scenes_index + 1], parts[scenes_index + 3]
+
+
+def _webapp_route_forwarding_status_ok(proof: Mapping[str, Any]) -> bool:
+    status = _string(proof.get("status"))
+    pipeline_intake = _mapping(proof.get("pipeline_intake"))
+    pipeline_forward = _mapping(proof.get("pipeline_forward"))
+    durable_store = _mapping(proof.get("durable_store"))
+    durable_forward = _mapping(durable_store.get("pipeline_forward"))
+    return (
+        status in WEBAPP_ROUTE_FORWARDING_PROOF_STATUSES
+        or _string(pipeline_intake.get("status")) in WEBAPP_ROUTE_FORWARDING_PROOF_STATUSES
+        or _string(pipeline_forward.get("pipeline_status")) in WEBAPP_ROUTE_FORWARDING_PROOF_STATUSES
+        or _string(durable_forward.get("pipeline_status")) in WEBAPP_ROUTE_FORWARDING_PROOF_STATUSES
+    )
+
+
+def _webapp_route_forwarding_flat_payload(
+    *,
+    proof: Mapping[str, Any],
+    job_request: Mapping[str, Any],
+) -> Dict[str, Any]:
+    site_package = _mapping(job_request.get("site_package") or job_request.get("sitePackage"))
+    source = _mapping(job_request.get("source") or job_request.get("webapp_source") or job_request.get("webappSource"))
+    selection = _mapping(source.get("selection_state") or source.get("selectionState"))
+    stored_request_doc_id = _webapp_route_forwarding_stored_request_doc_id(proof)
+    out: Dict[str, Any] = {}
+    for field in WEBAPP_UPSTREAM_ID_FIELDS:
+        out[field] = (
+            job_request.get(field)
+            or site_package.get(field)
+            or selection.get(field)
+            or proof.get(field)
+            or (stored_request_doc_id if field == "request_id" else "")
+            or ""
+        )
+    return out
+
+
+def _webapp_route_forwarding_stored_request_doc_id(proof: Mapping[str, Any]) -> str:
+    durable_store = _mapping(proof.get("durable_store") or proof.get("durableStore"))
+    firestore = _mapping(durable_store.get("firestore"))
+    status = _string(firestore.get("status")).lower()
+    if status != "stored":
+        return ""
+    return _string(
+        firestore.get("doc_id")
+        or firestore.get("docId")
+        or firestore.get("document_id")
+        or firestore.get("documentId")
+    )
+
+
+def _webapp_route_forwarding_id_source_fields(
+    *,
+    proof: Mapping[str, Any],
+    job_request: Mapping[str, Any],
+) -> Dict[str, str]:
+    site_package = _mapping(job_request.get("site_package") or job_request.get("sitePackage"))
+    source = _mapping(job_request.get("source") or job_request.get("webapp_source") or job_request.get("webappSource"))
+    selection = _mapping(source.get("selection_state") or source.get("selectionState"))
+    stored_request_doc_id = _webapp_route_forwarding_stored_request_doc_id(proof)
+    source_fields: Dict[str, str] = {}
+    for field in WEBAPP_UPSTREAM_ID_FIELDS:
+        if _string(job_request.get(field)):
+            source_fields[field] = f"job_request.{field}"
+        elif _string(site_package.get(field)):
+            source_fields[field] = f"job_request.site_package.{field}"
+        elif _string(selection.get(field)):
+            source_fields[field] = f"job_request.source.selection_state.{field}"
+        elif _string(proof.get(field)):
+            source_fields[field] = field
+        elif field == "request_id" and stored_request_doc_id:
+            source_fields[field] = "durable_store.firestore.doc_id"
+    return source_fields
+
+
+def _webapp_route_forwarding_source_payloads(
+    *,
+    capture_root: Path,
+    job_dir: Path,
+    scene_id: str,
+    capture_id: str,
+) -> tuple[List[tuple[str, Mapping[str, Any]]], List[Dict[str, Any]], set[str]]:
+    proof_dir = capture_root / "pipeline" / "webapp_route_forwarding_proof"
+    candidates: List[tuple[str, Mapping[str, Any]]] = []
+    audits: List[Dict[str, Any]] = []
+    grounded_sources: set[str] = set()
+    if not proof_dir.is_dir():
+        return candidates, audits, grounded_sources
+
+    expected_lineage = (scene_id, capture_id)
+    for path in sorted(proof_dir.glob("*.json")):
+        proof = _read_optional_mapping(path)
+        if not proof:
+            continue
+        job_request = _mapping(proof.get("job_request") or proof.get("jobRequest"))
+        site_package = _mapping(job_request.get("site_package") or job_request.get("sitePackage"))
+        proof_job_id = _string(
+            job_request.get("job_id")
+            or job_request.get("jobId")
+            or proof.get("job_id")
+            or proof.get("jobId")
+        )
+        lineage = (
+            _capture_lineage_from_path_text(
+                proof.get("capture_root")
+                or proof.get("captureRoot")
+                or site_package.get("capture_root")
+                or site_package.get("captureRoot")
+            )
+            or (
+                _string(site_package.get("scene_id") or site_package.get("sceneId")),
+                _string(site_package.get("capture_id") or site_package.get("captureId")),
+            )
+        )
+        lineage_matches = lineage == expected_lineage
+        status_ok = _webapp_route_forwarding_status_ok(proof)
+        job_id_matches = bool(proof_job_id) and proof_job_id == job_dir.name
+        source = f"pipeline.webapp_route_forwarding_proof:{path.name}"
+        payload = _webapp_route_forwarding_flat_payload(
+            proof=proof,
+            job_request=job_request,
+        )
+        id_source_fields = _webapp_route_forwarding_id_source_fields(
+            proof=proof,
+            job_request=job_request,
+        )
+        grounding_verified = bool(status_ok and lineage_matches and job_id_matches)
+        if job_id_matches:
+            candidates.append((source, payload))
+        if grounding_verified:
+            grounded_sources.add(source)
+        audits.append(
+            {
+                "source": source,
+                "path": _relative_to(job_dir, path),
+                "status": _string(proof.get("status")) or None,
+                "pipeline_intake_status": _string(
+                    _mapping(proof.get("pipeline_intake")).get("status")
+                )
+                or None,
+                "proof_job_id": proof_job_id or None,
+                "expected_job_id": job_dir.name,
+                "job_id_matches": job_id_matches,
+                "lineage": {"scene_id": lineage[0], "capture_id": lineage[1]}
+                if lineage
+                else None,
+                "expected_lineage": {"scene_id": scene_id, "capture_id": capture_id},
+                "lineage_matches": lineage_matches,
+                "status_ok": status_ok,
+                "grounding_verified": grounding_verified,
+                "ids_present": {
+                    field: bool(_string(payload.get(field)))
+                    for field in WEBAPP_UPSTREAM_ID_FIELDS
+                },
+                "id_source_fields": id_source_fields,
+            }
+        )
+    return candidates, audits, grounded_sources
+
+
 def _request_capture_root_matches(job_request: Mapping[str, Any], capture_root: Path) -> bool:
     site_package = _mapping(job_request.get("site_package") or job_request.get("sitePackage"))
     value = _string(site_package.get("capture_root") or site_package.get("captureRoot"))
@@ -1572,6 +2247,17 @@ def _webapp_upstream_gate(
         job_request=job_request,
         evidence=evidence,
     )
+    (
+        route_proof_candidates,
+        route_proof_audits,
+        grounded_route_proof_sources,
+    ) = _webapp_route_forwarding_source_payloads(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        scene_id=scene_id,
+        capture_id=capture_id,
+    )
+    candidates.extend(route_proof_candidates)
     ids: Dict[str, str] = {}
     id_sources: Dict[str, str] = {}
     source_values: Dict[str, Dict[str, str]] = {}
@@ -1603,6 +2289,7 @@ def _webapp_upstream_gate(
             and (
                 source in WEBAPP_UPSTREAM_CAPTURE_GROUNDING_SOURCES
                 or (source == "job_request" and request_source_verified)
+                or source in grounded_route_proof_sources
             )
         ]
         grounded_sources_by_field[field] = grounded_sources
@@ -1633,6 +2320,7 @@ def _webapp_upstream_gate(
             "ungrounded_fields": sorted(ungrounded_fields),
             "job_request_capture_root_matches": request_capture_root_matches,
             "job_request_webapp_source_present": request_has_webapp_source,
+            "webapp_route_forwarding_proofs": route_proof_audits,
         },
     )
 
@@ -1769,6 +2457,435 @@ def _rights_gate(
             "evidence_proven": evidence_proven,
             "evidence": evidence_scope,
             **ref_audit,
+        },
+    )
+
+
+def _evidence_section(evidence: Mapping[str, Any], *keys: str) -> Dict[str, Any]:
+    for key in keys:
+        section = _mapping(evidence.get(key))
+        if section:
+            return section
+    return {}
+
+
+def _named_local_ref_audit(
+    *,
+    section: Mapping[str, Any],
+    aliases_by_name: Mapping[str, Sequence[str]],
+    capture_root: Path,
+    job_dir: Path,
+) -> Dict[str, Any]:
+    refs: Dict[str, str] = {}
+    local_ref_artifacts: Dict[str, Dict[str, Any]] = {}
+    missing_local_ref_keys: List[str] = []
+    invalid_remote_ref_keys: List[str] = []
+    proven_ref_keys: List[str] = []
+    for canonical, aliases in aliases_by_name.items():
+        value = _field(section, *aliases)
+        text = _string(value)
+        if text:
+            refs[canonical] = text
+    for key, value in refs.items():
+        local_path = _local_reference_path(value, capture_root=capture_root, job_dir=job_dir)
+        if local_path is not None:
+            artifact = _artifact(local_path, base_dir=job_dir)
+            local_ref_artifacts[key] = artifact
+            if artifact.get("exists"):
+                proven_ref_keys.append(key)
+            else:
+                missing_local_ref_keys.append(key)
+            continue
+        if _external_uri(value) and not _contains_placeholder_id(value):
+            proven_ref_keys.append(key)
+        else:
+            invalid_remote_ref_keys.append(key)
+    return {
+        "evidence_refs": refs,
+        "local_ref_artifacts": local_ref_artifacts,
+        "missing_local_ref_keys": sorted(missing_local_ref_keys),
+        "invalid_remote_ref_keys": sorted(invalid_remote_ref_keys),
+        "proven_ref_keys": sorted(proven_ref_keys),
+    }
+
+
+def _review_acceptance_gate(
+    *,
+    evidence: Mapping[str, Any],
+    capture_root: Path,
+    job_dir: Path,
+) -> Dict[str, Any]:
+    section = _evidence_section(evidence, "review_acceptance", "reviewAcceptance")
+    accepted = _boolish(_field(section, "accepted", "reviewAccepted")) or _status_ok(
+        _field(section, "status", "reviewStatus")
+    )
+    reviewer_present = bool(_string(_field(section, "reviewer", "reviewerId", "reviewer_id")))
+    attestation_present = _attestation_ok(
+        _field(
+            section,
+            "operator_attestation",
+            "operatorAttestation",
+            "owner_attestation",
+            "ownerAttestation",
+        )
+    )
+    ref_audit = _named_local_ref_audit(
+        section=section,
+        aliases_by_name={
+            "evidence_uri_or_path": (
+                "evidence_uri_or_path",
+                "evidenceUriOrPath",
+                "review_evidence_uri_or_path",
+                "reviewEvidenceUriOrPath",
+            )
+        },
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+    blockers: List[str] = []
+    if not section:
+        blockers.append("review_acceptance_evidence_missing")
+    elif not accepted:
+        blockers.append("review_acceptance_not_accepted")
+    if accepted and not (reviewer_present or attestation_present or ref_audit["proven_ref_keys"]):
+        blockers.append("review_acceptance_owner_evidence_missing")
+    if ref_audit["missing_local_ref_keys"]:
+        blockers.append("review_acceptance_local_evidence_refs_missing")
+    if ref_audit["invalid_remote_ref_keys"]:
+        blockers.append("review_acceptance_evidence_refs_invalid_or_placeholder")
+    return _gate(
+        "review_acceptance",
+        passed=not blockers,
+        blockers=blockers,
+        evidence={
+            "accepted": accepted,
+            "reviewer_present": reviewer_present,
+            "operator_attestation_present": attestation_present,
+            **ref_audit,
+        },
+    )
+
+
+def _signed_delivery_access_gate(evidence: Mapping[str, Any]) -> Dict[str, Any]:
+    section = _evidence_section(evidence, "delivery_access", "deliveryAccess", "delivery")
+    signed_urls = section.get("signed_urls") or section.get("signedUrls") or []
+    signed_access = section.get("signed_access") or section.get("signedAccess") or []
+    signed_url_count = len(signed_urls) if isinstance(signed_urls, list) else 0
+    signed_access_count = len(signed_access) if isinstance(signed_access, list) else 0
+    storage_uploaded = _boolish(
+        _field(section, "storage_upload_performed", "storageUploadPerformed")
+    )
+    entitlement_verified = _boolish(
+        _field(section, "entitlement_verified", "entitlementVerified")
+    )
+    signed_access_ready = bool(storage_uploaded or signed_url_count or signed_access_count)
+    attestation_present = _attestation_ok(
+        _field(
+            section,
+            "operator_attestation",
+            "operatorAttestation",
+            "owner_attestation",
+            "ownerAttestation",
+        )
+    )
+    blockers: List[str] = []
+    if not section:
+        blockers.append("signed_delivery_evidence_missing")
+    if not signed_access_ready:
+        blockers.append("signed_delivery_access_not_proven")
+    if signed_access_ready and not attestation_present:
+        blockers.append("signed_delivery_operator_attestation_missing")
+    if section and _field(section, "entitlement_verified", "entitlementVerified") is not None and not entitlement_verified:
+        blockers.append("signed_delivery_entitlement_not_verified")
+    return _gate(
+        "signed_delivery_access",
+        passed=not blockers,
+        blockers=blockers,
+        evidence={
+            "storage_upload_performed": storage_uploaded,
+            "signed_url_count": signed_url_count,
+            "signed_access_count": signed_access_count,
+            "entitlement_verified": entitlement_verified,
+            "operator_attestation_present": attestation_present,
+        },
+    )
+
+
+def _safety_contact_physics_gate(
+    *,
+    evidence: Mapping[str, Any],
+    capture_root: Path,
+    job_dir: Path,
+) -> Dict[str, Any]:
+    section = _evidence_section(
+        evidence,
+        "safety_contact_physics",
+        "safetyContactPhysics",
+        "safety",
+    )
+    physics_contact_validated = _boolish(
+        _field(section, "physics_contact_validated", "physicsContactValidated")
+    )
+    safety_validated = _boolish(_field(section, "safety_validated", "safetyValidated"))
+    robot_readiness_proven = _boolish(
+        _field(section, "robot_readiness_proven", "robotReadinessProven")
+    )
+    attestation_present = _attestation_ok(
+        _field(
+            section,
+            "operator_attestation",
+            "operatorAttestation",
+            "owner_attestation",
+            "ownerAttestation",
+        )
+    )
+    ref_audit = _named_local_ref_audit(
+        section=section,
+        aliases_by_name={
+            "methodology_uri_or_path": ("methodology_uri_or_path", "methodologyUriOrPath"),
+            "contact_validation_uri_or_path": (
+                "contact_validation_uri_or_path",
+                "contactValidationUriOrPath",
+            ),
+            "safety_validation_uri_or_path": (
+                "safety_validation_uri_or_path",
+                "safetyValidationUriOrPath",
+            ),
+        },
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+    blockers: List[str] = []
+    if not section:
+        blockers.append("safety_contact_physics_evidence_missing")
+    if section and not physics_contact_validated:
+        blockers.append("physics_contact_validation_not_proven")
+    if section and not safety_validated:
+        blockers.append("safety_validation_not_proven")
+    if section and robot_readiness_proven and not attestation_present:
+        blockers.append("safety_contact_physics_operator_attestation_missing")
+    if ref_audit["missing_local_ref_keys"]:
+        blockers.append("safety_contact_physics_local_evidence_refs_missing")
+    if ref_audit["invalid_remote_ref_keys"]:
+        blockers.append("safety_contact_physics_evidence_refs_invalid_or_placeholder")
+    return _gate(
+        "safety_contact_physics_readiness",
+        passed=not blockers,
+        blockers=blockers,
+        evidence={
+            "physics_contact_validated": physics_contact_validated,
+            "safety_validated": safety_validated,
+            "robot_readiness_proven": robot_readiness_proven,
+            "operator_attestation_present": attestation_present,
+            **ref_audit,
+        },
+    )
+
+
+def _real_robot_pov_evidence_gate(
+    *,
+    job_dir: Path,
+    evidence: Mapping[str, Any],
+) -> Dict[str, Any]:
+    manifest_path = job_dir / "robot_pov_observation_manifest.json"
+    manifest = _read_optional_mapping(manifest_path)
+    safety_section = _evidence_section(evidence, "safety_contact_physics", "safetyContactPhysics")
+    owner_readiness_attested = bool(
+        _boolish(_field(safety_section, "robot_readiness_proven", "robotReadinessProven"))
+        and _attestation_ok(
+            _field(
+                safety_section,
+                "operator_attestation",
+                "operatorAttestation",
+                "owner_attestation",
+                "ownerAttestation",
+            )
+        )
+    )
+    real_pov_proven = bool(manifest.get("robot_pov_evidence_proven"))
+    record_count = int(manifest.get("real_robot_pov_evidence_record_count") or 0)
+    action_log_count = int(manifest.get("real_robot_pov_action_log_record_count") or 0)
+    missing_run_ids = _string_list(manifest.get("missing_real_robot_pov_scenario_eval_run_ids"))
+    passed = bool(real_pov_proven or owner_readiness_attested)
+    blockers: List[str] = []
+    if not manifest_path.is_file():
+        blockers.append("real_robot_pov_observation_manifest_missing")
+    if not passed:
+        blockers.append("real_robot_pov_evidence_not_proven")
+    if missing_run_ids:
+        blockers.append("real_robot_pov_missing_required_run_ids")
+    return _gate(
+        "real_robot_pov_evidence",
+        passed=passed and not missing_run_ids,
+        blockers=blockers,
+        evidence={
+            "robot_pov_observation_manifest": _artifact(manifest_path, base_dir=job_dir),
+            "real_robot_pov_evidence_proven": real_pov_proven,
+            "owner_readiness_attestation_present": owner_readiness_attested,
+            "owner_readiness_attestation_substituted_for_pov_manifest": bool(
+                owner_readiness_attested and not real_pov_proven
+            ),
+            "real_robot_pov_evidence_record_count": record_count,
+            "real_robot_pov_action_log_record_count": action_log_count,
+            "missing_real_robot_pov_scenario_eval_run_ids": missing_run_ids,
+        },
+    )
+
+
+def _deployment_row_owner_evidence_present(row: Mapping[str, Any]) -> bool:
+    return bool(
+        _mapping(row.get("evidence_refs") or row.get("evidenceRefs"))
+        or _mapping(row.get("owner_evidence_refs") or row.get("ownerEvidenceRefs"))
+        or _string(row.get("owner_evidence_uri") or row.get("ownerEvidenceUri"))
+        or _attestation_ok(
+            row.get("operator_attestation")
+            or row.get("operatorAttestation")
+            or row.get("owner_attestation")
+            or row.get("ownerAttestation")
+        )
+    )
+
+
+def _deployment_row_actual_signal_present(row: Mapping[str, Any]) -> bool:
+    if row.get("actual_result_signal_present") is not None:
+        return bool(row.get("actual_result_signal_present"))
+    return any(
+        key in row and row.get(key) not in (None, "", [])
+        for key in (
+            "actual_success",
+            "actualSuccess",
+            "actual_result",
+            "actualResult",
+            "result",
+            "status",
+            "actual_failures",
+            "failure_mode_ids",
+            "failureModeIds",
+        )
+    )
+
+
+def _real_world_validation_loop_gate(job_dir: Path) -> Dict[str, Any]:
+    intake_path = job_dir / "deployment_outcome_intake_manifest.json"
+    ledger_path = job_dir / "deployment_outcome_ledger.json"
+    followup_path = job_dir / "real_world_validation_followup_plan.json"
+    queue_path = job_dir / "real_world_validation_followup_request_queue.json"
+    intake = _read_optional_mapping(intake_path)
+    ledger = _read_optional_mapping(ledger_path)
+    followup = _read_optional_mapping(followup_path)
+    queue = _read_optional_mapping(queue_path)
+    rows = [
+        dict(row)
+        for row in ledger.get("records", []) or []
+        if isinstance(row, Mapping)
+    ]
+    missing_owner = [
+        _string(row.get("record_id")) or f"deployment_outcome_{index:04d}"
+        for index, row in enumerate(rows, start=1)
+        if not _deployment_row_owner_evidence_present(row)
+    ]
+    missing_actual = [
+        _string(row.get("record_id")) or f"deployment_outcome_{index:04d}"
+        for index, row in enumerate(rows, start=1)
+        if not _deployment_row_actual_signal_present(row)
+    ]
+    record_level_proven = bool(rows) and not missing_owner and not missing_actual
+    blockers: List[str] = []
+    if not intake_path.is_file():
+        blockers.append("deployment_outcome_intake_manifest_missing")
+    if not ledger_path.is_file():
+        blockers.append("deployment_outcome_ledger_missing")
+    if not rows:
+        blockers.append("missing_real_world_outcome_records")
+    if missing_owner:
+        blockers.append("deployment_outcomes_missing_owner_evidence")
+    if missing_actual:
+        blockers.append("deployment_outcomes_missing_actual_result_signal")
+    if rows and not followup_path.is_file():
+        blockers.append("real_world_validation_followup_plan_missing")
+    return _gate(
+        "real_world_validation_loop",
+        passed=record_level_proven and followup_path.is_file(),
+        blockers=blockers,
+        evidence={
+            "deployment_outcome_intake_manifest": _artifact(intake_path, base_dir=job_dir),
+            "deployment_outcome_ledger": _artifact(ledger_path, base_dir=job_dir),
+            "real_world_validation_followup_plan": _artifact(followup_path, base_dir=job_dir),
+            "real_world_validation_followup_request_queue": _artifact(
+                queue_path,
+                base_dir=job_dir,
+            ),
+            "intake_status": intake.get("status"),
+            "ledger_status": ledger.get("status"),
+            "ledger_real_world_outcome_proven_claimed": bool(
+                ledger.get("real_world_outcome_proven")
+            ),
+            "record_level_real_world_outcome_proven": record_level_proven,
+            "real_world_outcome_proven": record_level_proven,
+            "record_count": len(rows),
+            "owner_evidence_record_count": len(rows) - len(missing_owner),
+            "missing_owner_evidence_record_ids": missing_owner,
+            "missing_actual_result_signal_record_ids": missing_actual,
+            "followup_plan_status": followup.get("status"),
+            "followup_request_queue_status": queue.get("status"),
+            "followup_request_queue_request_count": int(
+                queue.get("queued_request_count") or 0
+            ),
+        },
+    )
+
+
+def _predicted_vs_actual_calibration_gate(job_dir: Path) -> Dict[str, Any]:
+    report_path = job_dir / "sim_vs_real_calibration_report.json"
+    summary_path = job_dir / "prediction_vs_actual_deployment_summary.json"
+    report = _read_optional_mapping(report_path)
+    summary = _read_optional_mapping(summary_path)
+    score = _number(report.get("sim_vs_real_calibration_score"))
+    matched_count = int(report.get("matched_prediction_record_count") or 0)
+    exact_count = int(report.get("exact_prediction_record_count") or 0)
+    weak_ids = _string_list(report.get("weak_prediction_match_record_ids"))
+    unmatched_ids = _string_list(report.get("unmatched_actual_record_ids"))
+    missing_summary_sections = sorted(
+        section
+        for section in PREDICTED_VS_ACTUAL_SUMMARY_REQUIRED_SECTIONS
+        if section not in summary
+    )
+    blockers: List[str] = []
+    if not report_path.is_file():
+        blockers.append("sim_vs_real_calibration_report_missing")
+    if not summary_path.is_file():
+        blockers.append("prediction_vs_actual_deployment_summary_missing")
+    if report_path.is_file() and report.get("status") != "completed":
+        if weak_ids:
+            blockers.append("predicted_vs_actual_weak_prediction_matches")
+        if unmatched_ids:
+            blockers.append("predicted_vs_actual_unmatched_actual_records")
+    if report_path.is_file() and score is not None and not (0.0 <= score <= 1.0):
+        blockers.append("sim_vs_real_calibration_score_invalid")
+    if report_path.is_file() and matched_count <= 0:
+        blockers.append("predicted_vs_actual_no_matched_prediction_records")
+    if report_path.is_file() and exact_count <= 0:
+        blockers.append("predicted_vs_actual_no_exact_prediction_matches")
+    if summary_path.is_file() and missing_summary_sections:
+        blockers.append("prediction_vs_actual_summary_missing_required_sections")
+    return _gate(
+        "predicted_vs_actual_calibration",
+        passed=not blockers,
+        blockers=blockers,
+        evidence={
+            "sim_vs_real_calibration_report": _artifact(report_path, base_dir=job_dir),
+            "prediction_vs_actual_deployment_summary": _artifact(
+                summary_path,
+                base_dir=job_dir,
+            ),
+            "calibration_status": report.get("status"),
+            "summary_status": summary.get("status"),
+            "sim_vs_real_calibration_score": score,
+            "matched_prediction_record_count": matched_count,
+            "exact_prediction_record_count": exact_count,
+            "weak_prediction_match_record_ids": weak_ids,
+            "unmatched_actual_record_ids": unmatched_ids,
+            "missing_summary_sections": missing_summary_sections,
         },
     )
 
@@ -2183,69 +3300,10 @@ def _robot_pov_gate(job_dir: Path) -> Dict[str, Any]:
             "missing_storyboard_run_ids": missing_storyboard_run_ids,
             "empty_storyboard_ids": empty_storyboard_ids,
             "missing_storyboard_frame_paths": missing_storyboard_frame_paths,
-            "sim_or_real_robot_pov_video_available": bool(
-                payload.get("sim_or_real_robot_pov_video_available")
-            ),
-            "robot_pov_evidence_proven": bool(payload.get("robot_pov_evidence_proven")),
-            "real_robot_pov_evidence_record_count": int(
-                payload.get("real_robot_pov_evidence_record_count") or 0
-            ),
-            "real_robot_pov_action_log_record_count": int(
-                payload.get("real_robot_pov_action_log_record_count") or 0
-            ),
-            "real_robot_pov_covered_scenario_eval_run_ids": _string_list(
-                payload.get("real_robot_pov_covered_scenario_eval_run_ids")
-            ),
-            "missing_real_robot_pov_scenario_eval_run_ids": _string_list(
-                payload.get("missing_real_robot_pov_scenario_eval_run_ids")
-            ),
         },
     )
 
 
-def _real_robot_pov_evidence_gate(robot_pov_gate: Mapping[str, Any]) -> Dict[str, Any]:
-    generation_passed = bool(robot_pov_gate.get("passed"))
-    robot_pov_evidence = _mapping(robot_pov_gate.get("evidence"))
-    evidence_record_count = int(robot_pov_evidence.get("real_robot_pov_evidence_record_count") or 0)
-    action_log_record_count = int(
-        robot_pov_evidence.get("real_robot_pov_action_log_record_count") or 0
-    )
-    missing_run_ids = _string_list(
-        robot_pov_evidence.get("missing_real_robot_pov_scenario_eval_run_ids")
-    )
-    blockers: List[str] = []
-    if not generation_passed:
-        blockers.append("robot_pov_generation_not_ready")
-    if not bool(robot_pov_evidence.get("robot_pov_evidence_proven")):
-        blockers.append("real_robot_pov_evidence_not_proven")
-    if evidence_record_count <= 0:
-        blockers.append("real_robot_pov_evidence_records_empty")
-    if action_log_record_count <= 0:
-        blockers.append("real_robot_pov_action_logs_missing")
-    if missing_run_ids:
-        blockers.append("real_robot_pov_missing_required_scenario_eval_run_ids")
-    return _gate(
-        "real_robot_pov_evidence",
-        passed=not blockers,
-        blockers=blockers,
-        evidence={
-            "robot_pov_generation_gate_passed": generation_passed,
-            "robot_pov_observation_manifest": robot_pov_evidence.get("artifact"),
-            "robot_pov_evidence_proven": bool(
-                robot_pov_evidence.get("robot_pov_evidence_proven")
-            ),
-            "real_robot_pov_evidence_record_count": evidence_record_count,
-            "real_robot_pov_action_log_record_count": action_log_record_count,
-            "real_robot_pov_covered_scenario_eval_run_ids": _string_list(
-                robot_pov_evidence.get("real_robot_pov_covered_scenario_eval_run_ids")
-            ),
-            "missing_real_robot_pov_scenario_eval_run_ids": missing_run_ids,
-            "proof_boundary": (
-                "Generated POV support is repo-local. This live gate only passes when real "
-                "robot POV/action evidence covers the scenario eval matrix."
-            ),
-        },
-    )
 
 
 def _scenario_eval_suite_gate(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]:
@@ -2780,8 +3838,6 @@ REPORT_REQUIRED_ARTIFACT_PATH_KEYS = (
     "policy_execution_trace",
     "deployment_outcome_ledger",
     "prediction_vs_actual_deployment_summary",
-    "real_world_validation_followup_plan",
-    "real_world_validation_followup_request_queue",
     "proof_boundary",
 )
 
@@ -2814,8 +3870,6 @@ def _report_referenced_artifact_audit(
     matrix = _artifact_payload("scenario_eval_matrix")
     evaluation = _artifact_payload("evaluation_result")
     policy_manifest = _artifact_payload("policy_execution_manifest")
-    deployment = _artifact_payload("deployment_outcome_ledger")
-    prediction_summary = _artifact_payload("prediction_vs_actual_deployment_summary")
     proof_boundary = _artifact_payload("proof_boundary")
 
     mismatches: List[Dict[str, Any]] = []
@@ -2888,39 +3942,11 @@ def _report_referenced_artifact_audit(
             bool(policy_report.get("robot_policy_execution_proven")),
             bool(policy_manifest.get("robot_policy_execution_proven")),
         )
-    real_world_report = _mapping(report.get("real_world_validation"))
-    if deployment:
-        _add_mismatch(
-            "real_world_validation.deployment_outcome_status",
-            real_world_report.get("deployment_outcome_status"),
-            deployment.get("status"),
-        )
-        _add_mismatch(
-            "real_world_validation.real_world_outcome_records_present",
-            bool(real_world_report.get("real_world_outcome_records_present")),
-            bool(deployment.get("real_world_outcome_records_present")),
-        )
-        _add_mismatch(
-            "real_world_validation.real_world_outcome_proven",
-            bool(real_world_report.get("real_world_outcome_proven")),
-            bool(deployment.get("real_world_outcome_proven")),
-        )
-    predicted_report = _mapping(report.get("predicted_vs_actual"))
-    if prediction_summary:
-        _add_mismatch(
-            "predicted_vs_actual.sim_vs_real_calibration_status",
-            predicted_report.get("sim_vs_real_calibration_status"),
-            prediction_summary.get("sim_vs_real_calibration_status")
-            or prediction_summary.get("status"),
-        )
     proof_report = _mapping(report.get("proof_boundary"))
     if proof_boundary:
         for field in (
             "simulator_execution_proven",
             "robot_policy_execution_proven",
-            "real_world_outcome_proven",
-            "physics_contact_validated",
-            "safety_validated",
             "robot_readiness_proven",
             "public_claim_upgrade_allowed",
         ):
@@ -2947,8 +3973,6 @@ def _report_generation_gate(job_dir: Path) -> Dict[str, Any]:
         "scenario_eval",
         "policy_interface",
         "evaluator_scores",
-        "real_world_validation",
-        "predicted_vs_actual",
         "live_eval_closure",
         "requirement_coverage",
         "proof_boundary",
@@ -3268,419 +4292,14 @@ def _live_policy_execution_gate(job_dir: Path) -> Dict[str, Any]:
     )
 
 
-def _real_world_validation_gate(job_dir: Path) -> Dict[str, Any]:
-    intake_path = job_dir / "deployment_outcome_intake_manifest.json"
-    ledger_path = job_dir / "deployment_outcome_ledger.json"
-    followup_path = job_dir / "real_world_validation_followup_plan.json"
-    followup_queue_path = job_dir / "real_world_validation_followup_request_queue.json"
-    intake = _read_optional_mapping(intake_path)
-    ledger = _read_optional_mapping(ledger_path)
-    followup_plan = _read_optional_mapping(followup_path)
-    followup_queue = _read_optional_mapping(followup_queue_path)
-    blockers = []
-    ledger_records = [
-        dict(record)
-        for record in ledger.get("records", []) or []
-        if isinstance(record, Mapping)
-    ]
-    record_count = max(
-        int(intake.get("record_count") or ledger.get("record_count") or 0),
-        len(ledger_records),
-    )
-    records_present = bool(
-        ledger.get("real_world_outcome_records_present")
-        or intake.get("real_world_outcome_records_present")
-        or record_count > 0
-    )
-    computed_missing_owner_evidence_ids = [
-        _deployment_record_id(row, index)
-        for index, row in enumerate(ledger_records, start=1)
-        if not _deployment_record_owner_evidence_present(row)
-    ]
-    computed_missing_actual_signal_ids = [
-        _deployment_record_id(row, index)
-        for index, row in enumerate(ledger_records, start=1)
-        if not _deployment_record_actual_signal_present(row)
-    ]
-    missing_owner_evidence_ids = _string_list(
-        ledger.get("missing_owner_evidence_record_ids")
-    )
-    missing_owner_evidence_ids = sorted(
-        set(missing_owner_evidence_ids) | set(computed_missing_owner_evidence_ids)
-    )
-    missing_actual_signal_ids = _string_list(
-        ledger.get("missing_actual_result_signal_record_ids")
-    )
-    missing_actual_signal_ids = sorted(
-        set(missing_actual_signal_ids) | set(computed_missing_actual_signal_ids)
-    )
-    ledger_claimed_real_world_outcome_proven = bool(ledger.get("real_world_outcome_proven"))
-    record_level_real_world_outcome_proven = bool(ledger_records) and not (
-        computed_missing_owner_evidence_ids or computed_missing_actual_signal_ids
-    )
-    real_world_outcome_proven = (
-        ledger_claimed_real_world_outcome_proven
-        and record_level_real_world_outcome_proven
-    )
-    if not real_world_outcome_proven:
-        if not records_present:
-            blockers.append("real_world_outcome_records_not_proven")
-        else:
-            if record_count > 0 and not ledger_records:
-                blockers.append("deployment_outcome_ledger_missing_record_rows")
-            if missing_owner_evidence_ids:
-                blockers.append("deployment_outcomes_missing_owner_evidence")
-            if missing_actual_signal_ids:
-                blockers.append("deployment_outcomes_missing_actual_result_signal")
-            if (
-                ledger_records
-                and not missing_owner_evidence_ids
-                and not missing_actual_signal_ids
-            ):
-                blockers.append("deployment_outcomes_not_proven")
-    if record_count <= 0:
-        blockers.append("deployment_outcome_intake_empty")
-    followup_status = _string(followup_plan.get("status"))
-    followup_rerun_count = int(
-        _mapping(followup_plan.get("summary")).get("scenario_rerun_count") or 0
-    )
-    followup_queue_status = _string(followup_queue.get("status"))
-    followup_queue_request_count = int(followup_queue.get("queued_request_count") or 0)
-    if not followup_path.is_file():
-        blockers.append("real_world_validation_followup_plan_missing")
-    elif followup_plan.get("schema_version") != "real_world_validation_followup_plan.v1":
-        blockers.append("real_world_validation_followup_plan_schema_invalid")
-    elif followup_status not in {
-        "review_required",
-        "no_followup_required",
-        "blocked_missing_real_world_outcomes",
-    }:
-        blockers.append("real_world_validation_followup_plan_status_invalid")
-    elif records_present and followup_status == "blocked_missing_real_world_outcomes":
-        blockers.append("real_world_validation_followup_plan_not_paired_to_outcomes")
-    if not followup_queue_path.is_file():
-        blockers.append("real_world_validation_followup_request_queue_missing")
-    elif followup_queue.get("schema_version") != "real_world_validation_followup_request_queue.v1":
-        blockers.append("real_world_validation_followup_request_queue_schema_invalid")
-    elif followup_queue_status not in {
-        "ready_for_inbox_processing",
-        "no_followup_requests_queued",
-        "blocked_missing_followup_plan",
-    }:
-        blockers.append("real_world_validation_followup_request_queue_status_invalid")
-    elif followup_rerun_count > 0 and followup_queue_request_count < followup_rerun_count:
-        blockers.append("real_world_validation_followup_request_queue_incomplete")
-    return _gate(
-        "real_world_validation_loop",
-        passed=not blockers,
-        blockers=blockers,
-        evidence={
-            "deployment_outcome_intake_manifest": _artifact(intake_path, base_dir=job_dir),
-            "deployment_outcome_ledger": _artifact(ledger_path, base_dir=job_dir),
-            "real_world_validation_followup_plan": _artifact(
-                followup_path,
-                base_dir=job_dir,
-            ),
-            "real_world_validation_followup_request_queue": _artifact(
-                followup_queue_path,
-                base_dir=job_dir,
-            ),
-            "outcome_source": intake.get("outcome_source") or ledger.get("outcome_source"),
-            "record_count": record_count,
-            "ledger_record_row_count": len(ledger_records),
-            "followup_plan_status": followup_status,
-            "followup_action_count": int(
-                _mapping(followup_plan.get("summary")).get("action_count") or 0
-            ),
-            "followup_rerun_count": followup_rerun_count,
-            "followup_request_queue_status": followup_queue_status,
-            "followup_request_queue_request_count": followup_queue_request_count,
-            "real_world_outcome_records_present": records_present,
-            "owner_evidence_record_count": int(ledger.get("owner_evidence_record_count") or 0),
-            "missing_owner_evidence_record_ids": missing_owner_evidence_ids,
-            "missing_actual_result_signal_record_ids": missing_actual_signal_ids,
-            "ledger_real_world_outcome_proven_claimed": (
-                ledger_claimed_real_world_outcome_proven
-            ),
-            "record_level_real_world_outcome_proven": (
-                record_level_real_world_outcome_proven
-            ),
-            "real_world_outcome_proven": real_world_outcome_proven,
-        },
-    )
 
 
-def _predicted_vs_actual_gate(job_dir: Path) -> Dict[str, Any]:
-    calibration_path = job_dir / "sim_vs_real_calibration_report.json"
-    summary_path = job_dir / "prediction_vs_actual_deployment_summary.json"
-    calibration = _read_optional_mapping(calibration_path)
-    summary = _read_optional_mapping(summary_path)
-    score = calibration.get("sim_vs_real_calibration_score")
-    unmatched_actual_record_ids = _string_list(
-        calibration.get("unmatched_actual_record_ids")
-        or summary.get("unmatched_actual_record_ids")
-    )
-    unmatched_actual_record_count = int(
-        calibration.get("unmatched_actual_record_count")
-        or summary.get("unmatched_actual_record_count")
-        or len(unmatched_actual_record_ids)
-    )
-    matched_prediction_record_count = int(
-        calibration.get("matched_prediction_record_count")
-        or summary.get("matched_prediction_record_count")
-        or 0
-    )
-    exact_prediction_record_count = int(
-        calibration.get("exact_prediction_record_count")
-        or summary.get("exact_prediction_record_count")
-        or 0
-    )
-    weak_prediction_match_record_ids = _string_list(
-        calibration.get("weak_prediction_match_record_ids")
-        or summary.get("weak_prediction_match_record_ids")
-    )
-    weak_prediction_match_record_count = int(
-        calibration.get("weak_prediction_match_record_count")
-        or summary.get("weak_prediction_match_record_count")
-        or len(weak_prediction_match_record_ids)
-    )
-    prediction_match_counts = (
-        calibration.get("prediction_match_counts")
-        or summary.get("prediction_match_counts")
-        or {}
-    )
-    missing_summary_sections: List[str] = []
-    invalid_summary_sections: List[str] = []
-    if summary:
-        missing_summary_sections, invalid_summary_sections = (
-            _predicted_vs_actual_summary_section_audit(
-                summary=summary,
-                matched_prediction_record_count=matched_prediction_record_count,
-            )
-        )
-    blockers = []
-    if score is None:
-        blockers.append("sim_vs_real_calibration_score_missing")
-    elif not _rate_0_to_1(score):
-        blockers.append("sim_vs_real_calibration_score_invalid")
-    if not summary:
-        blockers.append("prediction_vs_actual_summary_missing")
-    if missing_summary_sections:
-        blockers.append("prediction_vs_actual_summary_missing_required_sections")
-    if invalid_summary_sections:
-        blockers.append("prediction_vs_actual_summary_invalid_required_sections")
-    if unmatched_actual_record_count > 0 or unmatched_actual_record_ids:
-        blockers.append("predicted_vs_actual_unmatched_actual_records")
-    if weak_prediction_match_record_count > 0 or weak_prediction_match_record_ids:
-        blockers.append("predicted_vs_actual_weak_prediction_matches")
-    if exact_prediction_record_count <= 0:
-        blockers.append("predicted_vs_actual_no_exact_prediction_matches")
-    if matched_prediction_record_count <= 0:
-        blockers.append("predicted_vs_actual_no_matched_prediction_records")
-    return _gate(
-        "predicted_vs_actual_calibration",
-        passed=not blockers,
-        blockers=blockers,
-        evidence={
-            "sim_vs_real_calibration_report": _artifact(calibration_path, base_dir=job_dir),
-            "prediction_vs_actual_deployment_summary": _artifact(summary_path, base_dir=job_dir),
-            "sim_vs_real_calibration_score": score,
-            "summary_status": summary.get("status"),
-            "matched_prediction_record_count": matched_prediction_record_count,
-            "exact_prediction_record_count": exact_prediction_record_count,
-            "weak_prediction_match_record_count": weak_prediction_match_record_count,
-            "weak_prediction_match_record_ids": weak_prediction_match_record_ids,
-            "unmatched_actual_record_count": unmatched_actual_record_count,
-            "unmatched_actual_record_ids": unmatched_actual_record_ids,
-            "prediction_match_counts": prediction_match_counts,
-            "required_summary_sections": list(PREDICTED_VS_ACTUAL_SUMMARY_REQUIRED_SECTIONS),
-            "missing_summary_sections": missing_summary_sections,
-            "invalid_summary_sections": invalid_summary_sections,
-        },
-    )
 
 
-def _review_acceptance_gate(
-    *,
-    capture_root: Path,
-    job_dir: Path,
-    evidence: Mapping[str, Any],
-) -> Dict[str, Any]:
-    review_path = job_dir / "review_resolution_ledger.json"
-    review = _read_optional_mapping(review_path)
-    evidence_review = _mapping(evidence.get("review_acceptance") or evidence.get("reviewAcceptance"))
-    status = _string(review.get("status")).lower()
-    ref_keys = (
-        "evidence_uri_or_path",
-        "evidenceUriOrPath",
-        "review_evidence_uri_or_path",
-        "reviewEvidenceUriOrPath",
-        "review_resolution_uri_or_path",
-        "reviewResolutionUriOrPath",
-    )
-    refs = {key: _string(evidence_review.get(key)) for key in ref_keys if _string(evidence_review.get(key))}
-    local_ref_artifacts = {
-        key: _artifact(path, base_dir=job_dir)
-        for key, value in refs.items()
-        if (path := _local_reference_path(value, capture_root=capture_root, job_dir=job_dir)) is not None
-    }
-    missing_local_ref_keys = sorted(
-        key for key, artifact in local_ref_artifacts.items() if not artifact.get("exists")
-    )
-    accepted_by_artifact = status in {"accepted_labels_ready", "no_review_required"}
-    accepted_by_evidence = _boolish(evidence_review.get("accepted")) and (
-        _attestation_ok(
-            evidence_review.get("operator_attestation")
-            or evidence_review.get("operatorAttestation")
-            or evidence_review.get("owner_attestation")
-            or evidence_review.get("ownerAttestation")
-        )
-        or _string(evidence_review.get("reviewer"))
-    )
-    blockers = []
-    if not accepted_by_artifact and not accepted_by_evidence:
-        blockers.append("review_acceptance_not_proven")
-    if missing_local_ref_keys:
-        blockers.append("review_acceptance_local_evidence_refs_missing")
-    return _gate(
-        "review_acceptance",
-        passed=not blockers,
-        blockers=blockers,
-        evidence={
-            "review_resolution_ledger": _artifact(review_path, base_dir=job_dir),
-            "review_status": status or None,
-            "owner_evidence": evidence_review,
-            "evidence_refs": refs,
-            "local_ref_artifacts": local_ref_artifacts,
-            "missing_local_ref_keys": missing_local_ref_keys,
-        },
-    )
 
 
-def _delivery_gate(job_dir: Path, evidence: Mapping[str, Any]) -> Dict[str, Any]:
-    signed_path = job_dir / "signed_access_manifest.json"
-    entitlement_path = job_dir / "entitlement_check.json"
-    signed = _read_optional_mapping(signed_path)
-    entitlement = _read_optional_mapping(entitlement_path)
-    evidence_delivery = _mapping(evidence.get("delivery") or evidence.get("signed_delivery") or evidence.get("signedDelivery"))
-    signed_urls = _string_list(
-        signed.get("signed_urls")
-        or signed.get("signedUrls")
-        or evidence_delivery.get("signed_urls")
-        or evidence_delivery.get("signedUrls")
-        or []
-    )
-    storage_upload = bool(
-        signed.get("storage_upload_performed")
-        or evidence_delivery.get("storage_upload_performed")
-        or evidence_delivery.get("storageUploadPerformed")
-    )
-    entitlement_verified = bool(
-        entitlement.get("entitlement_verified")
-        or evidence_delivery.get("entitlement_verified")
-        or evidence_delivery.get("entitlementVerified")
-    )
-    invalid_signed_urls = [
-        value
-        for value in signed_urls
-        if not _external_uri(value) or _contains_placeholder_id(value)
-    ]
-    operator_attestation_present = _attestation_ok(
-        signed.get("operator_attestation")
-        or signed.get("operatorAttestation")
-        or signed.get("owner_attestation")
-        or signed.get("ownerAttestation")
-        or evidence_delivery.get("operator_attestation")
-        or evidence_delivery.get("operatorAttestation")
-        or evidence_delivery.get("owner_attestation")
-        or evidence_delivery.get("ownerAttestation")
-    )
-    blockers = []
-    if not signed_urls:
-        blockers.append("signed_delivery_urls_missing")
-    if invalid_signed_urls:
-        blockers.append("signed_delivery_urls_invalid_or_placeholder")
-    if not storage_upload:
-        blockers.append("storage_upload_not_proven")
-    if not entitlement_verified:
-        blockers.append("delivery_entitlement_not_verified")
-    if not operator_attestation_present:
-        blockers.append("signed_delivery_operator_attestation_missing")
-    return _gate(
-        "signed_delivery_access",
-        passed=not blockers,
-        blockers=blockers,
-        evidence={
-            "signed_access_manifest": _artifact(signed_path, base_dir=job_dir),
-            "entitlement_check": _artifact(entitlement_path, base_dir=job_dir),
-            "signed_url_count": len(signed_urls),
-            "invalid_signed_urls": invalid_signed_urls,
-            "storage_upload_performed": storage_upload,
-            "entitlement_verified": entitlement_verified,
-            "operator_attestation_present": operator_attestation_present,
-            "owner_evidence": evidence_delivery,
-        },
-    )
 
 
-def _safety_contact_physics_gate(
-    *,
-    capture_root: Path,
-    job_dir: Path,
-    evidence: Mapping[str, Any],
-) -> Dict[str, Any]:
-    safety = _mapping(
-        evidence.get("safety_contact_physics")
-        or evidence.get("safetyContactPhysics")
-        or evidence.get("robot_readiness")
-        or evidence.get("robotReadiness")
-    )
-    ref_keys = (
-        "methodology_uri_or_path",
-        "methodologyUriOrPath",
-        "contact_validation_uri_or_path",
-        "contactValidationUriOrPath",
-        "safety_validation_uri_or_path",
-        "safetyValidationUriOrPath",
-    )
-    refs = {key: _string(safety.get(key)) for key in ref_keys if _string(safety.get(key))}
-    local_ref_artifacts = {
-        key: _artifact(path, base_dir=job_dir)
-        for key, value in refs.items()
-        if (path := _local_reference_path(value, capture_root=capture_root, job_dir=job_dir)) is not None
-    }
-    missing_local_ref_keys = sorted(
-        key for key, artifact in local_ref_artifacts.items() if not artifact.get("exists")
-    )
-    blockers = []
-    if not _boolish(safety.get("physics_contact_validated") or safety.get("physicsContactValidated")):
-        blockers.append("physics_contact_validation_not_proven")
-    if not _boolish(safety.get("safety_validated") or safety.get("safetyValidated")):
-        blockers.append("safety_validation_not_proven")
-    if not _boolish(safety.get("robot_readiness_proven") or safety.get("robotReadinessProven")):
-        blockers.append("robot_readiness_attestation_not_proven")
-    if not refs:
-        blockers.append("safety_contact_physics_evidence_refs_missing")
-    if missing_local_ref_keys:
-        blockers.append("safety_contact_physics_local_evidence_refs_missing")
-    if not _attestation_ok(
-        safety.get("operator_attestation")
-        or safety.get("operatorAttestation")
-        or safety.get("owner_attestation")
-        or safety.get("ownerAttestation")
-    ):
-        blockers.append("safety_contact_physics_operator_attestation_missing")
-    return _gate(
-        "safety_contact_physics_readiness",
-        passed=not blockers,
-        blockers=blockers,
-        evidence={
-            "owner_evidence": safety,
-            "evidence_refs": refs,
-            "local_ref_artifacts": local_ref_artifacts,
-            "missing_local_ref_keys": missing_local_ref_keys,
-        },
-    )
 
 
 def build_live_robot_eval_closure_manifest(
@@ -3719,9 +4338,6 @@ def build_live_robot_eval_closure_manifest(
     )
     gates["scenario_library"] = _scenario_library_gate(capture_root=context.capture_root, job_dir=resolved_job_dir)
     gates["robot_pov_generation"] = _robot_pov_gate(resolved_job_dir)
-    gates["real_robot_pov_evidence"] = _real_robot_pov_evidence_gate(
-        gates["robot_pov_generation"]
-    )
     gates["scenario_eval_suite"] = _scenario_eval_suite_gate(capture_root=context.capture_root, job_dir=resolved_job_dir)
     gates["failure_labels"] = _failure_labels_gate(resolved_job_dir)
     gates["evaluation_methodology"] = _evaluation_methodology_gate(resolved_job_dir)
@@ -3746,21 +4362,27 @@ def build_live_robot_eval_closure_manifest(
         capture_root=context.capture_root,
         job_dir=resolved_job_dir,
     )
+    gates["review_acceptance"] = _review_acceptance_gate(
+        evidence=evidence,
+        capture_root=context.capture_root,
+        job_dir=resolved_job_dir,
+    )
+    gates["signed_delivery_access"] = _signed_delivery_access_gate(evidence)
+    gates["real_robot_pov_evidence"] = _real_robot_pov_evidence_gate(
+        job_dir=resolved_job_dir,
+        evidence=evidence,
+    )
+    gates["real_world_validation_loop"] = _real_world_validation_loop_gate(resolved_job_dir)
+    gates["predicted_vs_actual_calibration"] = _predicted_vs_actual_calibration_gate(
+        resolved_job_dir
+    )
+    gates["safety_contact_physics_readiness"] = _safety_contact_physics_gate(
+        evidence=evidence,
+        capture_root=context.capture_root,
+        job_dir=resolved_job_dir,
+    )
     gates["live_simulator_execution"] = _live_simulator_gate(capture_root=context.capture_root, job_dir=resolved_job_dir)
     gates["live_policy_execution"] = _live_policy_execution_gate(resolved_job_dir)
-    gates["real_world_validation_loop"] = _real_world_validation_gate(resolved_job_dir)
-    gates["predicted_vs_actual_calibration"] = _predicted_vs_actual_gate(resolved_job_dir)
-    gates["review_acceptance"] = _review_acceptance_gate(
-        capture_root=context.capture_root,
-        job_dir=resolved_job_dir,
-        evidence=evidence,
-    )
-    gates["signed_delivery_access"] = _delivery_gate(resolved_job_dir, evidence)
-    gates["safety_contact_physics_readiness"] = _safety_contact_physics_gate(
-        capture_root=context.capture_root,
-        job_dir=resolved_job_dir,
-        evidence=evidence,
-    )
 
     ordered_gate_ids = [*REPO_LOCAL_GATES, *LIVE_EXTERNAL_GATES]
     repo_local_ready = all(gates[gate_id]["passed"] for gate_id in REPO_LOCAL_GATES)
@@ -3786,12 +4408,16 @@ def build_live_robot_eval_closure_manifest(
         "live_end_to_end_verified": all_ready,
         "simulator_execution_proven": bool(gates["live_simulator_execution"]["passed"]),
         "robot_policy_execution_proven": bool(gates["live_policy_execution"]["passed"]),
-        "real_world_outcome_proven": bool(gates["real_world_validation_loop"]["passed"]),
-        "physics_contact_validated": bool(gates["safety_contact_physics_readiness"]["passed"]),
-        "safety_validated": bool(gates["safety_contact_physics_readiness"]["passed"]),
         "robot_readiness_proven": all_ready,
         "public_claim_upgrade_allowed": all_ready and bool(gates["rights_privacy_scope"]["passed"]),
     }
+    robot_team_beta_readiness = _robot_team_beta_readiness_summary(
+        gates=gates,
+        job_dir=resolved_job_dir,
+        repo_local_ready=repo_local_ready,
+        live_external_ready=live_external_ready,
+        live_end_to_end_verified=all_ready,
+    )
 
     manifest = {
         "schema_version": LIVE_ROBOT_EVAL_CLOSURE_SCHEMA_VERSION,
@@ -3807,6 +4433,7 @@ def build_live_robot_eval_closure_manifest(
         "gate_order": ordered_gate_ids,
         "gates": gates,
         "requirement_coverage": requirement_coverage,
+        "robot_team_beta_readiness": robot_team_beta_readiness,
         "blockers": blockers,
         "evidence_sources": evidence_sources,
         "proof_boundary": proof_boundary,

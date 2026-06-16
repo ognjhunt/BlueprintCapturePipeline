@@ -474,7 +474,9 @@ def assemble_g1_controlled_run_evidence(
         statement=_string(config.get("robot_team_review_statement")),
     )
     refs = {name: _file_ref(path) for name, path in discovered_files.items()}
-    path_uri = lambda name: _string(_mapping(refs.get(name)).get("uri"))
+
+    def path_uri(name: str) -> str:
+        return _string(_mapping(refs.get(name)).get("uri"))
 
     physical_robot_run = {
         "schema_version": "physical_robot_run_package.v1",

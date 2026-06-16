@@ -37,6 +37,173 @@ def test_sync_webapp_pipeline_attachment_skips_when_not_configured(monkeypatch) 
     assert result["attachment_payload"]["upstream_links_verified"] is True
 
 
+def test_sync_payload_projects_robot_eval_status_without_provider_details(monkeypatch) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_REQUIRED", raising=False)
+
+    result = sync_webapp_pipeline_attachment(
+        **_minimal_payload(),
+        robot_eval_status_projection={
+            "schema_version": "internal_robot_eval_status_projection.v1",
+            "job_id": "job-robot-eval-1",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "status": "simulator_command_completed",
+            "state": "completed",
+            "buyer_display_state": "simulator_results_ready_review_required",
+            "provider_command": "python private_runner.py --token secret",
+            "scenario_batch": {
+                "status": "completed",
+                "scenario_eval_run_count": 500,
+                "target_scenario_eval_run_count": 500,
+                "base_scenario_eval_run_count": 11,
+                "scenario_eval_batch_expanded": True,
+                "target_scenario_eval_run_count_satisfied": True,
+                "episode_authoring_contract": {
+                    "spawn_target_variation_seed_handling": (
+                        "deterministic_frozen_matrix_rows"
+                    ),
+                    "runtime_spawn_goal_variation_mutation_allowed": False,
+                },
+                "covered_scenario_eval_run_count": 500,
+                "missing_scenario_eval_run_count": 0,
+                "scenario_eval_run_coverage_complete": True,
+                "scenario_eval_matrix_path": "scenario_eval_matrix.json",
+            },
+            "batch_closure": {
+                "status": "completed_with_robot_team_grade_blockers",
+                "batch_execution_status": "completed",
+                "machine_trace_package_complete": True,
+                "robot_team_grade_package_complete": False,
+                "robot_team_grade_blockers": ["visual_video_coverage_not_complete"],
+                "batch_closure_manifest_path": (
+                    "simulator_command_batch_closure_manifest.json"
+                ),
+            },
+            "digital_twin_fidelity": {
+                "status": "blocked",
+                "machine_fidelity_audit_complete": True,
+                "robot_team_grade_fidelity_passed": False,
+                "blockers": ["visual_object_without_matching_physics"],
+            },
+            "policy_interface": {
+                "status": "contract_declared",
+                "selected_modalities": ["docker_container"],
+                "supported_modalities": ["docker_container", "recorded_action_trace"],
+                "observation_schema_id": "blueprint.robot_eval.observation.v1",
+                "action_schema_id": "blueprint.robot_eval.action_trace.v1",
+                "reproducible_replay_required": True,
+                "robot_policy_execution_proven": False,
+            },
+            "closure_audit": {
+                "live_eval_closure_status": "blocked",
+                "selected_scenario_coverage_closed": True,
+                "machine_trace_package_complete": True,
+                "robot_team_grade_package_complete": False,
+                "post_training_data_package_status": "export_ready_review_required",
+                "no_readiness_claim_upgrade_without_evidence": True,
+            },
+            "remote_cloud_execution": {
+                "status": "ready_for_explicit_provider_runtime",
+                "contract_ready_for_remote_runtime": True,
+                "remote_cloud_execution_proven": False,
+                "clean_shutdown_proven": False,
+                "live_provider_calls_performed": False,
+                "blockers": ["remote_provider_runtime_not_executed"],
+                "closure_manifest_path": "remote_cloud_execution_closure_manifest.json",
+                "provider_private_payload": {"token": "should-not-pass"},
+            },
+            "robot_team_grade_eval_closure": {
+                "status": "blocked_robot_team_grade_requirements",
+                "sim_only_beta_core_complete": True,
+                "robot_team_grade_evaluation_complete": False,
+                "deployment_readiness_complete": False,
+                "blocked_requirement_ids": [
+                    "remote_cloud_execution_path",
+                    "sim_vs_real_calibration_path",
+                ],
+                "closure_manifest_path": "robot_team_grade_eval_closure_manifest.json",
+                "private_requirement_notes": {"provider": "should-not-pass"},
+            },
+            "proof_boundary": {
+                "simulator_execution_proven": True,
+                "robot_policy_execution_proven": False,
+                "real_world_outcome_proven": False,
+                "physics_contact_validated": False,
+                "safety_validated": False,
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+            "artifact_paths": {
+                "scenario_eval_matrix": "scenario_eval_matrix.json",
+                "proof_boundary": "proof_boundary.json",
+                "webapp_robot_eval_status_projection": (
+                    "webapp_robot_eval_status_projection.json"
+                ),
+                "remote_cloud_execution_closure_manifest": (
+                    "remote_cloud_execution_closure_manifest.json"
+                ),
+                "robot_team_grade_eval_closure_manifest": (
+                    "robot_team_grade_eval_closure_manifest.json"
+                ),
+                "provider_private_log": "private_provider.log",
+            },
+        },
+    )
+
+    projection = result["attachment_payload"]["robot_eval_status_projection"]
+    assert projection["schema_version"] == "webapp_robot_eval_status_projection.v1"
+    assert projection["provider_details_exposed"] is False
+    assert projection["provider_complexity_hidden"] is True
+    assert projection["scenario_batch"]["scenario_eval_run_count"] == 500
+    assert projection["scenario_batch"]["target_scenario_eval_run_count"] == 500
+    assert projection["scenario_batch"]["base_scenario_eval_run_count"] == 11
+    assert projection["scenario_batch"]["scenario_eval_batch_expanded"] is True
+    assert projection["scenario_batch"]["target_scenario_eval_run_count_satisfied"] is True
+    assert (
+        projection["scenario_batch"]["episode_authoring_contract"][
+            "spawn_target_variation_seed_handling"
+        ]
+        == "deterministic_frozen_matrix_rows"
+    )
+    assert projection["batch_closure"]["robot_team_grade_package_complete"] is False
+    assert projection["digital_twin_fidelity"]["robot_team_grade_fidelity_passed"] is False
+    assert projection["policy_interface"]["observation_schema_id"] == (
+        "blueprint.robot_eval.observation.v1"
+    )
+    assert projection["closure_audit"]["selected_scenario_coverage_closed"] is True
+    assert projection["closure_audit"]["robot_team_grade_package_complete"] is False
+    assert (
+        projection["closure_audit"]["post_training_data_package_status"]
+        == "export_ready_review_required"
+    )
+    assert projection["remote_cloud_execution"]["contract_ready_for_remote_runtime"] is True
+    assert projection["remote_cloud_execution"]["remote_cloud_execution_proven"] is False
+    assert projection["remote_cloud_execution"]["clean_shutdown_proven"] is False
+    assert "provider_private_payload" not in projection["remote_cloud_execution"]
+    assert projection["robot_team_grade_eval_closure"]["sim_only_beta_core_complete"] is True
+    assert (
+        projection["robot_team_grade_eval_closure"]["robot_team_grade_evaluation_complete"]
+        is False
+    )
+    assert "private_requirement_notes" not in projection["robot_team_grade_eval_closure"]
+    assert projection["proof_boundary"]["public_claim_upgrade_allowed"] is False
+    assert projection["buyer_display_guardrails"]["readiness_claim_upgrade_allowed"] is False
+    assert projection["buyer_display_guardrails"]["provider_commands_exposed"] is False
+    assert "provider_command" not in projection
+    assert "provider_private_log" not in projection["artifact_paths"]
+    assert projection["artifact_paths"]["webapp_robot_eval_status_projection"] == (
+        "webapp_robot_eval_status_projection.json"
+    )
+    assert projection["artifact_paths"]["remote_cloud_execution_closure_manifest"] == (
+        "remote_cloud_execution_closure_manifest.json"
+    )
+    assert projection["artifact_paths"]["robot_team_grade_eval_closure_manifest"] == (
+        "robot_team_grade_eval_closure_manifest.json"
+    )
+
+
 def test_sync_webapp_pipeline_attachment_raises_when_required(monkeypatch) -> None:
     monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
     monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)

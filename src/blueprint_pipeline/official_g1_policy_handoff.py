@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import hashlib
 import json
 import math
@@ -89,6 +90,66 @@ def _as_float_list(values: Any) -> list[float]:
         return []
     array = np.asarray(values, dtype=float).reshape(-1)
     return [float(value) for value in array.tolist()]
+
+
+def _number(value: Any) -> float | None:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pose_triplet(value: Any) -> tuple[float, float, float] | None:
+    if isinstance(value, Mapping):
+        x = _number(value.get("x") or value.get("X") or value.get("pos_x"))
+        y = _number(value.get("y") or value.get("Y") or value.get("pos_y"))
+        z = _number(value.get("z") or value.get("Z") or value.get("pos_z"))
+        if x is not None and y is not None:
+            return (x, y, z if z is not None else 0.793)
+        position = (
+            value.get("position")
+            or value.get("position_xyz")
+            or value.get("translation")
+            or value.get("xyz")
+        )
+        return _pose_triplet(position)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        parts = list(value)
+        if len(parts) >= 2:
+            x = _number(parts[0])
+            y = _number(parts[1])
+            z = _number(parts[2]) if len(parts) >= 3 else 0.793
+            if x is not None and y is not None:
+                return (x, y, z if z is not None else 0.793)
+    return None
+
+
+def _nested_pose(
+    mapping: Mapping[str, Any],
+    keys: Sequence[str],
+) -> tuple[float, float, float] | None:
+    for key in keys:
+        if key in mapping:
+            pose = _pose_triplet(mapping.get(key))
+            if pose is not None:
+                return pose
+    for nested_key in (
+        "navigation",
+        "route",
+        "robot_route",
+        "concrete_mutation",
+        "engine_mutations",
+        "mujoco",
+        "mujoco_mutation",
+    ):
+        nested = mapping.get(nested_key)
+        if isinstance(nested, Mapping):
+            pose = _nested_pose(nested, keys)
+            if pose is not None:
+                return pose
+    return None
 
 
 def _sha256(path: Path) -> str:
@@ -334,6 +395,604 @@ def _xml_float(value: Any) -> str:
 
 def _xml_vec(values: Sequence[Any]) -> str:
     return " ".join(_xml_float(value) for value in values)
+
+
+def _proxy_xy_distance(point_xy: Sequence[float], proxy: Mapping[str, Any]) -> float | None:
+    pos = proxy.get("pos")
+    size = proxy.get("size")
+    if not (
+        isinstance(pos, Sequence)
+        and not isinstance(pos, (str, bytes))
+        and isinstance(size, Sequence)
+        and not isinstance(size, (str, bytes))
+        and len(pos) >= 2
+        and len(size) >= 2
+    ):
+        return None
+    x, y = float(point_xy[0]), float(point_xy[1])
+    px, py = float(pos[0]), float(pos[1])
+    sx, sy = float(size[0]), float(size[1])
+    dx = max(abs(x - px) - sx, 0.0)
+    dy = max(abs(y - py) - sy, 0.0)
+    return float(math.hypot(dx, dy))
+
+
+def _base_path_clearance_audit(
+    *,
+    base_positions: Sequence[Sequence[float]],
+    collision_proxies: Sequence[Mapping[str, Any]],
+    required_clearance_m: float,
+) -> dict[str, Any]:
+    if not base_positions:
+        return {
+            "status": "failed",
+            "reason": "missing_base_positions",
+            "passed": False,
+        }
+    if not collision_proxies:
+        return {
+            "status": "failed",
+            "reason": "missing_collision_proxies",
+            "passed": False,
+        }
+    minimum: dict[str, Any] | None = None
+    for step, base in enumerate(base_positions):
+        point_xy = [float(base[0]), float(base[1])]
+        for proxy_index, proxy in enumerate(collision_proxies):
+            distance = _proxy_xy_distance(point_xy, proxy)
+            if distance is None:
+                continue
+            if minimum is None or distance < float(minimum["clearance_m"]):
+                minimum = {
+                    "clearance_m": distance,
+                    "step_index": step,
+                    "base_xy": point_xy,
+                    "proxy_index": proxy_index,
+                    "proxy_name": proxy.get("name"),
+                    "proxy_pos": proxy.get("pos"),
+                    "proxy_size": proxy.get("size"),
+                }
+    endpoint_clearance = None
+    endpoint_proxy_index = None
+    endpoint = base_positions[-1]
+    for proxy_index, proxy in enumerate(collision_proxies):
+        distance = _proxy_xy_distance([float(endpoint[0]), float(endpoint[1])], proxy)
+        if distance is None:
+            continue
+        if endpoint_clearance is None or distance < endpoint_clearance:
+            endpoint_clearance = distance
+            endpoint_proxy_index = proxy_index
+    min_clearance = float(minimum["clearance_m"]) if minimum is not None else None
+    passed = (
+        min_clearance is not None
+        and min_clearance >= float(required_clearance_m)
+        and endpoint_clearance is not None
+        and endpoint_clearance >= float(required_clearance_m)
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "passed": passed,
+        "required_clearance_m": float(required_clearance_m),
+        "minimum_clearance_m": min_clearance,
+        "minimum_clearance_sample": minimum,
+        "endpoint_clearance_m": endpoint_clearance,
+        "endpoint_proxy_index": endpoint_proxy_index,
+        "base_sample_count": len(base_positions),
+        "collision_proxy_count": len(collision_proxies),
+    }
+
+
+def _rounded_pose(pose: Sequence[float]) -> tuple[float, float, float]:
+    return (round(float(pose[0]), 6), round(float(pose[1]), 6), round(float(pose[2]), 6))
+
+
+def _dedupe_route_points(
+    points: Sequence[Sequence[float]], *, min_distance_m: float = 0.05
+) -> list[tuple[float, float, float]]:
+    route: list[tuple[float, float, float]] = []
+    for point in points:
+        rounded = _rounded_pose(point)
+        if not route:
+            route.append(rounded)
+            continue
+        last = route[-1]
+        distance = math.sqrt(
+            (rounded[0] - last[0]) ** 2
+            + (rounded[1] - last[1]) ** 2
+            + (rounded[2] - last[2]) ** 2
+        )
+        if distance >= min_distance_m:
+            route.append(rounded)
+    return route
+
+
+def _route_distance(points: Sequence[Sequence[float]]) -> float:
+    total = 0.0
+    for a, b in zip(points, points[1:]):
+        total += math.sqrt(
+            (float(b[0]) - float(a[0])) ** 2
+            + (float(b[1]) - float(a[1])) ** 2
+            + (float(b[2]) - float(a[2])) ** 2
+        )
+    return total
+
+
+def _mesh_xy_bounds(
+    *,
+    mesh_info: Mapping[str, Any],
+    collision_proxies: Sequence[Mapping[str, Any]],
+    start: Sequence[float],
+    goal: Sequence[float],
+    margin_m: float,
+) -> tuple[float, float, float, float]:
+    xs = [float(start[0]), float(goal[0])]
+    ys = [float(start[1]), float(goal[1])]
+    bounds = mesh_info.get("bounds")
+    if isinstance(bounds, Sequence) and not isinstance(bounds, (str, bytes)) and len(bounds) >= 2:
+        lower = bounds[0]
+        upper = bounds[1]
+        if (
+            isinstance(lower, Sequence)
+            and not isinstance(lower, (str, bytes))
+            and isinstance(upper, Sequence)
+            and not isinstance(upper, (str, bytes))
+            and len(lower) >= 2
+            and len(upper) >= 2
+        ):
+            min_x = _number(lower[0])
+            min_y = _number(lower[1])
+            max_x = _number(upper[0])
+            max_y = _number(upper[1])
+            if None not in (min_x, min_y, max_x, max_y):
+                xs.extend([float(min_x), float(max_x)])
+                ys.extend([float(min_y), float(max_y)])
+    for proxy in collision_proxies:
+        pos = proxy.get("pos")
+        size = proxy.get("size")
+        if not (
+            isinstance(pos, Sequence)
+            and not isinstance(pos, (str, bytes))
+            and isinstance(size, Sequence)
+            and not isinstance(size, (str, bytes))
+            and len(pos) >= 2
+            and len(size) >= 2
+        ):
+            continue
+        xs.extend([float(pos[0]) - float(size[0]), float(pos[0]) + float(size[0])])
+        ys.extend([float(pos[1]) - float(size[1]), float(pos[1]) + float(size[1])])
+    return (
+        min(xs) - margin_m,
+        min(ys) - margin_m,
+        max(xs) + margin_m,
+        max(ys) + margin_m,
+    )
+
+
+def _clearance_sample(
+    *,
+    point_xy: Sequence[float],
+    collision_proxies: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    minimum: dict[str, Any] | None = None
+    for proxy_index, proxy in enumerate(collision_proxies):
+        distance = _proxy_xy_distance(point_xy, proxy)
+        if distance is None:
+            continue
+        if minimum is None or distance < float(minimum["clearance_m"]):
+            minimum = {
+                "clearance_m": distance,
+                "xy": [float(point_xy[0]), float(point_xy[1])],
+                "proxy_index": proxy_index,
+                "proxy_name": proxy.get("name"),
+                "proxy_pos": proxy.get("pos"),
+                "proxy_size": proxy.get("size"),
+            }
+    return minimum or {
+        "clearance_m": None,
+        "xy": [float(point_xy[0]), float(point_xy[1])],
+        "proxy_index": None,
+        "proxy_name": None,
+    }
+
+
+def _route_clearance_audit(
+    *,
+    route_waypoints: Sequence[Sequence[float]],
+    collision_proxies: Sequence[Mapping[str, Any]],
+    required_clearance_m: float,
+    sample_spacing_m: float,
+) -> dict[str, Any]:
+    if len(route_waypoints) < 2:
+        return {
+            "status": "failed",
+            "passed": False,
+            "reason": "route_requires_at_least_two_waypoints",
+        }
+    minimum: dict[str, Any] | None = None
+    sample_count = 0
+    for segment_index, (start, end) in enumerate(zip(route_waypoints, route_waypoints[1:])):
+        sx, sy = float(start[0]), float(start[1])
+        ex, ey = float(end[0]), float(end[1])
+        segment_length = math.hypot(ex - sx, ey - sy)
+        steps = max(1, int(math.ceil(segment_length / max(0.05, sample_spacing_m))))
+        for sample_index in range(steps + 1):
+            alpha = sample_index / float(steps)
+            point = [sx + (ex - sx) * alpha, sy + (ey - sy) * alpha]
+            sample_count += 1
+            sample = _clearance_sample(point_xy=point, collision_proxies=collision_proxies)
+            clearance = sample.get("clearance_m")
+            if clearance is None:
+                continue
+            candidate = {**sample, "segment_index": segment_index, "sample_index": sample_index}
+            if minimum is None or float(clearance) < float(minimum["clearance_m"]):
+                minimum = candidate
+    min_clearance = float(minimum["clearance_m"]) if minimum is not None else None
+    passed = min_clearance is not None and min_clearance >= float(required_clearance_m)
+    return {
+        "status": "passed" if passed else "failed",
+        "passed": passed,
+        "required_clearance_m": float(required_clearance_m),
+        "minimum_clearance_m": min_clearance,
+        "minimum_clearance_sample": minimum,
+        "route_sample_count": sample_count,
+        "collision_proxy_count": len(collision_proxies),
+    }
+
+
+def _segment_is_clear(
+    *,
+    start: Sequence[float],
+    end: Sequence[float],
+    collision_proxies: Sequence[Mapping[str, Any]],
+    required_clearance_m: float,
+    sample_spacing_m: float,
+) -> bool:
+    audit = _route_clearance_audit(
+        route_waypoints=[start, end],
+        collision_proxies=collision_proxies,
+        required_clearance_m=required_clearance_m,
+        sample_spacing_m=sample_spacing_m,
+    )
+    return audit.get("passed") is True
+
+
+def _smooth_route(
+    *,
+    route_waypoints: Sequence[Sequence[float]],
+    collision_proxies: Sequence[Mapping[str, Any]],
+    required_clearance_m: float,
+    sample_spacing_m: float,
+) -> list[tuple[float, float, float]]:
+    if len(route_waypoints) <= 2:
+        return _dedupe_route_points(route_waypoints)
+    smoothed: list[tuple[float, float, float]] = [_rounded_pose(route_waypoints[0])]
+    current_index = 0
+    while current_index < len(route_waypoints) - 1:
+        next_index = current_index + 1
+        for candidate_index in range(len(route_waypoints) - 1, current_index, -1):
+            if _segment_is_clear(
+                start=route_waypoints[current_index],
+                end=route_waypoints[candidate_index],
+                collision_proxies=collision_proxies,
+                required_clearance_m=required_clearance_m,
+                sample_spacing_m=sample_spacing_m,
+            ):
+                next_index = candidate_index
+                break
+        smoothed.append(_rounded_pose(route_waypoints[next_index]))
+        current_index = next_index
+    return _dedupe_route_points(smoothed)
+
+
+def _plan_occupancy_grid_route(
+    *,
+    start: Sequence[float],
+    goal: Sequence[float],
+    collision_proxies: Sequence[Mapping[str, Any]],
+    mesh_info: Mapping[str, Any],
+    required_clearance_m: float,
+    grid_resolution_m: float = 0.35,
+) -> dict[str, Any]:
+    start_pose = _rounded_pose(start)
+    goal_pose = _rounded_pose(goal)
+    blockers: list[str] = []
+    if not collision_proxies:
+        blockers.append("missing_collision_proxies_for_occupancy_map")
+
+    start_clearance = _clearance_sample(
+        point_xy=start_pose[:2],
+        collision_proxies=collision_proxies,
+    )
+    goal_clearance = _clearance_sample(
+        point_xy=goal_pose[:2],
+        collision_proxies=collision_proxies,
+    )
+    if start_clearance.get("clearance_m") is None:
+        blockers.append("start_clearance_unavailable")
+    elif float(start_clearance["clearance_m"]) < float(required_clearance_m):
+        blockers.append("start_occupied_or_below_clearance")
+    if goal_clearance.get("clearance_m") is None:
+        blockers.append("goal_clearance_unavailable")
+    elif float(goal_clearance["clearance_m"]) < float(required_clearance_m):
+        blockers.append("goal_occupied_or_below_clearance")
+    if blockers:
+        return {
+            "schema_version": "official_unitree_g1_navigation_plan.v1",
+            "status": "blocked",
+            "planned": False,
+            "blockers": blockers,
+            "start_pose": list(start_pose),
+            "goal_pose": list(goal_pose),
+            "start_clearance": start_clearance,
+            "goal_clearance": goal_clearance,
+            "route_waypoints": [],
+            "route_distance_m": None,
+            "route_clearance_audit": None,
+            "occupancy_map": {
+                "source": "external_scene_collision_proxy_geoms",
+                "collision_proxy_count": len(collision_proxies),
+            },
+        }
+
+    resolution = max(0.10, float(grid_resolution_m))
+    margin = max(float(required_clearance_m) + resolution * 2.0, 1.0)
+    min_x, min_y, max_x, max_y = _mesh_xy_bounds(
+        mesh_info=mesh_info,
+        collision_proxies=collision_proxies,
+        start=start_pose,
+        goal=goal_pose,
+        margin_m=margin,
+    )
+    width = max_x - min_x
+    height = max_y - min_y
+    max_cells_axis = 220
+    if width / resolution > max_cells_axis or height / resolution > max_cells_axis:
+        resolution = max(width, height) / float(max_cells_axis)
+    x_count = max(2, int(math.ceil(width / resolution)) + 1)
+    y_count = max(2, int(math.ceil(height / resolution)) + 1)
+
+    def world_to_cell(point: Sequence[float]) -> tuple[int, int]:
+        ix = int(round((float(point[0]) - min_x) / resolution))
+        iy = int(round((float(point[1]) - min_y) / resolution))
+        return max(0, min(x_count - 1, ix)), max(0, min(y_count - 1, iy))
+
+    def cell_center(cell: tuple[int, int]) -> tuple[float, float, float]:
+        return (
+            min_x + cell[0] * resolution,
+            min_y + cell[1] * resolution,
+            start_pose[2],
+        )
+
+    free_cache: dict[tuple[int, int], bool] = {}
+
+    def cell_is_free(cell: tuple[int, int]) -> bool:
+        if cell in free_cache:
+            return free_cache[cell]
+        center = cell_center(cell)
+        sample = _clearance_sample(point_xy=center[:2], collision_proxies=collision_proxies)
+        clearance = sample.get("clearance_m")
+        free = clearance is not None and float(clearance) >= float(required_clearance_m)
+        free_cache[cell] = free
+        return free
+
+    start_cell = world_to_cell(start_pose)
+    goal_cell = world_to_cell(goal_pose)
+    free_cache[start_cell] = True
+    free_cache[goal_cell] = True
+    neighbors = (
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    )
+
+    def heuristic(cell: tuple[int, int]) -> float:
+        return math.hypot(goal_cell[0] - cell[0], goal_cell[1] - cell[1])
+
+    open_heap: list[tuple[float, float, tuple[int, int]]] = [(heuristic(start_cell), 0.0, start_cell)]
+    came_from: dict[tuple[int, int], tuple[int, int]] = {}
+    g_score: dict[tuple[int, int], float] = {start_cell: 0.0}
+    closed: set[tuple[int, int]] = set()
+    while open_heap:
+        _, current_cost, current = heapq.heappop(open_heap)
+        if current in closed:
+            continue
+        if current == goal_cell:
+            break
+        closed.add(current)
+        for dx, dy in neighbors:
+            candidate = (current[0] + dx, current[1] + dy)
+            if not (0 <= candidate[0] < x_count and 0 <= candidate[1] < y_count):
+                continue
+            if not cell_is_free(candidate):
+                continue
+            step_cost = math.sqrt(2.0) if dx and dy else 1.0
+            tentative = current_cost + step_cost
+            if tentative >= g_score.get(candidate, float("inf")):
+                continue
+            came_from[candidate] = current
+            g_score[candidate] = tentative
+            heapq.heappush(open_heap, (tentative + heuristic(candidate), tentative, candidate))
+
+    if goal_cell not in came_from and goal_cell != start_cell:
+        return {
+            "schema_version": "official_unitree_g1_navigation_plan.v1",
+            "status": "blocked",
+            "planned": False,
+            "blockers": ["no_collision_free_occupancy_grid_route"],
+            "start_pose": list(start_pose),
+            "goal_pose": list(goal_pose),
+            "start_clearance": start_clearance,
+            "goal_clearance": goal_clearance,
+            "route_waypoints": [],
+            "route_distance_m": None,
+            "route_clearance_audit": None,
+            "occupancy_map": {
+                "source": "external_scene_collision_proxy_geoms",
+                "resolution_m": resolution,
+                "bounds_xy": [min_x, min_y, max_x, max_y],
+                "grid_shape_xy": [x_count, y_count],
+                "collision_proxy_count": len(collision_proxies),
+                "expanded_clearance_m": float(required_clearance_m),
+                "visited_cell_count": len(closed),
+            },
+        }
+
+    cell_path = [goal_cell]
+    while cell_path[-1] != start_cell:
+        cell_path.append(came_from[cell_path[-1]])
+    cell_path.reverse()
+    raw_route: list[tuple[float, float, float]] = [start_pose]
+    raw_route.extend(cell_center(cell) for cell in cell_path[1:-1])
+    raw_route.append(goal_pose)
+    route = _smooth_route(
+        route_waypoints=raw_route,
+        collision_proxies=collision_proxies,
+        required_clearance_m=required_clearance_m,
+        sample_spacing_m=max(0.05, resolution * 0.5),
+    )
+    route_audit = _route_clearance_audit(
+        route_waypoints=route,
+        collision_proxies=collision_proxies,
+        required_clearance_m=required_clearance_m,
+        sample_spacing_m=max(0.05, resolution * 0.5),
+    )
+    if route_audit.get("passed") is not True:
+        blockers.append("planned_route_clearance_audit_failed")
+    return {
+        "schema_version": "official_unitree_g1_navigation_plan.v1",
+        "status": "planned" if not blockers else "blocked",
+        "planned": not blockers,
+        "blockers": blockers,
+        "start_pose": list(start_pose),
+        "goal_pose": list(goal_pose),
+        "start_clearance": start_clearance,
+        "goal_clearance": goal_clearance,
+        "route_waypoints": [list(point) for point in route],
+        "raw_grid_route_waypoint_count": len(raw_route),
+        "route_waypoint_count": len(route),
+        "route_distance_m": round(_route_distance(route), 6),
+        "route_clearance_audit": route_audit,
+        "occupancy_map": {
+            "source": "external_scene_collision_proxy_geoms",
+            "resolution_m": resolution,
+            "bounds_xy": [min_x, min_y, max_x, max_y],
+            "grid_shape_xy": [x_count, y_count],
+            "collision_proxy_count": len(collision_proxies),
+            "expanded_clearance_m": float(required_clearance_m),
+            "visited_cell_count": len(closed),
+        },
+        "planner_boundary": (
+            "A deterministic 2D occupancy-grid route is planned from generated MuJoCo "
+            "collision proxies, then converted to velocity commands for the official G1 "
+            "policy. This is simulated support evidence, not physical robot readiness."
+        ),
+    }
+
+
+def _default_navigation_goal(
+    *,
+    start: Sequence[float],
+    mesh_info: Mapping[str, Any],
+    collision_proxies: Sequence[Mapping[str, Any]],
+    required_clearance_m: float,
+) -> tuple[float, float, float] | None:
+    min_x, min_y, max_x, max_y = _mesh_xy_bounds(
+        mesh_info=mesh_info,
+        collision_proxies=collision_proxies,
+        start=start,
+        goal=start,
+        margin_m=0.0,
+    )
+    sx, sy, sz = float(start[0]), float(start[1]), float(start[2])
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+    inset = max(1.0, required_clearance_m * 2.0)
+    candidates = [
+        (sx, max_y - inset if sy <= center_y else min_y + inset, sz),
+        (center_x, max_y - inset if sy <= center_y else min_y + inset, sz),
+        (max_x - inset if sx <= center_x else min_x + inset, sy, sz),
+        (max_x - inset if sx <= center_x else min_x + inset, center_y, sz),
+    ]
+    for candidate in candidates:
+        sample = _clearance_sample(point_xy=candidate[:2], collision_proxies=collision_proxies)
+        clearance = sample.get("clearance_m")
+        if clearance is not None and float(clearance) >= float(required_clearance_m):
+            return _rounded_pose(candidate)
+    return None
+
+
+def _navigation_command(
+    *,
+    route_waypoints: Sequence[Sequence[float]],
+    base_position: Sequence[float],
+    base_yaw: float,
+    waypoint_index: int,
+    max_speed_mps: float,
+    waypoint_tolerance_m: float,
+    yaw_gain: float,
+    max_yaw_rate: float,
+) -> dict[str, Any]:
+    if len(route_waypoints) < 2:
+        return {
+            "command_xyz": [0.0, 0.0, 0.0],
+            "waypoint_index": 0,
+            "active_waypoint": None,
+            "goal_reached": False,
+            "distance_to_active_waypoint_m": None,
+            "distance_to_goal_m": None,
+        }
+    index = max(1, min(int(waypoint_index), len(route_waypoints) - 1))
+    bx, by = float(base_position[0]), float(base_position[1])
+    while index < len(route_waypoints) - 1:
+        waypoint = route_waypoints[index]
+        if math.hypot(float(waypoint[0]) - bx, float(waypoint[1]) - by) > waypoint_tolerance_m:
+            break
+        index += 1
+    waypoint = route_waypoints[index]
+    goal = route_waypoints[-1]
+    dx = float(waypoint[0]) - bx
+    dy = float(waypoint[1]) - by
+    distance = math.hypot(dx, dy)
+    distance_to_goal = math.hypot(float(goal[0]) - bx, float(goal[1]) - by)
+    goal_reached = index == len(route_waypoints) - 1 and distance <= waypoint_tolerance_m
+    if goal_reached:
+        return {
+            "command_xyz": [0.0, 0.0, 0.0],
+            "waypoint_index": index,
+            "active_waypoint": list(_rounded_pose(waypoint)),
+            "goal_reached": True,
+            "distance_to_active_waypoint_m": round(distance, 6),
+            "distance_to_goal_m": round(distance_to_goal, 6),
+        }
+    desired_yaw = math.atan2(dy, dx) if distance > 1e-9 else float(base_yaw)
+    yaw_error = math.atan2(math.sin(desired_yaw - base_yaw), math.cos(desired_yaw - base_yaw))
+    speed = min(float(max_speed_mps), max(0.08, distance * 0.8))
+    world_vx = math.cos(desired_yaw) * speed
+    world_vy = math.sin(desired_yaw) * speed
+    cos_yaw = math.cos(base_yaw)
+    sin_yaw = math.sin(base_yaw)
+    body_vx = cos_yaw * world_vx + sin_yaw * world_vy
+    body_vy = -sin_yaw * world_vx + cos_yaw * world_vy
+    if abs(yaw_error) > 0.75:
+        body_vx *= 0.55
+        body_vy *= 0.55
+    body_vy = max(-0.30, min(0.30, body_vy))
+    yaw_rate = max(-max_yaw_rate, min(max_yaw_rate, yaw_gain * yaw_error))
+    return {
+        "command_xyz": [float(body_vx), float(body_vy), float(yaw_rate)],
+        "waypoint_index": index,
+        "active_waypoint": list(_rounded_pose(waypoint)),
+        "goal_reached": False,
+        "desired_yaw_rad": round(desired_yaw, 6),
+        "yaw_error_rad": round(yaw_error, 6),
+        "distance_to_active_waypoint_m": round(distance, 6),
+        "distance_to_goal_m": round(distance_to_goal, 6),
+    }
 
 
 def _write_camera_robot_xml(source_robot_xml: Path, output_robot_xml: Path) -> None:
@@ -1067,6 +1726,18 @@ def build_official_g1_policy_handoff(
     duration_seconds: float | None = None,
     target_displacement_m: float | None = None,
     fall_height_threshold_m: float = 0.45,
+    command_xyz: Sequence[float] | None = None,
+    collision_proxy_limit: int = 512,
+    base_path_clearance_m: float = 0.38,
+    initial_root_xy: Sequence[float] | None = None,
+    initial_root_yaw: float = 0.0,
+    navigation_goal_xyz: Sequence[float] | None = None,
+    navigation_grid_resolution_m: float = 0.35,
+    navigation_max_speed_mps: float = 0.55,
+    navigation_waypoint_tolerance_m: float = 0.35,
+    navigation_yaw_gain: float = 1.2,
+    navigation_max_yaw_rate: float = 0.9,
+    enable_navigation_planner: bool = True,
     copy_policy_source_snapshot: bool = True,
 ) -> dict[str, Any]:
     if platform.system().lower() == "linux":
@@ -1083,7 +1754,7 @@ def build_official_g1_policy_handoff(
     root = Path(capture_root).expanduser().resolve()
     policy_dir = root / DEFAULT_POLICY_RELATIVE
     handoff_dir = Path(output_dir).expanduser().resolve() if output_dir else policy_dir / "robot_team_handoff"
-    rendered_dir = policy_dir / "rendered_policy_motion"
+    rendered_dir = handoff_dir / "rendered_policy_motion"
     frames_dir = rendered_dir / "frames"
     robot_pov_frames_dir = handoff_dir / "robot_pov_frames"
     generated_mjcf_dir = handoff_dir / "generated_mjcf"
@@ -1149,7 +1820,11 @@ def build_official_g1_policy_handoff(
     try:
         external_scene_glb = _find_scene_glb(root)
         external_scene_obj = handoff_dir / "capture_scene_for_official_g1_policy.obj"
-        external_scene_mesh_info = _convert_glb_to_obj(external_scene_glb, external_scene_obj)
+        external_scene_mesh_info = _convert_glb_to_obj(
+            external_scene_glb,
+            external_scene_obj,
+            collision_proxy_limit=collision_proxy_limit,
+        )
         external_collision_proxies = list(
             external_scene_mesh_info.get("collision_proxy_geoms") or []
         )
@@ -1176,8 +1851,94 @@ def build_official_g1_policy_handoff(
         external_collision_proxies=external_collision_proxies,
     )
 
+    matrix_path = root / DEFAULT_MATRIX_RELATIVE
+    scenario_context = _scenario_context(matrix_path)
+    selected_matrix_run = _first_matrix_run(matrix_path)
     model = mujoco.MjModel.from_xml_path(str(generated_scene_xml))
     data = mujoco.MjData(model)
+    default_start_z = float(data.qpos[2]) if model.nq >= 3 else 0.793
+    matrix_start = _nested_pose(
+        selected_matrix_run,
+        (
+            "spawn_pose",
+            "start_pose",
+            "initial_pose",
+            "robot_spawn_pose",
+            "robot_start_pose",
+            "start_xyz",
+            "spawn_xyz",
+        ),
+    )
+    matrix_goal = _nested_pose(
+        selected_matrix_run,
+        (
+            "target_pose",
+            "goal_pose",
+            "navigation_target_pose",
+            "robot_target_pose",
+            "target_xyz",
+            "goal_xyz",
+        ),
+    )
+    explicit_goal = _pose_triplet(navigation_goal_xyz)
+    if initial_root_xy is not None and len(initial_root_xy) >= 2:
+        initial_root_pose = (
+            float(initial_root_xy[0]),
+            float(initial_root_xy[1]),
+            matrix_start[2] if matrix_start is not None else default_start_z,
+        )
+    else:
+        initial_root_pose = matrix_start or (
+            float(data.qpos[0]) if model.nq >= 1 else 0.0,
+            float(data.qpos[1]) if model.nq >= 2 else 0.0,
+            default_start_z,
+        )
+    goal_pose = explicit_goal or matrix_goal
+    if goal_pose is None and enable_navigation_planner:
+        goal_pose = _default_navigation_goal(
+            start=initial_root_pose,
+            mesh_info=external_scene_mesh_info,
+            collision_proxies=external_collision_proxies,
+            required_clearance_m=base_path_clearance_m,
+        )
+    navigation_plan = (
+        _plan_occupancy_grid_route(
+            start=initial_root_pose,
+            goal=goal_pose,
+            collision_proxies=external_collision_proxies,
+            mesh_info=external_scene_mesh_info,
+            required_clearance_m=base_path_clearance_m,
+            grid_resolution_m=navigation_grid_resolution_m,
+        )
+        if enable_navigation_planner and goal_pose is not None
+        else {
+            "schema_version": "official_unitree_g1_navigation_plan.v1",
+            "status": "not_requested",
+            "planned": False,
+            "blockers": ["navigation_goal_not_available"],
+            "start_pose": list(_rounded_pose(initial_root_pose)),
+            "goal_pose": None,
+            "route_waypoints": [],
+        }
+    )
+    if navigation_plan.get("planned") is True:
+        planned_start = navigation_plan.get("start_pose") or initial_root_pose
+        data.qpos[0] = float(planned_start[0])
+        data.qpos[1] = float(planned_start[1])
+        if model.nq >= 3:
+            data.qpos[2] = float(planned_start[2])
+    elif initial_root_xy is not None and len(initial_root_xy) >= 2:
+        data.qpos[0] = float(initial_root_pose[0])
+        data.qpos[1] = float(initial_root_pose[1])
+    if model.nq >= 7:
+        yaw = float(initial_root_yaw)
+        data.qpos[3:7] = [
+            math.cos(yaw / 2.0),
+            0.0,
+            0.0,
+            math.sin(yaw / 2.0),
+        ]
+        mujoco.mj_forward(model, data)
     model.opt.timestep = float(config.get("simulation_dt") or 0.002)
     policy = torch.jit.load(str(paths["policy"]), map_location="cpu")
     policy.eval()
@@ -1195,7 +1956,12 @@ def build_official_g1_policy_handoff(
     kps = np.asarray(config.get("kps") or [100] * len(JOINT_NAMES), dtype=np.float32)
     kds = np.asarray(config.get("kds") or [2] * len(JOINT_NAMES), dtype=np.float32)
     default_angles = np.asarray(config.get("default_angles") or [0] * len(JOINT_NAMES), dtype=np.float32)
-    cmd = np.asarray(config.get("cmd_init") or metrics.get("command_xyz") or [0.5, 0.0, 0.0], dtype=np.float32)
+    cmd = np.asarray(
+        command_xyz
+        if command_xyz is not None
+        else config.get("cmd_init") or metrics.get("command_xyz") or [0.5, 0.0, 0.0],
+        dtype=np.float32,
+    )
     cmd_scale = np.asarray(config.get("cmd_scale") or [2.0, 2.0, 0.25], dtype=np.float32)
     dof_pos_scale = float(config.get("dof_pos_scale") or 1.0)
     dof_vel_scale = float(config.get("dof_vel_scale") or 0.05)
@@ -1209,7 +1975,6 @@ def build_official_g1_policy_handoff(
         or JOINT_NAMES[index]
         for index in range(model.nu)
     ]
-    scenario_context = _scenario_context(root / DEFAULT_MATRIX_RELATIVE)
     cameras = _camera_set(camera_set)
     sample_indices = sorted(_render_capture_steps(total_steps, max_rendered_steps=max_frames))
     renderer = mujoco.Renderer(model, height=int(render_height), width=int(render_width))
@@ -1225,6 +1990,18 @@ def build_official_g1_policy_handoff(
     camera_frame_paths: dict[str, list[str]] = {camera: [] for camera in cameras}
     camera_frame_times: dict[str, list[float]] = {camera: [] for camera in cameras}
     base_positions: list[list[float]] = []
+    navigation_active = navigation_plan.get("planned") is True
+    navigation_waypoints = [
+        _rounded_pose(point)
+        for point in navigation_plan.get("route_waypoints", [])
+        if isinstance(point, Sequence) and not isinstance(point, (str, bytes)) and len(point) >= 3
+    ]
+    navigation_waypoint_index = 1 if len(navigation_waypoints) > 1 else 0
+    navigation_goal_reached = False
+    navigation_command_samples: list[dict[str, Any]] = []
+    navigation_clearance_samples: list[dict[str, Any]] = []
+    navigation_clearance_violation_count = 0
+    navigation_min_runtime_clearance: dict[str, Any] | None = None
     finite_state = True
     finite_actions = True
     initial_base_position_xy: np.ndarray | None = None
@@ -1241,6 +2018,55 @@ def build_official_g1_policy_handoff(
                 mujoco.mj_step(model, data)
                 counter = step + 1
                 policy_update_applied = counter % control_decimation == 0
+                base_position = _as_float_list(data.qpos[0:3])
+                base_yaw_rad = _yaw_from_quat_wxyz(_as_float_list(data.qpos[3:7]))
+                navigation_command_record: dict[str, Any] | None = None
+                runtime_clearance = _clearance_sample(
+                    point_xy=base_position[:2],
+                    collision_proxies=external_collision_proxies,
+                )
+                runtime_clearance_m = runtime_clearance.get("clearance_m")
+                if runtime_clearance_m is not None:
+                    runtime_clearance = {
+                        **runtime_clearance,
+                        "step": step,
+                        "sim_time_s": round(float(data.time), 9),
+                    }
+                    if (
+                        navigation_min_runtime_clearance is None
+                        or float(runtime_clearance_m)
+                        < float(navigation_min_runtime_clearance["clearance_m"])
+                    ):
+                        navigation_min_runtime_clearance = dict(runtime_clearance)
+                    if float(runtime_clearance_m) < float(base_path_clearance_m):
+                        navigation_clearance_violation_count += 1
+                    if policy_update_applied or float(runtime_clearance_m) < float(base_path_clearance_m):
+                        navigation_clearance_samples.append(dict(runtime_clearance))
+                if navigation_active:
+                    navigation_command_record = _navigation_command(
+                        route_waypoints=navigation_waypoints,
+                        base_position=base_position,
+                        base_yaw=base_yaw_rad,
+                        waypoint_index=navigation_waypoint_index,
+                        max_speed_mps=navigation_max_speed_mps,
+                        waypoint_tolerance_m=navigation_waypoint_tolerance_m,
+                        yaw_gain=navigation_yaw_gain,
+                        max_yaw_rate=navigation_max_yaw_rate,
+                    )
+                    navigation_waypoint_index = int(navigation_command_record["waypoint_index"])
+                    navigation_goal_reached = (
+                        navigation_goal_reached
+                        or navigation_command_record.get("goal_reached") is True
+                    )
+                    cmd = np.asarray(navigation_command_record["command_xyz"], dtype=np.float32)
+                    if policy_update_applied or navigation_command_record.get("goal_reached") is True:
+                        navigation_command_samples.append(
+                            {
+                                "step": step,
+                                "sim_time_s": round(float(data.time), 9),
+                                **navigation_command_record,
+                            }
+                        )
                 policy_observation: list[float] | None = None
                 if policy_update_applied:
                     obs = _observation(
@@ -1268,7 +2094,6 @@ def build_official_g1_policy_handoff(
                     np.all(np.isfinite(data.qpos)) and np.all(np.isfinite(data.qvel))
                 )
                 contacts, foot_contact_states = _contact_records(model, data, mujoco)
-                base_position = _as_float_list(data.qpos[0:3])
                 if initial_base_position_xy is None:
                     initial_base_position_xy = np.asarray(base_position[:2], dtype=float)
                 base_displacement_xy = float(
@@ -1282,8 +2107,16 @@ def build_official_g1_policy_handoff(
                 step_termination_reason: str | None = None
                 if scene_contact_count > 0:
                     step_termination_reason = "scene_collision"
+                elif (
+                    navigation_active
+                    and runtime_clearance_m is not None
+                    and float(runtime_clearance_m) < float(base_path_clearance_m)
+                ):
+                    step_termination_reason = "clearance_below_threshold"
                 elif float(base_position[2]) < float(fall_height_threshold_m):
                     step_termination_reason = "fall_height_below_threshold"
+                elif navigation_active and navigation_goal_reached:
+                    step_termination_reason = "navigation_goal_reached"
                 elif (
                     target_displacement_m is not None
                     and base_displacement_xy >= float(target_displacement_m)
@@ -1311,7 +2144,7 @@ def build_official_g1_policy_handoff(
                     "qvel": _as_float_list(data.qvel),
                     "base_position_xyz": base_position,
                     "base_orientation_quat_wxyz": _as_float_list(data.qpos[3:7]),
-                    "base_yaw_rad": _yaw_from_quat_wxyz(_as_float_list(data.qpos[3:7])),
+                    "base_yaw_rad": base_yaw_rad,
                     "base_linear_velocity_xyz": _as_float_list(data.qvel[0:3]),
                     "base_angular_velocity_xyz": _as_float_list(data.qvel[3:6]),
                     "joint_positions": joint_positions,
@@ -1332,6 +2165,30 @@ def build_official_g1_policy_handoff(
                         "available_at_control_update" if policy_update_applied else "not_sampled_this_step"
                     ),
                     "command_xyz": _as_float_list(cmd),
+                    "command_source": (
+                        "navigation_planner_waypoint_velocity"
+                        if navigation_active
+                        else "static_policy_command"
+                    ),
+                    "navigation": {
+                        "active": navigation_active,
+                        "planner_status": navigation_plan.get("status"),
+                        "waypoint_index": navigation_waypoint_index,
+                        "active_waypoint": navigation_command_record.get("active_waypoint")
+                        if navigation_command_record
+                        else None,
+                        "goal_pose": navigation_plan.get("goal_pose"),
+                        "goal_reached": navigation_goal_reached,
+                        "distance_to_active_waypoint_m": navigation_command_record.get(
+                            "distance_to_active_waypoint_m"
+                        )
+                        if navigation_command_record
+                        else None,
+                        "distance_to_goal_m": navigation_command_record.get("distance_to_goal_m")
+                        if navigation_command_record
+                        else None,
+                        "runtime_clearance_m": runtime_clearance_m,
+                    },
                     "scenario_context": scenario_context["selected_run"],
                     "rendered_frame": step in sample_indices,
                     "base_displacement_xy_m": base_displacement_xy,
@@ -1390,8 +2247,24 @@ def build_official_g1_policy_handoff(
                                     "physical_sensor_data": False,
                                 }
                             )
+                if step_termination_reason is not None:
+                    episode_termination_reason = step_termination_reason
+                    episode_termination_step = step
+                    episode_termination_time_s = float(data.time)
+                    break
     finally:
         renderer.close()
+
+    if episode_termination_step is None and rows:
+        last_row = rows[-1]
+        episode_termination_reason = "timeout"
+        episode_termination_step = int(last_row.get("step") or 0)
+        episode_termination_time_s = float(last_row.get("sim_time_s") or 0.0)
+    video_duration_s = (
+        float(episode_termination_time_s)
+        if episode_termination_time_s is not None
+        else requested_duration
+    )
 
     timeseries_path = handoff_dir / "robot_team_timeseries.jsonl"
     enriched_trace_path = handoff_dir / "policy_execution_trace_enriched.jsonl"
@@ -1419,7 +2292,7 @@ def build_official_g1_policy_handoff(
             )
             if video_name.startswith("official_policy_")
             else camera_frame_times.get(video_name, []),
-            video_duration_s=requested_duration,
+            video_duration_s=video_duration_s,
         )
         video["ffprobe"] = _ffprobe_video(Path(_string(video.get("path"))))
         video["blank_scene_checks"] = _blank_scene_checks(frame_paths)
@@ -1479,6 +2352,67 @@ def build_official_g1_policy_handoff(
         "base_position_max_xyz": _as_float_list(np.max(np.asarray(base_positions), axis=0)),
         "base_displacement_xy_m": base_displacement,
     }
+    base_path_clearance = _base_path_clearance_audit(
+        base_positions=base_positions,
+        collision_proxies=external_collision_proxies,
+        required_clearance_m=base_path_clearance_m,
+    )
+    navigation_runtime_audit = {
+        "status": "complete" if navigation_active else "not_active",
+        "navigation_active": navigation_active,
+        "goal_reached": navigation_goal_reached,
+        "final_waypoint_index": navigation_waypoint_index,
+        "waypoint_count": len(navigation_waypoints),
+        "runtime_clearance_violation_count": navigation_clearance_violation_count,
+        "minimum_runtime_clearance": navigation_min_runtime_clearance,
+        "command_sample_count": len(navigation_command_samples),
+        "clearance_sample_count": len(navigation_clearance_samples),
+        "command_samples": navigation_command_samples[:250],
+        "clearance_samples": navigation_clearance_samples[:250],
+        "termination_reason": episode_termination_reason,
+        "termination_step": episode_termination_step,
+        "termination_time_s": episode_termination_time_s,
+        "control_policy_feed": (
+            "waypoint_velocity_commands_in_policy_observation"
+            if navigation_active
+            else "static_policy_command"
+        ),
+    }
+    navigation_manifest = {
+        "schema_version": "official_unitree_g1_navigation_manifest.v1",
+        "generated_at": utc_now_iso(),
+        "status": (
+            "complete"
+            if navigation_active
+            and navigation_plan.get("status") == "planned"
+            and navigation_clearance_violation_count == 0
+            else "blocked"
+            if enable_navigation_planner
+            else "not_requested"
+        ),
+        "planner_enabled": enable_navigation_planner,
+        "planner": navigation_plan,
+        "runtime_audit": navigation_runtime_audit,
+        "settings": {
+            "grid_resolution_m": float(navigation_grid_resolution_m),
+            "required_clearance_m": float(base_path_clearance_m),
+            "max_speed_mps": float(navigation_max_speed_mps),
+            "waypoint_tolerance_m": float(navigation_waypoint_tolerance_m),
+            "yaw_gain": float(navigation_yaw_gain),
+            "max_yaw_rate": float(navigation_max_yaw_rate),
+        },
+        "proof_boundary": {
+            "simulated_mujoco_navigation": navigation_active,
+            "official_policy_command_stream_integrated": navigation_active,
+            "continuous_contact_checks": True,
+            "continuous_clearance_checks": True,
+            "physical_robot_readiness_proven": False,
+            "real_world_safety_contact_validation_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+    navigation_manifest_path = handoff_dir / "navigation_plan_manifest.json"
+    _safe_write_json(navigation_manifest_path, navigation_manifest)
     stream_manifest = _build_sensor_stream_manifest(
         path=timeseries_path,
         rows=rows,
@@ -1623,9 +2557,21 @@ def build_official_g1_policy_handoff(
         ),
         "policy_id": policy_manifest.get("policy_id"),
         "command_xyz": _as_float_list(cmd),
+        "command_source": (
+            "navigation_planner_waypoint_velocity"
+            if navigation_active
+            else "static_policy_command"
+        ),
+        "navigation_manifest": str(navigation_manifest_path),
+        "navigation_plan_status": navigation_plan.get("status"),
+        "navigation_goal_reached": navigation_goal_reached,
+        "navigation_route_distance_m": navigation_plan.get("route_distance_m"),
         "source_trace_rows": len(original_trace_rows),
         "timeseries_rows": len(rows),
-        "rendered_sample_count_per_camera": len(sample_indices),
+        "rendered_sample_count_per_camera": {
+            camera: len(paths) for camera, paths in camera_frame_paths.items()
+        },
+        "planned_render_sample_count_per_camera": len(sample_indices),
         "render_resolution": [int(render_width), int(render_height)],
         "render_fps": int(render_fps),
         "video_crf": int(video_crf),
@@ -1635,6 +2581,9 @@ def build_official_g1_policy_handoff(
         "blank_scene_checks": _blank_scene_checks(all_render_frames),
         "all_frames_nonblank": _blank_scene_checks(all_render_frames).get("all_frames_nonblank")
         is True,
+        "episode_termination_reason": episode_termination_reason,
+        "episode_termination_step": episode_termination_step,
+        "episode_termination_time_s": episode_termination_time_s,
         "motion_range": motion_range,
     }
     render_manifest_path = rendered_dir / "official_policy_rendered_motion_manifest.json"
@@ -1674,6 +2623,25 @@ def build_official_g1_policy_handoff(
         blockers.append("non_finite_policy_actions")
     if base_displacement <= 0.10:
         blockers.append("base_displacement_below_walking_threshold")
+    if episode_termination_reason == "scene_collision":
+        blockers.append("episode_terminated_by_scene_collision")
+    if episode_termination_reason == "fall_height_below_threshold":
+        blockers.append("episode_terminated_by_fall")
+    if episode_termination_reason == "clearance_below_threshold":
+        blockers.append("episode_terminated_by_clearance_violation")
+    if enable_navigation_planner and navigation_plan.get("status") != "planned":
+        blockers.append("navigation_planner_route_not_available")
+        blockers.extend(
+            f"navigation_planner_{blocker}"
+            for blocker in navigation_plan.get("blockers", [])
+            if isinstance(blocker, str)
+        )
+    if navigation_active and navigation_clearance_violation_count > 0:
+        blockers.append("navigation_runtime_clearance_violation")
+    if navigation_active and not navigation_goal_reached and episode_termination_reason == "timeout":
+        blockers.append("navigation_goal_not_reached_before_timeout")
+    if not base_path_clearance.get("passed"):
+        blockers.append("base_path_or_endpoint_occupancy_not_clear")
     external_scene_collision_loaded = bool(external_scene_obj is not None)
     if not external_scene_collision_loaded:
         blockers.append("external_scene_collision_mesh_not_loaded")
@@ -1705,6 +2673,12 @@ def build_official_g1_policy_handoff(
         ),
         "robot_team_handoff_gate_passed": not blockers,
         "locomotion_controller_integrated": True,
+        "planner_navigation_layer_integrated": navigation_active,
+        "navigation_planner_status": navigation_plan.get("status"),
+        "navigation_goal_reached": navigation_goal_reached,
+        "navigation_runtime_clearance_violation_count": navigation_clearance_violation_count,
+        "navigation_route_distance_m": navigation_plan.get("route_distance_m"),
+        "navigation_waypoint_count": len(navigation_waypoints),
         "physical_robot_readiness_proven": False,
         "real_robot_pov": False,
         "real_robot_pov_evidence_proven": False,
@@ -1712,10 +2686,32 @@ def build_official_g1_policy_handoff(
         "customer_delivery_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
         "duration_seconds": requested_duration,
+        "actual_duration_seconds": episode_termination_time_s,
+        "episode_termination_reason": episode_termination_reason,
+        "episode_termination_step": episode_termination_step,
+        "episode_termination_time_s": episode_termination_time_s,
+        "episode_termination_contract": {
+            "target_displacement_m": float(target_displacement_m)
+            if target_displacement_m is not None
+            else None,
+            "scene_collision_terminates_episode": True,
+            "fall_height_threshold_m": float(fall_height_threshold_m),
+            "timeout_seconds": requested_duration,
+        },
         "simulation_dt": simulation_dt,
-        "steps": total_steps,
+        "steps": len(rows),
+        "planned_steps": total_steps,
         "control_updates": control_update_count,
         "command_xyz": _as_float_list(cmd),
+        "command_source": (
+            "navigation_planner_waypoint_velocity"
+            if navigation_active
+            else "static_policy_command"
+        ),
+        "initial_root_xy": [float(value) for value in initial_root_xy[:2]]
+        if initial_root_xy is not None and len(initial_root_xy) >= 2
+        else None,
+        "initial_root_yaw": float(initial_root_yaw),
         "finite_state": finite_state,
         "finite_actions": finite_actions,
         "motion_range": motion_range,
@@ -1738,6 +2734,15 @@ def build_official_g1_policy_handoff(
             ).get("collision_proxy_geom_count")
             or 0
         ),
+        "collision_proxy_limit": int(collision_proxy_limit),
+        "base_path_clearance_m": float(base_path_clearance_m),
+        "base_path_clearance": base_path_clearance,
+        "navigation_plan": navigation_plan,
+        "navigation_runtime_audit": {
+            key: value
+            for key, value in navigation_runtime_audit.items()
+            if key not in {"command_samples", "clearance_samples"}
+        },
         "external_scene_mesh": external_scene_mesh_info,
         "external_scene_contact_rows": len(scene_contact_rows),
         "external_scene_contact_pair_count": len(scene_contact_pairs),
@@ -1753,6 +2758,7 @@ def build_official_g1_policy_handoff(
             "robot_team_timeseries": str(timeseries_path),
             "policy_execution_trace_enriched": str(enriched_trace_path),
             "sensor_stream_manifest": str(stream_manifest_path),
+            "navigation_plan_manifest": str(navigation_manifest_path),
             "camera_manifest": str(camera_manifest_path),
             "contact_manifest": str(contact_manifest_path),
             "provenance_manifest": str(provenance_manifest_path),
@@ -1772,6 +2778,9 @@ def build_official_g1_policy_handoff(
         "blockers": blockers,
         "proof_boundary": {
             "official_policy_simulated_motion": True,
+            "simulated_mujoco_navigation": navigation_active,
+            "continuous_contact_checks": True,
+            "continuous_clearance_checks": True,
             "physical_robot_readiness_proven": False,
             "real_robot_pov": False,
             "physical_sensor_data": False,
@@ -1801,11 +2810,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Comma-separated cameras: overview,side,follow,robot_pov,robot_pov_head,robot_pov_torso.",
     )
     parser.add_argument("--duration-seconds", type=float)
+    parser.add_argument("--target-displacement-m", type=float)
+    parser.add_argument("--fall-height-threshold-m", type=float, default=0.45)
+    parser.add_argument("--command-x", type=float)
+    parser.add_argument("--command-y", type=float)
+    parser.add_argument("--command-yaw", type=float)
+    parser.add_argument("--collision-proxy-limit", type=int, default=512)
+    parser.add_argument("--base-path-clearance-m", type=float, default=0.38)
+    parser.add_argument("--start-x", type=float)
+    parser.add_argument("--start-y", type=float)
+    parser.add_argument("--start-yaw", type=float, default=0.0)
+    parser.add_argument("--goal-x", type=float)
+    parser.add_argument("--goal-y", type=float)
+    parser.add_argument("--goal-z", type=float, default=0.793)
+    parser.add_argument("--navigation-grid-resolution-m", type=float, default=0.35)
+    parser.add_argument("--navigation-max-speed-mps", type=float, default=0.55)
+    parser.add_argument("--navigation-waypoint-tolerance-m", type=float, default=0.35)
+    parser.add_argument("--navigation-yaw-gain", type=float, default=1.2)
+    parser.add_argument("--navigation-max-yaw-rate", type=float, default=0.9)
+    parser.add_argument("--disable-navigation-planner", action="store_true")
     parser.add_argument("--no-policy-source-snapshot", action="store_true")
     args = parser.parse_args(argv)
     capture_root = args.capture_root or os.environ.get("BLUEPRINT_CAPTURE_ROOT")
     if not capture_root:
         parser.error("--capture-root or BLUEPRINT_CAPTURE_ROOT is required")
+    command_xyz = None
+    if (
+        args.command_x is not None
+        or args.command_y is not None
+        or args.command_yaw is not None
+    ):
+        command_xyz = [
+            0.5 if args.command_x is None else args.command_x,
+            0.0 if args.command_y is None else args.command_y,
+            0.0 if args.command_yaw is None else args.command_yaw,
+        ]
+    navigation_goal_xyz = (
+        [args.goal_x, args.goal_y, args.goal_z]
+        if args.goal_x is not None and args.goal_y is not None
+        else None
+    )
     result = build_official_g1_policy_handoff(
         capture_root=capture_root,
         policy_manifest_path=args.policy_manifest,
@@ -1818,6 +2862,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_frames=args.max_frames,
         camera_set=args.camera_set,
         duration_seconds=args.duration_seconds,
+        target_displacement_m=args.target_displacement_m,
+        fall_height_threshold_m=args.fall_height_threshold_m,
+        command_xyz=command_xyz,
+        collision_proxy_limit=args.collision_proxy_limit,
+        base_path_clearance_m=args.base_path_clearance_m,
+        initial_root_xy=[args.start_x, args.start_y]
+        if args.start_x is not None and args.start_y is not None
+        else None,
+        initial_root_yaw=args.start_yaw,
+        navigation_goal_xyz=navigation_goal_xyz,
+        navigation_grid_resolution_m=args.navigation_grid_resolution_m,
+        navigation_max_speed_mps=args.navigation_max_speed_mps,
+        navigation_waypoint_tolerance_m=args.navigation_waypoint_tolerance_m,
+        navigation_yaw_gain=args.navigation_yaw_gain,
+        navigation_max_yaw_rate=args.navigation_max_yaw_rate,
+        enable_navigation_planner=not args.disable_navigation_planner,
         copy_policy_source_snapshot=not args.no_policy_source_snapshot,
     )
     simulator_output_path = _string(os.environ.get("BLUEPRINT_SIMULATOR_OUTPUT"))
@@ -1844,6 +2904,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "simulated_robot_pov_status": result.get("simulated_robot_pov_status"),
                 "high_quality_video_status": result.get("high_quality_video_status"),
                 "walking_motion_proven": result.get("walking_motion_proven") is True,
+                "planner_navigation_layer_integrated": result.get(
+                    "planner_navigation_layer_integrated"
+                )
+                is True,
+                "navigation_planner_status": result.get("navigation_planner_status"),
+                "navigation_goal_reached": result.get("navigation_goal_reached") is True,
+                "navigation_runtime_clearance_violation_count": result.get(
+                    "navigation_runtime_clearance_violation_count"
+                ),
+                "navigation_route_distance_m": result.get("navigation_route_distance_m"),
                 "training_grade_policy_rollout_proven": result.get(
                     "training_grade_policy_rollout_proven"
                 )

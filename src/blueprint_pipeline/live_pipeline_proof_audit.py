@@ -29,7 +29,6 @@ FORBIDDEN_TRUE_FIELDS = (
     "robot_policy_execution_proven",
     "robot_readiness_proven",
     "physics_contact_validated",
-    "safety_validated",
     "training_completed",
     "public_claim_upgrade_allowed",
 )
@@ -220,7 +219,6 @@ def _goal_requirement_audit(
     arena_ready = bool(arena_section.get("ready")) and (
         "isaac_lab_arena_owner_evidence" not in required_inputs
     )
-    real_robot_pov_ready = "real_robot_pov_evidence" not in required_inputs
     live_agents_ready = (
         bool(_setup_section(setup_manifest, "live_agents_operator").get("ready"))
         and "live_agents_operator" not in enablement_inputs
@@ -238,12 +236,11 @@ def _goal_requirement_audit(
         and "delivery_upload" not in enablement_inputs
     )
     live_closure_evidence_ready = "live_robot_eval_closure_evidence" not in required_inputs
+    real_robot_pov_ready = "real_robot_pov_evidence" not in required_inputs
     deployment_outcomes_ready = "real_world_deployment_outcomes" not in required_inputs
     prediction_match_keys_ready = "predicted_vs_actual_exact_match_keys" not in required_inputs
-    deployment_outcome_owner_evidence_ready = (
-        deployment_outcomes_ready
-        and prediction_match_keys_ready
-        and "real_world_deployment_outcome_owner_evidence" not in required_inputs
+    deployment_owner_evidence_ready = (
+        "real_world_deployment_outcome_owner_evidence" not in required_inputs
     )
     policy_package_ready = "robot_team_policy_package" not in required_inputs
 
@@ -288,43 +285,26 @@ def _goal_requirement_audit(
         },
         "real_robot_pov_evidence": {
             "status": "ready" if real_robot_pov_ready else "external_input_missing",
-            "proof_boundary": (
-                "requires real robot camera/action evidence aligned to every scenario eval run"
-            ),
+            "proof_boundary": "requires real robot POV camera/action evidence from owner systems",
         },
         "live_robot_eval_closure_evidence": {
             "status": "ready" if live_closure_evidence_ready else "external_input_missing",
             "proof_boundary": (
-                "requires job-specific review, delivery, rights/privacy, and "
-                "safety/contact/physics evidence for live closure"
+                "requires job-specific package closure evidence for delivery/access, "
+                "rights/privacy, and WebApp lineage"
             ),
         },
         "real_world_deployment_outcomes": {
             "status": "ready" if deployment_outcomes_ready else "external_input_missing",
-            "proof_boundary": (
-                "requires job-specific actual pilot or deployment outcomes for "
-                "predicted-vs-actual calibration"
-            ),
+            "proof_boundary": "requires owner-supplied real-world deployment outcome records",
         },
         "predicted_vs_actual_exact_match_keys": {
-            "status": (
-                "ready" if prediction_match_keys_ready else "external_input_missing"
-            ),
-            "proof_boundary": (
-                "requires scenario_eval_run_id and scenario_variation_instance_id "
-                "before staged outcomes can be joined to predictions"
-            ),
+            "status": "ready" if prediction_match_keys_ready else "external_input_missing",
+            "proof_boundary": "requires exact scenario eval run and variation join keys",
         },
         "real_world_deployment_outcome_owner_evidence": {
-            "status": (
-                "ready"
-                if deployment_outcome_owner_evidence_ready
-                else "external_input_missing"
-            ),
-            "proof_boundary": (
-                "requires owner evidence on every actual outcome record before live "
-                "real-world outcome proof can pass"
-            ),
+            "status": "ready" if deployment_owner_evidence_ready else "external_input_missing",
+            "proof_boundary": "requires owner evidence for every deployment outcome row",
         },
         "robot_team_policy_package": {
             "status": "ready" if policy_package_ready else "external_input_missing",
@@ -350,14 +330,14 @@ def _staged_inputs_audit(
         ),
         "live_closure_evidence_job_id": staged_info.get("live_closure_evidence_job_id"),
         "deployment_outcomes_ready": bool(staged_info.get("deployment_outcomes_ready")),
-        "deployment_outcomes_owner_evidence_ready": bool(
-            staged_info.get("deployment_outcomes_owner_evidence_ready")
-        ),
         "deployment_outcomes_records_ready_for_calibration": bool(
             staged_info.get("deployment_outcomes_records_ready_for_calibration")
         ),
         "deployment_outcomes_prediction_match_keys_ready": bool(
             staged_info.get("deployment_outcomes_prediction_match_keys_ready")
+        ),
+        "deployment_outcomes_owner_evidence_ready": bool(
+            staged_info.get("deployment_outcomes_owner_evidence_ready")
         ),
         "deployment_outcomes_job_id": staged_info.get("deployment_outcomes_job_id"),
         "deployment_outcome_record_count": int(
@@ -367,7 +347,8 @@ def _staged_inputs_audit(
             staged_info.get("deployment_outcome_prediction_match_key_record_count") or 0
         ),
         "deployment_outcome_missing_prediction_match_key_record_ids": list(
-            staged_info.get("deployment_outcome_missing_prediction_match_key_record_ids") or []
+            staged_info.get("deployment_outcome_missing_prediction_match_key_record_ids")
+            or []
         ),
         "deployment_outcome_owner_evidence_record_count": int(
             staged_info.get("deployment_outcome_owner_evidence_record_count") or 0
@@ -382,20 +363,9 @@ def _staged_inputs_audit(
         ),
         "real_robot_pov_ready": bool(staged_info.get("real_robot_pov_ready")),
         "real_robot_pov_job_id": staged_info.get("real_robot_pov_job_id"),
-        "real_robot_pov_record_count": int(
-            staged_info.get("real_robot_pov_record_count") or 0
-        ),
+        "real_robot_pov_record_count": int(staged_info.get("real_robot_pov_record_count") or 0),
         "real_robot_pov_exact_key_record_count": int(
             staged_info.get("real_robot_pov_exact_key_record_count") or 0
-        ),
-        "real_robot_pov_camera_video_record_count": int(
-            staged_info.get("real_robot_pov_camera_video_record_count") or 0
-        ),
-        "real_robot_pov_action_log_record_count": int(
-            staged_info.get("real_robot_pov_action_log_record_count") or 0
-        ),
-        "real_robot_pov_timestamp_alignment_record_count": int(
-            staged_info.get("real_robot_pov_timestamp_alignment_record_count") or 0
         ),
         "real_robot_pov_evidence_record_count": int(
             staged_info.get("real_robot_pov_evidence_record_count") or 0
@@ -518,24 +488,22 @@ def build_live_pipeline_proof_audit(
         if input_id not in CORE_EXTERNAL_INPUT_IDS:
             internal_blockers.append(f"unexpected_required_input:{input_id}")
 
-    deployment_outcomes_ready = "real_world_deployment_outcomes" not in required_input_ids
-    prediction_match_keys_ready = "predicted_vs_actual_exact_match_keys" not in required_input_ids
     live_readiness = {
         "webapp_upstream_truth_ready": bool(
             manifest.get("effective_webapp_upstream_truth_ready")
         )
         and "webapp_upstream_truth" not in required_input_ids,
         "owner_arena_evidence_ready": "isaac_lab_arena_owner_evidence" not in required_input_ids,
-        "real_robot_pov_evidence_ready": "real_robot_pov_evidence" not in required_input_ids,
         "live_closure_evidence_ready": (
             "live_robot_eval_closure_evidence" not in required_input_ids
         ),
-        "deployment_outcomes_ready": deployment_outcomes_ready,
-        "deployment_outcomes_prediction_match_keys_ready": prediction_match_keys_ready,
+        "real_robot_pov_ready": "real_robot_pov_evidence" not in required_input_ids,
+        "deployment_outcomes_ready": "real_world_deployment_outcomes" not in required_input_ids,
+        "deployment_outcomes_prediction_match_keys_ready": (
+            "predicted_vs_actual_exact_match_keys" not in required_input_ids
+        ),
         "deployment_outcomes_owner_evidence_ready": (
-            deployment_outcomes_ready
-            and prediction_match_keys_ready
-            and "real_world_deployment_outcome_owner_evidence" not in required_input_ids
+            "real_world_deployment_outcome_owner_evidence" not in required_input_ids
         ),
         "policy_package_ready": "robot_team_policy_package" not in required_input_ids,
         "required_input_ids": required_input_ids,

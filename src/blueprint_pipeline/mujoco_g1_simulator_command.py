@@ -20,10 +20,36 @@ from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 
 MUJOCO_G1_SIMULATOR_COMMAND_OUTPUT_SCHEMA_VERSION = "mujoco_g1_simulator_command_output.v1"
 MUJOCO_G1_SIMULATOR_COMMAND_ARTIFACT_SCHEMA_VERSION = "mujoco_g1_simulator_command_artifact.v1"
+MUJOCO_G1_BATCH_TRACE_PACKAGE_SCHEMA_VERSION = "mujoco_g1_batch_trace_package.v1"
+MUJOCO_G1_BATCH_CLOSURE_SCHEMA_VERSION = "mujoco_g1_batch_closure_manifest.v1"
+MUJOCO_G1_DIGITAL_TWIN_FIDELITY_QA_SCHEMA_VERSION = "mujoco_g1_digital_twin_fidelity_qa.v1"
 DEFAULT_MENAGERIE_REF = "4c358ef9d9d7f32ca58b40b490884a0c1726a440"
 G1_SOURCE_URL = "https://github.com/google-deepmind/mujoco_menagerie/tree/main/unitree_g1"
 G1_REPOSITORY_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 POLICY_ID = "blueprint_default_walk_to_target_smoke_policy"
+TASK_GOAL_TOLERANCE_M = 0.25
+TASK_STUCK_MIN_PROGRESS_RATIO = 0.05
+TASK_STUCK_MIN_PROGRESS_M = 0.10
+TASK_FALL_ROOT_HEIGHT_M = 0.45
+TASK_CLEARANCE_THRESHOLD_M = 0.15
+REQUIRED_TASK_METRIC_KEYS = (
+    "goal_reached",
+    "final_target_error_m",
+    "goal_tolerance_m",
+    "min_clearance_m",
+    "clearance_threshold_m",
+    "timeout_count",
+    "fall_count",
+    "stuck_event_count",
+    "near_miss_event_count",
+    "robot_scene_contact_event_count",
+    "collision_response_event_count",
+    "actual_path_distance_m",
+    "path_efficiency_ratio",
+    "max_path_deviation_m",
+    "mean_path_deviation_m",
+    "policy_instability_detected",
+)
 RENDER_CAMERA_CONTRACT = [
     {
         "camera": "overview",
@@ -56,6 +82,39 @@ def _safe_id(value: Any, *, fallback: str = "item") -> str:
     cleaned = "".join(character.lower() if character.isalnum() else "_" for character in text)
     collapsed = "_".join(part for part in cleaned.split("_") if part)
     return collapsed or fallback
+
+
+def _float_triplet(value: Any) -> list[float] | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) < 3:
+        return None
+    try:
+        return [float(value[index]) for index in range(3)]
+    except (TypeError, ValueError):
+        return None
+
+
+def _bounds_payload(bounds: Any) -> dict[str, Any] | None:
+    if (
+        not isinstance(bounds, Sequence)
+        or isinstance(bounds, (str, bytes))
+        or len(bounds) < 2
+    ):
+        return None
+    lower = _float_triplet(bounds[0])
+    upper = _float_triplet(bounds[1])
+    if lower is None or upper is None:
+        return None
+    extents = [upper[index] - lower[index] for index in range(3)]
+    if any(value <= 0.0 for value in extents):
+        return None
+    return {
+        "bounds": [
+            [round(value, 6) for value in lower],
+            [round(value, 6) for value in upper],
+        ],
+        "extents": [round(value, 6) for value in extents],
+        "volume_m3_estimate": round(extents[0] * extents[1] * extents[2], 6),
+    }
 
 
 def _repo_root() -> Path:
@@ -122,11 +181,50 @@ def _glb_visual_summary(glb_path: Path) -> dict[str, Any]:
 
     primitive_count = 0
     attribute_usage: dict[str, int] = {}
-    for mesh in gltf_json.get("meshes", []) or []:
+    mesh_summaries: list[dict[str, Any]] = []
+    material_summaries = [
+        {
+            "material_index": index,
+            "name": _string(material.get("name")) or f"material_{index:04d}",
+        }
+        for index, material in enumerate(gltf_json.get("materials", []) or [])
+        if isinstance(material, Mapping)
+    ]
+    for mesh_index, mesh in enumerate(gltf_json.get("meshes", []) or []):
+        if not isinstance(mesh, Mapping):
+            continue
+        mesh_primitive_count = 0
+        mesh_material_indexes: list[int] = []
         for primitive in mesh.get("primitives", []) or []:
+            if not isinstance(primitive, Mapping):
+                continue
             primitive_count += 1
+            mesh_primitive_count += 1
+            material_index = primitive.get("material")
+            if isinstance(material_index, int):
+                mesh_material_indexes.append(material_index)
             for attribute_name in primitive.get("attributes", {}) or {}:
                 attribute_usage[attribute_name] = attribute_usage.get(attribute_name, 0) + 1
+        mesh_summaries.append(
+            {
+                "mesh_index": mesh_index,
+                "name": _string(mesh.get("name")) or f"mesh_{mesh_index:04d}",
+                "primitive_count": mesh_primitive_count,
+                "material_indexes": sorted(set(mesh_material_indexes)),
+            }
+        )
+    node_summaries: list[dict[str, Any]] = []
+    for node_index, node in enumerate(gltf_json.get("nodes", []) or []):
+        if not isinstance(node, Mapping):
+            continue
+        mesh_index = node.get("mesh")
+        node_summaries.append(
+            {
+                "node_index": node_index,
+                "name": _string(node.get("name")) or f"node_{node_index:04d}",
+                "mesh_index": mesh_index if isinstance(mesh_index, int) else None,
+            }
+        )
     return {
         "status": "inspected",
         "gltf_version": version,
@@ -138,6 +236,19 @@ def _glb_visual_summary(glb_path: Path) -> dict[str, Any]:
         "has_vertex_colors": "COLOR_0" in attribute_usage,
         "has_embedded_or_referenced_image_textures": bool(
             gltf_json.get("textures") or gltf_json.get("images")
+        ),
+        "meshes": mesh_summaries[:200],
+        "nodes": node_summaries[:200],
+        "materials": material_summaries[:200],
+        "named_mesh_count": sum(
+            1
+            for mesh in mesh_summaries
+            if _string(mesh.get("name")) and not _string(mesh.get("name")).startswith("mesh_")
+        ),
+        "named_node_count": sum(
+            1
+            for node in node_summaries
+            if _string(node.get("name")) and not _string(node.get("name")).startswith("node_")
         ),
     }
 
@@ -183,7 +294,175 @@ def _obj_vertex_color_summary(obj_path: Path) -> dict[str, Any]:
     }
 
 
-def _convert_glb_to_obj(glb_path: Path, obj_path: Path) -> dict[str, Any]:
+def _geometry_material_name(geometry: Any) -> str:
+    visual = getattr(geometry, "visual", None)
+    material = getattr(visual, "material", None)
+    return _string(getattr(material, "name", None))
+
+
+def _safe_len(value: Any) -> int:
+    try:
+        return int(len(value))
+    except Exception:
+        return 0
+
+
+def _is_generated_semantic_name(value: Any) -> bool:
+    name = _safe_id(value, fallback="")
+    if not name:
+        return True
+    generated_exact_names = {
+        "combined_scene_mesh",
+        "geometry",
+        "mesh",
+        "node",
+        "scene",
+        "world",
+        "object",
+    }
+    if name in generated_exact_names:
+        return True
+    generated_prefixes = (
+        "geometry_",
+        "mesh_",
+        "node_",
+        "visible_object_",
+        "component_",
+        "trimesh_",
+    )
+    return any(name.startswith(prefix) for prefix in generated_prefixes)
+
+
+def _geometry_visible_object(
+    *,
+    index: int,
+    geometry_name: str,
+    geometry: Any,
+    gltf_mesh: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    bounds = _bounds_payload(getattr(geometry, "bounds", None))
+    if bounds is None:
+        return None
+    metadata = _mapping(getattr(geometry, "metadata", None))
+    semantic_name = (
+        _string(metadata.get("name"))
+        or geometry_name
+        or _string(gltf_mesh.get("name") if gltf_mesh else None)
+        or f"visible_object_{index:04d}"
+    )
+    semantic_label_available = any(
+        _string(candidate) and not _is_generated_semantic_name(candidate)
+        for candidate in (
+            metadata.get("name"),
+            geometry_name,
+            gltf_mesh.get("name") if gltf_mesh else None,
+        )
+    )
+    material_name = _geometry_material_name(geometry)
+    gltf_material_indexes = []
+    if gltf_mesh:
+        material_indexes = gltf_mesh.get("material_indexes")
+        if isinstance(material_indexes, Sequence) and not isinstance(material_indexes, (str, bytes)):
+            gltf_material_indexes = [
+                int(value) for value in material_indexes if isinstance(value, int)
+            ]
+    return {
+        "object_id": f"visible_object_{index:04d}_{_safe_id(semantic_name)}",
+        "source_component_index": index,
+        "name": semantic_name,
+        "semantic_label_available": semantic_label_available,
+        "geometry_name": geometry_name or None,
+        "material_name": material_name or None,
+        "gltf_mesh_index": gltf_mesh.get("mesh_index") if gltf_mesh else None,
+        "gltf_mesh_name": gltf_mesh.get("name") if gltf_mesh else None,
+        "gltf_material_indexes": gltf_material_indexes,
+        "vertex_count": _safe_len(getattr(geometry, "vertices", [])),
+        "face_count": _safe_len(getattr(geometry, "faces", [])),
+        **bounds,
+    }
+
+
+def _visual_object_semantics_summary(
+    loaded_scene: Any,
+    fallback_mesh: Any,
+    visual_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    gltf_meshes = [
+        dict(mesh)
+        for mesh in visual_summary.get("meshes", []) or []
+        if isinstance(mesh, Mapping)
+    ]
+    visible_objects: list[dict[str, Any]] = []
+    scene_geometry = getattr(loaded_scene, "geometry", None)
+    if isinstance(scene_geometry, Mapping) and scene_geometry:
+        for index, (geometry_name, geometry) in enumerate(sorted(scene_geometry.items())):
+            gltf_mesh = gltf_meshes[index] if index < len(gltf_meshes) else None
+            visible_object = _geometry_visible_object(
+                index=index,
+                geometry_name=_string(geometry_name),
+                geometry=geometry,
+                gltf_mesh=gltf_mesh,
+            )
+            if visible_object:
+                visible_objects.append(visible_object)
+    if not visible_objects:
+        visible_object = _geometry_visible_object(
+            index=0,
+            geometry_name=_string(getattr(fallback_mesh, "metadata", {}).get("name"))
+            if isinstance(getattr(fallback_mesh, "metadata", None), Mapping)
+            else "combined_scene_mesh",
+            geometry=fallback_mesh,
+            gltf_mesh=gltf_meshes[0] if gltf_meshes else None,
+        )
+        if visible_object:
+            visible_objects.append(visible_object)
+
+    semantic_labeled_objects = [
+        item for item in visible_objects if item.get("semantic_label_available") is True
+    ]
+    materialized_objects = [
+        item
+        for item in visible_objects
+        if _string(item.get("material_name")) or item.get("gltf_material_indexes")
+    ]
+    node_names = [
+        _string(node.get("name"))
+        for node in visual_summary.get("nodes", []) or []
+        if isinstance(node, Mapping) and _string(node.get("name"))
+    ]
+    mesh_names = [
+        _string(mesh.get("name"))
+        for mesh in gltf_meshes
+        if _string(mesh.get("name"))
+    ]
+    status = "available" if visible_objects and semantic_labeled_objects else "missing"
+    blockers = []
+    if not visible_objects:
+        blockers.append("no_visible_geometry_objects_detected")
+    if visible_objects and not semantic_labeled_objects:
+        blockers.append("visible_geometry_object_names_missing")
+    return {
+        "status": status,
+        "visible_object_count": len(visible_objects),
+        "named_visible_object_count": len(semantic_labeled_objects),
+        "semantic_labeled_visible_object_count": len(semantic_labeled_objects),
+        "material_referenced_visible_object_count": len(materialized_objects),
+        "visible_objects": visible_objects[:200],
+        "gltf_mesh_names": mesh_names[:200],
+        "gltf_node_names": node_names[:200],
+        "gltf_material_count": int(visual_summary.get("materials_count") or 0),
+        "blockers": blockers,
+        "proof_boundary": (
+            "Visible-object semantics are extracted from GLB mesh/node names and "
+            "trimesh geometry components. They prove component identity only to the "
+            "extent those source assets expose stable names and bounds."
+        ),
+    }
+
+
+def _convert_glb_to_obj(
+    glb_path: Path, obj_path: Path, *, collision_proxy_limit: int = 160
+) -> dict[str, Any]:
     try:
         import trimesh  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover - runtime dependency check.
@@ -201,7 +480,14 @@ def _convert_glb_to_obj(glb_path: Path, obj_path: Path) -> dict[str, Any]:
     mesh.export(obj_path)
     obj_vertex_color_summary = _obj_vertex_color_summary(obj_path)
     glb_visual_summary = _glb_visual_summary(glb_path)
-    collision_proxy_geoms, collision_proxy_summary = _collision_proxy_geoms_from_mesh(mesh)
+    visual_object_semantics_summary = _visual_object_semantics_summary(
+        loaded_scene=loaded,
+        fallback_mesh=mesh,
+        visual_summary=glb_visual_summary,
+    )
+    collision_proxy_geoms, collision_proxy_summary = _collision_proxy_geoms_from_mesh(
+        mesh, max_proxies=collision_proxy_limit
+    )
     return {
         "source_glb": str(glb_path),
         "converted_obj": str(obj_path),
@@ -211,6 +497,7 @@ def _convert_glb_to_obj(glb_path: Path, obj_path: Path) -> dict[str, Any]:
         "extents": mesh.extents.tolist(),
         "centroid": mesh.centroid.tolist(),
         "visual_asset_summary": glb_visual_summary,
+        "visual_object_semantics_summary": visual_object_semantics_summary,
         "obj_vertex_color_summary": obj_vertex_color_summary,
         "collision_proxy_geoms": collision_proxy_geoms,
         "collision_proxy_summary": collision_proxy_summary,
@@ -334,6 +621,7 @@ def _collision_proxy_geoms_from_mesh(
         "scene_shell": 0,
         "degenerate": 0,
     }
+    skipped_indexes: dict[str, list[int]] = {key: [] for key in skipped}
     for component_index, component in enumerate(components):
         try:
             bounds = component.bounds
@@ -341,10 +629,12 @@ def _collision_proxy_geoms_from_mesh(
             upper = [float(value) for value in bounds[1][:3]]
         except Exception:
             skipped["degenerate"] += 1
+            skipped_indexes["degenerate"].append(component_index)
             continue
         extents = [upper[index] - lower[index] for index in range(3)]
         if any(value <= 0.0 for value in extents):
             skipped["degenerate"] += 1
+            skipped_indexes["degenerate"].append(component_index)
             continue
         z_min = lower[2]
         z_max = upper[2]
@@ -352,15 +642,19 @@ def _collision_proxy_geoms_from_mesh(
         volume = xy_area * extents[2]
         if z_max <= 0.14 and xy_area >= 2.0:
             skipped["floor_like"] += 1
+            skipped_indexes["floor_like"].append(component_index)
             continue
         if z_min >= 2.35:
             skipped["overhead"] += 1
+            skipped_indexes["overhead"].append(component_index)
             continue
         if extents[0] >= 8.0 and extents[1] >= 8.0 and extents[2] >= 2.0:
             skipped["scene_shell"] += 1
+            skipped_indexes["scene_shell"].append(component_index)
             continue
         if volume <= 0.001:
             skipped["degenerate"] += 1
+            skipped_indexes["degenerate"].append(component_index)
             continue
         margin = 0.035
         pos = [(lower[index] + upper[index]) / 2.0 for index in range(3)]
@@ -381,12 +675,46 @@ def _collision_proxy_geoms_from_mesh(
         )
     proxies.sort(key=lambda item: float(item["volume_m3_estimate"]), reverse=True)
     bounded = proxies[: max(0, max_proxies)]
+    covered_component_indexes = sorted(
+        int(proxy["source_component_index"]) for proxy in bounded
+    )
+    truncated_component_indexes = sorted(
+        int(proxy["source_component_index"]) for proxy in proxies[max(0, max_proxies) :]
+    )
+    reference_floor_covered_indexes = sorted(skipped_indexes["floor_like"])
+    intentionally_excluded_indexes = sorted(
+        [
+            *skipped_indexes["overhead"],
+            *skipped_indexes["scene_shell"],
+        ]
+    )
+    uncovered_component_indexes = sorted(
+        set(range(len(components)))
+        - set(covered_component_indexes)
+        - set(reference_floor_covered_indexes)
+        - set(intentionally_excluded_indexes)
+    )
     summary = {
         "status": "generated" if bounded else "not_generated",
         "source_component_count": len(components),
         "proxy_count": len(bounded),
         "max_proxy_count": max_proxies,
         "skipped": skipped,
+        "skipped_source_component_indexes": skipped_indexes,
+        "component_coverage": {
+            "covered_source_component_indexes": covered_component_indexes,
+            "covered_source_component_count": len(covered_component_indexes),
+            "reference_floor_covered_source_component_indexes": (
+                reference_floor_covered_indexes
+            ),
+            "intentionally_excluded_source_component_indexes": intentionally_excluded_indexes,
+            "truncated_source_component_indexes": truncated_component_indexes,
+            "truncated_source_component_count": len(truncated_component_indexes),
+            "uncovered_source_component_indexes": uncovered_component_indexes,
+            "uncovered_source_component_count": len(uncovered_component_indexes),
+            "component_proxy_coverage_complete": not uncovered_component_indexes
+            and not truncated_component_indexes,
+        },
         "generation_method": "component_aabb_obstacle_proxies_excluding_floor_overhead_and_scene_shell",
         "proof_boundary": (
             "Obstacle proxies are conservative MuJoCo box colliders derived from scene "
@@ -825,6 +1153,184 @@ def _route_distance(points: Sequence[Sequence[float]]) -> float:
     return total
 
 
+def _pose_distance(a: Sequence[float], b: Sequence[float]) -> float:
+    return math.sqrt(
+        (float(b[0]) - float(a[0])) ** 2
+        + (float(b[1]) - float(a[1])) ** 2
+        + (float(b[2]) - float(a[2])) ** 2
+    )
+
+
+def _action_pose(action: Mapping[str, Any], key: str) -> tuple[float, float, float] | None:
+    value = action.get(key)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) < 3:
+        return None
+    x = _number(value[0])
+    y = _number(value[1])
+    z = _number(value[2])
+    if x is None or y is None or z is None:
+        return None
+    return (float(x), float(y), float(z))
+
+
+def _attempt_task_outcome(
+    *,
+    actions: Sequence[Mapping[str, Any]],
+    start: Sequence[float],
+    target: Sequence[float],
+    route_distance_m: float,
+    collision_summary: Mapping[str, Any],
+    bounded_steps: int,
+    model_timestep_s: float,
+) -> dict[str, Any]:
+    start_pose = _rounded_pose(start)
+    target_pose = _rounded_pose(target)
+    root_positions = [
+        pose
+        for pose in (_action_pose(action, "root_position") for action in actions)
+        if pose is not None
+    ]
+    desired_positions = [
+        pose
+        for pose in (_action_pose(action, "desired_root_position") for action in actions)
+        if pose is not None
+    ]
+    final_pose = root_positions[-1] if root_positions else start_pose
+    direct_distance_m = _pose_distance(start_pose, target_pose)
+    final_target_error_m = _pose_distance(final_pose, target_pose)
+    actual_path_distance_m = _route_distance(root_positions) if len(root_positions) > 1 else 0.0
+    progress_m = max(0.0, direct_distance_m - final_target_error_m)
+    progress_ratio = progress_m / direct_distance_m if direct_distance_m > 0 else 1.0
+    path_deviations = [
+        _pose_distance(root_pose, desired_pose)
+        for root_pose, desired_pose in zip(root_positions, desired_positions)
+    ]
+    max_path_deviation_m = max(path_deviations) if path_deviations else 0.0
+    mean_path_deviation_m = (
+        sum(path_deviations) / len(path_deviations) if path_deviations else 0.0
+    )
+    z_values = [pose[2] for pose in root_positions]
+    min_root_height_m = min(z_values) if z_values else start_pose[2]
+    goal_reached = final_target_error_m <= TASK_GOAL_TOLERANCE_M
+    scene_contact_count = int(collision_summary.get("robot_scene_contact_event_count") or 0)
+    rejected_probe_count = int(collision_summary.get("rejected_scene_collision_probe_count") or 0)
+    near_miss_event_count = int(collision_summary.get("near_miss_event_count") or rejected_probe_count)
+    min_clearance_raw = _number(collision_summary.get("min_clearance_m"))
+    min_clearance_m = (
+        round(float(min_clearance_raw), 6) if min_clearance_raw is not None else None
+    )
+    clearance_threshold_m = float(
+        _number(collision_summary.get("clearance_threshold_m"))
+        or TASK_CLEARANCE_THRESHOLD_M
+    )
+    clearance_threshold_violation = bool(
+        collision_summary.get("clearance_threshold_violation")
+        or near_miss_event_count > 0
+        or (min_clearance_m is not None and min_clearance_m < clearance_threshold_m)
+    )
+    response_count = int(collision_summary.get("collision_response_event_count") or 0)
+    stopped_steps = sum(
+        1 for action in actions if _string(action.get("policy_action")) == "stopped_by_collision_probe"
+    )
+    redirected_steps = sum(
+        1
+        for action in actions
+        if _string(action.get("policy_action")) == "redirected_by_collision_probe"
+    )
+    fall_detected = bool(min_root_height_m < TASK_FALL_ROOT_HEIGHT_M)
+    timeout = not goal_reached
+    stuck_detected = bool(
+        not goal_reached
+        and direct_distance_m > TASK_STUCK_MIN_PROGRESS_M
+        and (
+            progress_m < TASK_STUCK_MIN_PROGRESS_M
+            or progress_ratio < TASK_STUCK_MIN_PROGRESS_RATIO
+            or stopped_steps >= max(1, int(len(actions) * 0.5))
+        )
+    )
+    endpoint_clean = bool(goal_reached and scene_contact_count == 0)
+    spawn_clean = bool(
+        not actions
+        or _string(actions[0].get("policy_action"))
+        != "redirected_by_collision_probe"
+    )
+    policy_instability = bool(
+        len(actions) > 0 and (stopped_steps + redirected_steps) / len(actions) > 0.75
+    )
+    failure_mode_ids: list[str] = []
+    if scene_contact_count:
+        failure_mode_ids.append("failure_scene_collision_contact")
+    if fall_detected:
+        failure_mode_ids.append("failure_robot_fall_detected")
+    if not goal_reached:
+        failure_mode_ids.append("failure_target_not_reached")
+    if not endpoint_clean:
+        failure_mode_ids.append("failure_endpoint_not_clean")
+    if stuck_detected:
+        failure_mode_ids.append("failure_stuck_or_no_progress")
+    if timeout:
+        failure_mode_ids.append("failure_timeout")
+    if policy_instability:
+        failure_mode_ids.append("failure_policy_instability")
+    if clearance_threshold_violation:
+        failure_mode_ids.append("failure_clearance_near_miss")
+    success = not failure_mode_ids
+    return {
+        "task_success": success,
+        "task_status": "passed" if success else "failed_task_criteria",
+        "failure_mode_ids": failure_mode_ids,
+        "failure_reason": ",".join(failure_mode_ids) if failure_mode_ids else None,
+        "goal_reached": goal_reached,
+        "endpoint_clean": endpoint_clean,
+        "spawn_clean": spawn_clean,
+        "timeout": timeout,
+        "fall_detected": fall_detected,
+        "stuck_detected": stuck_detected,
+        "policy_instability_detected": policy_instability,
+        "final_pose": [round(float(value), 6) for value in final_pose],
+        "final_target_error_m": round(final_target_error_m, 6),
+        "goal_tolerance_m": TASK_GOAL_TOLERANCE_M,
+        "min_clearance_m": min_clearance_m,
+        "clearance_threshold_m": clearance_threshold_m,
+        "clearance_threshold_violation": clearance_threshold_violation,
+        "direct_start_to_target_distance_m": round(direct_distance_m, 6),
+        "planned_route_distance_m": round(float(route_distance_m), 6),
+        "actual_path_distance_m": round(actual_path_distance_m, 6),
+        "path_efficiency_ratio": round(
+            actual_path_distance_m / route_distance_m, 6
+        )
+        if route_distance_m > 0
+        else None,
+        "progress_to_goal_m": round(progress_m, 6),
+        "progress_to_goal_ratio": round(progress_ratio, 6),
+        "max_path_deviation_m": round(max_path_deviation_m, 6),
+        "mean_path_deviation_m": round(mean_path_deviation_m, 6),
+        "min_root_height_m": round(float(min_root_height_m), 6),
+        "stopped_step_count": stopped_steps,
+        "redirected_step_count": redirected_steps,
+        "near_miss_event_count": near_miss_event_count,
+        "collision_response_event_count": response_count,
+        "robot_scene_contact_event_count": scene_contact_count,
+        "simulated_step_count": bounded_steps,
+        "cycle_time_seconds": round(bounded_steps * model_timestep_s, 6)
+        if model_timestep_s
+        else None,
+        "success_criteria": {
+            "goal_reached_within_tolerance": goal_reached,
+            "goal_tolerance_m": TASK_GOAL_TOLERANCE_M,
+            "no_committed_scene_collision_contacts": scene_contact_count == 0,
+            "no_clearance_near_miss": not clearance_threshold_violation,
+            "no_fall_detected": not fall_detected,
+            "no_stuck_or_no_progress": not stuck_detected,
+            "endpoint_clean": endpoint_clean,
+        },
+        "proof_boundary": (
+            "Task outcome is computed from deterministic MuJoCo preview state, contact "
+            "probes, and route traces. It is not physical robot deployment readiness."
+        ),
+    }
+
+
 def _interpolate_route(
     points: Sequence[Sequence[float]], alpha: float
 ) -> tuple[tuple[float, float, float], float, int]:
@@ -1212,6 +1718,23 @@ def _collision_summary(
     rejected_scene_contacts = [
         record for record in probe_trace if _is_scene_collision_contact(record)
     ]
+    scene_distance_samples = [
+        float(distance)
+        for distance in (
+            _number(record.get("distance"))
+            for record in [*scene_contacts, *rejected_scene_contacts]
+        )
+        if distance is not None
+    ]
+    min_clearance_m = (
+        round(max(0.0, min(scene_distance_samples)), 6)
+        if scene_distance_samples
+        else None
+    )
+    near_miss_event_count = len(rejected_scene_contacts)
+    clearance_threshold_violation = bool(
+        min_clearance_m is not None and min_clearance_m < TASK_CLEARANCE_THRESHOLD_M
+    )
     scene_visual_mesh_collision_twin_enabled = collision_proxy_count == 0
     scene_collision_mesh_geom_enabled = collision_proxy_count == 0
     scene_collision_proxy_geoms_enabled = collision_proxy_count > 0
@@ -1255,6 +1778,10 @@ def _collision_summary(
         "robot_scene_contact_event_count": len(scene_contacts),
         "robot_floor_contact_event_count": len(floor_contacts),
         "rejected_scene_collision_probe_count": len(rejected_scene_contacts),
+        "near_miss_event_count": near_miss_event_count,
+        "min_clearance_m": min_clearance_m,
+        "clearance_threshold_m": TASK_CLEARANCE_THRESHOLD_M,
+        "clearance_threshold_violation": clearance_threshold_violation,
         "collision_response_event_count": len(response_events),
         "sample_contacts": [dict(record) for record in contact_trace[:20]],
         "sample_rejected_collision_contacts": [
@@ -1525,6 +2052,7 @@ def _visual_artifact_summary(
         limitations.append("blank_scene_checks:one_or_more_frames_blank")
     return {
         "status": "complete" if all_frame_paths else "not_recorded",
+        "frames": [dict(frame) for frame in frames if isinstance(frame, Mapping)],
         "overview_frames": groups["overview"],
         "robot_pov_frames": groups["sim_robot_follow_pov"],
         "side_frames": groups["side"],
@@ -1532,6 +2060,949 @@ def _visual_artifact_summary(
         "blank_scene_checks": blank_scene_checks,
         "texture_material_evidence": texture_material_evidence,
         "limitations": limitations,
+    }
+
+
+def _relative_path(base_dir: Path, path: Path) -> str:
+    try:
+        return os.path.relpath(path.resolve(), base_dir.resolve())
+    except Exception:
+        return str(path)
+
+
+def _write_jsonl(path: Path, records: Sequence[Mapping[str, Any]]) -> None:
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+
+
+def _file_artifact(path: Path, *, base_dir: Path, required: bool = True) -> dict[str, Any]:
+    present = path.is_file()
+    return {
+        "path": _relative_path(base_dir, path),
+        "absolute_path": str(path),
+        "required": required,
+        "present": present,
+        "sha256": _sha256(path) if present else None,
+        "size_bytes": path.stat().st_size if present else None,
+    }
+
+
+def _write_visual_media_coverage_manifest(
+    *,
+    output_root: Path,
+    generated_at: str,
+    required_scenario_eval_run_ids: Sequence[str],
+    visual_artifacts: Mapping[str, Any],
+) -> dict[str, Any]:
+    manifest_path = output_root / "mujoco_batch_visual_media_coverage.json"
+    frames = [
+        dict(frame)
+        for frame in visual_artifacts.get("frames", []) or []
+        if isinstance(frame, Mapping)
+    ]
+    frames_by_run_camera: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for frame in frames:
+        run_id = _string(frame.get("scenario_eval_run_id"))
+        camera = _string(frame.get("camera"))
+        if not run_id or not camera:
+            continue
+        frames_by_run_camera.setdefault(run_id, {}).setdefault(camera, []).append(frame)
+    video_artifacts = {
+        "overview": _mapping(visual_artifacts.get("overview_video")),
+        "sim_robot_follow_pov": _mapping(visual_artifacts.get("robot_pov_video")),
+        "side": _mapping(visual_artifacts.get("side_video")),
+    }
+    required_ids = [_string(run_id) for run_id in required_scenario_eval_run_ids if _string(run_id)]
+    rows: list[dict[str, Any]] = []
+    for run_id in required_ids:
+        camera_frames = frames_by_run_camera.get(run_id, {})
+        frame_counts = {
+            camera: len(camera_frames.get(camera, []))
+            for camera in ("overview", "sim_robot_follow_pov", "side")
+        }
+        frame_paths = {
+            camera: [
+                _string(frame.get("path"))
+                for frame in camera_frames.get(camera, [])
+                if _string(frame.get("path"))
+            ]
+            for camera in ("overview", "sim_robot_follow_pov", "side")
+        }
+        camera_frame_coverage = {
+            camera: frame_counts[camera] > 0
+            for camera in ("overview", "sim_robot_follow_pov", "side")
+        }
+        video_bindings = {
+            camera: {
+                "status": video_artifacts[camera].get("status"),
+                "path": video_artifacts[camera].get("path"),
+                "video_contains_run": bool(
+                    camera_frame_coverage[camera]
+                    and video_artifacts[camera].get("status") == "complete"
+                    and video_artifacts[camera].get("path")
+                ),
+            }
+            for camera in ("overview", "sim_robot_follow_pov", "side")
+        }
+        missing_reasons: list[str] = []
+        for camera, covered in camera_frame_coverage.items():
+            if not covered:
+                missing_reasons.append(f"{camera}_frames_missing")
+        for camera, binding in video_bindings.items():
+            if not binding["video_contains_run"]:
+                missing_reasons.append(f"{camera}_video_missing_or_incomplete")
+        rows.append(
+            {
+                "scenario_eval_run_id": run_id,
+                "status": "complete" if not missing_reasons else "incomplete",
+                "frame_counts": frame_counts,
+                "frame_paths": frame_paths,
+                "camera_frame_coverage": camera_frame_coverage,
+                "video_bindings": video_bindings,
+                "robot_pov_frames_present": camera_frame_coverage["sim_robot_follow_pov"],
+                "third_person_frames_present": bool(
+                    camera_frame_coverage["overview"] and camera_frame_coverage["side"]
+                ),
+                "robot_pov_video_present": bool(
+                    video_bindings["sim_robot_follow_pov"]["video_contains_run"]
+                ),
+                "third_person_video_present": bool(
+                    video_bindings["overview"]["video_contains_run"]
+                    and video_bindings["side"]["video_contains_run"]
+                ),
+                "missing_reasons": missing_reasons,
+            }
+        )
+    missing_rows = [row for row in rows if row["status"] != "complete"]
+    extra_rendered_run_ids = sorted(set(frames_by_run_camera) - set(required_ids))
+    manifest = {
+        "schema_version": "mujoco_g1_batch_visual_media_coverage.v1",
+        "generated_at": generated_at,
+        "status": "completed" if rows and not missing_rows else "incomplete",
+        "required_scenario_eval_run_count": len(required_ids),
+        "required_scenario_eval_run_ids": required_ids,
+        "rendered_scenario_eval_run_ids": sorted(frames_by_run_camera),
+        "rendered_scenario_eval_run_count": len(frames_by_run_camera),
+        "missing_visual_media_run_count": len(missing_rows),
+        "missing_visual_media_scenario_eval_run_ids": [
+            row["scenario_eval_run_id"] for row in missing_rows
+        ],
+        "extra_rendered_scenario_eval_run_ids": extra_rendered_run_ids,
+        "all_required_runs_have_visual_recording": bool(rows and not missing_rows),
+        "all_required_runs_have_robot_pov_video": bool(
+            rows and all(row["robot_pov_video_present"] for row in rows)
+        ),
+        "all_required_runs_have_third_person_video": bool(
+            rows and all(row["third_person_video_present"] for row in rows)
+        ),
+        "video_artifacts": video_artifacts,
+        "visual_limitations": list(visual_artifacts.get("limitations") or []),
+        "rows": rows,
+        "claim_boundary": (
+            "This is simulated MuJoCo visual media coverage. It proves only which "
+            "scenario_eval_run_id rows have rendered simulator POV and third-person "
+            "media in this package; it is not physical robot camera evidence."
+        ),
+    }
+    write_json(manifest_path, manifest)
+    return manifest
+
+
+def _metric_coverage(attempts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    missing_rows: list[dict[str, Any]] = []
+    for attempt in attempts:
+        metrics = _mapping(attempt.get("metrics"))
+        missing = [key for key in REQUIRED_TASK_METRIC_KEYS if key not in metrics]
+        row = {
+            "attempt_id": attempt.get("attempt_id"),
+            "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+            "task_id": attempt.get("task_id"),
+            "scenario_id": attempt.get("scenario_id"),
+            "status": attempt.get("status"),
+            "success": bool(attempt.get("success")),
+            "task_success": bool(attempt.get("task_success")),
+            "failure_mode_ids": attempt.get("failure_mode_ids") or [],
+            "missing_metric_keys": missing,
+            "metrics": {key: metrics.get(key) for key in REQUIRED_TASK_METRIC_KEYS},
+        }
+        rows.append(row)
+        if missing:
+            missing_rows.append(row)
+    return {
+        "required_metric_keys": list(REQUIRED_TASK_METRIC_KEYS),
+        "attempt_metric_rows": rows,
+        "attempt_metric_row_count": len(rows),
+        "missing_metric_row_count": len(missing_rows),
+        "missing_metric_rows": missing_rows,
+        "metric_coverage_complete": bool(rows) and not missing_rows,
+    }
+
+
+def _sequence3(value: Any) -> list[float] | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) < 3:
+        return None
+    numbers = [_number(value[index]) for index in range(3)]
+    if any(number is None for number in numbers):
+        return None
+    return [float(number) for number in numbers if number is not None]
+
+
+def _mesh_bounds_summary(mesh_info: Mapping[str, Any]) -> dict[str, Any]:
+    bounds = mesh_info.get("bounds")
+    lower = upper = None
+    if (
+        isinstance(bounds, Sequence)
+        and not isinstance(bounds, (str, bytes))
+        and len(bounds) >= 2
+    ):
+        lower = _sequence3(bounds[0])
+        upper = _sequence3(bounds[1])
+    extents = _sequence3(mesh_info.get("extents"))
+    if extents is None and lower and upper:
+        extents = [upper[index] - lower[index] for index in range(3)]
+    positive_extents = bool(extents and all(value > 0 for value in extents))
+    volume = (
+        round(float(extents[0] * extents[1] * extents[2]), 6)
+        if positive_extents and extents is not None
+        else None
+    )
+    return {
+        "bounds": [lower, upper] if lower and upper else None,
+        "extents_m": [round(value, 6) for value in extents] if extents else None,
+        "positive_extents": positive_extents,
+        "volume_m3_estimate": volume,
+        "scale_evidence_available": positive_extents,
+    }
+
+
+def _int_set(values: Any) -> set[int]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        return set()
+    result: set[int] = set()
+    for value in values:
+        try:
+            result.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _visual_object_physics_coverage(
+    *,
+    object_semantics_summary: Mapping[str, Any],
+    collision_summary: Mapping[str, Any],
+    proxy_summary: Mapping[str, Any],
+    collider_loaded: bool,
+) -> dict[str, Any]:
+    visible_objects = [
+        dict(item)
+        for item in object_semantics_summary.get("visible_objects", []) or []
+        if isinstance(item, Mapping)
+    ]
+    if not visible_objects:
+        return {
+            "status": "blocked",
+            "coverage_complete": False,
+            "reason": "visible_object_semantics_missing",
+            "visible_object_count": 0,
+            "covered_visible_object_count": 0,
+            "missing_physics_object_ids": [],
+        }
+
+    if collider_loaded and bool(collision_summary.get("scene_collision_mesh_geom_enabled")):
+        return {
+            "status": "complete",
+            "coverage_complete": True,
+            "coverage_method": "full_scene_collision_mesh_geom",
+            "visible_object_count": len(visible_objects),
+            "covered_visible_object_count": len(visible_objects),
+            "covered_visible_object_ids": [
+                _string(item.get("object_id")) for item in visible_objects
+            ],
+            "missing_physics_object_ids": [],
+            "boundary": (
+                "The full converted scene mesh is loaded as collision geometry, so every "
+                "visible object in the converted scene has at least mesh-level physics "
+                "coverage."
+            ),
+        }
+
+    component_coverage = _mapping(proxy_summary.get("component_coverage"))
+    covered_component_indexes = _int_set(
+        component_coverage.get("covered_source_component_indexes")
+    )
+    reference_floor_indexes = _int_set(
+        component_coverage.get("reference_floor_covered_source_component_indexes")
+    )
+    physics_supported_indexes = covered_component_indexes | reference_floor_indexes
+    missing_objects: list[dict[str, Any]] = []
+    covered_objects: list[dict[str, Any]] = []
+    unmapped_objects: list[dict[str, Any]] = []
+    for visible_object in visible_objects:
+        component_index = visible_object.get("source_component_index")
+        try:
+            normalized_component_index = int(component_index)
+        except (TypeError, ValueError):
+            normalized_component_index = None
+        if normalized_component_index is None:
+            unmapped_objects.append(visible_object)
+            missing_objects.append(visible_object)
+            continue
+        if normalized_component_index in physics_supported_indexes:
+            covered_objects.append(visible_object)
+        else:
+            missing_objects.append(visible_object)
+
+    proxy_model_enabled = bool(collision_summary.get("scene_collision_proxy_geoms_enabled"))
+    proxy_generation_complete = bool(
+        component_coverage.get("component_proxy_coverage_complete")
+    )
+    coverage_complete = bool(
+        collider_loaded
+        and proxy_model_enabled
+        and proxy_generation_complete
+        and not missing_objects
+    )
+    return {
+        "status": "complete" if coverage_complete else "blocked",
+        "coverage_complete": coverage_complete,
+        "coverage_method": "component_aabb_proxy_geoms"
+        if proxy_model_enabled
+        else "missing_scene_collision_geometry",
+        "visible_object_count": len(visible_objects),
+        "covered_visible_object_count": len(covered_objects),
+        "covered_visible_object_ids": [
+            _string(item.get("object_id")) for item in covered_objects
+        ],
+        "missing_physics_object_ids": [
+            _string(item.get("object_id")) for item in missing_objects
+        ],
+        "unmapped_visible_object_ids": [
+            _string(item.get("object_id")) for item in unmapped_objects
+        ],
+        "component_coverage": component_coverage,
+        "proxy_collision_model_used": proxy_model_enabled,
+        "proxy_generation_complete": proxy_generation_complete,
+        "boundary": (
+            "Component proxy coverage proves each named visible component has a "
+            "corresponding conservative physics proxy or reference-floor collider. It "
+            "does not prove exact mesh collision fidelity or real-world safety."
+        ),
+    }
+
+
+def _build_digital_twin_fidelity_qa(
+    *,
+    generated_at: str,
+    mesh_info: Mapping[str, Any],
+    collision_summary: Mapping[str, Any],
+    visual_artifacts: Mapping[str, Any],
+) -> dict[str, Any]:
+    visual_summary = _mapping(mesh_info.get("visual_asset_summary"))
+    object_semantics_summary = _mapping(mesh_info.get("visual_object_semantics_summary"))
+    obj_summary = _mapping(mesh_info.get("obj_vertex_color_summary"))
+    proxy_summary = _mapping(mesh_info.get("collision_proxy_summary"))
+    texture_material_evidence = _mapping(visual_artifacts.get("texture_material_evidence"))
+    blank_scene_checks = _mapping(visual_artifacts.get("blank_scene_checks"))
+    bounds_summary = _mesh_bounds_summary(mesh_info)
+    proxy_count = int(collision_summary.get("scene_collision_proxy_geom_count") or 0)
+    source_component_count = int(proxy_summary.get("source_component_count") or 0)
+    max_proxy_count = int(proxy_summary.get("max_proxy_count") or 0)
+    proxy_generation_truncated = bool(
+        max_proxy_count and source_component_count > max_proxy_count and proxy_count >= max_proxy_count
+    )
+    material_truth_present = bool(
+        obj_summary.get("has_vertex_rgb")
+        or visual_summary.get("has_embedded_or_referenced_image_textures")
+        or int(visual_summary.get("materials_count") or 0) > 0
+    )
+    blank_scene_passed = bool(
+        blank_scene_checks.get("status") in {"not_applicable", "checked"}
+        and blank_scene_checks.get("all_frames_nonblank", True) is not False
+    )
+    visible_collision_alignment_validated = bool(
+        collision_summary.get("visible_scene_collision_alignment_validated")
+    )
+    collider_loaded = bool(collision_summary.get("collision_geometry_loaded"))
+    collider_coverage_available = bool(
+        collider_loaded
+        and (
+            collision_summary.get("scene_collision_mesh_geom_enabled")
+            or collision_summary.get("scene_collision_proxy_geoms_enabled")
+        )
+    )
+    object_semantics_available = bool(
+        object_semantics_summary.get("status") == "available"
+        and int(object_semantics_summary.get("visible_object_count") or 0) > 0
+        and int(object_semantics_summary.get("named_visible_object_count") or 0) > 0
+    )
+    visual_object_physics_coverage = _visual_object_physics_coverage(
+        object_semantics_summary=object_semantics_summary,
+        collision_summary=collision_summary,
+        proxy_summary=proxy_summary,
+        collider_loaded=collider_loaded,
+    )
+    visible_objects_have_physics_coverage = bool(
+        object_semantics_available
+        and visual_object_physics_coverage.get("coverage_complete")
+    )
+    visual_object_has_matching_physics = bool(
+        visible_collision_alignment_validated or visible_objects_have_physics_coverage
+    )
+    component_coverage = _mapping(proxy_summary.get("component_coverage"))
+    full_mesh_collision_loaded = bool(
+        collider_loaded and collision_summary.get("scene_collision_mesh_geom_enabled")
+    )
+    hidden_obstacle_risk_reviewed = bool(
+        collider_coverage_available
+        and (
+            full_mesh_collision_loaded
+            or (
+                visible_objects_have_physics_coverage
+                and component_coverage.get("component_proxy_coverage_complete") is True
+                and int(component_coverage.get("uncovered_source_component_count") or 0) == 0
+                and int(component_coverage.get("truncated_source_component_count") or 0) == 0
+            )
+        )
+        and not proxy_generation_truncated
+    )
+    gates = {
+        "scale_bounds_available": {
+            "passed": bounds_summary["scale_evidence_available"],
+            "evidence": bounds_summary,
+        },
+        "texture_material_truth_available": {
+            "passed": material_truth_present,
+            "evidence": {
+                "visual_asset_summary": visual_summary,
+                "obj_vertex_color_summary": obj_summary,
+                "texture_material_evidence": texture_material_evidence,
+            },
+        },
+        "nonblank_visual_evidence": {
+            "passed": blank_scene_passed,
+            "evidence": blank_scene_checks,
+        },
+        "collider_coverage_available": {
+            "passed": collider_coverage_available,
+            "evidence": {
+                "collision_geometry_loaded": collider_loaded,
+                "scene_collision_mesh_geom_enabled": collision_summary.get(
+                    "scene_collision_mesh_geom_enabled"
+                ),
+                "scene_collision_proxy_geoms_enabled": collision_summary.get(
+                    "scene_collision_proxy_geoms_enabled"
+                ),
+                "scene_collision_proxy_geom_count": proxy_count,
+                "collision_proxy_summary": proxy_summary,
+            },
+        },
+        "object_semantics_available": {
+            "passed": object_semantics_available,
+            "evidence": object_semantics_summary,
+        },
+        "visible_objects_have_physics_coverage": {
+            "passed": visible_objects_have_physics_coverage,
+            "evidence": visual_object_physics_coverage,
+        },
+        "visual_object_has_matching_physics": {
+            "passed": visual_object_has_matching_physics,
+            "evidence": {
+                "visible_scene_collision_alignment_validated": (
+                    visible_collision_alignment_validated
+                ),
+                "visible_objects_have_physics_coverage": (
+                    visible_objects_have_physics_coverage
+                ),
+                "visual_object_physics_coverage": visual_object_physics_coverage,
+                "proxy_collision_model_used": collision_summary.get(
+                    "proxy_collision_model_used"
+                ),
+                "boundary": (
+                    "Full scene mesh collision proves visual/physics alignment most "
+                    "directly. Component proxy coverage can prove each visible object has "
+                    "a conservative matching physics body, but it remains a simulator QA "
+                    "claim rather than deployment readiness."
+                ),
+            },
+        },
+        "hidden_obstacle_risk_reviewed": {
+            "passed": hidden_obstacle_risk_reviewed,
+            "evidence": {
+                "proxy_generation_truncated": proxy_generation_truncated,
+                "source_component_count": source_component_count,
+                "proxy_count": proxy_count,
+                "skipped_components": proxy_summary.get("skipped") or {},
+                "component_coverage": component_coverage,
+            },
+        },
+    }
+    blockers: list[str] = []
+    if not gates["scale_bounds_available"]["passed"]:
+        blockers.append("digital_twin_scale_bounds_missing")
+    if not gates["texture_material_truth_available"]["passed"]:
+        blockers.append("digital_twin_texture_material_truth_missing")
+    if not gates["nonblank_visual_evidence"]["passed"]:
+        blockers.append("digital_twin_visual_frames_blank_or_missing")
+    if not gates["collider_coverage_available"]["passed"]:
+        blockers.append("digital_twin_collider_coverage_missing")
+    if not gates["object_semantics_available"]["passed"]:
+        blockers.append("digital_twin_object_semantics_missing")
+    if not gates["visible_objects_have_physics_coverage"]["passed"]:
+        blockers.append("visible_objects_without_physics_coverage")
+    if not gates["visual_object_has_matching_physics"]["passed"]:
+        blockers.append("visual_collision_alignment_not_validated")
+    if not gates["hidden_obstacle_risk_reviewed"]["passed"]:
+        blockers.append("hidden_obstacle_or_proxy_truncation_review_required")
+    machine_fidelity_audit_complete = all(
+        bool(gates[gate_id]["passed"])
+        for gate_id in (
+            "scale_bounds_available",
+            "texture_material_truth_available",
+            "nonblank_visual_evidence",
+            "collider_coverage_available",
+            "object_semantics_available",
+            "visible_objects_have_physics_coverage",
+            "hidden_obstacle_risk_reviewed",
+        )
+    )
+    robot_team_grade_fidelity_passed = bool(
+        machine_fidelity_audit_complete
+        and gates["visual_object_has_matching_physics"]["passed"]
+    )
+    return {
+        "schema_version": MUJOCO_G1_DIGITAL_TWIN_FIDELITY_QA_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "passed" if robot_team_grade_fidelity_passed else "review_required",
+        "machine_fidelity_audit_complete": machine_fidelity_audit_complete,
+        "robot_team_grade_fidelity_passed": robot_team_grade_fidelity_passed,
+        "blockers": sorted(set(blockers)),
+        "gates": gates,
+        "mesh_info_summary": {
+            "source_glb": mesh_info.get("source_glb"),
+            "converted_obj": mesh_info.get("converted_obj"),
+            "vertices": mesh_info.get("vertices"),
+            "faces": mesh_info.get("faces"),
+            "visual_object_semantics_summary": object_semantics_summary,
+            **bounds_summary,
+        },
+        "visual_collision_parity": {
+            "visual_mesh_collisions_enabled": collision_summary.get(
+                "scene_visual_mesh_collisions_enabled"
+            ),
+            "visible_scene_collision_alignment_validated": (
+                visible_collision_alignment_validated
+            ),
+            "proxy_collision_model_used": collision_summary.get("proxy_collision_model_used"),
+            "scene_collision_proxy_geom_count": proxy_count,
+        },
+        "claim_boundary": (
+            "This audit checks simulator digital-twin fidelity evidence. It does not "
+            "upgrade physical robot readiness, customer safety validation, or real-world "
+            "deployment claims."
+        ),
+    }
+
+
+def _write_mujoco_batch_trace_package(
+    *,
+    output_root: Path,
+    generated_at: str,
+    attempts: Sequence[Mapping[str, Any]],
+    full_contact_trace: Sequence[Mapping[str, Any]],
+    full_collision_probe_trace: Sequence[Mapping[str, Any]],
+    full_collision_response_events: Sequence[Mapping[str, Any]],
+    required_scenario_eval_run_ids: Sequence[str],
+    covered_scenario_eval_run_ids: Sequence[str],
+    missing_scenario_eval_run_ids: Sequence[str],
+    duplicate_scenario_eval_run_ids: Sequence[str],
+    scenario_eval_run_coverage_complete: bool,
+    visual_artifacts: Mapping[str, Any],
+) -> dict[str, Any]:
+    attempt_trace_path = output_root / "mujoco_batch_attempt_trace.jsonl"
+    contact_stream_path = output_root / "mujoco_batch_contact_stream.jsonl"
+    planner_state_path = output_root / "mujoco_batch_planner_state.jsonl"
+    control_stream_path = output_root / "mujoco_batch_control_stream.jsonl"
+    metrics_path = output_root / "mujoco_batch_metrics.json"
+    failure_labels_path = output_root / "mujoco_batch_failure_labels.json"
+    checksums_path = output_root / "mujoco_batch_artifact_checksums.json"
+    manifest_path = output_root / "mujoco_batch_trace_package_manifest.json"
+    visual_media_coverage_manifest = _write_visual_media_coverage_manifest(
+        output_root=output_root,
+        generated_at=generated_at,
+        required_scenario_eval_run_ids=required_scenario_eval_run_ids,
+        visual_artifacts=visual_artifacts,
+    )
+    visual_media_coverage_path = output_root / "mujoco_batch_visual_media_coverage.json"
+
+    attempt_records = [
+        {
+            "attempt_id": attempt.get("attempt_id"),
+            "episode_id": attempt.get("episode_id"),
+            "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+            "variation_name": attempt.get("variation_name"),
+            "task_id": attempt.get("task_id"),
+            "scenario_id": attempt.get("scenario_id"),
+            "status": attempt.get("status"),
+            "success": bool(attempt.get("success")),
+            "task_success": bool(attempt.get("task_success")),
+            "failure_mode_ids": attempt.get("failure_mode_ids") or [],
+            "failure_reason": attempt.get("failure_reason"),
+            "deterministic_seed": attempt.get("deterministic_seed"),
+            "spawn_pose": attempt.get("spawn_pose"),
+            "target_pose": attempt.get("target_pose"),
+            "final_pose": attempt.get("final_pose"),
+            "route_waypoints": attempt.get("route_waypoints"),
+            "task_outcome": attempt.get("task_outcome"),
+            "metrics": attempt.get("metrics"),
+            "controls": attempt.get("actions") or [],
+            "contact_trace": attempt.get("contact_trace") or [],
+            "collision_probe_trace": attempt.get("collision_probe_trace") or [],
+            "collision_response_events": attempt.get("collision_response_events") or [],
+            "artifact_paths": attempt.get("artifact_paths") or {},
+            "claim_boundary": attempt.get("claim_boundary"),
+        }
+        for attempt in attempts
+    ]
+    contact_records: list[dict[str, Any]] = []
+    for record in full_contact_trace:
+        contact_records.append({"stream_type": "committed_contact", **dict(record)})
+    for record in full_collision_probe_trace:
+        contact_records.append({"stream_type": "collision_probe_candidate", **dict(record)})
+    for event in full_collision_response_events:
+        contact_records.append({"stream_type": "collision_response_event", **dict(event)})
+    planner_records: list[dict[str, Any]] = []
+    control_records: list[dict[str, Any]] = []
+    for attempt in attempts:
+        route_waypoints = [
+            dict(waypoint)
+            for waypoint in attempt.get("route_waypoints", []) or []
+            if isinstance(waypoint, Mapping)
+        ]
+        planner_records.append(
+            {
+                "stream_type": "planner_state",
+                "attempt_id": attempt.get("attempt_id"),
+                "episode_id": attempt.get("episode_id"),
+                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "scenario_variation_instance_id": attempt.get(
+                    "scenario_variation_instance_id"
+                ),
+                "task_id": attempt.get("task_id"),
+                "scenario_id": attempt.get("scenario_id"),
+                "deterministic_seed": attempt.get("deterministic_seed"),
+                "spawn_pose": attempt.get("spawn_pose"),
+                "target_pose": attempt.get("target_pose"),
+                "final_pose": attempt.get("final_pose"),
+                "route_waypoint_count": len(route_waypoints),
+                "route_waypoints": route_waypoints,
+                "planner_status": "completed" if route_waypoints else "not_recorded",
+                "runtime_route_mutation_allowed": False,
+            }
+        )
+        for index, action in enumerate(attempt.get("actions", []) or []):
+            action_payload = dict(action) if isinstance(action, Mapping) else {"value": action}
+            control_records.append(
+                {
+                    "stream_type": "control_action",
+                    "attempt_id": attempt.get("attempt_id"),
+                    "episode_id": attempt.get("episode_id"),
+                    "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                    "scenario_variation_instance_id": attempt.get(
+                        "scenario_variation_instance_id"
+                    ),
+                    "task_id": attempt.get("task_id"),
+                    "scenario_id": attempt.get("scenario_id"),
+                    "action_index": index,
+                    "action": action_payload,
+                    "deterministic_seed": attempt.get("deterministic_seed"),
+                }
+            )
+    metric_coverage = _metric_coverage(attempts)
+    failed_attempts = [attempt for attempt in attempts if not bool(attempt.get("success"))]
+    failure_labels = {
+        "schema_version": "mujoco_g1_batch_failure_labels.v1",
+        "generated_at": generated_at,
+        "status": "review_required" if failed_attempts else "no_failures_labeled",
+        "failed_attempt_count": len(failed_attempts),
+        "label_count": len(failed_attempts),
+        "failed_run_label_coverage_complete": True,
+        "labels": [
+            {
+                "label_id": f"mujoco_g1_label_{_safe_id(attempt.get('attempt_id'))}",
+                "attempt_id": attempt.get("attempt_id"),
+                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "scenario_variation_instance_id": attempt.get(
+                    "scenario_variation_instance_id"
+                ),
+                "variation_name": attempt.get("variation_name"),
+                "task_id": attempt.get("task_id"),
+                "scenario_id": attempt.get("scenario_id"),
+                "failure_mode_ids": attempt.get("failure_mode_ids") or [],
+                "failure_reason": attempt.get("failure_reason"),
+                "status": "review_required",
+                "proof_effect": "none_until_review_accepted_or_real_robot_outcomes_supplied",
+            }
+            for attempt in failed_attempts
+        ],
+    }
+    metrics = {
+        "schema_version": "mujoco_g1_batch_metrics.v1",
+        "generated_at": generated_at,
+        "attempt_count": len(attempts),
+        "passed_attempt_count": sum(1 for attempt in attempts if bool(attempt.get("success"))),
+        "failed_attempt_count": len(failed_attempts),
+        "required_scenario_eval_run_count": len(required_scenario_eval_run_ids),
+        "covered_scenario_eval_run_count": len(covered_scenario_eval_run_ids),
+        "missing_scenario_eval_run_count": len(missing_scenario_eval_run_ids),
+        "scenario_eval_run_coverage_complete": scenario_eval_run_coverage_complete,
+        "duplicate_scenario_eval_run_ids": list(duplicate_scenario_eval_run_ids),
+        **metric_coverage,
+        "claim_boundary": (
+            "Metrics are computed from deterministic MuJoCo preview attempts, not "
+            "physical robot deployment or robot-team policy quality evidence."
+        ),
+    }
+    _write_jsonl(attempt_trace_path, attempt_records)
+    _write_jsonl(contact_stream_path, contact_records)
+    _write_jsonl(planner_state_path, planner_records)
+    _write_jsonl(control_stream_path, control_records)
+    write_json(metrics_path, metrics)
+    write_json(failure_labels_path, failure_labels)
+
+    checksum_inputs = {
+        "attempt_trace_jsonl": attempt_trace_path,
+        "contact_stream_jsonl": contact_stream_path,
+        "planner_state_jsonl": planner_state_path,
+        "control_stream_jsonl": control_stream_path,
+        "metrics": metrics_path,
+        "failure_labels": failure_labels_path,
+        "visual_media_coverage": visual_media_coverage_path,
+    }
+    checksums = {
+        "schema_version": "mujoco_g1_batch_artifact_checksums.v1",
+        "generated_at": generated_at,
+        "artifact_count": len(checksum_inputs),
+        "artifacts": {
+            name: _file_artifact(path, base_dir=output_root) for name, path in checksum_inputs.items()
+        },
+    }
+    write_json(checksums_path, checksums)
+    manifest = {
+        "schema_version": MUJOCO_G1_BATCH_TRACE_PACKAGE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "completed" if attempts else "blocked_missing_attempts",
+        "attempt_count": len(attempts),
+        "required_scenario_eval_run_count": len(required_scenario_eval_run_ids),
+        "covered_scenario_eval_run_count": len(covered_scenario_eval_run_ids),
+        "missing_scenario_eval_run_count": len(missing_scenario_eval_run_ids),
+        "scenario_eval_run_coverage_complete": scenario_eval_run_coverage_complete,
+        "metric_coverage_complete": metrics["metric_coverage_complete"],
+        "failed_run_label_coverage_complete": failure_labels[
+            "failed_run_label_coverage_complete"
+        ],
+        "contact_stream_record_count": len(contact_records),
+        "planner_state_record_count": len(planner_records),
+        "control_stream_record_count": len(control_records),
+        "planner_state_coverage_complete": len(planner_records) == len(attempts),
+        "control_stream_coverage_complete": all(
+            bool(attempt.get("actions")) for attempt in attempts
+        )
+        if attempts
+        else False,
+        "artifact_paths": {
+            "attempt_trace_jsonl": str(attempt_trace_path),
+            "contact_stream_jsonl": str(contact_stream_path),
+            "planner_state_jsonl": str(planner_state_path),
+            "control_stream_jsonl": str(control_stream_path),
+            "metrics": str(metrics_path),
+            "failure_labels": str(failure_labels_path),
+            "visual_media_coverage": str(visual_media_coverage_path),
+            "artifact_checksums": str(checksums_path),
+        },
+        "visual_media_coverage": {
+            "status": visual_media_coverage_manifest.get("status"),
+            "all_required_runs_have_visual_recording": visual_media_coverage_manifest.get(
+                "all_required_runs_have_visual_recording"
+            ),
+            "missing_visual_media_run_count": visual_media_coverage_manifest.get(
+                "missing_visual_media_run_count"
+            ),
+            "missing_visual_media_scenario_eval_run_ids": visual_media_coverage_manifest.get(
+                "missing_visual_media_scenario_eval_run_ids"
+            ),
+        },
+        "claim_boundary": (
+            "Trace package is simulator evidence and closure input. It does not prove "
+            "physical robot readiness or robot-team policy quality."
+        ),
+    }
+    write_json(manifest_path, manifest)
+    return {
+        "manifest": manifest,
+        "metrics": metrics,
+        "failure_labels": failure_labels,
+        "visual_media_coverage": visual_media_coverage_manifest,
+        "artifact_paths": {
+            **manifest["artifact_paths"],
+            "trace_package_manifest": str(manifest_path),
+        },
+    }
+
+
+def _build_mujoco_batch_closure_manifest(
+    *,
+    output_root: Path,
+    generated_at: str,
+    attempts: Sequence[Mapping[str, Any]],
+    required_scenario_eval_run_ids: Sequence[str],
+    covered_scenario_eval_run_ids: Sequence[str],
+    missing_scenario_eval_run_ids: Sequence[str],
+    duplicate_scenario_eval_run_ids: Sequence[str],
+    attempt_count_matches_matrix_count: bool,
+    scenario_eval_run_id_coverage_exact: bool,
+    scenario_eval_run_coverage_complete: bool,
+    batch_trace_package: Mapping[str, Any],
+    support_artifacts: Mapping[str, Path],
+    visual_artifacts: Mapping[str, Any],
+    collision_summary: Mapping[str, Any],
+    digital_twin_fidelity_qa: Mapping[str, Any],
+    robot_team_handoff_blockers: Sequence[str],
+    claim_boundary: Mapping[str, Any],
+) -> dict[str, Any]:
+    artifact_presence = {
+        key: _file_artifact(path, base_dir=output_root)
+        for key, path in support_artifacts.items()
+    }
+    missing_required_artifacts = [
+        key for key, artifact in artifact_presence.items() if not artifact["present"]
+    ]
+    rendered_run_ids = sorted(
+        {
+            _string(frame.get("scenario_eval_run_id"))
+            for frame in visual_artifacts.get("frames", []) or []
+            if isinstance(frame, Mapping) and _string(frame.get("scenario_eval_run_id"))
+        }
+    )
+    video_statuses = {
+        "overview_video": _mapping(visual_artifacts.get("overview_video")).get("status"),
+        "robot_pov_video": _mapping(visual_artifacts.get("robot_pov_video")).get("status"),
+        "side_video": _mapping(visual_artifacts.get("side_video")).get("status"),
+    }
+    all_video_files_complete = all(status == "complete" for status in video_statuses.values())
+    visual_coverage_complete = (
+        bool(required_scenario_eval_run_ids)
+        and set(rendered_run_ids) == set(required_scenario_eval_run_ids)
+        and all_video_files_complete
+    )
+    trace_manifest = _mapping(batch_trace_package.get("manifest"))
+    metrics = _mapping(batch_trace_package.get("metrics"))
+    labels = _mapping(batch_trace_package.get("failure_labels"))
+    metric_coverage_complete = bool(
+        trace_manifest.get("metric_coverage_complete")
+        and metrics.get("metric_coverage_complete")
+    )
+    failure_label_coverage_complete = bool(
+        trace_manifest.get("failed_run_label_coverage_complete")
+        and labels.get("failed_run_label_coverage_complete")
+    )
+    machine_trace_package_complete = (
+        scenario_eval_run_coverage_complete
+        and metric_coverage_complete
+        and failure_label_coverage_complete
+        and not missing_required_artifacts
+    )
+    robot_team_grade_package_complete = (
+        machine_trace_package_complete
+        and visual_coverage_complete
+        and bool(digital_twin_fidelity_qa.get("robot_team_grade_fidelity_passed"))
+        and bool(collision_summary.get("collision_dynamics_validated"))
+        and not robot_team_handoff_blockers
+    )
+    blockers: list[str] = []
+    if not scenario_eval_run_coverage_complete:
+        blockers.append("scenario_eval_run_coverage_incomplete")
+    if missing_required_artifacts:
+        blockers.append("batch_required_artifacts_missing")
+    if not metric_coverage_complete:
+        blockers.append("batch_task_metric_coverage_incomplete")
+    if not failure_label_coverage_complete:
+        blockers.append("batch_failure_label_coverage_incomplete")
+    robot_team_grade_blockers = list(robot_team_handoff_blockers)
+    if not visual_coverage_complete:
+        robot_team_grade_blockers.append("visual_video_coverage_not_complete_for_all_runs")
+    if not bool(digital_twin_fidelity_qa.get("robot_team_grade_fidelity_passed")):
+        robot_team_grade_blockers.extend(
+            _string(blocker)
+            for blocker in digital_twin_fidelity_qa.get("blockers", [])
+            if _string(blocker)
+        )
+        robot_team_grade_blockers.append("digital_twin_fidelity_qa_not_passed")
+    if not bool(collision_summary.get("collision_dynamics_validated")):
+        robot_team_grade_blockers.append("collision_dynamics_not_validated_for_robot_team_grade")
+    status = (
+        "completed"
+        if robot_team_grade_package_complete
+        else "completed_with_robot_team_grade_blockers"
+        if machine_trace_package_complete
+        else "blocked"
+    )
+    return {
+        "schema_version": MUJOCO_G1_BATCH_CLOSURE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "batch_execution_status": "completed" if scenario_eval_run_coverage_complete else "blocked",
+        "machine_trace_package_complete": machine_trace_package_complete,
+        "robot_team_grade_package_complete": robot_team_grade_package_complete,
+        "blockers": blockers,
+        "robot_team_grade_blockers": sorted(set(robot_team_grade_blockers)),
+        "attempt_count": len(attempts),
+        "required_scenario_eval_run_count": len(required_scenario_eval_run_ids),
+        "covered_scenario_eval_run_count": len(covered_scenario_eval_run_ids),
+        "missing_scenario_eval_run_count": len(missing_scenario_eval_run_ids),
+        "attempt_count_matches_matrix_count": attempt_count_matches_matrix_count,
+        "scenario_eval_run_id_coverage_exact": scenario_eval_run_id_coverage_exact,
+        "scenario_eval_run_coverage_complete": scenario_eval_run_coverage_complete,
+        "duplicate_scenario_eval_run_ids": list(duplicate_scenario_eval_run_ids),
+        "required_scenario_eval_run_ids": list(required_scenario_eval_run_ids),
+        "covered_scenario_eval_run_ids": list(covered_scenario_eval_run_ids),
+        "missing_scenario_eval_run_ids": list(missing_scenario_eval_run_ids),
+        "metric_coverage_complete": metric_coverage_complete,
+        "failure_label_coverage_complete": failure_label_coverage_complete,
+        "failed_attempt_count": int(labels.get("failed_attempt_count") or 0),
+        "failure_label_count": int(labels.get("label_count") or 0),
+        "artifact_presence": artifact_presence,
+        "missing_required_artifacts": missing_required_artifacts,
+        "visual_coverage": {
+            "rendered_scenario_eval_run_ids": rendered_run_ids,
+            "rendered_scenario_eval_run_count": len(rendered_run_ids),
+            "missing_rendered_scenario_eval_run_ids": sorted(
+                set(required_scenario_eval_run_ids) - set(rendered_run_ids)
+            ),
+            "all_required_runs_have_visual_recording": visual_coverage_complete,
+            "video_statuses": video_statuses,
+            "all_video_files_complete": all_video_files_complete,
+            "visual_limitations": list(visual_artifacts.get("limitations") or []),
+        },
+        "digital_twin_fidelity_qa": dict(digital_twin_fidelity_qa),
+        "policy_interface_boundary": {
+            "default_preview_policy_id": POLICY_ID,
+            "robot_team_policy_execution_proven": False,
+            "locomotion_controller_integrated": False,
+            "training_grade_policy_rollout_proven": False,
+            "official_policy_handoff_required_for_robot_team_grade": True,
+        },
+        "remote_cloud_execution_boundary": {
+            "local_or_worker_command_artifacts_emitted": True,
+            "signed_output_uris_proven_by_this_command": False,
+            "provider_worker_shutdown_proven_by_this_command": False,
+        },
+        "claim_boundary": dict(claim_boundary),
     }
 
 
@@ -1710,6 +3181,7 @@ def run_mujoco_g1_simulator_command(
         accepted_yaw = 0.0
         accepted_phase = 0.0
         accepted_moving = False
+        blocked_collision_probe: dict[str, Any] | None = None
         for step in range(bounded_steps):
             alpha = 0.0 if bounded_steps <= 1 else step / float(bounded_steps - 1)
             desired_pose, yaw, route_segment_index = _interpolate_route(route_points, alpha)
@@ -1764,6 +3236,9 @@ def run_mujoco_g1_simulator_command(
                     full_collision_probe_trace.append(enriched_probe)
                 event = {
                     "event_type": "candidate_rejected_scene_collision",
+                    "attempt_id": attempt_id,
+                    "episode_id": episode_id,
+                    "scenario_eval_run_id": scenario_eval_run_id or None,
                     "step": step,
                     "sim_time_s": round(float(data.time), 9),
                     "candidate_kind": candidate["candidate_kind"],
@@ -1776,11 +3251,39 @@ def run_mujoco_g1_simulator_command(
                 episode_collision_response_events.append(event)
                 full_collision_response_events.append(event)
             if selected_candidate["accepted"] is False:
-                raise RuntimeError(
-                    "MuJoCo collision-governed preview could not find a non-colliding "
-                    f"pose for {attempt_id} at step {step}; refusing to render a "
-                    "pass-through video"
+                blocked_collision_probe = {
+                    "reason": "no_non_colliding_pose",
+                    "step": step,
+                    "attempt_id": attempt_id,
+                    "episode_id": episode_id,
+                    "scenario_eval_run_id": scenario_eval_run_id or None,
+                    "rejected_candidate_count": len(rejected_candidates),
+                    "candidate_count": len(candidate_results),
+                }
+                actions.append(
+                    {
+                        "step": step,
+                        "sim_time_s": round(float(data.time), 9),
+                        "root_position": [round(float(value), 6) for value in start],
+                        "desired_root_position": [
+                            round(float(desired_pose[0]), 6),
+                            round(float(desired_pose[1]), 6),
+                            round(float(desired_pose[2]), 6),
+                        ],
+                        "root_yaw_radians": round(float(yaw), 6),
+                        "target": list(target),
+                        "route_segment_index": route_segment_index,
+                        "contact_count": 0,
+                        "scene_collision_contact_count": 0,
+                        "collision_probe_candidate_count": len(candidate_results),
+                        "rejected_collision_probe_count": len(rejected_candidates),
+                        "policy_action": "blocked_no_non_colliding_pose",
+                        "status": "blocked_collision_probe_no_safe_pose",
+                        "scenario_eval_run_id": scenario_eval_run_id or None,
+                        "deterministic_seed": navigation["seed"],
+                    }
                 )
+                break
             selected_pose = selected_candidate["pose"]
             selected_yaw = float(selected_candidate.get("yaw", yaw))
             selected_phase = float(selected_candidate.get("phase", phase))
@@ -1795,6 +3298,9 @@ def run_mujoco_g1_simulator_command(
                 policy_action = "redirected_by_collision_probe"
                 event = {
                     "event_type": "motion_redirected_by_collision_probe",
+                    "attempt_id": attempt_id,
+                    "episode_id": episode_id,
+                    "scenario_eval_run_id": scenario_eval_run_id or None,
                     "step": step,
                     "sim_time_s": round(float(data.time), 9),
                     "accepted_pose": list(selected_pose),
@@ -1809,6 +3315,9 @@ def run_mujoco_g1_simulator_command(
                 policy_action = "stopped_by_collision_probe"
                 event = {
                     "event_type": "motion_stopped_by_collision_probe",
+                    "attempt_id": attempt_id,
+                    "episode_id": episode_id,
+                    "scenario_eval_run_id": scenario_eval_run_id or None,
                     "step": step,
                     "sim_time_s": round(float(data.time), 9),
                     "accepted_pose": list(selected_pose),
@@ -2076,10 +3585,35 @@ def run_mujoco_g1_simulator_command(
             collision_response_events=episode_collision_response_events,
             collision_proxy_count=collision_proxy_count,
         )
+        task_outcome = _attempt_task_outcome(
+            actions=actions,
+            start=start,
+            target=target,
+            route_distance_m=route_distance,
+            collision_summary=episode_collision_summary,
+            bounded_steps=bounded_steps,
+            model_timestep_s=model_timestep,
+        )
+        if blocked_collision_probe:
+            failure_mode_ids = list(task_outcome["failure_mode_ids"])
+            if "failure_collision_probe_no_safe_pose" not in failure_mode_ids:
+                failure_mode_ids.append("failure_collision_probe_no_safe_pose")
+            task_outcome = {
+                **task_outcome,
+                "task_success": False,
+                "task_status": "blocked_collision_probe_no_safe_pose",
+                "failure_mode_ids": failure_mode_ids,
+                "failure_reason": ",".join(failure_mode_ids),
+                "collision_probe_blocked": blocked_collision_probe,
+            }
         scene_contact_count = int(episode_collision_summary["robot_scene_contact_event_count"])
         collision_free_preview = scene_contact_count == 0
         attempt_status = (
-            "completed_collision_governed"
+            "blocked_collision_probe_no_safe_pose"
+            if blocked_collision_probe
+            else "passed_task_criteria"
+            if task_outcome["task_success"]
+            else "failed_task_criteria"
             if collision_free_preview
             else "blocked_collision_overlap_detected"
         )
@@ -2105,15 +3639,21 @@ def run_mujoco_g1_simulator_command(
             "task_id": task_id,
             "policy_id": _string(matrix_run.get("policy_id")) or POLICY_ID,
             "status": attempt_status,
-            "success": collision_free_preview,
+            "success": bool(task_outcome["task_success"]),
+            "task_success": bool(task_outcome["task_success"]),
+            "failure_reason": task_outcome["failure_reason"],
+            "failure_mode_ids": task_outcome["failure_mode_ids"],
             "success_semantics": (
-                "scene_collision_contacts_govern_preview_motion_but_not_locomotion_task_success"
+                "goal_reached_with_clean_endpoint_no_scene_contacts_no_fall"
+                if task_outcome["task_success"]
+                else "physics_preview_completed_but_task_success_criteria_failed"
                 if collision_free_preview
                 else "scene_collision_contacts_detected_preview_blocked"
             ),
             "deterministic_seed": navigation["seed"],
             "spawn_pose": list(start),
             "target_pose": list(target),
+            "final_pose": task_outcome["final_pose"],
             "route_source": navigation["route_source"],
             "route_strategy": route_strategy,
             "route_waypoints": [list(point) for point in route_points],
@@ -2121,13 +3661,15 @@ def run_mujoco_g1_simulator_command(
             "walking_motion_proven": False,
             "walking_style_preview_animation_rendered": bool(preview_joint_addresses),
             "training_grade_policy_rollout_proven": False,
+            "collision_probe_blocked": blocked_collision_probe,
             "metrics": {
                 "cycle_time_seconds": round(bounded_steps * model_timestep, 6)
                 if model_timestep
                 else None,
                 "intervention_count": 0,
-                "unsafe_proximity_event_count": 0,
-                "collision_risk_event_count": scene_contact_count,
+                "unsafe_proximity_event_count": task_outcome["near_miss_event_count"],
+                "collision_risk_event_count": scene_contact_count
+                + task_outcome["near_miss_event_count"],
                 "collision_risk_status": (
                     "collision_governed_motion_contact_checked"
                 ),
@@ -2150,7 +3692,31 @@ def run_mujoco_g1_simulator_command(
                 ],
                 "object_drop_count": 0,
                 "wrong_object_count": 0,
-                "timeout_count": 0,
+                "timeout_count": 1 if task_outcome["timeout"] else 0,
+                "fall_count": 1 if task_outcome["fall_detected"] else 0,
+                "stuck_event_count": 1 if task_outcome["stuck_detected"] else 0,
+                "near_miss_event_count": task_outcome["near_miss_event_count"],
+                "min_clearance_m": task_outcome["min_clearance_m"],
+                "clearance_threshold_m": task_outcome["clearance_threshold_m"],
+                "clearance_threshold_violation": task_outcome[
+                    "clearance_threshold_violation"
+                ],
+                "goal_reached": task_outcome["goal_reached"],
+                "endpoint_clean": task_outcome["endpoint_clean"],
+                "spawn_clean": task_outcome["spawn_clean"],
+                "task_success": task_outcome["task_success"],
+                "final_target_error_m": task_outcome["final_target_error_m"],
+                "goal_tolerance_m": task_outcome["goal_tolerance_m"],
+                "actual_path_distance_m": task_outcome["actual_path_distance_m"],
+                "path_efficiency_ratio": task_outcome["path_efficiency_ratio"],
+                "progress_to_goal_m": task_outcome["progress_to_goal_m"],
+                "progress_to_goal_ratio": task_outcome["progress_to_goal_ratio"],
+                "max_path_deviation_m": task_outcome["max_path_deviation_m"],
+                "mean_path_deviation_m": task_outcome["mean_path_deviation_m"],
+                "min_root_height_m": task_outcome["min_root_height_m"],
+                "policy_instability_detected": task_outcome[
+                    "policy_instability_detected"
+                ],
                 "simulated_step_count": bounded_steps,
                 "rendered_step_count": len(capture_steps),
                 "rendered_frame_count": len(rendered_frame_paths),
@@ -2160,6 +3726,7 @@ def run_mujoco_g1_simulator_command(
                 "target_pose_xyz": list(target),
                 "deterministic_seed": navigation["seed"],
             },
+            "task_outcome": task_outcome,
             "actions": actions,
             "contact_trace": episode_contact_trace[:100],
             "collision_probe_trace": episode_collision_probe_trace[:100],
@@ -2214,13 +3781,15 @@ def run_mujoco_g1_simulator_command(
                 "policy_id": attempt["policy_id"],
                 "start_pose": list(start),
                 "target_pose": list(target),
-                "final_pose": actions[-1]["root_position"],
+                "final_pose": task_outcome["final_pose"],
                 "step_count": bounded_steps,
                 "route_strategy": route_strategy,
                 "route_waypoints": [list(point) for point in route_points],
                 "route_distance_m": round(route_distance, 6),
                 "rendered_step_count": len(capture_steps),
                 "deterministic_seed": navigation["seed"],
+                "task_success": task_outcome["task_success"],
+                "task_outcome": task_outcome,
                 "actions": actions,
                 "collision_probe_trace": episode_collision_probe_trace[:100],
                 "collision_response_events": episode_collision_response_events[:100],
@@ -2241,10 +3810,104 @@ def run_mujoco_g1_simulator_command(
         collision_response_events=full_collision_response_events,
         collision_proxy_count=collision_proxy_count,
     )
+    digital_twin_fidelity_qa = _build_digital_twin_fidelity_qa(
+        generated_at=generated_at,
+        mesh_info=mesh_info,
+        collision_summary=collision_summary,
+        visual_artifacts=visual_artifacts,
+    )
     blocked_collision_attempt_count = sum(
         1 for attempt in attempts if _string(attempt.get("status")) == "blocked_collision_overlap_detected"
     )
     collision_free_preview = blocked_collision_attempt_count == 0
+    successful_task_attempts = [
+        attempt for attempt in attempts if bool(attempt.get("task_success"))
+    ]
+    failed_task_attempts = [
+        attempt for attempt in attempts if not bool(attempt.get("task_success"))
+    ]
+    task_failure_mode_counts: dict[str, int] = {}
+    for attempt in failed_task_attempts:
+        failure_modes = attempt.get("failure_mode_ids")
+        if not isinstance(failure_modes, Sequence) or isinstance(
+            failure_modes, (str, bytes)
+        ):
+            failure_modes = []
+        for failure_mode in failure_modes:
+            failure_id = _string(failure_mode)
+            if failure_id:
+                task_failure_mode_counts[failure_id] = (
+                    task_failure_mode_counts.get(failure_id, 0) + 1
+                )
+    clearance_values = [
+        float(value)
+        for value in (
+            _number(_mapping(attempt.get("task_outcome")).get("min_clearance_m"))
+            for attempt in attempts
+        )
+        if value is not None
+    ]
+    task_success_summary = {
+        "schema_version": "mujoco_g1_task_success_summary.v1",
+        "status": "completed" if attempts else "not_available",
+        "attempt_count": len(attempts),
+        "successful_attempt_count": len(successful_task_attempts),
+        "failed_attempt_count": len(failed_task_attempts),
+        "task_success_rate": round(len(successful_task_attempts) / len(attempts), 6)
+        if attempts
+        else None,
+        "failed_scenario_eval_run_ids": sorted(
+            _string(attempt.get("scenario_eval_run_id"))
+            for attempt in failed_task_attempts
+            if _string(attempt.get("scenario_eval_run_id"))
+        ),
+        "failure_mode_counts": dict(sorted(task_failure_mode_counts.items())),
+        "near_miss_attempt_count": sum(
+            1
+            for attempt in attempts
+            if int(_mapping(attempt.get("task_outcome")).get("near_miss_event_count") or 0)
+            > 0
+        ),
+        "near_miss_event_count": sum(
+            int(_mapping(attempt.get("task_outcome")).get("near_miss_event_count") or 0)
+            for attempt in attempts
+        ),
+        "min_clearance_m": min(clearance_values) if clearance_values else None,
+        "clearance_threshold_m": TASK_CLEARANCE_THRESHOLD_M,
+        "endpoint_clean_attempt_count": sum(
+            1
+            for attempt in attempts
+            if bool(_mapping(attempt.get("task_outcome")).get("endpoint_clean"))
+        ),
+        "goal_reached_attempt_count": sum(
+            1
+            for attempt in attempts
+            if bool(_mapping(attempt.get("task_outcome")).get("goal_reached"))
+        ),
+        "max_final_target_error_m": max(
+            (
+                float(_mapping(attempt.get("task_outcome")).get("final_target_error_m"))
+                for attempt in attempts
+                if _mapping(attempt.get("task_outcome")).get("final_target_error_m")
+                is not None
+            ),
+            default=None,
+        ),
+        "max_path_deviation_m": max(
+            (
+                float(_mapping(attempt.get("task_outcome")).get("max_path_deviation_m"))
+                for attempt in attempts
+                if _mapping(attempt.get("task_outcome")).get("max_path_deviation_m")
+                is not None
+            ),
+            default=None,
+        ),
+        "task_success_boundary": (
+            "Task success requires reaching the target inside tolerance with a clean "
+            "endpoint, no committed scene contacts, no clearance near-miss, no fall, "
+            "and no stuck/no-progress heuristic. Simulator command completion is tracked separately."
+        ),
+    }
     collision_dynamics_validated = bool(collision_summary["collision_dynamics_validated"])
     collision_avoidance_validated = bool(collision_summary["collision_avoidance_validated"])
     physics_controlled_preview_proven = bool(
@@ -2268,12 +3931,14 @@ def run_mujoco_g1_simulator_command(
             "robot_team_timeseries.jsonl",
             "sensor_stream_manifest.json",
             "contact_manifest.json",
+            "navigation_plan_manifest.json",
             "policy_execution_trace_enriched.jsonl",
             "robot_pov_manifest.json",
         ],
         "boundary": (
             "Use the official Unitree RL Gym G1 handoff path for balanced-controller "
-            "rollouts, qpos/qvel/control streams, contact traces, and robot-team review. "
+            "rollouts, planner waypoint velocity commands, qpos/qvel/control streams, "
+            "contact and clearance traces, and robot-team review. "
             "The default MuJoCo scene preview is not a substitute."
         ),
     }
@@ -2436,6 +4101,7 @@ def run_mujoco_g1_simulator_command(
         ),
         "attempts": all_policy_records,
         "actions": all_policy_records[0]["actions"] if all_policy_records else [],
+        "task_success_summary": task_success_summary,
         "collision_summary": collision_summary,
         "collision_probe_trace": full_collision_probe_trace[:500],
         "collision_response_events": full_collision_response_events[:500],
@@ -2506,6 +4172,7 @@ def run_mujoco_g1_simulator_command(
         "spawn_trace": str(output_root / "spawn_trace.json"),
         "policy_trace": str(output_root / "policy_execution_trace.json"),
         "sim_robot_pov_evidence": str(output_root / "sim_robot_pov_evidence_manifest.json"),
+        "digital_twin_fidelity_qa": str(output_root / "mujoco_digital_twin_fidelity_qa.json"),
         "source_scene_glb": str(scene_glb),
         "converted_scene_obj": str(scene_obj),
         "generated_mjcf": str(wrapper_xml),
@@ -2532,6 +4199,7 @@ def run_mujoco_g1_simulator_command(
                 str(output_root / "scene_load_trace.json"),
                 str(output_root / "spawn_trace.json"),
                 str(output_root / "policy_execution_trace.json"),
+                str(output_root / "mujoco_digital_twin_fidelity_qa.json"),
                 str(simulator_output),
             ],
             "visual": [*artifact_paths["frames"], *videos],
@@ -2543,13 +4211,20 @@ def run_mujoco_g1_simulator_command(
         "texture_material_evidence": visual_artifacts["texture_material_evidence"],
         "blank_scene_checks": visual_artifacts["blank_scene_checks"],
         "collision_summary": collision_summary,
+        "digital_twin_fidelity_qa": digital_twin_fidelity_qa,
+        "task_success_summary": task_success_summary,
         "collision_proxy_summary": mesh_info.get("collision_proxy_summary"),
         "physics_controlled_preview_proven": physics_controlled_preview_proven,
         "robot_team_handoff_ready": False,
         "robot_team_handoff_blockers": robot_team_handoff_blockers,
         "official_policy_handoff": official_policy_handoff,
         "limitations": visual_artifacts["limitations"],
-        "files": [str(wrapper_xml), str(generated_g1_xml), str(scene_obj)]
+        "files": [
+            str(wrapper_xml),
+            str(generated_g1_xml),
+            str(scene_obj),
+            str(output_root / "mujoco_digital_twin_fidelity_qa.json"),
+        ]
         + [frame["path"] for frame in frames]
         + videos,
     }
@@ -2557,6 +4232,7 @@ def run_mujoco_g1_simulator_command(
     write_json(output_root / "spawn_trace.json", spawn_trace)
     write_json(output_root / "policy_execution_trace.json", policy_trace)
     write_json(output_root / "sim_robot_pov_evidence_manifest.json", pov_manifest)
+    write_json(output_root / "mujoco_digital_twin_fidelity_qa.json", digital_twin_fidelity_qa)
     write_json(output_root / "artifact_manifest.json", artifact_manifest)
 
     required_scenario_eval_run_ids = [
@@ -2593,6 +4269,115 @@ def run_mujoco_g1_simulator_command(
         and not missing_scenario_eval_run_ids
         and not duplicate_scenario_eval_run_ids
     )
+    batch_trace_package = _write_mujoco_batch_trace_package(
+        output_root=output_root,
+        generated_at=generated_at,
+        attempts=attempts,
+        full_contact_trace=full_contact_trace,
+        full_collision_probe_trace=full_collision_probe_trace,
+        full_collision_response_events=full_collision_response_events,
+        required_scenario_eval_run_ids=required_scenario_eval_run_ids,
+        covered_scenario_eval_run_ids=covered_scenario_eval_run_ids,
+        missing_scenario_eval_run_ids=missing_scenario_eval_run_ids,
+        duplicate_scenario_eval_run_ids=duplicate_scenario_eval_run_ids,
+        scenario_eval_run_coverage_complete=scenario_eval_run_coverage_complete,
+        visual_artifacts=visual_artifacts,
+    )
+    batch_artifact_paths = {
+        key: str(value) for key, value in _mapping(batch_trace_package.get("artifact_paths")).items()
+    }
+    batch_closure_path = output_root / "mujoco_batch_closure_manifest.json"
+    artifact_paths.update(
+            {
+                "batch_attempt_trace_jsonl": batch_artifact_paths.get("attempt_trace_jsonl"),
+                "batch_contact_stream_jsonl": batch_artifact_paths.get("contact_stream_jsonl"),
+                "batch_planner_state_jsonl": batch_artifact_paths.get("planner_state_jsonl"),
+                "batch_control_stream_jsonl": batch_artifact_paths.get("control_stream_jsonl"),
+            "batch_metrics": batch_artifact_paths.get("metrics"),
+            "batch_failure_labels": batch_artifact_paths.get("failure_labels"),
+            "batch_visual_media_coverage": batch_artifact_paths.get("visual_media_coverage"),
+            "batch_artifact_checksums": batch_artifact_paths.get("artifact_checksums"),
+            "batch_trace_package_manifest": batch_artifact_paths.get("trace_package_manifest"),
+            "batch_closure_manifest": str(batch_closure_path),
+        }
+    )
+    artifact_manifest["artifacts"] = artifact_paths
+    artifact_manifest["batch_trace_package"] = batch_trace_package.get("manifest")
+    artifact_manifest["batch_closure_manifest"] = str(batch_closure_path)
+    artifact_manifest["artifact_classes"]["local_sim"] = [
+        *artifact_manifest["artifact_classes"]["local_sim"],
+        batch_artifact_paths.get("attempt_trace_jsonl"),
+        batch_artifact_paths.get("contact_stream_jsonl"),
+        batch_artifact_paths.get("planner_state_jsonl"),
+        batch_artifact_paths.get("control_stream_jsonl"),
+        batch_artifact_paths.get("metrics"),
+        batch_artifact_paths.get("failure_labels"),
+        batch_artifact_paths.get("artifact_checksums"),
+        batch_artifact_paths.get("trace_package_manifest"),
+        str(batch_closure_path),
+    ]
+    artifact_manifest["files"] = [
+        *artifact_manifest["files"],
+        *[
+            value
+            for value in (
+                batch_artifact_paths.get("attempt_trace_jsonl"),
+                batch_artifact_paths.get("contact_stream_jsonl"),
+                batch_artifact_paths.get("planner_state_jsonl"),
+                batch_artifact_paths.get("control_stream_jsonl"),
+                batch_artifact_paths.get("metrics"),
+                batch_artifact_paths.get("failure_labels"),
+                batch_artifact_paths.get("artifact_checksums"),
+                batch_artifact_paths.get("trace_package_manifest"),
+                str(batch_closure_path),
+            )
+            if value
+        ],
+    ]
+    write_json(output_root / "artifact_manifest.json", artifact_manifest)
+    batch_closure_manifest = _build_mujoco_batch_closure_manifest(
+        output_root=output_root,
+        generated_at=generated_at,
+        attempts=attempts,
+        required_scenario_eval_run_ids=required_scenario_eval_run_ids,
+        covered_scenario_eval_run_ids=covered_scenario_eval_run_ids,
+        missing_scenario_eval_run_ids=missing_scenario_eval_run_ids,
+        duplicate_scenario_eval_run_ids=duplicate_scenario_eval_run_ids,
+        attempt_count_matches_matrix_count=attempt_count_matches_matrix_count,
+        scenario_eval_run_id_coverage_exact=scenario_eval_run_id_coverage_exact,
+        scenario_eval_run_coverage_complete=scenario_eval_run_coverage_complete,
+        batch_trace_package=batch_trace_package,
+        support_artifacts={
+            "scene_trace": output_root / "scene_load_trace.json",
+            "spawn_trace": output_root / "spawn_trace.json",
+            "policy_trace": output_root / "policy_execution_trace.json",
+            "sim_robot_pov_evidence": output_root / "sim_robot_pov_evidence_manifest.json",
+            "digital_twin_fidelity_qa": output_root / "mujoco_digital_twin_fidelity_qa.json",
+            "artifact_manifest": output_root / "artifact_manifest.json",
+            "batch_attempt_trace_jsonl": Path(
+                batch_artifact_paths.get("attempt_trace_jsonl") or ""
+            ),
+            "batch_contact_stream_jsonl": Path(
+                batch_artifact_paths.get("contact_stream_jsonl") or ""
+            ),
+            "batch_metrics": Path(batch_artifact_paths.get("metrics") or ""),
+            "batch_failure_labels": Path(
+                batch_artifact_paths.get("failure_labels") or ""
+            ),
+            "batch_artifact_checksums": Path(
+                batch_artifact_paths.get("artifact_checksums") or ""
+            ),
+            "batch_trace_package_manifest": Path(
+                batch_artifact_paths.get("trace_package_manifest") or ""
+            ),
+        },
+        visual_artifacts={**visual_artifacts, "frames": frames},
+        collision_summary=collision_summary,
+        digital_twin_fidelity_qa=digital_twin_fidelity_qa,
+        robot_team_handoff_blockers=robot_team_handoff_blockers,
+        claim_boundary=claim_boundary,
+    )
+    write_json(batch_closure_path, batch_closure_manifest)
     payload = {
         "schema_version": MUJOCO_G1_SIMULATOR_COMMAND_OUTPUT_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2677,6 +4462,7 @@ def run_mujoco_g1_simulator_command(
             "Unitree locomotion policy."
         ),
         "collision_summary": collision_summary,
+        "digital_twin_fidelity_qa": digital_twin_fidelity_qa,
         "sim_robot_pov_evidence_proven": bool(frames),
         "real_robot_pov_evidence_proven": False,
         "evaluation_mode": "deterministic_mujoco_contact_governed_preview_harness",
@@ -2693,6 +4479,10 @@ def run_mujoco_g1_simulator_command(
         "scenario_eval_matrix_path": matrix_summary.get("scenario_eval_matrix_path"),
         "scenario_eval_run_count": len(matrix_runs),
         "attempt_count": len(attempts),
+        "successful_task_attempt_count": task_success_summary["successful_attempt_count"],
+        "failed_task_attempt_count": task_success_summary["failed_attempt_count"],
+        "task_success_rate": task_success_summary["task_success_rate"],
+        "task_success_summary": task_success_summary,
         "required_scenario_eval_run_count": len(required_scenario_eval_run_ids),
         "covered_scenario_eval_run_count": len(covered_scenario_eval_run_ids),
         "missing_scenario_eval_run_count": len(missing_scenario_eval_run_ids),
@@ -2703,6 +4493,15 @@ def run_mujoco_g1_simulator_command(
         "covered_scenario_eval_run_ids": covered_scenario_eval_run_ids,
         "missing_scenario_eval_run_ids": missing_scenario_eval_run_ids,
         "scenario_eval_run_coverage_complete": scenario_eval_run_coverage_complete,
+        "batch_trace_package": batch_trace_package.get("manifest"),
+        "batch_closure_manifest": batch_closure_manifest,
+        "batch_closure_manifest_path": str(batch_closure_path),
+        "machine_trace_package_complete": batch_closure_manifest.get(
+            "machine_trace_package_complete"
+        ),
+        "robot_team_grade_package_complete": batch_closure_manifest.get(
+            "robot_team_grade_package_complete"
+        ),
         "rendered_episode_count": len(rendered_episode_indexes) if frames else 0,
         "render_every_step": bool(render_every_step),
         "max_rendered_episodes": max_rendered_episodes,

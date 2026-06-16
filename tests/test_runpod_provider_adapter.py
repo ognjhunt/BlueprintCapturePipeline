@@ -156,6 +156,57 @@ def test_runpod_adapter_forwards_docker_entrypoint_to_pod_payload(tmp_path: Path
     assert pod["dockerStartCmd"] == ["-lc", "echo provider-heartbeat"]
 
 
+def test_runpod_adapter_forwards_allowed_secret_env_with_redaction(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    secret_value = "secret-gcp-json-b64"
+    monkeypatch.setenv(
+        "BLUEPRINT_RUNPOD_FORWARD_SECRET_ENV_VARS",
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON_B64",
+    )
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS_JSON_B64", secret_value)
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"id": "pod-secret-env"}).encode()
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="on-demand-pod",
+        allow_runpod_api_call=True,
+    )
+    persisted = _read_json(tmp_path / "runpod_provider_adapter_result.json")
+
+    outbound = captured["body"]  # type: ignore[assignment]
+    persisted_pod = persisted["runpod_request"]["body"]  # type: ignore[index]
+    assert outbound["env"]["GOOGLE_APPLICATION_CREDENTIALS_JSON_B64"] == secret_value  # type: ignore[index]
+    assert persisted_pod["env"]["GOOGLE_APPLICATION_CREDENTIALS_JSON_B64"] == (  # type: ignore[index]
+        "<redacted:secret-env>"
+    )
+    assert result["status"] == "submitted"
+    assert secret_value not in json.dumps(persisted)
+
+
 def test_runpod_adapter_blocks_missing_cost_control_limits(
     tmp_path: Path,
 ) -> None:

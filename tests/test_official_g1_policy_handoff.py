@@ -3,8 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from blueprint_pipeline.official_g1_policy_handoff import (
+    _base_path_clearance_audit,
     _camera_set,
     _frame_durations_for_realtime_video,
+    _navigation_command,
+    _plan_occupancy_grid_route,
     _redact_runtime_value,
     _robot_pov_manifest,
     _stream_gate,
@@ -83,6 +86,71 @@ def test_frame_durations_preserve_source_sim_time_for_realtime_video() -> None:
     assert durations == [0.5, 0.5, 0.5, 0.5]
     assert timing["mode"] == "source_sim_time_realtime"
     assert timing["expected_video_duration_s"] == 2.0
+
+
+def test_base_path_clearance_audit_blocks_occupied_endpoint() -> None:
+    audit = _base_path_clearance_audit(
+        base_positions=[[0.0, 0.0, 0.8], [1.0, 0.0, 0.8]],
+        collision_proxies=[
+            {"name": "box", "pos": [1.0, 0.0, 0.5], "size": [0.25, 0.25, 0.5]}
+        ],
+        required_clearance_m=0.38,
+    )
+
+    assert audit["passed"] is False
+    assert audit["endpoint_clearance_m"] == 0.0
+
+
+def test_navigation_planner_routes_around_occupied_proxy() -> None:
+    plan = _plan_occupancy_grid_route(
+        start=[-1.0, 0.0, 0.793],
+        goal=[1.0, 0.0, 0.793],
+        collision_proxies=[
+            {"name": "rack", "pos": [0.0, 0.0, 0.5], "size": [0.25, 0.55, 0.5]}
+        ],
+        mesh_info={"bounds": [[-2.0, -2.0, 0.0], [2.0, 2.0, 1.0]]},
+        required_clearance_m=0.20,
+        grid_resolution_m=0.20,
+    )
+
+    assert plan["status"] == "planned"
+    assert plan["route_waypoint_count"] >= 3
+    assert plan["route_clearance_audit"]["passed"] is True
+    assert plan["route_clearance_audit"]["minimum_clearance_m"] >= 0.20
+
+
+def test_navigation_planner_blocks_unclean_start() -> None:
+    plan = _plan_occupancy_grid_route(
+        start=[0.0, 0.0, 0.793],
+        goal=[1.0, 0.0, 0.793],
+        collision_proxies=[
+            {"name": "rack", "pos": [0.0, 0.0, 0.5], "size": [0.25, 0.25, 0.5]}
+        ],
+        mesh_info={"bounds": [[-2.0, -2.0, 0.0], [2.0, 2.0, 1.0]]},
+        required_clearance_m=0.20,
+        grid_resolution_m=0.20,
+    )
+
+    assert plan["status"] == "blocked"
+    assert "start_occupied_or_below_clearance" in plan["blockers"]
+
+
+def test_navigation_command_converts_waypoint_to_body_velocity() -> None:
+    command = _navigation_command(
+        route_waypoints=[[0.0, 0.0, 0.793], [1.0, 0.0, 0.793]],
+        base_position=[0.0, 0.0, 0.793],
+        base_yaw=0.0,
+        waypoint_index=1,
+        max_speed_mps=0.55,
+        waypoint_tolerance_m=0.20,
+        yaw_gain=1.2,
+        max_yaw_rate=0.9,
+    )
+
+    assert command["goal_reached"] is False
+    assert command["waypoint_index"] == 1
+    assert command["command_xyz"][0] > 0.0
+    assert abs(command["command_xyz"][1]) < 1e-9
 
 
 def test_secret_signature_redaction_for_json_artifacts() -> None:

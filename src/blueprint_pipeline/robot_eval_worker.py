@@ -36,6 +36,8 @@ from .robot_eval_job_orchestrator import (
     ISAAC_SIMULATORS,
     PROVISIONERS,
     SIMULATORS,
+    _artifact_output_write_auth_contract,
+    _remote_cloud_execution_closure_manifest,
     _run_command_simulator,
     build_robot_eval_job,
 )
@@ -52,6 +54,7 @@ SIGNED_URL_QUERY_PATTERN = re.compile(
     rf"([?&]{SIGNED_URL_SIGNATURE_PARAM})[^\s\"'&]+",
     flags=re.IGNORECASE,
 )
+REMOTE_ARTIFACT_OUTPUT_URI_SCHEMES = {"gs", "s3", "r2"}
 
 
 def _string(value: Any) -> str:
@@ -97,6 +100,17 @@ def _bool(value: Any) -> bool | None:
         if normalized in {"0", "false", "no", "off"}:
             return False
     return None
+
+
+def _artifact_output_uri_is_provider_writable(
+    uri: str, *, live_provider: bool
+) -> bool:
+    if not uri:
+        return False
+    scheme = urllib.parse.urlparse(uri).scheme or "local"
+    if live_provider:
+        return scheme in REMOTE_ARTIFACT_OUTPUT_URI_SCHEMES
+    return scheme in {"local", "file", *REMOTE_ARTIFACT_OUTPUT_URI_SCHEMES}
 
 
 def _env_truthy(name: str) -> bool:
@@ -944,6 +958,194 @@ def _record_provider_runtime_gpu_time(
     return dict(ledger["provider_runtime_accounting"])
 
 
+def _provider_shutdown_evidence_from_runtime(job_dir: Path) -> Dict[str, Any]:
+    configured = _string(os.getenv("BLUEPRINT_PROVIDER_SHUTDOWN_PROOF"))
+    candidates = [job_dir / "provider_shutdown_proof.json"]
+    if configured:
+        candidates.insert(0, Path(configured))
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        payload = read_json_any(candidate)
+        if isinstance(payload, Mapping):
+            return {
+                "status": "provided",
+                "source_path": str(candidate),
+                **dict(payload),
+            }
+    return {
+        "status": "missing",
+        "proof_boundary": (
+            "Worker finalizer completion is not provider deallocation proof. "
+            "Record provider pod/worker termination or zero-active-worker evidence "
+            "in provider_shutdown_proof.json before claiming clean shutdown."
+        ),
+    }
+
+
+def _provider_shutdown_proven(evidence: Mapping[str, Any]) -> bool:
+    return bool(
+        evidence.get("provider_shutdown_proven")
+        or evidence.get("clean_shutdown_proven")
+        or evidence.get("zero_active_workers_after_run")
+        or evidence.get("pod_terminated")
+        or evidence.get("worker_terminated")
+    )
+
+
+def _record_provider_runtime_finalizer_proof(
+    *,
+    job_dir: Path,
+    artifact_output_uri: str,
+    artifact_upload: Mapping[str, Any],
+    finalizer_refresh_upload: Mapping[str, Any],
+    runtime_manifest_upload: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    if not _env_truthy("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME"):
+        return {"status": "not_provider_runtime"}
+    ledger_path = job_dir / "gpu_cost_control_ledger.json"
+    payload = read_json_any(ledger_path) if ledger_path.is_file() else {}
+    if not isinstance(payload, Mapping):
+        return {"status": "blocked", "blockers": ["invalid_gpu_cost_control_ledger"]}
+    ledger = dict(payload)
+    artifact_finalizer = _mapping(ledger.get("artifact_finalizer"))
+    provider_shutdown_evidence = _provider_shutdown_evidence_from_runtime(job_dir)
+    provider_shutdown_proven = _provider_shutdown_proven(provider_shutdown_evidence)
+    artifact_upload_completed = artifact_upload.get("status") == "completed"
+    finalizer_refresh_completed = finalizer_refresh_upload.get("status") == "completed"
+    runtime_manifest_uploaded = runtime_manifest_upload.get("status") == "completed"
+
+    def upload_evidence(payload: Mapping[str, Any]) -> Dict[str, Any]:
+        keys = (
+            "status",
+            "destination_uri",
+            "uploaded_file_count",
+            "copied_file_count",
+            "object_keys",
+            "relative_paths",
+            "object_key",
+            "destination_path",
+            "storage_scheme",
+            "blockers",
+        )
+        return {key: payload.get(key) for key in keys if payload.get(key) not in (None, [])}
+
+    artifact_upload_evidence = upload_evidence(artifact_upload)
+    finalizer_refresh_upload_evidence = upload_evidence(finalizer_refresh_upload)
+    runtime_manifest_upload_evidence = upload_evidence(runtime_manifest_upload)
+    worker_finalizer_proven = bool(
+        artifact_upload_completed and finalizer_refresh_completed and runtime_manifest_uploaded
+    )
+    blockers: list[str] = []
+    if not artifact_upload_completed:
+        blockers.append("artifact_upload_not_completed_before_shutdown")
+    if not finalizer_refresh_completed:
+        blockers.append("finalizer_refresh_upload_not_completed_before_shutdown")
+    if not runtime_manifest_uploaded:
+        blockers.append("worker_runtime_manifest_upload_not_completed_before_shutdown")
+    if not provider_shutdown_proven:
+        blockers.append("provider_shutdown_evidence_missing")
+    proof = {
+        "schema_version": "robot_eval_provider_runtime_finalizer_proof.v1",
+        "generated_at": generated_at,
+        "status": "completed" if worker_finalizer_proven else "blocked",
+        "artifact_output_uri": artifact_output_uri,
+        "artifact_upload_completed_before_shutdown": artifact_upload_completed,
+        "finalizer_refresh_upload_completed_before_shutdown": finalizer_refresh_completed,
+        "worker_runtime_manifest_upload_completed_before_shutdown": runtime_manifest_uploaded,
+        "artifact_upload_evidence": artifact_upload_evidence,
+        "finalizer_refresh_upload_evidence": finalizer_refresh_upload_evidence,
+        "runtime_manifest_upload_evidence": runtime_manifest_upload_evidence,
+        "worker_artifacts_finalized_before_shutdown": worker_finalizer_proven,
+        "provider_shutdown_proven": provider_shutdown_proven,
+        "provider_shutdown_evidence": provider_shutdown_evidence,
+        "clean_shutdown_proven": worker_finalizer_proven and provider_shutdown_proven,
+        "blockers": blockers,
+        "claim_boundary": (
+            "Worker finalizer proof shows Blueprint artifacts were copied before worker "
+            "exit. Clean provider shutdown additionally requires provider lifecycle "
+            "evidence such as pod termination or zero active workers after the run."
+        ),
+    }
+    artifact_finalizer.update(
+        {
+            "worker_artifacts_finalized_before_shutdown": worker_finalizer_proven,
+            "worker_finalizer_completed_before_shutdown": worker_finalizer_proven,
+            "provider_shutdown_proven": provider_shutdown_proven,
+            "provider_shutdown_evidence": provider_shutdown_evidence,
+            "clean_shutdown_proven": proof["clean_shutdown_proven"],
+            "finalizer_proof_path": "provider_runtime_finalizer_proof.json",
+            "artifact_upload_evidence": artifact_upload_evidence,
+            "finalizer_refresh_upload_evidence": finalizer_refresh_upload_evidence,
+            "runtime_manifest_upload_evidence": runtime_manifest_upload_evidence,
+        }
+    )
+    ledger["artifact_finalizer"] = artifact_finalizer
+    ledger["provider_runtime_finalizer"] = proof
+    write_json(job_dir / "provider_runtime_finalizer_proof.json", proof)
+    write_json(ledger_path, ledger)
+    return proof
+
+
+def _refresh_remote_cloud_closure_after_worker_runtime(
+    *,
+    job_dir: Path,
+    generated_at: str,
+) -> Dict[str, Any]:
+    run_manifest_path = job_dir / "job_run_manifest.json"
+    run_manifest = _optional_json_mapping(run_manifest_path)
+    worker_launch_plan = _optional_json_mapping(job_dir / "worker_launch_plan.json")
+    worker_manifest = _optional_json_mapping(job_dir / "worker_manifest.json")
+    provider_launch_request = _optional_json_mapping(job_dir / "gpu_provider_launch_request.json")
+    gpu_result = _optional_json_mapping(job_dir / "gpu_provisioning_result.json")
+    gpu_cost_ledger = _optional_json_mapping(job_dir / "gpu_cost_control_ledger.json")
+    sim_result = _optional_json_mapping(job_dir / "simulator_service_result.json")
+    if not gpu_cost_ledger:
+        return {"status": "not_available", "reason": "missing_gpu_cost_control_ledger"}
+    closure = _remote_cloud_execution_closure_manifest(
+        job_id=_string(run_manifest.get("job_id")) or job_dir.name,
+        provisioner=_string(run_manifest.get("provisioner"))
+        or _string(gpu_cost_ledger.get("provider"))
+        or _string(provider_launch_request.get("provider"))
+        or "fixture_local",
+        simulator=_string(run_manifest.get("simulator"))
+        or _string(worker_manifest.get("simulator"))
+        or "fixture",
+        worker_launch_plan=worker_launch_plan,
+        worker_manifest=worker_manifest,
+        provider_launch_request=provider_launch_request,
+        gpu_result=gpu_result,
+        gpu_cost_ledger=gpu_cost_ledger,
+        sim_result=sim_result,
+        generated_at=generated_at,
+    )
+    write_json(job_dir / "remote_cloud_execution_closure_manifest.json", closure)
+    if run_manifest:
+        artifacts = dict(_mapping(run_manifest.get("artifacts")))
+        artifacts["remote_cloud_execution_closure_manifest"] = (
+            "remote_cloud_execution_closure_manifest.json"
+        )
+        artifacts["provider_runtime_finalizer_proof"] = "provider_runtime_finalizer_proof.json"
+        run_manifest.update(
+            {
+                "remote_cloud_execution_closure_status": closure.get("status"),
+                "remote_cloud_execution_proven": bool(
+                    closure.get("remote_cloud_execution_proven")
+                ),
+                "remote_cloud_clean_shutdown_proven": bool(
+                    closure.get("clean_shutdown_proven")
+                ),
+                "remote_cloud_runtime_blockers": _string_list(
+                    closure.get("runtime_blockers")
+                ),
+                "artifacts": artifacts,
+            }
+        )
+        write_json(run_manifest_path, run_manifest)
+    return closure
+
+
 def _refresh_job_startup_audit_with_worker_runtime(job_dir: Path) -> Dict[str, Any]:
     from .robot_eval_startup_architecture_audit import (
         build_robot_eval_startup_architecture_audit,
@@ -1288,6 +1490,11 @@ def run_robot_eval_worker(
     selected_artifact_output_uri = artifact_output_uri or _string(
         payload.get("artifact_output_uri")
     )
+    selected_artifact_output_uri_scheme = None
+    if selected_artifact_output_uri:
+        selected_artifact_output_uri_scheme = (
+            urllib.parse.urlparse(selected_artifact_output_uri).scheme or "local"
+        )
     payload_artifact_required = _bool(payload.get("artifact_output_uri_required"))
     selected_artifact_output_uri_required = (
         artifact_output_uri_required
@@ -1295,6 +1502,64 @@ def run_robot_eval_worker(
         else payload_artifact_required
         if payload_artifact_required is not None
         else selected_provisioner != "fixture_local"
+    )
+    payload_artifact_output_uri_provider_writable = _bool(
+        payload.get("artifact_output_uri_provider_writable")
+    )
+    artifact_output_uri_has_explicit_scheme = bool(
+        urllib.parse.urlparse(selected_artifact_output_uri).scheme
+    )
+    inferred_artifact_output_uri_provider_writable = (
+        _artifact_output_uri_is_provider_writable(
+            selected_artifact_output_uri,
+            live_provider=live_provider_manifest_required,
+        )
+        if selected_artifact_output_uri
+        and (
+            artifact_output_uri_has_explicit_scheme
+            or payload_artifact_output_uri_provider_writable is not None
+        )
+        else None
+    )
+    artifact_output_uri_provider_writable_flags = [
+        flag
+        for flag in (
+            payload_artifact_output_uri_provider_writable,
+            inferred_artifact_output_uri_provider_writable,
+        )
+        if flag is not None
+    ]
+    selected_artifact_output_uri_provider_writable = (
+        all(artifact_output_uri_provider_writable_flags)
+        if artifact_output_uri_provider_writable_flags
+        else None
+    )
+    artifact_output_write_auth = _mapping(payload.get("artifact_output_write_auth"))
+    payload_artifact_output_write_auth_ready = _bool(
+        payload.get("artifact_output_write_auth_contract_ready")
+    )
+    inferred_artifact_output_write_auth = _artifact_output_write_auth_contract(
+        selected_artifact_output_uri,
+        external_provider=live_provider_manifest_required,
+        provider_writable=bool(selected_artifact_output_uri_provider_writable),
+    )
+    selected_artifact_output_write_auth = (
+        artifact_output_write_auth or inferred_artifact_output_write_auth
+    )
+    artifact_output_write_auth_contract_ready = (
+        payload_artifact_output_write_auth_ready
+        if payload_artifact_output_write_auth_ready is not None
+        else bool(selected_artifact_output_write_auth.get("write_auth_contract_ready"))
+    )
+    artifact_output_write_auth_contract_present = bool(
+        artifact_output_write_auth or payload_artifact_output_write_auth_ready is not None
+    )
+    selected_artifact_output_write_auth_contract_ready = bool(
+        artifact_output_write_auth_contract_ready
+        and (
+            not live_provider_manifest_required
+            or artifact_output_write_auth_contract_present
+        )
     )
     if selected_artifact_output_uri_required and not selected_artifact_output_uri:
         return _blocked_runtime_manifest(
@@ -1313,6 +1578,70 @@ def run_robot_eval_worker(
                 "artifact_upload": {
                     "status": "blocked",
                     "reason": "missing_artifact_output_uri",
+                },
+            },
+        )
+    if (
+        live_provider_manifest_required
+        and selected_artifact_output_uri
+        and selected_artifact_output_uri_provider_writable is False
+    ):
+        return _blocked_runtime_manifest(
+            work_dir=worker_dir,
+            manifest_uri=manifest_uri,
+            blockers=["artifact_output_uri_not_provider_writable"],
+            generated_at=generated_at,
+            context={
+                "job_id": selected_job_id,
+                "capture_root": selected_capture_root,
+                "capture_root_bundle_uri": capture_root_bundle_uri or None,
+                "capture_root_bundle": capture_root_bundle,
+                "provisioner": selected_provisioner,
+                "simulator": selected_simulator,
+                "artifact_output_uri_required": selected_artifact_output_uri_required,
+                "artifact_output_uri": selected_artifact_output_uri,
+                "artifact_output_uri_scheme": selected_artifact_output_uri_scheme,
+                "artifact_output_uri_provider_writable": False,
+                "artifact_upload": {
+                    "status": "blocked",
+                    "reason": "artifact_output_uri_not_provider_writable",
+                },
+            },
+        )
+    if (
+        live_provider_manifest_required
+        and selected_artifact_output_uri
+        and selected_artifact_output_uri_provider_writable is True
+        and (
+            not artifact_output_write_auth_contract_present
+            or not selected_artifact_output_write_auth_contract_ready
+        )
+    ):
+        return _blocked_runtime_manifest(
+            work_dir=worker_dir,
+            manifest_uri=manifest_uri,
+            blockers=["artifact_output_write_auth_contract_missing"],
+            generated_at=generated_at,
+            context={
+                "job_id": selected_job_id,
+                "capture_root": selected_capture_root,
+                "capture_root_bundle_uri": capture_root_bundle_uri or None,
+                "capture_root_bundle": capture_root_bundle,
+                "provisioner": selected_provisioner,
+                "simulator": selected_simulator,
+                "artifact_output_uri_required": selected_artifact_output_uri_required,
+                "artifact_output_uri": selected_artifact_output_uri,
+                "artifact_output_uri_scheme": selected_artifact_output_uri_scheme,
+                "artifact_output_uri_provider_writable": (
+                    selected_artifact_output_uri_provider_writable
+                ),
+                "artifact_output_write_auth": selected_artifact_output_write_auth,
+                "artifact_output_write_auth_contract_ready": (
+                    selected_artifact_output_write_auth_contract_ready
+                ),
+                "artifact_upload": {
+                    "status": "blocked",
+                    "reason": "artifact_output_write_auth_contract_missing",
                 },
             },
         )
@@ -1558,6 +1887,13 @@ def run_robot_eval_worker(
         "artifact_upload": artifact_upload,
         "provider_runtime_accounting": provider_runtime_accounting,
         "artifact_output_uri_required": selected_artifact_output_uri_required,
+        "artifact_output_uri": selected_artifact_output_uri or None,
+        "artifact_output_uri_scheme": selected_artifact_output_uri_scheme,
+        "artifact_output_uri_provider_writable": selected_artifact_output_uri_provider_writable,
+        "artifact_output_write_auth": selected_artifact_output_write_auth,
+        "artifact_output_write_auth_contract_ready": (
+            selected_artifact_output_write_auth_contract_ready
+        ),
         "runtime_preflight_contract": runtime_preflight_contract,
         "runtime_preflight_manifest_path": "worker_runtime_preflight.json",
         "runtime_preflight_status": runtime_preflight.get("status"),
@@ -1616,6 +1952,31 @@ def run_robot_eval_worker(
         artifact_upload["worker_runtime_manifest_included"] = (
             runtime_manifest_upload.get("status") == "completed"
         )
+        provider_runtime_finalizer = _record_provider_runtime_finalizer_proof(
+            job_dir=job_dir,
+            artifact_output_uri=selected_artifact_output_uri,
+            artifact_upload=artifact_upload,
+            finalizer_refresh_upload=finalizer_refresh_upload,
+            runtime_manifest_upload=runtime_manifest_upload,
+            generated_at=generated_at,
+        )
+        remote_cloud_closure = _refresh_remote_cloud_closure_after_worker_runtime(
+            job_dir=job_dir,
+            generated_at=generated_at,
+        )
+        artifact_upload["provider_runtime_finalizer"] = provider_runtime_finalizer
+        artifact_upload["remote_cloud_execution_closure"] = remote_cloud_closure
+        if provider_runtime_finalizer.get("status") != "not_provider_runtime":
+            _copy_worker_runtime_files_to_artifact_output(
+                work_dir=job_dir,
+                artifact_output_uri=selected_artifact_output_uri,
+                relative_paths=[
+                    "gpu_cost_control_ledger.json",
+                    "provider_runtime_finalizer_proof.json",
+                    "remote_cloud_execution_closure_manifest.json",
+                    "job_run_manifest.json",
+                ],
+            )
         runtime_manifest["artifact_upload"] = artifact_upload
         if runtime_manifest_upload.get("status") != "completed":
             runtime_manifest["status"] = "blocked"
@@ -1662,7 +2023,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-cpu-preflight-render", action="store_true")
     parser.add_argument("--timeout-seconds", type=int)
     parser.add_argument("--budget-usd", type=float)
-    parser.add_argument("--artifact-output-uri")
+    parser.add_argument("--artifact-output-uri", default=os.getenv("BLUEPRINT_ARTIFACT_OUTPUT_URI"))
     parser.add_argument("--require-artifact-output-uri", action="store_true")
     parser.add_argument("--allow-missing-artifact-output-uri", action="store_true")
     return parser

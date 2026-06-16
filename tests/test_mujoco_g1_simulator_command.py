@@ -11,6 +11,7 @@ from PIL import Image
 
 from blueprint_pipeline.robot_eval_execution import build_simulator_command_artifacts
 from blueprint_pipeline.mujoco_g1_simulator_command import (
+    _build_digital_twin_fidelity_qa,
     _collision_summary,
     _episode_navigation_spec,
     _matrix_runs,
@@ -512,8 +513,78 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
         "run-b",
         "run-c",
     ]
+    assert payload["successful_task_attempt_count"] == 3
+    assert payload["failed_task_attempt_count"] == 0
+    assert payload["task_success_rate"] == 1.0
+    assert payload["task_success_summary"]["goal_reached_attempt_count"] == 3
     assert payload["attempts"][0]["spawn_pose"] == [-1.0, 0.0, 0.793]
     assert payload["attempts"][0]["target_pose"] == [1.0, 0.0, 0.793]
+    assert payload["attempts"][0]["task_success"] is True
+    assert payload["attempts"][0]["metrics"]["endpoint_clean"] is True
+    assert payload["attempts"][0]["metrics"]["final_target_error_m"] == 0.0
+    assert payload["machine_trace_package_complete"] is True
+    assert payload["robot_team_grade_package_complete"] is False
+    closure_path = Path(payload["artifact_paths"]["batch_closure_manifest"])
+    trace_package_path = Path(payload["artifact_paths"]["batch_trace_package_manifest"])
+    metrics_path = Path(payload["artifact_paths"]["batch_metrics"])
+    failure_labels_path = Path(payload["artifact_paths"]["batch_failure_labels"])
+    visual_media_coverage_path = Path(
+        payload["artifact_paths"]["batch_visual_media_coverage"]
+    )
+    fidelity_qa_path = Path(payload["artifact_paths"]["digital_twin_fidelity_qa"])
+    planner_state_path = Path(payload["artifact_paths"]["batch_planner_state_jsonl"])
+    control_stream_path = Path(payload["artifact_paths"]["batch_control_stream_jsonl"])
+    assert closure_path.is_file()
+    assert trace_package_path.is_file()
+    assert metrics_path.is_file()
+    assert failure_labels_path.is_file()
+    assert visual_media_coverage_path.is_file()
+    assert fidelity_qa_path.is_file()
+    assert planner_state_path.is_file()
+    assert control_stream_path.is_file()
+    closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    trace_package = json.loads(trace_package_path.read_text(encoding="utf-8"))
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    visual_media_coverage = json.loads(
+        visual_media_coverage_path.read_text(encoding="utf-8")
+    )
+    fidelity_qa = json.loads(fidelity_qa_path.read_text(encoding="utf-8"))
+    assert closure["batch_execution_status"] == "completed"
+    assert closure["machine_trace_package_complete"] is True
+    assert closure["robot_team_grade_package_complete"] is False
+    assert closure["scenario_eval_run_coverage_complete"] is True
+    assert closure["metric_coverage_complete"] is True
+    assert closure["failure_label_coverage_complete"] is True
+    assert "visual_video_coverage_not_complete_for_all_runs" in closure[
+        "robot_team_grade_blockers"
+    ]
+    assert closure["digital_twin_fidelity_qa"]["machine_fidelity_audit_complete"] is False
+    assert closure["digital_twin_fidelity_qa"]["robot_team_grade_fidelity_passed"] is False
+    assert "digital_twin_visual_frames_blank_or_missing" in closure["robot_team_grade_blockers"]
+    assert trace_package["attempt_count"] == 3
+    assert trace_package["metric_coverage_complete"] is True
+    assert trace_package["planner_state_record_count"] == 3
+    assert trace_package["control_stream_record_count"] > 0
+    assert trace_package["planner_state_coverage_complete"] is True
+    assert trace_package["control_stream_coverage_complete"] is True
+    assert metrics["attempt_metric_row_count"] == 3
+    assert metrics["metric_coverage_complete"] is True
+    assert "min_clearance_m" in metrics["required_metric_keys"]
+    assert "clearance_threshold_m" in metrics["required_metric_keys"]
+    assert visual_media_coverage["status"] == "incomplete"
+    assert visual_media_coverage["required_scenario_eval_run_count"] == 3
+    assert visual_media_coverage["missing_visual_media_run_count"] == 3
+    assert visual_media_coverage["missing_visual_media_scenario_eval_run_ids"] == [
+        "run-a",
+        "run-b",
+        "run-c",
+    ]
+    assert visual_media_coverage["all_required_runs_have_visual_recording"] is False
+    assert visual_media_coverage["all_required_runs_have_robot_pov_video"] is False
+    assert visual_media_coverage["all_required_runs_have_third_person_video"] is False
+    assert fidelity_qa["machine_fidelity_audit_complete"] is False
+    assert fidelity_qa["robot_team_grade_fidelity_passed"] is False
+    assert fidelity_qa["gates"]["nonblank_visual_evidence"]["passed"] is False
     assert simulator_output.is_file()
 
     artifacts = build_simulator_command_artifacts(
@@ -523,16 +594,58 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
         generated_at="2026-06-14T00:00:00Z",
     )
     trace = artifacts["normalized_attempt_trace"]
+    manifest = artifacts["manifest"]
+    job_dir = tmp_path / "job"
     assert trace["attempt_count"] == 3
     assert trace["required_scenario_eval_run_count"] == 3
     assert trace["covered_scenario_eval_run_count"] == 3
     assert trace["missing_scenario_eval_run_count"] == 0
     assert trace["scenario_eval_run_coverage_complete"] is True
+    assert trace["task_success_summary"]["successful_attempt_count"] == 3
+    assert trace["task_success_rate"] == 1.0
     assert [attempt["scenario_eval_run_id"] for attempt in trace["attempts"]] == [
         "run-a",
         "run-b",
         "run-c",
     ]
+    assert manifest["artifact_paths"]["simulator_command_batch_closure_manifest"] == (
+        "simulator_command_batch_closure_manifest.json"
+    )
+    assert manifest["artifact_paths"]["simulator_command_batch_planner_state_jsonl"] == (
+        "simulator_command_batch_planner_state.jsonl"
+    )
+    assert manifest["artifact_paths"]["simulator_command_batch_control_stream_jsonl"] == (
+        "simulator_command_batch_control_stream.jsonl"
+    )
+    assert manifest["artifact_paths"]["simulator_command_batch_visual_media_coverage"] == (
+        "simulator_command_batch_visual_media_coverage.json"
+    )
+    assert manifest["artifact_paths"]["simulator_command_digital_twin_fidelity_qa"] == (
+        "simulator_command_digital_twin_fidelity_qa.json"
+    )
+    assert manifest["command_batch_trace_job_artifacts_copied"] is True
+    assert (job_dir / "simulator_command_batch_closure_manifest.json").is_file()
+    assert (job_dir / "simulator_command_batch_trace_package_manifest.json").is_file()
+    assert (job_dir / "simulator_command_batch_attempt_trace.jsonl").is_file()
+    assert (job_dir / "simulator_command_batch_contact_stream.jsonl").is_file()
+    assert (job_dir / "simulator_command_batch_planner_state.jsonl").is_file()
+    assert (job_dir / "simulator_command_batch_control_stream.jsonl").is_file()
+    assert (job_dir / "simulator_command_batch_visual_media_coverage.json").is_file()
+    assert (job_dir / "simulator_command_digital_twin_fidelity_qa.json").is_file()
+    job_trace_package = json.loads(
+        (job_dir / "simulator_command_batch_trace_package_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert job_trace_package["artifact_paths"]["planner_state_jsonl"] == (
+        "simulator_command_batch_planner_state.jsonl"
+    )
+    assert job_trace_package["artifact_paths"]["control_stream_jsonl"] == (
+        "simulator_command_batch_control_stream.jsonl"
+    )
+    assert job_trace_package["source_artifact_paths"]["planner_state_jsonl"] == str(
+        planner_state_path
+    )
 
 
 def test_mujoco_g1_command_stops_before_fake_scene_collision(
@@ -607,10 +720,31 @@ def test_mujoco_g1_command_stops_before_fake_scene_collision(
     assert payload["robot_scene_contact_event_count"] == 0
     assert payload["collision_response_event_count"] > 0
     assert payload["collision_summary"]["rejected_scene_collision_probe_count"] > 0
-    assert attempt["status"] == "completed_collision_governed"
-    assert attempt["success"] is True
+    assert attempt["status"] == "failed_task_criteria"
+    assert attempt["success"] is False
+    assert attempt["task_success"] is False
+    assert "failure_target_not_reached" in attempt["failure_mode_ids"]
+    assert "failure_endpoint_not_clean" in attempt["failure_mode_ids"]
+    assert "failure_clearance_near_miss" in attempt["failure_mode_ids"]
     assert attempt["metrics"]["robot_scene_contact_event_count"] == 0
     assert attempt["metrics"]["collision_response_event_count"] > 0
+    assert attempt["metrics"]["near_miss_event_count"] > 0
+    assert attempt["metrics"]["min_clearance_m"] == 0.0
+    assert attempt["metrics"]["clearance_threshold_m"] == 0.15
+    assert attempt["metrics"]["clearance_threshold_violation"] is True
+    assert attempt["metrics"]["endpoint_clean"] is False
+    assert attempt["metrics"]["goal_reached"] is False
+    assert attempt["metrics"]["final_target_error_m"] > 0.25
+    assert payload["task_success_summary"]["failed_attempt_count"] == 1
+    assert payload["task_success_summary"]["near_miss_attempt_count"] == 1
+    assert payload["task_success_summary"]["near_miss_event_count"] > 0
+    assert payload["task_success_summary"]["min_clearance_m"] == 0.0
+    assert payload["task_success_summary"]["failure_mode_counts"][
+        "failure_target_not_reached"
+    ] == 1
+    assert payload["task_success_summary"]["failure_mode_counts"][
+        "failure_clearance_near_miss"
+    ] == 1
     assert any(
         action["policy_action"] in {"stopped_by_collision_probe", "redirected_by_collision_probe"}
         for action in actions
@@ -628,6 +762,202 @@ def test_proxy_only_collision_summary_does_not_validate_visible_scene_collision(
     assert summary["visible_scene_collision_alignment_validated"] is False
     assert summary["collision_dynamics_validated"] is False
     assert summary["physics_controlled_preview_proven"] is False
+
+
+def test_digital_twin_fidelity_qa_blocks_proxy_only_visual_physics_parity() -> None:
+    collision_summary = _collision_summary([], collision_proxy_count=3)
+    mesh_info = {
+        "source_glb": "scene.glb",
+        "converted_obj": "scene.obj",
+        "vertices": 12,
+        "faces": 8,
+        "bounds": [[-1.0, -1.0, 0.0], [1.0, 1.0, 1.5]],
+        "extents": [2.0, 2.0, 1.5],
+        "visual_asset_summary": {
+            "materials_count": 1,
+            "textures_count": 0,
+            "images_count": 0,
+            "has_embedded_or_referenced_image_textures": False,
+        },
+        "obj_vertex_color_summary": {
+            "has_vertex_rgb": True,
+            "vertex_rgb_fraction": 1.0,
+        },
+        "collision_proxy_summary": {
+            "source_component_count": 3,
+            "proxy_count": 3,
+            "max_proxy_count": 160,
+            "skipped": {},
+        },
+    }
+    visual_artifacts = {
+        "texture_material_evidence": {
+            "status": "materialized_vertex_color_scene_evidence_present"
+        },
+        "blank_scene_checks": {"status": "not_applicable"},
+    }
+
+    qa = _build_digital_twin_fidelity_qa(
+        generated_at="2026-06-14T00:00:00Z",
+        mesh_info=mesh_info,
+        collision_summary=collision_summary,
+        visual_artifacts=visual_artifacts,
+    )
+
+    assert qa["machine_fidelity_audit_complete"] is False
+    assert qa["robot_team_grade_fidelity_passed"] is False
+    assert qa["gates"]["object_semantics_available"]["passed"] is False
+    assert qa["gates"]["visible_objects_have_physics_coverage"]["passed"] is False
+    assert qa["gates"]["visual_object_has_matching_physics"]["passed"] is False
+    assert "digital_twin_object_semantics_missing" in qa["blockers"]
+    assert "visible_objects_without_physics_coverage" in qa["blockers"]
+    assert "visual_collision_alignment_not_validated" in qa["blockers"]
+
+
+def test_digital_twin_fidelity_qa_passes_component_mapped_proxy_physics_coverage() -> None:
+    collision_summary = _collision_summary([], collision_proxy_count=1)
+    mesh_info = {
+        "source_glb": "scene.glb",
+        "converted_obj": "scene.obj",
+        "vertices": 12,
+        "faces": 8,
+        "bounds": [[-1.0, -1.0, 0.0], [1.0, 1.0, 1.5]],
+        "extents": [2.0, 2.0, 1.5],
+        "visual_asset_summary": {
+            "materials_count": 1,
+            "textures_count": 0,
+            "images_count": 0,
+            "has_embedded_or_referenced_image_textures": False,
+        },
+        "visual_object_semantics_summary": {
+            "status": "available",
+            "visible_object_count": 1,
+            "named_visible_object_count": 1,
+            "visible_objects": [
+                {
+                    "object_id": "visible_object_0000_test_counter",
+                    "source_component_index": 0,
+                    "name": "test_counter",
+                    "bounds": [[-0.3, -0.2, 0.0], [0.3, 0.2, 0.8]],
+                    "extents": [0.6, 0.4, 0.8],
+                }
+            ],
+        },
+        "obj_vertex_color_summary": {
+            "has_vertex_rgb": True,
+            "vertex_rgb_fraction": 1.0,
+        },
+        "collision_proxy_summary": {
+            "source_component_count": 1,
+            "proxy_count": 1,
+            "max_proxy_count": 160,
+            "skipped": {},
+            "component_coverage": {
+                "covered_source_component_indexes": [0],
+                "covered_source_component_count": 1,
+                "reference_floor_covered_source_component_indexes": [],
+                "intentionally_excluded_source_component_indexes": [],
+                "truncated_source_component_indexes": [],
+                "truncated_source_component_count": 0,
+                "uncovered_source_component_indexes": [],
+                "uncovered_source_component_count": 0,
+                "component_proxy_coverage_complete": True,
+            },
+        },
+    }
+    visual_artifacts = {
+        "texture_material_evidence": {
+            "status": "materialized_vertex_color_scene_evidence_present"
+        },
+        "blank_scene_checks": {"status": "not_applicable"},
+    }
+
+    qa = _build_digital_twin_fidelity_qa(
+        generated_at="2026-06-14T00:00:00Z",
+        mesh_info=mesh_info,
+        collision_summary=collision_summary,
+        visual_artifacts=visual_artifacts,
+    )
+
+    assert qa["machine_fidelity_audit_complete"] is True
+    assert qa["robot_team_grade_fidelity_passed"] is True
+    assert qa["gates"]["object_semantics_available"]["passed"] is True
+    assert qa["gates"]["visible_objects_have_physics_coverage"]["passed"] is True
+    assert qa["gates"]["visual_object_has_matching_physics"]["passed"] is True
+    assert qa["visual_collision_parity"]["visible_scene_collision_alignment_validated"] is False
+    assert qa["blockers"] == []
+
+
+def test_digital_twin_fidelity_qa_blocks_uncovered_visible_object_component() -> None:
+    collision_summary = _collision_summary([], collision_proxy_count=1)
+    mesh_info = {
+        "source_glb": "scene.glb",
+        "converted_obj": "scene.obj",
+        "vertices": 12,
+        "faces": 8,
+        "bounds": [[-1.0, -1.0, 0.0], [1.0, 1.0, 1.5]],
+        "extents": [2.0, 2.0, 1.5],
+        "visual_asset_summary": {"materials_count": 1},
+        "visual_object_semantics_summary": {
+            "status": "available",
+            "visible_object_count": 2,
+            "named_visible_object_count": 2,
+            "visible_objects": [
+                {
+                    "object_id": "visible_object_0000_test_counter",
+                    "source_component_index": 0,
+                    "name": "test_counter",
+                },
+                {
+                    "object_id": "visible_object_0001_test_shelf",
+                    "source_component_index": 1,
+                    "name": "test_shelf",
+                },
+            ],
+        },
+        "obj_vertex_color_summary": {
+            "has_vertex_rgb": True,
+            "vertex_rgb_fraction": 1.0,
+        },
+        "collision_proxy_summary": {
+            "source_component_count": 2,
+            "proxy_count": 1,
+            "max_proxy_count": 160,
+            "skipped": {},
+            "component_coverage": {
+                "covered_source_component_indexes": [0],
+                "covered_source_component_count": 1,
+                "reference_floor_covered_source_component_indexes": [],
+                "intentionally_excluded_source_component_indexes": [],
+                "truncated_source_component_indexes": [],
+                "truncated_source_component_count": 0,
+                "uncovered_source_component_indexes": [1],
+                "uncovered_source_component_count": 1,
+                "component_proxy_coverage_complete": False,
+            },
+        },
+    }
+    visual_artifacts = {
+        "texture_material_evidence": {
+            "status": "materialized_vertex_color_scene_evidence_present"
+        },
+        "blank_scene_checks": {"status": "not_applicable"},
+    }
+
+    qa = _build_digital_twin_fidelity_qa(
+        generated_at="2026-06-14T00:00:00Z",
+        mesh_info=mesh_info,
+        collision_summary=collision_summary,
+        visual_artifacts=visual_artifacts,
+    )
+
+    coverage = qa["gates"]["visible_objects_have_physics_coverage"]["evidence"]
+    assert qa["machine_fidelity_audit_complete"] is False
+    assert qa["robot_team_grade_fidelity_passed"] is False
+    assert qa["gates"]["object_semantics_available"]["passed"] is True
+    assert qa["gates"]["visible_objects_have_physics_coverage"]["passed"] is False
+    assert "visible_object_0001_test_shelf" in coverage["missing_physics_object_ids"]
+    assert "visible_objects_without_physics_coverage" in qa["blockers"]
 
 
 def test_mujoco_g1_command_covers_500_matrix_rows_with_fake_backend(
@@ -683,6 +1013,40 @@ def test_mujoco_g1_command_covers_500_matrix_rows_with_fake_backend(
     assert payload["rendered_episode_count"] == 0
     assert payload["ai_route_selection_used_at_runtime"] is False
     assert payload["deterministic_per_episode_spawn_target_seed_handling"] is True
+    assert payload["task_success_summary"]["attempt_count"] == 500
+    assert payload["task_success_summary"]["failed_attempt_count"] == 500
+    assert payload["task_success_summary"]["failure_mode_counts"][
+        "failure_target_not_reached"
+    ] == 500
+    assert payload["machine_trace_package_complete"] is True
+    assert payload["robot_team_grade_package_complete"] is False
+    closure = json.loads(
+        Path(payload["artifact_paths"]["batch_closure_manifest"]).read_text(encoding="utf-8")
+    )
+    assert closure["attempt_count"] == 500
+    assert closure["required_scenario_eval_run_count"] == 500
+    assert closure["covered_scenario_eval_run_count"] == 500
+    assert closure["missing_scenario_eval_run_count"] == 0
+    assert closure["machine_trace_package_complete"] is True
+    assert closure["robot_team_grade_package_complete"] is False
+    assert closure["visual_coverage"]["all_required_runs_have_visual_recording"] is False
+    visual_media_coverage = json.loads(
+        Path(payload["artifact_paths"]["batch_visual_media_coverage"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert visual_media_coverage["status"] == "incomplete"
+    assert visual_media_coverage["required_scenario_eval_run_count"] == 500
+    assert visual_media_coverage["missing_visual_media_run_count"] == 500
+    assert visual_media_coverage["missing_visual_media_scenario_eval_run_ids"][0] == (
+        "run-0001"
+    )
+    assert visual_media_coverage["missing_visual_media_scenario_eval_run_ids"][-1] == (
+        "run-0500"
+    )
+    assert visual_media_coverage["all_required_runs_have_visual_recording"] is False
+    assert visual_media_coverage["all_required_runs_have_robot_pov_video"] is False
+    assert visual_media_coverage["all_required_runs_have_third_person_video"] is False
 
 
 def test_simulator_command_artifacts_block_incomplete_required_run_coverage(
@@ -717,3 +1081,98 @@ def test_simulator_command_artifacts_block_incomplete_required_run_coverage(
     assert trace["missing_scenario_eval_run_ids"] == ["run-b"]
     assert trace["scenario_eval_run_coverage_complete"] is False
     assert manifest["status"] == "blocked_incomplete_scenario_eval_run_coverage"
+
+
+def test_simulator_command_artifacts_normalize_task_metrics_and_failure_labels(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "required_scenario_eval_run_ids": ["run-a", "run-b"],
+        "attempts": [
+            {
+                "attempt_id": "attempt-run-a",
+                "scenario_eval_run_id": "run-a",
+                "scenario_id": "scenario-a",
+                "task_id": "walk_to_target",
+                "status": "passed_task_criteria",
+                "success": True,
+                "task_success": True,
+                "deterministic_seed": 101,
+                "spawn_pose": [0.0, 0.0, 0.793],
+                "target_pose": [1.0, 0.0, 0.793],
+                "final_pose": [1.0, 0.0, 0.793],
+                "metrics": {
+                    "cycle_time_seconds": 1.0,
+                    "endpoint_clean": True,
+                    "goal_reached": True,
+                },
+                "task_outcome": {
+                    "task_success": True,
+                    "task_status": "passed",
+                    "endpoint_clean": True,
+                    "goal_reached": True,
+                    "final_target_error_m": 0.0,
+                    "max_path_deviation_m": 0.0,
+                },
+            },
+            {
+                "attempt_id": "attempt-run-b",
+                "scenario_eval_run_id": "run-b",
+                "scenario_id": "scenario-b",
+                "task_id": "walk_to_target",
+                "status": "failed_task_criteria",
+                "success": False,
+                "task_success": False,
+                "failure_mode_ids": [
+                    "failure_target_not_reached",
+                    "failure_endpoint_not_clean",
+                ],
+                "failure_reason": "failure_target_not_reached,failure_endpoint_not_clean",
+                "deterministic_seed": 202,
+                "spawn_pose": [0.0, 0.0, 0.793],
+                "target_pose": [1.0, 0.0, 0.793],
+                "final_pose": [0.2, 0.0, 0.793],
+                "metrics": {
+                    "cycle_time_seconds": 1.0,
+                    "endpoint_clean": False,
+                    "goal_reached": False,
+                },
+                "task_outcome": {
+                    "task_success": False,
+                    "task_status": "failed_task_criteria",
+                    "endpoint_clean": False,
+                    "goal_reached": False,
+                    "final_target_error_m": 0.8,
+                    "max_path_deviation_m": 0.4,
+                },
+            },
+        ],
+    }
+
+    artifacts = build_simulator_command_artifacts(
+        job_dir=tmp_path / "job",
+        simulator="mujoco",
+        simulator_output=payload,
+        generated_at="2026-06-14T00:00:00Z",
+    )
+
+    trace = artifacts["normalized_attempt_trace"]
+    labels = artifacts["failure_labels"]
+    prediction = artifacts["prediction_outcome_ledger"]
+    manifest = artifacts["manifest"]
+
+    assert trace["scenario_eval_run_coverage_complete"] is True
+    assert trace["task_success_summary"]["successful_attempt_count"] == 1
+    assert trace["task_success_summary"]["failed_attempt_count"] == 1
+    assert trace["task_success_summary"]["failed_scenario_eval_run_ids"] == ["run-b"]
+    assert trace["task_success_summary"]["failure_mode_counts"] == {
+        "failure_endpoint_not_clean": 1,
+        "failure_target_not_reached": 1,
+    }
+    assert trace["attempts"][1]["task_status"] == "failed_task_criteria"
+    assert trace["attempts"][1]["task_outcome"]["final_target_error_m"] == 0.8
+    assert labels["label_count"] == 1
+    assert labels["labels"][0]["task_outcome"]["endpoint_clean"] is False
+    assert prediction["records"][1]["predicted_task_success"] is False
+    assert prediction["records"][1]["predicted_final_target_error_m"] == 0.8
+    assert manifest["task_success_rate"] == 0.5

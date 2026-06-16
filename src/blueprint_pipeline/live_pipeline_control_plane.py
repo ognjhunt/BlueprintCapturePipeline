@@ -65,25 +65,12 @@ ARENA_RESULT_ARTIFACT_NAMES = (
 
 LIVE_CLOSURE_EVIDENCE_ARTIFACT_NAMES = (
     "live_eval_closure_evidence.json",
-    "owner_robot_readiness_evidence.json",
-)
-
-DEPLOYMENT_OUTCOME_ARTIFACT_NAMES = (
-    "deployment_outcome.json",
-    "deployment_outcome_manifest.json",
-    "actual_outcome_manifest.json",
+    "package_closure_evidence.json",
 )
 
 POLICY_PACKAGE_ARTIFACT_NAMES = (
     "policy_package.json",
     "robot_team_policy_package.v1",
-)
-
-REAL_ROBOT_POV_ARTIFACT_NAMES = (
-    "real_robot_pov_manifest.json",
-    "robot camera video URI or local evidence ref per scenario eval run",
-    "action log URI or local evidence ref per scenario eval run",
-    "timestamp alignment and owner/operator attestation",
 )
 
 POLICY_MODALITY_ORDER = (
@@ -303,7 +290,8 @@ def _control_plane_next_inputs_needed(
     real_robot_pov_ready: bool = False,
     live_closure_evidence_ready: bool = False,
     deployment_outcomes_ready: bool = False,
-    deployment_outcomes_owner_evidence_ready: bool = False,
+    deployment_prediction_match_keys_ready: bool = False,
+    deployment_owner_evidence_ready: bool = False,
     policy_package_ready: bool = False,
     followup_request_queues: Mapping[str, Any] | None = None,
 ) -> List[str]:
@@ -328,29 +316,42 @@ def _control_plane_next_inputs_needed(
         )
     if not real_robot_pov_ready:
         next_inputs.append(
-            "Provide real robot POV/action evidence aligned to scenario eval runs before "
-            "claiming live robot POV proof."
+            "Provide real robot POV evidence with exact run/variation keys, camera video, "
+            "action logs, timestamp alignment, and owner evidence."
         )
     if not live_closure_evidence_ready:
         next_inputs.append(
-            "Provide job-specific live closure evidence for review acceptance, signed delivery, "
-            "rights/privacy, and safety/contact/physics readiness."
+            "Provide live closure evidence for the job, including package delivery/access, "
+            "rights/privacy, and WebApp lineage."
         )
     if not deployment_outcomes_ready:
         next_inputs.append(
-            "Provide job-specific real-world deployment outcome records before "
-            "claiming predicted-vs-actual validation."
+            "Provide deployment outcome records with task/scenario IDs and actual result "
+            "signals for real-world validation."
         )
-    elif not deployment_outcomes_owner_evidence_ready:
+    elif not deployment_prediction_match_keys_ready:
         next_inputs.append(
-            "Add owner evidence refs, owner proof URIs, or owner/operator attestations "
-            "to every staged real-world deployment outcome before claiming outcome proof."
+            "Provide deployment outcome exact prediction join keys: scenario_eval_run_id and "
+            "scenario_variation_instance_id."
+        )
+    elif not deployment_owner_evidence_ready:
+        next_inputs.append(
+            "Provide owner evidence for each deployment outcome record before claiming "
+            "real-world validation closure."
         )
     if not policy_package_ready:
         next_inputs.append(
             "Provide a robot-team policy package through one supported modality before "
             "running policy execution."
         )
+    followup_queues = _as_mapping(followup_request_queues)
+    if followup_queues.get("ready"):
+        for queue in followup_queues.get("queues") or []:
+            if not isinstance(queue, Mapping):
+                continue
+            command = _string(queue.get("safe_processing_command"))
+            if command:
+                next_inputs.append(command)
     if not _setup_section_ready(setup_manifest, "rollout_vision_labeling"):
         next_inputs.append(
             "Provide a vision-labeling command and gate before model labels can be generated."
@@ -368,17 +369,6 @@ def _control_plane_next_inputs_needed(
             "Configure gated Agents SDK and Codex SDK or host-OAuth operator credentials before "
             "running live repo operators."
         )
-    queues = _as_mapping(followup_request_queues)
-    if queues.get("status") == "ready_for_inbox_processing":
-        for queue in queues.get("queues") or []:
-            if not isinstance(queue, Mapping):
-                continue
-            command = _string(queue.get("safe_processing_command"))
-            if command:
-                next_inputs.append(
-                    "Process real-world validation follow-up draft requests: "
-                    f"{command}"
-                )
     return next_inputs
 
 
@@ -482,23 +472,6 @@ def _request_policy_package_audit(request: Mapping[str, Any]) -> Dict[str, Any]:
         "ready_modalities": ready,
         "missing_inputs": missing_by_modality,
         "ready": bool(ready),
-    }
-
-
-def _real_robot_pov_status(capture_root: Path | None) -> Dict[str, Any]:
-    path = (
-        capture_root / "pipeline" / "robot_eval_inputs" / "real_robot_pov_manifest.json"
-        if capture_root
-        else None
-    )
-    return {
-        "ready": bool(path and path.is_file()),
-        "configured_path": str(path) if path else None,
-        "required_artifacts": list(REAL_ROBOT_POV_ARTIFACT_NAMES),
-        "proof_boundary": (
-            "Real robot POV evidence is only proven after job execution ingests this manifest "
-            "and covers every scenario eval run."
-        ),
     }
 
 
@@ -1031,8 +1004,8 @@ BLOCKER_PACKET_TEMPLATES: Dict[str, Dict[str, str]] = {
     "live_robot_eval_closure_evidence": {
         "owner": "Blueprint delivery/review operator",
         "required_input": (
-            "Job-specific live closure evidence covering review acceptance, signed delivery, "
-            "rights/privacy, and safety/contact/physics readiness where applicable."
+            "Job-specific package closure evidence covering delivery/access, rights/privacy, "
+            "and WebApp lineage where applicable."
         ),
         "safe_proof_command": (
             "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
@@ -1041,109 +1014,15 @@ BLOCKER_PACKET_TEMPLATES: Dict[str, Dict[str, str]] = {
         ),
         "retry_condition": (
             "Re-run after the staged closure file job_id matches a robot-eval job and includes "
-            "local evidence refs or owner proof URIs for each claimed live gate."
+            "local evidence refs or owner proof URIs for package closure claims."
         ),
         "resume_target": (
             "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
             "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
         ),
         "disallowed_workaround": (
-            "Do not upgrade review, delivery, rights, safety, contact, physics, or readiness "
-            "claims from local package generation alone."
-        ),
-    },
-    "real_robot_pov_evidence": {
-        "owner": "Robot-team pilot owner",
-        "required_input": (
-            "A real robot POV manifest with robot camera video/action-log evidence aligned to "
-            "scenario_eval_run_id and scenario_variation_instance_id coverage."
-        ),
-        "safe_proof_command": (
-            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
-            "--real-robot-pov <real_robot_pov_manifest.json> --stage-real-robot-pov "
-            "--overwrite"
-        ),
-        "retry_condition": (
-            "Re-run after the intake audit stages the manifest and the next robot-eval job ingests "
-            "it into robot_pov_observation_manifest.json."
-        ),
-        "resume_target": (
-            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
-            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
-        ),
-        "disallowed_workaround": (
-            "Do not treat generated POV storyboards, simulator camera views, or policy traces "
-            "as real robot POV evidence."
-        ),
-    },
-    "real_world_deployment_outcomes": {
-        "owner": "Robot-team pilot owner",
-        "required_input": (
-            "Job-specific real-world deployment outcome records with actual result signals, "
-            "scenario/task context, and owner evidence references."
-        ),
-        "safe_proof_command": (
-            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
-            "--deployment-outcomes <deployment_outcomes.json> --stage-deployment-outcomes "
-            "--overwrite"
-        ),
-        "retry_condition": (
-            "Re-run after the pilot outcome file contains at least one outcome row for the job "
-            "with actual_success, actual_status, or failure signals."
-        ),
-        "resume_target": (
-            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
-            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
-        ),
-        "disallowed_workaround": (
-            "Do not substitute predicted outcomes, simulator attempts, or task/scenario cards "
-            "for real deployment actuals."
-        ),
-    },
-    "predicted_vs_actual_exact_match_keys": {
-        "owner": "Robot-team pilot owner",
-        "required_input": (
-            "Exact scenario_eval_run_id and scenario_variation_instance_id values on every "
-            "deployment outcome row that should calibrate predictions."
-        ),
-        "safe_proof_command": (
-            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
-            "--deployment-outcomes <deployment_outcomes.json> --stage-deployment-outcomes "
-            "--overwrite"
-        ),
-        "retry_condition": (
-            "Re-run after every deployment outcome row has exact join keys from the job's "
-            "scenario_eval_matrix.json."
-        ),
-        "resume_target": (
-            "blueprint-audit-live-pipeline-proof-boundary --manifest-path <control-plane-manifest>"
-        ),
-        "disallowed_workaround": (
-            "Do not infer exact predicted-vs-actual matches from task_id or scenario_id alone."
-        ),
-    },
-    "real_world_deployment_outcome_owner_evidence": {
-        "owner": "Robot-team pilot owner",
-        "required_input": (
-            "Owner evidence refs, owner proof URIs, or operator attestations for every staged "
-            "real-world outcome row."
-        ),
-        "safe_proof_command": (
-            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
-            "--deployment-outcomes <deployment_outcomes.json> --stage-deployment-outcomes "
-            "--overwrite"
-        ),
-        "retry_condition": (
-            "Re-run after every deployment outcome row includes owner evidence that the closure "
-            "audit can inspect."
-        ),
-        "resume_target": (
-            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
-            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
-        ),
-        "disallowed_workaround": (
-            "Do not mark real_world_outcome_proven from aggregate booleans or self-reported "
-            "summary text without row-level owner evidence."
+            "Do not upgrade package access, rights, or WebApp lineage claims from local "
+            "package generation alone."
         ),
     },
     "robot_team_policy_package": {
@@ -1168,6 +1047,96 @@ BLOCKER_PACKET_TEMPLATES: Dict[str, Dict[str, str]] = {
         "disallowed_workaround": (
             "Do not use placeholder policy endpoints, missing Docker digests, or unsupported "
             "modalities to satisfy policy execution input readiness."
+        ),
+    },
+    "real_robot_pov_evidence": {
+        "owner": "Robot team",
+        "required_input": (
+            "Real robot POV evidence for exact scenario run/variation keys, including camera "
+            "video, action logs, timestamp alignment, and owner evidence."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--real-robot-pov <real_robot_pov_manifest.json> --stage-real-robot-pov --overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after real_robot_pov_manifest.v1 contains exact run/variation keys and "
+            "camera/action owner evidence."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not use generated simulator POV, storyboards, or local support media as real "
+            "robot POV evidence."
+        ),
+    },
+    "real_world_deployment_outcomes": {
+        "owner": "Robot team deployment operator",
+        "required_input": (
+            "Deployment outcome records with task/scenario IDs and actual result signals from "
+            "a real robot-team deployment or pilot."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--deployment-outcomes <deployment_outcome_manifest.json> "
+            "--stage-deployment-outcomes --overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after deployment_outcome_manifest.v1 records exist for the job."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not infer actual deployment outcomes from simulator predictions or local "
+            "evaluation rows."
+        ),
+    },
+    "predicted_vs_actual_exact_match_keys": {
+        "owner": "Robot team deployment operator",
+        "required_input": (
+            "Exact deployment outcome join keys for predicted-vs-actual calibration."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--deployment-outcomes <deployment_outcome_manifest.json> "
+            "--stage-deployment-outcomes --overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after every deployment outcome record includes scenario_eval_run_id and "
+            "scenario_variation_instance_id."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not calibrate predicted-vs-actual outcomes from task/scenario names alone."
+        ),
+    },
+    "real_world_deployment_outcome_owner_evidence": {
+        "owner": "Robot team deployment operator",
+        "required_input": (
+            "Owner evidence references or attestations for each deployment outcome record."
+        ),
+        "safe_proof_command": (
+            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
+            "--deployment-outcomes <deployment_outcome_manifest.json> "
+            "--stage-deployment-outcomes --overwrite"
+        ),
+        "retry_condition": (
+            "Re-run after every deployment outcome has evidence_refs, owner_evidence_refs, "
+            "owner_evidence_uri, or an operator attestation."
+        ),
+        "resume_target": (
+            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
+            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+        ),
+        "disallowed_workaround": (
+            "Do not treat un-attested result rows as owner deployment evidence."
         ),
     },
     "rollout_vision_labeling": {
@@ -1341,24 +1310,16 @@ def _build_external_input_packet(
         "webapp_upstream_truth",
     ) or bool(webapp_inbox_truth.get("ready"))
     live_closure_evidence_ready = bool(staged_inputs.get("live_closure_evidence_ready"))
+    real_robot_pov_ready = bool(staged_inputs.get("real_robot_pov_ready"))
     deployment_outcomes_ready = bool(staged_inputs.get("deployment_outcomes_ready"))
-    deployment_outcomes_records_ready = bool(
-        staged_inputs.get("deployment_outcomes_records_ready_for_calibration")
+    deployment_prediction_match_keys_ready = bool(
+        staged_inputs.get("deployment_outcomes_prediction_match_keys_ready")
     )
-    deployment_outcomes_owner_evidence_ready = bool(
+    deployment_owner_evidence_ready = bool(
         staged_inputs.get("deployment_outcomes_owner_evidence_ready")
     )
     policy_package_ready = bool(staged_inputs.get("policy_package_ready")) or bool(
         webapp_inbox_truth.get("accepted_policy_package_request_count")
-    )
-    real_robot_pov = _real_robot_pov_status(capture_root)
-    real_robot_pov_path = (
-        _string(staged_inputs.get("real_robot_pov_path"))
-        or _string(real_robot_pov.get("configured_path"))
-        or None
-    )
-    real_robot_pov_ready = bool(real_robot_pov.get("ready")) or bool(
-        staged_inputs.get("real_robot_pov_ready")
     )
     required_inputs: List[Dict[str, Any]] = []
     if not webapp_truth_ready:
@@ -1420,30 +1381,45 @@ def _build_external_input_packet(
         required_inputs.append(
             {
                 "id": "real_robot_pov_evidence",
-                "title": "Real robot POV and action-log evidence",
-                "status": "ready" if real_robot_pov_ready else "not_staged",
+                "title": "Real robot POV and action evidence",
+                "status": _string(staged_inputs.get("status")) or "not_staged",
                 "accepted_paths": [
                     {
-                        "kind": "capture_root_real_robot_pov_manifest",
+                        "kind": "global_real_robot_pov_manifest",
                         "target": (
                             "<capture_root>/pipeline/robot_eval_inputs/"
                             "real_robot_pov_manifest.json"
                         ),
-                        "configured_path": real_robot_pov_path,
-                        "required_artifacts": list(REAL_ROBOT_POV_ARTIFACT_NAMES),
+                        "required_artifacts": ["real_robot_pov_manifest.v1"],
                     }
                 ],
                 "required_record_fields": [
+                    "task_id",
+                    "scenario_id",
                     "scenario_eval_run_id",
                     "scenario_variation_instance_id",
                     "robot_camera_video_uri",
                     "action_log_uri",
                     "timestamp_alignment",
-                    "operator_attestation or owner_evidence_refs",
+                    "owner_evidence_refs",
                 ],
+                "staged_inputs": {
+                    "status": staged_inputs.get("status"),
+                    "real_robot_pov_path": staged_inputs.get("real_robot_pov_path"),
+                    "real_robot_pov_record_count": staged_inputs.get(
+                        "real_robot_pov_record_count"
+                    ),
+                    "missing_exact_key_record_ids": staged_inputs.get(
+                        "real_robot_pov_missing_exact_key_record_ids"
+                    ),
+                    "missing_evidence_record_ids": staged_inputs.get(
+                        "real_robot_pov_missing_evidence_record_ids"
+                    ),
+                    "blockers": staged_inputs.get("blockers", []),
+                },
                 "proof_boundary": (
-                    "Generated POV support does not satisfy this input; live POV proof requires "
-                    "real robot camera/action evidence ingested by the job."
+                    "Generated robot POV or simulator camera media does not satisfy real robot "
+                    "POV evidence; this input must come from owner robot camera/action logs."
                 ),
             }
         )
@@ -1451,7 +1427,7 @@ def _build_external_input_packet(
         required_inputs.append(
             {
                 "id": "live_robot_eval_closure_evidence",
-                "title": "Job-specific live robot-eval closure evidence",
+                "title": "Job-specific package closure evidence",
                 "status": _string(staged_inputs.get("status")) or "not_staged",
                 "accepted_paths": [
                     {
@@ -1463,12 +1439,9 @@ def _build_external_input_packet(
                         "required_artifacts": list(LIVE_CLOSURE_EVIDENCE_ARTIFACT_NAMES),
                     }
                 ],
-                "required_sections": [
-                    "review_acceptance",
-                    "delivery",
-                    "safety_contact_physics",
-                ],
+                "required_sections": [],
                 "optional_sections": [
+                    "delivery_access",
                     "rights_privacy",
                     "webapp_upstream",
                 ],
@@ -1492,104 +1465,88 @@ def _build_external_input_packet(
         required_inputs.append(
             {
                 "id": "real_world_deployment_outcomes",
-                "title": "Job-specific real-world deployment outcomes",
+                "title": "Real-world deployment outcome records",
                 "status": _string(staged_inputs.get("status")) or "not_staged",
                 "accepted_paths": [
                     {
-                        "kind": "job_specific_deployment_outcome",
+                        "kind": "job_specific_deployment_outcome_inbox",
                         "target": (
                             "<capture_root>/pipeline/robot_eval_inputs/<job_id>/"
                             "deployment_outcomes/inbox/*.json"
                         ),
-                        "required_artifacts": list(DEPLOYMENT_OUTCOME_ARTIFACT_NAMES),
+                        "required_artifacts": ["deployment_outcome_manifest.v1"],
                     }
                 ],
                 "required_record_fields": [
                     "task_id",
                     "scenario_id",
-                    "actual_success or actual_status or failures",
+                    "actual_success or actual_result",
                 ],
                 "staged_inputs": {
                     "status": staged_inputs.get("status"),
-                    "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
-                    "deployment_outcomes_job_id": staged_inputs.get("deployment_outcomes_job_id"),
+                    "deployment_outcomes_path": staged_inputs.get(
+                        "deployment_outcomes_path"
+                    ),
                     "deployment_outcome_record_count": staged_inputs.get(
                         "deployment_outcome_record_count"
-                    ),
-                    "deployment_outcome_owner_evidence_record_count": staged_inputs.get(
-                        "deployment_outcome_owner_evidence_record_count"
-                    ),
-                    "deployment_outcome_missing_owner_evidence_record_ids": staged_inputs.get(
-                        "deployment_outcome_missing_owner_evidence_record_ids"
                     ),
                     "blockers": staged_inputs.get("blockers", []),
                 },
                 "proof_boundary": (
-                    "Deployment outcomes are real-world validation inputs only; the job must pair "
-                    "them with predictions before sim-vs-real calibration is proven."
+                    "Deployment outcomes must be owner-supplied actual result records; "
+                    "simulator predictions cannot satisfy this input."
                 ),
             }
         )
-    elif not deployment_outcomes_records_ready:
+    elif not deployment_prediction_match_keys_ready:
         required_inputs.append(
             {
                 "id": "predicted_vs_actual_exact_match_keys",
-                "title": "Exact prediction join keys for staged deployment outcomes",
+                "title": "Exact prediction-to-actual join keys",
                 "status": _string(staged_inputs.get("status")) or "not_staged",
                 "required_record_fields": [
                     "scenario_eval_run_id",
                     "scenario_variation_instance_id",
                 ],
+                "current_blockers": ["deployment_outcomes_missing_exact_prediction_join_keys"],
                 "staged_inputs": {
-                    "status": staged_inputs.get("status"),
-                    "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
-                    "deployment_outcomes_job_id": staged_inputs.get("deployment_outcomes_job_id"),
-                    "deployment_outcome_record_count": staged_inputs.get(
-                        "deployment_outcome_record_count"
+                    "deployment_outcomes_path": staged_inputs.get(
+                        "deployment_outcomes_path"
                     ),
-                    "deployment_outcome_prediction_match_key_record_count": staged_inputs.get(
-                        "deployment_outcome_prediction_match_key_record_count"
-                    ),
-                    "deployment_outcome_missing_prediction_match_key_record_ids": (
-                        staged_inputs.get(
-                            "deployment_outcome_missing_prediction_match_key_record_ids"
-                        )
+                    "missing_prediction_match_key_record_ids": staged_inputs.get(
+                        "deployment_outcome_missing_prediction_match_key_record_ids"
                     ),
                 },
                 "proof_boundary": (
-                    "Task/scenario-level deployment outcomes can prove owner-supplied real-world "
-                    "records exist, but predicted-vs-actual calibration requires exact "
-                    "scenario-eval-run and scenario-variation keys."
+                    "Task/scenario names are insufficient for predicted-vs-actual calibration; "
+                    "exact run and variation keys are required."
                 ),
             }
         )
-    elif not deployment_outcomes_owner_evidence_ready:
+    elif not deployment_owner_evidence_ready:
         required_inputs.append(
             {
                 "id": "real_world_deployment_outcome_owner_evidence",
-                "title": "Owner evidence for real-world deployment outcomes",
+                "title": "Owner evidence for deployment outcomes",
                 "status": _string(staged_inputs.get("status")) or "not_staged",
                 "required_record_fields": [
-                    "evidence_refs or evidence_uri or pilot_log_uri",
-                    "operator_attestation or owner_attestation",
+                    "evidence_refs",
+                    "owner_evidence_refs",
+                    "owner_evidence_uri",
+                    "operator_attestation",
                 ],
+                "current_blockers": ["deployment_outcomes_missing_owner_evidence"],
                 "staged_inputs": {
-                    "status": staged_inputs.get("status"),
-                    "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
-                    "deployment_outcomes_job_id": staged_inputs.get("deployment_outcomes_job_id"),
-                    "deployment_outcome_record_count": staged_inputs.get(
-                        "deployment_outcome_record_count"
+                    "deployment_outcomes_path": staged_inputs.get(
+                        "deployment_outcomes_path"
                     ),
-                    "deployment_outcome_owner_evidence_record_count": staged_inputs.get(
-                        "deployment_outcome_owner_evidence_record_count"
-                    ),
-                    "deployment_outcome_missing_owner_evidence_record_ids": staged_inputs.get(
+                    "missing_owner_evidence_record_ids": staged_inputs.get(
                         "deployment_outcome_missing_owner_evidence_record_ids"
                     ),
                 },
                 "proof_boundary": (
-                    "Outcome records can support calibration before proof, but live closure cannot "
-                    "pass real_world_outcome_proven until every actual outcome has owner evidence."
+                    "Outcome rows without owner evidence remain actual-result inputs only and "
+                    "do not close real-world validation."
                 ),
             }
         )
@@ -1696,10 +1653,10 @@ def _build_external_input_packet(
             "setup_manifest_path": str(setup_manifest_path),
             "inbox_run_manifest_path": inbox_run.get("manifest_path"),
             "staged_inputs_path": staged_inputs.get("path"),
-            "real_robot_pov_manifest_path": real_robot_pov_path,
             "live_closure_evidence_path": staged_inputs.get("live_closure_evidence_path"),
             "deployment_outcomes_path": staged_inputs.get("deployment_outcomes_path"),
             "policy_package_path": staged_inputs.get("policy_package_path"),
+            "real_robot_pov_path": staged_inputs.get("real_robot_pov_path"),
         },
         "staged_inputs": {
             "status": staged_inputs.get("status"),
@@ -1708,12 +1665,24 @@ def _build_external_input_packet(
             "live_closure_evidence_ready": staged_inputs.get("live_closure_evidence_ready"),
             "live_closure_evidence_job_id": staged_inputs.get("live_closure_evidence_job_id"),
             "deployment_outcomes_ready": staged_inputs.get("deployment_outcomes_ready"),
+            "deployment_outcomes_records_ready_for_calibration": staged_inputs.get(
+                "deployment_outcomes_records_ready_for_calibration"
+            ),
+            "deployment_outcomes_prediction_match_keys_ready": staged_inputs.get(
+                "deployment_outcomes_prediction_match_keys_ready"
+            ),
             "deployment_outcomes_owner_evidence_ready": staged_inputs.get(
                 "deployment_outcomes_owner_evidence_ready"
             ),
             "deployment_outcomes_job_id": staged_inputs.get("deployment_outcomes_job_id"),
             "deployment_outcome_record_count": staged_inputs.get(
                 "deployment_outcome_record_count"
+            ),
+            "deployment_outcome_prediction_match_key_record_count": staged_inputs.get(
+                "deployment_outcome_prediction_match_key_record_count"
+            ),
+            "deployment_outcome_missing_prediction_match_key_record_ids": staged_inputs.get(
+                "deployment_outcome_missing_prediction_match_key_record_ids"
             ),
             "deployment_outcome_owner_evidence_record_count": staged_inputs.get(
                 "deployment_outcome_owner_evidence_record_count"
@@ -1726,8 +1695,7 @@ def _build_external_input_packet(
             "policy_package_selected_modalities": staged_inputs.get(
                 "policy_package_selected_modalities"
             ),
-            "real_robot_pov_ready": real_robot_pov_ready,
-            "real_robot_pov_manifest_path": real_robot_pov_path,
+            "real_robot_pov_ready": staged_inputs.get("real_robot_pov_ready"),
             "real_robot_pov_job_id": staged_inputs.get("real_robot_pov_job_id"),
             "real_robot_pov_record_count": staged_inputs.get("real_robot_pov_record_count"),
             "real_robot_pov_exact_key_record_count": staged_inputs.get(
@@ -1753,13 +1721,13 @@ def _build_external_input_packet(
             ),
             "blockers": staged_inputs.get("blockers", []),
         },
+        "real_world_validation_followup_request_queues": followup_request_queues,
         "webapp_upstream_truth": {
             "ready": webapp_truth_ready,
             "capture_root_section_status": _string(webapp_section.get("status")) or "blocked",
             "job_request_inbox_status": webapp_inbox_truth.get("status"),
             "accepted_request_ids": webapp_inbox_truth.get("accepted_request_ids", []),
         },
-        "real_world_validation_followup_request_queues": dict(followup_request_queues),
         "required_inputs": required_inputs,
         "enablement_inputs": enablement_inputs,
         "example_robot_eval_job_request": {
@@ -2310,16 +2278,15 @@ def run_live_pipeline_control_plane(
                 job_request_inbox=inbox_path,
                 setup_manifest=setup_manifest,
                 webapp_upstream_truth_ready=webapp_upstream_truth_ready,
-                real_robot_pov_ready=bool(
-                    external_input_packet["staged_inputs"].get("real_robot_pov_ready")
-                ),
+                real_robot_pov_ready=bool(staged_inputs.get("real_robot_pov_ready")),
                 live_closure_evidence_ready=bool(
                     staged_inputs.get("live_closure_evidence_ready")
                 ),
-                deployment_outcomes_ready=bool(
-                    staged_inputs.get("deployment_outcomes_ready")
+                deployment_outcomes_ready=bool(staged_inputs.get("deployment_outcomes_ready")),
+                deployment_prediction_match_keys_ready=bool(
+                    staged_inputs.get("deployment_outcomes_prediction_match_keys_ready")
                 ),
-                deployment_outcomes_owner_evidence_ready=bool(
+                deployment_owner_evidence_ready=bool(
                     staged_inputs.get("deployment_outcomes_owner_evidence_ready")
                 ),
                 policy_package_ready=bool(staged_inputs.get("policy_package_ready"))

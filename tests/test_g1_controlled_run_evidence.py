@@ -7,7 +7,6 @@ from blueprint_pipeline.g1_controlled_run_evidence import (
     G1_CONTROLLED_RUN_EVIDENCE_SCHEMA_VERSION,
     assemble_g1_controlled_run_evidence,
     main,
-    write_g1_controlled_run_input_template,
 )
 from blueprint_pipeline.live_pipeline_control_plane import (
     JOB_REQUEST_INBOX_ENV,

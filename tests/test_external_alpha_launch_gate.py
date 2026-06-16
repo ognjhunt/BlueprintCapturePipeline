@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 
 def _load_gate_module():
@@ -90,3 +94,49 @@ def test_android_skip_reason_when_sdk_is_missing(monkeypatch, tmp_path: Path) ->
     reason = gate._android_skip_reason(android_dir)
 
     assert reason == "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
+
+
+def test_run_forwards_timeout_to_subprocess(monkeypatch, tmp_path: Path) -> None:
+    gate = _load_gate_module()
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, *, cwd, check, env, timeout):  # type: ignore[no-untyped-def]
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["check"] = check
+        captured["env"] = env
+        captured["timeout"] = timeout
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+
+    gate._run(["xcodebuild", "test"], cwd=tmp_path, timeout_seconds=123)
+
+    assert captured == {
+        "cmd": ["xcodebuild", "test"],
+        "cwd": tmp_path,
+        "check": True,
+        "env": None,
+        "timeout": 123,
+    }
+
+
+def test_run_turns_timeout_into_actionable_failure(monkeypatch, tmp_path: Path) -> None:
+    gate = _load_gate_module()
+
+    def fake_run(cmd, *, cwd, check, env, timeout):  # type: ignore[no-untyped-def]
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Command timed out after 3 seconds: xcodebuild test"):
+        gate._run(["xcodebuild", "test"], cwd=tmp_path, timeout_seconds=3)
+
+
+def test_pipeline_gate_uses_current_python_interpreter() -> None:
+    gate = _load_gate_module()
+
+    command = gate._pipeline_pytest_command()
+
+    assert command[:3] == [sys.executable, "-m", "pytest"]
+    assert "tests/test_alpha_readiness.py" in command
+    assert "tests/test_webapp_sync.py" in command

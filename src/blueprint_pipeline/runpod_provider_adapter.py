@@ -31,7 +31,9 @@ RUNPOD_SERVERLESS_API_BASE = "https://api.runpod.ai/v2"
 RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV = "BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID"
 PROVIDER_LAUNCH_REQUEST_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST"
 PROVIDER_ADAPTER_OUTPUT_ENV = "BLUEPRINT_GPU_PROVIDER_ADAPTER_OUTPUT"
+RUNPOD_FORWARD_SECRET_ENV_VARS_ENV = "BLUEPRINT_RUNPOD_FORWARD_SECRET_ENV_VARS"
 GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
+SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 WORKER_IMAGE_REF_ENV_BY_SIMULATOR = {
     "isaac_sim": "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
     "isaac_lab_arena": "BLUEPRINT_ISAAC_ARENA_EVAL_WORKER_IMAGE_REF",
@@ -275,14 +277,24 @@ def _redact_runtime_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_redact_runtime_value(item) for item in value]
     if isinstance(value, Mapping):
-        return {
-            str(key): "<redacted:signed-url>"
-            if str(key) == "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"
-            and isinstance(item, str)
-            and item
-            else _redact_runtime_value(item)
-            for key, item in value.items()
-        }
+        redacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if (
+                isinstance(item, str)
+                and item
+                and any(marker in key_text.upper() for marker in SENSITIVE_ENV_NAME_MARKERS)
+            ):
+                redacted[key_text] = "<redacted:secret-env>"
+            elif (
+                key_text == "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"
+                and isinstance(item, str)
+                and item
+            ):
+                redacted[key_text] = "<redacted:signed-url>"
+            else:
+                redacted[key_text] = _redact_runtime_value(item)
+        return redacted
     return value
 
 
@@ -446,6 +458,16 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
         if SIGNED_URL_SIGNATURE_PARAM in env_value.lower():
             continue
         env[env_key] = env_value
+    forward_secret_names = _dedupe(
+        name.strip()
+        for name in _string(os.getenv(RUNPOD_FORWARD_SECRET_ENV_VARS_ENV)).split(",")
+    )
+    for env_key in forward_secret_names:
+        if not any(marker in env_key.upper() for marker in SENSITIVE_ENV_NAME_MARKERS):
+            continue
+        env_value = os.getenv(env_key)
+        if env_value:
+            env[env_key] = env_value
     cache_paths = _mapping(_cache(request).get("paths"))
     cache_env_by_key = {
         "mujoco_assets": "BLUEPRINT_MUJOCO_ASSET_CACHE",

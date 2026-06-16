@@ -31,11 +31,35 @@ def _desktop_capture_repo() -> Path:
     return Path.home() / "Desktop" / "BlueprintCapture"
 
 
-def _run(cmd: Iterable[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
-    printable = " ".join(cmd)
+DEFAULT_IOS_TEST_TIMEOUT_SECONDS = 900
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _run(
+    cmd: Iterable[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    timeout_seconds: int | None = None,
+) -> None:
+    command = list(cmd)
+    printable = " ".join(command)
     print(f"[external-alpha-gate] cwd={cwd}")
     print(f"[external-alpha-gate] $ {printable}")
-    subprocess.run(list(cmd), cwd=cwd, check=True, env=env)
+    if timeout_seconds is not None:
+        print(f"[external-alpha-gate] timeout_seconds={timeout_seconds}")
+    try:
+        subprocess.run(command, cwd=cwd, check=True, env=env, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Command timed out after {timeout_seconds} seconds: {printable}"
+        ) from exc
 
 
 def _ensure_extract_frames_dependencies(extract_frames_dir: Path) -> None:
@@ -62,6 +86,20 @@ def _resolve_swift_packages(capture_repo: Path, derived_data_path: Path) -> None
         print(f"[external-alpha-gate] repairing stale Swift package state at {source_packages_dir}")
         shutil.rmtree(source_packages_dir, ignore_errors=True)
         _run(cmd, cwd=capture_repo)
+
+
+def _pipeline_pytest_command() -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "tests/test_alpha_readiness.py",
+        "tests/test_qualification_alpha.py",
+        "tests/test_site_world_packaging.py",
+        "tests/test_storage_trigger.py",
+        "tests/test_webapp_sync.py",
+        "tests/test_world_model_candidate_parity.py",
+    ]
 
 
 def _android_skip_reason(android_dir: Path) -> str | None:
@@ -168,6 +206,17 @@ def main() -> int:
     parser.add_argument("--ios-simulator-udid", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_UDID"))
     parser.add_argument("--ios-simulator-name", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_NAME", "iPhone 17 Pro"))
     parser.add_argument("--ios-simulator-os", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_OS"))
+    parser.add_argument(
+        "--ios-test-timeout-seconds",
+        type=_positive_int,
+        default=_positive_int(
+            os.getenv("BLUEPRINT_IOS_TEST_TIMEOUT_SECONDS", str(DEFAULT_IOS_TEST_TIMEOUT_SECONDS))
+        ),
+        help=(
+            "Hard timeout for the targeted iOS simulator test leg. "
+            "Defaults to BLUEPRINT_IOS_TEST_TIMEOUT_SECONDS or 900 seconds."
+        ),
+    )
     args = parser.parse_args()
 
     capture_repo = args.capture_repo.resolve()
@@ -212,6 +261,7 @@ def main() -> int:
                 "-only-testing:BlueprintCaptureTests/RuntimeConfigTests",
             ],
             cwd=capture_repo,
+            timeout_seconds=args.ios_test_timeout_seconds,
         )
 
     if not args.skip_android:
@@ -226,15 +276,7 @@ def main() -> int:
 
     if not args.skip_pipeline:
         _run(
-            [
-                "pytest",
-                "tests/test_alpha_readiness.py",
-                "tests/test_qualification_alpha.py",
-                "tests/test_site_world_packaging.py",
-                "tests/test_storage_trigger.py",
-                "tests/test_webapp_sync.py",
-                "tests/test_world_model_candidate_parity.py",
-            ],
+            _pipeline_pytest_command(),
             cwd=pipeline_repo,
             env=contract_test_env(),
         )

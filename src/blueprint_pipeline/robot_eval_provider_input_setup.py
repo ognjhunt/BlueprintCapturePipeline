@@ -24,6 +24,7 @@ from .robot_eval_job_orchestrator import (
     WORKER_CAPTURE_ROOT_BUNDLE_URI_ENV,
     WORKER_IMAGE_REF_ENV_BY_SIMULATOR,
     WORKER_MANIFEST_URI_ENV,
+    _remote_cloud_execution_closure_manifest,
     build_robot_eval_job,
 )
 
@@ -368,9 +369,44 @@ def _write_publish_resolution_script(
     return {"status": "written", "path": str(path)}
 
 
+def _read_optional_mapping(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    payload = read_json_any(path)
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _refresh_remote_cloud_execution_closure_manifest(
+    *,
+    job_dir: Path,
+    job_id: str,
+    provisioner: str,
+    simulator: str,
+) -> None:
+    provider_request = _read_optional_mapping(job_dir / "gpu_provider_launch_request.json")
+    if not provider_request:
+        return
+    closure = _remote_cloud_execution_closure_manifest(
+        job_id=job_id,
+        provisioner=provisioner,
+        simulator=simulator,
+        worker_launch_plan=_read_optional_mapping(job_dir / "worker_launch_plan.json"),
+        worker_manifest=_read_optional_mapping(job_dir / "worker_manifest.json"),
+        provider_launch_request=provider_request,
+        gpu_result=_read_optional_mapping(job_dir / "gpu_provisioner_result.json"),
+        gpu_cost_ledger=_read_optional_mapping(job_dir / "gpu_cost_control_ledger.json"),
+        sim_result=_read_optional_mapping(job_dir / "simulator_service_result.json"),
+        generated_at=utc_now_iso(),
+    )
+    write_json(job_dir / "remote_cloud_execution_closure_manifest.json", closure)
+
+
 def _annotate_provider_launch_request(
     *,
     job_dir: Path,
+    job_id: str,
+    provisioner: str,
+    simulator: str,
     setup_manifest: Mapping[str, Any],
     setup_manifest_path: Path,
 ) -> None:
@@ -410,6 +446,12 @@ def _annotate_provider_launch_request(
             ]
         )
     write_json(request_path, request)
+    _refresh_remote_cloud_execution_closure_manifest(
+        job_dir=job_dir,
+        job_id=job_id,
+        provisioner=provisioner,
+        simulator=simulator,
+    )
 
 
 def prepare_robot_eval_provider_inputs(
@@ -518,6 +560,7 @@ def prepare_robot_eval_provider_inputs(
     )
     if external_provider and not provider_inputs_uploaded:
         blockers.append("provider_inputs_upload_not_proven")
+    blockers = _dedupe(blockers)
     status = "ready_for_provider_launcher_inputs" if not blockers else "prepared_with_external_blockers"
     manifest = {
         "schema_version": PROVIDER_INPUT_SETUP_SCHEMA_VERSION,
@@ -566,6 +609,9 @@ def prepare_robot_eval_provider_inputs(
     write_json(manifest_path, manifest)
     _annotate_provider_launch_request(
         job_dir=job_dir,
+        job_id=job_id,
+        provisioner=provisioner,
+        simulator=simulator,
         setup_manifest=manifest,
         setup_manifest_path=manifest_path,
     )

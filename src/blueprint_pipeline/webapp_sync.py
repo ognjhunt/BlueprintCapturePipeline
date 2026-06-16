@@ -17,6 +17,8 @@ class WebappSyncError(RuntimeError):
     """Raised when pipeline-to-webapp sync is configured as required and fails."""
 
 
+ROBOT_EVAL_WEBAPP_STATUS_PROJECTION_SCHEMA_VERSION = "webapp_robot_eval_status_projection.v1"
+
 _PLACEHOLDER_ID_MARKERS = (
     "example",
     "placeholder",
@@ -28,6 +30,27 @@ _PLACEHOLDER_ID_MARKERS = (
     ">",
     "your-",
 )
+
+
+def _mapping(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, (list, tuple, set)):
+        candidates = [str(item) for item in value]
+    else:
+        candidates = []
+    seen: set[str] = set()
+    out: list[str] = []
+    for candidate in candidates:
+        text = candidate.strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
 
 
 def _string_env(name: str) -> str:
@@ -60,6 +83,241 @@ def _artifact_uri_checksums(artifacts: Mapping[str, Any]) -> Dict[str, str]:
         text = str(value)
         checksums[str(key)] = sha256(text.encode("utf-8")).hexdigest()
     return checksums
+
+
+def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    scenario_batch = _mapping(value.get("scenario_batch"))
+    trace_package = _mapping(value.get("trace_package"))
+    task_metrics = _mapping(value.get("task_metrics"))
+    batch_closure = _mapping(value.get("batch_closure"))
+    digital_twin_fidelity = _mapping(value.get("digital_twin_fidelity"))
+    policy_interface = _mapping(value.get("policy_interface"))
+    closure_audit = _mapping(value.get("closure_audit"))
+    remote_cloud_execution = _mapping(value.get("remote_cloud_execution"))
+    robot_team_grade_eval_closure = _mapping(value.get("robot_team_grade_eval_closure"))
+    proof_boundary = _mapping(value.get("proof_boundary"))
+    artifact_paths = _mapping(value.get("artifact_paths"))
+    buyer_display_guardrails = _mapping(value.get("buyer_display_guardrails"))
+    must_not_display_as = _string_list(buyer_display_guardrails.get("must_not_display_as"))
+    if not must_not_display_as:
+        must_not_display_as = [
+            "physical_robot_readiness",
+            "deployment_readiness",
+            "policy_quality_certification",
+        ]
+    return {
+        "schema_version": ROBOT_EVAL_WEBAPP_STATUS_PROJECTION_SCHEMA_VERSION,
+        "generated_at": str(value.get("generated_at") or "").strip() or None,
+        "job_id": str(value.get("job_id") or "").strip(),
+        "scene_id": str(value.get("scene_id") or "").strip(),
+        "capture_id": str(value.get("capture_id") or "").strip(),
+        "status": str(value.get("status") or "").strip(),
+        "state": str(value.get("state") or "").strip(),
+        "buyer_display_state": str(value.get("buyer_display_state") or "").strip(),
+        "webapp_role": "display_status_and_proof_boundaries_only",
+        "provider_complexity_hidden": True,
+        "provider_details_exposed": False,
+        "scenario_batch": {
+            "status": scenario_batch.get("status"),
+            "scenario_eval_run_count": scenario_batch.get("scenario_eval_run_count"),
+            "target_scenario_eval_run_count": scenario_batch.get(
+                "target_scenario_eval_run_count"
+            ),
+            "base_scenario_eval_run_count": scenario_batch.get(
+                "base_scenario_eval_run_count"
+            ),
+            "scenario_eval_batch_expanded": bool(
+                scenario_batch.get("scenario_eval_batch_expanded")
+            ),
+            "target_scenario_eval_run_count_satisfied": bool(
+                scenario_batch.get("target_scenario_eval_run_count_satisfied")
+            ),
+            "episode_authoring_contract": _mapping(
+                scenario_batch.get("episode_authoring_contract")
+            ),
+            "covered_scenario_eval_run_count": scenario_batch.get(
+                "covered_scenario_eval_run_count"
+            ),
+            "missing_scenario_eval_run_count": scenario_batch.get(
+                "missing_scenario_eval_run_count"
+            ),
+            "scenario_eval_run_coverage_complete": bool(
+                scenario_batch.get("scenario_eval_run_coverage_complete")
+            ),
+            "scenario_eval_matrix_path": scenario_batch.get("scenario_eval_matrix_path"),
+        },
+        "trace_package": {
+            "status": trace_package.get("status"),
+            "machine_trace_package_complete": bool(
+                trace_package.get("machine_trace_package_complete")
+            ),
+            "attempt_trace_path": trace_package.get("attempt_trace_path"),
+            "robot_pov_observation_manifest_path": trace_package.get(
+                "robot_pov_observation_manifest_path"
+            ),
+            "robot_pov_frame_sequence_manifest_path": trace_package.get(
+                "robot_pov_frame_sequence_manifest_path"
+            ),
+            "third_person_video_manifest_path": trace_package.get(
+                "third_person_video_manifest_path"
+            ),
+            "contact_stream_path": trace_package.get("contact_stream_path"),
+        },
+        "task_metrics": {
+            "evaluation_status": task_metrics.get("evaluation_status"),
+            "task_success_rate": task_metrics.get("task_success_rate"),
+            "successful_attempt_count": task_metrics.get("successful_attempt_count"),
+            "failed_attempt_count": task_metrics.get("failed_attempt_count"),
+            "metric_coverage_complete": bool(task_metrics.get("metric_coverage_complete")),
+            "failure_label_coverage_complete": bool(
+                task_metrics.get("failure_label_coverage_complete")
+            ),
+        },
+        "batch_closure": {
+            "status": batch_closure.get("status"),
+            "batch_execution_status": batch_closure.get("batch_execution_status"),
+            "machine_trace_package_complete": bool(
+                batch_closure.get("machine_trace_package_complete")
+            ),
+            "robot_team_grade_package_complete": bool(
+                batch_closure.get("robot_team_grade_package_complete")
+            ),
+            "robot_team_grade_blockers": _string_list(
+                batch_closure.get("robot_team_grade_blockers")
+            ),
+            "batch_closure_manifest_path": batch_closure.get("batch_closure_manifest_path"),
+            "batch_trace_package_manifest_path": batch_closure.get(
+                "batch_trace_package_manifest_path"
+            ),
+        },
+        "digital_twin_fidelity": {
+            "status": digital_twin_fidelity.get("status"),
+            "machine_fidelity_audit_complete": bool(
+                digital_twin_fidelity.get("machine_fidelity_audit_complete")
+            ),
+            "robot_team_grade_fidelity_passed": bool(
+                digital_twin_fidelity.get("robot_team_grade_fidelity_passed")
+            ),
+            "blockers": _string_list(digital_twin_fidelity.get("blockers")),
+        },
+        "policy_interface": {
+            "status": policy_interface.get("status"),
+            "selected_modalities": _string_list(policy_interface.get("selected_modalities")),
+            "supported_modalities": _string_list(policy_interface.get("supported_modalities")),
+            "observation_schema_id": policy_interface.get("observation_schema_id"),
+            "action_schema_id": policy_interface.get("action_schema_id"),
+            "reproducible_replay_required": bool(
+                policy_interface.get("reproducible_replay_required")
+            ),
+            "robot_policy_execution_proven": bool(
+                policy_interface.get("robot_policy_execution_proven")
+            ),
+        },
+        "closure_audit": {
+            "live_eval_closure_status": closure_audit.get("live_eval_closure_status"),
+            "selected_scenario_coverage_closed": bool(
+                closure_audit.get("selected_scenario_coverage_closed")
+            ),
+            "machine_trace_package_complete": bool(
+                closure_audit.get("machine_trace_package_complete")
+            ),
+            "robot_team_grade_package_complete": bool(
+                closure_audit.get("robot_team_grade_package_complete")
+            ),
+            "post_training_data_package_status": closure_audit.get(
+                "post_training_data_package_status"
+            ),
+            "no_readiness_claim_upgrade_without_evidence": bool(
+                closure_audit.get("no_readiness_claim_upgrade_without_evidence")
+            ),
+        },
+        "remote_cloud_execution": {
+            "status": remote_cloud_execution.get("status"),
+            "contract_ready_for_remote_runtime": bool(
+                remote_cloud_execution.get("contract_ready_for_remote_runtime")
+            ),
+            "remote_cloud_execution_proven": bool(
+                remote_cloud_execution.get("remote_cloud_execution_proven")
+            ),
+            "clean_shutdown_proven": bool(
+                remote_cloud_execution.get("clean_shutdown_proven")
+            ),
+            "live_provider_calls_performed": bool(
+                remote_cloud_execution.get("live_provider_calls_performed")
+            ),
+            "blockers": _string_list(remote_cloud_execution.get("blockers")),
+            "closure_manifest_path": remote_cloud_execution.get("closure_manifest_path"),
+        },
+        "robot_team_grade_eval_closure": {
+            "status": robot_team_grade_eval_closure.get("status"),
+            "sim_only_beta_core_complete": bool(
+                robot_team_grade_eval_closure.get("sim_only_beta_core_complete")
+            ),
+            "robot_team_grade_evaluation_complete": bool(
+                robot_team_grade_eval_closure.get("robot_team_grade_evaluation_complete")
+            ),
+            "deployment_readiness_complete": bool(
+                robot_team_grade_eval_closure.get("deployment_readiness_complete")
+            ),
+            "blocked_requirement_ids": _string_list(
+                robot_team_grade_eval_closure.get("blocked_requirement_ids")
+            ),
+            "closure_manifest_path": robot_team_grade_eval_closure.get(
+                "closure_manifest_path"
+            ),
+        },
+        "proof_boundary": {
+            "simulator_execution_proven": bool(
+                proof_boundary.get("simulator_execution_proven")
+            ),
+            "robot_policy_execution_proven": bool(
+                proof_boundary.get("robot_policy_execution_proven")
+            ),
+            "real_world_outcome_proven": bool(
+                proof_boundary.get("real_world_outcome_proven")
+            ),
+            "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
+            "safety_validated": bool(proof_boundary.get("safety_validated")),
+            "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
+            "public_claim_upgrade_allowed": bool(
+                proof_boundary.get("public_claim_upgrade_allowed")
+            ),
+        },
+        "artifact_paths": {
+            str(key): item
+            for key, item in artifact_paths.items()
+            if key
+            in {
+                "scenario_eval_matrix",
+                "simulator_command_batch_closure_manifest",
+                "simulator_command_batch_trace_package_manifest",
+                "normalized_attempt_trace",
+                "failure_labels",
+                "robot_pov_observation_manifest",
+                "robot_pov_frame_sequence_manifest",
+                "policy_package_manifest",
+                "policy_execution_manifest",
+                "evaluation_result",
+                "proof_boundary",
+                "job_run_manifest",
+                "post_training_data_package_export_manifest",
+                "webapp_robot_eval_status_projection",
+                "remote_cloud_execution_closure_manifest",
+                "robot_team_grade_eval_closure_manifest",
+            }
+            and item
+        },
+        "buyer_display_guardrails": {
+            "must_not_display_as": must_not_display_as,
+            "provider_commands_exposed": False,
+            "provider_credentials_exposed": False,
+            "readiness_claim_upgrade_allowed": bool(
+                proof_boundary.get("public_claim_upgrade_allowed")
+            ),
+        },
+    }
 
 
 def _contains_placeholder_id(value: str) -> bool:
@@ -222,8 +480,12 @@ def build_webapp_pipeline_attachment_payload(
     artifacts: Mapping[str, Any],
     derived_assets: Optional[Mapping[str, Any]] = None,
     deployment_readiness: Optional[Mapping[str, Any]] = None,
+    robot_eval_status_projection: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
 ) -> Dict[str, Any]:
+    safe_robot_eval_projection = _safe_robot_eval_status_projection(
+        robot_eval_status_projection
+    )
     payload = {
         "schema_version": "v1",
         "site_submission_id": str(site_submission_id or "").strip(),
@@ -247,6 +509,7 @@ def build_webapp_pipeline_attachment_payload(
             if isinstance(deployment_readiness, Mapping)
             else None
         ),
+        "robot_eval_status_projection": safe_robot_eval_projection or None,
     }
     if not payload["site_submission_id"] and not payload["request_id"]:
         raise ValueError("site_submission_id or request_id is required")
@@ -267,6 +530,7 @@ def sync_webapp_pipeline_attachment(
     artifacts: Mapping[str, Any],
     derived_assets: Optional[Mapping[str, Any]] = None,
     deployment_readiness: Optional[Mapping[str, Any]] = None,
+    robot_eval_status_projection: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
 ) -> Dict[str, Any]:
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
@@ -288,6 +552,7 @@ def sync_webapp_pipeline_attachment(
         artifacts=artifacts,
         derived_assets=derived_assets,
         deployment_readiness=deployment_readiness,
+        robot_eval_status_projection=robot_eval_status_projection,
         authoritative_state_update=authoritative_state_update,
     )
     payload["artifact_uri_checksums"] = _artifact_uri_checksums(payload.get("artifacts") or {})

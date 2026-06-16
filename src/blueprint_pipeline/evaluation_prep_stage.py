@@ -1209,6 +1209,12 @@ def robot_eval_job_evaluation_prep_surface(
         "gpu_provider_launcher_stderr_log": "gpu_provider_launcher.stderr.log",
         "runpod_provider_adapter_result": "runpod_provider_adapter_result.json",
         "gpu_cost_control_ledger": "gpu_cost_control_ledger.json",
+        "remote_cloud_execution_closure_manifest": (
+            "remote_cloud_execution_closure_manifest.json"
+        ),
+        "robot_team_grade_eval_closure_manifest": (
+            "robot_team_grade_eval_closure_manifest.json"
+        ),
         "gpu_provisioning_result": "gpu_provisioning_result.json",
         "startup_architecture_audit": "startup_architecture_audit.json",
         "worker_runtime_manifest": "worker_runtime_manifest.json",
@@ -1247,6 +1253,7 @@ def robot_eval_job_evaluation_prep_surface(
         "post_training_data_package_export_manifest": (
             "post_training_data_package_export_manifest.json"
         ),
+        "webapp_robot_eval_status_projection": "webapp_robot_eval_status_projection.json",
         "customer_handoff_report": "customer_handoff_report.json",
         "delivery_manifest": "delivery_manifest.json",
         "arena_rerun_plan": "arena_rerun_plan.json",
@@ -1366,10 +1373,19 @@ def robot_eval_job_evaluation_prep_surface(
             ),
             "robot_eval_report_uri": "robot_eval_job_robot_eval_report_uri",
             "robot_eval_report_markdown_uri": "robot_eval_job_robot_eval_report_markdown_uri",
-            "post_training_data_package_export_manifest_uri": (
-                "robot_eval_job_post_training_data_package_export_manifest_uri"
-            ),
-        }
+        "post_training_data_package_export_manifest_uri": (
+            "robot_eval_job_post_training_data_package_export_manifest_uri"
+        ),
+        "webapp_robot_eval_status_projection_uri": (
+            "robot_eval_job_webapp_robot_eval_status_projection_uri"
+        ),
+        "remote_cloud_execution_closure_manifest_uri": (
+            "robot_eval_job_remote_cloud_execution_closure_manifest_uri"
+        ),
+        "robot_team_grade_eval_closure_manifest_uri": (
+            "robot_eval_job_robot_team_grade_eval_closure_manifest_uri"
+        ),
+    }
         for source_key, alias_key in alias_map.items():
             value = latest_artifact_uris.get(source_key)
             if isinstance(value, str) and value:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -21,11 +22,25 @@ ROBOT_POV_RENDER_STORYBOARD_SCHEMA_VERSION = "robot_pov_render_storyboard.v1"
 SCENARIO_EVAL_MATRIX_SCHEMA_VERSION = "robot_eval_scenario_eval_matrix.v1"
 POLICY_EXECUTION_MANIFEST_SCHEMA_VERSION = "robot_policy_execution_manifest.v1"
 POLICY_EXECUTION_TRACE_SCHEMA_VERSION = "robot_policy_execution_trace.v1"
+POLICY_OBSERVATION_SCHEMA_ID = "blueprint.robot_eval.observation.v1"
+POLICY_ACTION_SCHEMA_ID = "blueprint.robot_eval.action_trace.v1"
+POLICY_OBSERVATION_SCHEMA_REF = "blueprint://schemas/robot_eval_observation.v1"
+POLICY_ACTION_SCHEMA_REF = "blueprint://schemas/robot_eval_action_trace.v1"
 DEPLOYMENT_OUTCOME_LEDGER_SCHEMA_VERSION = "deployment_outcome_ledger.v1"
 SIM_VS_REAL_CALIBRATION_SCHEMA_VERSION = "sim_vs_real_calibration_report.v1"
 PREDICTION_VS_ACTUAL_DEPLOYMENT_SCHEMA_VERSION = "prediction_vs_actual_deployment_summary.v1"
 REAL_WORLD_VALIDATION_FOLLOWUP_PLAN_SCHEMA_VERSION = "real_world_validation_followup_plan.v1"
 SIMULATOR_COMMAND_ARTIFACTS_SCHEMA_VERSION = "simulator_command_artifacts.v1"
+BATCH_TRACE_ARTIFACT_JOB_NAMES = {
+    "attempt_trace_jsonl": "simulator_command_batch_attempt_trace.jsonl",
+    "contact_stream_jsonl": "simulator_command_batch_contact_stream.jsonl",
+    "planner_state_jsonl": "simulator_command_batch_planner_state.jsonl",
+    "control_stream_jsonl": "simulator_command_batch_control_stream.jsonl",
+    "metrics": "simulator_command_batch_metrics.json",
+    "failure_labels": "simulator_command_batch_failure_labels.json",
+    "visual_media_coverage": "simulator_command_batch_visual_media_coverage.json",
+    "artifact_checksums": "simulator_command_batch_artifact_checksums.json",
+}
 
 POLICY_MODALITIES = (
     "policy_api_endpoint",
@@ -77,8 +92,109 @@ def _boolish(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "passed", "success", "succeeded"}
 
 
+def _safe_id(value: Any) -> str:
+    text = _string(value).lower()
+    return "".join(char if char.isalnum() else "_" for char in text).strip("_") or "unknown"
+
+
+def _string_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, Sequence):
+        return [_string(item) for item in value if _string(item)]
+    return []
+
+
+def _read_optional_mapping(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = read_json_any(path)
+    except Exception:
+        return {}
+    return _mapping(payload)
+
+
+def _relative_to(root: Path, value: Any) -> str:
+    path = value if isinstance(value, Path) else Path(str(value))
+    try:
+        return os.path.relpath(path.resolve(), root.resolve())
+    except Exception:
+        return str(path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _source_trace_base_dir(simulator_payload: Mapping[str, Any]) -> Path | None:
+    artifact_paths = _mapping(simulator_payload.get("artifact_paths"))
+    manifest_ref = _string(artifact_paths.get("batch_trace_package_manifest"))
+    if not manifest_ref or "://" in manifest_ref:
+        return None
+    manifest_path = Path(manifest_ref)
+    if manifest_path.is_file():
+        return manifest_path.parent
+    return None
+
+
+def _copy_command_batch_trace_artifacts(
+    *,
+    job_dir: Path,
+    trace_package: Mapping[str, Any],
+    source_base_dir: Path | None,
+) -> tuple[Dict[str, str], Dict[str, Any]]:
+    source_artifact_paths = _mapping(trace_package.get("artifact_paths"))
+    copied: Dict[str, str] = {}
+    records: Dict[str, Any] = {}
+    for artifact_key, job_name in BATCH_TRACE_ARTIFACT_JOB_NAMES.items():
+        source_ref = _string(source_artifact_paths.get(artifact_key))
+        if not source_ref:
+            records[artifact_key] = {
+                "status": "missing_source_ref",
+                "source_ref": None,
+                "job_artifact": job_name,
+            }
+            continue
+        if "://" in source_ref:
+            records[artifact_key] = {
+                "status": "remote_source_not_copied",
+                "source_ref": source_ref,
+                "job_artifact": job_name,
+            }
+            continue
+        source_path = Path(source_ref)
+        if not source_path.is_absolute() and source_base_dir is not None:
+            source_path = source_base_dir / source_path
+        destination = job_dir / job_name
+        if source_path.is_file():
+            ensure_dir(destination.parent)
+            if source_path.resolve() != destination.resolve():
+                shutil.copyfile(source_path, destination)
+            copied[artifact_key] = job_name
+            records[artifact_key] = {
+                "status": "copied",
+                "source_ref": source_ref,
+                "job_artifact": job_name,
+                "size_bytes": destination.stat().st_size,
+                "sha256": _sha256_file(destination),
+            }
+        else:
+            records[artifact_key] = {
+                "status": "missing_source_file",
+                "source_ref": source_ref,
+                "resolved_source_path": str(source_path),
+                "job_artifact": job_name,
+            }
+    return copied, records
+
+
 def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> Dict[str, Any]:
-    """Return a policy-package modality for the gated default walk-to-target test policy."""
+    """Return policy-package modality gated Blueprint default test policies."""
 
     policy_package = _mapping(job_request.get("policy_package") or job_request.get("policyPackage"))
     raw = _mapping(
@@ -99,8 +215,57 @@ def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> 
         return {}
 
     policy_kind = _string(raw.get("policy_kind") or raw.get("policyKind") or raw.get("kind"))
-    if policy_kind and policy_kind not in {"walk_to_target", "default_walk_to_target"}:
+    manipulation_policy_kinds = {
+        "mobile_manipulation_pick_carry_place",
+        "default_mobile_manipulation",
+        "pick_carry_place",
+        "pick_carry_place_tote",
+        "default_pick_carry_place_tote",
+    }
+    if policy_kind and policy_kind not in {
+        "walk_to_target",
+        "default_walk_to_target",
+        *manipulation_policy_kinds,
+    }:
         return {}
+    if policy_kind in manipulation_policy_kinds:
+        object_id = _string(raw.get("object_id") or raw.get("objectId")) or "simready_tote_001"
+        object_class = _string(raw.get("object_class") or raw.get("objectClass")) or "tote"
+        task_id = _string(raw.get("task_id") or raw.get("taskId")) or "mobile_pick_carry_place_tote"
+        policy_id = _string(raw.get("policy_id") or raw.get("policyId")) or (
+            "blueprint_default_phase_manipulation_policy"
+        )
+        return {
+            "high_level_skill_trace": {
+                "policy_id": policy_id,
+                "policy_kind": "mobile_manipulation_pick_carry_place",
+                "task_id": task_id,
+                "object_id": object_id,
+                "object_class": object_class,
+                "blueprint_default_test_policy": True,
+                "ordered_skill_sequence": [
+                    {"skill_id": "navigate_to_object", "name": "navigate_to_object"},
+                    {"skill_id": "pregrasp_stance", "name": "pregrasp_stance"},
+                    {"skill_id": "reach", "name": "reach"},
+                    {"skill_id": "close_grip", "name": "close_grip"},
+                    {"skill_id": "lift", "name": "lift"},
+                    {"skill_id": "verify_grasp", "name": "verify_grasp"},
+                    {"skill_id": "carry_to_return_pose", "name": "carry_to_return_pose"},
+                    {"skill_id": "place", "name": "place"},
+                    {"skill_id": "release", "name": "release"},
+                    {"skill_id": "verify_placement", "name": "verify_placement"},
+                ],
+                "claim_boundary": {
+                    "default_test_policy_execution_contract": True,
+                    "default_manipulation_policy": True,
+                    "robot_team_policy_execution_proven": False,
+                    "simulator_physics_execution_proven": False,
+                    "grasp_physics_validated": False,
+                    "physical_robot_readiness_proven": False,
+                    "public_claim_upgrade_allowed": False,
+                },
+            }
+        }
     target = (
         _string(
             raw.get("target")
@@ -127,45 +292,13 @@ def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> 
             ],
             "claim_boundary": {
                 "default_test_policy_execution_contract": True,
+                "robot_team_policy_execution_proven": False,
                 "robot_team_policy_quality_proven": False,
-                "real_robot_pov_evidence_proven": False,
                 "robot_readiness_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         }
     }
-
-
-def _string_list(value: Any) -> List[str]:
-    if isinstance(value, str):
-        return [value] if value.strip() else []
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-        return [str(item) for item in value if str(item).strip()]
-    return []
-
-
-def _safe_id(value: str) -> str:
-    cleaned = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in value)
-    return cleaned.strip("-_") or "item"
-
-
-def _relative_to(base: Path, path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(base.resolve()))
-    except ValueError:
-        try:
-            return os.path.relpath(path.resolve(), base.resolve())
-        except ValueError:
-            return str(path.resolve())
-
-
-def _read_optional_mapping(path: Path) -> Dict[str, Any]:
-    try:
-        payload = read_json_any(path)
-    except (OSError, json.JSONDecodeError, ValueError):
-        return {}
-    return _mapping(payload)
-
 
 def _read_optional_any(path: Path) -> Any:
     try:
@@ -470,6 +603,248 @@ def _scenario_eval_run_id(
     )
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _requested_scenario_eval_run_target_count(
+    job_request: Mapping[str, Any],
+) -> tuple[int | None, str | None]:
+    execution_request = _mapping(
+        job_request.get("execution_request") or job_request.get("executionRequest")
+    )
+    containers: list[tuple[str, Mapping[str, Any]]] = [
+        ("job_request", job_request),
+        ("execution_request", execution_request),
+        (
+            "execution_request.scenario_batch",
+            _mapping(
+                execution_request.get("scenario_batch")
+                or execution_request.get("scenarioBatch")
+            ),
+        ),
+        (
+            "execution_request.scenario_matrix",
+            _mapping(
+                execution_request.get("scenario_matrix")
+                or execution_request.get("scenarioMatrix")
+            ),
+        ),
+        (
+            "execution_request.simulator_routing",
+            _mapping(
+                execution_request.get("simulator_routing")
+                or execution_request.get("simulatorRouting")
+            ),
+        ),
+    ]
+    keys = (
+        "target_scenario_eval_run_count",
+        "targetScenarioEvalRunCount",
+        "requested_scenario_eval_run_count",
+        "requestedScenarioEvalRunCount",
+        "scenario_eval_run_count",
+        "scenarioEvalRunCount",
+        "scenario_count",
+        "scenarioCount",
+        "arena_scenario_count",
+        "arenaScenarioCount",
+        "batch_size",
+        "batchSize",
+    )
+    for source_name, container in containers:
+        for key in keys:
+            value = _positive_int(container.get(key))
+            if value is not None:
+                return value, f"{source_name}.{key}"
+    return None, None
+
+
+def _pose_triplet(value: Any) -> list[float] | None:
+    if isinstance(value, Mapping):
+        xyz = value.get("xyz") or value.get("pose") or value.get("position")
+        nested = _pose_triplet(xyz)
+        if nested is not None:
+            return nested
+        x = value.get("x")
+        y = value.get("y")
+        z = value.get("z", 0.793)
+        try:
+            return [round(float(x), 6), round(float(y), 6), round(float(z), 6)]
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        if len(value) < 2:
+            return None
+        try:
+            x = float(value[0])
+            y = float(value[1])
+            z = float(value[2]) if len(value) > 2 else 0.793
+        except (TypeError, ValueError):
+            return None
+        return [round(x, 6), round(y, 6), round(z, 6)]
+    return None
+
+
+def _mutation_pose(run: Mapping[str, Any], *keys: str) -> tuple[list[float] | None, str | None]:
+    concrete_mutation = _mapping(run.get("concrete_mutation"))
+    for key in keys:
+        pose = _pose_triplet(run.get(key))
+        if pose is not None:
+            return pose, key
+        pose = _pose_triplet(concrete_mutation.get(key))
+        if pose is not None:
+            return pose, f"concrete_mutation.{key}"
+    return None, None
+
+
+def _stable_scenario_seed(run: Mapping[str, Any], *, ordinal: int, repeat_index: int) -> int:
+    explicit = _positive_int(run.get("deterministic_seed") or run.get("episode_seed"))
+    if explicit is not None:
+        return explicit
+    raw = ":".join(
+        [
+            _string(run.get("task_id")) or "task",
+            _string(run.get("scenario_id")) or "scenario",
+            _string(run.get("scenario_variation_instance_id")) or "base",
+            _string(run.get("variation_name")) or "base_capture_layout",
+            str(ordinal),
+            str(repeat_index),
+        ]
+    )
+    return int(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _fallback_spawn_target(seed: int) -> tuple[list[float], list[float]]:
+    start_x = round(((seed % 1600) - 800) / 100.0, 3)
+    start_y = round((((seed >> 8) % 1600) - 800) / 100.0, 3)
+    target_x = round(((((seed >> 16) % 1600) - 800) / 100.0), 3)
+    target_y = round(((((seed >> 24) % 1600) - 800) / 100.0), 3)
+    if abs(target_x - start_x) + abs(target_y - start_y) < 1.0:
+        target_x = round(start_x + 2.0, 3)
+        target_y = round(start_y - 2.0, 3)
+    return [start_x, start_y, 0.793], [target_x, target_y, 0.793]
+
+
+def _with_deterministic_scenario_fields(
+    run: Mapping[str, Any],
+    *,
+    ordinal: int,
+    repeat_index: int,
+    batch_source_run_id: str | None = None,
+) -> Dict[str, Any]:
+    out = dict(run)
+    seed = _stable_scenario_seed(out, ordinal=ordinal, repeat_index=repeat_index)
+    fallback_spawn, fallback_target = _fallback_spawn_target(seed)
+    spawn_pose, spawn_source = _mutation_pose(
+        out, "spawn_pose", "start_pose", "robot_spawn_pose", "start_xyz", "spawn_xyz"
+    )
+    target_pose, target_source = _mutation_pose(
+        out, "target_pose", "goal_pose", "robot_target_pose", "target_xyz", "goal_xyz"
+    )
+    if spawn_pose is None:
+        spawn_pose = fallback_spawn
+        spawn_source = "deterministic_seed_fallback"
+    if target_pose is None:
+        target_pose = fallback_target
+        target_source = "deterministic_seed_fallback"
+    concrete_mutation = {
+        **_mapping(out.get("concrete_mutation")),
+        "spawn_pose": spawn_pose,
+        "target_pose": target_pose,
+        "deterministic_seed": seed,
+    }
+    out.update(
+        {
+            "episode_id": out.get("episode_id")
+            or f"episode_{_safe_id(_string(out.get('scenario_eval_run_id')))}",
+            "deterministic_seed": seed,
+            "episode_seed": seed,
+            "spawn_pose": spawn_pose,
+            "target_pose": target_pose,
+            "start_xyz": spawn_pose,
+            "target_xyz": target_pose,
+            "route_waypoints": out.get("route_waypoints") or [spawn_pose, target_pose],
+            "concrete_mutation": concrete_mutation,
+            "batch_ordinal": ordinal,
+            "batch_repeat_index": repeat_index,
+            "batch_source_scenario_eval_run_id": batch_source_run_id
+            or _string(out.get("scenario_eval_run_id")),
+            "spawn_goal_variation_seed_frozen": True,
+            "deterministic_scenario_parameters": {
+                "schema_version": "deterministic_scenario_parameters.v1",
+                "spawn_pose_source": spawn_source,
+                "target_pose_source": target_source,
+                "deterministic_seed_source": "sha256_task_scenario_variation_ordinal",
+                "runtime_spawn_goal_variation_mutation_allowed": False,
+            },
+        }
+    )
+    return out
+
+
+def _expand_scenario_eval_runs_to_target_count(
+    runs: Sequence[Mapping[str, Any]],
+    *,
+    target_count: int | None,
+    exact_filters_requested: bool,
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
+    if not runs:
+        return [], {
+            "expanded": False,
+            "base_scenario_eval_run_count": 0,
+            "target_scenario_eval_run_count": target_count,
+            "target_scenario_eval_run_count_satisfied": False,
+        }
+    if exact_filters_requested or target_count is None or target_count <= len(runs):
+        enriched = [
+            _with_deterministic_scenario_fields(run, ordinal=index, repeat_index=0)
+            for index, run in enumerate(runs, start=1)
+        ]
+        return enriched, {
+            "expanded": False,
+            "base_scenario_eval_run_count": len(runs),
+            "target_scenario_eval_run_count": target_count or len(runs),
+            "target_scenario_eval_run_count_satisfied": len(enriched)
+            >= (target_count or len(runs)),
+            "expansion_skipped_reason": "exact_run_filters_requested"
+            if exact_filters_requested and target_count is not None
+            else None,
+        }
+    base_runs = [dict(run) for run in runs]
+    expanded: list[Dict[str, Any]] = []
+    for ordinal in range(1, target_count + 1):
+        base = dict(base_runs[(ordinal - 1) % len(base_runs)])
+        repeat_index = (ordinal - 1) // len(base_runs)
+        source_run_id = _string(base.get("scenario_eval_run_id"))
+        if repeat_index:
+            base["scenario_eval_run_id"] = _scenario_eval_run_id(
+                task_id=_string(base.get("task_id")),
+                scenario_id=_string(base.get("scenario_id")),
+                variation_name=_string(base.get("variation_name")) or "base_capture_layout",
+                index=ordinal,
+            )
+            base.pop("episode_id", None)
+        expanded.append(
+            _with_deterministic_scenario_fields(
+                base,
+                ordinal=ordinal,
+                repeat_index=repeat_index,
+                batch_source_run_id=source_run_id,
+            )
+        )
+    return expanded, {
+        "expanded": True,
+        "base_scenario_eval_run_count": len(base_runs),
+        "target_scenario_eval_run_count": target_count,
+        "target_scenario_eval_run_count_satisfied": len(expanded) == target_count,
+    }
+
+
 def build_scenario_eval_matrix(
     *,
     capture_root: str | Path,
@@ -492,6 +867,9 @@ def build_scenario_eval_matrix(
     scenario_cards = _read_optional_mapping(robot_eval_dir / "scenario_cards.json")
     requested = _requested_scenarios(job_request, scenario_cards)
     requested_eval_run_filters = _requested_scenario_eval_run_filters(job_request)
+    target_scenario_eval_run_count, target_scenario_eval_run_count_source = (
+        _requested_scenario_eval_run_target_count(job_request)
+    )
     scenario_card_rows = _scenario_card_rows(scenario_cards)
     scenario_cards_by_id = {
         _string(card.get("scenario_id")): card
@@ -646,8 +1024,13 @@ def build_scenario_eval_matrix(
                             key: value for key, value in filter_row.items() if value
                         },
                     }
-                )
+            )
         runs = filtered_runs
+    runs, batch_expansion = _expand_scenario_eval_runs_to_target_count(
+        runs,
+        target_count=target_scenario_eval_run_count,
+        exact_filters_requested=bool(requested_eval_run_filters),
+    )
 
     required_names = _string_list(variation_payload.get("required_variation_names"))
     covered_names = sorted(
@@ -685,6 +1068,14 @@ def build_scenario_eval_matrix(
         "invalid_requested_scenario_count": len(invalid_requested_rows),
         "requested_scenario_eval_run_filter_count": len(requested_eval_run_filters),
         "requested_scenario_eval_run_filters": requested_eval_run_filters,
+        "target_scenario_eval_run_count": batch_expansion["target_scenario_eval_run_count"],
+        "target_scenario_eval_run_count_source": target_scenario_eval_run_count_source,
+        "base_scenario_eval_run_count": batch_expansion["base_scenario_eval_run_count"],
+        "scenario_eval_batch_expanded": batch_expansion["expanded"],
+        "target_scenario_eval_run_count_satisfied": batch_expansion[
+            "target_scenario_eval_run_count_satisfied"
+        ],
+        "scenario_eval_batch_expansion": batch_expansion,
         "unmatched_requested_scenario_eval_run_filter_count": len(
             unmatched_requested_eval_run_filters
         ),
@@ -710,6 +1101,16 @@ def build_scenario_eval_matrix(
             if variation_payload
             else None,
         },
+        "episode_authoring_contract": {
+            "schema_version": "scenario_eval_episode_authoring_contract.v1",
+            "spawn_target_variation_seed_handling": "deterministic_frozen_matrix_rows",
+            "runtime_spawn_goal_variation_mutation_allowed": False,
+            "scenario_eval_run_id_exact_coverage_required": True,
+            "target_scenario_eval_run_count": batch_expansion["target_scenario_eval_run_count"],
+            "target_scenario_eval_run_count_satisfied": batch_expansion[
+                "target_scenario_eval_run_count_satisfied"
+            ],
+        },
         "robot_pov_generation_required_for_each_run": True,
         "policy_attempt_required_for_each_run": True,
         "simulator_rollout_required_for_each_run": True,
@@ -719,6 +1120,9 @@ def build_scenario_eval_matrix(
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
+    manifest["deterministic_fingerprint"] = hashlib.sha256(
+        json.dumps({"runs": runs}, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
     write_json(resolved_job_dir / "scenario_eval_matrix.json", manifest)
     return manifest
 
@@ -1005,10 +1409,27 @@ def build_robot_pov_observation_bundle(
                     "extrinsics_source": "episode_spec_or_deterministic_default",
                 },
                 "observation_schema": {
+                    "schema_id": POLICY_OBSERVATION_SCHEMA_ID,
+                    "schema_ref": POLICY_OBSERVATION_SCHEMA_REF,
                     "rgb": "image/png",
                     "depth": "optional_depth_map_or_missing",
                     "robot_state": ["base_pose", "joint_state_optional", "gripper_state_optional"],
                     "task_instruction": "task_card.task_statement",
+                },
+                "expected_action_schema": {
+                    "schema_id": POLICY_ACTION_SCHEMA_ID,
+                    "schema_ref": POLICY_ACTION_SCHEMA_REF,
+                    "required_fields": [
+                        "scenario_eval_run_id",
+                        "scenario_variation_instance_id",
+                        "task_id",
+                        "scenario_id",
+                        "status",
+                        "success",
+                        "actions",
+                        "metrics",
+                        "failure_mode_ids",
+                    ],
                 },
                 "generated_frame_path": _relative_to(resolved_job_dir, frame_path)
                 if frame_written
@@ -1070,6 +1491,16 @@ def build_robot_pov_observation_bundle(
         "local_render_frame_count": sum(
             int(sequence.get("frame_count") or 0) for sequence in frame_sequences
         ),
+        "policy_adapter_input_contract": {
+            "schema_version": "robot_policy_adapter_input_contract.v1",
+            "observation_schema_id": POLICY_OBSERVATION_SCHEMA_ID,
+            "observation_schema_ref": POLICY_OBSERVATION_SCHEMA_REF,
+            "action_schema_id": POLICY_ACTION_SCHEMA_ID,
+            "action_schema_ref": POLICY_ACTION_SCHEMA_REF,
+            "scenario_eval_run_id_exact_coverage_required": True,
+            "scenario_variation_instance_id_exact_coverage_required": True,
+            "runtime_spawn_goal_variation_mutation_allowed": False,
+        },
         "robot_profile": robot_profile,
         "observations": observations,
         "robot_pov_generated": bool(observations),
@@ -1419,6 +1850,106 @@ def _default_test_policy_execution_payload(
     payload: Mapping[str, Any],
     observations: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
+    policy_kind = _string(payload.get("policy_kind") or payload.get("policyKind")) or "walk_to_target"
+    policy_id = _string(payload.get("policy_id") or payload.get("policyId")) or DEFAULT_TEST_POLICY_ID
+    if policy_kind == "mobile_manipulation_pick_carry_place":
+        task_id = _string(payload.get("task_id") or payload.get("taskId")) or (
+            "mobile_pick_carry_place_tote"
+        )
+        object_id = _string(payload.get("object_id") or payload.get("objectId")) or "simready_tote_001"
+        object_class = _string(payload.get("object_class") or payload.get("objectClass")) or "tote"
+        raw_phases = payload.get("ordered_skill_sequence")
+        phases = [dict(item) for item in raw_phases if isinstance(item, Mapping)] if isinstance(
+            raw_phases, list
+        ) else []
+        if not phases:
+            phases = [
+                {"skill_id": name, "name": name}
+                for name in (
+                    "navigate_to_object",
+                    "pregrasp_stance",
+                    "reach",
+                    "close_grip",
+                    "lift",
+                    "verify_grasp",
+                    "carry_to_return_pose",
+                    "place",
+                    "release",
+                    "verify_placement",
+                )
+            ]
+        attempts: List[Dict[str, Any]] = []
+        for index, observation in enumerate(observations, start=1):
+            scenario_eval_run_id = _string(observation.get("scenario_eval_run_id"))
+            actions = [
+                {
+                    "action": _string(phase.get("skill_id") or phase.get("name")),
+                    "target": {"object_id": object_id, "object_class": object_class},
+                    "status": "completed",
+                    "evidence_scope": "job_default_manipulation_policy_reference_trace",
+                }
+                for phase in phases
+            ]
+            attempts.append(
+                {
+                    "attempt_id": f"{policy_id}_{_safe_id(scenario_eval_run_id or str(index))}",
+                    "observation_id": _string(observation.get("observation_id")),
+                    "scenario_id": _string(observation.get("scenario_id")),
+                    "scenario_eval_run_id": scenario_eval_run_id,
+                    "scenario_variation_instance_id": _string(
+                        observation.get("scenario_variation_instance_id")
+                    )
+                    or None,
+                    "variation_name": _string(observation.get("variation_name")) or None,
+                    "task_id": _string(observation.get("task_id")) or task_id,
+                    "policy_id": policy_id,
+                    "policy_scope": "blueprint_default_test_policy",
+                    "policy_kind": "mobile_manipulation_pick_carry_place",
+                    "target": object_id,
+                    "status": "completed",
+                    "success": True,
+                    "actions": actions,
+                    "skills": [
+                        {
+                            "skill_id": _string(phase.get("skill_id") or phase.get("name")),
+                            "name": _string(phase.get("name") or phase.get("skill_id")),
+                            "target": object_id,
+                            "status": "completed",
+                        }
+                        for phase in phases
+                    ],
+                    "metrics": {
+                        "default_test_policy": True,
+                        "default_manipulation_policy": True,
+                        "phase_count": len(phases),
+                        "completed_phase_count": len(phases),
+                        "reference_trace_only": True,
+                        "simulator_physics_execution_proven": False,
+                        "grasp_physics_validated": False,
+                    },
+                }
+            )
+        return {
+            "schema_version": "blueprint_default_test_policy_execution.v1",
+            "status": "completed" if attempts else "blocked_missing_observations",
+            "policy_id": policy_id,
+            "policy_kind": "mobile_manipulation_pick_carry_place",
+            "task_id": task_id,
+            "object_id": object_id,
+            "object_class": object_class,
+            "attempts": attempts,
+            "claim_boundary": {
+                "default_test_policy_execution_proven": bool(attempts),
+                "default_manipulation_policy": True,
+                "robot_team_policy_execution_proven": False,
+                "robot_team_policy_quality_proven": False,
+                "simulator_physics_execution_proven": False,
+                "grasp_physics_validated": False,
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        }
+
     target = (
         _string(
             payload.get("target")
@@ -1429,7 +1960,6 @@ def _default_test_policy_execution_payload(
         )
         or "walk_to_target_pose"
     )
-    policy_id = _string(payload.get("policy_id") or payload.get("policyId")) or DEFAULT_TEST_POLICY_ID
     attempts: List[Dict[str, Any]] = []
     for index, observation in enumerate(observations, start=1):
         scenario_eval_run_id = _string(observation.get("scenario_eval_run_id"))
@@ -1488,7 +2018,6 @@ def _default_test_policy_execution_payload(
             "public_claim_upgrade_allowed": False,
         },
     }
-
 
 def build_policy_execution_bundle(
     *,
@@ -1770,8 +2299,19 @@ def _simulator_attempts_from_payload(
             if record.get("success") is not None
             else status in {"completed", "success", "succeeded", "passed"}
         )
+        task_outcome = _mapping(record.get("task_outcome") or record.get("taskOutcome"))
+        task_success_raw = (
+            record.get("task_success")
+            if record.get("task_success") is not None
+            else task_outcome.get("task_success")
+        )
+        task_success = (
+            _boolish(task_success_raw) if task_success_raw is not None else bool(success)
+        )
         failure_ids = _failure_ids(record, "failure_mode_ids", "failure_modes", "failures")
-        if not success and not failure_ids:
+        if not failure_ids:
+            failure_ids = _failure_ids(task_outcome, "failure_mode_ids", "failure_modes", "failures")
+        if (not success or not task_success) and not failure_ids:
             failure_ids = [_string(record.get("failure_reason")) or "simulator_failure"]
         attempts.append(
             {
@@ -1800,11 +2340,34 @@ def _simulator_attempts_from_payload(
                 "engine": simulator,
                 "runner": "command_adapter",
                 "status": status,
-                "success": bool(success),
+                "success": bool(success and task_success),
+                "task_success": bool(task_success),
+                "task_status": _string(
+                    record.get("task_status")
+                    or record.get("taskStatus")
+                    or task_outcome.get("task_status")
+                )
+                or ("passed" if task_success else "failed_task_criteria"),
                 "failure_reason": _string(record.get("failure_reason") or record.get("reason"))
+                or _string(task_outcome.get("failure_reason"))
                 or None,
                 "failure_mode_ids": failure_ids,
                 "metrics": _mapping(record.get("metrics")),
+                "task_outcome": task_outcome,
+                "spawn_pose": record.get("spawn_pose") or record.get("spawnPose"),
+                "target_pose": record.get("target_pose") or record.get("targetPose"),
+                "final_pose": record.get("final_pose") or record.get("finalPose"),
+                "deterministic_seed": record.get("deterministic_seed")
+                or _mapping(record.get("metrics")).get("deterministic_seed"),
+                "route_source": _string(record.get("route_source") or record.get("routeSource"))
+                or None,
+                "route_strategy": _string(
+                    record.get("route_strategy") or record.get("routeStrategy")
+                )
+                or None,
+                "route_waypoints": record.get("route_waypoints")
+                if isinstance(record.get("route_waypoints"), list)
+                else [],
                 "action_trace": record.get("actions") if isinstance(record.get("actions"), list) else [],
                 "contact_trace": record.get("contact_trace")
                 if isinstance(record.get("contact_trace"), list)
@@ -1819,6 +2382,127 @@ def _simulator_attempts_from_payload(
             }
         )
     return attempts
+
+
+def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    successful = [attempt for attempt in attempts if bool(attempt.get("task_success"))]
+    failed = [attempt for attempt in attempts if not bool(attempt.get("task_success"))]
+    failure_mode_counts: Dict[str, int] = {}
+    task_outcomes = [_mapping(attempt.get("task_outcome")) for attempt in attempts]
+
+    def outcome_has(key: str) -> bool:
+        return any(key in outcome for outcome in task_outcomes)
+
+    for attempt in failed:
+        for failure_mode in _string_list(attempt.get("failure_mode_ids")):
+            failure_mode_counts[failure_mode] = failure_mode_counts.get(failure_mode, 0) + 1
+    final_errors = [
+        value
+        for value in (
+            _number(_mapping(attempt.get("task_outcome")).get("final_target_error_m"))
+            for attempt in attempts
+        )
+        if value is not None
+    ]
+    path_deviations = [
+        value
+        for value in (
+            _number(_mapping(attempt.get("task_outcome")).get("max_path_deviation_m"))
+            for attempt in attempts
+        )
+        if value is not None
+    ]
+    clearance_values = [
+        value
+        for value in (
+            _number(_mapping(attempt.get("task_outcome")).get("min_clearance_m"))
+            for attempt in attempts
+        )
+        if value is not None
+    ]
+    return {
+        "schema_version": "robot_eval_task_success_summary.v1",
+        "status": "completed" if attempts else "not_available",
+        "attempt_count": len(attempts),
+        "successful_attempt_count": len(successful),
+        "failed_attempt_count": len(failed),
+        "task_success_rate": round(len(successful) / len(attempts), 6)
+        if attempts
+        else None,
+        "failed_scenario_eval_run_ids": sorted(
+            _string(attempt.get("scenario_eval_run_id"))
+            for attempt in failed
+            if _string(attempt.get("scenario_eval_run_id"))
+        ),
+        "failure_mode_counts": dict(sorted(failure_mode_counts.items())),
+        "near_miss_attempt_count": sum(
+            1
+            for attempt in attempts
+            if int(_mapping(attempt.get("task_outcome")).get("near_miss_event_count") or 0)
+            > 0
+        )
+        if outcome_has("near_miss_event_count")
+        else None,
+        "near_miss_event_count": sum(
+            int(_mapping(attempt.get("task_outcome")).get("near_miss_event_count") or 0)
+            for attempt in attempts
+        )
+        if outcome_has("near_miss_event_count")
+        else None,
+        "min_clearance_m": min(clearance_values) if clearance_values else None,
+        "clearance_threshold_m": min(
+            (
+                value
+                for value in (
+                    _number(_mapping(attempt.get("task_outcome")).get("clearance_threshold_m"))
+                    for attempt in attempts
+                )
+                if value is not None
+            ),
+            default=None,
+        ),
+        "fall_attempt_count": sum(
+            1 for attempt in attempts if bool(_mapping(attempt.get("task_outcome")).get("fall_detected"))
+        )
+        if outcome_has("fall_detected")
+        else None,
+        "stuck_attempt_count": sum(
+            1 for attempt in attempts if bool(_mapping(attempt.get("task_outcome")).get("stuck_detected"))
+        )
+        if outcome_has("stuck_detected")
+        else None,
+        "policy_instability_attempt_count": sum(
+            1
+            for attempt in attempts
+            if bool(_mapping(attempt.get("task_outcome")).get("policy_instability_detected"))
+        )
+        if outcome_has("policy_instability_detected")
+        else None,
+        "scene_contact_attempt_count": sum(
+            1
+            for attempt in attempts
+            if int(_mapping(attempt.get("task_outcome")).get("robot_scene_contact_event_count") or 0)
+            > 0
+        )
+        if outcome_has("robot_scene_contact_event_count")
+        else None,
+        "endpoint_clean_attempt_count": sum(
+            1
+            for attempt in attempts
+            if bool(_mapping(attempt.get("task_outcome")).get("endpoint_clean"))
+        ),
+        "goal_reached_attempt_count": sum(
+            1
+            for attempt in attempts
+            if bool(_mapping(attempt.get("task_outcome")).get("goal_reached"))
+        ),
+        "max_final_target_error_m": max(final_errors) if final_errors else None,
+        "max_path_deviation_m": max(path_deviations) if path_deviations else None,
+        "task_success_boundary": (
+            "Task success is normalized separately from simulator command completion; "
+            "failed attempts remain valid evidence when coverage is complete."
+        ),
+    }
 
 
 def build_simulator_command_artifacts(
@@ -1900,6 +2584,7 @@ def build_simulator_command_artifacts(
     if attempts and required_scenario_eval_run_ids and not scenario_eval_run_coverage_complete:
         status = "blocked_incomplete_scenario_eval_run_coverage"
     failures = [attempt for attempt in attempts if not bool(attempt.get("success"))]
+    task_success_summary = _task_success_summary_from_attempts(attempts)
     failed_attempt_ids = sorted(
         _string(attempt.get("attempt_id")) for attempt in failures if _string(attempt.get("attempt_id"))
     )
@@ -1924,6 +2609,10 @@ def build_simulator_command_artifacts(
         "covered_scenario_eval_run_ids": covered_scenario_eval_run_ids,
         "missing_scenario_eval_run_ids": missing_scenario_eval_run_ids,
         "scenario_eval_run_coverage_complete": scenario_eval_run_coverage_complete,
+        "task_success_summary": task_success_summary,
+        "successful_task_attempt_count": task_success_summary["successful_attempt_count"],
+        "failed_task_attempt_count": task_success_summary["failed_attempt_count"],
+        "task_success_rate": task_success_summary["task_success_rate"],
         "attempts": attempts,
         "result_ingested": bool(attempts),
         "simulator_execution_proven": bool(attempts),
@@ -1943,6 +2632,7 @@ def build_simulator_command_artifacts(
         "covered_failed_scenario_eval_run_ids": failed_scenario_eval_run_ids,
         "missing_failed_scenario_eval_run_ids": [],
         "failed_run_label_coverage_complete": True,
+        "task_success_summary": task_success_summary,
         "labels": [
             {
                 "label_id": f"label_{_safe_id(_string(attempt.get('attempt_id')))}",
@@ -1955,6 +2645,8 @@ def build_simulator_command_artifacts(
                 "policy_id": attempt.get("policy_id"),
                 "failure_mode_ids": attempt.get("failure_mode_ids") or [],
                 "failure_reason": attempt.get("failure_reason"),
+                "task_status": attempt.get("task_status"),
+                "task_outcome": attempt.get("task_outcome") or {},
                 "status": "review_required",
                 "proof_effect": "none_until_review_accepted_or_owner_proof_supplied",
             }
@@ -1972,8 +2664,15 @@ def build_simulator_command_artifacts(
             "policy_id": attempt.get("policy_id"),
             "predicted_status": "passed" if attempt.get("success") else "failed",
             "predicted_success": bool(attempt.get("success")),
+            "predicted_task_success": bool(attempt.get("task_success")),
             "predicted_cycle_time_seconds": _number(
                 _mapping(attempt.get("metrics")).get("cycle_time_seconds")
+            ),
+            "predicted_final_target_error_m": _number(
+                _mapping(attempt.get("task_outcome")).get("final_target_error_m")
+            ),
+            "predicted_endpoint_clean": _mapping(attempt.get("task_outcome")).get(
+                "endpoint_clean"
             ),
             "failure_mode_ids": attempt.get("failure_mode_ids") or [],
             "source": f"{simulator}_command_output",
@@ -1987,6 +2686,7 @@ def build_simulator_command_artifacts(
         "status": "completed" if attempts else "not_available",
         "record_count": len(prediction_records),
         "records": prediction_records,
+        "task_success_summary": task_success_summary,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     calibration_report = {
@@ -1995,6 +2695,7 @@ def build_simulator_command_artifacts(
         "status": "needs_real_world_outcomes" if attempts else "not_available",
         "record_count": len(prediction_records),
         "records": prediction_records,
+        "task_success_summary": task_success_summary,
         "sim_vs_real_calibration_score": None,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -2012,12 +2713,99 @@ def build_simulator_command_artifacts(
                 "task_id": attempt.get("task_id"),
                 "failure_mode_ids": attempt.get("failure_mode_ids") or [],
                 "failure_reason": attempt.get("failure_reason"),
+                "task_status": attempt.get("task_status"),
+                "task_outcome": attempt.get("task_outcome") or {},
                 "review_required": True,
             }
             for attempt in failures
         ],
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
+    command_batch_trace_package = _mapping(simulator_payload.get("batch_trace_package"))
+    command_batch_closure_manifest = _mapping(simulator_payload.get("batch_closure_manifest"))
+    command_batch_trace_copied_paths: Dict[str, str] = {}
+    command_batch_trace_copy_records: Dict[str, Any] = {}
+    source_base_dir = _source_trace_base_dir(simulator_payload)
+    if command_batch_trace_package:
+        command_batch_trace_copied_paths, command_batch_trace_copy_records = (
+            _copy_command_batch_trace_artifacts(
+                job_dir=resolved_job_dir,
+                trace_package=command_batch_trace_package,
+                source_base_dir=source_base_dir,
+            )
+        )
+        command_batch_trace_package = {
+            **command_batch_trace_package,
+            "source_artifact_paths": dict(
+                _mapping(command_batch_trace_package.get("artifact_paths"))
+            ),
+            "artifact_paths": dict(command_batch_trace_copied_paths),
+            "job_artifact_copy_status": "copied"
+            if set(BATCH_TRACE_ARTIFACT_JOB_NAMES).issubset(
+                set(command_batch_trace_copied_paths)
+            )
+            else "partial_or_missing",
+            "job_artifact_copy_records": command_batch_trace_copy_records,
+        }
+    simulator_artifact_paths = _mapping(simulator_payload.get("artifact_paths"))
+    digital_twin_qa_job_name = "simulator_command_digital_twin_fidelity_qa.json"
+    digital_twin_qa_copy_record: Dict[str, Any] = {
+        "status": "missing_source_ref",
+        "source_ref": None,
+        "job_artifact": digital_twin_qa_job_name,
+    }
+    digital_twin_qa_source_ref = _string(
+        simulator_artifact_paths.get("digital_twin_fidelity_qa")
+    )
+    if digital_twin_qa_source_ref:
+        if "://" in digital_twin_qa_source_ref:
+            digital_twin_qa_copy_record = {
+                "status": "remote_source_not_copied",
+                "source_ref": digital_twin_qa_source_ref,
+                "job_artifact": digital_twin_qa_job_name,
+            }
+        else:
+            digital_twin_qa_source_path = Path(digital_twin_qa_source_ref)
+            if not digital_twin_qa_source_path.is_absolute() and source_base_dir is not None:
+                digital_twin_qa_source_path = source_base_dir / digital_twin_qa_source_path
+            digital_twin_qa_destination = resolved_job_dir / digital_twin_qa_job_name
+            if digital_twin_qa_source_path.is_file():
+                ensure_dir(digital_twin_qa_destination.parent)
+                if digital_twin_qa_source_path.resolve() != digital_twin_qa_destination.resolve():
+                    shutil.copyfile(digital_twin_qa_source_path, digital_twin_qa_destination)
+                digital_twin_qa_copy_record = {
+                    "status": "copied",
+                    "source_ref": digital_twin_qa_source_ref,
+                    "job_artifact": digital_twin_qa_job_name,
+                    "sha256": _sha256_file(digital_twin_qa_destination),
+                }
+            else:
+                digital_twin_qa_copy_record = {
+                    "status": "missing_source_file",
+                    "source_ref": digital_twin_qa_source_ref,
+                    "job_artifact": digital_twin_qa_job_name,
+                }
+    artifact_paths = {
+        "normalized_attempt_trace": "normalized_attempt_trace.json",
+        "failure_labels": "failure_labels.json",
+        "prediction_outcome_ledger": "prediction_outcome_ledger.json",
+        "calibration_report": "calibration_report.json",
+        "breakage_library": "breakage_library.json",
+    }
+    if command_batch_trace_package:
+        artifact_paths["simulator_command_batch_trace_package_manifest"] = (
+            "simulator_command_batch_trace_package_manifest.json"
+        )
+        for artifact_key, job_name in command_batch_trace_copied_paths.items():
+            artifact_paths[f"simulator_command_batch_{artifact_key}"] = job_name
+    if command_batch_closure_manifest:
+        artifact_paths["simulator_command_batch_closure_manifest"] = (
+            "simulator_command_batch_closure_manifest.json"
+        )
+    if digital_twin_qa_copy_record.get("status") == "copied":
+        artifact_paths["simulator_command_digital_twin_fidelity_qa"] = (
+            digital_twin_qa_job_name
+        )
     manifest = {
         "schema_version": SIMULATOR_COMMAND_ARTIFACTS_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2031,13 +2819,31 @@ def build_simulator_command_artifacts(
         "scenario_eval_run_id_coverage_exact": scenario_eval_run_id_coverage_exact,
         "duplicate_scenario_eval_run_ids": duplicate_scenario_eval_run_ids,
         "scenario_eval_run_coverage_complete": scenario_eval_run_coverage_complete,
-        "artifact_paths": {
-            "normalized_attempt_trace": "normalized_attempt_trace.json",
-            "failure_labels": "failure_labels.json",
-            "prediction_outcome_ledger": "prediction_outcome_ledger.json",
-            "calibration_report": "calibration_report.json",
-            "breakage_library": "breakage_library.json",
-        },
+        "task_success_summary": task_success_summary,
+        "successful_task_attempt_count": task_success_summary["successful_attempt_count"],
+        "failed_task_attempt_count": task_success_summary["failed_attempt_count"],
+        "task_success_rate": task_success_summary["task_success_rate"],
+        "artifact_paths": artifact_paths,
+        "command_batch_trace_package_status": command_batch_trace_package.get("status"),
+        "command_batch_trace_job_artifact_copy_status": command_batch_trace_package.get(
+            "job_artifact_copy_status"
+        ),
+        "command_batch_trace_job_artifacts_copied": bool(
+            command_batch_trace_package
+            and set(BATCH_TRACE_ARTIFACT_JOB_NAMES).issubset(
+                set(command_batch_trace_copied_paths)
+            )
+        ),
+        "simulator_command_digital_twin_fidelity_qa_copy_record": (
+            digital_twin_qa_copy_record
+        ),
+        "command_batch_closure_status": command_batch_closure_manifest.get("status"),
+        "machine_trace_package_complete": command_batch_closure_manifest.get(
+            "machine_trace_package_complete"
+        ),
+        "robot_team_grade_package_complete": command_batch_closure_manifest.get(
+            "robot_team_grade_package_complete"
+        ),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     write_json(resolved_job_dir / "normalized_attempt_trace.json", trace)
@@ -2045,6 +2851,16 @@ def build_simulator_command_artifacts(
     write_json(resolved_job_dir / "prediction_outcome_ledger.json", prediction_ledger)
     write_json(resolved_job_dir / "calibration_report.json", calibration_report)
     write_json(resolved_job_dir / "breakage_library.json", breakage_library)
+    if command_batch_trace_package:
+        write_json(
+            resolved_job_dir / "simulator_command_batch_trace_package_manifest.json",
+            command_batch_trace_package,
+        )
+    if command_batch_closure_manifest:
+        write_json(
+            resolved_job_dir / "simulator_command_batch_closure_manifest.json",
+            command_batch_closure_manifest,
+        )
     write_json(resolved_job_dir / "simulator_command_artifacts_manifest.json", manifest)
     return {
         "manifest": manifest,
@@ -2053,6 +2869,8 @@ def build_simulator_command_artifacts(
         "prediction_outcome_ledger": prediction_ledger,
         "calibration_report": calibration_report,
         "breakage_library": breakage_library,
+        "simulator_command_batch_trace_package_manifest": command_batch_trace_package,
+        "simulator_command_batch_closure_manifest": command_batch_closure_manifest,
     }
 
 

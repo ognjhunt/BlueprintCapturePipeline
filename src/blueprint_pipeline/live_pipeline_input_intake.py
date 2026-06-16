@@ -30,9 +30,7 @@ from .live_robot_eval_closure import LIVE_ROBOT_EVAL_EVIDENCE_SCHEMA_VERSION
 
 LIVE_PIPELINE_INPUT_INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_input_intake.v1"
 LIVE_CLOSURE_EVIDENCE_ARTIFACT_NAME = "live_eval_closure_evidence.json"
-DEPLOYMENT_OUTCOME_ARTIFACT_NAME = "deployment_outcome.json"
 POLICY_PACKAGE_ARTIFACT_NAME = "policy_package.json"
-REAL_ROBOT_POV_ARTIFACT_NAME = "real_robot_pov_manifest.json"
 LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND = "local_first_gpu_rehearsal_request"
 POLICY_MODALITY_ORDER = (
     "policy_api_endpoint",
@@ -98,6 +96,29 @@ def _attestation_ok(value: Any) -> bool:
             or value.get("accepted_claim_boundary")
             or value.get("acceptedClaimBoundary")
         )
+    )
+
+
+def _delivery_access_ready(section: Mapping[str, Any]) -> bool:
+    if not section:
+        return True
+    if (
+        _status_ok(section.get("status"))
+        or _boolish(section.get("accepted"))
+        or bool(section.get("artifact_refs") or section.get("artifactRefs"))
+    ):
+        return True
+    signed_urls = section.get("signed_urls") or section.get("signedUrls")
+    signed_access = section.get("signed_access") or section.get("signedAccess")
+    storage_upload = section.get("storage_upload_performed") or section.get(
+        "storageUploadPerformed"
+    )
+    entitlement = section.get("entitlement_verified") or section.get("entitlementVerified")
+    return bool(
+        (isinstance(signed_urls, list) and signed_urls)
+        or (isinstance(signed_access, list) and signed_access)
+        or _boolish(storage_upload)
+        or _boolish(entitlement)
     )
 
 
@@ -308,375 +329,61 @@ def _evidence_job_id(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _records_from_outcome_payload(payload: Any) -> List[Dict[str, Any]]:
-    if isinstance(payload, list):
-        return [dict(item) for item in payload if isinstance(item, Mapping)]
-    if not isinstance(payload, Mapping):
+def _records(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    records = payload.get("records") or payload.get("outcomes") or payload.get("observations")
+    if not isinstance(records, list):
         return []
-    for key in (
-        "records",
-        "outcomes",
-        "actual_outcomes",
-        "actualOutcomes",
-        "deployment_outcomes",
-        "deploymentOutcomes",
-    ):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [dict(item) for item in value if isinstance(item, Mapping)]
-    if _string(payload.get("task_id") or payload.get("taskId")) or _string(
-        payload.get("scenario_id") or payload.get("scenarioId")
-    ):
-        return [dict(payload)]
-    return []
+    return [dict(record) for record in records if isinstance(record, Mapping)]
 
 
-def _outcome_job_id(payload: Mapping[str, Any], records: Sequence[Mapping[str, Any]]) -> str | None:
-    for field in ("job_id", "jobId", "robot_eval_job_id", "robotEvalJobId"):
-        value = _string(payload.get(field))
-        if value:
-            return value
-    record_job_ids = {
-        value
-        for record in records
-        if (
-            value := _string(
-                record.get("job_id")
-                or record.get("jobId")
-                or record.get("robot_eval_job_id")
-                or record.get("robotEvalJobId")
-            )
+def _record_id(record: Mapping[str, Any], *, prefix: str, index: int) -> str:
+    return (
+        _string(
+            record.get("outcome_id")
+            or record.get("outcomeId")
+            or record.get("evidence_id")
+            or record.get("evidenceId")
+            or record.get("record_id")
+            or record.get("recordId")
+            or record.get("id")
         )
-    }
-    if len(record_job_ids) == 1:
-        return next(iter(record_job_ids))
-    return None
-
-
-def _actual_signal_present(record: Mapping[str, Any]) -> bool:
-    for key in (
-        "actual_success",
-        "actualSuccess",
-        "success",
-        "passed",
-        "actual_status",
-        "actualStatus",
-        "status",
-    ):
-        if record.get(key) is not None and _string(record.get(key)) != "":
-            return True
-    for key in ("failure_mode_ids", "actual_failures", "actualFailures", "failures"):
-        value = record.get(key)
-        if isinstance(value, list) and value:
-            return True
-        if isinstance(value, str) and value.strip():
-            return True
-    return False
-
-
-def _prediction_match_key_present(record: Mapping[str, Any]) -> bool:
-    return bool(
-        _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId"))
-        and _string(
-            record.get("scenario_variation_instance_id")
-            or record.get("scenarioVariationInstanceId")
-        )
+        or f"{prefix}_{index + 1:04d}"
     )
 
 
-def _record_id(record: Mapping[str, Any], index: int) -> str:
-    value = _string(record.get("outcome_id") or record.get("record_id") or record.get("id"))
-    return value or f"deployment-outcome-{index:04d}"
-
-
-def _outcome_owner_evidence_present(record: Mapping[str, Any]) -> bool:
-    evidence_refs = _mapping(
+def _record_has_owner_evidence(record: Mapping[str, Any]) -> bool:
+    evidence = (
         record.get("evidence_refs")
         or record.get("evidenceRefs")
         or record.get("owner_evidence_refs")
         or record.get("ownerEvidenceRefs")
-    )
-    owner_evidence_uri = _string(
-        record.get("evidence_uri")
-        or record.get("evidenceUri")
-        or record.get("pilot_log_uri")
-        or record.get("pilotLogUri")
-        or record.get("owner_system_proof_uri")
-        or record.get("ownerSystemProofUri")
-    )
-    attestation = (
-        record.get("operator_attestation")
+        or record.get("operator_attestation")
         or record.get("operatorAttestation")
         or record.get("owner_attestation")
         or record.get("ownerAttestation")
     )
-    return bool(evidence_refs or owner_evidence_uri or _attestation_ok(attestation))
+    if isinstance(evidence, Mapping):
+        return bool(evidence)
+    if isinstance(evidence, list):
+        return bool(evidence)
+    return bool(_string(evidence))
 
 
-def _records_from_real_robot_pov_payload(payload: Any) -> List[Dict[str, Any]]:
-    if isinstance(payload, list):
-        return [dict(item) for item in payload if isinstance(item, Mapping)]
-    if not isinstance(payload, Mapping):
-        return []
+def _record_has_actual_result(record: Mapping[str, Any]) -> bool:
     for key in (
-        "records",
-        "robot_pov_records",
-        "robotPovRecords",
-        "evidence_records",
-        "evidenceRecords",
-        "observations",
+        "actual_success",
+        "actualSuccess",
+        "actual_result",
+        "actualResult",
+        "result",
+        "outcome",
+        "status",
+        "failure_mode_ids",
+        "failureModeIds",
     ):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [dict(item) for item in value if isinstance(item, Mapping)]
-    if _string(
-        payload.get("robot_camera_video_uri")
-        or payload.get("robotCameraVideoUri")
-        or payload.get("action_log_uri")
-        or payload.get("actionLogUri")
-    ):
-        return [dict(payload)]
-    return []
-
-
-def _real_robot_pov_job_id(
-    payload: Mapping[str, Any],
-    records: Sequence[Mapping[str, Any]],
-) -> str | None:
-    for field in ("job_id", "jobId", "robot_eval_job_id", "robotEvalJobId"):
-        value = _string(payload.get(field))
-        if value:
-            return value
-    record_job_ids = {
-        value
-        for record in records
-        if (
-            value := _string(
-                record.get("job_id")
-                or record.get("jobId")
-                or record.get("robot_eval_job_id")
-                or record.get("robotEvalJobId")
-            )
-        )
-    }
-    if len(record_job_ids) == 1:
-        return next(iter(record_job_ids))
-    return None
-
-
-def _pov_record_id(record: Mapping[str, Any], index: int) -> str:
-    value = _string(
-        record.get("evidence_id")
-        or record.get("evidenceId")
-        or record.get("record_id")
-        or record.get("recordId")
-        or record.get("id")
-    )
-    return value or f"real-robot-pov-{index:04d}"
-
-
-def _pov_exact_key_present(record: Mapping[str, Any]) -> bool:
-    return bool(
-        _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId"))
-        and _string(
-            record.get("scenario_variation_instance_id")
-            or record.get("scenarioVariationInstanceId")
-        )
-    )
-
-
-def _pov_camera_video_present(record: Mapping[str, Any]) -> bool:
-    return bool(
-        _string(
-            record.get("robot_camera_video_uri")
-            or record.get("robotCameraVideoUri")
-            or record.get("pov_video_uri")
-            or record.get("povVideoUri")
-            or record.get("camera_video_uri")
-            or record.get("cameraVideoUri")
-            or record.get("video_uri")
-            or record.get("videoUri")
-        )
-    )
-
-
-def _pov_action_log_present(record: Mapping[str, Any]) -> bool:
-    return bool(
-        _string(
-            record.get("action_log_uri")
-            or record.get("actionLogUri")
-            or record.get("recorded_action_trace_uri")
-            or record.get("recordedActionTraceUri")
-            or record.get("action_trace_uri")
-            or record.get("actionTraceUri")
-        )
-    )
-
-
-def _pov_timestamp_alignment_present(
-    *,
-    record: Mapping[str, Any],
-    payload: Mapping[str, Any],
-) -> bool:
-    return bool(
-        _string(
-            record.get("timestamp_alignment")
-            or record.get("timestampAlignment")
-            or payload.get("timestamp_alignment")
-            or payload.get("timestampAlignment")
-        )
-    )
-
-
-def _pov_owner_evidence_present(record: Mapping[str, Any]) -> bool:
-    evidence_refs = _mapping(
-        record.get("owner_evidence_refs")
-        or record.get("ownerEvidenceRefs")
-        or record.get("evidence_refs")
-        or record.get("evidenceRefs")
-    )
-    evidence_uri = _string(
-        record.get("owner_evidence_uri")
-        or record.get("ownerEvidenceUri")
-        or record.get("evidence_uri")
-        or record.get("evidenceUri")
-    )
-    attestation = (
-        record.get("operator_attestation")
-        or record.get("operatorAttestation")
-        or record.get("owner_attestation")
-        or record.get("ownerAttestation")
-    )
-    return bool(evidence_refs or evidence_uri or _attestation_ok(attestation))
-
-
-def _audit_real_robot_pov(
-    *,
-    path: Path | None,
-    expected_job_id: str | None,
-) -> Dict[str, Any]:
-    if path is None:
-        return {
-            "status": "not_provided",
-            "ready": False,
-            "path": None,
-            "blockers": ["real_robot_pov_not_provided"],
-            "job_id": expected_job_id,
-            "record_count": 0,
-            "record_ids": [],
-        }
-    if not path.is_file():
-        return {
-            "status": "blocked",
-            "ready": False,
-            "path": str(path),
-            "blockers": ["real_robot_pov_missing"],
-            "job_id": expected_job_id,
-            "record_count": 0,
-            "record_ids": [],
-        }
-    try:
-        payload = _read_mapping(path)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {
-            "status": "blocked",
-            "ready": False,
-            "path": str(path),
-            "blockers": [f"real_robot_pov_read_failed:{type(exc).__name__}"],
-            "sha256": _sha_file(path),
-            "job_id": expected_job_id,
-            "record_count": 0,
-            "record_ids": [],
-        }
-    records = _records_from_real_robot_pov_payload(payload)
-    evidence_job_id = _real_robot_pov_job_id(payload, records)
-    resolved_job_id = expected_job_id or evidence_job_id
-    blockers: List[str] = []
-    if payload.get("schema_version") not in {
-        "real_robot_pov_manifest.v1",
-        "robot_pov_evidence_manifest.v1",
-        "real_robot_pov_evidence_manifest.v1",
-    }:
-        blockers.append("real_robot_pov_schema_mismatch")
-    if evidence_job_id and not _safe_job_id(evidence_job_id):
-        blockers.append("real_robot_pov_job_id_unsafe")
-    if expected_job_id and evidence_job_id and evidence_job_id != expected_job_id:
-        blockers.append("real_robot_pov_job_id_mismatch")
-    if not records:
-        blockers.append("real_robot_pov_empty")
-
-    missing_exact_keys = [
-        _pov_record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _pov_exact_key_present(record)
-    ]
-    missing_camera_video = [
-        _pov_record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _pov_camera_video_present(record)
-    ]
-    missing_action_logs = [
-        _pov_record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _pov_action_log_present(record)
-    ]
-    missing_timestamp_alignment = [
-        _pov_record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _pov_timestamp_alignment_present(record=record, payload=payload)
-    ]
-    missing_evidence = [
-        _pov_record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _pov_owner_evidence_present(record)
-    ]
-    if missing_exact_keys:
-        blockers.append("real_robot_pov_missing_exact_keys")
-    if missing_camera_video:
-        blockers.append("real_robot_pov_missing_camera_videos")
-    if missing_action_logs:
-        blockers.append("real_robot_pov_missing_action_logs")
-    if missing_timestamp_alignment:
-        blockers.append("real_robot_pov_missing_timestamp_alignment")
-    if missing_evidence:
-        blockers.append("real_robot_pov_missing_owner_evidence")
-
-    exact_key_record_count = len(records) - len(missing_exact_keys)
-    camera_video_record_count = len(records) - len(missing_camera_video)
-    action_log_record_count = len(records) - len(missing_action_logs)
-    timestamp_alignment_record_count = len(records) - len(missing_timestamp_alignment)
-    evidence_record_count = len(records) - len(missing_evidence)
-    return {
-        "status": "ready_for_robot_eval_job" if not blockers else "blocked",
-        "ready": not blockers,
-        "path": str(path),
-        "sha256": _sha_file(path),
-        "schema_version": payload.get("schema_version"),
-        "job_id": resolved_job_id,
-        "evidence_job_id": evidence_job_id,
-        "expected_job_id": expected_job_id,
-        "record_count": len(records),
-        "record_ids": [
-            _pov_record_id(record, index)
-            for index, record in enumerate(records, start=1)
-        ],
-        "exact_key_record_count": exact_key_record_count,
-        "camera_video_record_count": camera_video_record_count,
-        "action_log_record_count": action_log_record_count,
-        "timestamp_alignment_record_count": timestamp_alignment_record_count,
-        "evidence_record_count": evidence_record_count,
-        "missing_exact_key_record_ids": missing_exact_keys,
-        "missing_camera_video_record_ids": missing_camera_video,
-        "missing_action_log_record_ids": missing_action_logs,
-        "missing_timestamp_alignment_record_ids": missing_timestamp_alignment,
-        "missing_evidence_record_ids": missing_evidence,
-        "blockers": blockers,
-        "metadata_only": True,
-        "proof_boundary": (
-            "Real robot POV intake validates owner-supplied camera/action evidence references only; "
-            "the job must ingest the manifest before robot POV proof is allowed."
-        ),
-    }
+        if key in record and record.get(key) not in (None, "", []):
+            return True
+    return False
 
 
 def _audit_deployment_outcomes(
@@ -714,63 +421,61 @@ def _audit_deployment_outcomes(
             "job_id": expected_job_id,
             "record_count": 0,
         }
-    records = _records_from_outcome_payload(payload)
-    evidence_job_id = _outcome_job_id(payload, records)
+
+    evidence_job_id = _evidence_job_id(payload)
     resolved_job_id = expected_job_id or evidence_job_id
+    records = _records(payload)
     blockers: List[str] = []
-    if payload.get("schema_version") not in {
-        "deployment_outcome.v1",
-        "deployment_outcome_manifest.v1",
-        "actual_outcome_manifest.v1",
-        "deployment_outcome_inbox.v1",
-    }:
+    if payload.get("schema_version") != "deployment_outcome_manifest.v1":
         blockers.append("deployment_outcomes_schema_mismatch")
-    if not records:
-        blockers.append("deployment_outcomes_empty")
     if not resolved_job_id:
         blockers.append("deployment_outcomes_job_id_missing")
     elif not _safe_job_id(resolved_job_id):
         blockers.append("deployment_outcomes_job_id_unsafe")
     if expected_job_id and evidence_job_id and evidence_job_id != expected_job_id:
         blockers.append("deployment_outcomes_job_id_mismatch")
-    missing_task_or_scenario = [
-        _record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _string(record.get("task_id") or record.get("taskId"))
-        or not _string(record.get("scenario_id") or record.get("scenarioId"))
-    ]
-    missing_actual_signal = [
-        _record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _actual_signal_present(record)
-    ]
+    if not records:
+        blockers.append("deployment_outcomes_no_records")
+
+    missing_task_or_scenario: List[str] = []
+    missing_actual_signal: List[str] = []
+    missing_prediction_keys: List[str] = []
+    missing_owner_evidence: List[str] = []
+    prediction_key_count = 0
+    owner_evidence_count = 0
+    for index, record in enumerate(records):
+        record_id = _record_id(record, prefix="deployment_outcome", index=index)
+        has_task = bool(_string(record.get("task_id") or record.get("taskId")))
+        has_scenario = bool(_string(record.get("scenario_id") or record.get("scenarioId")))
+        has_run = bool(_string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId")))
+        has_variation = bool(
+            _string(
+                record.get("scenario_variation_instance_id")
+                or record.get("scenarioVariationInstanceId")
+            )
+        )
+        if not (has_task and has_scenario):
+            missing_task_or_scenario.append(record_id)
+        if not _record_has_actual_result(record):
+            missing_actual_signal.append(record_id)
+        if has_run and has_variation:
+            prediction_key_count += 1
+        else:
+            missing_prediction_keys.append(record_id)
+        if _record_has_owner_evidence(record):
+            owner_evidence_count += 1
+        else:
+            missing_owner_evidence.append(record_id)
+
     if missing_task_or_scenario:
         blockers.append("deployment_outcomes_missing_task_or_scenario")
     if missing_actual_signal:
         blockers.append("deployment_outcomes_missing_actual_result_signal")
-    missing_owner_evidence = [
-        _record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _outcome_owner_evidence_present(record)
-    ]
-    missing_prediction_match_keys = [
-        _record_id(record, index)
-        for index, record in enumerate(records, start=1)
-        if not _prediction_match_key_present(record)
-    ]
-    owner_evidence_record_count = len(records) - len(missing_owner_evidence)
-    prediction_match_key_record_count = len(records) - len(missing_prediction_match_keys)
-    records_ready_for_calibration = (
-        bool(records)
-        and not blockers
-        and not missing_prediction_match_keys
-    )
+
+    ready = not blockers
     return {
-        "status": "ready_for_real_world_validation" if not blockers else "blocked",
-        "ready": not blockers,
-        "records_ready_for_calibration": records_ready_for_calibration,
-        "prediction_match_keys_ready": records_ready_for_calibration,
-        "owner_evidence_ready": bool(records) and not missing_owner_evidence and not blockers,
+        "status": "ready_for_real_world_validation" if ready else "blocked",
+        "ready": ready,
         "path": str(path),
         "sha256": _sha_file(path),
         "schema_version": payload.get("schema_version"),
@@ -778,19 +483,172 @@ def _audit_deployment_outcomes(
         "evidence_job_id": evidence_job_id,
         "expected_job_id": expected_job_id,
         "record_count": len(records),
-        "record_ids": [_record_id(record, index) for index, record in enumerate(records, start=1)],
-        "prediction_match_key_record_count": prediction_match_key_record_count,
-        "missing_prediction_match_key_record_ids": missing_prediction_match_keys,
-        "owner_evidence_record_count": owner_evidence_record_count,
+        "records_ready_for_calibration": bool(records) and not missing_prediction_keys,
+        "prediction_match_keys_ready": bool(records) and not missing_prediction_keys,
+        "prediction_match_key_record_count": prediction_key_count,
+        "missing_prediction_match_key_record_ids": missing_prediction_keys,
+        "owner_evidence_ready": bool(records) and not missing_owner_evidence,
+        "owner_evidence_record_count": owner_evidence_count,
         "missing_owner_evidence_record_ids": missing_owner_evidence,
-        "missing_task_or_scenario_record_ids": missing_task_or_scenario,
-        "missing_actual_signal_record_ids": missing_actual_signal,
         "blockers": blockers,
         "metadata_only": True,
         "proof_boundary": (
-            "Deployment outcomes are owner-supplied real-world validation inputs; they do not "
-            "prove readiness until every outcome has owner evidence, the job pairs them with "
-            "predictions, and closure passes."
+            "Deployment outcome intake validates owner records for later predicted-vs-actual "
+            "joins; it does not prove calibration until the robot-eval job ingests them."
+        ),
+    }
+
+
+def _real_pov_video(record: Mapping[str, Any]) -> str:
+    return _string(
+        record.get("robot_camera_video_uri")
+        or record.get("robotCameraVideoUri")
+        or record.get("camera_video_uri")
+        or record.get("cameraVideoUri")
+        or record.get("video_uri")
+        or record.get("videoUri")
+    )
+
+
+def _real_pov_action_log(record: Mapping[str, Any]) -> str:
+    return _string(
+        record.get("action_log_uri")
+        or record.get("actionLogUri")
+        or record.get("actions_uri")
+        or record.get("actionsUri")
+        or record.get("action_trace_uri")
+        or record.get("actionTraceUri")
+    )
+
+
+def _audit_real_robot_pov(
+    *,
+    path: Path | None,
+    expected_job_id: str | None,
+) -> Dict[str, Any]:
+    if path is None:
+        return {
+            "status": "not_provided",
+            "ready": False,
+            "path": None,
+            "blockers": ["real_robot_pov_not_provided"],
+            "job_id": expected_job_id,
+            "record_count": 0,
+        }
+    if not path.is_file():
+        return {
+            "status": "blocked",
+            "ready": False,
+            "path": str(path),
+            "blockers": ["real_robot_pov_missing"],
+            "job_id": expected_job_id,
+            "record_count": 0,
+        }
+    try:
+        payload = _read_mapping(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "blocked",
+            "ready": False,
+            "path": str(path),
+            "blockers": [f"real_robot_pov_read_failed:{type(exc).__name__}"],
+            "sha256": _sha_file(path),
+            "job_id": expected_job_id,
+            "record_count": 0,
+        }
+
+    evidence_job_id = _evidence_job_id(payload)
+    resolved_job_id = expected_job_id or evidence_job_id
+    records = _records(payload)
+    blockers: List[str] = []
+    if payload.get("schema_version") != "real_robot_pov_manifest.v1":
+        blockers.append("real_robot_pov_schema_mismatch")
+    if resolved_job_id and not _safe_job_id(resolved_job_id):
+        blockers.append("real_robot_pov_job_id_unsafe")
+    if expected_job_id and evidence_job_id and evidence_job_id != expected_job_id:
+        blockers.append("real_robot_pov_job_id_mismatch")
+    if not records:
+        blockers.append("real_robot_pov_no_records")
+
+    missing_exact_keys: List[str] = []
+    missing_camera_video: List[str] = []
+    missing_action_logs: List[str] = []
+    missing_timestamp_alignment: List[str] = []
+    missing_evidence: List[str] = []
+    exact_key_count = 0
+    camera_video_count = 0
+    action_log_count = 0
+    timestamp_alignment_count = 0
+    evidence_count = 0
+    for index, record in enumerate(records):
+        record_id = _record_id(record, prefix="real_robot_pov", index=index)
+        has_task = bool(_string(record.get("task_id") or record.get("taskId")))
+        has_scenario = bool(_string(record.get("scenario_id") or record.get("scenarioId")))
+        has_run = bool(_string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId")))
+        has_variation = bool(
+            _string(
+                record.get("scenario_variation_instance_id")
+                or record.get("scenarioVariationInstanceId")
+            )
+        )
+        if has_task and has_scenario and has_run and has_variation:
+            exact_key_count += 1
+        else:
+            missing_exact_keys.append(record_id)
+        if _real_pov_video(record):
+            camera_video_count += 1
+        else:
+            missing_camera_video.append(record_id)
+        if _real_pov_action_log(record):
+            action_log_count += 1
+        else:
+            missing_action_logs.append(record_id)
+        if _string(record.get("timestamp_alignment") or record.get("timestampAlignment")):
+            timestamp_alignment_count += 1
+        else:
+            missing_timestamp_alignment.append(record_id)
+        if _record_has_owner_evidence(record):
+            evidence_count += 1
+        else:
+            missing_evidence.append(record_id)
+
+    if missing_exact_keys:
+        blockers.append("real_robot_pov_missing_exact_keys")
+    if missing_camera_video:
+        blockers.append("real_robot_pov_missing_camera_video")
+    if missing_action_logs:
+        blockers.append("real_robot_pov_missing_action_logs")
+    if missing_timestamp_alignment:
+        blockers.append("real_robot_pov_missing_timestamp_alignment")
+    if missing_evidence:
+        blockers.append("real_robot_pov_missing_owner_evidence")
+
+    ready = not blockers
+    return {
+        "status": "ready_for_robot_eval_job" if ready else "blocked",
+        "ready": ready,
+        "path": str(path),
+        "sha256": _sha_file(path),
+        "schema_version": payload.get("schema_version"),
+        "job_id": resolved_job_id,
+        "evidence_job_id": evidence_job_id,
+        "expected_job_id": expected_job_id,
+        "record_count": len(records),
+        "exact_key_record_count": exact_key_count,
+        "camera_video_record_count": camera_video_count,
+        "action_log_record_count": action_log_count,
+        "timestamp_alignment_record_count": timestamp_alignment_count,
+        "evidence_record_count": evidence_count,
+        "missing_exact_key_record_ids": missing_exact_keys,
+        "missing_camera_video_record_ids": missing_camera_video,
+        "missing_action_log_record_ids": missing_action_logs,
+        "missing_timestamp_alignment_record_ids": missing_timestamp_alignment,
+        "missing_evidence_record_ids": missing_evidence,
+        "blockers": blockers,
+        "metadata_only": True,
+        "proof_boundary": (
+            "Real robot POV intake validates owner-supplied camera/action evidence pointers "
+            "only; the job ingest and closure audit must join them to scenario runs."
         ),
     }
 
@@ -996,60 +854,11 @@ def _audit_live_closure_evidence(
     if expected_job_id and evidence_job_id and evidence_job_id != expected_job_id:
         blockers.append("live_closure_evidence_job_id_mismatch")
 
-    review = _section(payload, "review_acceptance", "reviewAcceptance")
-    delivery = _section(payload, "delivery", "signed_delivery", "signedDelivery")
-    safety = _section(
-        payload,
-        "safety_contact_physics",
-        "safetyContactPhysics",
-        "robot_readiness",
-        "robotReadiness",
-    )
+    delivery_access = _section(payload, "delivery_access", "deliveryAccess", "delivery")
     rights = _section(payload, "rights_privacy", "rightsPrivacy")
     webapp = _section(payload, "webapp_upstream", "webappUpstream")
 
-    review_ready = (
-        _boolish(review.get("accepted"))
-        or _status_ok(review.get("status"))
-    ) and (
-        _attestation_ok(
-            review.get("operator_attestation")
-            or review.get("operatorAttestation")
-            or review.get("owner_attestation")
-            or review.get("ownerAttestation")
-        )
-        or bool(_string(review.get("reviewer")))
-    )
-    signed_urls = delivery.get("signed_urls") or delivery.get("signedUrls") or []
-    delivery_ready = (
-        bool(signed_urls)
-        and _boolish(
-            delivery.get("storage_upload_performed")
-            or delivery.get("storageUploadPerformed")
-        )
-        and _boolish(delivery.get("entitlement_verified") or delivery.get("entitlementVerified"))
-    )
-    safety_ref_fields = (
-        "methodology_uri_or_path",
-        "methodologyUriOrPath",
-        "contact_validation_uri_or_path",
-        "contactValidationUriOrPath",
-        "safety_validation_uri_or_path",
-        "safetyValidationUriOrPath",
-    )
-    safety_refs = [field for field in safety_ref_fields if _string(safety.get(field))]
-    safety_ready = (
-        _boolish(safety.get("physics_contact_validated") or safety.get("physicsContactValidated"))
-        and _boolish(safety.get("safety_validated") or safety.get("safetyValidated"))
-        and _boolish(safety.get("robot_readiness_proven") or safety.get("robotReadinessProven"))
-        and bool(safety_refs)
-        and _attestation_ok(
-            safety.get("operator_attestation")
-            or safety.get("operatorAttestation")
-            or safety.get("owner_attestation")
-            or safety.get("ownerAttestation")
-        )
-    )
+    delivery_access_ready = _delivery_access_ready(delivery_access)
     rights_ready = (
         not rights
         or _status_ok(rights.get("status"))
@@ -1060,12 +869,8 @@ def _audit_live_closure_evidence(
         1 for field in WEBAPP_UPSTREAM_REQUIRED_FIELDS if _string(webapp.get(field))
     )
 
-    if not review_ready:
-        blockers.append("review_acceptance_evidence_incomplete")
-    if not delivery_ready:
-        blockers.append("delivery_evidence_incomplete")
-    if not safety_ready:
-        blockers.append("safety_contact_physics_evidence_incomplete")
+    if not delivery_access_ready:
+        blockers.append("delivery_access_evidence_incomplete")
     if not rights_ready:
         blockers.append("rights_privacy_evidence_blocked")
 
@@ -1079,9 +884,7 @@ def _audit_live_closure_evidence(
         "evidence_job_id": evidence_job_id,
         "expected_job_id": expected_job_id,
         "sections": {
-            "review_acceptance_ready": review_ready,
-            "delivery_ready": delivery_ready,
-            "safety_contact_physics_ready": safety_ready,
+            "delivery_access_ready": delivery_access_ready,
             "rights_privacy_ready": rights_ready,
             "webapp_upstream_id_count": webapp_id_count,
         },
@@ -1089,7 +892,7 @@ def _audit_live_closure_evidence(
         "metadata_only": True,
         "proof_boundary": (
             "Closure evidence is staged for the deterministic live closure audit only; it does "
-            "not prove robot readiness until live_eval_closure_manifest.json passes."
+            "not prove package closure until live_eval_closure_manifest.json passes."
         ),
     }
 
@@ -1199,55 +1002,6 @@ def _stage_live_closure_evidence(
     }
 
 
-def _stage_real_robot_pov(
-    *,
-    pov_path: Path,
-    audit: Mapping[str, Any],
-    capture_root: Path | None,
-    overwrite: bool,
-) -> Dict[str, Any]:
-    if not audit.get("ready"):
-        return {
-            "status": "blocked",
-            "performed": False,
-            "blockers": ["real_robot_pov_not_ready_for_staging"],
-        }
-    if capture_root is None:
-        return {
-            "status": "blocked",
-            "performed": False,
-            "blockers": ["missing_control_plane_capture_root"],
-        }
-    target = (
-        capture_root
-        / "pipeline"
-        / "robot_eval_inputs"
-        / REAL_ROBOT_POV_ARTIFACT_NAME
-    )
-    ensure_dir(target.parent)
-    blockers: List[str] = []
-    if target.exists() and not overwrite:
-        blockers.append("target_real_robot_pov_already_exists")
-    if blockers:
-        return {
-            "status": "blocked",
-            "performed": False,
-            "target_path": str(target),
-            "blockers": blockers,
-        }
-    shutil.copy2(pov_path, target)
-    return {
-        "status": "staged",
-        "performed": True,
-        "target_path": str(target),
-        "job_id": audit.get("job_id"),
-        "record_count": int(audit.get("record_count") or 0),
-        "sha256": _sha_file(target),
-        "blockers": [],
-        "proof_boundary": "staging copies real robot POV references only and does not run the job",
-    }
-
-
 def _stage_deployment_outcomes(
     *,
     outcome_path: Path,
@@ -1280,45 +1034,94 @@ def _stage_deployment_outcomes(
             "performed": False,
             "blockers": ["deployment_outcomes_job_id_unsafe"],
         }
-    digest = _string(audit.get("sha256"))[:12] or _sha_file(outcome_path)[:12]
-    record_ids = [
-        _string(record_id)
-        for record_id in audit.get("record_ids", [])
-        if _string(record_id)
-    ]
-    stem = record_ids[0] if len(record_ids) == 1 else f"{job_id}-{digest}"
-    safe_stem = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in stem).strip(".-")
-    safe_stem = safe_stem[:120] or f"{job_id}-{digest}"
-    target = (
+    payload = _read_mapping(outcome_path)
+    records = _records(payload)
+    target_dir = (
         capture_root
         / "pipeline"
         / "robot_eval_inputs"
         / job_id
         / "deployment_outcomes"
         / "inbox"
-        / f"{safe_stem}.json"
     )
+    ensure_dir(target_dir)
+    target_paths = [
+        target_dir / f"{_record_id(record, prefix='deployment_outcome', index=index)}.json"
+        for index, record in enumerate(records)
+    ]
+    existing = [str(path) for path in target_paths if path.exists()]
+    if existing and not overwrite:
+        return {
+            "status": "blocked",
+            "performed": False,
+            "target_path": existing[0],
+            "blockers": ["target_deployment_outcome_already_exists"],
+        }
+    for index, record in enumerate(records):
+        target = target_paths[index]
+        write_json(
+            target,
+            {
+                "schema_version": "deployment_outcome_record.v1",
+                "job_id": job_id,
+                "source_manifest_path": str(outcome_path),
+                "record": record,
+            },
+        )
+    return {
+        "status": "staged",
+        "performed": True,
+        "target_path": str(target_paths[0]) if target_paths else None,
+        "target_dir": str(target_dir),
+        "job_id": job_id,
+        "record_count": len(records),
+        "sha256": _sha_file(target_paths[0]) if target_paths else None,
+        "blockers": [],
+        "proof_boundary": (
+            "staging copies owner deployment outcome records only and does not run "
+            "predicted-vs-actual calibration"
+        ),
+    }
+
+
+def _stage_real_robot_pov(
+    *,
+    pov_path: Path,
+    audit: Mapping[str, Any],
+    capture_root: Path | None,
+    overwrite: bool,
+) -> Dict[str, Any]:
+    if not audit.get("ready"):
+        return {
+            "status": "blocked",
+            "performed": False,
+            "blockers": ["real_robot_pov_not_ready_for_staging"],
+        }
+    if capture_root is None:
+        return {
+            "status": "blocked",
+            "performed": False,
+            "blockers": ["missing_control_plane_capture_root"],
+        }
+    target = capture_root / "pipeline" / "robot_eval_inputs" / "real_robot_pov_manifest.json"
     ensure_dir(target.parent)
-    blockers: List[str] = []
     if target.exists() and not overwrite:
-        blockers.append("target_deployment_outcome_already_exists")
-    if blockers:
         return {
             "status": "blocked",
             "performed": False,
             "target_path": str(target),
-            "blockers": blockers,
+            "blockers": ["target_real_robot_pov_already_exists"],
         }
-    shutil.copy2(outcome_path, target)
+    shutil.copy2(pov_path, target)
     return {
         "status": "staged",
         "performed": True,
         "target_path": str(target),
-        "job_id": job_id,
+        "job_id": audit.get("job_id"),
         "record_count": int(audit.get("record_count") or 0),
         "sha256": _sha_file(target),
         "blockers": [],
-        "proof_boundary": "staging copies deployment outcomes only and does not run the job",
+        "proof_boundary": "staging copies real robot POV evidence only and does not execute policy",
     }
 
 
@@ -1502,38 +1305,37 @@ def _write_staged_inputs(
         },
         "deployment_outcomes": {
             "ready": outcomes_ready and outcomes_staged,
-            "records_ready_for_calibration": bool(
-                deployment_outcomes_audit.get("records_ready_for_calibration")
-            )
-            and outcomes_staged,
-            "prediction_match_keys_ready": bool(
-                deployment_outcomes_audit.get("prediction_match_keys_ready")
-            )
-            and outcomes_staged,
-            "owner_evidence_ready": bool(
-                deployment_outcomes_audit.get("owner_evidence_ready")
-            )
-            and outcomes_staged,
             "staged": outcomes_staged,
             "job_id": deployment_outcomes_audit.get("job_id")
             or deployment_outcomes_staging.get("job_id"),
             "path": deployment_outcomes_audit.get("path"),
             "target_path": deployment_outcomes_staging.get("target_path"),
+            "target_dir": deployment_outcomes_staging.get("target_dir"),
             "sha256": deployment_outcomes_staging.get("sha256")
             or deployment_outcomes_audit.get("sha256"),
             "record_count": deployment_outcomes_audit.get("record_count", 0),
-            "record_ids": deployment_outcomes_audit.get("record_ids", []),
+            "records_ready_for_calibration": bool(
+                deployment_outcomes_audit.get("records_ready_for_calibration")
+            ),
+            "prediction_match_keys_ready": bool(
+                deployment_outcomes_audit.get("prediction_match_keys_ready")
+            ),
             "prediction_match_key_record_count": deployment_outcomes_audit.get(
-                "prediction_match_key_record_count", 0
+                "prediction_match_key_record_count",
+                0,
             ),
             "missing_prediction_match_key_record_ids": deployment_outcomes_audit.get(
-                "missing_prediction_match_key_record_ids", []
+                "missing_prediction_match_key_record_ids",
+                [],
             ),
+            "owner_evidence_ready": bool(deployment_outcomes_audit.get("owner_evidence_ready")),
             "owner_evidence_record_count": deployment_outcomes_audit.get(
-                "owner_evidence_record_count", 0
+                "owner_evidence_record_count",
+                0,
             ),
             "missing_owner_evidence_record_ids": deployment_outcomes_audit.get(
-                "missing_owner_evidence_record_ids", []
+                "missing_owner_evidence_record_ids",
+                [],
             ),
         },
         "policy_package": {
@@ -1548,34 +1350,30 @@ def _write_staged_inputs(
         "real_robot_pov": {
             "ready": real_pov_ready and real_pov_staged,
             "staged": real_pov_staged,
-            "job_id": real_robot_pov_audit.get("job_id") or real_robot_pov_staging.get("job_id"),
+            "job_id": real_robot_pov_audit.get("job_id")
+            or real_robot_pov_staging.get("job_id"),
             "path": real_robot_pov_audit.get("path"),
             "target_path": real_robot_pov_staging.get("target_path"),
-            "sha256": real_robot_pov_staging.get("sha256")
-            or real_robot_pov_audit.get("sha256"),
+            "sha256": real_robot_pov_staging.get("sha256") or real_robot_pov_audit.get("sha256"),
             "record_count": real_robot_pov_audit.get("record_count", 0),
-            "record_ids": real_robot_pov_audit.get("record_ids", []),
             "exact_key_record_count": real_robot_pov_audit.get("exact_key_record_count", 0),
-            "camera_video_record_count": real_robot_pov_audit.get("camera_video_record_count", 0),
+            "camera_video_record_count": real_robot_pov_audit.get(
+                "camera_video_record_count",
+                0,
+            ),
             "action_log_record_count": real_robot_pov_audit.get("action_log_record_count", 0),
             "timestamp_alignment_record_count": real_robot_pov_audit.get(
-                "timestamp_alignment_record_count", 0
+                "timestamp_alignment_record_count",
+                0,
             ),
             "evidence_record_count": real_robot_pov_audit.get("evidence_record_count", 0),
             "missing_exact_key_record_ids": real_robot_pov_audit.get(
-                "missing_exact_key_record_ids", []
-            ),
-            "missing_camera_video_record_ids": real_robot_pov_audit.get(
-                "missing_camera_video_record_ids", []
-            ),
-            "missing_action_log_record_ids": real_robot_pov_audit.get(
-                "missing_action_log_record_ids", []
-            ),
-            "missing_timestamp_alignment_record_ids": real_robot_pov_audit.get(
-                "missing_timestamp_alignment_record_ids", []
+                "missing_exact_key_record_ids",
+                [],
             ),
             "missing_evidence_record_ids": real_robot_pov_audit.get(
-                "missing_evidence_record_ids", []
+                "missing_evidence_record_ids",
+                [],
             ),
         },
         "proof_boundary": {
@@ -1584,8 +1382,6 @@ def _write_staged_inputs(
             "live_webapp_forwarding_proven": False,
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
-            "robot_pov_evidence_proven": False,
-            "real_world_outcome_proven": False,
             "policy_execution_proven": False,
             "robot_readiness_proven": False,
             "public_claim_upgrade_allowed": False,

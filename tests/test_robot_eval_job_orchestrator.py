@@ -14,9 +14,13 @@ import pytest
 from blueprint_pipeline import robot_eval_provider_input_setup as provider_input_setup
 from blueprint_pipeline.evaluation_prep_stage import robot_eval_job_evaluation_prep_surface
 from blueprint_pipeline.live_robot_eval_closure import build_live_robot_eval_closure_manifest
+from blueprint_pipeline.post_training_data_package import build_post_training_data_package_export
+from blueprint_pipeline.robot_eval_execution import build_scenario_eval_matrix
 from blueprint_pipeline.robot_eval_job_orchestrator import (
     AgentsSdkRobotEvalJobAdapter,
     FakeRobotEvalJobAgentAdapter,
+    _remote_cloud_execution_closure_manifest,
+    _robot_team_grade_eval_closure_manifest,
     build_robot_eval_job,
     resolve_simulator_selection_policy,
     run_robot_eval_job_request_inbox,
@@ -24,7 +28,7 @@ from blueprint_pipeline.robot_eval_job_orchestrator import (
 from blueprint_pipeline.robot_eval_provider_input_setup import (
     prepare_robot_eval_provider_inputs,
 )
-from blueprint_pipeline.robot_eval_worker import run_robot_eval_worker
+from blueprint_pipeline.robot_eval_worker import _build_parser, run_robot_eval_worker
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -261,6 +265,237 @@ def _write_fixture_attempts(capture_root: Path, *, success: bool) -> None:
     )
 
 
+def test_post_training_export_includes_simulator_batch_trace_streams(tmp_path: Path) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-batch-traces"
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "schema_version": "robot_eval_simulator_command_normalized_attempt_trace.v1",
+            "attempts": [{"attempt_id": "attempt-run-a", "scenario_eval_run_id": "run-a"}],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "schema_version": "robot_eval_simulator_command_failure_labels.v1",
+            "labels": [],
+        },
+    )
+    _write_json(
+        job_dir / "prediction_outcome_ledger.json",
+        {
+            "schema_version": "robot_eval_simulator_prediction_outcome_ledger.v1",
+            "records": [],
+        },
+    )
+    _write_json(
+        job_dir / "calibration_report.json",
+        {
+            "schema_version": "robot_eval_simulator_calibration_report.v1",
+            "records": [],
+        },
+    )
+    _write_json(
+        job_dir / "breakage_library.json",
+        {
+            "schema_version": "robot_eval_simulator_breakage_library.v1",
+            "records": [],
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_trace_package_manifest.json",
+        {
+            "schema_version": "mujoco_g1_batch_trace_package.v1",
+            "artifact_paths": {
+                "attempt_trace_jsonl": "simulator_command_batch_attempt_trace.jsonl",
+                "contact_stream_jsonl": "simulator_command_batch_contact_stream.jsonl",
+                "planner_state_jsonl": "simulator_command_batch_planner_state.jsonl",
+                "control_stream_jsonl": "simulator_command_batch_control_stream.jsonl",
+                "visual_media_coverage": (
+                    "simulator_command_batch_visual_media_coverage.json"
+                ),
+            },
+        },
+    )
+    for name in (
+        "simulator_command_batch_attempt_trace.jsonl",
+        "simulator_command_batch_contact_stream.jsonl",
+        "simulator_command_batch_planner_state.jsonl",
+        "simulator_command_batch_control_stream.jsonl",
+        "simulator_command_batch_visual_media_coverage.json",
+        "simulator_command_digital_twin_fidelity_qa.json",
+    ):
+        path = job_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+
+    package = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=job_dir,
+    )
+
+    assert package["status"] == "export_ready_review_required"
+    assert package["included_artifacts"]["simulator_command_batch_attempt_trace"] == (
+        "simulator_command_batch_attempt_trace.jsonl"
+    )
+    assert package["included_artifacts"]["simulator_command_batch_contact_stream"] == (
+        "simulator_command_batch_contact_stream.jsonl"
+    )
+    assert package["included_artifacts"]["simulator_command_batch_planner_state"] == (
+        "simulator_command_batch_planner_state.jsonl"
+    )
+    assert package["included_artifacts"]["simulator_command_batch_control_stream"] == (
+        "simulator_command_batch_control_stream.jsonl"
+    )
+    assert package["included_artifacts"]["simulator_command_batch_visual_media_coverage"] == (
+        "simulator_command_batch_visual_media_coverage.json"
+    )
+    assert package["included_artifacts"]["simulator_command_digital_twin_fidelity_qa"] == (
+        "simulator_command_digital_twin_fidelity_qa.json"
+    )
+    assert package["export_policy"]["simulator_command_batch_trace_streams_included"] is True
+
+
+def test_scenario_eval_matrix_expands_requested_route_to_500_deterministic_runs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_policy_reference_variation_instances(capture_root)
+    request = _full_job_request(capture_root)
+    request["execution_request"] = {
+        "schema_version": "blueprint.robot_eval_execution_request.v1",
+        "scenario_batch": {
+            "target_scenario_eval_run_count": 500,
+            "batching_reason": "robot_team_grade_mujoco_review",
+        },
+    }
+
+    matrix = build_scenario_eval_matrix(
+        capture_root=capture_root,
+        job_dir=capture_root / "pipeline" / "robot_eval_jobs" / "job-500-matrix",
+        job_request=request,
+        generated_at="2026-06-14T00:00:00Z",
+    )
+
+    runs = matrix["runs"]
+    assert matrix["status"] == "completed"
+    assert matrix["base_scenario_eval_run_count"] == len(POLICY_REFERENCE_VARIATION_NAMES)
+    assert matrix["target_scenario_eval_run_count"] == 500
+    assert matrix["target_scenario_eval_run_count_source"] == (
+        "execution_request.scenario_batch.target_scenario_eval_run_count"
+    )
+    assert matrix["scenario_eval_batch_expanded"] is True
+    assert matrix["target_scenario_eval_run_count_satisfied"] is True
+    assert matrix["scenario_eval_run_count"] == 500
+    assert len({run["scenario_eval_run_id"] for run in runs}) == 500
+    assert set(matrix["variation_names_covered"]) == set(POLICY_REFERENCE_VARIATION_NAMES)
+    assert matrix["episode_authoring_contract"][
+        "spawn_target_variation_seed_handling"
+    ] == "deterministic_frozen_matrix_rows"
+    assert matrix["episode_authoring_contract"][
+        "runtime_spawn_goal_variation_mutation_allowed"
+    ] is False
+    first_run = runs[0]
+    repeated_run = runs[len(POLICY_REFERENCE_VARIATION_NAMES)]
+    last_run = runs[-1]
+    for run in (first_run, repeated_run, last_run):
+        assert run["spawn_goal_variation_seed_frozen"] is True
+        assert isinstance(run["deterministic_seed"], int)
+        assert run["deterministic_seed"] == run["episode_seed"]
+        assert len(run["spawn_pose"]) == 3
+        assert len(run["target_pose"]) == 3
+        assert run["concrete_mutation"]["spawn_pose"] == run["spawn_pose"]
+        assert run["concrete_mutation"]["target_pose"] == run["target_pose"]
+        assert run["deterministic_scenario_parameters"][
+            "runtime_spawn_goal_variation_mutation_allowed"
+        ] is False
+    assert repeated_run["batch_repeat_index"] == 1
+    assert repeated_run["batch_source_scenario_eval_run_id"] == first_run[
+        "scenario_eval_run_id"
+    ]
+    assert repeated_run["scenario_eval_run_id"] != first_run["scenario_eval_run_id"]
+    assert last_run["batch_ordinal"] == 500
+
+    repeat_matrix = build_scenario_eval_matrix(
+        capture_root=capture_root,
+        job_dir=capture_root / "pipeline" / "robot_eval_jobs" / "job-500-matrix-repeat",
+        job_request=request,
+        generated_at="2026-06-14T00:00:00Z",
+    )
+    assert repeat_matrix["deterministic_fingerprint"] == matrix["deterministic_fingerprint"]
+    assert repeat_matrix["runs"][0] == first_run
+    assert repeat_matrix["runs"][-1] == last_run
+
+
+def test_minimal_webapp_request_gets_beta_enrichment_without_overwriting_source(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    request = {
+        "schema_version": "robot_eval_job_request.v1",
+        "job_id": "job-minimal-webapp",
+        "buyer_request_id": "buyer-request-prod-001",
+        "site_package": {
+            "capture_root": str(capture_root),
+            "site_submission_id": "site-submission-prod-001",
+            "capture_job_id": "capture-job-prod-001",
+            "capture_id": "capture-1",
+        },
+        "source_kind": "webapp_route_forwarding_proof",
+    }
+    request_path = tmp_path / "minimal-webapp-request.json"
+    _write_json(request_path, request)
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-minimal-webapp",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-minimal-webapp"
+    source_request = _read_json(job_dir / "job_request_source.json")
+    enriched_request = _read_json(job_dir / "job_request.json")
+    enrichment = _read_json(job_dir / "job_request_enrichment_manifest.json")
+    validation = _read_json(job_dir / "job_validation.json")
+    policy_manifest = _read_json(job_dir / "policy_package_manifest.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert "customer" not in source_request
+    assert "robot_profile" not in source_request
+    assert "requested_tasks" not in source_request
+    assert "policy_package" not in source_request
+    assert enrichment["status"] == "enriched"
+    assert enrichment["added_fields"] == [
+        "customer",
+        "robot_profile",
+        "requested_tasks",
+        "policy_package",
+    ]
+    assert enrichment["claim_boundary"].startswith("Fills missing beta orchestration inputs")
+    assert enriched_request["customer"]["source"] == "pipeline_beta_request_enrichment"
+    assert enriched_request["robot_profile"]["robot_profile_id"]
+    assert enriched_request["requested_tasks"]
+    assert enriched_request["policy_package"]["high_level_skill_trace"]["reference_only"] is True
+    assert validation["status"] != "blocked"
+    assert "missing_customer" not in validation["blockers"]
+    assert "missing_robot_profile" not in validation["blockers"]
+    assert "missing_requested_tasks" not in validation["blockers"]
+    assert "missing_policy_evidence" not in validation["blockers"]
+    assert policy_manifest["status"] == "review_required"
+    assert policy_manifest["selected_modalities"] == ["high_level_skill_trace"]
+    assert run_manifest["artifacts"]["job_request_source"] == "job_request_source.json"
+    assert run_manifest["artifacts"]["job_request_enrichment_manifest"] == (
+        "job_request_enrichment_manifest.json"
+    )
+
+
 def _write_minimal_glb_with_accessor_bounds(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -336,6 +571,28 @@ def _variation_detail_fields(variation_name: str) -> dict[str, object]:
             }
         },
     }
+
+
+def _write_policy_reference_variation_instances(capture_root: Path) -> None:
+    _write_json(
+        capture_root / "pipeline" / "simulation_automation" / "scenario_variation_instances.json",
+        {
+            "schema_version": "scenario_variation_instances.v1",
+            "status": "completed",
+            "required_variation_names": list(POLICY_REFERENCE_VARIATION_NAMES),
+            "instance_count": len(POLICY_REFERENCE_VARIATION_NAMES),
+            "instances": [
+                {
+                    "instance_id": _scenario_variation_instance_id(variation_name),
+                    "task_id": "place_return_in_bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "variation_name": variation_name,
+                    **_variation_detail_fields(variation_name),
+                }
+                for variation_name in POLICY_REFERENCE_VARIATION_NAMES
+            ],
+        },
+    )
 
 
 def _scenario_eval_run_id(variation_name: str, index: int) -> str:
@@ -894,11 +1151,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert live_closure["repo_local_artifacts_ready"] is True
     assert live_closure["live_external_ready"] is False
     assert live_closure["gates"]["scenario_library"]["passed"] is True
-    assert live_closure["gates"]["real_robot_pov_evidence"]["passed"] is False
-    assert (
-        "real_robot_pov_evidence_not_proven"
-        in live_closure["gates"]["real_robot_pov_evidence"]["blockers"]
-    )
+    assert live_closure["gates"]["robot_pov_generation"]["passed"] is True
     assert live_closure["gates"]["report_generation"]["passed"] is True
     requirement_coverage = live_closure["requirement_coverage"]
     assert requirement_coverage["schema_version"] == "live_robot_eval_requirement_coverage.v1"
@@ -915,20 +1168,18 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "plugin_world_sim_engines",
         "neutral_eval_harness_report",
     }
-    assert set(requirement_coverage["live_external_requirement_ids"]) == {
-        "real_robot_pov_evidence",
-        "real_world_validation_loop",
-        "predicted_vs_actual_deployment_data",
-    }
+    assert set(requirement_coverage["live_external_requirement_ids"]) == set()
     assert not (
         set(requirement_coverage["repo_local_requirement_ids"])
         - set(requirement_coverage["passed_requirement_ids"])
     )
-    assert {
-        "real_robot_pov_evidence",
-        "real_world_validation_loop",
-        "predicted_vs_actual_deployment_data",
-    }.issubset(set(requirement_coverage["blocked_requirement_ids"]))
+    assert set(requirement_coverage["blocked_requirement_ids"]).isdisjoint(
+        {
+            "real_robot_pov_evidence",
+            "real_world_validation_loop",
+            "predicted_vs_actual_deployment_data",
+        }
+    )
     for export_name in ("rlds", "lerobot", "hdf5", "parquet", "video_bundle"):
         export_entry = optional_exports["formats"][export_name]
         assert export_entry["format_written"] is True
@@ -1238,13 +1489,9 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
     assert str(staged_closure_evidence_path) in live_closure["evidence_sources"]
     assert live_closure["blockers"] == []
     assert all(gate["passed"] for gate in live_closure["gates"].values())
-    assert live_closure["gates"]["real_robot_pov_evidence"]["passed"] is True
     assert proof_boundary["status"] == "live_end_to_end_verified"
     assert proof_boundary["simulator_execution_proven"] is True
     assert proof_boundary["robot_policy_execution_proven"] is True
-    assert proof_boundary["real_world_outcome_proven"] is True
-    assert proof_boundary["physics_contact_validated"] is True
-    assert proof_boundary["safety_validated"] is True
     assert proof_boundary["robot_readiness_proven"] is True
     assert proof_boundary["public_claim_upgrade_allowed"] is True
     assert run_manifest["live_end_to_end_verified"] is True
@@ -1364,6 +1611,443 @@ def test_live_robot_eval_closure_blocks_conflicting_webapp_upstream_sources(
         "job_request": "site-submission-live-001",
         "capture_descriptor": "site-submission-other",
     }
+
+
+def test_live_robot_eval_closure_accepts_matching_webapp_route_forwarding_proof_lineage(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "webapp-prod-job-1"
+    request = _full_job_request(capture_root)
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "webapp_route_forwarding_proof"
+        / "webapp_route_forwarding_proof.production.json",
+        {
+            "schema_version": "blueprint_webapp_route_forwarding_proof.v1",
+            "status": "forwarded_to_pipeline_intake",
+            "capture_root": (
+                "/var/lib/blueprint/pipeline-control-plane/captures/local-blueprint/"
+                "scenes/scene-1/captures/capture-1"
+            ),
+            "pipeline_intake": {"status": "staged_for_control_plane"},
+            "job_request": {
+                "schema_version": "robot_eval_job_request.v1",
+                "job_id": "webapp-prod-job-1",
+                "request_id": "request-prod-001",
+                "buyer_request_id": "buyer-request-prod-001",
+                "site_package": {
+                    "site_submission_id": "site-submission-prod-001",
+                    "capture_job_id": "capture-job-prod-001",
+                    "capture_id": "capture-1",
+                    "capture_root": (
+                        "/var/lib/blueprint/pipeline-control-plane/captures/"
+                        "local-blueprint/scenes/scene-1/captures/capture-1"
+                    ),
+                },
+            },
+        },
+    )
+    _write_json(
+        job_dir / "runpod_live_execution_proof.zero-pods.json",
+        {
+            "schema_version": "runpod_live_execution_proof.v1",
+            "status": "runpod_live_proof_collected",
+            "api_call_performed": True,
+            "runpod_side_effects_may_have_occurred": False,
+            "active_pod_count_before": 0,
+            "active_pod_count_after": 0,
+            "secret_values_in_artifact": False,
+            "raw_api_key_stored": False,
+            "blockers": [],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    gate = manifest["gates"]["webapp_upstream_truth"]
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
+    assert gate["evidence"]["ids"] == {
+        "site_submission_id": "site-submission-prod-001",
+        "request_id": "request-prod-001",
+        "buyer_request_id": "buyer-request-prod-001",
+        "capture_job_id": "capture-job-prod-001",
+    }
+    assert gate["evidence"]["webapp_route_forwarding_proofs"][0]["grounding_verified"] is True
+    assert gate["evidence"]["webapp_route_forwarding_proofs"][0]["lineage_matches"] is True
+    assert gate["evidence"]["webapp_route_forwarding_proofs"][0]["job_id_matches"] is True
+    beta_checks = {
+        check["check_id"]: check for check in manifest["robot_team_beta_readiness"]["checks"]
+    }
+    assert beta_checks["production_or_staging_webapp_request_ids"]["passed"] is True
+    assert beta_checks["real_capture_root_input"]["passed"] is True
+    assert beta_checks["live_provider_worker_execution"]["passed"] is False
+    assert (
+        "remote_cloud_execution_closure_manifest_missing"
+        in beta_checks["live_provider_worker_execution"]["blockers"]
+    )
+    assert beta_checks["fresh_live_robot_team_run_today"]["passed"] is False
+    assert (
+        "remote_cloud_execution_closure_manifest_missing"
+        in beta_checks["fresh_live_robot_team_run_today"]["blockers"]
+    )
+    assert beta_checks["shutdown_and_cost_proof"]["evidence"][
+        "runpod_zero_active_pods_proof"
+    ]["zero_active_pods_now"] is True
+    assert beta_checks["robot_pov_policy_evidence"]["passed"] is False
+    assert (
+        "real_robot_pov_evidence:real_robot_pov_evidence_not_proven"
+        in beta_checks["robot_pov_policy_evidence"]["blockers"]
+    )
+    assert beta_checks["deployment_outcome_joins"]["passed"] is False
+    assert (
+        "deployment_outcome_intake_manifest_missing"
+        in beta_checks["deployment_outcome_joins"]["blockers"]
+    )
+
+
+def test_live_robot_eval_closure_beta_accepts_schema_valid_deployment_join_artifacts(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "webapp-prod-join-artifacts"
+    request = _full_job_request(capture_root)
+    _write_json(
+        job_dir / "deployment_outcome_intake_manifest.json",
+        {
+            "schema_version": "deployment_outcome_intake_manifest.v1",
+            "status": "blocked_missing_real_world_outcomes",
+            "record_count": 0,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        job_dir / "deployment_outcome_ledger.json",
+        {
+            "schema_version": "deployment_outcome_ledger.v1",
+            "status": "blocked_missing_real_world_outcomes",
+            "record_count": 0,
+            "matched_prediction_record_count": 0,
+            "exact_prediction_record_count": 0,
+            "blockers": ["missing_real_world_outcome_records"],
+        },
+    )
+    _write_json(
+        job_dir / "prediction_vs_actual_deployment_summary.json",
+        {
+            "schema_version": "prediction_vs_actual_deployment_summary.v1",
+            "status": "blocked_missing_real_world_outcomes",
+            "matched_prediction_record_count": 0,
+            "exact_prediction_record_count": 0,
+        },
+    )
+    _write_json(
+        job_dir / "sim_vs_real_calibration_report.json",
+        {
+            "schema_version": "sim_vs_real_calibration_report.v1",
+            "status": "blocked_missing_real_world_outcomes",
+            "matched_prediction_record_count": 0,
+            "exact_prediction_record_count": 0,
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    beta_checks = {
+        check["check_id"]: check
+        for check in manifest["robot_team_beta_readiness"]["checks"]
+    }
+    deployment_check = beta_checks["deployment_outcome_joins"]
+    assert deployment_check["passed"] is True
+    assert deployment_check["blockers"] == []
+    assert deployment_check["evidence"]["real_world_outcome_record_count"] == 0
+    assert deployment_check["evidence"]["prediction_summary_status"] == (
+        "blocked_missing_real_world_outcomes"
+    )
+    assert deployment_check["evidence"]["calibration_report_status"] == (
+        "blocked_missing_real_world_outcomes"
+    )
+
+
+def test_live_robot_eval_closure_blocks_stale_remote_run_for_today_beta(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "webapp-prod-job-stale-live"
+    request = _full_job_request(capture_root)
+    _write_json(
+        job_dir / "remote_cloud_execution_closure_manifest.json",
+        {
+            "schema_version": "remote_cloud_execution_closure_manifest.v1",
+            "generated_at": "2000-01-01T00:00:00Z",
+            "status": "remote_execution_completed_with_shutdown_proof",
+            "remote_cloud_execution_proven": True,
+            "clean_shutdown_proven": True,
+            "live_provider_calls_performed": True,
+            "blockers": [],
+            "checks": {
+                "artifact_output_uri_configured": True,
+                "artifact_output_uri_provider_writable": True,
+                "artifact_output_write_auth_contract_ready": True,
+                "actual_gpu_time_record_present": True,
+            },
+            "outputs": {
+                "artifact_output_uri": "gs://blueprint-8c1ca-scenes/jobs/webapp-prod-job-stale-live",
+            },
+            "cost_and_timeout_controls": {"actual_gpu_seconds": 120},
+            "provider_input_setup": {
+                "status": "ready_for_provider_launcher_inputs",
+                "provider_inputs_uploaded": True,
+                "blockers": [],
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    beta_checks = {
+        check["check_id"]: check for check in manifest["robot_team_beta_readiness"]["checks"]
+    }
+    fresh_check = beta_checks["fresh_live_robot_team_run_today"]
+    assert fresh_check["passed"] is False
+    assert fresh_check["evidence"]["remote_closure_generated_date"] == "2000-01-01"
+    assert "remote_closure_not_generated_today" in fresh_check["blockers"]
+    assert beta_checks["live_provider_worker_execution"]["passed"] is True
+    assert beta_checks["writable_artifact_output_uri"]["passed"] is True
+
+
+def test_live_robot_eval_closure_blocks_writable_output_until_provider_inputs_uploaded(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "webapp-prod-job-gcs-blocked"
+    request = _full_job_request(capture_root)
+    _write_json(
+        job_dir / "remote_cloud_execution_closure_manifest.json",
+        {
+            "schema_version": "remote_cloud_execution_closure_manifest.v1",
+            "status": "blocked_before_remote_execution",
+            "remote_cloud_execution_proven": False,
+            "clean_shutdown_proven": False,
+            "live_provider_calls_performed": False,
+            "blockers": ["provider_input_setup:upload_failed:gs_billing_account_disabled"],
+            "checks": {
+                "artifact_output_uri_configured": True,
+                "artifact_output_uri_provider_writable": True,
+                "artifact_output_write_auth_contract_ready": True,
+                "actual_gpu_time_record_present": False,
+            },
+            "outputs": {
+                "artifact_output_uri": "gs://blueprint-8c1ca-scenes/jobs/webapp-prod-job-gcs-blocked",
+                "artifact_output_uri_scheme": "gs",
+            },
+            "cost_and_timeout_controls": {"actual_gpu_seconds": None},
+            "provider_input_setup": {
+                "status": "prepared_with_external_blockers",
+                "provider_inputs_uploaded": False,
+                "blockers": [
+                    "upload_failed:gs_billing_account_disabled",
+                    "provider_inputs_upload_not_proven",
+                ],
+                "manifest_path": "provider_input_setup_manifest.json",
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    beta_checks = {
+        check["check_id"]: check for check in manifest["robot_team_beta_readiness"]["checks"]
+    }
+    output_check = beta_checks["writable_artifact_output_uri"]
+    assert output_check["passed"] is False
+    assert "remote_artifact_output_upload_not_proven" in output_check["blockers"]
+    assert (
+        "provider_input_setup:upload_failed:gs_billing_account_disabled"
+        in output_check["blockers"]
+    )
+    assert output_check["evidence"]["artifact_output_uri_provider_writable"] is True
+    assert output_check["evidence"]["artifact_output_write_auth_contract_ready"] is True
+    assert output_check["evidence"]["provider_input_setup"]["provider_inputs_uploaded"] is False
+
+
+def test_live_robot_eval_closure_keeps_route_proof_without_request_id_blocked(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "webapp-prod-job-no-request-id"
+    request = _full_job_request(capture_root)
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "webapp_route_forwarding_proof"
+        / "webapp_route_forwarding_proof.production.json",
+        {
+            "schema_version": "blueprint_webapp_route_forwarding_proof.v1",
+            "status": "forwarded_to_pipeline_intake",
+            "capture_root": (
+                "/var/lib/blueprint/pipeline-control-plane/captures/local-blueprint/"
+                "scenes/scene-1/captures/capture-1"
+            ),
+            "pipeline_intake": {"status": "staged_for_control_plane"},
+            "job_request": {
+                "schema_version": "robot_eval_job_request.v1",
+                "job_id": "webapp-prod-job-no-request-id",
+                "buyer_request_id": "buyer-request-prod-001",
+                "site_package": {
+                    "site_submission_id": "site-submission-prod-001",
+                    "capture_job_id": "capture-job-prod-001",
+                    "capture_id": "capture-1",
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    gate = manifest["gates"]["webapp_upstream_truth"]
+    assert gate["passed"] is False
+    assert "missing_webapp_request_id" in gate["blockers"]
+    assert gate["evidence"]["ids"]["buyer_request_id"] == "buyer-request-prod-001"
+    assert gate["evidence"]["ids"]["site_submission_id"] == "site-submission-prod-001"
+    assert gate["evidence"]["ids"]["capture_job_id"] == "capture-job-prod-001"
+    assert gate["evidence"]["webapp_route_forwarding_proofs"][0]["grounding_verified"] is True
+    assert (
+        gate["evidence"]["webapp_route_forwarding_proofs"][0]["ids_present"]["request_id"]
+        is False
+    )
+    beta_checks = {
+        check["check_id"]: check for check in manifest["robot_team_beta_readiness"]["checks"]
+    }
+    assert beta_checks["production_or_staging_webapp_request_ids"]["passed"] is False
+    assert "webapp_upstream_truth:missing_webapp_request_id" in (
+        beta_checks["production_or_staging_webapp_request_ids"]["blockers"]
+    )
+
+
+def test_live_robot_eval_closure_uses_stored_webapp_doc_id_as_request_id(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "webapp-prod-doc-job"
+    request = _full_job_request(capture_root)
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "webapp_route_forwarding_proof"
+        / "webapp_route_forwarding_proof.production.json",
+        {
+            "schema_version": "blueprint_webapp_route_forwarding_proof.v1",
+            "status": "forwarded_to_pipeline_intake",
+            "capture_root": (
+                "/var/lib/blueprint/pipeline-control-plane/captures/local-blueprint/"
+                "scenes/scene-1/captures/capture-1"
+            ),
+            "pipeline_intake": {"status": "staged_for_control_plane"},
+            "durable_store": {
+                "firestore": {
+                    "status": "stored",
+                    "doc_id": "webapp-prod-doc-job",
+                }
+            },
+            "job_request": {
+                "schema_version": "robot_eval_job_request.v1",
+                "job_id": "webapp-prod-doc-job",
+                "buyer_request_id": "buyer-request-prod-001",
+                "site_package": {
+                    "site_submission_id": "site-submission-prod-001",
+                    "capture_job_id": "capture-job-prod-001",
+                    "capture_id": "capture-1",
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    gate = manifest["gates"]["webapp_upstream_truth"]
+    assert gate["passed"] is True
+    assert gate["evidence"]["ids"]["request_id"] == "webapp-prod-doc-job"
+    assert gate["evidence"]["webapp_route_forwarding_proofs"][0]["id_source_fields"][
+        "request_id"
+    ] == "durable_store.firestore.doc_id"
+    beta_checks = {
+        check["check_id"]: check for check in manifest["robot_team_beta_readiness"]["checks"]
+    }
+    assert beta_checks["production_or_staging_webapp_request_ids"]["passed"] is True
+
+
+def test_live_robot_eval_closure_does_not_ground_route_proof_for_another_job(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "current-webapp-job"
+    request = _full_job_request(capture_root)
+    _write_json(
+        capture_root
+        / "pipeline"
+        / "webapp_route_forwarding_proof"
+        / "webapp_route_forwarding_proof.stale.json",
+        {
+            "schema_version": "blueprint_webapp_route_forwarding_proof.v1",
+            "status": "forwarded_to_pipeline_intake",
+            "capture_root": (
+                "/var/lib/blueprint/pipeline-control-plane/captures/local-blueprint/"
+                "scenes/scene-1/captures/capture-1"
+            ),
+            "pipeline_intake": {"status": "staged_for_control_plane"},
+            "job_request": {
+                "schema_version": "robot_eval_job_request.v1",
+                "job_id": "previous-webapp-job",
+                "request_id": "request-prod-001",
+                "buyer_request_id": "buyer-request-prod-001",
+                "site_package": {
+                    "site_submission_id": "site-submission-prod-001",
+                    "capture_job_id": "capture-job-prod-001",
+                    "capture_id": "capture-1",
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    gate = manifest["gates"]["webapp_upstream_truth"]
+    assert gate["passed"] is False
+    assert "missing_webapp_request_id" in gate["blockers"]
+    assert "missing_webapp_buyer_request_id" in gate["blockers"]
+    assert gate["evidence"]["webapp_route_forwarding_proofs"][0]["grounding_verified"] is False
+    assert gate["evidence"]["webapp_route_forwarding_proofs"][0]["job_id_matches"] is False
 
 
 def test_live_robot_eval_closure_revalidates_owner_gpu_proof_manifest_evidence(
@@ -3877,8 +4561,30 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     robot_eval_report = _read_json(job_dir / "robot_eval_report.json")
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
     live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+    beta_checks = {
+        check["check_id"]: check
+        for check in live_closure["robot_team_beta_readiness"]["checks"]
+    }
 
     assert policy_execution["robot_policy_execution_proven"] is True
+    assert live_closure["robot_team_beta_readiness"]["ready_for_beta"] is False
+    assert "live_provider_worker_execution" in live_closure["robot_team_beta_readiness"][
+        "blocked_check_ids"
+    ]
+    assert beta_checks["robot_pov_policy_evidence"]["passed"] is False
+    assert "real_robot_pov_evidence:real_robot_pov_evidence_not_proven" in beta_checks[
+        "robot_pov_policy_evidence"
+    ]["blockers"]
+    assert beta_checks["deployment_outcome_joins"]["passed"] is True
+    assert beta_checks["deployment_outcome_joins"]["evidence"][
+        "real_world_outcome_record_count"
+    ] == 1
+    assert (
+        beta_checks["deployment_outcome_joins"]["evidence"][
+            "predicted_vs_actual_gate_passed"
+        ]
+        is True
+    )
     assert policy_execution["modality_results"]["policy_api_endpoint"]["status"] == "completed"
     assert policy_trace["attempt_count"] >= 1
     assert proof_boundary["robot_policy_execution_proven"] is True
@@ -4770,8 +5476,11 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     matrix = _read_json(job_dir / "scenario_eval_matrix.json")
     prediction = _read_json(job_dir / "prediction_outcome_ledger.json")
     proof_boundary = _read_json(job_dir / "proof_boundary.json")
+    remote_closure = _read_json(job_dir / "remote_cloud_execution_closure_manifest.json")
+    robot_team_closure = _read_json(job_dir / "robot_team_grade_eval_closure_manifest.json")
     package = _read_json(job_dir / "post_training_data_package_export_manifest.json")
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    webapp_projection = _read_json(job_dir / "webapp_robot_eval_status_projection.json")
 
     assert result["status"] == "simulator_command_completed"
     assert simulator_result["status"] == "completed"
@@ -4809,9 +5518,97 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     assert package["included_artifacts"]["simulator_provider_adapter_manifest"] == (
         "simulator_provider_adapter_manifest.json"
     )
+    assert package["included_artifacts"]["webapp_robot_eval_status_projection"] == (
+        "webapp_robot_eval_status_projection.json"
+    )
+    assert package["included_artifacts"]["remote_cloud_execution_closure_manifest"] == (
+        "remote_cloud_execution_closure_manifest.json"
+    )
+    assert package["included_artifacts"]["robot_team_grade_eval_closure_manifest"] == (
+        "robot_team_grade_eval_closure_manifest.json"
+    )
     assert package["export_policy"]["simulator_provider_adapter_included"] is True
     assert run_manifest["simulator_execution_proven"] is True
     assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["webapp_robot_eval_status_projection_status"] == (
+        "simulator_command_completed"
+    )
+    assert run_manifest["remote_cloud_execution_closure_status"] == (
+        "not_required_for_local_execution"
+    )
+    assert run_manifest["remote_cloud_execution_proven"] is False
+    assert run_manifest["remote_cloud_clean_shutdown_proven"] is False
+    assert run_manifest["robot_team_grade_eval_closure_status"] == (
+        "blocked_robot_team_grade_requirements"
+    )
+    assert run_manifest["robot_team_grade_evaluation_complete"] is False
+    assert run_manifest["deployment_readiness_complete"] is False
+    assert run_manifest["artifacts"]["webapp_robot_eval_status_projection"] == (
+        "webapp_robot_eval_status_projection.json"
+    )
+    assert webapp_projection["schema_version"] == "webapp_robot_eval_status_projection.v1"
+    assert webapp_projection["provider_complexity_hidden"] is True
+    assert webapp_projection["provider_details_exposed"] is False
+    assert webapp_projection["scenario_batch"]["scenario_eval_run_count"] == (
+        matrix["scenario_eval_run_count"]
+    )
+    assert webapp_projection["scenario_batch"]["scenario_eval_run_coverage_complete"] is True
+    assert webapp_projection["proof_boundary"]["simulator_execution_proven"] is True
+    assert webapp_projection["proof_boundary"]["robot_readiness_proven"] is False
+    assert webapp_projection["proof_boundary"]["public_claim_upgrade_allowed"] is False
+    assert webapp_projection["artifact_paths"]["webapp_robot_eval_status_projection"] == (
+        "webapp_robot_eval_status_projection.json"
+    )
+    assert webapp_projection["remote_cloud_execution"]["status"] == (
+        "not_required_for_local_execution"
+    )
+    assert webapp_projection["remote_cloud_execution"]["remote_cloud_execution_proven"] is False
+    assert webapp_projection["robot_team_grade_eval_closure"]["status"] == (
+        "blocked_robot_team_grade_requirements"
+    )
+    assert (
+        webapp_projection["robot_team_grade_eval_closure"][
+            "robot_team_grade_evaluation_complete"
+        ]
+        is False
+    )
+    assert remote_closure["status"] == "not_required_for_local_execution"
+    assert remote_closure["remote_cloud_execution_proven"] is False
+    assert robot_team_closure["schema_version"] == "robot_team_grade_eval_closure.v1"
+    assert robot_team_closure["robot_team_grade_evaluation_complete"] is False
+    assert robot_team_closure["deployment_readiness_complete"] is False
+    assert "task_success_metrics" in robot_team_closure["blocked_requirement_ids"]
+    assert "digital_twin_fidelity_qa" in robot_team_closure["blocked_requirement_ids"]
+    assert "full_trace_package" in robot_team_closure["blocked_requirement_ids"]
+    assert "remote_cloud_execution_path" in robot_team_closure["blocked_requirement_ids"]
+    full_trace_package = {
+        requirement["requirement_id"]: requirement
+        for requirement in robot_team_closure["requirements"]
+    }["full_trace_package"]
+    assert "missing_trace_artifact_metrics" in full_trace_package["blockers"]
+    assert "missing_trace_artifact_visual_media_coverage" in full_trace_package[
+        "blockers"
+    ]
+    assert "missing_trace_artifact_artifact_checksums" in full_trace_package[
+        "blockers"
+    ]
+    assert "visual_media_coverage_manifest_missing" in full_trace_package["blockers"]
+    task_metrics = {
+        requirement["requirement_id"]: requirement
+        for requirement in robot_team_closure["requirements"]
+    }["task_success_metrics"]
+    assert "missing_metric_clearance" in task_metrics["blockers"]
+    assert "missing_metric_near_misses" in task_metrics["blockers"]
+    assert "missing_metric_path_deviation" in task_metrics["blockers"]
+    assert "missing_metric_policy_instability" in task_metrics["blockers"]
+    assert "batch_metrics_artifact_missing" in task_metrics["blockers"]
+    digital_twin = {
+        requirement["requirement_id"]: requirement
+        for requirement in robot_team_closure["requirements"]
+    }["digital_twin_fidelity_qa"]
+    assert "digital_twin_fidelity_qa_artifact_missing" in digital_twin["blockers"]
+    assert webapp_projection["buyer_display_guardrails"]["provider_commands_exposed"] is False
+    assert "provider_command" not in webapp_projection
 
 
 def test_packaged_mujoco_g1_simulator_command_is_available() -> None:
@@ -5162,6 +5959,28 @@ def test_robot_eval_job_policy_manifest_includes_adapter_smoke_contracts(
     )
 
     policy_manifest = _read_json(Path(result["job_dir"]) / "policy_package_manifest.json")
+    observation_manifest = _read_json(
+        Path(result["job_dir"]) / "robot_pov_observation_manifest.json"
+    )
+    assert policy_manifest["interface_contract"]["observation_schema_id"] == (
+        "blueprint.robot_eval.observation.v1"
+    )
+    assert policy_manifest["interface_contract"]["action_schema_id"] == (
+        "blueprint.robot_eval.action_trace.v1"
+    )
+    assert policy_manifest["interface_contract"]["reproducible_replay_required"] is True
+    assert observation_manifest["policy_adapter_input_contract"]["observation_schema_id"] == (
+        "blueprint.robot_eval.observation.v1"
+    )
+    assert observation_manifest["policy_adapter_input_contract"]["action_schema_id"] == (
+        "blueprint.robot_eval.action_trace.v1"
+    )
+    assert observation_manifest["observations"][0]["observation_schema"]["schema_id"] == (
+        "blueprint.robot_eval.observation.v1"
+    )
+    assert observation_manifest["observations"][0]["expected_action_schema"]["schema_id"] == (
+        "blueprint.robot_eval.action_trace.v1"
+    )
     for modality in (
         "policy_api_endpoint",
         "docker_container",
@@ -5174,8 +5993,26 @@ def test_robot_eval_job_policy_manifest_includes_adapter_smoke_contracts(
         assert contract["schema_version"] == "policy_adapter_smoke_contract.v1"
         assert contract["modality"] == modality
         assert contract["observation_manifest_input"] == "robot_pov_observation_manifest.json"
+        assert contract["observation_schema_id"] == "blueprint.robot_eval.observation.v1"
+        assert contract["action_schema_id"] == "blueprint.robot_eval.action_trace.v1"
         assert "scenario_eval_run_id" in contract["required_attempt_fields"]
         assert "scenario_variation_instance_id" in contract["required_attempt_fields"]
+        assert "scenario_eval_run_id" in contract["required_observation_fields"]
+        assert "actions" in contract["required_action_output_fields"]
+        assert contract["reproducible_replay_contract"][
+            "runtime_spawn_goal_variation_mutation_allowed"
+        ] is False
+        interface_contract = policy_manifest["modalities"][modality]["interface_contract"]
+        assert interface_contract["schema_version"] == "robot_team_policy_interface_contract.v1"
+        assert interface_contract["observation_schema"]["schema_id"] == (
+            "blueprint.robot_eval.observation.v1"
+        )
+        assert interface_contract["action_schema"]["schema_id"] == (
+            "blueprint.robot_eval.action_trace.v1"
+        )
+        assert interface_contract["reproducible_replay"][
+            "exact_scenario_eval_run_id_coverage_required"
+        ] is True
         assert contract["proof_boundary"]["robot_readiness_proven"] is False
     assert (
         policy_manifest["modalities"]["policy_api_endpoint"]["adapter_smoke_contract"][
@@ -5187,6 +6024,10 @@ def test_robot_eval_job_policy_manifest_includes_adapter_smoke_contracts(
         policy_manifest["modalities"]["docker_container"]["adapter_smoke_contract"]["smoke_runner"]
         == "docker_run_observation_manifest_probe"
     )
+    docker_contract = policy_manifest["modalities"]["docker_container"]["interface_contract"]
+    assert docker_contract["container_runtime"]["digest_required"] is True
+    assert docker_contract["container_runtime"]["runtime_image_pinned_by_digest"] is True
+    assert docker_contract["container_runtime"]["versioned_runtime_image_proven"] is True
 
 
 def test_robot_eval_job_rights_privacy_block_prevents_execution(
@@ -5250,6 +6091,7 @@ def test_robot_eval_job_missing_policy_evidence_writes_exact_blockers(
     validation = _read_json(job_dir / "job_validation.json")
     blocked = _read_json(job_dir / "blocked_manifest.json")
     policy_manifest = _read_json(job_dir / "policy_package_manifest.json")
+    robot_team_closure = _read_json(job_dir / "robot_team_grade_eval_closure_manifest.json")
 
     assert validation["status"] == "blocked"
     assert validation["missing_evidence_statuses"] == [
@@ -5262,6 +6104,20 @@ def test_robot_eval_job_missing_policy_evidence_writes_exact_blockers(
     ]
     assert policy_manifest["modalities"]["docker_container"]["status"] == "blocked"
     assert policy_manifest["modalities"]["teleop_demo"]["status"] == "blocked"
+    requirements = {item["requirement_id"]: item for item in robot_team_closure["requirements"]}
+    policy_interface = requirements["robot_team_policy_interface"]
+    assert policy_interface["passed"] is False
+    assert "robot_team_policy_interface" in robot_team_closure["blocked_requirement_ids"]
+    assert "policy_package_validation_blocked" in policy_interface["blockers"]
+    assert "policy_interface_selected_modalities_invalid" in policy_interface["blockers"]
+    assert (
+        "policy_docker_container_runtime_image_not_versioned"
+        in policy_interface["blockers"]
+    )
+    assert robot_team_closure["policy_interface_summary"]["invalid_selected_modalities"] == [
+        "docker_container",
+        "teleop_demo",
+    ]
 
 
 def test_robot_eval_job_accepts_one_complete_policy_modality(
@@ -5530,6 +6386,571 @@ def test_robot_eval_job_real_provisioner_fails_closed_without_gates(
     assert "gpu_provisioning_blocked" in blocked["blockers"]
 
 
+def test_remote_cloud_execution_closure_requires_provider_shutdown_evidence() -> None:
+    worker_launch_plan = {
+        "worker_image": {
+            "configured_image_ref_present": True,
+            "configured_image_ref_is_versioned": True,
+            "configured_image_ref_fetchable_by_provider": True,
+        },
+        "input_bundle": {
+            "capture_root_bundle_uri": "r2://blueprint-inputs/capture.zip",
+            "capture_root_bundle_uri_scheme": "r2",
+            "capture_root_bundle_uri_fetchable_by_provider": True,
+        },
+        "worker_manifest_input_contract": {
+            "configured_worker_manifest_uri": "r2://blueprint-inputs/worker.json",
+            "configured_worker_manifest_uri_present": True,
+            "worker_manifest_uri_fetchable_by_provider": True,
+        },
+        "artifact_upload_contract": {
+            "configured_artifact_output_uri": "r2://blueprint-artifacts/jobs/job-remote",
+            "configured_artifact_output_uri_present": True,
+            "artifact_output_uri_scheme": "r2",
+            "artifact_output_uri_provider_writable": True,
+            "artifact_output_write_auth_contract_ready": True,
+            "artifact_output_write_auth": {
+                "authorization_mode": "worker_storage_credentials",
+                "write_auth_required_for_provider": True,
+                "write_auth_contract_ready": True,
+                "required_secret_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+                "required_plaintext_env_vars": [
+                    "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL",
+                    "AWS_ENDPOINT_URL",
+                ],
+                "secret_values_in_artifact": False,
+            },
+            "upload_before_shutdown_required": True,
+        },
+        "launch_mode": {"hard_timeout_seconds": 120},
+    }
+    worker_manifest = {"status": "ready_for_worker_upload"}
+    provider_launch_request = {
+        "status": "request_manifest_ready",
+        "provider_request_shape": {
+            "inputs": {
+                "manifest_uri": "r2://blueprint-inputs/worker.json",
+                "capture_root_bundle_uri": "r2://blueprint-inputs/capture.zip",
+            },
+            "limits": {
+                "hard_timeout_seconds": 120,
+                "idle_shutdown_required": True,
+            },
+        },
+    }
+    base_ledger = {
+        "status": "provider_runtime_observed",
+        "live_provider_calls_performed": True,
+        "budget": {"requested_budget_usd": 10},
+        "worker_limits": {
+            "hard_timeout_seconds": 120,
+            "idle_shutdown_required": True,
+        },
+        "gpu_time": {"actual_gpu_time_record_present": True},
+        "artifact_finalizer": {
+            "upload_before_shutdown_required": True,
+            "worker_artifacts_finalized_before_shutdown": True,
+        },
+    }
+    missing_shutdown = _remote_cloud_execution_closure_manifest(
+        job_id="job-remote",
+        provisioner="runpod",
+        simulator="mujoco",
+        worker_launch_plan=worker_launch_plan,
+        worker_manifest=worker_manifest,
+        provider_launch_request=provider_launch_request,
+        gpu_result={"live_provider_calls_performed": True},
+        gpu_cost_ledger=base_ledger,
+        sim_result={"simulator_execution_proven": True},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+    assert missing_shutdown["status"] == "remote_execution_completed_missing_shutdown_proof"
+    assert missing_shutdown["remote_cloud_execution_proven"] is True
+    assert missing_shutdown["clean_shutdown_proven"] is False
+    assert "remote_artifact_upload_evidence_incomplete" in missing_shutdown["runtime_blockers"]
+    assert "remote_provider_shutdown_not_proven" in missing_shutdown["runtime_blockers"]
+
+    proven_ledger = {
+        **base_ledger,
+        "artifact_finalizer": {
+            **base_ledger["artifact_finalizer"],  # type: ignore[index]
+            "artifact_upload_evidence": {
+                "status": "completed",
+                "destination_uri": "r2://blueprint-artifacts/jobs/job-remote",
+                "uploaded_file_count": 12,
+                "object_keys": ["jobs/job-remote/job_run_manifest.json"],
+            },
+            "finalizer_refresh_upload_evidence": {
+                "status": "completed",
+                "destination_uri": "r2://blueprint-artifacts/jobs/job-remote",
+                "uploaded_file_count": 4,
+                "object_keys": ["jobs/job-remote/gpu_cost_control_ledger.json"],
+            },
+            "runtime_manifest_upload_evidence": {
+                "status": "completed",
+                "destination_uri": "r2://blueprint-artifacts/jobs/job-remote",
+                "object_key": "jobs/job-remote/worker_runtime_manifest.json",
+            },
+            "provider_shutdown_proven": True,
+            "provider_shutdown_evidence": {
+                "provider_shutdown_proven": True,
+                "zero_active_workers_after_run": True,
+            },
+        },
+    }
+    proven = _remote_cloud_execution_closure_manifest(
+        job_id="job-remote",
+        provisioner="runpod",
+        simulator="mujoco",
+        worker_launch_plan=worker_launch_plan,
+        worker_manifest=worker_manifest,
+        provider_launch_request=provider_launch_request,
+        gpu_result={"live_provider_calls_performed": True},
+        gpu_cost_ledger=proven_ledger,
+        sim_result={"simulator_execution_proven": True},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+    assert proven["status"] == "remote_execution_completed_with_shutdown_proof"
+    assert proven["remote_cloud_execution_proven"] is True
+    assert proven["clean_shutdown_proven"] is True
+    assert proven["runtime_blockers"] == []
+    assert proven["checks"]["artifact_output_uri_provider_writable"] is True
+    assert proven["checks"]["artifact_output_write_auth_contract_ready"] is True
+    assert proven["checks"]["artifact_upload_evidence_complete"] is True
+    assert proven["outputs"]["artifact_output_uri_scheme"] == "r2"
+    assert proven["outputs"]["artifact_output_uri_provider_writable"] is True
+    assert proven["outputs"]["artifact_output_write_auth"]["authorization_mode"] == (
+        "worker_storage_credentials"
+    )
+    assert proven["outputs"]["artifact_upload_evidence"]["uploaded_file_count"] == 12
+
+
+def test_remote_cloud_execution_closure_blocks_provider_input_setup_upload_not_proven() -> None:
+    worker_launch_plan = {
+        "worker_image": {
+            "configured_image_ref_present": True,
+            "configured_image_ref_is_versioned": True,
+            "configured_image_ref_fetchable_by_provider": True,
+        },
+        "input_bundle": {
+            "capture_root_bundle_uri": "gs://blueprint-inputs/capture.zip",
+            "capture_root_bundle_uri_scheme": "gs",
+            "capture_root_bundle_uri_fetchable_by_provider": True,
+        },
+        "worker_manifest_input_contract": {
+            "configured_worker_manifest_uri": "gs://blueprint-inputs/worker.json",
+            "configured_worker_manifest_uri_present": True,
+            "worker_manifest_uri_fetchable_by_provider": True,
+        },
+        "artifact_upload_contract": {
+            "configured_artifact_output_uri": "gs://blueprint-artifacts/jobs/job-remote",
+            "configured_artifact_output_uri_present": True,
+            "artifact_output_uri_scheme": "gs",
+            "artifact_output_uri_provider_writable": True,
+            "artifact_output_write_auth_contract_ready": True,
+            "upload_before_shutdown_required": True,
+        },
+        "launch_mode": {"hard_timeout_seconds": 120},
+    }
+    worker_manifest = {"status": "ready_for_worker_upload"}
+    provider_launch_request = {
+        "status": "request_manifest_ready",
+        "provider_input_setup": {
+            "status": "prepared_with_external_blockers",
+            "manifest_path": "provider_input_setup_manifest.json",
+            "provider_inputs_uploaded": False,
+            "blockers": ["upload_failed:gs_billing_account_disabled"],
+            "artifact_output_uri": "gs://blueprint-artifacts/jobs/job-remote",
+        },
+        "provider_request_shape": {
+            "inputs": {
+                "manifest_uri": "gs://blueprint-inputs/worker.json",
+                "capture_root_bundle_uri": "gs://blueprint-inputs/capture.zip",
+            },
+            "limits": {
+                "hard_timeout_seconds": 120,
+                "idle_shutdown_required": True,
+            },
+        },
+    }
+    gpu_cost_ledger = {
+        "status": "blocked_before_allocation",
+        "budget": {"requested_budget_usd": 10},
+        "worker_limits": {
+            "hard_timeout_seconds": 120,
+            "idle_shutdown_required": True,
+        },
+        "gpu_time": {"actual_gpu_time_record_present": False},
+        "artifact_finalizer": {"upload_before_shutdown_required": True},
+    }
+
+    closure = _remote_cloud_execution_closure_manifest(
+        job_id="job-remote",
+        provisioner="runpod",
+        simulator="mujoco",
+        worker_launch_plan=worker_launch_plan,
+        worker_manifest=worker_manifest,
+        provider_launch_request=provider_launch_request,
+        gpu_result={},
+        gpu_cost_ledger=gpu_cost_ledger,
+        sim_result={"simulator_execution_proven": False},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+
+    assert closure["status"] == "blocked_before_remote_execution"
+    assert closure["contract_ready_for_remote_runtime"] is False
+    assert "provider_input_setup:upload_failed:gs_billing_account_disabled" in closure[
+        "contract_blockers"
+    ]
+    assert "provider_input_setup:provider_inputs_upload_not_proven" in closure[
+        "contract_blockers"
+    ]
+    assert closure["provider_input_setup"]["provider_inputs_uploaded"] is False
+
+
+def test_remote_cloud_execution_closure_blocks_non_writable_artifact_output_uri() -> None:
+    worker_launch_plan = {
+        "worker_image": {
+            "configured_image_ref_present": True,
+            "configured_image_ref_is_versioned": True,
+            "configured_image_ref_fetchable_by_provider": True,
+        },
+        "input_bundle": {
+            "capture_root_bundle_uri": "r2://blueprint-inputs/capture.zip",
+            "capture_root_bundle_uri_scheme": "r2",
+            "capture_root_bundle_uri_fetchable_by_provider": True,
+        },
+        "worker_manifest_input_contract": {
+            "configured_worker_manifest_uri": "r2://blueprint-inputs/worker.json",
+            "configured_worker_manifest_uri_present": True,
+            "worker_manifest_uri_fetchable_by_provider": True,
+        },
+        "artifact_upload_contract": {
+            "configured_artifact_output_uri": "file:///tmp/job-remote",
+            "configured_artifact_output_uri_present": True,
+            "artifact_output_uri_scheme": "file",
+            "artifact_output_uri_provider_writable": False,
+            "upload_before_shutdown_required": True,
+        },
+        "launch_mode": {"hard_timeout_seconds": 120},
+    }
+    worker_manifest = {"status": "ready_for_worker_upload"}
+    provider_launch_request = {
+        "status": "request_manifest_ready",
+        "provider_request_shape": {
+            "inputs": {
+                "manifest_uri": "r2://blueprint-inputs/worker.json",
+                "capture_root_bundle_uri": "r2://blueprint-inputs/capture.zip",
+            },
+            "limits": {
+                "hard_timeout_seconds": 120,
+                "idle_shutdown_required": True,
+            },
+        },
+    }
+    gpu_cost_ledger = {
+        "status": "provider_runtime_observed",
+        "live_provider_calls_performed": True,
+        "budget": {"requested_budget_usd": 10},
+        "worker_limits": {
+            "hard_timeout_seconds": 120,
+            "idle_shutdown_required": True,
+        },
+        "gpu_time": {"actual_gpu_time_record_present": True},
+        "artifact_finalizer": {
+            "upload_before_shutdown_required": True,
+            "worker_artifacts_finalized_before_shutdown": True,
+            "provider_shutdown_proven": True,
+        },
+    }
+
+    closure = _remote_cloud_execution_closure_manifest(
+        job_id="job-remote",
+        provisioner="runpod",
+        simulator="mujoco",
+        worker_launch_plan=worker_launch_plan,
+        worker_manifest=worker_manifest,
+        provider_launch_request=provider_launch_request,
+        gpu_result={"live_provider_calls_performed": True},
+        gpu_cost_ledger=gpu_cost_ledger,
+        sim_result={"simulator_execution_proven": True},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+
+    assert closure["status"] == "blocked_before_remote_execution"
+    assert closure["contract_ready_for_remote_runtime"] is False
+    assert "remote_artifact_output_uri_not_provider_writable" in closure["contract_blockers"]
+    assert closure["checks"]["artifact_output_uri_provider_writable"] is False
+    assert closure["outputs"]["artifact_output_uri_scheme"] == "file"
+    assert closure["outputs"]["artifact_output_uri_provider_writable"] is False
+
+
+def test_robot_team_grade_closure_accepts_explicitly_blocked_scenario_runs(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "robot_eval_jobs" / "job-explicit-block"
+    scenario_eval_matrix = {
+        "status": "completed",
+        "scenario_eval_run_count": 2,
+        "runs": [
+            {"scenario_eval_run_id": "run-covered", "task_id": "task-1", "scenario_id": "s-1"},
+            {"scenario_eval_run_id": "run-blocked", "task_id": "task-1", "scenario_id": "s-2"},
+        ],
+    }
+    _write_json(job_dir / "scenario_eval_matrix.json", scenario_eval_matrix)
+    _write_json(
+        job_dir / "simulator_command_batch_closure_manifest.json",
+        {
+            "required_scenario_eval_run_count": 2,
+            "covered_scenario_eval_run_count": 1,
+            "missing_scenario_eval_run_count": 1,
+            "scenario_eval_run_coverage_complete": False,
+            "required_scenario_eval_run_ids": ["run-covered", "run-blocked"],
+            "covered_scenario_eval_run_ids": ["run-covered"],
+            "missing_scenario_eval_run_ids": ["run-blocked"],
+            "explicitly_blocked_scenario_eval_runs": [
+                {
+                    "scenario_eval_run_id": "run-blocked",
+                    "stage": "provider_runtime_preflight",
+                    "reason": "worker image digest missing before launch",
+                    "blockers": ["worker_image_digest_missing"],
+                }
+            ],
+        },
+    )
+
+    closure = _robot_team_grade_eval_closure_manifest(
+        job_dir=job_dir,
+        job_id="job-explicit-block",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="blocked",
+        blockers=[],
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result={},
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
+        policy_execution_manifest={},
+        evaluation_result={},
+        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        live_closure={},
+        remote_cloud_closure={},
+        webapp_status_projection={},
+        data_package_export={},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+
+    requirements = {item["requirement_id"]: item for item in closure["requirements"]}
+    assert requirements["batch_scenario_execution"]["passed"] is True
+    assert "batch_scenario_execution" not in closure["blocked_requirement_ids"]
+    assert closure["scenario_execution_summary"]["selected_scenario_runs_closed"] is True
+    assert closure["scenario_execution_summary"]["explicitly_blocked_scenario_eval_run_ids"] == [
+        "run-blocked"
+    ]
+
+
+def test_robot_team_grade_closure_blocks_weak_explicit_scenario_block_records(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "robot_eval_jobs" / "job-weak-block"
+    scenario_eval_matrix = {
+        "status": "completed",
+        "scenario_eval_run_count": 2,
+        "runs": [
+            {"scenario_eval_run_id": "run-covered", "task_id": "task-1", "scenario_id": "s-1"},
+            {"scenario_eval_run_id": "run-blocked", "task_id": "task-1", "scenario_id": "s-2"},
+        ],
+    }
+    _write_json(job_dir / "scenario_eval_matrix.json", scenario_eval_matrix)
+    _write_json(
+        job_dir / "simulator_command_batch_closure_manifest.json",
+        {
+            "required_scenario_eval_run_count": 2,
+            "covered_scenario_eval_run_count": 1,
+            "missing_scenario_eval_run_count": 1,
+            "scenario_eval_run_coverage_complete": False,
+            "required_scenario_eval_run_ids": ["run-covered", "run-blocked"],
+            "covered_scenario_eval_run_ids": ["run-covered"],
+            "missing_scenario_eval_run_ids": ["run-blocked"],
+            "explicitly_blocked_scenario_eval_runs": [
+                {"scenario_eval_run_id": "run-blocked"}
+            ],
+        },
+    )
+
+    closure = _robot_team_grade_eval_closure_manifest(
+        job_dir=job_dir,
+        job_id="job-weak-block",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="blocked",
+        blockers=[],
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result={},
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
+        policy_execution_manifest={},
+        evaluation_result={},
+        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        live_closure={},
+        remote_cloud_closure={},
+        webapp_status_projection={},
+        data_package_export={},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+
+    requirements = {item["requirement_id"]: item for item in closure["requirements"]}
+    assert requirements["batch_scenario_execution"]["passed"] is False
+    assert "batch_scenario_execution" in closure["blocked_requirement_ids"]
+    assert "scenario_eval_run_missing_without_explicit_blockers" in requirements[
+        "batch_scenario_execution"
+    ]["blockers"]
+    assert "scenario_eval_run_blocker_records_missing_required_fields" in requirements[
+        "batch_scenario_execution"
+    ]["blockers"]
+    assert closure["scenario_execution_summary"]["selected_scenario_runs_closed"] is False
+    assert closure["scenario_execution_summary"]["invalid_explicit_blocker_record_run_ids"] == [
+        "run-blocked"
+    ]
+
+
+def test_robot_team_grade_closure_blocks_incomplete_trace_stream_coverage(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "robot_eval_jobs" / "job-trace-streams"
+    scenario_eval_matrix = {
+        "status": "completed",
+        "scenario_eval_run_count": 1,
+        "runs": [{"scenario_eval_run_id": "run-1", "task_id": "task-1", "scenario_id": "s-1"}],
+    }
+    for name in (
+        "simulator_command_batch_attempt_trace.jsonl",
+        "simulator_command_batch_contact_stream.jsonl",
+        "simulator_command_batch_planner_state.jsonl",
+        "simulator_command_batch_control_stream.jsonl",
+    ):
+        (job_dir / name).parent.mkdir(parents=True, exist_ok=True)
+        (job_dir / name).write_text("{}\n", encoding="utf-8")
+    _write_json(job_dir / "scenario_eval_matrix.json", scenario_eval_matrix)
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "required_scenario_eval_run_count": 1,
+            "covered_scenario_eval_run_count": 1,
+            "missing_scenario_eval_run_count": 0,
+            "scenario_eval_run_coverage_complete": True,
+            "task_success_rate": 1.0,
+            "successful_task_attempt_count": 1,
+            "failed_task_attempt_count": 0,
+            "task_success_summary": {
+                "goal_reached_attempt_count": 1,
+                "fall_attempt_count": 0,
+                "min_clearance_m": 0.42,
+                "scene_contact_attempt_count": 0,
+                "near_miss_event_count": 0,
+                "max_path_deviation_m": 0.1,
+                "stuck_attempt_count": 0,
+                "policy_instability_attempt_count": 0,
+            },
+        },
+    )
+    _write_json(job_dir / "failure_labels.json", {"labels": [], "failed_attempt_count": 0})
+    _write_json(
+        job_dir / "simulator_command_batch_metrics.json",
+        {
+            "metric_coverage_complete": True,
+            "attempt_metric_row_count": 1,
+            "missing_metric_row_count": 0,
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_visual_media_coverage.json",
+        {
+            "all_required_runs_have_visual_recording": True,
+            "all_required_runs_have_robot_pov_video": True,
+            "all_required_runs_have_third_person_video": True,
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_artifact_checksums.json",
+        {
+            "artifacts": {
+                "attempt_trace_jsonl": {"present": True},
+                "contact_stream_jsonl": {"present": True},
+                "planner_state_jsonl": {"present": True},
+                "control_stream_jsonl": {"present": True},
+                "metrics": {"present": True},
+                "failure_labels": {"present": True},
+                "visual_media_coverage": {"present": True},
+            }
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_trace_package_manifest.json",
+        {
+            "status": "completed",
+            "contact_stream_record_count": 1,
+            "planner_state_coverage_complete": False,
+            "control_stream_coverage_complete": False,
+        },
+    )
+    _write_json(job_dir / "robot_pov_observation_manifest.json", {"status": "completed"})
+    _write_json(job_dir / "robot_pov_frame_sequence_manifest.json", {"status": "completed"})
+
+    closure = _robot_team_grade_eval_closure_manifest(
+        job_dir=job_dir,
+        job_id="job-trace-streams",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="completed",
+        blockers=[],
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result={},
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={
+            "status": "review_required",
+            "selected_modalities": ["policy_api_endpoint"],
+            "interface_contract": {
+                "observation_schema_id": "blueprint.robot_eval.observation.v1",
+                "action_schema_id": "blueprint.robot_eval.action_trace.v1",
+                "reproducible_replay_required": True,
+            },
+            "modalities": {
+                "policy_api_endpoint": {
+                    "status": "reference_present_requires_owner_system_review",
+                    "selected": True,
+                    "missing_inputs": [],
+                }
+            },
+        },
+        policy_execution_manifest={},
+        evaluation_result={
+            "standard_policy_scorecard": {
+                "cycle_time": {"sample_count": 1},
+                "collision_risk": {"event_count": 0},
+                "unsafe_proximity": {"event_count": 0},
+            }
+        },
+        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        live_closure={},
+        remote_cloud_closure={},
+        webapp_status_projection={},
+        data_package_export={},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+
+    requirements = {item["requirement_id"]: item for item in closure["requirements"]}
+    full_trace = requirements["full_trace_package"]
+    assert full_trace["passed"] is False
+    assert "missing_trace_artifact_third_person_video_manifest" not in full_trace["blockers"]
+    assert "planner_state_coverage_not_complete" in full_trace["blockers"]
+    assert "control_stream_coverage_not_complete" in full_trace["blockers"]
+    assert closure["closure_audit_summary"]["full_trace_package_complete"] is False
+
+
 def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_without_preflight(
     tmp_path: Path,
     monkeypatch,
@@ -5640,6 +7061,15 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
         "s3",
         "r2",
     ]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_uri_scheme"] == "r2"  # type: ignore[index]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_uri_provider_writable"] is True  # type: ignore[index]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_write_auth_contract_ready"] is True  # type: ignore[index]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_write_auth"][  # type: ignore[index]
+        "required_secret_env_vars"
+    ] == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_write_auth"][  # type: ignore[index]
+        "secret_values_in_artifact"
+    ] is False
     assert worker_plan["artifact_upload_contract"]["s3_compatible_storage_supported"] is True  # type: ignore[index]
     assert worker_plan["artifact_upload_contract"]["r2_requires_endpoint_env"] is True  # type: ignore[index]
     assert worker_plan["runtime_preflight_contract"]["required_before_scene_load"] is True  # type: ignore[index]
@@ -5676,6 +7106,12 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
         "r2://blueprint-artifacts/jobs/job-webapp-execution-request"
     )
     assert worker_manifest["artifact_output_uri_required"] is True
+    assert worker_manifest["artifact_output_uri_scheme"] == "r2"
+    assert worker_manifest["artifact_output_uri_provider_writable"] is True
+    assert worker_manifest["artifact_output_write_auth_contract_ready"] is True
+    assert worker_manifest["artifact_output_write_auth"]["authorization_mode"] == (
+        "worker_storage_credentials"
+    )
     assert worker_manifest["job_request"]["schema_version"] == "robot_eval_job_request.v1"  # type: ignore[index]
     assert provider_launch["schema_version"] == "robot_eval_gpu_provider_launch_request.v1"
     assert provider_launch["provider"] == "runpod"
@@ -5693,9 +7129,13 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert provider_launch["provider_request_shape"]["image"]["dockerfile_path"] == (  # type: ignore[index]
         "deploy/docker/robot_eval_worker/isaac/Dockerfile"
     )
-    assert provider_launch["provider_request_shape"]["command"] == (  # type: ignore[index]
-        "blueprint-run-robot-eval-worker --manifest ${BLUEPRINT_EVAL_MANIFEST_URI}"
-    )
+    provider_command = provider_launch["provider_request_shape"]["command"]  # type: ignore[index]
+    assert provider_command.startswith("blueprint-run-robot-eval-worker ")
+    assert "--allow-gpu-provisioning" in provider_command
+    assert "--allow-simulator-execution" in provider_command
+    assert "--allowed-simulator isaac_sim" in provider_command
+    assert "--simulator-command" in provider_command
+    assert "isaac_sim=" in provider_command
     assert provider_launch["provider_request_shape"]["inputs"]["worker_manifest_path"] == (  # type: ignore[index]
         "worker_manifest.json"
     )
@@ -5727,6 +7167,19 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert provider_launch["provider_request_shape"]["inputs"]["artifact_output_uri"] == (  # type: ignore[index]
         "r2://blueprint-artifacts/jobs/job-webapp-execution-request"
     )
+    assert provider_launch["provider_request_shape"]["inputs"]["artifact_output_uri_scheme"] == "r2"  # type: ignore[index]
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "artifact_output_uri_provider_writable"
+    ] is True
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "artifact_output_write_auth_contract_ready"
+    ] is True
+    assert provider_launch["provider_request_shape"]["inputs"]["artifact_output_write_auth"][  # type: ignore[index]
+        "required_secret_env_vars"
+    ] == ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "provider_writable_artifact_output_uri_schemes"
+    ] == ["gs", "r2", "s3"]
     assert provider_launch["provider_request_shape"]["gpu"]["preferred_gpu_class"] == (  # type: ignore[index]
         "rtx_rt_core_24gb_or_larger"
     )
@@ -5854,11 +7307,14 @@ def test_live_provider_launch_blocks_without_versioned_worker_image_ref(
     provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
     provisioning = _read_json(job_dir / "gpu_provisioning_result.json")
     cost_ledger = _read_json(job_dir / "gpu_cost_control_ledger.json")
+    remote_closure = _read_json(job_dir / "remote_cloud_execution_closure_manifest.json")
 
     assert scheduler["status"] == "awaiting_explicit_gpu_and_simulator_gates"
     assert scheduler["blockers"] == []
     assert worker_plan["status"] == "blocked_missing_prebuilt_worker_image_ref"
     assert "missing_prebuilt_worker_image_ref" in worker_plan["blockers"]
+    assert remote_closure["status"] == "blocked_before_remote_execution"
+    assert "remote_worker_image_not_pinned_or_fetchable" in remote_closure["contract_blockers"]
     assert worker_plan["worker_image"]["published_image_ref_required"] is True  # type: ignore[index]
     assert worker_plan["worker_image"]["image_ref_env_var"] == (  # type: ignore[index]
         "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"
@@ -5949,6 +7405,94 @@ def test_live_provider_launch_blocks_without_worker_manifest_uri(
     assert "missing_worker_manifest_uri" in provisioning["blockers"]
     assert cost_ledger["status"] == "blocked_before_allocation"
     assert "missing_worker_manifest_uri" in cost_ledger["blockers"]
+
+
+def test_live_provider_launch_blocks_https_artifact_output_uri(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_cpu_preflight_ready_scene_asset(capture_root)
+    request = _full_job_request(capture_root)
+    request["execution_request"] = _webapp_execution_request()
+    request["budget"] = {"budget_usd": 10, "timeout_seconds": 120}
+    request_path = tmp_path / "webapp-job-request.json"
+    _write_json(request_path, request)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_ARTIFACT_OUTPUT_URI",
+        "https://example.com/blueprint-artifacts/jobs/job-live-provider-https-output",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "r2://blueprint-artifacts/jobs/job-live-provider-https-output/worker_manifest.json",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI",
+        "r2://blueprint-artifacts/jobs/job-live-provider-https-output/capture-root.zip",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+        "registry.example/blueprint/isaac-eval-worker:2026-06-12",
+    )
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-live-provider-https-output",
+        provisioner="runpod",
+        simulator="isaac_sim",
+        allow_gpu_provisioning=True,
+        allow_simulator_execution=True,
+        allowed_simulators=["isaac_sim"],
+        simulator_commands={"isaac_sim": f"{sys.executable} -c \"print('isaac ok')\""},
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / (
+        "job-live-provider-https-output"
+    )
+    worker_plan = _read_json(job_dir / "worker_launch_plan.json")
+    worker_manifest = _read_json(job_dir / "worker_manifest.json")
+    provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+    remote_closure = _read_json(job_dir / "remote_cloud_execution_closure_manifest.json")
+
+    assert worker_plan["status"] == "blocked_invalid_worker_artifact_output_uri"
+    assert "worker_artifact_output_uri_not_provider_writable" in worker_plan["blockers"]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_uri_scheme"] == "https"  # type: ignore[index]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_uri_provider_writable"] is False  # type: ignore[index]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_write_auth_contract_ready"] is False  # type: ignore[index]
+    assert worker_plan["artifact_upload_contract"]["artifact_output_write_auth"][  # type: ignore[index]
+        "authorization_mode"
+    ] == "unsupported_uri_scheme"
+    assert worker_plan["artifact_upload_contract"][  # type: ignore[index]
+        "remote_provider_writable_artifact_output_uri_schemes"
+    ] == ["gs", "r2", "s3"]
+    assert worker_manifest["status"] == "blocked"
+    assert worker_manifest["artifact_output_uri_scheme"] == "https"
+    assert worker_manifest["artifact_output_uri_provider_writable"] is False
+    assert worker_manifest["artifact_output_write_auth_contract_ready"] is False
+    assert "worker_artifact_output_uri_not_provider_writable" in worker_manifest["blockers"]
+    assert provider_launch["status"] == "blocked_by_worker_plan"
+    assert provider_launch["provider_request_shape"]["inputs"]["artifact_output_uri_scheme"] == "https"  # type: ignore[index]
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "artifact_output_uri_provider_writable"
+    ] is False
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "artifact_output_write_auth_contract_ready"
+    ] is False
+    assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "provider_writable_artifact_output_uri_schemes"
+    ] == ["gs", "r2", "s3"]
+    assert "worker_artifact_output_uri_not_provider_writable" in provider_launch["blockers"]
+    assert remote_closure["status"] == "blocked_before_remote_execution"
+    assert "remote_artifact_output_uri_not_provider_writable" in remote_closure[
+        "contract_blockers"
+    ]
+    assert remote_closure["checks"]["artifact_output_uri_provider_writable"] is False
+    assert remote_closure["checks"]["artifact_output_write_auth_contract_ready"] is False
+    assert remote_closure["outputs"]["artifact_output_uri_scheme"] == "https"
 
 
 def test_live_provider_launch_blocks_without_capture_root_bundle_uri(
@@ -6122,6 +7666,7 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
     provisioning = _read_json(job_dir / "gpu_provisioning_result.json")
     cost_ledger = _read_json(job_dir / "gpu_cost_control_ledger.json")
+    remote_closure = _read_json(job_dir / "remote_cloud_execution_closure_manifest.json")
 
     assert worker_plan["status"] == "awaiting_explicit_provider_gate"
     assert worker_plan["blockers"] == []
@@ -6153,6 +7698,12 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     )
     assert provider_launch["status"] == "request_manifest_ready"
     assert provider_launch["reason"] == "provider_launch_request_ready_for_explicit_launcher"
+    provider_command = provider_launch["provider_request_shape"]["command"]  # type: ignore[index]
+    assert provider_command.startswith("blueprint-run-robot-eval-worker ")
+    assert "--allow-gpu-provisioning" in provider_command
+    assert "--allow-simulator-execution" not in provider_command
+    assert "--allowed-simulator" not in provider_command
+    assert "--simulator-command" not in provider_command
     assert provider_launch["provider_request_shape"]["image"]["configured_image_ref"] == (  # type: ignore[index]
         "registry.example/blueprint/isaac-eval-worker:2026-06-12"
     )
@@ -6184,6 +7735,15 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert cost_ledger["status"] == "ready_for_explicit_provider_launcher"
     assert cost_ledger["gpu_time"]["estimated_gpu_seconds"] == 120  # type: ignore[index]
     assert cost_ledger["gpu_time"]["actual_gpu_seconds"] is None  # type: ignore[index]
+    assert remote_closure["status"] == "ready_for_explicit_provider_runtime"
+    assert remote_closure["contract_ready_for_remote_runtime"] is True
+    assert remote_closure["remote_cloud_execution_proven"] is False
+    assert remote_closure["clean_shutdown_proven"] is False
+    assert remote_closure["checks"]["versioned_worker_image_ref_pinned"] is True
+    assert remote_closure["checks"]["worker_manifest_uri_fetchable"] is True
+    assert remote_closure["checks"]["capture_root_bundle_uri_fetchable"] is True
+    assert remote_closure["checks"]["artifact_output_uri_configured"] is True
+    assert remote_closure["runtime_blockers"] == ["remote_provider_runtime_not_executed"]
 
 
 def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
@@ -6218,6 +7778,7 @@ def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     worker_plan = _read_json(job_dir / "worker_launch_plan.json")
     worker_manifest = _read_json(job_dir / "worker_manifest.json")
     provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+    remote_closure = _read_json(job_dir / "remote_cloud_execution_closure_manifest.json")
 
     assert result["status"] == "prepared_with_external_blockers"
     assert result["blockers"] == ["provider_inputs_upload_not_proven"]
@@ -6245,6 +7806,12 @@ def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     assert provider_launch["status"] == "blocked_provider_input_setup"
     assert "provider_input_setup_blocked" in provider_launch["blockers"]
     assert "provider_inputs_upload_not_proven" in provider_launch["blockers"]
+    assert remote_closure["status"] == "blocked_before_remote_execution"
+    assert remote_closure["contract_ready_for_remote_runtime"] is False
+    assert remote_closure["provider_input_setup"]["provider_inputs_uploaded"] is False
+    assert "provider_input_setup:provider_inputs_upload_not_proven" in remote_closure[
+        "contract_blockers"
+    ]
     assert (tmp_path / "provider_inputs" / "provider_input_env.sh").is_file()
     assert (tmp_path / "provider_inputs" / "provider_input_setup_manifest.json").is_file()
     publish_script = tmp_path / "provider_inputs" / "provider_publish_resolution.sh"
@@ -6675,6 +8242,102 @@ def test_robot_eval_worker_blocks_live_provider_without_artifact_output_uri(
     ).exists()
 
 
+def test_robot_eval_worker_blocks_live_provider_non_writable_artifact_output_uri(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    artifact_output_uri = (tmp_path / "worker_artifacts").as_uri()
+    manifest_path = tmp_path / "worker_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": "robot_eval_worker_manifest.v1",
+            "capture_root": str(capture_root),
+            "job_id": "worker-non-writable-artifact-output",
+            "provisioner": "runpod",
+            "simulator": "isaac_sim",
+            "artifact_output_uri": artifact_output_uri,
+            "artifact_output_uri_required": True,
+            "artifact_output_uri_scheme": "file",
+            "artifact_output_uri_provider_writable": False,
+            "job_request": {
+                "schema_version": "robot_eval_job_request.v1",
+                "job_id": "worker-non-writable-artifact-output",
+            },
+        },
+    )
+
+    runtime = run_robot_eval_worker(
+        manifest_uri=str(manifest_path),
+        work_dir=tmp_path / "worker",
+    )
+
+    assert runtime["status"] == "blocked"
+    assert runtime["provisioner"] == "runpod"
+    assert runtime["artifact_output_uri_required"] is True
+    assert runtime["artifact_output_uri"] == artifact_output_uri
+    assert runtime["artifact_output_uri_scheme"] == "file"
+    assert runtime["artifact_output_uri_provider_writable"] is False
+    assert runtime["blockers"] == ["artifact_output_uri_not_provider_writable"]
+    assert runtime["artifact_upload"]["status"] == "blocked"  # type: ignore[index]
+    assert runtime["artifact_upload"]["reason"] == (  # type: ignore[index]
+        "artifact_output_uri_not_provider_writable"
+    )
+    assert not (
+        capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "worker-non-writable-artifact-output"
+    ).exists()
+
+
+def test_robot_eval_worker_blocks_live_provider_missing_artifact_write_auth_contract(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    manifest_path = tmp_path / "worker_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": "robot_eval_worker_manifest.v1",
+            "capture_root": str(capture_root),
+            "job_id": "worker-missing-artifact-write-auth",
+            "provisioner": "runpod",
+            "simulator": "isaac_sim",
+            "artifact_output_uri": "r2://blueprint-artifacts/jobs/worker-missing-auth",
+            "artifact_output_uri_required": True,
+            "artifact_output_uri_scheme": "r2",
+            "artifact_output_uri_provider_writable": True,
+            "job_request": {
+                "schema_version": "robot_eval_job_request.v1",
+                "job_id": "worker-missing-artifact-write-auth",
+            },
+        },
+    )
+
+    runtime = run_robot_eval_worker(
+        manifest_uri=str(manifest_path),
+        work_dir=tmp_path / "worker",
+    )
+
+    assert runtime["status"] == "blocked"
+    assert runtime["artifact_output_uri_required"] is True
+    assert runtime["artifact_output_uri_scheme"] == "r2"
+    assert runtime["artifact_output_uri_provider_writable"] is True
+    assert runtime["artifact_output_write_auth_contract_ready"] is False
+    assert runtime["blockers"] == ["artifact_output_write_auth_contract_missing"]
+    assert runtime["artifact_upload"]["status"] == "blocked"  # type: ignore[index]
+    assert runtime["artifact_upload"]["reason"] == (  # type: ignore[index]
+        "artifact_output_write_auth_contract_missing"
+    )
+    assert not (
+        capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "worker-missing-artifact-write-auth"
+    ).exists()
+
+
 def test_robot_eval_worker_blocks_live_provider_without_worker_manifest_schema(
     tmp_path: Path,
 ) -> None:
@@ -6704,6 +8367,18 @@ def test_robot_eval_worker_blocks_live_provider_without_worker_manifest_schema(
     assert not (
         capture_root / "pipeline" / "robot_eval_jobs" / "worker-invalid-schema"
     ).exists()
+
+
+def test_robot_eval_worker_parser_defaults_artifact_output_uri_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_EVAL_MANIFEST_URI", "gs://blueprint/manifests/worker.json")
+    monkeypatch.setenv("BLUEPRINT_ARTIFACT_OUTPUT_URI", "gs://blueprint/artifacts/job")
+
+    args = _build_parser().parse_args([])
+
+    assert args.manifest == "gs://blueprint/manifests/worker.json"
+    assert args.artifact_output_uri == "gs://blueprint/artifacts/job"
 
 
 def test_robot_eval_worker_blocks_live_provider_without_embedded_job_request(
@@ -7051,6 +8726,8 @@ def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
     refreshed_audit = _read_json(job_dir / "startup_architecture_audit.json")
     refreshed_run_manifest = _read_json(job_dir / "job_run_manifest.json")
     cost_ledger = _read_json(job_dir / "gpu_cost_control_ledger.json")
+    finalizer_proof = _read_json(job_dir / "provider_runtime_finalizer_proof.json")
+    remote_closure = _read_json(job_dir / "remote_cloud_execution_closure_manifest.json")
     assert runtime["startup_architecture_blockers"] == refreshed_audit["blockers"]
     assert runtime["provider_runtime_accounting"]["status"] == "recorded"
     assert cost_ledger["status"] == "provider_runtime_observed"
@@ -7059,6 +8736,24 @@ def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
     assert cost_ledger["gpu_time"]["actual_gpu_time_source"] == (  # type: ignore[index]
         "worker_runtime_wall_clock_seconds"
     )
+    assert cost_ledger["artifact_finalizer"][  # type: ignore[index]
+        "worker_artifacts_finalized_before_shutdown"
+    ] is True
+    assert cost_ledger["artifact_finalizer"][  # type: ignore[index]
+        "provider_shutdown_proven"
+    ] is False
+    assert finalizer_proof["worker_artifacts_finalized_before_shutdown"] is True
+    assert finalizer_proof["provider_shutdown_proven"] is False
+    assert "provider_shutdown_evidence_missing" in finalizer_proof["blockers"]
+    assert remote_closure["clean_shutdown_proven"] is False
+    assert "remote_provider_shutdown_not_proven" in remote_closure["runtime_blockers"]
+    assert refreshed_run_manifest["remote_cloud_clean_shutdown_proven"] is False
+    assert refreshed_run_manifest["artifacts"]["provider_runtime_finalizer_proof"] == (
+        "provider_runtime_finalizer_proof.json"
+    )
+    assert (artifact_output_dir / "gpu_cost_control_ledger.json").is_file()
+    assert (artifact_output_dir / "provider_runtime_finalizer_proof.json").is_file()
+    assert (artifact_output_dir / "remote_cloud_execution_closure_manifest.json").is_file()
     assert "cost:gpu_time_recorded_or_blocked" not in refreshed_audit["blockers"]
     redaction_check = next(
         check
@@ -7661,6 +9356,12 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
     assert surface["artifacts"]["robot_eval_job_job-surfaced_gpu_cost_control_ledger"] == (
         "../robot_eval_jobs/job-surfaced/gpu_cost_control_ledger.json"
     )
+    assert surface["artifacts"][
+        "robot_eval_job_job-surfaced_remote_cloud_execution_closure_manifest"
+    ] == ("../robot_eval_jobs/job-surfaced/remote_cloud_execution_closure_manifest.json")
+    assert surface["artifacts"][
+        "robot_eval_job_job-surfaced_robot_team_grade_eval_closure_manifest"
+    ] == ("../robot_eval_jobs/job-surfaced/robot_team_grade_eval_closure_manifest.json")
     assert surface["artifacts"]["robot_eval_job_job-surfaced_gpu_provisioning_result"] == (
         "../robot_eval_jobs/job-surfaced/gpu_provisioning_result.json"
     )
@@ -7712,6 +9413,10 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
         ]
         == "../robot_eval_jobs/job-surfaced/post_training_data_package_export_manifest.json"
     )
+    assert (
+        surface["artifacts"]["robot_eval_job_job-surfaced_webapp_robot_eval_status_projection"]
+        == "../robot_eval_jobs/job-surfaced/webapp_robot_eval_status_projection.json"
+    )
     assert surface["artifact_uris"]["robot_eval_job_job-surfaced_run_manifest_uri"].endswith(
         "/pipeline/robot_eval_jobs/job-surfaced/job_run_manifest.json"
     )
@@ -7762,6 +9467,21 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
         "robot_eval_job_post_training_data_package_export_manifest_uri"
     ].endswith(
         "/pipeline/robot_eval_jobs/job-surfaced/post_training_data_package_export_manifest.json"
+    )
+    assert surface["artifact_uris"][
+        "robot_eval_job_webapp_robot_eval_status_projection_uri"
+    ].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/webapp_robot_eval_status_projection.json"
+    )
+    assert surface["artifact_uris"][
+        "robot_eval_job_remote_cloud_execution_closure_manifest_uri"
+    ].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/remote_cloud_execution_closure_manifest.json"
+    )
+    assert surface["artifact_uris"][
+        "robot_eval_job_robot_team_grade_eval_closure_manifest_uri"
+    ].endswith(
+        "/pipeline/robot_eval_jobs/job-surfaced/robot_team_grade_eval_closure_manifest.json"
     )
     assert surface["artifact_uris"]["robot_eval_job_live_eval_closure_manifest_uri"].endswith(
         "/pipeline/robot_eval_jobs/job-surfaced/live_eval_closure_manifest.json"
