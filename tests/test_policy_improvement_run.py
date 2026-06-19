@@ -107,6 +107,20 @@ def _complete_job_dir(capture_root: Path) -> Path:
         },
     )
     _write_json(
+        job_dir / "evaluation_result.json",
+        {
+            "schema_version": "robot_eval_evaluation_result.v1",
+            "status": "completed",
+            "standard_policy_scorecard": {
+                "success_rate": 0.82,
+                "cycle_time": {"mean_seconds": 87.5, "sample_count": 3},
+                "intervention_rate": 0.1,
+                "required_scenario_eval_run_ids": ["heldout-1"],
+                "completed_scenario_eval_run_ids": ["heldout-1"],
+            },
+        },
+    )
+    _write_json(
         job_dir / "post_training_data_package_export_manifest.json",
         {
             "schema_version": "post_training_data_package_export.v1",
@@ -180,11 +194,24 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
         "failure_mode": "grasp_alignment_miss",
         "count": 2,
     }
+    assert result["baseline_evaluation_summary"]["success_rate"] == 0.82
+    assert result["task_evaluation_run_parity"]["webapp_projection_safe"] is True
     assert result["policy_autoresearch_summary"]["heldout_success_rate_delta"] == 0.14
+    assert result["readiness_ladder"][-1] == {
+        "stage": "customer_review_package",
+        "status": "ready",
+        "blockers": [],
+    }
+    assert result["webapp_summary_projection"] == _read_json(
+        job_dir / "policy_improvement_run" / "policy_improvement_run_webapp_summary.json"
+    )
+    assert result["webapp_summary_projection"]["safe_for_firestore"] is True
+    assert result["webapp_summary_projection"]["dense_or_secret_payloads_included"] is False
     assert result["claim_boundary"]["simulator_execution_proven"] is True
     assert result["claim_boundary"]["robot_readiness_proven"] is False
     assert result["claim_boundary"]["public_claim_upgrade_allowed"] is False
     assert "policy_candidate_package" in result["included_artifacts"]
+    assert "evaluation_result" in result["included_artifacts"]
 
     persisted = _read_json(job_dir / "policy_improvement_run" / "policy_improvement_run_offer.json")
     brief = (job_dir / "policy_improvement_run" / "policy_improvement_run_offer.md").read_text(
