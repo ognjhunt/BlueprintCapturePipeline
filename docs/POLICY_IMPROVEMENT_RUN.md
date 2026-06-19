@@ -50,7 +50,13 @@ Source code is optional by default. The access ladder is:
 6. Post-train or lift a candidate artifact.
 7. Test candidate versions on heldout or sealed scenarios that were not used as
    training data.
-8. Deliver the improved artifact and an evidence report.
+8. Deliver the improved artifact, WebApp-safe summary projection, and evidence report.
+
+The run now mirrors the Task Evaluation Run shape instead of being only a thin
+offer wrapper: it carries a baseline evaluation scorecard projection, a staged
+readiness ladder, and a `policy_improvement_run_webapp_summary.json` document
+that WebApp can store without dense traces, secrets, training payloads, or raw
+policy artifacts.
 
 ## Scenario Split Contract
 
@@ -139,7 +145,7 @@ python -m pytest tests/test_policy_improvement_run.py tests/test_policy_autorese
   Packages.
 - Customer-supplied policies work without source code access.
 - The artifact reports baseline score, improved candidate score, failure modes,
-  access level, and proof limits.
+  access level, readiness ladder, WebApp-safe projection, and proof limits.
 - Missing customer inputs, missing heldout/sealed splits, or missing candidate
   evidence fail closed.
 

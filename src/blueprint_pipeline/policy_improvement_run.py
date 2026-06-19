@@ -18,7 +18,7 @@ from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_te
 from .local_capture import resolve_local_capture_context
 
 
-POLICY_IMPROVEMENT_RUN_SCHEMA_VERSION = "policy_improvement_run_offer.v1"
+POLICY_IMPROVEMENT_RUN_SCHEMA_VERSION = "policy_improvement_run_offer.v2"
 DEFAULT_OUTPUT_DIR_NAME = "policy_improvement_run"
 
 ACCESS_LEVELS = {
@@ -203,6 +203,25 @@ def _failure_mode_summary(labels: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _scorecard_summary(evaluation_result: Mapping[str, Any]) -> dict[str, Any]:
+    scorecard = _mapping(evaluation_result.get("standard_policy_scorecard"))
+    cycle_time = _mapping(scorecard.get("cycle_time"))
+    return {
+        "status": evaluation_result.get("status") or "missing",
+        "success_rate": _float(scorecard.get("success_rate")),
+        "cycle_time_mean_seconds": _float(cycle_time.get("mean_seconds")),
+        "cycle_time_sample_count": cycle_time.get("sample_count"),
+        "intervention_rate": _float(scorecard.get("intervention_rate")),
+        "sim_vs_real_calibration_score": _float(
+            scorecard.get("sim_vs_real_calibration_score")
+        ),
+        "required_scenario_eval_run_ids": scorecard.get("required_scenario_eval_run_ids")
+        or [],
+        "completed_scenario_eval_run_ids": scorecard.get("completed_scenario_eval_run_ids")
+        or [],
+    }
+
+
 def _policy_autoresearch_summary(
     *,
     report: Mapping[str, Any],
@@ -321,6 +340,149 @@ def _customer_inputs(
         },
     }
 
+
+
+def _readiness_ladder(
+    *,
+    customer_inputs: Mapping[str, Mapping[str, Any]],
+    included_artifacts: Mapping[str, str],
+    split_counts: Mapping[str, int],
+    post_training_package: Mapping[str, Any],
+    policy_summary: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    checks = [
+        (
+            "customer_policy_intake",
+            all(value.get("status") == "present" for value in customer_inputs.values()),
+            [
+                f"missing_customer_input_{key}"
+                for key, value in customer_inputs.items()
+                if value.get("status") != "present"
+            ],
+        ),
+        (
+            "task_evaluation_run_contract",
+            "scenario_eval_matrix" in included_artifacts
+            and int(split_counts.get("heldout") or 0)
+            + int(split_counts.get("sealed_audit") or 0)
+            > 0,
+            [
+                blocker
+                for blocker, failed in (
+                    ("missing_scenario_eval_matrix", "scenario_eval_matrix" not in included_artifacts),
+                    (
+                        "missing_heldout_or_sealed_audit_split",
+                        int(split_counts.get("heldout") or 0)
+                        + int(split_counts.get("sealed_audit") or 0)
+                        == 0,
+                    ),
+                )
+                if failed
+            ],
+        ),
+        (
+            "baseline_evaluation",
+            "normalized_attempt_trace" in included_artifacts
+            and "evaluation_result" in included_artifacts,
+            [
+                blocker
+                for blocker, failed in (
+                    ("baseline_normalized_attempt_trace_missing", "normalized_attempt_trace" not in included_artifacts),
+                    ("evaluation_result_missing", "evaluation_result" not in included_artifacts),
+                )
+                if failed
+            ],
+        ),
+        (
+            "failure_diagnosis",
+            "failure_labels" in included_artifacts,
+            [] if "failure_labels" in included_artifacts else ["failure_labels_missing"],
+        ),
+        (
+            "post_training_data_package",
+            post_training_package.get("status") == "export_ready_review_required",
+            []
+            if post_training_package.get("status") == "export_ready_review_required"
+            else ["post_training_data_package_export_not_ready"],
+        ),
+        (
+            "policy_autoresearch",
+            "policy_autoresearch_report" in included_artifacts,
+            []
+            if "policy_autoresearch_report" in included_artifacts
+            else ["policy_autoresearch_report_missing"],
+        ),
+        (
+            "candidate_promotion",
+            policy_summary.get("candidate_status") == "promoted_sim_only_policy_candidate"
+            and policy_summary.get("safety_contact_gate_passed") is True,
+            [
+                blocker
+                for blocker, failed in (
+                    (
+                        "promoted_policy_candidate_missing",
+                        policy_summary.get("candidate_status")
+                        != "promoted_sim_only_policy_candidate",
+                    ),
+                    (
+                        "policy_candidate_safety_contact_gate_not_passed",
+                        policy_summary.get("safety_contact_gate_passed") is not True,
+                    ),
+                )
+                if failed
+            ],
+        ),
+        (
+            "customer_review_package",
+            "policy_candidate_package" in included_artifacts
+            and "heldout_eval_result" in included_artifacts,
+            [
+                blocker
+                for blocker, failed in (
+                    ("policy_candidate_package_missing", "policy_candidate_package" not in included_artifacts),
+                    ("heldout_eval_result_missing", "heldout_eval_result" not in included_artifacts),
+                )
+                if failed
+            ],
+        ),
+    ]
+    return [
+        {
+            "stage": stage,
+            "status": "ready" if ready else "blocked",
+            "blockers": blockers,
+        }
+        for stage, ready, blockers in checks
+    ]
+
+
+def _webapp_summary_projection(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    policy_summary = _mapping(manifest.get("policy_autoresearch_summary"))
+    baseline = _mapping(manifest.get("baseline_evaluation_summary"))
+    customer_inputs = _mapping(manifest.get("customer_inputs"))
+    return {
+        "schema_version": "policy_improvement_run_webapp_summary.v1",
+        "product_family": "policy_improvement_run",
+        "scene_id": manifest.get("scene_id"),
+        "capture_id": manifest.get("capture_id"),
+        "status": manifest.get("status"),
+        "blockers": manifest.get("blockers") or [],
+        "customer_input_status": {
+            key: _mapping(value).get("status") for key, value in customer_inputs.items()
+        },
+        "baseline_success_rate": baseline.get("success_rate"),
+        "candidate_success_rate": policy_summary.get("best_heldout_success_rate"),
+        "heldout_success_rate_delta": policy_summary.get("heldout_success_rate_delta"),
+        "safety_contact_gate_passed": policy_summary.get("safety_contact_gate_passed"),
+        "readiness_ladder": manifest.get("readiness_ladder") or [],
+        "artifact_uris": {
+            "manifest": manifest.get("manifest_path"),
+            "brief": manifest.get("brief_path"),
+        },
+        "safe_for_firestore": True,
+        "dense_or_secret_payloads_included": False,
+        "claim_boundary": manifest.get("claim_boundary") or {},
+    }
 
 def _status_and_blockers(
     *,
@@ -499,6 +661,7 @@ def build_policy_improvement_run_offer(
     heldout_result = _read_optional_mapping(
         resolved_job_dir / "policy_autoresearch" / "heldout_eval_result.json"
     )
+    evaluation_result = _read_optional_mapping(resolved_job_dir / "evaluation_result.json")
 
     customer_input_summary = _customer_inputs(
         job_request=job_request,
@@ -522,6 +685,13 @@ def build_policy_improvement_run_offer(
         split_counts=split_counts,
         policy_summary=policy_summary,
         post_training_package=post_training_package,
+    )
+    readiness_ladder = _readiness_ladder(
+        customer_inputs=customer_input_summary,
+        included_artifacts=included_artifacts,
+        split_counts=split_counts,
+        post_training_package=post_training_package,
+        policy_summary=policy_summary,
     )
 
     access = dict(ACCESS_LEVELS[access_level])
@@ -577,6 +747,15 @@ def build_policy_improvement_run_offer(
             "sealed_scenario_evaluation",
             "improved_artifact_and_evidence_report",
         ],
+        "task_evaluation_run_parity": {
+            "baseline_eval_result_required": True,
+            "scenario_eval_matrix_required": True,
+            "normalized_attempt_trace_required": True,
+            "standard_policy_scorecard_projected": True,
+            "customer_handoff_ready_only_after_review": True,
+            "webapp_projection_safe": True,
+        },
+        "baseline_evaluation_summary": _scorecard_summary(evaluation_result),
         "scenario_split_policy": {
             "development_visible_to_autoresearch": True,
             "validation_limited_feedback": True,
@@ -592,6 +771,7 @@ def build_policy_improvement_run_offer(
             "manifest_counts": post_training_package.get("manifest_counts") or {},
         },
         "policy_autoresearch_summary": policy_summary,
+        "readiness_ladder": readiness_ladder,
         "deliverables": [
             "baseline_eval_report",
             "failure_mode_report",
@@ -621,8 +801,13 @@ def build_policy_improvement_run_offer(
         "brief_path": "policy_improvement_run_offer.md",
         "claim_boundary": boundary,
     }
+    manifest["webapp_summary_projection"] = _webapp_summary_projection(manifest)
 
     write_json(resolved_output_dir / "policy_improvement_run_offer.json", manifest)
+    write_json(
+        resolved_output_dir / "policy_improvement_run_webapp_summary.json",
+        manifest["webapp_summary_projection"],
+    )
     write_text(resolved_output_dir / "policy_improvement_run_offer.md", _markdown_brief(manifest))
     return manifest
 
