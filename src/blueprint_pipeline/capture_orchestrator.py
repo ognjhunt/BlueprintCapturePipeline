@@ -6,6 +6,8 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+import shlex
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -95,6 +97,13 @@ _WORLD_MODEL_PLUGIN_OPTIONAL_INPUT_KEYS = {
     "site_reference_projection",
 }
 _OPTIONAL_MISSING_SOURCE_STATUSES = {"", "missing", "not_available", "optional_missing"}
+SIM_ONLY_BETA_AUTONOMY_ENV = "BLUEPRINT_SIM_ONLY_BETA_AUTONOMY"
+SIM_ONLY_BETA_DEFAULT_TASK_EVAL_ENV = "BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL"
+ALLOW_SIMULATOR_EXECUTION_ENV = "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"
+MUJOCO_G1_MODEL_ROOT_ENV = "BLUEPRINT_MUJOCO_G1_MODEL_ROOT"
+MUJOCO_ALLOW_FETCH_G1_ASSETS_ENV = "BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS"
+MUJOCO_BETA_STEPS_ENV = "BLUEPRINT_MUJOCO_BETA_STEPS"
+MUJOCO_BETA_SKIP_RENDER_ENV = "BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES"
 
 
 @dataclass(frozen=True)
@@ -192,6 +201,18 @@ def _descriptor_requests_task_evaluation_run(descriptor_path: Path) -> bool:
     return "task_evaluation_run" in _descriptor_requested_outputs(payload)
 
 
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sim_only_beta_autonomy_enabled() -> bool:
+    return _env_truthy(SIM_ONLY_BETA_AUTONOMY_ENV)
+
+
+def _sim_only_beta_default_task_eval_enabled() -> bool:
+    return _sim_only_beta_autonomy_enabled() or _env_truthy(SIM_ONLY_BETA_DEFAULT_TASK_EVAL_ENV)
+
+
 def _call_requests_task_evaluation_run(
     *,
     lane: Optional[str],
@@ -260,6 +281,8 @@ def _load_descriptor_requested_lanes(descriptor_gcs_uri: str, gcs_root: Any) -> 
         return list(_CURRENT_PIPELINE_LANES)
     if "scene_memory" in normalized_outputs:
         return ["qualification", "scene_memory"]
+    if _sim_only_beta_default_task_eval_enabled():
+        return list(_CURRENT_PIPELINE_LANES)
     return ["qualification"]
 
 
@@ -319,6 +342,84 @@ def _robot_eval_job_request_inbox_for_capture(capture_root: Path) -> Optional[Pa
         if candidate.is_dir() and any(path.is_file() for path in candidate.glob("*.json")):
             return candidate
     return None
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _mujoco_beta_simulator_command(capture_root: Path) -> str:
+    explicit = str(os.getenv("ROBOT_EVAL_JOB_DEFAULT_SIMULATOR_COMMAND") or "").strip()
+    if explicit:
+        return explicit
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.mujoco_g1_simulator_command",
+        "--capture-root",
+        str(capture_root),
+        "--steps",
+        str(_env_int(MUJOCO_BETA_STEPS_ENV, 32)),
+    ]
+    g1_root = str(os.getenv(MUJOCO_G1_MODEL_ROOT_ENV) or "").strip()
+    if g1_root:
+        command.extend(["--g1-model-root", g1_root])
+    elif _env_truthy(MUJOCO_ALLOW_FETCH_G1_ASSETS_ENV):
+        command.append("--allow-fetch-g1-assets")
+    else:
+        return ""
+    if _env_truthy(MUJOCO_BETA_SKIP_RENDER_ENV):
+        command.append("--skip-render-frames")
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def _default_robot_eval_job_runtime(capture_root: Path) -> Dict[str, Any]:
+    simulator = os.getenv("ROBOT_EVAL_JOB_DEFAULT_SIMULATOR")
+    provisioner = os.getenv("ROBOT_EVAL_JOB_DEFAULT_PROVISIONER")
+    if _sim_only_beta_autonomy_enabled():
+        simulator = simulator or "mujoco"
+        provisioner = provisioner or "fixture_local"
+    else:
+        simulator = simulator or "fixture"
+        provisioner = provisioner or "fixture_local"
+
+    allowed_simulators: List[str] = []
+    raw_allowed = os.getenv("ROBOT_EVAL_JOB_ALLOWED_SIMULATORS")
+    if raw_allowed:
+        allowed_simulators = [
+            item.strip()
+            for item in raw_allowed.replace(";", ",").split(",")
+            if item.strip()
+        ]
+    elif _sim_only_beta_autonomy_enabled() and simulator != "fixture":
+        allowed_simulators = [simulator]
+
+    simulator_commands: Dict[str, str] = {}
+    if _sim_only_beta_autonomy_enabled() and simulator == "mujoco":
+        command = _mujoco_beta_simulator_command(capture_root)
+        if command:
+            simulator_commands["mujoco"] = command
+
+    return {
+        "provisioner": provisioner,
+        "simulator": simulator,
+        "allow_simulator_execution": (
+            _sim_only_beta_autonomy_enabled()
+            and _env_truthy(ALLOW_SIMULATOR_EXECUTION_ENV)
+            and simulator != "fixture"
+        ),
+        "allowed_simulators": allowed_simulators,
+        "simulator_commands": simulator_commands,
+        "allow_cpu_simulator_preflight": _sim_only_beta_autonomy_enabled()
+        and _env_truthy("BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT"),
+    }
 
 
 def _load_cards(path: Path) -> List[Dict[str, Any]]:
@@ -1112,6 +1213,7 @@ def _auto_stage_robot_eval_job_request(
         f"{_safe_slug(capture_id, fallback='capture')}"
     )
     buyer_request_id = f"buyer-request-{job_id}"
+    beta_runtime = _default_robot_eval_job_runtime(capture_root)
     request = {
         "schema_version": "robot_eval_job_request.v1",
         "job_id": job_id,
@@ -1157,7 +1259,7 @@ def _auto_stage_robot_eval_job_request(
             }
         },
         "operation": "evaluate_only",
-        "simulator_preference": "fixture",
+        "simulator_preference": beta_runtime["simulator"],
         "cosmos_training_preference": {"mode": "export_only"},
         "budget": {"budget_usd": 0.0, "timeout_seconds": 120},
         "rights_privacy_scope": {
@@ -1183,6 +1285,16 @@ def _auto_stage_robot_eval_job_request(
             "failure_taxonomy_mode_count": failure_taxonomy_mode_count,
             "standard_scorecard_metrics": list(_STANDARD_ROBOT_EVAL_SCORECARD_METRICS),
             "required_scenario_variation_names": list(_STANDARD_SCENARIO_VARIATION_NAMES),
+            "sim_only_beta_autonomy_enabled": _sim_only_beta_autonomy_enabled(),
+            "simulator_profile": {
+                "simulator": beta_runtime["simulator"],
+                "provisioner": beta_runtime["provisioner"],
+                "allow_simulator_execution": beta_runtime["allow_simulator_execution"],
+                "allowed_simulators": beta_runtime["allowed_simulators"],
+                "packaged_simulator_command_configured": bool(
+                    beta_runtime["simulator_commands"].get("mujoco")
+                ),
+            },
             "simulator_engine_plugin_registry": (
                 "pipeline/simulation_automation/simulator_engine_plugin_registry.json"
             ),
@@ -1263,11 +1375,16 @@ def _run_robot_eval_job_inbox_if_ready(
             "auto_stage": auto_stage,
             "claim_boundary": "no_robot_eval_job_request_v1_files_found",
         }
+    runtime = _default_robot_eval_job_runtime(capture_root)
     result = run_robot_eval_job_request_inbox(
         capture_root=capture_root,
         inbox_dir=inbox,
-        provisioner=os.getenv("ROBOT_EVAL_JOB_DEFAULT_PROVISIONER", "fixture_local"),
-        simulator=os.getenv("ROBOT_EVAL_JOB_DEFAULT_SIMULATOR", "fixture"),
+        provisioner=runtime["provisioner"],
+        simulator=runtime["simulator"],
+        allow_simulator_execution=runtime["allow_simulator_execution"],
+        allowed_simulators=runtime["allowed_simulators"],
+        simulator_commands=runtime["simulator_commands"],
+        allow_cpu_simulator_preflight=runtime["allow_cpu_simulator_preflight"],
     )
     return {
         "status": result.get("status"),
@@ -1277,6 +1394,13 @@ def _run_robot_eval_job_inbox_if_ready(
             capture_root / "pipeline" / "robot_eval_job_requests" / "inbox_run_manifest.json"
         ),
         "auto_stage": auto_stage,
+        "runtime": {
+            "provisioner": runtime["provisioner"],
+            "simulator": runtime["simulator"],
+            "allow_simulator_execution": runtime["allow_simulator_execution"],
+            "allowed_simulators": runtime["allowed_simulators"],
+            "simulator_command_configured": bool(runtime["simulator_commands"]),
+        },
         "claim_boundary": "job_requests_processed_with_gated_default_execution",
     }
 
@@ -1298,7 +1422,10 @@ def run_capture_pipeline(
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
     auto_stage_task_eval = _descriptor_requests_task_evaluation_run(
         descriptor_path
-    ) or _call_requests_task_evaluation_run(lane=lane, requested_lanes=requested_lanes)
+    ) or _call_requests_task_evaluation_run(
+        lane=lane,
+        requested_lanes=requested_lanes,
+    ) or _sim_only_beta_default_task_eval_enabled()
 
     results: List[Dict[str, Any]] = []
     qualification_result: Optional[Dict[str, Any]] = None
@@ -1364,6 +1491,7 @@ def run_capture_pipeline(
                         "processed_count",
                         0,
                     ),
+                    "robot_eval_job_runtime": robot_eval_jobs.get("runtime", {}),
                     "robot_eval_job_inbox_manifest_path": robot_eval_jobs.get("manifest_path"),
                     "robot_eval_job_auto_stage_status": auto_stage.get("status"),
                     "robot_eval_job_auto_stage_request_path": auto_stage.get("request_path"),

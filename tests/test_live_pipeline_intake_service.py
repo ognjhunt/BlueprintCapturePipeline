@@ -41,6 +41,35 @@ def _control_manifest(tmp_path: Path, capture_root: Path) -> Path:
     return output_path
 
 
+def _seed_robot_eval_dataset_cards(capture_root: Path) -> None:
+    dataset_dir = capture_root / "pipeline" / "robot_eval_dataset"
+    _write_json(
+        dataset_dir / "task_cards.json",
+        {
+            "schema_version": "robot_eval_task_cards.v1",
+            "cards": [
+                {
+                    "task_id": "scene_anchor_geometry_0",
+                    "task_card_id": "task-card-1",
+                }
+            ],
+        },
+    )
+    _write_json(
+        dataset_dir / "scenario_cards.json",
+        {
+            "schema_version": "robot_eval_scenario_cards.v1",
+            "cards": [
+                {
+                    "scenario_id": "scenario_scene_anchor_geometry_0_unitree_g1",
+                    "task_id": "scene_anchor_geometry_0",
+                    "robot_profile_id": "unitree_g1",
+                }
+            ],
+        },
+    )
+
+
 def _webapp_request(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict[str, object]:
     buyer_request_id = "buyer-request-1"
     return {
@@ -74,6 +103,22 @@ def _webapp_request(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict
                 },
             },
         },
+    }
+
+
+def _capture_handoff() -> dict[str, object]:
+    return {
+        "schema_version": "blueprint_capture_pipeline_handoff.v1",
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "site_submission_id": "site-submission-1",
+        "buyer_request_id": "buyer-request-1",
+        "capture_job_id": "capture-job-1",
+        "requested_outputs": ["robot_eval_dataset", "task_evaluation_run"],
+        "requested_lanes": ["evaluation_prep", "robot_eval_dataset", "task_evaluation_run"],
+        "robot_eval_dataset_requested": True,
+        "capture_descriptor_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        "pipeline_handoff_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline_handoff.json",
     }
 
 
@@ -201,6 +246,78 @@ def test_live_pipeline_intake_service_stages_webapp_request(
     assert Path(payload["webapp_staging"]["target_path"]).is_file()
     assert payload["trigger"]["status"] == "not_configured"
     assert payload["proof_boundary"]["intake_sets_proof_booleans"] is False
+
+
+def test_live_pipeline_intake_service_converts_capture_handoff_to_webapp_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_robot_eval_dataset_cards(capture_root)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE", "true")
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/live-pipeline/capture-handoffs",
+        json=_capture_handoff(),
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "staged_for_control_plane"
+    assert payload["accepted"] is True
+    assert payload["capture_handoff"]["converted_to_job_request"] is True
+    assert payload["capture_handoff"]["dataset_selection"]["task_id"] == "scene_anchor_geometry_0"
+    target_path = Path(payload["webapp_staging"]["target_path"])
+    assert target_path.is_file()
+    envelope = json.loads(target_path.read_text(encoding="utf-8"))
+    job_request = envelope["job_request"]
+    assert envelope["source_kind"] == "capture_pipeline_handoff"
+    assert job_request["source_kind"] == "capture_pipeline_handoff"
+    assert job_request["requested_tasks"] == [
+        {
+            "task_id": "scene_anchor_geometry_0",
+            "scenario_ids": ["scenario_scene_anchor_geometry_0_unitree_g1"],
+        }
+    ]
+    assert job_request["source"]["pipeline_handoff_uri"].endswith("pipeline_handoff.json")
+    assert job_request["policy_package"]["high_level_skill_trace"]["ordered_skill_sequence"] == [
+        "walk_to_target"
+    ]
+
+
+def test_live_pipeline_intake_service_blocks_capture_handoff_without_robot_eval_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_robot_eval_dataset_cards(capture_root)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    client = TestClient(create_app())
+    handoff = {
+        **_capture_handoff(),
+        "requested_outputs": ["qualification"],
+        "requested_lanes": ["qualification"],
+        "robot_eval_dataset_requested": False,
+    }
+
+    response = client.post(
+        "/api/live-pipeline/capture-handoffs",
+        json=handoff,
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["status"] == "blocked"
+    assert payload["accepted"] is False
+    assert "capture_handoff:capture_handoff_robot_eval_not_requested" in payload[
+        "input_blockers"
+    ]
 
 
 def test_live_pipeline_intake_service_records_blocked_webapp_request(

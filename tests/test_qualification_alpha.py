@@ -897,6 +897,41 @@ def test_resolve_requested_lanes_demotes_bridge_default_scene_memory(tmp_path: P
     assert lanes == ["qualification"]
 
 
+def test_materialized_capture_uses_beta_default_current_lanes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root, _descriptor_uri = _build_staged_capture(tmp_path, requested_outputs=[])
+    raw_manifest_path = capture_root / "raw" / "manifest.json"
+    raw_manifest = json.loads(raw_manifest_path.read_text(encoding="utf-8"))
+    raw_manifest.pop("requested_outputs", None)
+    raw_manifest_path.write_text(json.dumps(raw_manifest), encoding="utf-8")
+
+    monkeypatch.setenv("BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL", "true")
+    materialized = materialize_capture_bundle(
+        bucket="local-blueprint",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        gcs_root=tmp_path,
+    )
+
+    assert materialized["descriptor"]["requested_outputs"] == [
+        "qualification",
+        "preview_simulation",
+    ]
+    assert materialized["descriptor"]["requested_lanes"] == [
+        "qualification",
+        "evaluation_prep",
+        "simulation_automation",
+    ]
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    assert descriptor["requested_lanes"] == [
+        "qualification",
+        "evaluation_prep",
+        "simulation_automation",
+    ]
+
+
 def test_bad_video_review_forces_recapture_and_lower_world_model_fit(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_staged_capture(tmp_path)
     bad_review = _successful_capture_review()

@@ -205,6 +205,56 @@ def test_live_pipeline_control_plane_processes_empty_inbox_without_live_actions(
     )
 
 
+def test_live_pipeline_control_plane_beta_env_defaults_to_mujoco_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    _write_json(inbox_dir / "job.json", _webapp_queue_envelope(capture_root))
+    g1_root = tmp_path / "unitree_g1"
+    g1_root.mkdir()
+    (g1_root / "g1.xml").write_text("<mujoco/>", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_SIM_ONLY_BETA_AUTONOMY", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_MUJOCO_G1_MODEL_ROOT", str(g1_root))
+    calls = []
+
+    def _run_inbox(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        return {
+            "schema_version": "robot_eval_job_request_inbox_run.v1",
+            "status": "completed",
+            "processed_count": 1,
+            "jobs": [{"job_id": "webapp-job-1", "status": "simulator_command_completed"}],
+            "claim_boundary": {},
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.live_pipeline_control_plane.run_robot_eval_job_request_inbox",
+        _run_inbox,
+    )
+
+    result = run_live_pipeline_control_plane(
+        capture_root=capture_root,
+        job_request_inbox=inbox_dir,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    assert result["execution_config"]["simulator"] == "mujoco"
+    assert result["execution_config"]["allowed_simulators"] == ["mujoco"]
+    assert result["execution_config"]["allow_simulator_execution"] is True
+    assert result["execution_config"]["simulator_commands_configured"] == ["mujoco"]
+    assert calls[0]["simulator"] == "mujoco"
+    assert calls[0]["allowed_simulators"] == ["mujoco"]
+    assert calls[0]["allow_simulator_execution"] is True
+    assert "blueprint_pipeline.mujoco_g1_simulator_command" in calls[0]["simulator_commands"]["mujoco"]
+    assert str(g1_root) in calls[0]["simulator_commands"]["mujoco"]
+    assert "--max-rendered-episodes 11" in calls[0]["simulator_commands"]["mujoco"]
+    assert "--max-rendered-steps 24" in calls[0]["simulator_commands"]["mujoco"]
+
+
 def test_live_pipeline_control_plane_writes_resumable_blocker_packets(
     tmp_path: Path,
 ) -> None:

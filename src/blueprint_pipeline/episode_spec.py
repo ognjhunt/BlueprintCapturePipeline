@@ -239,6 +239,72 @@ def _scene_class_task_hints(site_text: str) -> List[Dict[str, Any]]:
     return hints
 
 
+def _task_category_from_text(text: str) -> str:
+    lower = text.lower()
+    if any(token in lower for token in ("pick", "place", "grasp", "bin", "tote")):
+        return "pick_place"
+    if any(token in lower for token in ("inspect", "check", "scan")):
+        return "inspection_route"
+    return "navigation"
+
+
+def _capture_manifest_task_hints(capture_root: Path) -> List[Dict[str, Any]]:
+    descriptor = _read_optional_mapping(capture_root / "capture_descriptor.json")
+    raw_manifest = _read_optional_mapping(capture_root / "raw" / "manifest.json")
+    task_steps = _string_list(
+        raw_manifest.get("taskSteps")
+        or raw_manifest.get("task_steps")
+        or descriptor.get("taskSteps")
+        or descriptor.get("task_steps")
+    )
+    workflow_name = _string(
+        raw_manifest.get("workflowName")
+        or raw_manifest.get("workflow_name")
+        or descriptor.get("workflowName")
+        or descriptor.get("workflow_name")
+    )
+    zone = _string(raw_manifest.get("zone") or descriptor.get("zone"))
+    special_task_type = _string(
+        raw_manifest.get("special_task_type")
+        or raw_manifest.get("specialTaskType")
+        or descriptor.get("special_task_type")
+        or descriptor.get("specialTaskType")
+    )
+    basis = " ".join([workflow_name, special_task_type, zone, *task_steps]).strip()
+    if not basis:
+        return []
+
+    lower = basis.lower()
+    task_id_basis = workflow_name or special_task_type or " ".join(task_steps[:2]) or zone
+    target_object_ids: List[str] = []
+    if any(token in lower for token in ("waypoint", "navigate", "route", "spawn")):
+        target_object_ids = ["selected_waypoint"]
+        if "humanoid" in lower:
+            task_text = "Navigate humanoid from validated start zone to selected waypoint"
+        else:
+            task_text = "Navigate from validated start zone to selected waypoint"
+    elif task_steps:
+        task_text = "Execute capture-described task: " + "; ".join(task_steps[:3])
+    else:
+        task_text = workflow_name or special_task_type or f"Execute task in {zone}"
+
+    return [
+        {
+            "task_id": f"capture_intent_{_stable_slug(task_id_basis, fallback='task')}",
+            "task_text": task_text,
+            "task_category": _task_category_from_text(" ".join([task_text, basis])),
+            "target_object_ids": target_object_ids,
+            "source": "raw/manifest.json",
+            "source_context": {
+                "workflow_name": workflow_name or None,
+                "task_steps": task_steps,
+                "zone": zone or None,
+                "special_task_type": special_task_type or None,
+            },
+        }
+    ]
+
+
 def _object_label_task_hints(pipeline_dir: Path) -> List[Dict[str, Any]]:
     manifest = _read_optional_mapping(pipeline_dir / "evaluation_prep" / "object_geometry_manifest.json")
     objects = manifest.get("objects")
@@ -326,7 +392,7 @@ def _task_hypothesis_hints(capture_root: Path) -> List[Dict[str, Any]]:
 
 def _proposal_from_hint(hint: Mapping[str, Any], *, index: int) -> Dict[str, Any]:
     task_id = _stable_slug(hint.get("task_id"), fallback=f"task_{index + 1}")
-    return {
+    proposal = {
         "proposal_id": f"task_anchor_proposal_{task_id}",
         "task_id": task_id,
         "task_text": _string(hint.get("task_text")) or "Review a scene-grounded robot task",
@@ -346,6 +412,10 @@ def _proposal_from_hint(hint: Mapping[str, Any], *, index: int) -> Dict[str, Any
         ],
         "claim_boundary": "task_anchor_proposal_is_advisory_not_robot_eval_proof",
     }
+    source_context = hint.get("source_context")
+    if isinstance(source_context, Mapping):
+        proposal["source_context"] = dict(source_context)
+    return proposal
 
 
 def build_task_anchor_proposals(
@@ -357,9 +427,10 @@ def build_task_anchor_proposals(
 ) -> Dict[str, Any]:
     hints: List[Dict[str, Any]] = []
     hints.extend(_task_hypothesis_hints(capture_root))
+    hints.extend(_capture_manifest_task_hints(capture_root))
     hints.extend(_object_label_task_hints(pipeline_dir))
-    hints.extend(_scene_asset_task_hints(automation_dir))
     hints.extend(_scene_class_task_hints(_site_type_text(capture_root)))
+    hints.extend(_scene_asset_task_hints(automation_dir))
     if not hints:
         hints.append(
             {

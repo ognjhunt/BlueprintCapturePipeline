@@ -223,6 +223,41 @@ def test_simulator_beta_readiness_marks_physical_gates_out_of_scope(tmp_path: Pa
     assert persisted["ready_for_simulator_beta"] is True
 
 
+def test_simulator_beta_readiness_defers_to_release_gate_when_present(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    release_gate_path = (
+        capture_root
+        / "pipeline"
+        / "live_pipeline_control_plane"
+        / "sim_only_beta_release_gate_report.json"
+    )
+    _write_json(
+        release_gate_path,
+        {
+            "schema_version": "blueprint.sim_only_beta_release_gate_report.v1",
+            "status": "passed",
+            "ready_for_beta_release": True,
+            "blockers": [],
+        },
+    )
+
+    manifest = build_simulator_beta_readiness(capture_root=capture_root)
+
+    assert manifest["status"] == "ready_for_simulator_beta"
+    assert manifest["ready_for_simulator_beta"] is True
+    assert manifest["blocking_gate_ids"] == []
+    assert manifest["release_authority"]["ready_for_beta_release"] is True
+    assert manifest["release_authority"][
+        "legacy_provider_rehearsal_gates_are_advisory"
+    ] is True
+    assert "production_runpod_worker_execution" in manifest[
+        "legacy_provider_rehearsal_blocking_gate_ids"
+    ]
+    assert manifest["claim_boundary"]["sim_only_release_gate_authoritative"] is True
+
+
 def test_simulator_beta_readiness_does_not_promote_training_grade_without_handoff(
     tmp_path: Path,
 ) -> None:

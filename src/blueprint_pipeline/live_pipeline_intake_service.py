@@ -40,6 +40,7 @@ INTAKE_TRIGGER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND"
 INTAKE_ALLOW_TRIGGER_ENV = "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER"
 INTAKE_OVERWRITE_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE"
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
+CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
 
 
 def _string(value: Any) -> str:
@@ -85,6 +86,14 @@ def _candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
     return work_dir / f"{_safe_stem(job_id or digest)}-{digest}.json"
 
 
+def _capture_handoff_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
+    scene_id = _string(payload.get("scene_id") or payload.get("sceneId"))
+    capture_id = _string(payload.get("capture_id") or payload.get("captureId"))
+    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+    stem = "-".join(part for part in (scene_id, capture_id, digest) if part)
+    return work_dir / "capture_handoffs" / f"{_safe_stem(stem or digest)}.json"
+
+
 def _closure_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
     job_id = _string(
         payload.get("job_id")
@@ -116,6 +125,292 @@ def _policy_package_candidate_path(payload: Mapping[str, Any], work_dir: Path) -
     )
     digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
     return work_dir / "policy_packages" / f"{_safe_stem(job_id or digest)}-{digest}.json"
+
+
+def _read_mapping_file(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    payload = read_json_any(path)
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _first_string(*values: Any) -> str:
+    for value in values:
+        text = _string(value)
+        if text:
+            return text
+    return ""
+
+
+def _list_from_payload(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def _cards_from_file(path: Path) -> list[Mapping[str, Any]]:
+    payload = read_json_any(path)
+    if isinstance(payload, Mapping):
+        cards = payload.get("cards")
+        return [card for card in _list_from_payload(cards) if isinstance(card, Mapping)]
+    return [card for card in _list_from_payload(payload) if isinstance(card, Mapping)]
+
+
+def _capture_root_ids(capture_root: Path) -> Dict[str, str]:
+    descriptor = _read_mapping_file(capture_root / "capture_descriptor.json")
+    upload_complete = _read_mapping_file(capture_root / "raw" / "capture_upload_complete.json")
+    parts = list(capture_root.parts)
+    scene_from_path = ""
+    capture_from_path = capture_root.name
+    if "scenes" in parts and "captures" in parts:
+        scene_index = parts.index("scenes")
+        capture_index = parts.index("captures")
+        if scene_index + 1 < len(parts):
+            scene_from_path = parts[scene_index + 1]
+        if capture_index + 1 < len(parts):
+            capture_from_path = parts[capture_index + 1]
+    return {
+        "scene_id": _first_string(
+            descriptor.get("scene_id"),
+            descriptor.get("sceneId"),
+            upload_complete.get("scene_id"),
+            upload_complete.get("sceneId"),
+            scene_from_path,
+        ),
+        "capture_id": _first_string(
+            descriptor.get("capture_id"),
+            descriptor.get("captureId"),
+            upload_complete.get("capture_id"),
+            upload_complete.get("captureId"),
+            capture_from_path,
+        ),
+    }
+
+
+def _select_dataset_task(capture_root: Path) -> tuple[Dict[str, Any] | None, list[str]]:
+    dataset_dir = capture_root / "pipeline" / "robot_eval_dataset"
+    task_cards_path = dataset_dir / "task_cards.json"
+    scenario_cards_path = dataset_dir / "scenario_cards.json"
+    blockers: list[str] = []
+    if not task_cards_path.is_file():
+        blockers.append("robot_eval_task_cards_missing")
+    if not scenario_cards_path.is_file():
+        blockers.append("robot_eval_scenario_cards_missing")
+    if blockers:
+        return None, blockers
+    task_cards = _cards_from_file(task_cards_path)
+    scenario_cards = _cards_from_file(scenario_cards_path)
+    if not task_cards:
+        blockers.append("robot_eval_task_cards_empty")
+    if not scenario_cards:
+        blockers.append("robot_eval_scenario_cards_empty")
+    if blockers:
+        return None, blockers
+    for task in task_cards:
+        task_id = _string(task.get("task_id") or task.get("taskId"))
+        if not task_id:
+            continue
+        scenario = next(
+            (
+                card
+                for card in scenario_cards
+                if _string(card.get("task_id") or card.get("taskId")) == task_id
+                and _string(card.get("scenario_id") or card.get("scenarioId"))
+            ),
+            None,
+        )
+        if scenario is None:
+            continue
+        return {
+            "task_id": task_id,
+            "scenario_id": _string(scenario.get("scenario_id") or scenario.get("scenarioId")),
+            "task_cards_uri": str(task_cards_path),
+            "scenario_cards_uri": str(scenario_cards_path),
+            "task_card_count": len(task_cards),
+            "scenario_card_count": len(scenario_cards),
+        }, []
+    return None, ["robot_eval_no_task_scenario_pair"]
+
+
+def _capture_handoff_requests_robot_eval(payload: Mapping[str, Any]) -> bool:
+    requested_lanes = {
+        _string(item)
+        for item in _list_from_payload(payload.get("requested_lanes") or payload.get("requestedLanes"))
+        if _string(item)
+    }
+    requested_outputs = {
+        _string(item)
+        for item in _list_from_payload(
+            payload.get("requested_outputs") or payload.get("requestedOutputs")
+        )
+        if _string(item)
+    }
+    return (
+        payload.get("robot_eval_dataset_requested") is True
+        or payload.get("robotEvalDatasetRequested") is True
+        or "robot_eval_dataset" in requested_lanes
+        or "task_evaluation_run" in requested_lanes
+        or "robot_eval_dataset" in requested_outputs
+        or "task_evaluation_run" in requested_outputs
+    )
+
+
+def _capture_handoff_to_webapp_request(
+    *,
+    payload: Mapping[str, Any],
+    capture_root: Path,
+) -> tuple[Dict[str, Any] | None, Dict[str, Any]]:
+    capture_ids = _capture_root_ids(capture_root)
+    handoff_scene_id = _first_string(payload.get("scene_id"), payload.get("sceneId"))
+    handoff_capture_id = _first_string(payload.get("capture_id"), payload.get("captureId"))
+    site_submission_id = _first_string(
+        payload.get("site_submission_id"),
+        payload.get("siteSubmissionId"),
+    )
+    buyer_request_id = _first_string(payload.get("buyer_request_id"), payload.get("buyerRequestId"))
+    capture_job_id = _first_string(payload.get("capture_job_id"), payload.get("captureJobId"))
+    pipeline_handoff_uri = _first_string(
+        payload.get("pipeline_handoff_uri"),
+        payload.get("pipelineHandoffUri"),
+    )
+    capture_descriptor_uri = _first_string(
+        payload.get("capture_descriptor_uri"),
+        payload.get("captureDescriptorUri"),
+    )
+    blockers: list[str] = []
+    if not _capture_handoff_requests_robot_eval(payload):
+        blockers.append("capture_handoff_robot_eval_not_requested")
+    if handoff_scene_id and capture_ids["scene_id"] and handoff_scene_id != capture_ids["scene_id"]:
+        blockers.append("capture_handoff_scene_id_mismatch")
+    if handoff_capture_id and capture_ids["capture_id"] and handoff_capture_id != capture_ids["capture_id"]:
+        blockers.append("capture_handoff_capture_id_mismatch")
+    for field, value in (
+        ("site_submission_id", site_submission_id),
+        ("buyer_request_id", buyer_request_id),
+        ("capture_job_id", capture_job_id),
+    ):
+        if not value:
+            blockers.append(f"capture_handoff_missing_{field}")
+    dataset_selection, dataset_blockers = _select_dataset_task(capture_root)
+    blockers.extend(dataset_blockers)
+    if blockers:
+        return None, {
+            "status": "blocked",
+            "ready": False,
+            "scene_id": handoff_scene_id or capture_ids["scene_id"],
+            "capture_id": handoff_capture_id or capture_ids["capture_id"],
+            "blockers": blockers,
+        }
+    assert dataset_selection is not None
+    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+    scene_id = handoff_scene_id or capture_ids["scene_id"]
+    capture_id = handoff_capture_id or capture_ids["capture_id"]
+    job_id = _safe_stem(f"capture-handoff-{scene_id}-{capture_id}-{digest}")
+    request = {
+        "schema_version": WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
+        "job_id": job_id,
+        "request_id": job_id,
+        "buyer_request_id": buyer_request_id,
+        "site_package": {
+            "capture_root": str(capture_root),
+            "scene_id": scene_id,
+            "capture_id": capture_id,
+            "site_submission_id": site_submission_id,
+            "buyer_request_id": buyer_request_id,
+            "capture_job_id": capture_job_id,
+            "pipeline_prefix": str(capture_root / "pipeline"),
+            "package_uri": str(
+                capture_root
+                / "pipeline"
+                / "robot_eval_dataset"
+                / "robot_eval_dataset_manifest.json"
+            ),
+            "pipeline_handoff_uri": pipeline_handoff_uri or None,
+            "capture_descriptor_uri": capture_descriptor_uri or None,
+        },
+        "owner_system": {
+            "name": "BlueprintCapturePipelineIntake",
+            "request_id": job_id,
+            "buyer_request_id": buyer_request_id,
+            "site_submission_id": site_submission_id,
+            "capture_job_id": capture_job_id,
+            "capture_id": capture_id,
+        },
+        "source": {
+            "system": "BlueprintCapture",
+            "source_kind": CAPTURE_HANDOFF_SOURCE_KIND,
+            "pipeline_handoff_uri": pipeline_handoff_uri or None,
+            "capture_descriptor_uri": capture_descriptor_uri or None,
+            "selection_state": {
+                "source_kind": CAPTURE_HANDOFF_SOURCE_KIND,
+                "scene_id": scene_id,
+                "capture_id": capture_id,
+                "site_submission_id": site_submission_id,
+                "buyer_request_id": buyer_request_id,
+                "capture_job_id": capture_job_id,
+                "task_id": dataset_selection["task_id"],
+                "scenario_id": dataset_selection["scenario_id"],
+                "dataset_selection": dataset_selection,
+            },
+        },
+        "source_kind": CAPTURE_HANDOFF_SOURCE_KIND,
+        "requested_tasks": [
+            {
+                "task_id": dataset_selection["task_id"],
+                "scenario_ids": [dataset_selection["scenario_id"]],
+            }
+        ],
+        "robot_profile": {"robot_profile_id": "unitree_g1_humanoid"},
+        "simulator_preference": {"framework": "mujoco"},
+        "policy_package": {
+            "policy_api_endpoint": {},
+            "docker_container": {},
+            "recorded_action_trace": {},
+            "high_level_skill_trace": {
+                "ordered_skill_sequence": ["walk_to_target"],
+                "skill_taxonomy_version": "blueprint_default_test_policy.v1",
+                "source_type": "capture_handoff_default_sim_only_policy",
+                "confidence_coverage_note": (
+                    "Capture handoff synthesized sim-only beta request; does not prove "
+                    "robot-team policy execution."
+                ),
+            },
+            "teleop_demo": {},
+            "sim_controller_plugin": {},
+        },
+        "proof_boundary": {
+            "capture_handoff_driven_request": True,
+            "simulator_execution_proven": False,
+            "robot_policy_execution_proven": False,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+    envelope = {
+        "queue_contract": WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
+        "status": "queued_for_pipeline",
+        "job_id": job_id,
+        "source_kind": CAPTURE_HANDOFF_SOURCE_KIND,
+        "capture_handoff": {
+            "scene_id": scene_id,
+            "capture_id": capture_id,
+            "pipeline_handoff_uri": pipeline_handoff_uri or None,
+            "capture_descriptor_uri": capture_descriptor_uri or None,
+            "robot_eval_dataset_requested": True,
+        },
+        "job_request": request,
+    }
+    return envelope, {
+        "status": "ready",
+        "ready": True,
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "job_id": job_id,
+        "dataset_selection": dataset_selection,
+        "blockers": [],
+    }
 
 
 def _real_robot_pov_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
@@ -464,6 +759,7 @@ def create_app() -> FastAPI:
             "trigger_configured": bool(_string(os.getenv(INTAKE_TRIGGER_ENV))),
             "endpoints": [
                 "/api/live-pipeline/job-requests",
+                "/api/live-pipeline/capture-handoffs",
                 "/api/live-pipeline/policy-packages",
                 "/api/live-pipeline/real-robot-pov",
                 "/api/live-pipeline/deployment-outcomes",
@@ -515,6 +811,101 @@ def create_app() -> FastAPI:
             intake=intake,
             trigger=trigger,
         )
+        if intake.get("input_blockers"):
+            return JSONResponse(status_code=202, content=response)
+        return response
+
+    @app.post("/api/live-pipeline/capture-handoffs", dependencies=[Depends(_require_token)])
+    async def intake_capture_handoff(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        manifest_path = _manifest_path().resolve()
+        if not manifest_path.is_file():
+            raise HTTPException(
+                status_code=503,
+                detail=f"control-plane manifest missing: {manifest_path}",
+            )
+        manifest_payload = read_json_any(manifest_path)
+        if not isinstance(manifest_payload, Mapping):
+            raise HTTPException(status_code=503, detail="control-plane manifest is not JSON object")
+        capture_root_text = _string(manifest_payload.get("capture_root"))
+        if not capture_root_text:
+            raise HTTPException(status_code=503, detail="control-plane capture_root missing")
+        capture_root = Path(capture_root_text).resolve()
+        work_dir = _work_dir(manifest_path).resolve()
+        ensure_dir(work_dir)
+        handoff_path = _capture_handoff_candidate_path(payload, work_dir)
+        write_json(handoff_path, dict(payload))
+        envelope, handoff_audit = _capture_handoff_to_webapp_request(
+            payload=payload,
+            capture_root=capture_root,
+        )
+        if envelope is None:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "schema_version": INTAKE_SCHEMA_VERSION,
+                    "status": "blocked",
+                    "accepted": False,
+                    "generated_at": utc_now_iso(),
+                    "candidate": {"path": str(handoff_path)},
+                    "capture_handoff": handoff_audit,
+                    "input_blockers": [
+                        f"capture_handoff:{blocker}"
+                        for blocker in handoff_audit.get("blockers", [])
+                    ],
+                    "trigger": {
+                        "status": "not_run",
+                        "performed": False,
+                        "reason": "capture_handoff_not_ready",
+                    },
+                    "proof_boundary": {
+                        "capture_handoff_converted_to_job_request": False,
+                        "intake_performs_robot_execution": False,
+                        "intake_sets_proof_booleans": False,
+                        "simulator_execution_proven": False,
+                        "robot_readiness_proven": False,
+                        "public_claim_upgrade_allowed": False,
+                    },
+                },
+            )
+        request_path = _candidate_path(envelope, work_dir)
+        write_json(request_path, envelope)
+        intake = build_live_pipeline_input_intake(
+            manifest_path=manifest_path,
+            webapp_job_request=request_path,
+            stage_webapp_request=True,
+            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
+        )
+        trigger = (
+            _trigger_control_plane()
+            if intake.get("status") == "staged_for_control_plane"
+            else {
+                "status": "not_run",
+                "performed": False,
+                "reason": "intake_not_staged_for_control_plane",
+            }
+        )
+        response = _redacted_intake_response(
+            candidate_path=request_path,
+            intake=intake,
+            trigger=trigger,
+        )
+        response["capture_handoff"] = {
+            **handoff_audit,
+            "candidate_path": str(handoff_path),
+            "webapp_job_request_candidate_path": str(request_path),
+            "converted_to_job_request": True,
+        }
+        response["proof_boundary"] = {
+            **_mapping(response.get("proof_boundary")),
+            "capture_handoff_converted_to_job_request": True,
+            "capture_handoff_endpoint_directly_runs_simulator": False,
+        }
         if intake.get("input_blockers"):
             return JSONResponse(status_code=202, content=response)
         return response

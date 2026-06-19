@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import shlex
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -112,6 +113,14 @@ CONTROL_PLANE_ALLOW_LIVE_CODEX_SDK_ENV = "BLUEPRINT_CONTROL_PLANE_ALLOW_LIVE_COD
 CONTROL_PLANE_SIMULATOR_ENV = "BLUEPRINT_CONTROL_PLANE_SIMULATOR"
 CONTROL_PLANE_PROVISIONER_ENV = "BLUEPRINT_CONTROL_PLANE_PROVISIONER"
 CONTROL_PLANE_TIMEOUT_SECONDS_ENV = "BLUEPRINT_CONTROL_PLANE_TIMEOUT_SECONDS"
+SIM_ONLY_BETA_AUTONOMY_ENV = "BLUEPRINT_SIM_ONLY_BETA_AUTONOMY"
+ALLOW_SIMULATOR_EXECUTION_ENV = "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"
+MUJOCO_G1_MODEL_ROOT_ENV = "BLUEPRINT_MUJOCO_G1_MODEL_ROOT"
+MUJOCO_ALLOW_FETCH_G1_ASSETS_ENV = "BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS"
+MUJOCO_BETA_STEPS_ENV = "BLUEPRINT_MUJOCO_BETA_STEPS"
+MUJOCO_BETA_MAX_RENDERED_EPISODES_ENV = "BLUEPRINT_MUJOCO_BETA_MAX_RENDERED_EPISODES"
+MUJOCO_BETA_MAX_RENDERED_STEPS_ENV = "BLUEPRINT_MUJOCO_BETA_MAX_RENDERED_STEPS"
+MUJOCO_BETA_SKIP_RENDER_ENV = "BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES"
 ISAAC_LAB_ARENA_COMMAND_ENV = "BLUEPRINT_ISAAC_LAB_ARENA_COMMAND"
 DIGITALOCEAN_DROPLET_NAME_ENV = "BLUEPRINT_DIGITALOCEAN_DROPLET_NAME"
 DIGITALOCEAN_DROPLET_IP_ENV = "BLUEPRINT_DIGITALOCEAN_DROPLET_IP"
@@ -155,6 +164,43 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _mujoco_beta_simulator_command(capture_root: Path | None) -> str:
+    explicit = _string(os.getenv("ROBOT_EVAL_JOB_DEFAULT_SIMULATOR_COMMAND"))
+    if explicit:
+        return explicit
+    if capture_root is None:
+        return ""
+    default_rendered_episodes = 11 if _env_truthy(SIM_ONLY_BETA_AUTONOMY_ENV) else 3
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.mujoco_g1_simulator_command",
+        "--capture-root",
+        str(capture_root),
+        "--steps",
+        str(_env_int(MUJOCO_BETA_STEPS_ENV, 32)),
+        "--max-rendered-episodes",
+        str(
+            _env_int(
+                MUJOCO_BETA_MAX_RENDERED_EPISODES_ENV,
+                default_rendered_episodes,
+            )
+        ),
+        "--max-rendered-steps",
+        str(_env_int(MUJOCO_BETA_MAX_RENDERED_STEPS_ENV, 24)),
+    ]
+    g1_root = _string(os.getenv(MUJOCO_G1_MODEL_ROOT_ENV))
+    if g1_root:
+        command.extend(["--g1-model-root", g1_root])
+    elif _env_truthy(MUJOCO_ALLOW_FETCH_G1_ASSETS_ENV):
+        command.append("--allow-fetch-g1-assets")
+    else:
+        return ""
+    if _env_truthy(MUJOCO_BETA_SKIP_RENDER_ENV):
+        command.append("--skip-render-frames")
+    return " ".join(shlex.quote(part) for part in command)
 
 
 def _count(value: Any) -> int:
@@ -1983,10 +2029,14 @@ def run_live_pipeline_control_plane(
             _string(arena_operator_mode or os.getenv(CONTROL_PLANE_ARENA_OPERATOR_MODE_ENV))
             or "none"
         )
+        sim_only_beta_autonomy = _env_truthy(SIM_ONLY_BETA_AUTONOMY_ENV)
         resolved_provisioner = (
             _string(provisioner or os.getenv(CONTROL_PLANE_PROVISIONER_ENV)) or "fixture_local"
         )
-        resolved_simulator = _string(simulator or os.getenv(CONTROL_PLANE_SIMULATOR_ENV)) or "fixture"
+        resolved_simulator = (
+            _string(simulator or os.getenv(CONTROL_PLANE_SIMULATOR_ENV))
+            or ("mujoco" if sim_only_beta_autonomy else "fixture")
+        )
         resolved_timeout = (
             int(timeout_seconds)
             if timeout_seconds is not None
@@ -2024,6 +2074,7 @@ def run_live_pipeline_control_plane(
             bool(allow_simulator_execution)
             if allow_simulator_execution is not None
             else _env_truthy(CONTROL_PLANE_ALLOW_SIMULATOR_EXECUTION_ENV)
+            or (sim_only_beta_autonomy and _env_truthy(ALLOW_SIMULATOR_EXECUTION_ENV))
         )
         cpu_preflight_allowed = (
             bool(allow_cpu_simulator_preflight)
@@ -2063,6 +2114,17 @@ def run_live_pipeline_control_plane(
             or _env_truthy(LIVE_CODEX_SDK_ENV)
         )
         parsed_simulator_commands = _parse_simulator_commands(simulator_commands)
+        if (
+            sim_only_beta_autonomy
+            and resolved_simulator == "mujoco"
+            and "mujoco" not in parsed_simulator_commands
+        ):
+            command = _mujoco_beta_simulator_command(capture_path)
+            if command:
+                parsed_simulator_commands["mujoco"] = command
+        effective_allowed_simulators = list(allowed_simulators)
+        if sim_only_beta_autonomy and resolved_simulator != "fixture" and not effective_allowed_simulators:
+            effective_allowed_simulators = [resolved_simulator]
 
         setup_output = (
             capture_path / "pipeline" / "live_pipeline_setup" / "live_pipeline_setup_manifest.json"
@@ -2118,7 +2180,7 @@ def run_live_pipeline_control_plane(
                     simulator=resolved_simulator,
                     allow_gpu_provisioning=gpu_allowed,
                     allow_simulator_execution=simulator_execution_allowed,
-                    allowed_simulators=allowed_simulators,
+                    allowed_simulators=effective_allowed_simulators,
                     simulator_commands=parsed_simulator_commands,
                     allow_cpu_simulator_preflight=cpu_preflight_allowed,
                     cpu_preflight_backends=cpu_preflight_backends,
@@ -2251,7 +2313,7 @@ def run_live_pipeline_control_plane(
             "execution_config": {
                 "provisioner": resolved_provisioner,
                 "simulator": resolved_simulator,
-                "allowed_simulators": list(allowed_simulators),
+                "allowed_simulators": list(effective_allowed_simulators),
                 "simulator_commands_configured": sorted(parsed_simulator_commands),
                 "allow_gpu_provisioning": gpu_allowed,
                 "allow_simulator_execution": simulator_execution_allowed,

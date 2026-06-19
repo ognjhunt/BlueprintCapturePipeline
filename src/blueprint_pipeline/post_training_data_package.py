@@ -541,6 +541,7 @@ def build_post_training_data_package_export(
         for key, name in (
             ("normalized_attempt_trace", "normalized_attempt_trace.json"),
             ("failure_labels", "failure_labels.json"),
+            ("visual_review_ledger", "visual_review_ledger.json"),
             ("arena_eval_metrics", "arena_eval_metrics.json"),
             ("simulator_provider_adapter_manifest", "simulator_provider_adapter_manifest.json"),
             ("simulator_command_artifacts_manifest", "simulator_command_artifacts_manifest.json"),
@@ -583,6 +584,10 @@ def build_post_training_data_package_export(
             (
                 "simulator_command_batch_visual_media_coverage",
                 "simulator_command_batch_visual_media_coverage.json",
+            ),
+            (
+                "simulator_command_batch_visual_review_ledger",
+                "simulator_command_batch_visual_review_ledger.json",
             ),
             (
                 "simulator_command_digital_twin_fidelity_qa",
@@ -729,6 +734,8 @@ def build_post_training_data_package_export(
             "policy_execution_trace_included": "policy_execution_trace" in included_artifacts,
             "normalized_eval_attempts_included": "normalized_attempt_trace" in included_artifacts,
             "failure_labels_included": "failure_labels" in included_artifacts,
+            "visual_review_ledger_included": "visual_review_ledger" in included_artifacts
+            or "simulator_command_batch_visual_review_ledger" in included_artifacts,
             "arena_metrics_included": bool(metrics),
             "clips_manifest_included": bool(clips),
             "calibration_included": "calibration_report" in included_artifacts,

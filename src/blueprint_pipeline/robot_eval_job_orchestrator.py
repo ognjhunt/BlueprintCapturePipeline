@@ -6051,6 +6051,7 @@ def _robot_team_grade_eval_closure_manifest(
                 artifact_paths.get("simulator_command_digital_twin_fidelity_qa"),
                 artifact_paths.get("simulator_command_batch_closure_manifest"),
             ],
+            sim_only_beta_required=False,
         ),
         requirement(
             "robot_team_policy_interface",
@@ -6068,6 +6069,7 @@ def _robot_team_grade_eval_closure_manifest(
                     for modality, status in selected_policy_statuses.items()
                 ],
             ],
+            sim_only_beta_required=False,
         ),
         requirement(
             "full_trace_package",

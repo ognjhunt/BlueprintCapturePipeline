@@ -69,6 +69,42 @@ pipeline/live_pipeline_control_plane/live_pipeline_input_intake_audit.json
 pipeline/live_pipeline_control_plane/live_pipeline_staged_inputs.json
 ```
 
+### Sim-Only Beta Profile
+
+Use this profile when the beta surface is intentionally simulator-only and every
+accepted upload or WebApp job request should progress into task-eval/simulation
+automation without waiting for IRL evidence:
+
+```bash
+BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL=true
+BLUEPRINT_SIM_ONLY_BETA_AUTONOMY=true
+BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true
+BLUEPRINT_MUJOCO_G1_MODEL_ROOT=/path/to/mujoco_menagerie/unitree_g1
+```
+
+`BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL=true` routes captures with no
+explicit requested outputs into `qualification`, `evaluation_prep`, and
+`simulation_automation`. `BLUEPRINT_SIM_ONLY_BETA_AUTONOMY=true` makes
+auto-staged job requests and the live control plane prefer MuJoCo instead of
+the fixture simulator. `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true` is still
+required before a non-fixture simulator command can execute. The packaged
+command is configured only when `ROBOT_EVAL_JOB_DEFAULT_SIMULATOR_COMMAND` is
+set, `BLUEPRINT_MUJOCO_G1_MODEL_ROOT` points at local Unitree G1 MuJoCo assets,
+or `BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS=true` allows asset fetch.
+
+Optional beta knobs:
+
+```bash
+BLUEPRINT_MUJOCO_BETA_STEPS=32
+BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES=false
+```
+
+Do not enable `BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES=true` for customer beta
+closure evidence; sim-only beta core closure still requires visual media
+coverage, trace package coverage, attempt metrics, and scenario-run coverage.
+This profile does not prove physical robot readiness, deployment readiness, live
+customer delivery, or robot-team-grade evaluation completion.
+
 That packet is the machine-readable handoff for the remaining external inputs:
 
 - real WebApp upstream IDs: `site_submission_id`, `request_id`,

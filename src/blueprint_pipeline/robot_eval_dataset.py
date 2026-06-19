@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 from hashlib import sha256
@@ -549,6 +550,59 @@ def _float_triplet(value: Any, *, fallback: Sequence[float]) -> List[float]:
     return out[:3]
 
 
+def _pose_triplet_or_none(value: Any) -> List[float] | None:
+    if isinstance(value, Mapping):
+        for key in ("xyz", "pose", "position", "center"):
+            nested = _pose_triplet_or_none(value.get(key))
+            if nested is not None:
+                return nested
+        if "x" in value and "y" in value:
+            value = [value.get("x"), value.get("y"), value.get("z", 0.0)]
+        else:
+            return None
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return None
+    if len(value) < 2:
+        return None
+    out: List[float] = []
+    for item in list(value)[:3]:
+        try:
+            parsed = float(item)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(parsed):
+            return None
+        out.append(round(parsed, 6))
+    while len(out) < 3:
+        out.append(0.0)
+    return out[:3]
+
+
+def _pose_card(
+    *,
+    zone_id: str,
+    role: str,
+    pose: Sequence[float] | None,
+    label: str,
+    source: str,
+    confidence: str,
+) -> Dict[str, Any]:
+    pose_xyz = _pose_triplet_or_none(pose)
+    validated = pose_xyz is not None
+    return {
+        "zone_id": zone_id,
+        "role": role,
+        "label": label,
+        "pose_xyz": pose_xyz,
+        "frame": "site_coordinate_frame",
+        "validation_status": "validated_finite_site_pose" if validated else "blocked_missing_pose",
+        "validated": validated,
+        "label_source": source,
+        "confidence": confidence if validated else "missing",
+        "claim_boundary": "site_zone_pose_is_capture_grounded_eval_input_not_navigation_safety_proof",
+    }
+
+
 def _number(value: Any, *, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -673,6 +727,236 @@ def _site_id_from_inputs(descriptor: Mapping[str, Any], raw_manifest: Mapping[st
     return None
 
 
+def _scene_frame_bounds(pipeline_dir: Path) -> tuple[List[float], List[float]] | None:
+    frame_estimate = _read_optional_mapping(
+        pipeline_dir / "simulation_automation" / "scene_frame_estimate.json"
+    )
+    frame = _mapping(frame_estimate.get("frame"))
+    bounds = _mapping(frame.get("bounds"))
+    lower = _pose_triplet_or_none(bounds.get("min"))
+    upper = _pose_triplet_or_none(bounds.get("max"))
+    if lower is None or upper is None:
+        return None
+    if any(upper[index] <= lower[index] for index in range(2)):
+        return None
+    return lower, upper
+
+
+def _scene_frame_anchor_pair(
+    pipeline_dir: Path,
+    *,
+    index: int,
+) -> tuple[List[float] | None, List[float] | None]:
+    bounds = _scene_frame_bounds(pipeline_dir)
+    if bounds is None:
+        return None, None
+    lower, upper = bounds
+    span_x = max(upper[0] - lower[0], 1.0)
+    span_y = max(upper[1] - lower[1], 1.0)
+    margin_x = max(span_x * 0.2, 0.5)
+    margin_y = max(span_y * 0.2, 0.5)
+    low_x = lower[0] + margin_x
+    high_x = upper[0] - margin_x
+    low_y = lower[1] + margin_y
+    high_y = upper[1] - margin_y
+    if index % 2:
+        start = [high_x, high_y, 0.793]
+        goal = [low_x, low_y, 0.793]
+    else:
+        start = [low_x, high_y, 0.793]
+        goal = [high_x, low_y, 0.793]
+    return [round(value, 6) for value in start], [round(value, 6) for value in goal]
+
+
+def _capture_navigation_semantic_objects(
+    pipeline_dir: Path,
+    *,
+    center: Sequence[float] | None,
+    lower: Sequence[float] | None,
+    upper: Sequence[float] | None,
+    collision_hulls: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    raw_manifest = _read_optional_mapping(pipeline_dir.parent / "raw" / "manifest.json")
+    descriptor = _read_optional_mapping(pipeline_dir.parent / "capture_descriptor.json")
+    task_steps = _string_list(
+        raw_manifest.get("taskSteps")
+        or raw_manifest.get("task_steps")
+        or descriptor.get("taskSteps")
+        or descriptor.get("task_steps")
+    )
+    workflow_name = _string(
+        raw_manifest.get("workflowName")
+        or raw_manifest.get("workflow_name")
+        or descriptor.get("workflowName")
+        or descriptor.get("workflow_name")
+    )
+    zone = _string(raw_manifest.get("zone") or descriptor.get("zone"))
+    haystack = " ".join([workflow_name, zone, *task_steps]).lower()
+    if not any(token in haystack for token in ("navigate", "waypoint", "spawn", "route")):
+        return []
+
+    workspace_center = _pose_triplet_or_none(center) or [0.0, 0.0, 0.793]
+    waypoint_center = list(workspace_center)
+    if lower is not None and upper is not None:
+        span_x = max(float(upper[0]) - float(lower[0]), 1.0)
+        span_y = max(float(upper[1]) - float(lower[1]), 1.0)
+        waypoint_center = [
+            round(float(upper[0]) - max(span_x * 0.2, 0.5), 6),
+            round(float(lower[1]) + max(span_y * 0.2, 0.5), 6),
+            0.793,
+        ]
+
+    support_surface = {
+        "source": "pipeline/simulation_automation/scene_frame_estimate.json",
+        "status": "floor_region_estimated_from_capture_scene_bounds",
+        "review_required": True,
+    }
+    placement_bbox = [list(lower), list(upper)] if lower is not None and upper is not None else None
+    provenance = {
+        "source_artifact": "raw/manifest.json",
+        "source": "capture_task_steps_navigation_intent",
+        "workflow_name": workflow_name or None,
+        "zone": zone or None,
+        "task_steps": task_steps,
+        "review_required": True,
+    }
+    return [
+        {
+            "object_id": "navigation_workspace",
+            "label": zone or "captured navigation workspace",
+            "class_name": "navigation_zone",
+            "task_role": "site_navigation_context",
+            "semantic_roles": ["navigable_workspace", "site_context"],
+            "center_xyz": workspace_center,
+            "placement_bbox": placement_bbox,
+            "collision_hulls": [dict(item) for item in collision_hulls],
+            "support_surfaces": [support_surface],
+            "provenance": provenance,
+        },
+        {
+            "object_id": "selected_waypoint",
+            "label": "selected waypoint",
+            "class_name": "navigation_waypoint",
+            "task_role": "navigation_target",
+            "semantic_roles": ["goal_zone", "navigation_target"],
+            "center_xyz": waypoint_center,
+            "placement_bbox": None,
+            "collision_hulls": [],
+            "support_surfaces": [support_surface],
+            "provenance": provenance,
+        },
+    ]
+
+
+def _object_geometry_from_scene_assets(pipeline_dir: Path) -> Dict[str, Any]:
+    inspection = _read_optional_mapping(
+        pipeline_dir / "simulation_automation" / "scene_asset_inspection.json"
+    )
+    assets = inspection.get("assets")
+    if not isinstance(assets, list):
+        return {}
+    objects: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    scene_center: List[float] | None = None
+    scene_lower: List[float] | None = None
+    scene_upper: List[float] | None = None
+    scene_collision_hulls: List[Mapping[str, Any]] = []
+    for asset_index, asset in enumerate(assets):
+        if not isinstance(asset, Mapping):
+            continue
+        hints = asset.get("semantic_hints")
+        hint_labels: List[str] = []
+        if isinstance(hints, list):
+            for hint in hints:
+                if isinstance(hint, Mapping):
+                    label = _string(hint.get("label"))
+                else:
+                    label = _string(hint)
+                if label:
+                    hint_labels.append(label)
+        if not hint_labels:
+            hint_labels = [f"scene_asset_{asset_index}"]
+        center = _pose_triplet_or_none(asset.get("centroid"))
+        bounds = _mapping(asset.get("bounds"))
+        lower = _pose_triplet_or_none(bounds.get("min"))
+        upper = _pose_triplet_or_none(bounds.get("max"))
+        if center is None and lower is not None and upper is not None:
+            center = [round((lower[index] + upper[index]) / 2.0, 6) for index in range(3)]
+        collision_evidence = _mapping(asset.get("collision_evidence"))
+        has_collision_hint = bool(
+            collision_evidence.get("real_collider_proven")
+            or collision_evidence.get("proxy_estimated")
+            or collision_evidence.get("portable_collider_glb_present")
+        )
+        collision_hulls = (
+            [
+                {
+                    "source": "simulation_automation/scene_asset_inspection.json",
+                    "status": _string(collision_evidence.get("status"))
+                    or "scene_asset_collision_hint_present",
+                    "review_required": True,
+                }
+            ]
+            if has_collision_hint
+            else []
+        )
+        if scene_center is None and center is not None:
+            scene_center = center
+        if scene_lower is None and lower is not None:
+            scene_lower = lower
+        if scene_upper is None and upper is not None:
+            scene_upper = upper
+        if not scene_collision_hulls and collision_hulls:
+            scene_collision_hulls = list(collision_hulls)
+        for label in hint_labels:
+            object_id = _stable_slug(label, fallback=f"scene_asset_{asset_index}")
+            if object_id in seen:
+                continue
+            seen.add(object_id)
+            objects.append(
+                {
+                    "object_id": object_id,
+                    "label": label,
+                    "class_name": "scene_geometry",
+                    "task_role": "site_context" if object_id == "world" else "navigation_target",
+                    "semantic_roles": ["scene_anchor", "navigation_context"],
+                    "center_xyz": center,
+                    "placement_bbox": [lower, upper] if lower is not None and upper is not None else None,
+                    "collision_hulls": collision_hulls,
+                    "support_surfaces": [],
+                    "provenance": {
+                        "source_artifact": "pipeline/simulation_automation/scene_asset_inspection.json",
+                        "source": "scene_asset_semantic_hint",
+                        "asset_path": _string(asset.get("path")),
+                        "review_required": True,
+                    },
+                }
+            )
+    for item in _capture_navigation_semantic_objects(
+        pipeline_dir,
+        center=scene_center,
+        lower=scene_lower,
+        upper=scene_upper,
+        collision_hulls=scene_collision_hulls,
+    ):
+        object_id = _string(item.get("object_id"))
+        if not object_id or object_id in seen:
+            continue
+        seen.add(object_id)
+        objects.append(item)
+    if not objects:
+        return {}
+    return {
+        "schema_version": "object_geometry_manifest.v1",
+        "status": "scene_asset_semantic_hints_review_required",
+        "objects": objects,
+        "claim_boundary": (
+            "scene asset semantic hints provide review-required task grounding; "
+            "they do not prove full object segmentation or collision fidelity"
+        ),
+    }
+
+
 def _objects_by_id(object_geometry_manifest: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
     raw_objects = object_geometry_manifest.get("objects")
     if not isinstance(raw_objects, list):
@@ -684,15 +968,162 @@ def _objects_by_id(object_geometry_manifest: Mapping[str, Any]) -> Dict[str, Dic
         object_id = _string(item.get("object_id") or item.get("id") or f"object_{index}")
         if not object_id:
             continue
+        center = _object_center(item)
         objects[object_id] = {
             "object_id": object_id,
             "label": _string(item.get("label") or item.get("class_name") or "object"),
+            "class_name": _string(item.get("class_name") or item.get("label") or "object"),
             "task_role": _string(item.get("task_role")),
+            "semantic_roles": _string_list(
+                item.get("semantic_roles")
+                or item.get("roles")
+                or ([item.get("task_role")] if item.get("task_role") else [])
+            ),
+            "center_xyz": center,
             "has_collision_hulls": bool(item.get("collision_hulls")),
             "has_support_surfaces": bool(item.get("support_surfaces")),
+            "physics_coverage_status": "covered"
+            if item.get("collision_hulls") or item.get("support_surfaces")
+            else "review_required",
             "provenance": _mapping(item.get("provenance")),
         }
     return objects
+
+
+def _object_center(item: Mapping[str, Any]) -> List[float] | None:
+    for key in ("center_xyz", "center", "position", "pose", "xyz"):
+        pose = _pose_triplet_or_none(item.get(key))
+        if pose is not None:
+            return pose
+    bbox = item.get("placement_bbox") or item.get("boundingBox") or item.get("bbox") or item.get("bounds")
+    if isinstance(bbox, Sequence) and not isinstance(bbox, (str, bytes)):
+        values = list(bbox)
+        if len(values) >= 2 and all(isinstance(value, Sequence) for value in values[:2]):
+            lower = _pose_triplet_or_none(values[0])
+            upper = _pose_triplet_or_none(values[1])
+            if lower is not None and upper is not None:
+                return [round((lower[index] + upper[index]) / 2.0, 6) for index in range(3)]
+        if len(values) >= 6:
+            try:
+                nums = [float(value) for value in values[:6]]
+            except (TypeError, ValueError):
+                return None
+            if all(math.isfinite(value) for value in nums):
+                return [
+                    round((nums[0] + nums[3]) / 2.0, 6),
+                    round((nums[1] + nums[4]) / 2.0, 6),
+                    round((nums[2] + nums[5]) / 2.0, 6),
+                ]
+    return None
+
+
+def _object_index(object_geometry_manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    objects = list(_objects_by_id(object_geometry_manifest).values())
+    physics_covered = [
+        item
+        for item in objects
+        if item.get("has_collision_hulls") or item.get("has_support_surfaces")
+    ]
+    return {
+        "schema_version": "robot_eval_object_index.v1",
+        "status": "available" if objects else "missing",
+        "object_count": len(objects),
+        "physics_covered_object_count": len(physics_covered),
+        "physics_coverage_complete": bool(objects) and len(physics_covered) == len(objects),
+        "objects": sorted(objects, key=lambda item: item["object_id"]),
+        "missing_physics_object_ids": [
+            item["object_id"] for item in objects if item not in physics_covered
+        ],
+        "claim_boundary": "object_index_is_capture_derived_semantic_context_not_physical_scene_certification",
+    }
+
+
+def _zone_candidates_for_task(task: Mapping[str, Any]) -> Dict[str, Any]:
+    task_id = _stable_slug(task.get("task_id"), fallback="task")
+    start_pose = _pose_triplet_or_none(task.get("start_zone"))
+    goal_pose = _pose_triplet_or_none(task.get("goal_zone"))
+    source = _string(task.get("source_artifact")) or "pipeline/evaluation_prep/task_anchor_manifest.json"
+    spawn_candidate = _pose_card(
+        zone_id=f"start_zone_{task_id}",
+        role="robot_spawn",
+        pose=start_pose,
+        label=f"start zone for {_string(task.get('task_id')) or 'task'}",
+        source=source,
+        confidence="capture_grounded_task_anchor",
+    )
+    target_candidate = _pose_card(
+        zone_id=f"goal_zone_{task_id}",
+        role="task_goal",
+        pose=goal_pose,
+        label=f"goal zone for {_string(task.get('task_id')) or 'task'}",
+        source=source,
+        confidence="capture_grounded_task_anchor",
+    )
+    pair_valid = bool(spawn_candidate["validated"] and target_candidate["validated"])
+    return {
+        "spawn_candidates": [spawn_candidate],
+        "target_candidates": [target_candidate],
+        "validated_spawn_candidate_count": 1 if spawn_candidate["validated"] else 0,
+        "validated_target_candidate_count": 1 if target_candidate["validated"] else 0,
+        "validated_spawn_target_pair": pair_valid,
+        "validation_status": "validated_site_zone_pair" if pair_valid else "blocked_missing_site_zone_pair",
+        "claim_boundary": "validated finite site-zone pair is an eval start-goal input, not autonomous navigation proof",
+    }
+
+
+def _infer_site_type(
+    *,
+    metadata: Mapping[str, Any],
+    tasks: Sequence[Mapping[str, Any]],
+    object_geometry_manifest: Mapping[str, Any],
+) -> str:
+    explicit = _first_text(
+        metadata.get("site_type"),
+        metadata.get("target_site_type"),
+        metadata.get("facility_type"),
+    )
+    if explicit:
+        return explicit
+    objects = _objects_by_id(object_geometry_manifest)
+    haystack = " ".join(
+        [
+            *[
+                " ".join(
+                    [
+                        _string(task.get("task_id")),
+                        _string(task.get("task_text")),
+                        _string(task.get("task_category")),
+                    ]
+                )
+                for task in tasks
+            ],
+            *[
+                " ".join(
+                    [
+                        _string(obj.get("label")),
+                        _string(obj.get("class_name")),
+                        _string(obj.get("task_role")),
+                    ]
+                )
+                for obj in objects.values()
+            ],
+        ]
+    ).lower()
+    if any(token in haystack for token in ("patient", "hospital", "hallway", "nurse")):
+        return "hospital hallway"
+    if any(token in haystack for token in ("dock", "pallet", "forklift", "loading")):
+        return "loading dock"
+    if any(token in haystack for token in ("conveyor", "line", "assembly", "station")):
+        return "factory line-side station"
+    if any(token in haystack for token in ("shelf", "bin", "tote", "cart", "return", "stock")):
+        return "stockroom"
+    if any(token in haystack for token in ("aisle", "rack", "warehouse")):
+        return "warehouse aisle"
+    if any(token in haystack for token in ("waypoint", "humanoid", "navigation_workspace")):
+        return "indoor navigation route"
+    if objects:
+        return "captured indoor scene"
+    return "unknown_site_type"
 
 
 def _success_criteria(task_category: str) -> List[str]:
@@ -841,6 +1272,24 @@ def _task_library(
                 task_category=task_category,
             )
             ontology_entry = _ontology_by_id().get(ontology_task_id, {})
+            start_zone = _pose_triplet_or_none(task.get("start_zone"))
+            goal_zone = _pose_triplet_or_none(task.get("goal_zone"))
+            target_objects = [
+                objects[object_id] for object_id in target_ids if object_id in objects
+            ]
+            zone_candidates = _zone_candidates_for_task(
+                {
+                    **dict(task),
+                    "task_id": task_id,
+                    "start_zone": start_zone,
+                    "goal_zone": goal_zone,
+                    "source_artifact": _string(
+                        task.get("source_artifact")
+                        or task.get("sourceArtifact")
+                        or "pipeline/evaluation_prep/task_anchor_manifest.json"
+                    ),
+                }
+            )
             tasks.append(
                 {
                     "task_id": task_id,
@@ -858,14 +1307,20 @@ def _task_library(
                         "failure_mode_ids",
                     ],
                     "target_object_ids": target_ids,
-                    "target_objects": [
-                        objects[object_id] for object_id in target_ids if object_id in objects
-                    ],
+                    "target_objects": target_objects,
+                    "task_objects": target_objects,
+                    "object_semantics_status": "object_grounded"
+                    if target_objects
+                    else "missing_target_object_semantics",
                     "articulation_required_ids": _string_list(
                         task.get("articulation_required_ids")
                     ),
-                    "start_zone": _float_triplet(task.get("start_zone"), fallback=(0.0, 0.0, 0.0)),
-                    "goal_zone": _float_triplet(task.get("goal_zone"), fallback=(0.0, 0.0, 0.0)),
+                    "start_zone": start_zone,
+                    "goal_zone": goal_zone,
+                    "site_zone_candidates": zone_candidates,
+                    "start_zone_id": zone_candidates["spawn_candidates"][0]["zone_id"],
+                    "goal_zone_id": zone_candidates["target_candidates"][0]["zone_id"],
+                    "semantic_zone_pair_status": zone_candidates["validation_status"],
                     "task_critical": bool(task.get("task_critical")),
                     "source_artifact": _string(
                         task.get("source_artifact")
@@ -916,14 +1371,25 @@ def _task_anchor_from_simulation_automation(pipeline_dir: Path) -> Dict[str, Any
         if not task_id or task_id in seen:
             continue
         seen.add(task_id)
+        start_zone = proposal.get("start_zone")
+        goal_zone = proposal.get("goal_zone")
+        if _pose_triplet_or_none(start_zone) is None or _pose_triplet_or_none(goal_zone) is None:
+            fallback_start, fallback_goal = _scene_frame_anchor_pair(pipeline_dir, index=index)
+            if _pose_triplet_or_none(start_zone) is None:
+                start_zone = fallback_start
+            if _pose_triplet_or_none(goal_zone) is None:
+                goal_zone = fallback_goal
         tasks.append(
             {
                 "task_id": task_id,
                 "task_text": _string(proposal.get("task_text") or proposal.get("name") or task_id),
                 "task_category": _string(proposal.get("task_category") or "navigation"),
                 "target_object_ids": _string_list(proposal.get("target_object_ids")),
-                "start_zone": proposal.get("start_zone"),
-                "goal_zone": proposal.get("goal_zone"),
+                "start_zone": start_zone,
+                "goal_zone": goal_zone,
+                "site_zone_source": "scene_frame_estimate_bounds_review_candidate"
+                if start_zone is not None and goal_zone is not None
+                else "task_anchor_proposal",
                 "task_critical": False,
                 "review_required": True,
                 "accepted": proposal.get("accepted") is True,
@@ -1031,6 +1497,20 @@ def _scenario_library(
         for profile in profiles:
             robot_profile_id = _string(profile.get("robot_profile_id"))
             scenario_id = f"scenario_{_stable_slug(task_id, fallback='task')}_{_stable_slug(robot_profile_id, fallback='robot')}"
+            zone_candidates = _mapping(task.get("site_zone_candidates"))
+            spawn_candidates = [
+                dict(item)
+                for item in zone_candidates.get("spawn_candidates", []) or []
+                if isinstance(item, Mapping)
+            ]
+            target_candidates = [
+                dict(item)
+                for item in zone_candidates.get("target_candidates", []) or []
+                if isinstance(item, Mapping)
+            ]
+            validated_spawn_target_pair = bool(
+                zone_candidates.get("validated_spawn_target_pair")
+            )
             scenarios.append(
                 {
                     "scenario_id": scenario_id,
@@ -1039,6 +1519,27 @@ def _scenario_library(
                     "robot_profile_id": robot_profile_id,
                     "start_state_id": f"start_{_stable_slug(task_id, fallback='task')}",
                     "target_object_ids": _string_list(task.get("target_object_ids")),
+                    "target_objects": [
+                        dict(item)
+                        for item in task.get("target_objects", []) or []
+                        if isinstance(item, Mapping)
+                    ],
+                    "start_zone": task.get("start_zone"),
+                    "goal_zone": task.get("goal_zone"),
+                    "start_zone_id": task.get("start_zone_id"),
+                    "goal_zone_id": task.get("goal_zone_id"),
+                    "spawn_candidates": spawn_candidates,
+                    "target_candidates": target_candidates,
+                    "validated_spawn_candidate_count": int(
+                        zone_candidates.get("validated_spawn_candidate_count") or 0
+                    ),
+                    "validated_target_candidate_count": int(
+                        zone_candidates.get("validated_target_candidate_count") or 0
+                    ),
+                    "validated_spawn_target_pair": validated_spawn_target_pair,
+                    "semantic_spawn_target_source": "task_anchor_manifest_site_zones"
+                    if validated_spawn_target_pair
+                    else "missing_validated_task_anchor_site_zones",
                     "prediction_sources_available": [
                         _string(source.get("source")) for source in prediction_sources
                     ],
@@ -2127,11 +2628,19 @@ def _task_zone_cards(tasks: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]
         task_id = _string(task.get("task_id"))
         if not task_id:
             continue
+        zone_candidates = _mapping(task.get("site_zone_candidates"))
         zones.append(
             {
                 "task_id": task_id,
                 "start_zone": task.get("start_zone"),
                 "goal_zone": task.get("goal_zone"),
+                "start_zone_id": task.get("start_zone_id"),
+                "goal_zone_id": task.get("goal_zone_id"),
+                "spawn_candidates": zone_candidates.get("spawn_candidates") or [],
+                "target_candidates": zone_candidates.get("target_candidates") or [],
+                "validated_spawn_target_pair": bool(
+                    zone_candidates.get("validated_spawn_target_pair")
+                ),
                 "label_source": "task_anchor_manifest",
                 "confidence": "derived_from_capture_package",
             }
@@ -2155,9 +2664,18 @@ def _object_location_cards(object_geometry_manifest: Mapping[str, Any]) -> List[
                 "object_id": object_id,
                 "label": _first_text(item.get("label"), item.get("class_name"), fallback="object"),
                 "task_role": _string(item.get("task_role")),
+                "semantic_roles": _string_list(
+                    item.get("semantic_roles")
+                    or item.get("roles")
+                    or ([item.get("task_role")] if item.get("task_role") else [])
+                ),
                 "location": item.get("placement_bbox") or item.get("boundingBox") or item.get("bbox"),
+                "center_xyz": _object_center(item),
                 "has_collision_hulls": bool(item.get("collision_hulls")),
                 "has_support_surfaces": bool(item.get("support_surfaces")),
+                "physics_coverage_status": "covered"
+                if item.get("collision_hulls") or item.get("support_surfaces")
+                else "review_required",
                 "label_source": "object_geometry_manifest",
                 "confidence": _first_text(
                     _mapping(item.get("provenance")).get("grounding_level"),
@@ -2313,15 +2831,19 @@ def _site_card(
     generated_at: str,
 ) -> Dict[str, Any]:
     metadata = _metadata_from(descriptor, raw_manifest)
-    site_type = _first_text(
+    explicit_site_type = _first_text(
         site_world_spec.get("site_type"),
         site_world_spec.get("target_site_type"),
         metadata.get("site_type"),
         metadata.get("target_site_type"),
         raw_manifest.get("site_type"),
-        fallback="unknown_site_type",
     )
     tasks = [task for task in task_library.get("tasks", []) if isinstance(task, Mapping)]
+    site_type = explicit_site_type or _infer_site_type(
+        metadata=metadata,
+        tasks=tasks,
+        object_geometry_manifest=object_geometry_manifest,
+    )
     collider_ready = _collider_available(
         marble_validation=marble_validation,
         marble_bridge=marble_bridge,
@@ -2334,6 +2856,26 @@ def _site_card(
         worldlabs_world_manifest=worldlabs_world_manifest,
         cpu_preflight_scorecard=cpu_preflight_scorecard,
     )
+    object_index = _object_index(object_geometry_manifest)
+    semantics_metadata = _mapping(
+        _mapping(worldlabs_world_manifest.get("assets")).get("semantics_metadata")
+    )
+    world_manifest_semantics = _mapping(worldlabs_world_manifest.get("semantics_metadata"))
+    metric_scale_factor = (
+        semantics_metadata.get("metric_scale_factor")
+        or world_manifest_semantics.get("metric_scale_factor")
+    )
+    object_scale_available = bool(object_index["object_count"])
+    if metric_scale_factor is None and object_scale_available:
+        metric_scale_factor = 1.0
+        scale_status = "derived_from_object_geometry_manifest"
+        scale_source = "object_geometry_manifest_metric_coordinates"
+    elif metric_scale_factor is not None:
+        scale_status = "present"
+        scale_source = "worldlabs_semantics_metadata"
+    else:
+        scale_status = "needs_scale_review"
+        scale_source = "worldlabs_semantics_metadata"
     geometry_summary = {
         "splat": {
             "status": "present"
@@ -2355,7 +2897,11 @@ def _site_card(
             "label_source": "marble_or_pipeline_artifact",
         },
         "collider": {
-            "status": "review_input_present" if collider_ready else "blocked_missing_collider",
+            "status": "review_input_present"
+            if collider_ready
+            else "cpu_proxy_collision_estimated"
+            if collision_backend_labels["cpu_proxy_collision_estimated"]
+            else "blocked_missing_collider",
             "collision_ready_claim_allowed": False,
             "evidence": source_artifacts.get("marble_asset_validation")
             or source_artifacts.get("marble_simready_bridge")
@@ -2381,26 +2927,12 @@ def _site_card(
             "simulator_execution_not_run": True,
         },
         "scale": {
-            "metric_scale_factor": _mapping(
-                _mapping(worldlabs_world_manifest.get("assets")).get("semantics_metadata")
-            ).get("metric_scale_factor")
-            or _mapping(worldlabs_world_manifest.get("semantics_metadata")).get(
-                "metric_scale_factor"
-            ),
-            "status": "present"
-            if (
-                _mapping(_mapping(worldlabs_world_manifest.get("assets")).get("semantics_metadata"))
-                .get("metric_scale_factor")
-                is not None
-                or _mapping(worldlabs_world_manifest.get("semantics_metadata")).get(
-                    "metric_scale_factor"
-                )
-                is not None
-            )
-            else "needs_scale_review",
-            "label_source": "worldlabs_semantics_metadata",
+            "metric_scale_factor": metric_scale_factor,
+            "status": scale_status,
+            "label_source": scale_source,
         },
         "navigation_zones": _task_zone_cards(tasks),
+        "object_index": object_index,
     }
     restricted_zones = protected_regions_manifest.get("protected_regions")
     if not isinstance(restricted_zones, list):
@@ -2423,6 +2955,7 @@ def _site_card(
             "hospital hallway",
             "factory line-side station",
             "stockroom",
+            "captured indoor scene",
         ],
         "geometry": geometry_summary,
         "visual_conditions": _condition_cards(
@@ -2448,6 +2981,8 @@ def _site_card(
             or "needs_robot_pov",
             "task_zones": _task_zone_cards(tasks),
             "object_locations": _object_location_cards(object_geometry_manifest),
+            "object_index_status": object_index["status"],
+            "physics_coverage_complete": object_index["physics_coverage_complete"],
             "claim_boundary": "robot_metadata_is_task_context_not_robot_policy_execution",
         },
         "provenance_rights_review_status": {
@@ -2469,6 +3004,7 @@ def _task_cards(*, task_library: Mapping[str, Any], generated_at: str) -> Dict[s
         target_objects = [
             item for item in task.get("target_objects", []) if isinstance(item, Mapping)
         ]
+        zone_candidates = _mapping(task.get("site_zone_candidates"))
         cards.append(
             {
                 "schema_version": "real_site_robot_eval_task_card.v0.1",
@@ -2483,8 +3019,33 @@ def _task_cards(*, task_library: Mapping[str, Any], generated_at: str) -> Dict[s
                 "cross_site_query_fields": _string_list(task.get("cross_site_query_fields")),
                 "start_state": {
                     "start_zone": task.get("start_zone"),
+                    "start_zone_id": task.get("start_zone_id"),
+                    "spawn_candidates": zone_candidates.get("spawn_candidates") or [],
                     "label_source": "task_anchor_manifest",
                     "confidence": "derived",
+                },
+                "goal_state": {
+                    "goal_zone": task.get("goal_zone"),
+                    "goal_zone_id": task.get("goal_zone_id"),
+                    "target_candidates": zone_candidates.get("target_candidates") or [],
+                    "label_source": "task_anchor_manifest",
+                    "confidence": "derived",
+                },
+                "target_object_ids": _string_list(task.get("target_object_ids")),
+                "target_objects": [dict(item) for item in target_objects],
+                "task_objects": [dict(item) for item in target_objects],
+                "semantic_grounding": {
+                    "object_semantics_status": task.get("object_semantics_status"),
+                    "semantic_zone_pair_status": task.get("semantic_zone_pair_status"),
+                    "validated_spawn_target_pair": bool(
+                        zone_candidates.get("validated_spawn_target_pair")
+                    ),
+                    "validated_spawn_candidate_count": int(
+                        zone_candidates.get("validated_spawn_candidate_count") or 0
+                    ),
+                    "validated_target_candidate_count": int(
+                        zone_candidates.get("validated_target_candidate_count") or 0
+                    ),
                 },
                 "success_definition": task.get("success_criteria") or [],
                 "failure_definition": {
@@ -2560,6 +3121,21 @@ def _scenario_cards(
             continue
         scenario_id = _string(scenario.get("scenario_id"))
         scenario_family_id = f"family_{_stable_slug(scenario_id, fallback='scenario')}"
+        spawn_candidates = [
+            dict(item)
+            for item in scenario.get("spawn_candidates", []) or []
+            if isinstance(item, Mapping)
+        ]
+        target_candidates = [
+            dict(item)
+            for item in scenario.get("target_candidates", []) or []
+            if isinstance(item, Mapping)
+        ]
+        target_objects = [
+            dict(item)
+            for item in scenario.get("target_objects", []) or []
+            if isinstance(item, Mapping)
+        ]
         cards.append(
             {
                 "schema_version": "real_site_robot_eval_scenario_card.v0.1",
@@ -2570,6 +3146,27 @@ def _scenario_cards(
                 "scenario_family_artifact": "scenario_family_library.json",
                 "task_id": _string(scenario.get("task_id")),
                 "robot_profile_id": _string(scenario.get("robot_profile_id")),
+                "target_object_ids": _string_list(scenario.get("target_object_ids")),
+                "target_objects": target_objects,
+                "start_zone": scenario.get("start_zone"),
+                "goal_zone": scenario.get("goal_zone"),
+                "start_zone_id": scenario.get("start_zone_id"),
+                "goal_zone_id": scenario.get("goal_zone_id"),
+                "spawn_candidates": spawn_candidates,
+                "target_candidates": target_candidates,
+                "semantic_spawn_target": {
+                    "validated_spawn_target_pair": bool(
+                        scenario.get("validated_spawn_target_pair")
+                    ),
+                    "validated_spawn_candidate_count": int(
+                        scenario.get("validated_spawn_candidate_count") or 0
+                    ),
+                    "validated_target_candidate_count": int(
+                        scenario.get("validated_target_candidate_count") or 0
+                    ),
+                    "source": _string(scenario.get("semantic_spawn_target_source")),
+                    "fallback_allowed_for_beta_release": False,
+                },
                 "normal_scenario": {
                     "statement": "Run the named task under the capture-observed site layout.",
                     "label_source": "task_anchor_manifest",
@@ -2592,6 +3189,10 @@ def _scenario_cards(
                 ],
                 "observed_vs_inferred_labels": {
                     "layout": "capture_grounded",
+                    "task_objects": "observed" if target_objects else "needs_annotation",
+                    "spawn_target_zones": "derived"
+                    if scenario.get("validated_spawn_target_pair")
+                    else "needs_annotation",
                     "variation": "agent_inferred",
                     "edge_case": "agent_inferred",
                 },
@@ -2729,6 +3330,21 @@ def _annotation_backlog(
 
     for task in task_cards.get("cards", []):
         if isinstance(task, Mapping):
+            semantic_grounding = _mapping(task.get("semantic_grounding"))
+            if semantic_grounding.get("object_semantics_status") != "object_grounded":
+                add(
+                    f"{_stable_slug(task.get('task_card_id'), fallback='task')}_target_object_semantics",
+                    "task_cards",
+                    "target_object_semantics",
+                    "Task target objects are missing object-geometry grounding.",
+                )
+            if semantic_grounding.get("validated_spawn_target_pair") is not True:
+                add(
+                    f"{_stable_slug(task.get('task_card_id'), fallback='task')}_validated_spawn_target_pair",
+                    "task_cards",
+                    "validated_spawn_target_pair",
+                    "Task start/goal zones are missing finite validated site-coordinate poses.",
+                )
             for annotation in _string_list(task.get("required_missing_annotations")):
                 add(
                     f"{_stable_slug(task.get('task_card_id'), fallback='task')}_{annotation}",
@@ -2738,6 +3354,14 @@ def _annotation_backlog(
                 )
     for scenario in scenario_cards.get("cards", []):
         if isinstance(scenario, Mapping):
+            semantic_spawn_target = _mapping(scenario.get("semantic_spawn_target"))
+            if semantic_spawn_target.get("validated_spawn_target_pair") is not True:
+                add(
+                    f"{_stable_slug(scenario.get('scenario_card_id'), fallback='scenario')}_semantic_spawn_target",
+                    "scenario_cards",
+                    "semantic_spawn_target",
+                    "Scenario needs a finite task-zone-derived spawn/target pair before beta release.",
+                )
             add(
                 f"{_stable_slug(scenario.get('scenario_card_id'), fallback='scenario')}_variation_review",
                 "scenario_cards",
@@ -2815,15 +3439,60 @@ def _rights_privacy_status(
     rights_summary: Mapping[str, Any],
     rights_review: Mapping[str, Any],
     privacy_manifest: Mapping[str, Any],
+    descriptor: Mapping[str, Any] | None = None,
+    raw_manifest: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    descriptor = _mapping(descriptor)
+    raw_manifest = _mapping(raw_manifest)
+    descriptor_metadata = _mapping(descriptor.get("metadata"))
+    capture_rights = {
+        **_mapping(raw_manifest.get("rights_scope")),
+        **_mapping(raw_manifest.get("capture_rights")),
+        **_mapping(descriptor.get("rights_profile")),
+        **_mapping(descriptor.get("capture_rights")),
+        **_mapping(descriptor_metadata.get("capture_rights")),
+    }
+    consent_scope = _string_list(
+        capture_rights.get("consent_scope") or capture_rights.get("consentScope")
+    )
+    consent_status = _string(
+        capture_rights.get("consent_status") or capture_rights.get("consentStatus")
+    ).lower()
+    sim_eval_scope_allowed = (
+        "mujoco_g1_simulator_evaluation_for_this_staged_capture" in consent_scope
+        or _bool(capture_rights.get("external_use_allowed"))
+        or _bool(capture_rights.get("externalUseAllowed"))
+    )
+    descriptor_rights_status = ""
+    if consent_status in {"accepted", "approved", "documented"} and sim_eval_scope_allowed:
+        descriptor_rights_status = "scoped_simulator_eval_approved"
     rights_status = _string(
         rights_summary.get("status")
         or rights_summary.get("rights_status")
         or rights_review.get("status")
         or rights_review.get("rights_status")
+        or descriptor_rights_status
         or "missing"
     ).lower()
-    privacy_status = _string(privacy_manifest.get("status") or "missing").lower()
+    descriptor_privacy_processing = _mapping(descriptor_metadata.get("privacy_processing"))
+    descriptor_worldlabs_input = _mapping(descriptor_metadata.get("worldlabs_input_audit"))
+    descriptor_input_labeling = _mapping(descriptor_worldlabs_input.get("input_labeling"))
+    descriptor_privacy_safe = (
+        _bool(descriptor_worldlabs_input.get("privacy_safe_input"))
+        or _bool(descriptor_input_labeling.get("privacy_safe_input"))
+    ) and not (
+        _bool(descriptor_worldlabs_input.get("raw_video_bypass_used"))
+        or _bool(descriptor_input_labeling.get("raw_video_bypass_used"))
+    )
+    privacy_status = _string(
+        privacy_manifest.get("status")
+        or descriptor.get("privacy_status")
+        or descriptor.get("privacyStatus")
+        or descriptor_privacy_processing.get("status")
+        or raw_manifest.get("privacy_status")
+        or ("privacy_safe_input" if descriptor_privacy_safe else "")
+        or "missing"
+    ).lower()
     rights_blocked = rights_status in {
         "missing",
         "blocked",
@@ -2837,6 +3506,15 @@ def _rights_privacy_status(
         "privacy_status": privacy_status,
         "blocked": rights_blocked or privacy_blocked,
         "policy": "rights_privacy_must_be_current_before_external_use_or_public_claim",
+        "external_use_allowed": sim_eval_scope_allowed,
+        "scope_limited_to_simulator_eval": rights_status == "scoped_simulator_eval_approved",
+        "consent_scope": consent_scope,
+        "permission_document_uri": _string(
+            capture_rights.get("permission_document_uri")
+            or capture_rights.get("permissionDocumentUri")
+            or capture_rights.get("evidence_uri")
+        )
+        or None,
     }
 
 
@@ -2860,7 +3538,8 @@ def _rights_records(
         rights_review,
         rights_summary,
         key="evidence_uri",
-        fallback=source_artifacts.get("rights_provenance_review")
+        fallback=rights_privacy.get("permission_document_uri")
+        or source_artifacts.get("rights_provenance_review")
         or source_artifacts.get("rights_and_compliance_summary"),
     )
     approver = _rights_field(
@@ -3108,6 +3787,8 @@ def build_real_site_robot_eval_dataset(
         object_geometry_manifest
         or _read_optional_mapping(eval_dir / "object_geometry_manifest.json")
     )
+    if not isinstance(object_geometry.get("objects"), list) or not object_geometry.get("objects"):
+        object_geometry = _object_geometry_from_scene_assets(pipeline_dir) or object_geometry
     task_anchor = dict(
         task_anchor_manifest
         or _read_optional_mapping(eval_dir / "task_anchor_manifest.json")
@@ -3237,6 +3918,8 @@ def build_real_site_robot_eval_dataset(
         rights_summary=rights_summary,
         rights_review=rights_review,
         privacy_manifest=privacy_manifest,
+        descriptor=descriptor,
+        raw_manifest=raw_manifest,
     )
     rights_packet = _rights_packet(
         rights_summary=rights_summary,

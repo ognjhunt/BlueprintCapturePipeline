@@ -590,6 +590,184 @@ def test_capture_orchestrator_auto_stages_task_eval_job_request_when_capture_req
     )
 
 
+def test_capture_orchestrator_beta_default_routes_uploads_into_current_lanes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "metadata": {"site_identity": {"site_id": "site-1"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL", "true")
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.resolve_gs_uri_to_path",
+        lambda *_args, **_kwargs: descriptor_path,
+    )
+
+    lanes = resolve_requested_lanes(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        gcs_root=tmp_path,
+    )
+
+    assert lanes == ["qualification", "evaluation_prep", "simulation_automation"]
+
+
+def test_capture_orchestrator_beta_auto_stage_uses_mujoco_runtime_profile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "metadata": {"site_identity": {"site_id": "site-1"}},
+                "requested_outputs": ["task_evaluation_run"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    robot_eval_dir = descriptor_path.parent / "pipeline" / "robot_eval_dataset"
+    robot_eval_dir.mkdir(parents=True)
+    (robot_eval_dir / "task_cards.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "real_site_robot_eval_task_cards.v0.1",
+                "cards": [
+                    {
+                        "task_id": "place_return_in_bin",
+                        "task_statement": "Place the return item in the labeled bin",
+                        "task_category": "pick_place",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (robot_eval_dir / "scenario_cards.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "real_site_robot_eval_scenario_cards.v0.1",
+                "cards": [
+                    {
+                        "scenario_id": "scenario_place_return_in_bin_mobile",
+                        "task_id": "place_return_in_bin",
+                        "robot_profile_id": "mobile_manipulator_rgb_v1",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (robot_eval_dir / "task_thresholds.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "robot_eval_task_thresholds.v1",
+                "thresholds": [{"task_id": "place_return_in_bin"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (robot_eval_dir / "scoring_methodology.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "robot_eval_scoring_methodology.v1",
+                "metrics": [
+                    "success_rate",
+                    "cycle_time",
+                    "intervention_rate",
+                    "unsafe_proximity",
+                    "collision_risk",
+                    "object_drop",
+                    "wrong_object",
+                    "timeout",
+                    "recovery_success",
+                    "world_model_uncertainty",
+                    "sim_vs_real_calibration_score",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_complete_scenario_variation_artifacts(descriptor_path.parent)
+    _write_failure_taxonomy(robot_eval_dir)
+    _write_required_robot_eval_dataset_inputs(descriptor_path.parent)
+    _write_complete_simulation_automation_plugin_inputs(descriptor_path.parent)
+    _write_complete_simulator_plugin_registry(descriptor_path.parent)
+    g1_root = tmp_path / "unitree_g1"
+    g1_root.mkdir()
+    (g1_root / "g1.xml").write_text("<mujoco/>", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_SIM_ONLY_BETA_AUTONOMY", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_MUJOCO_G1_MODEL_ROOT", str(g1_root))
+    calls = []
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.run_qualification_pipeline",
+        lambda **_kwargs: {
+            "status": "completed",
+            "lane": "qualification",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "pipeline_prefix": "scenes/scene-1/captures/capture-1/pipeline",
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.run_evaluation_prep_stage",
+        lambda **_kwargs: {"manifest_path": str(tmp_path / "evaluation_prep_manifest.json")},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.build_simulation_automation",
+        lambda **_kwargs: {
+            "manifest_path": str(tmp_path / "simulation_automation_run_manifest.json"),
+            "plan_path": str(tmp_path / "simulation_automation_plan.json"),
+            "status": "completed",
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.resolve_gs_uri_to_path",
+        lambda *_args, **_kwargs: descriptor_path,
+    )
+
+    def _run_inbox(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        return {"status": "completed", "processed_count": 1}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.run_robot_eval_job_request_inbox",
+        _run_inbox,
+    )
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    inbox = descriptor_path.parent / "pipeline" / "robot_eval_job_requests" / "inbox"
+    request = json.loads(next(inbox.glob("*.json")).read_text(encoding="utf-8"))["job_request"]
+    assert request["simulator_preference"] == "mujoco"
+    assert request["source"]["simulator_profile"]["packaged_simulator_command_configured"] is True
+    assert calls[0]["simulator"] == "mujoco"
+    assert calls[0]["allowed_simulators"] == ["mujoco"]
+    assert calls[0]["allow_simulator_execution"] is True
+    assert "blueprint_pipeline.mujoco_g1_simulator_command" in calls[0]["simulator_commands"]["mujoco"]
+    assert str(g1_root) in calls[0]["simulator_commands"]["mujoco"]
+    assert result["results"][-1]["robot_eval_job_runtime"]["simulator"] == "mujoco"
+    assert result["results"][-1]["robot_eval_job_runtime"]["simulator_command_configured"] is True
+
+
 def test_capture_orchestrator_blocks_task_eval_auto_stage_without_eval_methodology(
     monkeypatch,
     tmp_path: Path,

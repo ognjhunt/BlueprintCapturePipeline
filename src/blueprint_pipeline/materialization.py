@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
@@ -993,7 +994,14 @@ def _default_requested_lanes(
     legacy_scene_memory_lanes = ["qualification", "scene_memory"]
     requested_outputs = _normalized_requested_outputs(manifest, context)
     if not requested_outputs:
-        return current_default_lanes if native_default_candidate else ["qualification"]
+        beta_default = str(
+            context.get("sim_only_beta_default_task_eval")
+            or manifest.get("sim_only_beta_default_task_eval")
+            or os.getenv("BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL")
+            or os.getenv("BLUEPRINT_SIM_ONLY_BETA_AUTONOMY")
+            or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        return current_default_lanes if native_default_candidate or beta_default else ["qualification"]
 
     lanes: List[str] = []
 

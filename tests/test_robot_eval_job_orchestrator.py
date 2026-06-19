@@ -144,6 +144,48 @@ def _write_robot_eval_cards(
                     "scenario_id": "scenario_place_return_in_bin_mobile",
                     "task_id": "place_return_in_bin",
                     "robot_profile_id": "mobile_manipulator_rgb_v1",
+                    "target_object_ids": ["bin_0001"],
+                    "target_objects": [
+                        {
+                            "object_id": "bin_0001",
+                            "label": "returns bin",
+                            "task_role": "target_container",
+                            "center_xyz": [1.0, 0.0, 0.2],
+                            "has_collision_hulls": True,
+                            "has_support_surfaces": True,
+                        }
+                    ],
+                    "start_zone": [-1.0, 0.0, 0.793],
+                    "goal_zone": [1.0, 0.0, 0.793],
+                    "start_zone_id": "start_zone_place_return_in_bin",
+                    "goal_zone_id": "goal_zone_place_return_in_bin",
+                    "spawn_candidates": [
+                        {
+                            "zone_id": "start_zone_place_return_in_bin",
+                            "role": "robot_spawn",
+                            "pose_xyz": [-1.0, 0.0, 0.793],
+                            "validation_status": "validated_finite_site_pose",
+                            "validated": True,
+                            "label_source": "task_anchor_manifest",
+                        }
+                    ],
+                    "target_candidates": [
+                        {
+                            "zone_id": "goal_zone_place_return_in_bin",
+                            "role": "task_goal",
+                            "pose_xyz": [1.0, 0.0, 0.793],
+                            "validation_status": "validated_finite_site_pose",
+                            "validated": True,
+                            "label_source": "task_anchor_manifest",
+                        }
+                    ],
+                    "semantic_spawn_target": {
+                        "validated_spawn_target_pair": True,
+                        "validated_spawn_candidate_count": 1,
+                        "validated_target_candidate_count": 1,
+                        "source": "task_anchor_manifest_site_zones",
+                        "fallback_allowed_for_beta_release": False,
+                    },
                     "normal_scenario": {
                         "statement": "Run the task under the capture-observed layout.",
                         "ground_truth_status": "derived_from_capture_package",
@@ -284,6 +326,14 @@ def test_post_training_export_includes_simulator_batch_trace_streams(tmp_path: P
         },
     )
     _write_json(
+        job_dir / "visual_review_ledger.json",
+        {
+            "schema_version": "robot_eval_simulator_visual_review_ledger.v1",
+            "status": "accepted",
+            "records": [],
+        },
+    )
+    _write_json(
         job_dir / "prediction_outcome_ledger.json",
         {
             "schema_version": "robot_eval_simulator_prediction_outcome_ledger.v1",
@@ -316,6 +366,9 @@ def test_post_training_export_includes_simulator_batch_trace_streams(tmp_path: P
                 "visual_media_coverage": (
                     "simulator_command_batch_visual_media_coverage.json"
                 ),
+                "visual_review_ledger": (
+                    "simulator_command_batch_visual_review_ledger.json"
+                ),
             },
         },
     )
@@ -325,6 +378,7 @@ def test_post_training_export_includes_simulator_batch_trace_streams(tmp_path: P
         "simulator_command_batch_planner_state.jsonl",
         "simulator_command_batch_control_stream.jsonl",
         "simulator_command_batch_visual_media_coverage.json",
+        "simulator_command_batch_visual_review_ledger.json",
         "simulator_command_digital_twin_fidelity_qa.json",
     ):
         path = job_dir / name
@@ -338,6 +392,11 @@ def test_post_training_export_includes_simulator_batch_trace_streams(tmp_path: P
     )
 
     assert package["status"] == "export_ready_review_required"
+    assert package["included_artifacts"]["visual_review_ledger"] == "visual_review_ledger.json"
+    assert package["included_artifacts"]["simulator_command_batch_visual_review_ledger"] == (
+        "simulator_command_batch_visual_review_ledger.json"
+    )
+    assert package["export_policy"]["visual_review_ledger_included"] is True
     assert package["included_artifacts"]["simulator_command_batch_attempt_trace"] == (
         "simulator_command_batch_attempt_trace.jsonl"
     )
@@ -391,6 +450,9 @@ def test_scenario_eval_matrix_expands_requested_route_to_500_deterministic_runs(
     assert matrix["scenario_eval_batch_expanded"] is True
     assert matrix["target_scenario_eval_run_count_satisfied"] is True
     assert matrix["scenario_eval_run_count"] == 500
+    assert matrix["semantic_spawn_target_coverage_complete"] is True
+    assert matrix["deterministic_fallback_spawn_target_run_count"] == 0
+    assert matrix["fallback_spawn_target_run_ids"] == []
     assert len({run["scenario_eval_run_id"] for run in runs}) == 500
     assert set(matrix["variation_names_covered"]) == set(POLICY_REFERENCE_VARIATION_NAMES)
     assert matrix["episode_authoring_contract"][
@@ -408,6 +470,11 @@ def test_scenario_eval_matrix_expands_requested_route_to_500_deterministic_runs(
         assert run["deterministic_seed"] == run["episode_seed"]
         assert len(run["spawn_pose"]) == 3
         assert len(run["target_pose"]) == 3
+        assert run["validated_spawn_target_pair"] is True
+        assert run["deterministic_spawn_target_fallback_used"] is False
+        assert run["deterministic_scenario_parameters"][
+            "semantic_spawn_target_validated"
+        ] is True
         assert run["concrete_mutation"]["spawn_pose"] == run["spawn_pose"]
         assert run["concrete_mutation"]["target_pose"] == run["target_pose"]
         assert run["deterministic_scenario_parameters"][
@@ -5688,6 +5755,7 @@ def test_robot_eval_job_runs_packaged_mujoco_g1_simulator_command(
     trace = _read_json(job_dir / "normalized_attempt_trace.json")
     eval_result = _read_json(job_dir / "evaluation_result.json")
     proof_boundary = _read_json(job_dir / "proof_boundary.json")
+    robot_team_closure = _read_json(job_dir / "robot_team_grade_eval_closure_manifest.json")
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
 
     assert result["status"] == "simulator_command_completed"
@@ -5715,6 +5783,10 @@ def test_robot_eval_job_runs_packaged_mujoco_g1_simulator_command(
     assert proof_boundary["simulator_execution_proven"] is True
     assert proof_boundary["robot_readiness_proven"] is False
     assert run_manifest["simulator_execution_proven"] is True
+    assert run_manifest["sim_only_beta_core_complete"] is False
+    assert robot_team_closure["sim_only_beta_core_complete"] is False
+    assert "full_trace_package" in robot_team_closure["blocked_requirement_ids"]
+    assert robot_team_closure["robot_team_grade_evaluation_complete"] is False
     assert run_manifest["robot_readiness_proven"] is False
 
 
@@ -6748,6 +6820,160 @@ def test_robot_team_grade_closure_accepts_explicitly_blocked_scenario_runs(
     assert closure["scenario_execution_summary"]["explicitly_blocked_scenario_eval_run_ids"] == [
         "run-blocked"
     ]
+
+
+def test_robot_team_grade_closure_marks_sim_only_beta_core_complete_with_trace_media_metrics(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "robot_eval_jobs" / "job-sim-beta-complete"
+    scenario_eval_matrix = {
+        "status": "completed",
+        "scenario_eval_run_count": 1,
+        "runs": [{"scenario_eval_run_id": "run-1", "task_id": "task-1", "scenario_id": "s-1"}],
+    }
+    task_success_summary = {
+        "task_success_rate": 1.0,
+        "successful_attempt_count": 1,
+        "failed_attempt_count": 0,
+        "goal_reached_attempt_count": 1,
+        "fall_attempt_count": 0,
+        "min_clearance_m": 0.15,
+        "scene_contact_attempt_count": 0,
+        "near_miss_event_count": 0,
+        "max_path_deviation_m": 0.0,
+        "stuck_attempt_count": 0,
+        "policy_instability_attempt_count": 0,
+    }
+    _write_json(job_dir / "scenario_eval_matrix.json", scenario_eval_matrix)
+    _write_json(
+        job_dir / "simulator_command_batch_closure_manifest.json",
+        {
+            "required_scenario_eval_run_count": 1,
+            "covered_scenario_eval_run_count": 1,
+            "missing_scenario_eval_run_count": 0,
+            "scenario_eval_run_coverage_complete": True,
+            "required_scenario_eval_run_ids": ["run-1"],
+            "covered_scenario_eval_run_ids": ["run-1"],
+            "missing_scenario_eval_run_ids": [],
+        },
+    )
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "status": "completed",
+            "attempt_count": 1,
+            "required_scenario_eval_run_ids": ["run-1"],
+            "covered_scenario_eval_run_ids": ["run-1"],
+            "missing_scenario_eval_run_ids": [],
+            "scenario_eval_run_coverage_complete": True,
+            "task_success_summary": task_success_summary,
+        },
+    )
+    _write_json(job_dir / "failure_labels.json", {"status": "no_failure_labels", "labels": []})
+    _write_json(
+        job_dir / "simulator_command_batch_metrics.json",
+        {
+            "attempt_metric_row_count": 1,
+            "missing_metric_row_count": 0,
+            "metric_coverage_complete": True,
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_visual_media_coverage.json",
+        {
+            "all_required_runs_have_visual_recording": True,
+            "all_required_runs_have_robot_pov_video": True,
+            "all_required_runs_have_third_person_video": True,
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_trace_package_manifest.json",
+        {
+            "contact_stream_record_count": 1,
+            "planner_state_coverage_complete": True,
+            "control_stream_coverage_complete": True,
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_artifact_checksums.json",
+        {
+            "artifacts": {
+                "attempt_trace_jsonl": {"present": True},
+                "contact_stream_jsonl": {"present": True},
+                "planner_state_jsonl": {"present": True},
+                "control_stream_jsonl": {"present": True},
+                "metrics": {"present": True},
+                "failure_labels": {"present": True},
+                "visual_media_coverage": {"present": True},
+            }
+        },
+    )
+    for name in (
+        "simulator_command_batch_attempt_trace.jsonl",
+        "simulator_command_batch_contact_stream.jsonl",
+        "simulator_command_batch_planner_state.jsonl",
+        "simulator_command_batch_control_stream.jsonl",
+        "robot_pov_observations.jsonl",
+    ):
+        (job_dir / name).parent.mkdir(parents=True, exist_ok=True)
+        (job_dir / name).write_text("{}\n", encoding="utf-8")
+    for name in (
+        "robot_pov_observation_manifest.json",
+        "robot_pov_frame_sequence_manifest.json",
+        "live_eval_closure_manifest.json",
+        "proof_boundary.json",
+        "post_training_data_package_export_manifest.json",
+        "webapp_robot_eval_status_projection.json",
+    ):
+        _write_json(job_dir / name, {"status": "present"})
+    evaluation_result = {
+        "standard_policy_scorecard": {
+            "cycle_time": {"sample_count": 1},
+            "collision_risk": {"event_count": 0},
+            "unsafe_proximity": {"event_count": 0},
+        }
+    }
+
+    closure = _robot_team_grade_eval_closure_manifest(
+        job_dir=job_dir,
+        job_id="job-sim-beta-complete",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="simulator_command_completed",
+        blockers=[],
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result={
+            "status": "completed",
+            "required_scenario_eval_run_ids": ["run-1"],
+            "covered_scenario_eval_run_ids": ["run-1"],
+            "missing_scenario_eval_run_ids": [],
+        },
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={"status": "blocked"},
+        policy_execution_manifest={},
+        evaluation_result=evaluation_result,
+        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        live_closure={},
+        remote_cloud_closure={},
+        webapp_status_projection={
+            "provider_complexity_hidden": True,
+            "provider_details_exposed": False,
+        },
+        data_package_export={"status": "export_ready_review_required"},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+
+    assert closure["sim_only_beta_core_complete"] is True
+    assert closure["robot_team_grade_evaluation_complete"] is False
+    assert "digital_twin_fidelity_qa" in closure["blocked_requirement_ids"]
+    assert "robot_team_policy_interface" in closure["blocked_requirement_ids"]
+    sim_only_blockers = [
+        item["requirement_id"]
+        for item in closure["requirements"]
+        if item["sim_only_beta_required"] and not item["passed"]
+    ]
+    assert sim_only_blockers == []
 
 
 def test_robot_team_grade_closure_blocks_weak_explicit_scenario_block_records(

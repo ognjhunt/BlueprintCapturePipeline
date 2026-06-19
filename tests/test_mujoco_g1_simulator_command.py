@@ -286,6 +286,26 @@ def _install_fake_mujoco_backend(monkeypatch) -> None:
             self.azimuth = 0.0
             self.elevation = 0.0
 
+    class FakeRenderer:
+        def __init__(self, _model: FakeModel, *, height: int, width: int) -> None:
+            self.height = height
+            self.width = width
+            self.render_count = 0
+
+        def update_scene(self, _data: FakeData, camera: object) -> None:
+            self.camera = camera
+
+        def render(self) -> np.ndarray:
+            self.render_count += 1
+            image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+            image[:, :, 0] = (self.render_count * 31) % 255
+            image[:, :, 1] = np.arange(self.width, dtype=np.uint16) % 255
+            image[:, :, 2] = np.arange(self.height, dtype=np.uint16)[:, None] % 255
+            return image
+
+        def close(self) -> None:
+            return None
+
     def fake_name_to_id(_model: FakeModel, _object_type: object, name: str) -> int:
         return 0 if name in {"floating_base_joint", "stand"} else -1
 
@@ -297,6 +317,7 @@ def _install_fake_mujoco_backend(monkeypatch) -> None:
         MjModel=FakeModel,
         MjData=FakeData,
         MjvCamera=FakeCamera,
+        Renderer=FakeRenderer,
         mjtObj=types.SimpleNamespace(mjOBJ_JOINT=1, mjOBJ_KEY=2),
         mjtCamera=types.SimpleNamespace(mjCAMERA_FREE=1),
         mj_name2id=fake_name_to_id,
@@ -528,6 +549,7 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
     trace_package_path = Path(payload["artifact_paths"]["batch_trace_package_manifest"])
     metrics_path = Path(payload["artifact_paths"]["batch_metrics"])
     failure_labels_path = Path(payload["artifact_paths"]["batch_failure_labels"])
+    visual_review_ledger_path = Path(payload["artifact_paths"]["batch_visual_review_ledger"])
     visual_media_coverage_path = Path(
         payload["artifact_paths"]["batch_visual_media_coverage"]
     )
@@ -538,6 +560,7 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
     assert trace_package_path.is_file()
     assert metrics_path.is_file()
     assert failure_labels_path.is_file()
+    assert visual_review_ledger_path.is_file()
     assert visual_media_coverage_path.is_file()
     assert fidelity_qa_path.is_file()
     assert planner_state_path.is_file()
@@ -545,6 +568,7 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
     closure = json.loads(closure_path.read_text(encoding="utf-8"))
     trace_package = json.loads(trace_package_path.read_text(encoding="utf-8"))
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    visual_review = json.loads(visual_review_ledger_path.read_text(encoding="utf-8"))
     visual_media_coverage = json.loads(
         visual_media_coverage_path.read_text(encoding="utf-8")
     )
@@ -555,6 +579,14 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
     assert closure["scenario_eval_run_coverage_complete"] is True
     assert closure["metric_coverage_complete"] is True
     assert closure["failure_label_coverage_complete"] is True
+    assert closure["visual_review_coverage_complete"] is True
+    assert closure["visual_review"]["review_count"] == 3
+    assert visual_review["status"] == "accepted"
+    assert visual_review["review_count"] == 3
+    assert visual_review["visual_review_coverage_complete"] is True
+    assert visual_review["records"][0]["review_status"] == (
+        "accepted_deterministic_simulator_visual_review"
+    )
     assert "visual_video_coverage_not_complete_for_all_runs" in closure[
         "robot_team_grade_blockers"
     ]
@@ -620,6 +652,11 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
     assert manifest["artifact_paths"]["simulator_command_batch_visual_media_coverage"] == (
         "simulator_command_batch_visual_media_coverage.json"
     )
+    assert manifest["artifact_paths"]["simulator_command_batch_visual_review_ledger"] == (
+        "simulator_command_batch_visual_review_ledger.json"
+    )
+    assert manifest["artifact_paths"]["visual_review_ledger"] == "visual_review_ledger.json"
+    assert manifest["visual_review_coverage_complete"] is True
     assert manifest["artifact_paths"]["simulator_command_digital_twin_fidelity_qa"] == (
         "simulator_command_digital_twin_fidelity_qa.json"
     )
@@ -631,6 +668,8 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
     assert (job_dir / "simulator_command_batch_planner_state.jsonl").is_file()
     assert (job_dir / "simulator_command_batch_control_stream.jsonl").is_file()
     assert (job_dir / "simulator_command_batch_visual_media_coverage.json").is_file()
+    assert (job_dir / "simulator_command_batch_visual_review_ledger.json").is_file()
+    assert (job_dir / "visual_review_ledger.json").is_file()
     assert (job_dir / "simulator_command_digital_twin_fidelity_qa.json").is_file()
     job_trace_package = json.loads(
         (job_dir / "simulator_command_batch_trace_package_manifest.json").read_text(
@@ -646,6 +685,101 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
     assert job_trace_package["source_artifact_paths"]["planner_state_jsonl"] == str(
         planner_state_path
     )
+
+
+def test_mujoco_g1_command_records_diagnostic_visuals_for_blocked_episode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _install_fake_mujoco_backend(monkeypatch)
+    capture_root, g1_root = _seed_fake_capture_and_g1(tmp_path, monkeypatch)
+    matrix_path = tmp_path / "scenario_eval_matrix.json"
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "robot_eval_scenario_eval_matrix.v1",
+                "status": "completed",
+                "scenario_eval_run_count": 1,
+                "runs": [
+                    {
+                        "scenario_eval_run_id": "run-blocked",
+                        "task_id": "walk_to_target",
+                        "scenario_id": "scenario-blocked",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.mujoco_g1_simulator_command._evaluate_preview_candidate",
+        lambda **_kwargs: {
+            "candidate_kind": "direct",
+            "pose": (0.0, 0.0, 0.793),
+            "yaw": 0.0,
+            "phase": 0.0,
+            "moving": False,
+            "contacts": [{"scene_collision_contact": True}],
+            "contact_count": 1,
+            "scene_collision_contact_count": 1,
+            "accepted": False,
+        },
+    )
+
+    def fake_video_writer(
+        *,
+        camera: str,
+        frame_paths: list[str],
+        frame_times_s: list[float | None],
+        output_root: Path,
+        fallback_frame_duration_s: float,
+    ) -> dict[str, object]:
+        del frame_times_s, fallback_frame_duration_s
+        video_path = output_root / f"{camera}.mp4"
+        video_path.write_bytes(b"fake mp4 bytes")
+        return {
+            "status": "complete",
+            "path": str(video_path),
+            "frame_count": len(frame_paths),
+            "realtime_timing_from_sim_time": True,
+            "source_frames": list(frame_paths),
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.mujoco_g1_simulator_command._write_frame_video",
+        fake_video_writer,
+    )
+
+    payload = run_mujoco_g1_simulator_command(
+        capture_root=capture_root,
+        g1_model_root=g1_root,
+        output_dir=tmp_path / "mujoco-output-blocked",
+        scenario_eval_matrix_path=matrix_path,
+        steps=2,
+        render_frames=True,
+        max_rendered_episodes=1,
+    )
+
+    visual_media_coverage = json.loads(
+        Path(payload["artifact_paths"]["batch_visual_media_coverage"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    row = visual_media_coverage["rows"][0]
+
+    assert payload["status"] == "completed"
+    assert payload["rendered_episode_count"] == 1
+    assert row["status"] == "complete"
+    assert row["frame_counts"] == {
+        "overview": 2,
+        "sim_robot_follow_pov": 2,
+        "side": 2,
+    }
+    assert row["robot_pov_video_present"] is True
+    assert row["third_person_video_present"] is True
+    assert visual_media_coverage["all_required_runs_have_visual_recording"] is True
+    assert visual_media_coverage["missing_visual_media_run_count"] == 0
 
 
 def test_mujoco_g1_command_stops_before_fake_scene_collision(
@@ -745,6 +879,20 @@ def test_mujoco_g1_command_stops_before_fake_scene_collision(
     assert payload["task_success_summary"]["failure_mode_counts"][
         "failure_clearance_near_miss"
     ] == 1
+    failure_labels = json.loads(
+        Path(payload["artifact_paths"]["batch_failure_labels"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    failure_label = failure_labels["labels"][0]
+    assert failure_label["status"] == "deterministically_labeled_failure"
+    assert failure_label["label"] == "failure"
+    assert failure_label["primary_failure_mode"] == "failure_target_not_reached"
+    assert failure_label["criteria_results"]["success_criteria"][
+        "goal_reached_within_tolerance"
+    ] is False
+    assert failure_label["criteria_results"]["metrics"]["min_clearance_m"] == 0.0
+    assert failure_label["evidence_refs"]
     assert any(
         action["policy_action"] in {"stopped_by_collision_probe", "redirected_by_collision_probe"}
         for action in actions
@@ -1158,6 +1306,7 @@ def test_simulator_command_artifacts_normalize_task_metrics_and_failure_labels(
 
     trace = artifacts["normalized_attempt_trace"]
     labels = artifacts["failure_labels"]
+    visual_review = artifacts["visual_review_ledger"]
     prediction = artifacts["prediction_outcome_ledger"]
     manifest = artifacts["manifest"]
 
@@ -1172,6 +1321,17 @@ def test_simulator_command_artifacts_normalize_task_metrics_and_failure_labels(
     assert trace["attempts"][1]["task_status"] == "failed_task_criteria"
     assert trace["attempts"][1]["task_outcome"]["final_target_error_m"] == 0.8
     assert labels["label_count"] == 1
+    assert labels["labels"][0]["status"] == "deterministically_labeled_failure"
+    assert labels["labels"][0]["label"] == "failure"
+    assert labels["labels"][0]["primary_failure_mode"] == "failure_target_not_reached"
+    assert labels["labels"][0]["criteria_results"]["success_criteria"][
+        "goal_reached_within_tolerance"
+    ] is False
+    assert visual_review["review_count"] == 2
+    assert visual_review["success_count"] == 1
+    assert visual_review["failure_count"] == 1
+    assert visual_review["records"][1]["decision"] == "failure"
+    assert manifest["visual_review_coverage_complete"] is True
     assert labels["labels"][0]["task_outcome"]["endpoint_clean"] is False
     assert prediction["records"][1]["predicted_task_success"] is False
     assert prediction["records"][1]["predicted_final_target_error_m"] == 0.8

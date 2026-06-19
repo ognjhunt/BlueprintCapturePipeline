@@ -22,6 +22,9 @@ DEFAULT_HANDOFF_RELATIVE = (
     "pipeline/sim_only_beta_rehearsal/official_unitree_g1_policy_execution/"
     "robot_team_handoff/robot_team_handoff_manifest.json"
 )
+DEFAULT_RELEASE_GATE_RELATIVE = (
+    "pipeline/live_pipeline_control_plane/sim_only_beta_release_gate_report.json"
+)
 
 
 def _string(value: Any) -> str:
@@ -468,6 +471,7 @@ def build_simulator_beta_readiness(
     mujoco_output_path: str | Path | None = None,
     official_policy_execution_path: str | Path | None = None,
     handoff_manifest_path: str | Path | None = None,
+    release_gate_report_path: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(capture_root).expanduser().resolve()
     out_dir = (
@@ -491,6 +495,12 @@ def build_simulator_beta_readiness(
         if handoff_manifest_path
         else root / DEFAULT_HANDOFF_RELATIVE
     )
+    release_gate_path = (
+        Path(release_gate_report_path).expanduser().resolve()
+        if release_gate_report_path
+        else root / DEFAULT_RELEASE_GATE_RELATIVE
+    )
+    release_gate_payload = optional_read_json(release_gate_path)
     runpod_path, runpod_payload = _select_runpod_live_execution_proof(root)
     webapp_path, webapp_payload = _select_webapp_route_forwarding_proof(root)
     gates = {
@@ -512,11 +522,26 @@ def build_simulator_beta_readiness(
         "production_runpod_worker_execution",
         "customer_website_to_pipeline_request",
     ]
-    blocking_gate_ids = [
-        gate_id
-        for gate_id in infrastructure_gate_ids
-        if gates[gate_id].get("proven") is not True
-    ]
+    release_gate_authority_present = isinstance(release_gate_payload, Mapping)
+    release_gate_ready = bool(
+        release_gate_authority_present
+        and release_gate_payload.get("ready_for_beta_release") is True
+        and release_gate_payload.get("status") == "passed"
+    )
+    if release_gate_authority_present:
+        blocking_gate_ids = [] if release_gate_ready else ["sim_only_beta_release_gate"]
+        legacy_provider_rehearsal_blocking_gate_ids = [
+            gate_id
+            for gate_id in infrastructure_gate_ids
+            if gates[gate_id].get("proven") is not True
+        ]
+    else:
+        blocking_gate_ids = [
+            gate_id
+            for gate_id in infrastructure_gate_ids
+            if gates[gate_id].get("proven") is not True
+        ]
+        legacy_provider_rehearsal_blocking_gate_ids = []
     data_gate_ids = [
         gate_id
         for gate_id in ("official_policy_robot_team_handoff_dataset",)
@@ -543,6 +568,22 @@ def build_simulator_beta_readiness(
             "simulator_backend": "mujoco",
         },
         "blocking_gate_ids": blocking_gate_ids,
+        "release_authority": {
+            "authoritative_command": "python scripts/run_sim_only_beta_release_gate.py",
+            "report_path": str(release_gate_path),
+            "report_present": release_gate_authority_present,
+            "status": _mapping(release_gate_payload).get("status")
+            if release_gate_authority_present
+            else None,
+            "ready_for_beta_release": release_gate_ready,
+            "blockers": _as_list(_mapping(release_gate_payload).get("blockers"))
+            if release_gate_authority_present
+            else [],
+            "legacy_provider_rehearsal_gates_are_advisory": release_gate_authority_present,
+        },
+        "legacy_provider_rehearsal_blocking_gate_ids": (
+            legacy_provider_rehearsal_blocking_gate_ids
+        ),
         "data_gate_ids": data_gate_ids,
         "gates": gates,
         "out_of_scope_gates": out_of_scope,
@@ -572,9 +613,11 @@ def build_simulator_beta_readiness(
             ].get("proven")
             is True,
             "public_claim_upgrade_allowed": False,
+            "sim_only_release_gate_authoritative": release_gate_authority_present,
         },
         "artifacts": {
             "manifest": str(manifest_path),
+            "sim_only_beta_release_gate_report": str(release_gate_path),
             "mujoco_output": str(mujoco_path),
             "official_policy_execution": str(policy_path),
             "robot_team_handoff_manifest": str(handoff_path),
@@ -593,6 +636,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--mujoco-output")
     parser.add_argument("--official-policy-execution")
     parser.add_argument("--handoff-manifest")
+    parser.add_argument("--release-gate-report")
     args = parser.parse_args(argv)
     manifest = build_simulator_beta_readiness(
         capture_root=args.capture_root,
@@ -600,6 +644,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         mujoco_output_path=args.mujoco_output,
         official_policy_execution_path=args.official_policy_execution,
         handoff_manifest_path=args.handoff_manifest,
+        release_gate_report_path=args.release_gate_report,
     )
     print(manifest["artifacts"]["manifest"])
     return 0 if manifest["ready_for_simulator_beta"] else 1

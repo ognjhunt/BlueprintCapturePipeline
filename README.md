@@ -165,6 +165,13 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/policy_execution_manifest.json`
 - `robot_eval_jobs/<job_id>/policy_execution_trace.json`
 - `robot_eval_jobs/<job_id>/policy_execution_trace.jsonl`
+- `robot_eval_jobs/<job_id>/policy_autoresearch/policy_autoresearch_report.json`
+- `robot_eval_jobs/<job_id>/policy_autoresearch/agent_idea_tree.json`
+- `robot_eval_jobs/<job_id>/policy_autoresearch/policy_candidate_package.json`
+- `robot_eval_jobs/<job_id>/policy_autoresearch/heldout_eval_result.json`
+- `robot_eval_jobs/<job_id>/policy_autoresearch/followup_real_world_validation_request.json`
+- `robot_eval_jobs/<job_id>/policy_improvement_run/policy_improvement_run_offer.json`
+- `robot_eval_jobs/<job_id>/policy_improvement_run/policy_improvement_run_offer.md`
 - `robot_eval_jobs/<job_id>/policy_adapter_manifest.json` when Arena package
   ingest is run
 - `robot_eval_jobs/<job_id>/training_request.json`
@@ -257,6 +264,48 @@ Cross-repo external alpha gate:
 ```bash
 python scripts/run_external_alpha_launch_gate.py
 ```
+
+Sim-only beta profile for post-upload autonomy:
+
+```bash
+export BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL=true
+export BLUEPRINT_SIM_ONLY_BETA_AUTONOMY=true
+export BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true
+export BLUEPRINT_MUJOCO_G1_MODEL_ROOT=/path/to/mujoco_menagerie/unitree_g1
+```
+
+With this profile, uploads without explicit requested outputs default into `qualification`, `evaluation_prep`, and `simulation_automation`; auto-staged `robot_eval_job_request.v1` work uses the MuJoCo runtime profile; and the control plane can drain accepted WebApp-style job requests into the packaged `blueprint_pipeline.mujoco_g1_simulator_command`. `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION` remains an explicit gate, and a MuJoCo G1 asset root or `BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS=true` is required before the packaged command is configured. This proves only sim-only beta execution when the job artifacts contain trace, metric, visual media, and scenario-run coverage evidence. It does not prove physical robot readiness, deployment readiness, or robot-team-grade closure.
+
+Local sim-only beta gate:
+
+```bash
+python scripts/run_sim_only_beta_local_gate.py \
+  --capture-root /absolute/path/to/capture-root \
+  --webapp-repo /Users/nijelhunt_1/workspace/Blueprint-WebApp \
+  --mujoco-g1-root /absolute/path/to/mujoco_menagerie/unitree_g1
+```
+
+This starts the real local Pipeline intake service with a synthetic token, runs WebApp forwarding preflight with the read-only intake probe, posts a WebApp-built `robot_eval_job_request.v1` through the WebApp route, processes the staged Pipeline inbox, runs the packaged MuJoCo sim-only command, and writes `pipeline/live_pipeline_control_plane/sim_only_beta_local_gate/sim_only_beta_local_gate_report.json`. The report must be `status=passed` before claiming local post-upload autonomy. The report remains local proof only; production forwarding, deployment parity, remote cloud execution, and physical robot readiness require separate evidence.
+
+Sim-only beta release gate:
+
+```bash
+python scripts/run_sim_only_beta_deployment_parity_proof.py \
+  --capture-root /absolute/path/to/capture-root \
+  --route-forwarding-proof /absolute/path/to/production_route_forwarding_proof.json \
+  --webapp-url https://<webapp-host> \
+  --pipeline-intake-url https://<pipeline-host>/api/live-pipeline/job-requests \
+  --webapp-deployed-commit <commit-sha-from-deploy-provider> \
+  --pipeline-deployed-commit <commit-sha-from-deploy-provider>
+
+python scripts/run_sim_only_beta_release_gate.py \
+  --capture-root /absolute/path/to/capture-root \
+  --forwarding-preflight-report /absolute/path/to/forwarding_preflight.json \
+  --production-route-forwarding-proof /absolute/path/to/production_route_forwarding_proof.json \
+  --production-deployment-proof /absolute/path/to/sim_only_beta_production_deployment_proof.json
+```
+
+The deployment/parity proof checks WebApp `/health/ready`, Pipeline intake `/health`, authenticated intake-audit reachability when the intake is routed under `/api/live-pipeline/*`, clean `HEAD == origin/main` repo parity, and deployed commit equality when commit values are supplied. A route-forwarding proof can supply the WebApp URL and forwarding endpoint URL when those fields are present, but deployed commits and the live intake token still come from deployment/runtime configuration. The release gate reads the local sim-only gate report and WebApp forwarding preflight report, then requires a current production route-forwarding proof for the same capture root plus deployment/parity proof before writing `pipeline/live_pipeline_control_plane/sim_only_beta_release_gate_report.json`. The report must be `status=passed` before claiming beta release readiness. Physical robot readiness and remote-cloud provider execution stay out of scope for this sim-only gate.
 
 Live Arena/package setup audit:
 
@@ -900,6 +949,124 @@ required, covered, and missing `scenario_eval_run_id`s for each selected
 robot-team modality and for the aggregate trace. Local reference replays can
 prove trace coverage only; live policy proof still requires a gated execution
 command/API/container run and accepted owner-system evidence.
+
+Sim-only policy autoresearch can run after `scenario_eval_matrix.json` exists:
+
+```bash
+blueprint-run-policy-autoresearch \
+  --capture-root /path/to/<capture-root> \
+  --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
+  --policy-recipe /path/to/seed_policy_recipe.json \
+  --reviewed-examples /path/to/reviewed_success_failure_examples.json \
+  --simulator-engine mujoco \
+  --simulator-engine isaac_sim \
+  --evaluator-command "python /path/to/site_policy_eval_runner.py" \
+  --max-iterations 8 \
+  --agent-count 4
+```
+
+Minimal seed recipe:
+
+```json
+{
+  "schema_version": "policy_autoresearch_recipe.v1",
+  "policy_id": "site_policy_seed",
+  "policy_kind": "code_as_policy_navigation_heuristic",
+  "mutable_parameters": {
+    "planner": "direct",
+    "clearance_margin_m": 0.05,
+    "dynamic_obstacle_yield": false,
+    "perception_vote_count": 1,
+    "retry_budget": 0,
+    "max_speed_mps": 0.9,
+    "grasp_alignment_correction": false
+  }
+}
+```
+
+This lane freezes a verifier from the scenario matrix, splits train and heldout
+runs, optionally freezes reviewed success/failure examples into that verifier,
+mutates only policy recipe parameters, and promotes a candidate only when heldout
+task success reaches the configured target and safety/contact gates stay clean.
+Candidate recipes that include reward/verifier/classifier override keys are
+blocked before the loop runs. It writes `policy_autoresearch_report.json`,
+`agent_idea_tree.json`, `policy_candidate_package.json`, `heldout_eval_result.json`, and
+`followup_real_world_validation_request.json` under
+`policy_autoresearch/`. The candidate package is a Task Evaluation Run support
+artifact only: it does not upgrade simulator execution, live policy execution,
+physical robot readiness, safety validation, or public claims without separate
+accepted owner-system evidence.
+
+When `--evaluator-command` is supplied, the command is called for each candidate
+and split with `BLUEPRINT_POLICY_AUTORESEARCH_RECIPE`,
+`BLUEPRINT_POLICY_AUTORESEARCH_MATRIX`, `BLUEPRINT_POLICY_AUTORESEARCH_OUTPUT`,
+`BLUEPRINT_POLICY_AUTORESEARCH_PHASE`,
+`BLUEPRINT_POLICY_AUTORESEARCH_SIMULATOR_ENGINE`, and
+`BLUEPRINT_POLICY_AUTORESEARCH_VERIFIER_SHA256`,
+`BLUEPRINT_POLICY_AUTORESEARCH_CAPTURE_ROOT`,
+`BLUEPRINT_POLICY_AUTORESEARCH_JOB_DIR`, and
+`BLUEPRINT_POLICY_AUTORESEARCH_SOURCE_MATRIX` in its environment. If
+`--evaluator-attempt-trace` is supplied, it is also exposed as
+`BLUEPRINT_POLICY_AUTORESEARCH_ATTEMPT_TRACE`. The evaluator must write JSON
+with `attempts`, `results`, or `episodes` so the lane can normalize task
+success, failure modes, safety events, and contact events against the frozen
+verifier.
+
+For cheap local smoke tests, the packaged replay evaluator can consume existing
+attempt evidence without claiming fresh simulator execution:
+
+```bash
+blueprint-run-policy-autoresearch \
+  --capture-root /path/to/<capture-root> \
+  --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
+  --policy-recipe /path/to/seed_policy_recipe.json \
+  --evaluator-command "python -m blueprint_pipeline.policy_autoresearch_local_evaluator" \
+  --evaluator-attempt-trace /path/to/simulator_command_batch_attempt_trace.jsonl \
+  --max-iterations 2 \
+  --agent-count 2
+```
+
+Without this hook, the lane uses the built-in deterministic recipe evaluator
+for local contract tests and dry runs.
+
+Policy Improvement Runs package the commercial offer that sits one step above
+the baseline Task Evaluation Run and Post-Training Data Package. A robot team
+supplies its policy or base model, robot embodiment, action interface, target
+task, success threshold, and cycle-time threshold. Blueprint evaluates the
+baseline, diagnoses dominant failures, creates twin/cousin scenarios and a
+curriculum, post-trains or lifts a bounded candidate, tests that candidate on
+heldout/sealed scenarios, and emits an improved artifact plus evidence report.
+The contract stays model-agnostic and customer-supplied-policy friendly:
+`black_box` accepts an API/container/action-trace surface, `config_adapter`
+accepts adapter or task-head access, and `source_training` is the only mode that
+requires source/training access.
+
+```bash
+blueprint-build-policy-improvement-run \
+  --capture-root /path/to/<capture-root> \
+  --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
+  --access-level config_adapter \
+  --customer-policy-ref customer-tote-policy-v3 \
+  --embodiment g1-humanoid \
+  --action-interface joint_position_delta_20hz \
+  --target-task tote-transfer \
+  --success-threshold 0.95 \
+  --cycle-time-threshold-seconds 90 \
+  --improvement-target adapter \
+  --improvement-target task_head
+```
+
+The builder writes `policy_improvement_run_offer.json` and
+`policy_improvement_run_offer.md` under `policy_improvement_run/`. The manifest
+binds together the scenario matrix, normalized baseline attempts, failure
+labels, Post-Training Data Package export, policy-autoresearch candidate
+package, heldout result, and proof boundary. It can say the run is ready for
+baseline evaluation, failure diagnosis, post-training package build,
+policy-autoresearch, or customer review. It cannot turn sim heldout success into
+deployment approval: sealed audit scenarios must remain outside training, and
+robot readiness, physical safety validation, real-world outcome, and public
+claim upgrades remain false until separately proven by accepted live evidence.
+
 When `--arena-results-dir` points at existing Isaac Lab-Arena rollout artifacts,
 the job ingests those local results into normalized traces, labels, clips,
 metrics, reports, delivery manifests, rerun queues, and a Post-Training Data

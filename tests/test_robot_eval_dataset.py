@@ -154,26 +154,218 @@ def test_robot_eval_dataset_uses_simulation_automation_task_proposals_when_eval_
             ],
         },
     )
+    _write_json(
+        capture_root / "pipeline" / "simulation_automation" / "scene_frame_estimate.json",
+        {
+            "schema_version": "scene_frame_estimate.v1",
+            "status": "complete",
+            "frame": {
+                "bounds": {"min": [-4.0, -2.0, -0.1], "max": [6.0, 8.0, 3.0]},
+                "centroid": [1.0, 3.0, 1.0],
+                "up_axis": "Z",
+            },
+        },
+    )
+    _write_json(
+        capture_root / "pipeline" / "simulation_automation" / "scene_asset_inspection.json",
+        {
+            "schema_version": "scene_asset_inspection.v1",
+            "status": "complete",
+            "assets": [
+                {
+                    "path": "pipeline/worldlabs_assets/worldlabs_collider.glb",
+                    "semantic_hints": [{"label": "black", "source": "glb_node_or_mesh_name"}],
+                    "bounds": {"min": [-4.0, -2.0, -0.1], "max": [6.0, 8.0, 3.0]},
+                    "centroid": [1.0, 3.0, 1.0],
+                    "collision_evidence": {
+                        "real_collider_proven": True,
+                        "status": "portable_collider_name_present",
+                    },
+                }
+            ],
+        },
+    )
 
     result = build_real_site_robot_eval_dataset(capture_root=capture_root)
 
     robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
     manifest = json.loads((robot_eval_root / "robot_eval_dataset_manifest.json").read_text())
+    site_card = json.loads((robot_eval_root / "site_card.json").read_text())
     task_cards = json.loads((robot_eval_root / "task_cards.json").read_text())
     scenario_cards = json.loads((robot_eval_root / "scenario_cards.json").read_text())
 
     assert result["status"] == "capture_grounded_review_ready"
     assert manifest["task_card_count"] == 1
     assert manifest["scenario_card_count"] == 1
+    assert site_card["site_type"] == "captured indoor scene"
+    assert site_card["geometry"]["object_index"]["object_count"] == 1
+    assert site_card["robot_metadata"]["task_zones"][0]["validated_spawn_target_pair"] is True
     assert task_cards["cards"][0]["task_id"] == "scene_anchor_black"
+    assert task_cards["cards"][0]["target_objects"][0]["object_id"] == "black"
+    assert task_cards["cards"][0]["semantic_grounding"]["object_semantics_status"] == "object_grounded"
+    assert task_cards["cards"][0]["semantic_grounding"]["validated_spawn_target_pair"] is True
     assert task_cards["cards"][0]["task_evidence_source"] == (
         "pipeline/simulation_automation/task_anchor_proposal_manifest.json"
     )
     assert scenario_cards["cards"][0]["scenario_id"] == "scenario_scene_anchor_black_unitree_g1"
     assert scenario_cards["cards"][0]["robot_profile_id"] == "unitree_g1"
+    assert scenario_cards["cards"][0]["semantic_spawn_target"]["validated_spawn_target_pair"] is True
+    assert scenario_cards["cards"][0]["spawn_candidates"][0]["validated"] is True
+    assert scenario_cards["cards"][0]["target_candidates"][0]["validated"] is True
     assert scenario_cards["cards"][0]["claim_boundary"] == (
         "scenario_card_is_review_scope_not_simulator_or_pilot_result"
     )
+
+
+def test_robot_eval_dataset_grounded_capture_manifest_navigation_task(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_review_sources(capture_root)
+    _write_json(
+        capture_root / "pipeline" / "simulation_automation" / "task_anchor_proposal_manifest.json",
+        {
+            "schema_version": "task_anchor_proposal_manifest.v1",
+            "generated_at": "2026-06-18T00:00:00Z",
+            "status": "compiled_review_required",
+            "proposal_count": 1,
+            "proposals": [
+                {
+                    "proposal_id": "task_anchor_proposal_capture_intent_First_GPU_humanoid_navigation_smoke",
+                    "task_id": "capture_intent_First_GPU_humanoid_navigation_smoke",
+                    "task_text": "Navigate humanoid from validated start zone to selected waypoint",
+                    "task_category": "navigation",
+                    "target_object_ids": ["selected_waypoint"],
+                    "source": "raw/manifest.json",
+                    "review_required": True,
+                    "accepted": False,
+                }
+            ],
+        },
+    )
+    _write_json(
+        capture_root / "pipeline" / "simulation_automation" / "scene_frame_estimate.json",
+        {
+            "schema_version": "scene_frame_estimate.v1",
+            "status": "complete",
+            "frame": {
+                "bounds": {"min": [-4.0, -2.0, -0.1], "max": [6.0, 8.0, 3.0]},
+                "centroid": [1.0, 3.0, 1.0],
+                "up_axis": "Z",
+            },
+        },
+    )
+    _write_json(
+        capture_root / "pipeline" / "simulation_automation" / "scene_asset_inspection.json",
+        {
+            "schema_version": "scene_asset_inspection.v1",
+            "status": "complete",
+            "assets": [
+                {
+                    "path": "pipeline/worldlabs_assets/worldlabs_collider.glb",
+                    "semantic_hints": [
+                        {"label": "world", "source": "glb_node_or_mesh_name"},
+                        {"label": "geometry_0", "source": "glb_node_or_mesh_name"},
+                    ],
+                    "bounds": {"min": [-4.0, -2.0, -0.1], "max": [6.0, 8.0, 3.0]},
+                    "centroid": [1.0, 3.0, 1.0],
+                    "collision_evidence": {
+                        "real_collider_proven": True,
+                        "status": "portable_collider_name_present",
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        capture_root / "raw" / "manifest.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "workflowName": "First GPU humanoid navigation smoke",
+            "taskSteps": [
+                "load captured scene",
+                "spawn humanoid at valid start pose",
+                "navigate to selected waypoint",
+            ],
+            "zone": "sample-zone",
+        },
+    )
+
+    build_real_site_robot_eval_dataset(capture_root=capture_root)
+
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    site_card = json.loads((robot_eval_root / "site_card.json").read_text())
+    task_cards = json.loads((robot_eval_root / "task_cards.json").read_text())
+    scenario_cards = json.loads((robot_eval_root / "scenario_cards.json").read_text())
+
+    object_ids = {
+        item["object_id"] for item in site_card["geometry"]["object_index"]["objects"]
+    }
+    assert site_card["site_type"] == "indoor navigation route"
+    assert {"navigation_workspace", "selected_waypoint"}.issubset(object_ids)
+    assert site_card["geometry"]["object_index"]["physics_coverage_complete"] is True
+    assert task_cards["cards"][0]["task_statement"] == (
+        "Navigate humanoid from validated start zone to selected waypoint"
+    )
+    assert task_cards["cards"][0]["target_object_ids"] == ["selected_waypoint"]
+    assert task_cards["cards"][0]["target_objects"][0]["object_id"] == "selected_waypoint"
+    assert task_cards["cards"][0]["semantic_grounding"]["object_semantics_status"] == (
+        "object_grounded"
+    )
+    assert scenario_cards["cards"][0]["target_objects"][0]["class_name"] == (
+        "navigation_waypoint"
+    )
+    assert scenario_cards["cards"][0]["semantic_spawn_target"]["validated_spawn_target_pair"] is True
+
+
+def test_robot_eval_dataset_accepts_descriptor_scoped_mujoco_sim_rights(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_eval_inputs(capture_root)
+    permission_uri = "owner://approval/mujoco-g1-smoke"
+    _write_json(
+        capture_root / "capture_descriptor.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "privacy_status": "full_frame_redacted_local_proof",
+            "metadata": {
+                "site_identity": {"site_id": "site-1"},
+                "capture_rights": {
+                    "derived_scene_generation_allowed": True,
+                    "data_licensing_allowed": False,
+                    "consent_status": "documented",
+                    "permission_document_uri": permission_uri,
+                    "consent_scope": [
+                        "isolated_owner_gpu_smoke",
+                        "mujoco_g1_simulator_evaluation_for_this_staged_capture",
+                    ],
+                },
+                "worldlabs_input_audit": {
+                    "privacy_safe_input": True,
+                    "raw_video_bypass_used": False,
+                },
+            },
+        },
+    )
+
+    result = build_real_site_robot_eval_dataset(capture_root=capture_root)
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    manifest = json.loads((robot_eval_root / "robot_eval_dataset_manifest.json").read_text())
+    rights_packet = json.loads((robot_eval_root / "rights_packet.json").read_text())
+
+    assert result["status"] == "capture_grounded_review_ready"
+    assert "blocked_rights_privacy" not in manifest["dataset_statuses"]
+    assert manifest["rights_privacy"]["rights_status"] == "scoped_simulator_eval_approved"
+    assert manifest["rights_privacy"]["privacy_status"] == "full_frame_redacted_local_proof"
+    assert manifest["rights_privacy"]["blocked"] is False
+    assert manifest["rights_privacy"]["scope_limited_to_simulator_eval"] is True
+    assert rights_packet["status"] == "review_required"
+    assert rights_packet["commercial_use_claim_allowed"] is False
+    assert rights_packet["external_licensing_claim_allowed"] is False
+    assert {record["evidence_uri"] for record in rights_packet["records"]} == {permission_uri}
 
 
 def _write_recorded_trace_fixture(capture_root: Path) -> None:
@@ -337,14 +529,22 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
         "actual_outcome_proven",
     ]
     assert site_card["schema_version"] == "real_site_robot_eval_site_card.v0.1"
-    assert site_card["site_type"] == "unknown_site_type"
+    assert site_card["site_type"] == "stockroom"
     assert site_card["geometry"]["collider"]["status"] == "review_input_present"
     assert site_card["geometry"]["collider"]["collision_ready_claim_allowed"] is False
+    assert site_card["geometry"]["scale"]["status"] == "derived_from_object_geometry_manifest"
+    assert site_card["geometry"]["object_index"]["object_count"] == 1
+    assert site_card["geometry"]["object_index"]["physics_coverage_complete"] is True
     assert site_card["safety_constraints"]["claim_boundary"] == (
         "safety_constraints_are_review_inputs_not_safety_validation"
     )
     assert task_cards["task_card_count"] == 1
     assert task_cards["cards"][0]["ontology_task_id"] == "place_object_into_bin"
+    assert task_cards["cards"][0]["target_object_ids"] == ["bin_0001"]
+    assert task_cards["cards"][0]["target_objects"][0]["object_id"] == "bin_0001"
+    assert task_cards["cards"][0]["semantic_grounding"][
+        "validated_spawn_target_pair"
+    ] is True
     assert task_cards["cards"][0]["required_metrics"] == [
         "success_rate",
         "cycle_time",
@@ -360,6 +560,20 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
         "placement_accuracy",
     ]
     assert scenario_cards["scenario_card_count"] == 1
+    assert scenario_cards["cards"][0]["target_object_ids"] == ["bin_0001"]
+    assert scenario_cards["cards"][0]["semantic_spawn_target"][
+        "validated_spawn_target_pair"
+    ] is True
+    assert scenario_cards["cards"][0]["spawn_candidates"][0]["pose_xyz"] == [
+        0.0,
+        0.0,
+        0.0,
+    ]
+    assert scenario_cards["cards"][0]["target_candidates"][0]["pose_xyz"] == [
+        1.0,
+        0.0,
+        0.2,
+    ]
     assert scenario_cards["cards"][0]["observed_vs_inferred_labels"]["variation"] == (
         "agent_inferred"
     )

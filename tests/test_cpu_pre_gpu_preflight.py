@@ -5,7 +5,11 @@ import struct
 from pathlib import Path
 
 from blueprint_pipeline.cpu_simulator_preflight import build_cpu_simulator_preflight
-from blueprint_pipeline.episode_spec import FakeEpisodeSpecAgentAdapter, build_episode_specs
+from blueprint_pipeline.episode_spec import (
+    FakeEpisodeSpecAgentAdapter,
+    build_episode_specs,
+    build_task_anchor_proposals,
+)
 from blueprint_pipeline.robot_eval_dataset import build_real_site_robot_eval_dataset
 from blueprint_pipeline.scene_asset_preflight import build_scene_asset_preflight
 from blueprint_pipeline.simulation_automation import build_simulation_automation
@@ -132,6 +136,58 @@ def _write_minimal_glb_with_accessor_bounds(path: Path) -> None:
         + struct.pack("<II", len(raw_json), 0x4E4F534A)
         + raw_json
     )
+
+
+def test_task_anchor_proposals_prefer_capture_manifest_task_intent(tmp_path: Path) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_json(
+        capture_root / "raw" / "manifest.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "workflowName": "First GPU humanoid navigation smoke",
+            "taskSteps": [
+                "load captured scene",
+                "spawn humanoid at valid start pose",
+                "navigate to selected waypoint",
+            ],
+            "zone": "sample-zone",
+        },
+    )
+    automation_dir = capture_root / "pipeline" / "simulation_automation"
+    _write_json(
+        automation_dir / "scene_asset_inspection.json",
+        {
+            "schema_version": "scene_asset_inspection.v1",
+            "assets": [
+                {
+                    "semantic_hints": [
+                        {"label": "world", "source": "glb_node_or_mesh_name"},
+                        {"label": "geometry_0", "source": "glb_node_or_mesh_name"},
+                    ]
+                }
+            ],
+        },
+    )
+
+    manifest = build_task_anchor_proposals(
+        capture_root=capture_root,
+        pipeline_dir=capture_root / "pipeline",
+        automation_dir=automation_dir,
+        generated_at="2026-06-18T00:00:00+00:00",
+    )
+
+    assert manifest["proposals"][0]["task_id"] == (
+        "capture_intent_First_GPU_humanoid_navigation_smoke"
+    )
+    assert manifest["proposals"][0]["task_text"] == (
+        "Navigate humanoid from validated start zone to selected waypoint"
+    )
+    assert manifest["proposals"][0]["target_object_ids"] == ["selected_waypoint"]
+    assert manifest["proposals"][0]["source"] == "raw/manifest.json"
+    proposal_ids = [proposal["task_id"] for proposal in manifest["proposals"]]
+    assert "scene_anchor_world" in proposal_ids[1:]
+    assert "scene_anchor_geometry_0" in proposal_ids[1:]
 
 
 def test_scene_asset_preflight_inspects_ply_bounds_without_collision_claim(

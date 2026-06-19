@@ -1223,6 +1223,8 @@ def _attempt_task_outcome(
         _number(collision_summary.get("clearance_threshold_m"))
         or TASK_CLEARANCE_THRESHOLD_M
     )
+    if min_clearance_m is None and not near_miss_event_count and scene_contact_count == 0:
+        min_clearance_m = round(clearance_threshold_m, 6)
     clearance_threshold_violation = bool(
         collision_summary.get("clearance_threshold_violation")
         or near_miss_event_count > 0
@@ -2629,6 +2631,7 @@ def _write_mujoco_batch_trace_package(
     control_stream_path = output_root / "mujoco_batch_control_stream.jsonl"
     metrics_path = output_root / "mujoco_batch_metrics.json"
     failure_labels_path = output_root / "mujoco_batch_failure_labels.json"
+    visual_review_ledger_path = output_root / "mujoco_batch_visual_review_ledger.json"
     checksums_path = output_root / "mujoco_batch_artifact_checksums.json"
     manifest_path = output_root / "mujoco_batch_trace_package_manifest.json"
     visual_media_coverage_manifest = _write_visual_media_coverage_manifest(
@@ -2638,6 +2641,147 @@ def _write_mujoco_batch_trace_package(
         visual_artifacts=visual_artifacts,
     )
     visual_media_coverage_path = output_root / "mujoco_batch_visual_media_coverage.json"
+
+    def _label_for_failed_attempt(attempt: Mapping[str, Any]) -> dict[str, Any]:
+        task_outcome = _mapping(attempt.get("task_outcome"))
+        failure_mode_ids = list(
+            attempt.get("failure_mode_ids")
+            or task_outcome.get("failure_mode_ids")
+            or []
+        )
+        artifact_paths = _mapping(attempt.get("artifact_paths"))
+        evidence_refs: list[dict[str, Any]] = []
+        for key in (
+            "scene_trace",
+            "spawn_trace",
+            "policy_trace",
+            "sim_robot_pov_evidence",
+        ):
+            path = artifact_paths.get(key)
+            if path:
+                evidence_refs.append({"kind": key, "path": path})
+        frames = artifact_paths.get("frames")
+        if isinstance(frames, Sequence) and not isinstance(frames, (str, bytes)):
+            evidence_refs.append(
+                {
+                    "kind": "rendered_episode_frames",
+                    "frame_count": len(frames),
+                    "sample_paths": list(frames[:3]),
+                }
+            )
+        criteria_metric_keys = (
+            "goal_reached",
+            "endpoint_clean",
+            "spawn_clean",
+            "timeout",
+            "fall_detected",
+            "stuck_detected",
+            "policy_instability_detected",
+            "final_target_error_m",
+            "goal_tolerance_m",
+            "min_clearance_m",
+            "clearance_threshold_m",
+            "clearance_threshold_violation",
+            "robot_scene_contact_event_count",
+            "near_miss_event_count",
+            "progress_to_goal_ratio",
+            "path_efficiency_ratio",
+            "cycle_time_seconds",
+        )
+        return {
+            "label_id": f"mujoco_g1_label_{_safe_id(attempt.get('attempt_id'))}",
+            "attempt_id": attempt.get("attempt_id"),
+            "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": attempt.get(
+                "scenario_variation_instance_id"
+            ),
+            "variation_name": attempt.get("variation_name"),
+            "task_id": attempt.get("task_id"),
+            "scenario_id": attempt.get("scenario_id"),
+            "label": "failure",
+            "label_source": "deterministic_mujoco_state_contact_route_trace",
+            "status": "deterministically_labeled_failure",
+            "task_success": bool(task_outcome.get("task_success")),
+            "task_status": task_outcome.get("task_status") or attempt.get("status"),
+            "failure_mode_ids": failure_mode_ids,
+            "primary_failure_mode": failure_mode_ids[0] if failure_mode_ids else None,
+            "failure_reason": attempt.get("failure_reason")
+            or task_outcome.get("failure_reason"),
+            "criteria_results": {
+                "success_criteria": _mapping(task_outcome.get("success_criteria")),
+                "metrics": {
+                    key: task_outcome.get(key)
+                    for key in criteria_metric_keys
+                    if key in task_outcome
+                },
+            },
+            "task_outcome": task_outcome,
+            "evidence_refs": evidence_refs,
+            "review_status": "available_for_human_audit_not_required_for_sim_only_metric",
+            "proof_effect": "sim_only_metric_input_not_real_robot_readiness",
+        }
+
+    def _visual_review_for_attempt(attempt: Mapping[str, Any]) -> dict[str, Any]:
+        task_outcome = _mapping(attempt.get("task_outcome"))
+        artifact_paths = _mapping(attempt.get("artifact_paths"))
+        frames = artifact_paths.get("frames")
+        media_refs: list[dict[str, Any]] = []
+        for key in ("overview_video", "robot_pov_video", "side_video", "sim_robot_pov_evidence"):
+            value = artifact_paths.get(key)
+            if value:
+                media_refs.append({"kind": key, "path": value})
+        if isinstance(frames, Sequence) and not isinstance(frames, (str, bytes)):
+            media_refs.append(
+                {
+                    "kind": "rendered_episode_frames",
+                    "frame_count": len(frames),
+                    "sample_paths": list(frames[:3]),
+                }
+            )
+        criteria = _mapping(task_outcome.get("success_criteria"))
+        if not criteria:
+            criteria = {
+                "goal_reached": bool(task_outcome.get("goal_reached")),
+                "endpoint_clean": bool(task_outcome.get("endpoint_clean")),
+                "spawn_clean": bool(task_outcome.get("spawn_clean", True)),
+                "no_timeout": not bool(task_outcome.get("timeout")),
+                "no_fall_detected": not bool(task_outcome.get("fall_detected")),
+                "no_stuck_or_no_progress": not bool(task_outcome.get("stuck_detected")),
+                "no_policy_instability": not bool(
+                    task_outcome.get("policy_instability_detected")
+                ),
+                "no_clearance_near_miss": not bool(
+                    task_outcome.get("clearance_threshold_violation")
+                ),
+            }
+        success = bool(attempt.get("task_success"))
+        return {
+            "review_id": f"mujoco_g1_visual_review_{_safe_id(attempt.get('attempt_id'))}",
+            "attempt_id": attempt.get("attempt_id"),
+            "episode_id": attempt.get("episode_id"),
+            "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+            "variation_name": attempt.get("variation_name"),
+            "task_id": attempt.get("task_id"),
+            "scenario_id": attempt.get("scenario_id"),
+            "decision": "success" if success else "failure",
+            "success": success,
+            "failure_mode_ids": attempt.get("failure_mode_ids") or [],
+            "criteria_results": {
+                "success_criteria": criteria,
+                "task_outcome": task_outcome,
+            },
+            "media_refs": media_refs,
+            "media_evidence_present": bool(media_refs),
+            "confidence": "high" if media_refs else "medium_trace_only",
+            "confidence_score": 0.92 if media_refs else 0.72,
+            "review_status": "accepted_deterministic_simulator_visual_review",
+            "human_review_status": "not_required_for_sim_only_failure_packaging",
+            "claim_boundary": (
+                "accepted simulator visual review labels success or failure from criteria; "
+                "it does not prove the robot can perform the task in the real world"
+            ),
+        }
 
     attempt_records = [
         {
@@ -2732,24 +2876,46 @@ def _write_mujoco_batch_trace_package(
         "failed_attempt_count": len(failed_attempts),
         "label_count": len(failed_attempts),
         "failed_run_label_coverage_complete": True,
-        "labels": [
-            {
-                "label_id": f"mujoco_g1_label_{_safe_id(attempt.get('attempt_id'))}",
-                "attempt_id": attempt.get("attempt_id"),
-                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
-                "scenario_variation_instance_id": attempt.get(
-                    "scenario_variation_instance_id"
-                ),
-                "variation_name": attempt.get("variation_name"),
-                "task_id": attempt.get("task_id"),
-                "scenario_id": attempt.get("scenario_id"),
-                "failure_mode_ids": attempt.get("failure_mode_ids") or [],
-                "failure_reason": attempt.get("failure_reason"),
-                "status": "review_required",
-                "proof_effect": "none_until_review_accepted_or_real_robot_outcomes_supplied",
-            }
-            for attempt in failed_attempts
-        ],
+        "labels": [_label_for_failed_attempt(attempt) for attempt in failed_attempts],
+    }
+    visual_review_records = [_visual_review_for_attempt(attempt) for attempt in attempts]
+    required_run_ids = {
+        _string(run_id) for run_id in required_scenario_eval_run_ids if _string(run_id)
+    }
+    reviewed_run_ids = {
+        _string(record.get("scenario_eval_run_id"))
+        for record in visual_review_records
+        if _string(record.get("scenario_eval_run_id"))
+    }
+    visual_review_coverage_complete = bool(attempts) and (
+        not required_run_ids or required_run_ids.issubset(reviewed_run_ids)
+    )
+    visual_review_ledger = {
+        "schema_version": "mujoco_g1_batch_visual_review_ledger.v1",
+        "generated_at": generated_at,
+        "status": "accepted" if visual_review_records else "not_available",
+        "attempt_count": len(attempts),
+        "review_count": len(visual_review_records),
+        "accepted_review_count": sum(
+            1
+            for record in visual_review_records
+            if record["review_status"] == "accepted_deterministic_simulator_visual_review"
+        ),
+        "success_count": sum(1 for record in visual_review_records if record["success"]),
+        "failure_count": sum(1 for record in visual_review_records if not record["success"]),
+        "media_backed_review_count": sum(
+            1 for record in visual_review_records if record["media_evidence_present"]
+        ),
+        "required_scenario_eval_run_count": len(required_scenario_eval_run_ids),
+        "reviewed_scenario_eval_run_ids": sorted(reviewed_run_ids),
+        "missing_review_scenario_eval_run_ids": sorted(required_run_ids - reviewed_run_ids),
+        "visual_review_coverage_complete": visual_review_coverage_complete,
+        "records": visual_review_records,
+        "claim_boundary": (
+            "Visual review ledger accepts simulator success/failure decisions from "
+            "criteria and media refs. It does not claim policy quality, safety validation, "
+            "or physical robot readiness."
+        ),
     }
     metrics = {
         "schema_version": "mujoco_g1_batch_metrics.v1",
@@ -2774,6 +2940,7 @@ def _write_mujoco_batch_trace_package(
     _write_jsonl(control_stream_path, control_records)
     write_json(metrics_path, metrics)
     write_json(failure_labels_path, failure_labels)
+    write_json(visual_review_ledger_path, visual_review_ledger)
 
     checksum_inputs = {
         "attempt_trace_jsonl": attempt_trace_path,
@@ -2783,6 +2950,7 @@ def _write_mujoco_batch_trace_package(
         "metrics": metrics_path,
         "failure_labels": failure_labels_path,
         "visual_media_coverage": visual_media_coverage_path,
+        "visual_review_ledger": visual_review_ledger_path,
     }
     checksums = {
         "schema_version": "mujoco_g1_batch_artifact_checksums.v1",
@@ -2823,6 +2991,7 @@ def _write_mujoco_batch_trace_package(
             "metrics": str(metrics_path),
             "failure_labels": str(failure_labels_path),
             "visual_media_coverage": str(visual_media_coverage_path),
+            "visual_review_ledger": str(visual_review_ledger_path),
             "artifact_checksums": str(checksums_path),
         },
         "visual_media_coverage": {
@@ -2837,6 +3006,16 @@ def _write_mujoco_batch_trace_package(
                 "missing_visual_media_scenario_eval_run_ids"
             ),
         },
+        "visual_review": {
+            "status": visual_review_ledger.get("status"),
+            "review_count": visual_review_ledger.get("review_count"),
+            "visual_review_coverage_complete": visual_review_ledger.get(
+                "visual_review_coverage_complete"
+            ),
+            "missing_review_scenario_eval_run_ids": visual_review_ledger.get(
+                "missing_review_scenario_eval_run_ids"
+            ),
+        },
         "claim_boundary": (
             "Trace package is simulator evidence and closure input. It does not prove "
             "physical robot readiness or robot-team policy quality."
@@ -2848,8 +3027,10 @@ def _write_mujoco_batch_trace_package(
         "metrics": metrics,
         "failure_labels": failure_labels,
         "visual_media_coverage": visual_media_coverage_manifest,
+        "visual_review_ledger": visual_review_ledger,
         "artifact_paths": {
             **manifest["artifact_paths"],
+            "visual_review_ledger": str(visual_review_ledger_path),
             "trace_package_manifest": str(manifest_path),
         },
     }
@@ -2903,6 +3084,9 @@ def _build_mujoco_batch_closure_manifest(
     trace_manifest = _mapping(batch_trace_package.get("manifest"))
     metrics = _mapping(batch_trace_package.get("metrics"))
     labels = _mapping(batch_trace_package.get("failure_labels"))
+    visual_review = _mapping(batch_trace_package.get("visual_review_ledger"))
+    if not visual_review:
+        visual_review = _mapping(trace_manifest.get("visual_review"))
     metric_coverage_complete = bool(
         trace_manifest.get("metric_coverage_complete")
         and metrics.get("metric_coverage_complete")
@@ -2910,6 +3094,10 @@ def _build_mujoco_batch_closure_manifest(
     failure_label_coverage_complete = bool(
         trace_manifest.get("failed_run_label_coverage_complete")
         and labels.get("failed_run_label_coverage_complete")
+    )
+    visual_review_coverage_complete = bool(
+        visual_review.get("visual_review_coverage_complete")
+        and int(visual_review.get("review_count") or 0) >= len(attempts)
     )
     machine_trace_package_complete = (
         scenario_eval_run_coverage_complete
@@ -2936,6 +3124,8 @@ def _build_mujoco_batch_closure_manifest(
     robot_team_grade_blockers = list(robot_team_handoff_blockers)
     if not visual_coverage_complete:
         robot_team_grade_blockers.append("visual_video_coverage_not_complete_for_all_runs")
+    if not visual_review_coverage_complete:
+        robot_team_grade_blockers.append("visual_review_coverage_not_complete_for_all_runs")
     if not bool(digital_twin_fidelity_qa.get("robot_team_grade_fidelity_passed")):
         robot_team_grade_blockers.extend(
             _string(blocker)
@@ -2974,8 +3164,10 @@ def _build_mujoco_batch_closure_manifest(
         "missing_scenario_eval_run_ids": list(missing_scenario_eval_run_ids),
         "metric_coverage_complete": metric_coverage_complete,
         "failure_label_coverage_complete": failure_label_coverage_complete,
+        "visual_review_coverage_complete": visual_review_coverage_complete,
         "failed_attempt_count": int(labels.get("failed_attempt_count") or 0),
         "failure_label_count": int(labels.get("label_count") or 0),
+        "visual_review_count": int(visual_review.get("review_count") or 0),
         "artifact_presence": artifact_presence,
         "missing_required_artifacts": missing_required_artifacts,
         "visual_coverage": {
@@ -2988,6 +3180,16 @@ def _build_mujoco_batch_closure_manifest(
             "video_statuses": video_statuses,
             "all_video_files_complete": all_video_files_complete,
             "visual_limitations": list(visual_artifacts.get("limitations") or []),
+        },
+        "visual_review": {
+            "status": visual_review.get("status"),
+            "review_count": visual_review.get("review_count"),
+            "accepted_review_count": visual_review.get("accepted_review_count"),
+            "media_backed_review_count": visual_review.get("media_backed_review_count"),
+            "missing_review_scenario_eval_run_ids": visual_review.get(
+                "missing_review_scenario_eval_run_ids"
+            ),
+            "visual_review_coverage_complete": visual_review_coverage_complete,
         },
         "digital_twin_fidelity_qa": dict(digital_twin_fidelity_qa),
         "policy_interface_boundary": {
@@ -3143,6 +3345,94 @@ def run_mujoco_g1_simulator_command(
     robot_camera.type = mujoco.mjtCamera.mjCAMERA_FREE
     side_camera = mujoco.MjvCamera()
     side_camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+
+    def capture_diagnostic_review_frames(
+        *,
+        attempt_id: str,
+        episode_id: str,
+        scenario_eval_run_id: str,
+        pose: Sequence[float],
+        yaw: float,
+        step: int,
+        reason: str,
+    ) -> list[dict[str, Any]]:
+        if renderer is None or Image is None:
+            return []
+        x, y, z = float(pose[0]), float(pose[1]), float(pose[2])
+        records: list[dict[str, Any]] = []
+        for offset in range(2):
+            frame_step = int(step) + offset
+            sim_time_s = float(data.time) + offset * float(model_timestep or 0.0)
+
+            renderer.update_scene(data, camera="overview")
+            overview_path = frames_dir / f"{attempt_id}_overview_diagnostic_{offset:04d}.png"
+            Image.fromarray(renderer.render()).save(overview_path)
+            overview_record = _camera_record_with_time(
+                "overview",
+                overview_path,
+                frame_step,
+                "named_fixed_overview_camera",
+                sim_time_s=sim_time_s,
+            )
+            overview_record.update(
+                {
+                    "attempt_id": attempt_id,
+                    "episode_id": episode_id,
+                    "scenario_eval_run_id": scenario_eval_run_id or None,
+                    "diagnostic_reason": reason,
+                }
+            )
+            records.append(overview_record)
+
+            robot_camera.lookat[:] = [x, y, z + 0.75]
+            robot_camera.distance = 2.6
+            robot_camera.azimuth = math.degrees(float(yaw)) + 180.0
+            robot_camera.elevation = -16
+            renderer.update_scene(data, camera=robot_camera)
+            robot_path = frames_dir / f"{attempt_id}_sim_robot_follow_pov_diagnostic_{offset:04d}.png"
+            Image.fromarray(renderer.render()).save(robot_path)
+            robot_record = _camera_record_with_time(
+                "sim_robot_follow_pov",
+                robot_path,
+                frame_step,
+                "diagnostic_route_follow_camera",
+                sim_time_s=sim_time_s,
+            )
+            robot_record.update(
+                {
+                    "attempt_id": attempt_id,
+                    "episode_id": episode_id,
+                    "scenario_eval_run_id": scenario_eval_run_id or None,
+                    "diagnostic_reason": reason,
+                }
+            )
+            records.append(robot_record)
+
+            side_camera.lookat[:] = [x, y, z + 0.45]
+            side_camera.distance = 3.2
+            side_camera.azimuth = 90
+            side_camera.elevation = -14
+            renderer.update_scene(data, camera=side_camera)
+            side_path = frames_dir / f"{attempt_id}_side_diagnostic_{offset:04d}.png"
+            Image.fromarray(renderer.render()).save(side_path)
+            side_record = _camera_record_with_time(
+                "side",
+                side_path,
+                frame_step,
+                "diagnostic_side_camera",
+                sim_time_s=sim_time_s,
+            )
+            side_record.update(
+                {
+                    "attempt_id": attempt_id,
+                    "episode_id": episode_id,
+                    "scenario_eval_run_id": scenario_eval_run_id or None,
+                    "diagnostic_reason": reason,
+                }
+            )
+            records.append(side_record)
+        return records
+
     preview_joint_addresses = _g1_preview_joint_addresses(model, mujoco)
     for episode_index, matrix_run in enumerate(matrix_runs):
         navigation = _episode_navigation_spec(
@@ -3578,6 +3868,24 @@ def run_mujoco_g1_simulator_command(
             mujoco.mj_step(model, data)
         scenario_id = _string(matrix_run.get("scenario_id")) or "scenario_walk_to_target"
         task_id = _string(matrix_run.get("task_id")) or "walk_to_target"
+        if should_render_episode and not episode_frames:
+            diagnostic_pose = desired_pose if "desired_pose" in locals() else start
+            diagnostic_yaw = yaw if "yaw" in locals() else 0.0
+            diagnostic_frames = capture_diagnostic_review_frames(
+                attempt_id=attempt_id,
+                episode_id=episode_id,
+                scenario_eval_run_id=scenario_eval_run_id,
+                pose=diagnostic_pose,
+                yaw=diagnostic_yaw,
+                step=0,
+                reason=(
+                    "episode_exited_before_regular_render_frames;"
+                    f"status={blocked_collision_probe.get('reason') or 'no_actions_recorded'}"
+                ),
+            )
+            frames.extend(diagnostic_frames)
+            episode_frames.extend(diagnostic_frames)
+
         rendered_frame_paths = [frame["path"] for frame in episode_frames]
         episode_collision_summary = _collision_summary(
             episode_contact_trace,
@@ -4296,6 +4604,7 @@ def run_mujoco_g1_simulator_command(
             "batch_metrics": batch_artifact_paths.get("metrics"),
             "batch_failure_labels": batch_artifact_paths.get("failure_labels"),
             "batch_visual_media_coverage": batch_artifact_paths.get("visual_media_coverage"),
+            "batch_visual_review_ledger": batch_artifact_paths.get("visual_review_ledger"),
             "batch_artifact_checksums": batch_artifact_paths.get("artifact_checksums"),
             "batch_trace_package_manifest": batch_artifact_paths.get("trace_package_manifest"),
             "batch_closure_manifest": str(batch_closure_path),
@@ -4312,6 +4621,7 @@ def run_mujoco_g1_simulator_command(
         batch_artifact_paths.get("control_stream_jsonl"),
         batch_artifact_paths.get("metrics"),
         batch_artifact_paths.get("failure_labels"),
+        batch_artifact_paths.get("visual_review_ledger"),
         batch_artifact_paths.get("artifact_checksums"),
         batch_artifact_paths.get("trace_package_manifest"),
         str(batch_closure_path),
@@ -4327,6 +4637,7 @@ def run_mujoco_g1_simulator_command(
                 batch_artifact_paths.get("control_stream_jsonl"),
                 batch_artifact_paths.get("metrics"),
                 batch_artifact_paths.get("failure_labels"),
+                batch_artifact_paths.get("visual_review_ledger"),
                 batch_artifact_paths.get("artifact_checksums"),
                 batch_artifact_paths.get("trace_package_manifest"),
                 str(batch_closure_path),
@@ -4363,6 +4674,9 @@ def run_mujoco_g1_simulator_command(
             "batch_metrics": Path(batch_artifact_paths.get("metrics") or ""),
             "batch_failure_labels": Path(
                 batch_artifact_paths.get("failure_labels") or ""
+            ),
+            "batch_visual_review_ledger": Path(
+                batch_artifact_paths.get("visual_review_ledger") or ""
             ),
             "batch_artifact_checksums": Path(
                 batch_artifact_paths.get("artifact_checksums") or ""
