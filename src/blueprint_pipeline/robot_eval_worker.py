@@ -1335,6 +1335,7 @@ def run_robot_eval_worker(
     job_id: str | None = None,
     provisioner: str | None = None,
     simulator: str | None = None,
+    evaluation_substrate: str | None = None,
     allow_gpu_provisioning: bool = False,
     allow_simulator_execution: bool = False,
     allowed_simulators: Sequence[str] = (),
@@ -1418,6 +1419,12 @@ def run_robot_eval_worker(
 
     selected_provisioner = provisioner or _string(payload.get("provisioner")) or "fixture_local"
     selected_simulator = simulator or _string(payload.get("simulator")) or "fixture"
+    selected_evaluation_substrate = (
+        evaluation_substrate
+        or _string(payload.get("evaluation_substrate") or payload.get("evaluationSubstrate"))
+        or _string(job_request.get("evaluation_substrate") or job_request.get("evaluationSubstrate"))
+        or None
+    )
     selected_robot = (
         _string(payload.get("robot"))
         or _string(payload.get("robot_model"))
@@ -1724,6 +1731,7 @@ def run_robot_eval_worker(
             job_id=selected_job_id,
             provisioner=selected_provisioner,
             simulator=selected_simulator,
+            evaluation_substrate=selected_evaluation_substrate,
             allow_gpu_provisioning=allow_gpu_provisioning,
             allow_simulator_execution=allow_simulator_execution,
             allowed_simulators=selected_allowed_simulators,
@@ -1871,6 +1879,7 @@ def run_robot_eval_worker(
         "capture_root_bundle": capture_root_bundle,
         "provisioner": selected_provisioner,
         "simulator": selected_simulator,
+        "evaluation_substrate": selected_evaluation_substrate,
         "robot": selected_robot,
         "job_status": job_status,
         "full_job_status": full_job_status,
@@ -2013,6 +2022,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--job-id")
     parser.add_argument("--provisioner", choices=PROVISIONERS)
     parser.add_argument("--simulator", choices=SIMULATORS)
+    parser.add_argument("--evaluation-substrate")
     parser.add_argument("--allow-gpu-provisioning", action="store_true")
     parser.add_argument("--allow-simulator-execution", action="store_true")
     parser.add_argument("--allowed-simulator", action="append", default=[])
@@ -2041,6 +2051,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         job_id=args.job_id,
         provisioner=args.provisioner,
         simulator=args.simulator,
+        evaluation_substrate=args.evaluation_substrate,
         allow_gpu_provisioning=args.allow_gpu_provisioning,
         allow_simulator_execution=args.allow_simulator_execution,
         allowed_simulators=args.allowed_simulator,

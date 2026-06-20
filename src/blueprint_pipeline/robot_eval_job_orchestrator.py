@@ -54,6 +54,8 @@ from .robot_eval_dataset import build_real_site_robot_eval_dataset
 from .scene_asset_preflight import build_scene_asset_preflight
 from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
+from .wam_eval_substrate import WAM_EVALUATION_SUBSTRATES, requested_evaluation_substrate
+from .wam_fixture_evaluator import run_wam_eval_job
 
 
 JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
@@ -4882,6 +4884,23 @@ def _write_robot_eval_report(
             "real_world_validation_followup_request_queue": (
                 "real_world_validation_followup_request_queue.json"
             ),
+            **(
+                {
+                    "evaluation_substrate_registry": "evaluation_substrate_registry.json",
+                    "wam_evaluation_request": "wam_evaluation_request.json",
+                    "wam_rollout_manifest": "wam_rollout_manifest.json",
+                    "wam_rollout_results": "wam_rollout_results.json",
+                    "vision_success_labels": "vision_success_labels.json",
+                    "policy_ranking_scorecard": "policy_ranking_scorecard.json",
+                    "wam_eval_claim_boundary": "wam_eval_claim_boundary.json",
+                    "real_world_validation_followup_request": (
+                        "real_world_validation_followup_request.json"
+                    ),
+                    "srcc_validation_plan": "srcc_validation_plan.json",
+                }
+                if (job_dir / "wam_rollout_manifest.json").is_file()
+                else {}
+            ),
             "live_eval_closure_manifest": "live_eval_closure_manifest.json",
             "proof_boundary": "proof_boundary.json",
         },
@@ -5127,6 +5146,15 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "simulator_command_batch_closure_manifest.json",
         "scenario_eval_matrix.json",
         "policy_package_manifest.json",
+        "evaluation_substrate_registry.json",
+        "wam_evaluation_request.json",
+        "wam_rollout_manifest.json",
+        "wam_rollout_results.json",
+        "vision_success_labels.json",
+        "policy_ranking_scorecard.json",
+        "wam_eval_claim_boundary.json",
+        "real_world_validation_followup_request.json",
+        "srcc_validation_plan.json",
         "robot_pov_observation_manifest.json",
         "robot_pov_observations.jsonl",
         "robot_pov_frame_sequence_manifest.json",
@@ -6273,6 +6301,7 @@ def build_robot_eval_job(
     agent_adapter: RobotEvalJobAgentAdapter | None = None,
     provisioner: str = "fixture_local",
     simulator: str = "fixture",
+    evaluation_substrate: str | None = None,
     allow_gpu_provisioning: bool = False,
     allow_simulator_execution: bool = False,
     allowed_simulators: Sequence[str] = (),
@@ -6579,6 +6608,34 @@ def build_robot_eval_job(
             simulator_blockers = []
             _write_job_json(job_dir, "simulator_service_result.json", sim_result)
 
+    selected_evaluation_substrate = requested_evaluation_substrate(
+        request,
+        explicit=evaluation_substrate,
+    )
+    wam_eval_result: Dict[str, Any] = {}
+    wam_eval_blockers: List[str] = []
+    if selected_evaluation_substrate in WAM_EVALUATION_SUBSTRATES:
+        wam_eval_result = run_wam_eval_job(
+            capture_root=context.capture_root,
+            job_dir=job_dir,
+            evaluation_substrate=selected_evaluation_substrate,
+            generated_at=generated_at,
+        )
+        for artifact_key in (
+            "normalized_attempt_trace",
+            "failure_labels",
+            "prediction_outcome_ledger",
+            "calibration_report",
+            "breakage_library",
+        ):
+            artifact_payload = _mapping(wam_eval_result.get(artifact_key))
+            if artifact_payload:
+                copied_artifacts[artifact_key] = artifact_payload
+        if wam_eval_result.get("status") != "completed":
+            wam_eval_blockers = _string_list(wam_eval_result.get("blockers")) or [
+                "wam_evaluation_blocked"
+            ]
+
     gpu_cost_ledger = _gpu_cost_control_ledger(
         request=request,
         scheduler_decision=scheduler_decision,
@@ -6644,6 +6701,28 @@ def build_robot_eval_job(
         copied_artifacts=copied_artifacts,
         generated_at=generated_at,
     )
+    if wam_eval_result:
+        eval_result = {
+            **dict(eval_result),
+            "evaluation_substrate": selected_evaluation_substrate,
+            "wam_evaluation_status": wam_eval_result.get("status"),
+            "wam_rollout_manifest_path": "wam_rollout_manifest.json",
+            "wam_rollout_results_path": "wam_rollout_results.json",
+            "vision_success_labels_path": "vision_success_labels.json",
+            "policy_ranking_scorecard_path": "policy_ranking_scorecard.json",
+            "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
+            "real_world_validation_followup_request_path": (
+                "real_world_validation_followup_request.json"
+            ),
+            "srcc_validation_plan_path": "srcc_validation_plan.json",
+            "claim_boundary": {
+                **_mapping(eval_result.get("claim_boundary")),
+                "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
+                "generated_wam_rollouts_are_model_derived_support_artifacts": True,
+                "customer_specific_srcc_claimed": False,
+                "passing_wam_eval_is_not_deployment_approval": True,
+            },
+        }
     _write_job_json(job_dir, "evaluation_result.json", eval_result)
     prediction_ledger = _mapping(copied_artifacts.get("prediction_outcome_ledger"))
     if not prediction_ledger:
@@ -6691,6 +6770,22 @@ def build_robot_eval_job(
         deployment_outcome_ledger=_mapping(deployment_validation.get("ledger")),
         generated_at=generated_at,
     )
+    if wam_eval_result:
+        proof_boundary = {
+            **dict(proof_boundary),
+            "evaluation_substrate": selected_evaluation_substrate,
+            "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
+            "generated_wam_rollouts_are_model_derived_support_artifacts": True,
+            "customer_specific_srcc_claimed": False,
+            "passing_wam_eval_is_not_deployment_approval": True,
+            "claim_boundary": {
+                **_mapping(proof_boundary.get("claim_boundary")),
+                "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
+                "generated_wam_rollouts_are_model_derived_support_artifacts": True,
+                "customer_specific_srcc_claimed": False,
+                "passing_wam_eval_is_not_deployment_approval": True,
+            },
+        }
     _write_job_json(job_dir, "proof_boundary.json", proof_boundary)
     blockers: List[str] = []
     missing_inputs: List[str] = []
@@ -6708,6 +6803,8 @@ def build_robot_eval_job(
         "gpu_cost_control_ledger_blockers": _string_list(gpu_cost_ledger.get("blockers")),
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
+        "evaluation_substrate": selected_evaluation_substrate or None,
+        "wam_evaluation_status": wam_eval_result.get("status") if wam_eval_result else None,
         "robot_pov_status": robot_pov_manifest.get("status"),
         "robot_pov_evidence_proven": bool(robot_pov_manifest.get("robot_pov_evidence_proven")),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
@@ -6740,6 +6837,10 @@ def build_robot_eval_job(
     if simulator_blockers and validation.get("status") != "blocked":
         blockers.extend(simulator_blockers)
         evidence["simulator_blockers"] = _string_list(sim_result.get("blockers"))
+    if wam_eval_blockers and validation.get("status") != "blocked":
+        blockers.append("wam_evaluation_blocked")
+        missing_inputs.extend(wam_eval_blockers)
+        evidence["wam_evaluation_blockers"] = wam_eval_blockers
     if scenario_eval_matrix.get("status") != "completed":
         blockers.append("scenario_eval_matrix_blocked")
         missing_inputs.extend(_string_list(scenario_eval_matrix.get("blockers")))
@@ -6959,6 +7060,11 @@ def build_robot_eval_job(
         "operation": _string(request.get("operation") or "evaluate_only"),
         "provisioner": provisioner,
         "simulator": simulator,
+        "evaluation_substrate": selected_evaluation_substrate or None,
+        "wam_evaluation_status": wam_eval_result.get("status") if wam_eval_result else None,
+        "policy_ranking_scorecard_path": (
+            "policy_ranking_scorecard.json" if wam_eval_result else None
+        ),
         "agent_orchestration_status": agent_plan.get("status"),
         "agent_operator_mode": agent_plan.get("operator_mode"),
         "agent_operator_ledger": "agent_orchestration_plan.json",
@@ -7197,6 +7303,15 @@ def build_robot_eval_job(
             ),
             "training_result": training_res,
             "evaluation_result": eval_result,
+            "wam_eval_result": {
+                "status": wam_eval_result.get("status"),
+                "evaluation_substrate": wam_eval_result.get("evaluation_substrate"),
+                "policy_ranking_scorecard": _mapping(
+                    wam_eval_result.get("policy_ranking_scorecard")
+                ),
+            }
+            if wam_eval_result
+            else {},
             "live_closure": live_closure,
             "execution_fingerprint": fingerprint_execution_artifacts(
                 robot_pov_manifest,
@@ -7322,6 +7437,7 @@ def run_robot_eval_job_request_inbox(
     agent_adapter: RobotEvalJobAgentAdapter | None = None,
     provisioner: str = "fixture_local",
     simulator: str = "fixture",
+    evaluation_substrate: str | None = None,
     allow_gpu_provisioning: bool = False,
     allow_simulator_execution: bool = False,
     allowed_simulators: Sequence[str] = (),
@@ -7407,6 +7523,7 @@ def run_robot_eval_job_request_inbox(
             agent_adapter=agent_adapter,
             provisioner=provisioner,
             simulator=simulator,
+            evaluation_substrate=evaluation_substrate,
             allow_gpu_provisioning=allow_gpu_provisioning,
             allow_simulator_execution=allow_simulator_execution,
             allowed_simulators=allowed_simulators,
@@ -7535,6 +7652,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--provisioner", choices=PROVISIONERS, default="fixture_local")
     parser.add_argument("--simulator", choices=SIMULATORS, default="fixture")
     parser.add_argument(
+        "--evaluation-substrate",
+        default=None,
+        help=(
+            "Optional evaluation substrate such as fixture_wam, cosmos3_wam, "
+            "oscar_wam, classical_sim_mujoco, classical_sim_isaac, or recorded_trace. "
+            "Legacy simulator aliases are accepted."
+        ),
+    )
+    parser.add_argument(
         "--allow-gpu-provisioning",
         action="store_true",
         help="Permit gated non-fixture provisioning only with matching environment approval",
@@ -7637,6 +7763,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 ),
                 provisioner=args.provisioner,
                 simulator=args.simulator,
+                evaluation_substrate=args.evaluation_substrate,
                 allow_gpu_provisioning=args.allow_gpu_provisioning,
                 allow_simulator_execution=args.allow_simulator_execution,
                 allowed_simulators=args.allow_simulator,
@@ -7685,6 +7812,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             ),
             provisioner=args.provisioner,
             simulator=args.simulator,
+            evaluation_substrate=args.evaluation_substrate,
             allow_gpu_provisioning=args.allow_gpu_provisioning,
             allow_simulator_execution=args.allow_simulator_execution,
             allowed_simulators=args.allow_simulator,

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .wam_eval_substrate import WAM_EVALUATION_SUBSTRATES, normalize_evaluation_substrate
 
 
 POLICY_AUTORESEARCH_REPORT_SCHEMA_VERSION = "policy_autoresearch_report.v1"
@@ -62,10 +63,15 @@ FORBIDDEN_RECIPE_KEYS = {
 }
 
 CLAIM_BOUNDARY: dict[str, Any] = {
-    "artifact_purpose": "sim_only_policy_autoresearch_support",
+    "artifact_purpose": "policy_autoresearch_support",
+    "evaluation_substrate_agnostic": True,
     "policy_recipe_mutation_only": True,
     "verifier_and_reward_frozen_before_mutation": True,
     "scenario_eval_matrix_is_immutable_eval_contract": True,
+    "generated_wam_rollouts_are_model_derived_support_artifacts": True,
+    "customer_specific_srcc_claimed": False,
+    "customer_specific_srcc_requires_real_world_validation_rollouts": True,
+    "passing_wam_heldout_eval_is_not_deployment_approval": True,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "real_world_outcome_proven": False,
@@ -137,6 +143,29 @@ def _engine_key(value: Any) -> str:
     return _safe_id(value, fallback="engine")
 
 
+def _evaluation_substrate_for_engine(value: Any) -> str:
+    text = _string(value)
+    if not text:
+        return ""
+    try:
+        return normalize_evaluation_substrate(text, simulator_engine=text, default=text)
+    except ValueError:
+        return _engine_key(text)
+
+
+def _wam_substrate_requested(values: Sequence[str]) -> bool:
+    return any(_evaluation_substrate_for_engine(value) in WAM_EVALUATION_SUBSTRATES for value in values)
+
+
+def _requested_evaluation_substrate_cycle(values: Sequence[str] | None) -> list[str]:
+    substrates: list[str] = []
+    for value in values or ():
+        text = _string(value)
+        if text:
+            substrates.append(normalize_evaluation_substrate(text))
+    return substrates
+
+
 def _parse_engine_evaluator_commands(values: Sequence[str] | None) -> dict[str, str]:
     commands: dict[str, str] = {}
     for value in values or []:
@@ -184,6 +213,7 @@ def _payload_simulator_engines(payload: Any) -> list[str]:
     if isinstance(payload, Mapping):
         add(payload.get("simulator_engine") or payload.get("simulatorEngine"))
         add(payload.get("simulator_backend") or payload.get("simulatorBackend"))
+        add(payload.get("evaluation_substrate") or payload.get("evaluationSubstrate"))
         raw_attempts = payload.get("attempts") or payload.get("results") or payload.get("episodes")
     else:
         raw_attempts = payload
@@ -193,11 +223,14 @@ def _payload_simulator_engines(payload: Any) -> list[str]:
                 continue
             add(raw.get("simulator_engine") or raw.get("simulatorEngine"))
             add(raw.get("simulator_backend") or raw.get("simulatorBackend"))
+            add(raw.get("evaluation_substrate") or raw.get("evaluationSubstrate"))
             metrics = _mapping(raw.get("metrics"))
             add(metrics.get("simulator_engine") or metrics.get("simulatorEngine"))
+            add(metrics.get("evaluation_substrate") or metrics.get("evaluationSubstrate"))
             boundary = _mapping(raw.get("claim_boundary") or raw.get("claimBoundary"))
             add(boundary.get("simulator_engine") or boundary.get("simulatorEngine"))
             add(boundary.get("simulator_backend") or boundary.get("simulatorBackend"))
+            add(boundary.get("evaluation_substrate") or boundary.get("evaluationSubstrate"))
     return sorted(engines)
 
 
@@ -547,6 +580,7 @@ def _eval_result_from_attempts(
     evaluator_command_used: bool,
     evaluator_detail: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    evaluation_substrate = _evaluation_substrate_for_engine(engine)
     normalized_attempts = [dict(attempt) for attempt in attempts]
     success_count = sum(1 for attempt in normalized_attempts if bool(attempt.get("task_success") or attempt.get("success")))
     safety_event_count = sum(
@@ -574,6 +608,7 @@ def _eval_result_from_attempts(
         "status": "completed" if normalized_attempts else "blocked_missing_eval_runs",
         "phase": phase,
         "simulator_engine": engine,
+        "evaluation_substrate": evaluation_substrate,
         "recipe_id": _string(recipe.get("candidate_id") or recipe.get("policy_id")),
         "policy_id": _string(recipe.get("policy_id")),
         "frozen_verifier_sha256": verifier_sha256,
@@ -606,7 +641,14 @@ def _eval_result_from_attempts(
             }
         ),
         "attempts": normalized_attempts,
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "evaluation_substrate": evaluation_substrate,
+            "wam_evaluation_substrate": evaluation_substrate in WAM_EVALUATION_SUBSTRATES,
+            "simulator_execution_proven": _eval_has_simulator_execution(
+                {"attempts": normalized_attempts}
+            ),
+        },
     }
 
 
@@ -626,12 +668,16 @@ def _normalize_external_attempts(
     if not isinstance(raw_attempts, list):
         raw_attempts = []
     payload_engine = ""
+    payload_substrate = ""
     if isinstance(payload, Mapping):
         payload_engine = _string(
             payload.get("simulator_engine")
             or payload.get("simulatorEngine")
             or payload.get("simulator_backend")
             or payload.get("simulatorBackend")
+        )
+        payload_substrate = _string(
+            payload.get("evaluation_substrate") or payload.get("evaluationSubstrate")
         )
     run_by_id = {_string(run.get("scenario_eval_run_id")): dict(run) for run in runs}
     normalized: list[dict[str, Any]] = []
@@ -668,6 +714,12 @@ def _normalize_external_attempts(
                     or payload_engine
                 )
                 or engine,
+                "evaluation_substrate": _string(
+                    raw.get("evaluation_substrate")
+                    or raw.get("evaluationSubstrate")
+                    or payload_substrate
+                )
+                or _evaluation_substrate_for_engine(engine),
                 "status": _string(raw.get("status")) or ("completed" if success else "failed"),
                 "success": success,
                 "task_success": success,
@@ -713,6 +765,7 @@ def _evaluate_recipe_with_command(
     source_attempt_trace_path: Path | None = None,
 ) -> dict[str, Any]:
     recipe_id = _safe_id(recipe.get("candidate_id") or recipe.get("policy_id"))
+    evaluation_substrate = _evaluation_substrate_for_engine(engine)
     run_dir = eval_root_dir / f"{phase}_{recipe_id}_{_safe_id(engine)}"
     ensure_dir(run_dir)
     recipe_path = run_dir / "policy_recipe.json"
@@ -725,6 +778,7 @@ def _evaluate_recipe_with_command(
             "schema_version": "policy_autoresearch_split_matrix.v1",
             "phase": phase,
             "simulator_engine": engine,
+            "evaluation_substrate": evaluation_substrate,
             "runs": [dict(run) for run in runs],
         },
     )
@@ -735,6 +789,7 @@ def _evaluate_recipe_with_command(
         "BLUEPRINT_POLICY_AUTORESEARCH_OUTPUT": str(output_path),
         "BLUEPRINT_POLICY_AUTORESEARCH_PHASE": phase,
         "BLUEPRINT_POLICY_AUTORESEARCH_SIMULATOR_ENGINE": engine,
+        "BLUEPRINT_POLICY_AUTORESEARCH_EVALUATION_SUBSTRATE": evaluation_substrate,
         "BLUEPRINT_POLICY_AUTORESEARCH_VERIFIER_SHA256": verifier_sha256,
     }
     if source_capture_root is not None:
@@ -765,6 +820,7 @@ def _evaluate_recipe_with_command(
         "input_matrix_path": str(matrix_path),
         "output_path": str(output_path),
         "duration_seconds": evaluator_duration_seconds,
+        "evaluation_substrate": evaluation_substrate,
         "source_capture_root": str(source_capture_root) if source_capture_root else None,
         "source_job_dir": str(source_job_dir) if source_job_dir else None,
         "source_matrix_path": str(source_matrix_path) if source_matrix_path else None,
@@ -961,6 +1017,7 @@ def _mutate_recipe(
     candidate["mutation_iteration"] = iteration
     candidate["mutation_agent_id"] = f"agent_{branch_index + 1:02d}"
     candidate["simulator_engine"] = engine
+    candidate["evaluation_substrate"] = _evaluation_substrate_for_engine(engine)
     candidate = _recipe_with_capabilities(candidate)
     idea = {
         "idea_id": candidate["candidate_id"],
@@ -968,6 +1025,7 @@ def _mutate_recipe(
         "iteration": iteration,
         "agent_id": candidate["mutation_agent_id"],
         "simulator_engine": engine,
+        "evaluation_substrate": _evaluation_substrate_for_engine(engine),
         "hypothesis": (
             "Add policy capabilities observed in failed train attempts while leaving "
             "the frozen verifier and scenario matrix unchanged."
@@ -1183,6 +1241,7 @@ def run_policy_autoresearch(
     target_success_rate: float = DEFAULT_TARGET_SUCCESS_RATE,
     heldout_ratio: float = DEFAULT_HELDOUT_RATIO,
     simulator_engines: Sequence[str] = DEFAULT_SIMULATOR_ENGINES,
+    evaluation_substrates: Sequence[str] | None = None,
     evaluator_command: str | None = None,
     evaluator_commands_by_engine: Mapping[str, str] | None = None,
     evaluator_timeout_seconds: int = 120,
@@ -1194,7 +1253,7 @@ def run_policy_autoresearch(
     parallel_branch_limit: int = DEFAULT_PARALLEL_BRANCH_LIMIT,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    """Run bounded sim-only policy autoresearch for one robot-eval job."""
+    """Run bounded policy autoresearch for one robot-eval job."""
 
     generated = generated_at or utc_now_iso()
     started_monotonic = time.monotonic()
@@ -1274,6 +1333,15 @@ def run_policy_autoresearch(
         )
 
     try:
+        requested_substrate_cycle = _requested_evaluation_substrate_cycle(evaluation_substrates)
+    except ValueError as exc:
+        return _blocked_artifacts(
+            output_dir=resolved_output_dir,
+            generated_at=generated,
+            blockers=[f"unsupported_evaluation_substrate:{exc}"],
+        )
+
+    try:
         runs = _load_matrix_runs(matrix_path)
     except Exception as exc:
         return _blocked_artifacts(
@@ -1316,7 +1384,15 @@ def run_policy_autoresearch(
         )
 
     seed_recipe = _recipe_with_capabilities(seed_recipe_raw)
-    engine_cycle = list(simulator_engines or DEFAULT_SIMULATOR_ENGINES)
+    engine_cycle = (
+        requested_substrate_cycle
+        if evaluation_substrates is not None
+        else list(simulator_engines or DEFAULT_SIMULATOR_ENGINES)
+    )
+    if not engine_cycle:
+        engine_cycle = list(DEFAULT_SIMULATOR_ENGINES)
+    evaluation_substrate_cycle = [_evaluation_substrate_for_engine(engine) for engine in engine_cycle]
+    wam_substrate_requested = _wam_substrate_requested(evaluation_substrate_cycle)
     engine = engine_cycle[0]
     baseline_evaluator_command = _evaluator_command_for_engine(
         engine=engine,
@@ -1380,6 +1456,7 @@ def run_policy_autoresearch(
             "iteration": 0,
             "agent_id": "seed",
             "simulator_engine": engine,
+            "evaluation_substrate": evaluation_substrate_cycle[0],
             "hypothesis": "Seed policy recipe supplied by the job owner.",
             "train_success_rate": baseline_train["task_success_rate"],
             "heldout_success_rate": baseline_heldout["task_success_rate"],
@@ -1490,6 +1567,7 @@ def run_policy_autoresearch(
                     "candidate_id": candidate_recipe.get("candidate_id"),
                     "agent_id": candidate_recipe.get("mutation_agent_id"),
                     "simulator_engine": candidate_engine,
+                    "evaluation_substrate": _evaluation_substrate_for_engine(candidate_engine),
                     "estimated_tokens": estimated_tokens,
                 }
             )
@@ -1600,6 +1678,9 @@ def run_policy_autoresearch(
                             "candidate_id": candidate_recipe.get("candidate_id"),
                             "agent_id": candidate_recipe.get("mutation_agent_id"),
                             "simulator_engine": candidate_engine,
+                            "evaluation_substrate": _evaluation_substrate_for_engine(
+                                candidate_engine
+                            ),
                             "train_success_rate": candidate_train["task_success_rate"],
                             "heldout_success_rate": candidate_heldout["task_success_rate"],
                             "train_status": candidate_train.get("status"),
@@ -1693,7 +1774,13 @@ def run_policy_autoresearch(
         "nodes": idea_nodes,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
-    package_status = "promoted_sim_only_policy_candidate" if promoted else "not_promoted"
+    package_status = (
+        "promoted_wam_policy_candidate"
+        if promoted and wam_substrate_requested
+        else "promoted_sim_only_policy_candidate"
+        if promoted
+        else "not_promoted"
+    )
     policy_candidate_package = {
         "schema_version": POLICY_AUTORESEARCH_CANDIDATE_PACKAGE_SCHEMA_VERSION,
         "generated_at": generated,
@@ -1708,13 +1795,26 @@ def run_policy_autoresearch(
         "heldout_success_rate": best_heldout["task_success_rate"],
         "safety_contact_gate_passed": bool(best_heldout.get("safety_contact_gate_passed")),
         "blockers": blockers,
-        "sim_only_policy_improvement_support_artifact": True,
+        "sim_only_policy_improvement_support_artifact": not wam_substrate_requested,
+        "wam_policy_improvement_support_artifact": wam_substrate_requested,
         "simulator_execution_proven": simulator_execution_proven,
         "requested_simulator_engines": engine_cycle,
         "proven_simulator_engines": proven_simulator_engines,
+        "evaluation_substrates": evaluation_substrate_cycle,
+        "requested_evaluation_substrates": evaluation_substrate_cycle,
+        "wam_evaluation_substrate_requested": wam_substrate_requested,
+        "generated_wam_rollouts_are_model_derived_support_artifacts": (
+            wam_substrate_requested
+        ),
+        "customer_specific_srcc_claimed": False,
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "evaluation_substrates": evaluation_substrate_cycle,
+            "wam_evaluation_substrate_requested": wam_substrate_requested,
+            "simulator_execution_proven": simulator_execution_proven,
+        },
     }
     followup_request = {
         "schema_version": POLICY_AUTORESEARCH_FOLLOWUP_REQUEST_SCHEMA_VERSION,
@@ -1727,6 +1827,7 @@ def run_policy_autoresearch(
             "real_robot_pov_manifest_with_exact_scenario_eval_run_ids",
             "deployment_outcome_records_with_owner_evidence_or_operator_attestation",
             "safety_contact_physics_evidence_for_every_promoted_scenario_eval_run",
+            "paired_real_world_rollouts_for_customer_specific_srcc_claims",
         ],
         "requested_real_world_validation_run_ids": best_heldout.get(
             "covered_scenario_eval_run_ids", []
@@ -1734,7 +1835,11 @@ def run_policy_autoresearch(
         if promoted
         else [],
         "blockers": [] if promoted else blockers,
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "evaluation_substrates": evaluation_substrate_cycle,
+            "wam_evaluation_substrate_requested": wam_substrate_requested,
+        },
     }
     status = "promoted" if promoted else "completed_no_promotion"
     report = {
@@ -1760,6 +1865,13 @@ def run_policy_autoresearch(
         "simulator_engines": engine_cycle,
         "requested_simulator_engines": engine_cycle,
         "proven_simulator_engines": proven_simulator_engines,
+        "evaluation_substrates": evaluation_substrate_cycle,
+        "requested_evaluation_substrates": evaluation_substrate_cycle,
+        "wam_evaluation_substrate_requested": wam_substrate_requested,
+        "generated_wam_rollouts_are_model_derived_support_artifacts": (
+            wam_substrate_requested
+        ),
+        "customer_specific_srcc_claimed": False,
         "evaluator_command_used": bool(evaluator_command or evaluator_commands_by_engine),
         "evaluator_commands_by_engine": sorted(
             _engine_key(engine) for engine in (evaluator_commands_by_engine or {})
@@ -1778,7 +1890,12 @@ def run_policy_autoresearch(
         },
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "evaluation_substrates": evaluation_substrate_cycle,
+            "wam_evaluation_substrate_requested": wam_substrate_requested,
+            "simulator_execution_proven": simulator_execution_proven,
+        },
     }
 
     write_json(resolved_output_dir / "baseline_train_eval_result.json", baseline_train)
@@ -1875,6 +1992,16 @@ def main(argv: list[str] | None = None) -> int:
         dest="simulator_engines",
         help="Simulator branch label to use for candidate evaluation. May be repeated.",
     )
+    parser.add_argument(
+        "--evaluation-substrate",
+        action="append",
+        dest="evaluation_substrates",
+        help=(
+            "Evaluation substrate branch label such as fixture_wam, cosmos3_wam, "
+            "oscar_wam, classical_sim_mujoco, classical_sim_isaac, or recorded_trace. "
+            "May be repeated. When provided, it takes precedence over --simulator-engine."
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         evaluator_commands_by_engine = _parse_engine_evaluator_commands(
@@ -1895,6 +2022,9 @@ def main(argv: list[str] | None = None) -> int:
         target_success_rate=args.target_success_rate,
         heldout_ratio=args.heldout_ratio,
         simulator_engines=tuple(args.simulator_engines or DEFAULT_SIMULATOR_ENGINES),
+        evaluation_substrates=tuple(args.evaluation_substrates)
+        if args.evaluation_substrates
+        else None,
         evaluator_command=args.evaluator_command,
         evaluator_commands_by_engine=evaluator_commands_by_engine,
         evaluator_timeout_seconds=args.evaluator_timeout_seconds,

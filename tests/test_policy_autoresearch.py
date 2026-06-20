@@ -388,6 +388,136 @@ json.dump({"attempts": attempts}, open(output, "w"))
     assert result["heldout_eval_result"]["task_success_summary"]["task_success_rate"] == 1.0
 
 
+def test_policy_autoresearch_can_call_wam_evaluator_command(tmp_path: Path) -> None:
+    capture_root, job_dir = _job_dir(tmp_path)
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "runs": [
+                {
+                    "scenario_eval_run_id": "run_train_clearance",
+                    "task_id": "tote_transfer",
+                    "scenario_id": "blocked_path",
+                    "variation_name": "blocked_path",
+                    "split": "train",
+                    "required_policy_capabilities": ["clearance_aware_navigation"],
+                },
+                {
+                    "scenario_eval_run_id": "run_heldout_clearance",
+                    "task_id": "tote_transfer",
+                    "scenario_id": "heldout_blocked_path",
+                    "variation_name": "heldout_blocked_path",
+                    "split": "heldout",
+                    "required_policy_capabilities": ["clearance_aware_navigation"],
+                },
+            ],
+        },
+    )
+    evaluator = tmp_path / "fake_wam_evaluator.py"
+    evaluator.write_text(
+        """
+import json
+import os
+
+matrix = json.loads(open(os.environ["BLUEPRINT_POLICY_AUTORESEARCH_MATRIX"]).read())
+recipe = json.loads(open(os.environ["BLUEPRINT_POLICY_AUTORESEARCH_RECIPE"]).read())
+output = os.environ["BLUEPRINT_POLICY_AUTORESEARCH_OUTPUT"]
+substrate = os.environ["BLUEPRINT_POLICY_AUTORESEARCH_EVALUATION_SUBSTRATE"]
+assert substrate == "fixture_wam"
+assert matrix["evaluation_substrate"] == "fixture_wam"
+params = recipe.get("mutable_parameters", {})
+success = params.get("planner") == "clearance_aware"
+attempts = []
+for run in matrix["runs"]:
+    attempts.append({
+        "scenario_eval_run_id": run["scenario_eval_run_id"],
+        "scenario_variation_instance_id": run.get("scenario_variation_instance_id"),
+        "task_id": run.get("task_id"),
+        "scenario_id": run.get("scenario_id"),
+        "variation_name": run.get("variation_name"),
+        "policy_id": recipe.get("policy_id"),
+        "evaluation_substrate": substrate,
+        "success": success,
+        "task_success": success,
+        "metrics": {
+            "safety_event_count": 0,
+            "contact_event_count": 0 if success else 1,
+            "world_model_uncertainty": 0.14,
+        },
+        "failure_mode_ids": [] if success else ["failure_clearance_near_miss"],
+        "claim_boundary": {
+            "evaluation_substrate": substrate,
+            "generated_wam_rollout": True,
+            "simulator_execution_performed": False,
+            "robot_readiness_proven": False
+        }
+    })
+json.dump({"evaluation_substrate": substrate, "attempts": attempts}, open(output, "w"))
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = run_policy_autoresearch(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        policy_recipe_path=_seed_recipe(tmp_path),
+        max_iterations=1,
+        agent_count=1,
+        target_success_rate=1.0,
+        evaluation_substrates=("fixture_wam",),
+        evaluator_command=f"{sys.executable} {evaluator}",
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+
+    assert result["report"]["status"] == "promoted"
+    assert result["report"]["requested_evaluation_substrates"] == ["fixture_wam"]
+    assert result["report"]["wam_evaluation_substrate_requested"] is True
+    assert result["report"]["simulator_execution_proven"] is False
+    assert result["heldout_eval_result"]["evaluation_substrate"] == "fixture_wam"
+    assert result["heldout_eval_result"]["attempts"][0]["evaluation_substrate"] == "fixture_wam"
+    assert result["policy_candidate_package"]["status"] == "promoted_wam_policy_candidate"
+    assert result["policy_candidate_package"]["sim_only_policy_improvement_support_artifact"] is False
+    assert result["policy_candidate_package"]["wam_policy_improvement_support_artifact"] is True
+    assert result["policy_candidate_package"]["customer_specific_srcc_claimed"] is False
+
+
+def test_policy_autoresearch_blocks_unsupported_evaluation_substrate(
+    tmp_path: Path,
+) -> None:
+    capture_root, job_dir = _job_dir(tmp_path)
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "runs": [
+                {
+                    "scenario_eval_run_id": "run_train_clearance",
+                    "task_id": "navigate_to_target",
+                    "scenario_id": "blocked_path",
+                    "split": "train",
+                    "required_policy_capabilities": ["clearance_aware_navigation"],
+                }
+            ],
+        },
+    )
+
+    result = run_policy_autoresearch(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        policy_recipe_path=_seed_recipe(tmp_path),
+        evaluation_substrates=("hardwired_private_model",),
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+
+    assert result["report"]["status"] == "blocked"
+    assert result["report"]["blockers"] == [
+        "unsupported_evaluation_substrate:Unsupported evaluation substrate: "
+        "hardwired_private_model"
+    ]
+    assert result["policy_candidate_package"]["status"] == "blocked"
+
+
 def test_policy_autoresearch_rejects_external_evaluator_engine_mismatch(
     tmp_path: Path,
 ) -> None:

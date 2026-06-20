@@ -158,6 +158,24 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/simulator_service_result.json`
 - `robot_eval_jobs/<job_id>/scenario_eval_matrix.json`
 - `robot_eval_jobs/<job_id>/policy_package_manifest.json`
+- `robot_eval_jobs/<job_id>/evaluation_substrate_registry.json` when WAM/substrate
+  evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_evaluation_request.json` when WAM/substrate
+  evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_rollout_manifest.json` when WAM/substrate
+  evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_rollout_results.json` when WAM/substrate
+  evaluation is requested
+- `robot_eval_jobs/<job_id>/vision_success_labels.json` when WAM/substrate
+  evaluation is requested
+- `robot_eval_jobs/<job_id>/policy_ranking_scorecard.json` when WAM/substrate
+  evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_eval_claim_boundary.json` when WAM/substrate
+  evaluation is requested
+- `robot_eval_jobs/<job_id>/real_world_validation_followup_request.json` when
+  WAM/substrate evaluation is requested
+- `robot_eval_jobs/<job_id>/srcc_validation_plan.json` when WAM/substrate
+  evaluation is requested
 - `robot_eval_jobs/<job_id>/robot_pov_observation_manifest.json`
 - `robot_eval_jobs/<job_id>/robot_pov_observations.jsonl`
 - `robot_eval_jobs/<job_id>/robot_pov_frame_sequence_manifest.json`
@@ -783,6 +801,34 @@ blueprint-run-robot-eval-job \
   --agent-mode fake \
   --provisioner fixture_local \
   --simulator fixture
+```
+
+Fixture WAM/substrate evaluation can be requested on the same job path:
+
+```bash
+blueprint-run-robot-eval-job \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --job-request /path/to/robot-eval-job-request.json \
+  --job-id <job_id> \
+  --provisioner fixture_local \
+  --simulator fixture \
+  --evaluation-substrate fixture_wam
+```
+
+That writes local WAM rollout, fixture vision-label, normalized attempt,
+failure-label, policy-ranking scorecard, claim-boundary, and real-world
+validation follow-up artifacts. It performs no live provider calls and does not
+prove physical robot readiness, deployment approval, safety approval, public
+readiness, or customer-specific SRCC.
+
+The fixture WAM evaluator can also be run directly against an existing job
+directory:
+
+```bash
+blueprint-run-wam-fixture-evaluator \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
+  --evaluation-substrate fixture_wam
 ```
 
 To consume WebApp-exported request JSON files, point the same entrypoint at an

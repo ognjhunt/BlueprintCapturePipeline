@@ -195,6 +195,57 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
     assert "deployment approval" in brief
 
 
+def test_policy_improvement_run_offer_accepts_promoted_wam_candidate(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    job_dir = _complete_job_dir(capture_root)
+    autoresearch = job_dir / "policy_autoresearch"
+    package = _read_json(autoresearch / "policy_candidate_package.json")
+    package["status"] = "promoted_wam_policy_candidate"
+    package["sim_only_policy_improvement_support_artifact"] = False
+    package["wam_policy_improvement_support_artifact"] = True
+    package["simulator_execution_proven"] = False
+    _write_json(autoresearch / "policy_candidate_package.json", package)
+    _write_json(
+        job_dir / "policy_ranking_scorecard.json",
+        {
+            "schema_version": "policy_ranking_scorecard.v1",
+            "status": "completed",
+            "evaluation_substrate": "fixture_wam",
+            "top_policy_id": "site_finetune_policy",
+            "policy_count": 2,
+            "scenario_attempt_count": 6,
+        },
+    )
+    _write_json(
+        job_dir / "wam_eval_claim_boundary.json",
+        {
+            "schema_version": "wam_eval_claim_boundary.v1",
+            "evaluation_substrate": "fixture_wam",
+            "generated_rollouts_are_model_derived_support_artifacts": True,
+            "customer_specific_srcc_claimed": False,
+        },
+    )
+
+    result = build_policy_improvement_run_offer(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        access_level="config_adapter",
+        improvement_targets=("adapter",),
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+
+    assert result["status"] == "improvement_candidate_ready_for_customer_review"
+    assert result["policy_autoresearch_summary"]["candidate_status"] == (
+        "promoted_wam_policy_candidate"
+    )
+    assert result["wam_evaluation_summary"]["status"] == "completed"
+    assert result["wam_evaluation_summary"]["evaluation_substrate"] == "fixture_wam"
+    assert result["wam_evaluation_summary"]["customer_specific_srcc_claimed"] is False
+    assert result["claim_boundary"]["simulator_execution_proven"] is False
+
+
 def test_policy_improvement_run_offer_blocks_missing_customer_inputs_and_holdout(
     tmp_path: Path,
 ) -> None:

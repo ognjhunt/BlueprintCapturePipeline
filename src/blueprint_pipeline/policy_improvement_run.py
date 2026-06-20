@@ -73,6 +73,10 @@ CLAIM_BOUNDARY: dict[str, Any] = {
     "development_scenarios_may_be_used_for_training": True,
     "sealed_audit_scenarios_must_not_be_used_for_training": True,
     "sim_heldout_success_is_not_deployment_approval": True,
+    "wam_heldout_success_is_not_deployment_approval": True,
+    "generated_wam_rollouts_are_model_derived_support_artifacts": True,
+    "customer_specific_srcc_requires_real_world_validation_rollouts": True,
+    "customer_specific_srcc_claimed": False,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "real_world_outcome_proven": False,
@@ -353,7 +357,11 @@ def _status_and_blockers(
         ]
     if "policy_autoresearch_report" not in included_artifacts:
         return "ready_for_policy_autoresearch", ["policy_autoresearch_report_missing"]
-    if policy_summary.get("candidate_status") != "promoted_sim_only_policy_candidate":
+    promoted_statuses = {
+        "promoted_sim_only_policy_candidate",
+        "promoted_wam_policy_candidate",
+    }
+    if policy_summary.get("candidate_status") not in promoted_statuses:
         return "completed_no_promoted_candidate", ["promoted_policy_candidate_missing"]
     if policy_summary.get("safety_contact_gate_passed") is not True:
         return "blocked_candidate_failed_safety_contact_gate", [
@@ -445,6 +453,15 @@ def build_policy_improvement_run_offer(
         "training_request": "training_request.json",
         "training_result": "training_result.json",
         "evaluation_result": "evaluation_result.json",
+        "evaluation_substrate_registry": "evaluation_substrate_registry.json",
+        "wam_evaluation_request": "wam_evaluation_request.json",
+        "wam_rollout_manifest": "wam_rollout_manifest.json",
+        "wam_rollout_results": "wam_rollout_results.json",
+        "vision_success_labels": "vision_success_labels.json",
+        "policy_ranking_scorecard": "policy_ranking_scorecard.json",
+        "wam_eval_claim_boundary": "wam_eval_claim_boundary.json",
+        "real_world_validation_followup_request": "real_world_validation_followup_request.json",
+        "srcc_validation_plan": "srcc_validation_plan.json",
         "post_training_data_package_export_manifest": (
             "post_training_data_package_export_manifest.json"
         ),
@@ -499,6 +516,8 @@ def build_policy_improvement_run_offer(
     heldout_result = _read_optional_mapping(
         resolved_job_dir / "policy_autoresearch" / "heldout_eval_result.json"
     )
+    wam_scorecard = _read_optional_mapping(resolved_job_dir / "policy_ranking_scorecard.json")
+    wam_claim_boundary = _read_optional_mapping(resolved_job_dir / "wam_eval_claim_boundary.json")
 
     customer_input_summary = _customer_inputs(
         job_request=job_request,
@@ -539,6 +558,9 @@ def build_policy_improvement_run_offer(
     boundary["public_claim_upgrade_allowed"] = bool(
         candidate_package.get("public_claim_upgrade_allowed") is True
     )
+    boundary["wam_evaluation_substrate"] = wam_claim_boundary.get("evaluation_substrate")
+    boundary["wam_scorecard_included"] = bool(wam_scorecard)
+    boundary["customer_specific_srcc_claimed"] = False
 
     manifest: dict[str, Any] = {
         "schema_version": POLICY_IMPROVEMENT_RUN_SCHEMA_VERSION,
@@ -551,8 +573,9 @@ def build_policy_improvement_run_offer(
             "product_family": "task_eval_to_policy_improvement",
             "one_line": (
                 "Evaluate a customer-supplied robot policy against a real-site "
-                "Task Evaluation Run, turn failures into twin/cousin curricula, "
-                "post-train a bounded candidate, and report sealed before/after evidence."
+                "Task Evaluation Run using replaceable evaluation substrates, turn "
+                "failures into twin/cousin curricula, post-train a bounded candidate, "
+                "and report sealed before/after evidence."
             ),
             "primary_sale": "policy lift toward a pilot gate",
             "not_sold_as": [
@@ -570,6 +593,7 @@ def build_policy_improvement_run_offer(
         "improvement_targets": list(targets),
         "workflow": [
             "baseline_evaluation",
+            "substrate_selection_or_wam_fixture_evaluation",
             "dominant_failure_mode_diagnosis",
             "digital_twin_and_cousin_scenario_generation",
             "curriculum_build",
@@ -592,8 +616,23 @@ def build_policy_improvement_run_offer(
             "manifest_counts": post_training_package.get("manifest_counts") or {},
         },
         "policy_autoresearch_summary": policy_summary,
+        "wam_evaluation_summary": {
+            "status": wam_scorecard.get("status") or "missing",
+            "evaluation_substrate": wam_scorecard.get("evaluation_substrate")
+            or wam_claim_boundary.get("evaluation_substrate"),
+            "top_policy_id": wam_scorecard.get("top_policy_id"),
+            "policy_count": wam_scorecard.get("policy_count"),
+            "scenario_attempt_count": wam_scorecard.get("scenario_attempt_count"),
+            "customer_specific_srcc_claimed": False,
+            "claim_boundary": {
+                "generated_wam_rollouts_are_model_derived_support_artifacts": True,
+                "passing_wam_heldout_eval_is_not_deployment_approval": True,
+                "customer_specific_srcc_requires_real_world_validation_rollouts": True,
+            },
+        },
         "deliverables": [
             "baseline_eval_report",
+            "wam_rollout_and_policy_ranking_scorecard_when_requested",
             "failure_mode_report",
             "twin_and_cousin_scenario_curriculum",
             "post_training_data_package",

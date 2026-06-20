@@ -9849,3 +9849,66 @@ def test_isaac_lab_arena_results_feed_eval_package_and_delivery(
     assert operators["agents_sdk_operator_performed"] is True
     assert operators["codex_sdk_operator_performed"] is True
     assert operators["public_claim_upgrade_allowed"] is False
+
+
+def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request = _full_job_request(capture_root)
+    request["evaluation_substrate"] = "fixture_wam"
+    request["policy_candidates"] = [
+        {
+            "policy_id": "baseline_policy",
+            "capabilities": ["clearance_aware_navigation"],
+        },
+        {
+            "policy_id": "site_finetune_policy",
+            "capabilities": [
+                "clearance_aware_navigation",
+                "dynamic_obstacle_yield",
+                "visual_recheck",
+                "grasp_alignment_correction",
+            ],
+        },
+    ]
+    request_path = tmp_path / "job-request-wam.json"
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-fixture-wam",
+        provisioner="fixture_local",
+        simulator="fixture",
+        evaluation_substrate="fixture_wam",
+    )
+
+    assert result["status"] in {
+        "fixture_evaluation_completed",
+        "fixture_evaluation_completed_with_failures",
+        "completed_with_failures",
+    }
+    job_dir = Path(result["job_dir"])
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    eval_result = _read_json(job_dir / "evaluation_result.json")
+    rollout_manifest = _read_json(job_dir / "wam_rollout_manifest.json")
+    labels = _read_json(job_dir / "vision_success_labels.json")
+    scorecard = _read_json(job_dir / "policy_ranking_scorecard.json")
+    claim_boundary = _read_json(job_dir / "wam_eval_claim_boundary.json")
+    followup = _read_json(job_dir / "real_world_validation_followup_request.json")
+
+    assert run_manifest["evaluation_substrate"] == "fixture_wam"
+    assert run_manifest["wam_evaluation_status"] == "completed"
+    assert run_manifest["artifacts"]["wam_rollout_manifest"] == "wam_rollout_manifest.json"
+    assert eval_result["evaluation_substrate"] == "fixture_wam"
+    assert rollout_manifest["status"] == "completed"
+    assert labels["status"] == "completed"
+    assert scorecard["status"] == "completed"
+    assert scorecard["top_policy_id"] == "site_finetune_policy"
+    assert claim_boundary["generated_rollouts_are_model_derived_support_artifacts"] is True
+    assert claim_boundary["customer_specific_srcc_claimed"] is False
+    assert claim_boundary["passing_wam_heldout_eval_is_not_deployment_approval"] is True
+    assert followup["minimum_validation_requirements"]["paired_real_outcome_records_required"] is True
+    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["public_claim_upgrade_allowed"] is False

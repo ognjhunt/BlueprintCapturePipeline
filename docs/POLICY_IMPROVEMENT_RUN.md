@@ -5,7 +5,9 @@
 Policy Improvement Run is Blueprint's managed policy-lift offer for robot teams.
 It turns a real-site Task Evaluation Run and Post-Training Data Package into a
 bounded attempt to improve a customer-supplied policy, adapter, task head,
-distilled skill, or complete policy candidate.
+distilled skill, or complete policy candidate. WAM/substrate evaluation is now
+first-class; classical simulation remains available as a fallback, cross-check,
+or stricter physics lane.
 
 The offer is more valuable than evaluation alone when a team already has a
 borderline policy and needs evidence that recoverable site/task failures can be
@@ -41,16 +43,19 @@ Source code is optional by default. The access ladder is:
 ## Workflow
 
 1. Build or reuse the real-site Task Evaluation Run.
-2. Evaluate the baseline policy.
-3. Identify dominant failure modes from normalized attempts, clips, labels, and
+2. Select an evaluation substrate such as `fixture_wam`, `cosmos3_wam`,
+   `oscar_wam`, `classical_sim_mujoco`, `classical_sim_isaac`, or
+   `recorded_trace`.
+3. Evaluate the baseline policy.
+4. Identify dominant failure modes from normalized attempts, clips, labels, and
    review ledgers.
-4. Generate twin and cousin scenarios from the site/task distribution.
-5. Build a curriculum with development, validation, heldout, and sealed audit
+5. Generate twin and cousin scenarios from the site/task distribution.
+6. Build a curriculum with development, validation, heldout, and sealed audit
    splits.
-6. Post-train or lift a candidate artifact.
-7. Test candidate versions on heldout or sealed scenarios that were not used as
+7. Post-train or lift a candidate artifact.
+8. Test candidate versions on heldout or sealed scenarios that were not used as
    training data.
-8. Deliver the improved artifact and an evidence report.
+9. Deliver the improved artifact and an evidence report.
 
 ## Scenario Split Contract
 
@@ -84,7 +89,18 @@ blueprint-build-policy-improvement-run \
   --improvement-target task_head
 ```
 
-Run the underlying sim-only policy-autoresearch loop:
+Run a WAM/substrate policy-autoresearch loop:
+
+```bash
+blueprint-run-policy-autoresearch \
+  --capture-root /path/to/<capture-root> \
+  --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
+  --policy-recipe /path/to/seed_policy_recipe.json \
+  --evaluation-substrate fixture_wam \
+  --evaluator-command "python -m blueprint_pipeline.policy_autoresearch_wam_fixture_evaluator"
+```
+
+Run the MuJoCo cross-check/fallback policy-autoresearch loop:
 
 ```bash
 blueprint-run-policy-autoresearch \
@@ -113,8 +129,12 @@ python -m pytest tests/test_policy_improvement_run.py tests/test_policy_autorese
 ## Project Structure
 
 - `src/blueprint_pipeline/policy_improvement_run.py`: offer manifest builder.
-- `src/blueprint_pipeline/policy_autoresearch.py`: sim-only candidate search
-  and promotion loop.
+- `src/blueprint_pipeline/policy_autoresearch.py`: substrate-aware candidate
+  search and promotion loop.
+- `src/blueprint_pipeline/wam_fixture_evaluator.py`: deterministic local WAM
+  job evaluator.
+- `src/blueprint_pipeline/policy_autoresearch_wam_fixture_evaluator.py`:
+  deterministic local WAM split evaluator for policy autoresearch.
 - `src/blueprint_pipeline/post_training_data_package.py`: package export,
   checksums, optional exports, and archive.
 - `tests/test_policy_improvement_run.py`: product contract coverage.
@@ -130,6 +150,10 @@ python -m pytest tests/test_policy_improvement_run.py tests/test_policy_autorese
 - Never let the policy-improvement agent mutate final scoring, success
   thresholds, sealed seeds, or proof boundaries.
 - Never claim simulator heldout success is physical deployment approval.
+- Never claim WAM heldout success, generated rollout labels, or a policy
+  ranking scorecard is real-world deployment approval.
+- Never claim customer-specific SRCC without paired real-world validation
+  rollouts for that customer's hardware/policy/task family.
 - Never require source access for the baseline commercial offer.
 
 ## Success Criteria
@@ -140,6 +164,8 @@ python -m pytest tests/test_policy_improvement_run.py tests/test_policy_autorese
 - Customer-supplied policies work without source code access.
 - The artifact reports baseline score, improved candidate score, failure modes,
   access level, and proof limits.
+- WAM outputs, when present, are labeled as model-derived support artifacts and
+  include a real-world validation follow-up request.
 - Missing customer inputs, missing heldout/sealed splits, or missing candidate
   evidence fail closed.
 
