@@ -10,6 +10,7 @@ from .common import utc_now_iso, write_json
 
 EVALUATION_SUBSTRATE_REGISTRY_SCHEMA_VERSION = "evaluation_substrate_registry.v1"
 EVALUATION_SUBSTRATE_REQUEST_SCHEMA_VERSION = "wam_evaluation_request.v1"
+WAM_EVAL_CLAIM_BOUNDARY_SCHEMA_VERSION = "wam_eval_claim_boundary.v1"
 
 SUPPORTED_EVALUATION_SUBSTRATES = (
     "fixture_wam",
@@ -267,4 +268,26 @@ def build_wam_evaluation_request(
             "robot_readiness_proven": False,
             "public_claim_upgrade_allowed": False,
         },
+    }
+
+
+def build_wam_eval_claim_boundary(*, substrate: str, generated_at: str) -> Dict[str, Any]:
+    return {
+        "schema_version": WAM_EVAL_CLAIM_BOUNDARY_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "evaluation_substrate": substrate,
+        "artifact_purpose": "wam_policy_evaluation_support",
+        "generated_rollouts_are_model_derived_support_artifacts": True,
+        "generated_rollouts_are_raw_capture_evidence": False,
+        "fixture_wam_is_deterministic_local_test_substrate": substrate == "fixture_wam",
+        "live_provider_calls_performed": False,
+        "customer_specific_srcc_claimed": False,
+        "customer_specific_srcc_requires_real_world_validation_rollouts": True,
+        "passing_wam_heldout_eval_is_not_deployment_approval": True,
+        "simulator_execution_proven": False,
+        "robot_policy_execution_proven": False,
+        "real_world_outcome_proven": False,
+        "robot_readiness_proven": False,
+        "safety_validated": False,
+        "public_claim_upgrade_allowed": False,
     }

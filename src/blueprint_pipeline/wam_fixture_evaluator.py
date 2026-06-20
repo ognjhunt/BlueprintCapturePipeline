@@ -9,9 +9,27 @@ from typing import Any, Dict, Mapping, Sequence
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .wam_eval_substrate import (
     WAM_EVALUATION_SUBSTRATES,
+    build_wam_eval_claim_boundary,
     build_wam_evaluation_request,
     normalize_evaluation_substrate,
     write_evaluation_substrate_registry,
+)
+from .wam_provider_runtime import (
+    classical_sim_cross_check_plan as _classical_sim_cross_check_plan,
+    customer_validation_envelope as _customer_validation_envelope,
+    env_truthy as _env_truthy,
+    normalize_provider_rollouts as _normalize_provider_rollouts,
+    policy_interface_binding as _policy_interface_binding,
+    production_ops_manifest as _production_ops_manifest,
+    provider_artifact_upload_proof as _provider_artifact_upload_proof,
+    provider_auth_status as _provider_auth_status,
+    provider_cost_ledger as _provider_cost_ledger,
+    provider_execution_manifest as _provider_execution_manifest,
+    provider_runtime_package as _provider_runtime_package,
+    real_world_anchor_manifest as _real_world_anchor_manifest,
+    run_provider_command as _run_provider_command,
+    substrate_provider_command as _substrate_provider_command,
+    vision_review_queue as _vision_review_queue,
 )
 from .wam_vision_success_judge import build_fixture_vision_success_labels
 
@@ -19,7 +37,6 @@ from .wam_vision_success_judge import build_fixture_vision_success_labels
 WAM_ROLLOUT_MANIFEST_SCHEMA_VERSION = "wam_rollout_manifest.v1"
 WAM_ROLLOUT_RESULTS_SCHEMA_VERSION = "wam_rollout_results.v1"
 POLICY_RANKING_SCORECARD_SCHEMA_VERSION = "policy_ranking_scorecard.v1"
-WAM_EVAL_CLAIM_BOUNDARY_SCHEMA_VERSION = "wam_eval_claim_boundary.v1"
 REAL_WORLD_VALIDATION_FOLLOWUP_SCHEMA_VERSION = "real_world_validation_followup_request.v1"
 SRCC_VALIDATION_PLAN_SCHEMA_VERSION = "srcc_validation_plan.v1"
 NORMALIZED_ATTEMPT_TRACE_SCHEMA_VERSION = "robot_eval_job_normalized_attempt_trace.v1"
@@ -43,6 +60,16 @@ WAM_ARTIFACT_PATHS = {
     "wam_eval_claim_boundary": "wam_eval_claim_boundary.json",
     "real_world_validation_followup_request": "real_world_validation_followup_request.json",
     "srcc_validation_plan": "srcc_validation_plan.json",
+    "wam_provider_runtime_package": "wam_provider_runtime_package.json",
+    "wam_provider_execution_manifest": "wam_provider_execution_manifest.json",
+    "wam_provider_cost_control_ledger": "wam_provider_cost_control_ledger.json",
+    "wam_provider_artifact_upload_proof": "wam_provider_artifact_upload_proof.json",
+    "wam_policy_interface_binding": "wam_policy_interface_binding.json",
+    "wam_vision_success_review_queue": "wam_vision_success_review_queue.json",
+    "wam_real_world_validation_anchor_manifest": "wam_real_world_validation_anchor_manifest.json",
+    "wam_customer_validation_envelope": "wam_customer_validation_envelope.json",
+    "wam_production_ops_manifest": "wam_production_ops_manifest.json",
+    "wam_classical_sim_cross_check_plan": "wam_classical_sim_cross_check_plan.json",
     "customer_handoff_report": "customer_handoff_report.json",
     "customer_handoff_report_markdown": "customer_handoff_report.md",
 }
@@ -634,25 +661,7 @@ def _policy_scorecard(
 
 
 def _claim_boundary(*, substrate: str, generated_at: str) -> Dict[str, Any]:
-    return {
-        "schema_version": WAM_EVAL_CLAIM_BOUNDARY_SCHEMA_VERSION,
-        "generated_at": generated_at,
-        "evaluation_substrate": substrate,
-        "artifact_purpose": "wam_policy_evaluation_support",
-        "generated_rollouts_are_model_derived_support_artifacts": True,
-        "generated_rollouts_are_raw_capture_evidence": False,
-        "fixture_wam_is_deterministic_local_test_substrate": substrate == "fixture_wam",
-        "live_provider_calls_performed": False,
-        "customer_specific_srcc_claimed": False,
-        "customer_specific_srcc_requires_real_world_validation_rollouts": True,
-        "passing_wam_heldout_eval_is_not_deployment_approval": True,
-        "simulator_execution_proven": False,
-        "robot_policy_execution_proven": False,
-        "real_world_outcome_proven": False,
-        "robot_readiness_proven": False,
-        "safety_validated": False,
-        "public_claim_upgrade_allowed": False,
-    }
+    return build_wam_eval_claim_boundary(substrate=substrate, generated_at=generated_at)
 
 
 def _real_world_validation_followup(
@@ -755,6 +764,48 @@ def _blocked_wam_artifacts(
     blockers: Sequence[str],
 ) -> Dict[str, Any]:
     registry = write_evaluation_substrate_registry(job_dir, generated_at=generated_at)
+    matrix = _read_optional_mapping(job_dir / "scenario_eval_matrix.json")
+    policy_manifest = _read_optional_mapping(job_dir / "policy_package_manifest.json")
+    request_payload = _read_optional_mapping(job_dir / "job_request.json")
+    policies = _policy_candidates(request=request_payload, policy_manifest=policy_manifest)
+    policy_binding = _policy_interface_binding(
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        policy_manifest=policy_manifest,
+        policies=policies,
+        generated_at=generated_at,
+    )
+    runtime_package = _provider_runtime_package(
+        capture_root=job_dir.parents[2] if len(job_dir.parents) >= 3 else job_dir,
+        job_dir=job_dir,
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        scenario_eval_run_count=len(_matrix_runs(matrix)),
+        policies=policies,
+        generated_at=generated_at,
+        artifact_output_uri=None,
+        budget_usd=None,
+    )
+    provider_execution = _provider_execution_manifest(
+        substrate=substrate,
+        generated_at=generated_at,
+        status="blocked",
+        command_used=False,
+        blockers=blockers,
+    )
+    provider_cost = _provider_cost_ledger(
+        substrate=substrate,
+        generated_at=generated_at,
+        budget_usd=None,
+        status="blocked",
+    )
+    provider_upload = _provider_artifact_upload_proof(
+        substrate=substrate,
+        generated_at=generated_at,
+        artifact_output_uri=None,
+    )
     request = build_wam_evaluation_request(
         job_id=job_id,
         substrate=substrate,
@@ -796,6 +847,11 @@ def _blocked_wam_artifacts(
     )
     scorecard = _policy_scorecard(substrate=substrate, labels=labels, generated_at=generated_at)
     claim_boundary = _claim_boundary(substrate=substrate, generated_at=generated_at)
+    review_queue = _vision_review_queue(
+        substrate=substrate,
+        labels=labels,
+        generated_at=generated_at,
+    )
     followup = _real_world_validation_followup(
         job_id=job_id,
         substrate=substrate,
@@ -803,7 +859,42 @@ def _blocked_wam_artifacts(
         generated_at=generated_at,
     )
     srcc_plan = _srcc_validation_plan(job_id=job_id, substrate=substrate, generated_at=generated_at)
+    anchor_manifest = _real_world_anchor_manifest(
+        job_dir=job_dir,
+        substrate=substrate,
+        scorecard=scorecard,
+        generated_at=generated_at,
+    )
+    validation_envelope = _customer_validation_envelope(
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        scorecard=scorecard,
+        anchor_manifest=anchor_manifest,
+        generated_at=generated_at,
+    )
+    production_ops = _production_ops_manifest(
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        provider_execution=provider_execution,
+        generated_at=generated_at,
+        artifact_output_uri=None,
+        budget_usd=None,
+    )
+    cross_check_plan = _classical_sim_cross_check_plan(
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        scorecard=scorecard,
+        generated_at=generated_at,
+    )
     payloads = {
+        "wam_provider_runtime_package": runtime_package,
+        "wam_provider_execution_manifest": provider_execution,
+        "wam_provider_cost_control_ledger": provider_cost,
+        "wam_provider_artifact_upload_proof": provider_upload,
+        "wam_policy_interface_binding": policy_binding,
         "wam_evaluation_request": request,
         "wam_rollout_manifest": empty_rollout_manifest,
         "wam_rollout_results": empty_results,
@@ -812,8 +903,13 @@ def _blocked_wam_artifacts(
         "failure_labels": failure_labels,
         "policy_ranking_scorecard": scorecard,
         "wam_eval_claim_boundary": claim_boundary,
+        "wam_vision_success_review_queue": review_queue,
         "real_world_validation_followup_request": followup,
         "srcc_validation_plan": srcc_plan,
+        "wam_real_world_validation_anchor_manifest": anchor_manifest,
+        "wam_customer_validation_envelope": validation_envelope,
+        "wam_production_ops_manifest": production_ops,
+        "wam_classical_sim_cross_check_plan": cross_check_plan,
     }
     _write_wam_artifacts(job_dir, payloads)
     return {
@@ -830,11 +926,17 @@ def run_wam_eval_job(
     capture_root: str | Path,
     job_dir: str | Path,
     evaluation_substrate: str = "fixture_wam",
+    allow_live_provider: bool = False,
+    provider_command: str | None = None,
+    artifact_output_uri: str | None = None,
+    budget_usd: float | None = None,
+    max_retries: int = 0,
+    timeout_seconds: int = 120,
     generated_at: str | None = None,
 ) -> Dict[str, Any]:
     """Run the deterministic local WAM evaluator for an existing robot-eval job."""
 
-    _ = Path(capture_root).resolve()
+    resolved_capture_root = Path(capture_root).resolve()
     resolved_job_dir = Path(job_dir).resolve()
     ensure_dir(resolved_job_dir)
     generated = generated_at or utc_now_iso()
@@ -847,14 +949,6 @@ def run_wam_eval_job(
             substrate=substrate,
             generated_at=generated,
             blockers=["evaluation_substrate_is_not_wam"],
-        )
-    if substrate != "fixture_wam":
-        return _blocked_wam_artifacts(
-            job_dir=resolved_job_dir,
-            job_id=job_id,
-            substrate=substrate,
-            generated_at=generated,
-            blockers=[f"{substrate}_provider_adapter_not_configured_for_local_run"],
         )
 
     matrix = _read_optional_mapping(resolved_job_dir / "scenario_eval_matrix.json")
@@ -877,6 +971,31 @@ def run_wam_eval_job(
         )
 
     registry = write_evaluation_substrate_registry(resolved_job_dir, generated_at=generated)
+    policy_binding = _policy_interface_binding(
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        policy_manifest=policy_manifest,
+        policies=policies,
+        generated_at=generated,
+    )
+    provider_command_text = _substrate_provider_command(substrate, provider_command)
+    provider_runtime_package = _provider_runtime_package(
+        capture_root=resolved_capture_root,
+        job_dir=resolved_job_dir,
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        scenario_eval_run_count=len(runs),
+        policies=policies,
+        generated_at=generated,
+        artifact_output_uri=artifact_output_uri,
+        budget_usd=budget_usd,
+    )
+    provider_runtime_package_path = (
+        resolved_job_dir / WAM_ARTIFACT_PATHS["wam_provider_runtime_package"]
+    )
+    write_json(provider_runtime_package_path, provider_runtime_package)
     request = build_wam_evaluation_request(
         job_id=job_id,
         substrate=substrate,
@@ -884,18 +1003,76 @@ def run_wam_eval_job(
         generated_at=generated,
     )
     rollouts: list[Dict[str, Any]] = []
-    for policy in policies:
-        for run in runs:
-            rollouts.append(
-                _rollout_for_run(
-                    job_dir=resolved_job_dir,
-                    substrate=substrate,
-                    policy=policy,
-                    run=run,
-                    index=len(rollouts) + 1,
-                    generated_at=generated,
+    provider_execution_detail: Dict[str, Any] = {}
+    provider_payload: Dict[str, Any] = {}
+    provider_execution_status = "not_required_fixture"
+    provider_execution_blockers: list[str] = []
+    provider_command_used = False
+    if substrate == "fixture_wam":
+        for policy in policies:
+            for run in runs:
+                rollouts.append(
+                    _rollout_for_run(
+                        job_dir=resolved_job_dir,
+                        substrate=substrate,
+                        policy=policy,
+                        run=run,
+                        index=len(rollouts) + 1,
+                        generated_at=generated,
+                    )
                 )
+    else:
+        live_gate = bool(allow_live_provider or _env_truthy("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER"))
+        auth_status = _provider_auth_status(substrate)
+        if not live_gate:
+            provider_execution_blockers.append("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER_not_enabled")
+        if not provider_command_text:
+            provider_execution_blockers.append(
+                f"{substrate}_provider_adapter_not_configured_for_local_run"
             )
+        if not auth_status["auth_available"]:
+            provider_execution_blockers.append(f"{substrate}_auth_env_missing")
+        if provider_execution_blockers:
+            return _blocked_wam_artifacts(
+                job_dir=resolved_job_dir,
+                job_id=job_id,
+                substrate=substrate,
+                generated_at=generated,
+                blockers=provider_execution_blockers,
+            )
+        output_path = resolved_job_dir / "wam_provider" / "wam_provider_output.json"
+        attempts = 0
+        last_status = "blocked"
+        last_payload: Any = {}
+        last_detail: Dict[str, Any] = {}
+        for attempt in range(max(0, max_retries) + 1):
+            attempts = attempt + 1
+            last_status, last_payload, last_detail = _run_provider_command(
+                command_text=provider_command_text,
+                runtime_package_path=provider_runtime_package_path,
+                output_path=output_path,
+                substrate=substrate,
+                artifact_output_uri=artifact_output_uri,
+                timeout_seconds=timeout_seconds,
+            )
+            rollouts = _normalize_provider_rollouts(
+                payload=last_payload,
+                substrate=substrate,
+                generated_at=generated,
+            )
+            if last_status == "completed" and rollouts:
+                break
+        provider_command_used = True
+        provider_execution_status = "completed" if last_status == "completed" and rollouts else "blocked"
+        provider_payload = _mapping(last_payload)
+        provider_execution_detail = {
+            **last_detail,
+            "normalized_rollout_count": len(rollouts),
+            "attempt_count": attempts,
+        }
+        provider_execution_blockers.extend(_string_list(last_detail.get("blockers")))
+        if not rollouts:
+            provider_execution_blockers.append("wam_provider_output_missing_rollouts")
     rollout_manifest = _rollout_manifest(
         job_id=job_id,
         substrate=substrate,
@@ -925,6 +1102,13 @@ def run_wam_eval_job(
     )
     scorecard = _policy_scorecard(substrate=substrate, labels=labels, generated_at=generated)
     claim_boundary = _claim_boundary(substrate=substrate, generated_at=generated)
+    if provider_command_used and provider_execution_status == "completed":
+        claim_boundary = {**claim_boundary, "live_provider_calls_performed": True}
+    review_queue = _vision_review_queue(
+        substrate=substrate,
+        labels=labels,
+        generated_at=generated,
+    )
     followup = _real_world_validation_followup(
         job_id=job_id,
         substrate=substrate,
@@ -932,6 +1116,63 @@ def run_wam_eval_job(
         generated_at=generated,
     )
     srcc_plan = _srcc_validation_plan(job_id=job_id, substrate=substrate, generated_at=generated)
+    anchor_manifest = _real_world_anchor_manifest(
+        job_dir=resolved_job_dir,
+        substrate=substrate,
+        scorecard=scorecard,
+        generated_at=generated,
+    )
+    validation_envelope = _customer_validation_envelope(
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        scorecard=scorecard,
+        anchor_manifest=anchor_manifest,
+        generated_at=generated,
+    )
+    provider_execution = _provider_execution_manifest(
+        substrate=substrate,
+        generated_at=generated,
+        status=provider_execution_status
+        if provider_execution_status != "not_required_fixture"
+        else "not_required_fixture",
+        command_used=provider_command_used,
+        detail=provider_execution_detail,
+        blockers=provider_execution_blockers,
+        attempt_count=1
+        if substrate == "fixture_wam"
+        else int(provider_execution_detail.get("attempt_count") or 1),
+        max_retries=max_retries,
+    )
+    provider_cost = _provider_cost_ledger(
+        substrate=substrate,
+        generated_at=generated,
+        budget_usd=budget_usd,
+        status=provider_execution_status,
+        duration_seconds=_number(provider_execution_detail.get("duration_seconds"), None),
+    )
+    provider_upload = _provider_artifact_upload_proof(
+        substrate=substrate,
+        generated_at=generated,
+        artifact_output_uri=artifact_output_uri,
+        provider_payload=provider_payload,
+    )
+    production_ops = _production_ops_manifest(
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        provider_execution=provider_execution,
+        generated_at=generated,
+        artifact_output_uri=artifact_output_uri,
+        budget_usd=budget_usd,
+    )
+    cross_check_plan = _classical_sim_cross_check_plan(
+        job_id=job_id,
+        substrate=substrate,
+        request=request_payload,
+        scorecard=scorecard,
+        generated_at=generated,
+    )
     handoff = _customer_handoff_report(
         job_id=job_id,
         substrate=substrate,
@@ -939,6 +1180,11 @@ def run_wam_eval_job(
         generated_at=generated,
     )
     payloads = {
+        "wam_provider_runtime_package": provider_runtime_package,
+        "wam_provider_execution_manifest": provider_execution,
+        "wam_provider_cost_control_ledger": provider_cost,
+        "wam_provider_artifact_upload_proof": provider_upload,
+        "wam_policy_interface_binding": policy_binding,
         "wam_evaluation_request": request,
         "wam_rollout_manifest": rollout_manifest,
         "wam_rollout_results": rollout_results,
@@ -950,8 +1196,13 @@ def run_wam_eval_job(
         "breakage_library": breakage,
         "policy_ranking_scorecard": scorecard,
         "wam_eval_claim_boundary": claim_boundary,
+        "wam_vision_success_review_queue": review_queue,
         "real_world_validation_followup_request": followup,
         "srcc_validation_plan": srcc_plan,
+        "wam_real_world_validation_anchor_manifest": anchor_manifest,
+        "wam_customer_validation_envelope": validation_envelope,
+        "wam_production_ops_manifest": production_ops,
+        "wam_classical_sim_cross_check_plan": cross_check_plan,
         "customer_handoff_report": handoff,
     }
     _write_wam_artifacts(resolved_job_dir, payloads)
@@ -960,7 +1211,8 @@ def run_wam_eval_job(
         _customer_handoff_markdown(handoff),
     )
     return {
-        "status": "completed",
+        "status": "completed" if rollouts else "blocked",
+        "blockers": provider_execution_blockers,
         "evaluation_substrate": substrate,
         "evaluation_substrate_registry": registry,
         **payloads,
@@ -974,11 +1226,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--capture-root", required=True)
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--evaluation-substrate", default="fixture_wam")
+    parser.add_argument("--allow-live-provider", action="store_true")
+    parser.add_argument("--provider-command")
+    parser.add_argument("--artifact-output-uri")
+    parser.add_argument("--budget-usd", type=float)
+    parser.add_argument("--max-retries", type=int, default=0)
+    parser.add_argument("--timeout-seconds", type=int, default=120)
     args = parser.parse_args(argv)
     result = run_wam_eval_job(
         capture_root=args.capture_root,
         job_dir=args.job_dir,
         evaluation_substrate=args.evaluation_substrate,
+        allow_live_provider=args.allow_live_provider,
+        provider_command=args.provider_command,
+        artifact_output_uri=args.artifact_output_uri,
+        budget_usd=args.budget_usd,
+        max_retries=args.max_retries,
+        timeout_seconds=args.timeout_seconds,
     )
     print(f"[wam-eval] status={result['status']}")
     print(f"[wam-eval] job_dir={Path(args.job_dir).resolve()}")
