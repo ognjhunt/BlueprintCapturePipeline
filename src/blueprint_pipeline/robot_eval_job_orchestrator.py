@@ -54,8 +54,12 @@ from .robot_eval_dataset import build_real_site_robot_eval_dataset
 from .scene_asset_preflight import build_scene_asset_preflight
 from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
-from .wam_eval_substrate import WAM_EVALUATION_SUBSTRATES, requested_evaluation_substrate
+from .wam_eval_substrate import (
+    WAM_EVALUATION_SUBSTRATES,
+    requested_evaluation_substrate,
+)
 from .wam_fixture_evaluator import run_wam_eval_job
+from .wam_provider_runtime import parse_wam_provider_commands
 
 
 JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
@@ -2461,9 +2465,15 @@ def _build_worker_manifest(
     capture_root: Path,
     provisioner: str,
     simulator: str,
+    evaluation_substrate: str | None,
     worker_launch_plan: Mapping[str, Any],
     allowed_simulators: Sequence[str],
     simulator_commands: Mapping[str, str],
+    allow_wam_provider: bool,
+    wam_provider_commands: Mapping[str, str],
+    wam_artifact_output_uri: str | None,
+    wam_provider_max_retries: int,
+    wam_provider_timeout_seconds: int | None,
     timeout_seconds: int,
     budget_usd: float | None,
     generated_at: str,
@@ -2523,10 +2533,16 @@ def _build_worker_manifest(
         "capture_root": str(capture_root),
         "provisioner": provisioner,
         "simulator": simulator,
+        "evaluation_substrate": evaluation_substrate or None,
         "timeout_seconds": timeout_seconds,
         "budget_usd": budget_usd,
         "allowed_simulators": list(allowed_simulators),
         "simulator_commands": dict(simulator_commands),
+        "allow_wam_provider": bool(allow_wam_provider),
+        "wam_provider_commands": dict(wam_provider_commands),
+        "wam_artifact_output_uri": wam_artifact_output_uri or artifact_output_uri or None,
+        "wam_provider_max_retries": wam_provider_max_retries,
+        "wam_provider_timeout_seconds": wam_provider_timeout_seconds or timeout_seconds,
         "input_bundle": dict(input_bundle),
         "capture_root_bundle_uri": capture_root_bundle_uri or None,
         "capture_root_bundle_uri_env_var": WORKER_CAPTURE_ROOT_BUNDLE_URI_ENV,
@@ -2559,6 +2575,12 @@ def _build_worker_provider_command(
     allow_simulator_execution: bool,
     allowed_simulators: Sequence[str],
     simulator_commands: Mapping[str, str],
+    evaluation_substrate: str | None,
+    allow_wam_provider: bool,
+    wam_provider_commands: Mapping[str, str],
+    wam_artifact_output_uri: str | None,
+    wam_provider_max_retries: int,
+    wam_provider_timeout_seconds: int | None,
 ) -> str:
     command = [
         "blueprint-run-robot-eval-worker",
@@ -2569,6 +2591,8 @@ def _build_worker_provider_command(
         command.append("--allow-gpu-provisioning")
     if allow_simulator_execution:
         command.append("--allow-simulator-execution")
+    if evaluation_substrate:
+        command.extend(["--evaluation-substrate", evaluation_substrate])
     for simulator in _dedupe(_string_list(allowed_simulators)):
         if simulator and simulator != "fixture":
             command.extend(["--allowed-simulator", simulator])
@@ -2576,6 +2600,18 @@ def _build_worker_provider_command(
         simulator_command = _string(simulator_commands.get(simulator))
         if simulator and simulator_command:
             command.extend(["--simulator-command", f"{simulator}={simulator_command}"])
+    if allow_wam_provider:
+        command.append("--allow-wam-provider")
+    for substrate in sorted(wam_provider_commands):
+        wam_provider_command = _string(wam_provider_commands.get(substrate))
+        if substrate and wam_provider_command:
+            command.extend(["--wam-provider-command", f"{substrate}={wam_provider_command}"])
+    if wam_artifact_output_uri:
+        command.extend(["--wam-artifact-output-uri", wam_artifact_output_uri])
+    if wam_provider_max_retries:
+        command.extend(["--wam-provider-max-retries", str(wam_provider_max_retries)])
+    if wam_provider_timeout_seconds:
+        command.extend(["--wam-provider-timeout-seconds", str(wam_provider_timeout_seconds)])
     command_prefix = "blueprint-run-robot-eval-worker --manifest ${BLUEPRINT_EVAL_MANIFEST_URI}"
     command_tail = shlex.join(command[3:])
     return f"{command_prefix} {command_tail}" if command_tail else command_prefix
@@ -2591,6 +2627,12 @@ def _build_gpu_provider_launch_request(
     allow_simulator_execution: bool,
     allowed_simulators: Sequence[str],
     simulator_commands: Mapping[str, str],
+    evaluation_substrate: str | None,
+    allow_wam_provider: bool,
+    wam_provider_commands: Mapping[str, str],
+    wam_artifact_output_uri: str | None,
+    wam_provider_max_retries: int,
+    wam_provider_timeout_seconds: int | None,
     generated_at: str,
 ) -> Dict[str, Any]:
     provider = _string(request_manifest.get("provider")) or "fixture_local"
@@ -2618,6 +2660,12 @@ def _build_gpu_provider_launch_request(
         allow_simulator_execution=allow_simulator_execution,
         allowed_simulators=allowed_simulators,
         simulator_commands=simulator_commands,
+        evaluation_substrate=evaluation_substrate,
+        allow_wam_provider=allow_wam_provider,
+        wam_provider_commands=wam_provider_commands,
+        wam_artifact_output_uri=wam_artifact_output_uri,
+        wam_provider_max_retries=wam_provider_max_retries,
+        wam_provider_timeout_seconds=wam_provider_timeout_seconds,
     )
     approval_blockers: List[str] = []
     if external_provider:
@@ -6302,6 +6350,12 @@ def build_robot_eval_job(
     provisioner: str = "fixture_local",
     simulator: str = "fixture",
     evaluation_substrate: str | None = None,
+    allow_wam_provider: bool = False,
+    wam_provider_command: str | None = None,
+    wam_provider_commands: Mapping[str, str] | None = None,
+    wam_artifact_output_uri: str | None = None,
+    wam_provider_max_retries: int = 0,
+    wam_provider_timeout_seconds: int | None = None,
     allow_gpu_provisioning: bool = False,
     allow_simulator_execution: bool = False,
     allowed_simulators: Sequence[str] = (),
@@ -6389,6 +6443,11 @@ def build_robot_eval_job(
         job_request=request,
         generated_at=generated_at,
     )
+    selected_evaluation_substrate = requested_evaluation_substrate(
+        request,
+        explicit=evaluation_substrate,
+    )
+    selected_wam_provider_commands = dict(wam_provider_commands or {})
     policy_manifest, policy_missing_inputs, policy_missing_statuses = _policy_package_manifest(
         request=request,
         generated_at=generated_at,
@@ -6496,9 +6555,15 @@ def build_robot_eval_job(
         capture_root=context.capture_root,
         provisioner=provisioner,
         simulator=simulator,
+        evaluation_substrate=selected_evaluation_substrate or None,
         worker_launch_plan=worker_launch_plan,
         allowed_simulators=allowed_simulators,
         simulator_commands=dict(simulator_commands or {}),
+        allow_wam_provider=allow_wam_provider,
+        wam_provider_commands=selected_wam_provider_commands,
+        wam_artifact_output_uri=wam_artifact_output_uri,
+        wam_provider_max_retries=wam_provider_max_retries,
+        wam_provider_timeout_seconds=wam_provider_timeout_seconds,
         timeout_seconds=timeout_seconds,
         budget_usd=budget_usd,
         generated_at=generated_at,
@@ -6513,6 +6578,12 @@ def build_robot_eval_job(
         allow_simulator_execution=allow_simulator_execution,
         allowed_simulators=allowed_simulators,
         simulator_commands=dict(simulator_commands or {}),
+        evaluation_substrate=selected_evaluation_substrate or None,
+        allow_wam_provider=allow_wam_provider,
+        wam_provider_commands=selected_wam_provider_commands,
+        wam_artifact_output_uri=wam_artifact_output_uri,
+        wam_provider_max_retries=wam_provider_max_retries,
+        wam_provider_timeout_seconds=wam_provider_timeout_seconds,
         generated_at=generated_at,
     )
     _write_job_json(job_dir, "gpu_provider_launch_request.json", provider_launch_request)
@@ -6608,10 +6679,6 @@ def build_robot_eval_job(
             simulator_blockers = []
             _write_job_json(job_dir, "simulator_service_result.json", sim_result)
 
-    selected_evaluation_substrate = requested_evaluation_substrate(
-        request,
-        explicit=evaluation_substrate,
-    )
     wam_eval_result: Dict[str, Any] = {}
     wam_eval_blockers: List[str] = []
     if selected_evaluation_substrate in WAM_EVALUATION_SUBSTRATES:
@@ -6619,6 +6686,15 @@ def build_robot_eval_job(
             capture_root=context.capture_root,
             job_dir=job_dir,
             evaluation_substrate=selected_evaluation_substrate,
+            allow_live_provider=allow_wam_provider,
+            provider_command=(
+                _string(selected_wam_provider_commands.get(selected_evaluation_substrate))
+                or _string(wam_provider_command)
+            ),
+            artifact_output_uri=wam_artifact_output_uri,
+            budget_usd=budget_usd,
+            max_retries=wam_provider_max_retries,
+            timeout_seconds=wam_provider_timeout_seconds or timeout_seconds,
             generated_at=generated_at,
         )
         for artifact_key in (
@@ -7438,6 +7514,12 @@ def run_robot_eval_job_request_inbox(
     provisioner: str = "fixture_local",
     simulator: str = "fixture",
     evaluation_substrate: str | None = None,
+    allow_wam_provider: bool = False,
+    wam_provider_command: str | None = None,
+    wam_provider_commands: Mapping[str, str] | None = None,
+    wam_artifact_output_uri: str | None = None,
+    wam_provider_max_retries: int = 0,
+    wam_provider_timeout_seconds: int | None = None,
     allow_gpu_provisioning: bool = False,
     allow_simulator_execution: bool = False,
     allowed_simulators: Sequence[str] = (),
@@ -7524,6 +7606,12 @@ def run_robot_eval_job_request_inbox(
             provisioner=provisioner,
             simulator=simulator,
             evaluation_substrate=evaluation_substrate,
+            allow_wam_provider=allow_wam_provider,
+            wam_provider_command=wam_provider_command,
+            wam_provider_commands=wam_provider_commands or {},
+            wam_artifact_output_uri=wam_artifact_output_uri,
+            wam_provider_max_retries=wam_provider_max_retries,
+            wam_provider_timeout_seconds=wam_provider_timeout_seconds,
             allow_gpu_provisioning=allow_gpu_provisioning,
             allow_simulator_execution=allow_simulator_execution,
             allowed_simulators=allowed_simulators,
@@ -7661,6 +7749,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--allow-wam-provider",
+        action="store_true",
+        help=(
+            "Permit WAM provider adapter execution only with matching env approval "
+            "and provider auth envs."
+        ),
+    )
+    parser.add_argument(
+        "--wam-provider-command",
+        action="append",
+        default=[],
+        help="Explicit WAM provider adapter command as <cosmos3_wam|oscar_wam>=<command>",
+    )
+    parser.add_argument(
+        "--wam-artifact-output-uri",
+        default=None,
+        help="Optional provider-writable artifact destination passed to the WAM adapter.",
+    )
+    parser.add_argument("--wam-provider-max-retries", type=int, default=0)
+    parser.add_argument("--wam-provider-timeout-seconds", type=int, default=None)
+    parser.add_argument(
         "--allow-gpu-provisioning",
         action="store_true",
         help="Permit gated non-fixture provisioning only with matching environment approval",
@@ -7753,6 +7862,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         simulator_commands = _parse_simulator_commands(args.simulator_command)
         policy_execution_commands = _parse_policy_execution_commands(args.policy_execution_command)
+        wam_provider_commands = parse_wam_provider_commands(args.wam_provider_command)
         if args.job_request_inbox:
             result = run_robot_eval_job_request_inbox(
                 capture_root=args.capture_root,
@@ -7764,6 +7874,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 provisioner=args.provisioner,
                 simulator=args.simulator,
                 evaluation_substrate=args.evaluation_substrate,
+                allow_wam_provider=args.allow_wam_provider,
+                wam_provider_commands=wam_provider_commands,
+                wam_artifact_output_uri=args.wam_artifact_output_uri,
+                wam_provider_max_retries=args.wam_provider_max_retries,
+                wam_provider_timeout_seconds=args.wam_provider_timeout_seconds,
                 allow_gpu_provisioning=args.allow_gpu_provisioning,
                 allow_simulator_execution=args.allow_simulator_execution,
                 allowed_simulators=args.allow_simulator,
@@ -7813,6 +7928,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             provisioner=args.provisioner,
             simulator=args.simulator,
             evaluation_substrate=args.evaluation_substrate,
+            allow_wam_provider=args.allow_wam_provider,
+            wam_provider_commands=wam_provider_commands,
+            wam_artifact_output_uri=args.wam_artifact_output_uri,
+            wam_provider_max_retries=args.wam_provider_max_retries,
+            wam_provider_timeout_seconds=args.wam_provider_timeout_seconds,
             allow_gpu_provisioning=args.allow_gpu_provisioning,
             allow_simulator_execution=args.allow_simulator_execution,
             allowed_simulators=args.allow_simulator,

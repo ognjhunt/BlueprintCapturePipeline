@@ -318,6 +318,7 @@ def test_live_wam_provider_command_normalizes_rollouts_and_upload_evidence(
         capture_root=capture_root,
         job_dir=job_dir,
         evaluation_substrate="cosmos3_wam",
+        allow_live_provider=True,
         artifact_output_uri="gs://bucket/wam-output",
         budget_usd=12.5,
         generated_at="2026-06-20T00:00:00+00:00",
@@ -338,6 +339,37 @@ def test_live_wam_provider_command_normalizes_rollouts_and_upload_evidence(
     assert rollouts["rollouts"][0]["policy_id"] == "provider-policy"
     assert rollouts["rollouts"][0]["failure_mode_ids"] == ["fixture_failure"]
     assert rollouts["rollouts"][0]["ood_flags"] == ["glare"]
+
+
+def test_live_wam_provider_requires_explicit_and_env_gates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root, job_dir = _fixture_job(tmp_path)
+    monkeypatch.setenv("BLUEPRINT_COSMOS3_WAM_API_KEY", "test-auth")
+    command = f"{sys.executable} -c 'print(1)'"
+
+    missing_env = run_wam_eval_job(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        evaluation_substrate="cosmos3_wam",
+        allow_live_provider=True,
+        provider_command=command,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+    assert missing_env["status"] == "blocked"
+    assert "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER_not_enabled" in missing_env["blockers"]
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER", "true")
+    missing_explicit = run_wam_eval_job(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        evaluation_substrate="cosmos3_wam",
+        provider_command=command,
+        generated_at="2026-06-20T00:00:01+00:00",
+    )
+    assert missing_explicit["status"] == "blocked"
+    assert "allow_live_wam_provider_not_enabled" in missing_explicit["blockers"]
 
 
 def test_live_wam_provider_command_blocks_when_output_has_no_rollouts(
@@ -364,6 +396,7 @@ def test_live_wam_provider_command_blocks_when_output_has_no_rollouts(
         capture_root=capture_root,
         job_dir=job_dir,
         evaluation_substrate="cosmos3_wam",
+        allow_live_provider=True,
         provider_command=f"{sys.executable} {script}",
         max_retries=1,
         generated_at="2026-06-20T00:00:00+00:00",

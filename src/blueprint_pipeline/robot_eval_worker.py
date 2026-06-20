@@ -41,6 +41,7 @@ from .robot_eval_job_orchestrator import (
     _run_command_simulator,
     build_robot_eval_job,
 )
+from .wam_provider_runtime import parse_wam_provider_commands
 
 
 WORKER_RUNTIME_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_runtime_manifest.v1"
@@ -1336,6 +1337,11 @@ def run_robot_eval_worker(
     provisioner: str | None = None,
     simulator: str | None = None,
     evaluation_substrate: str | None = None,
+    allow_wam_provider: bool = False,
+    wam_provider_commands: Mapping[str, str] | None = None,
+    wam_artifact_output_uri: str | None = None,
+    wam_provider_max_retries: int = 0,
+    wam_provider_timeout_seconds: int | None = None,
     allow_gpu_provisioning: bool = False,
     allow_simulator_execution: bool = False,
     allowed_simulators: Sequence[str] = (),
@@ -1425,6 +1431,36 @@ def run_robot_eval_worker(
         or _string(job_request.get("evaluation_substrate") or job_request.get("evaluationSubstrate"))
         or None
     )
+    selected_allow_wam_provider = bool(
+        allow_wam_provider
+        or _bool(payload.get("allow_wam_provider") or payload.get("allowWamProvider"))
+    )
+    selected_wam_provider_commands = {
+        **_mapping(payload.get("wam_provider_commands") or payload.get("wamProviderCommands")),
+        **dict(wam_provider_commands or {}),
+    }
+    selected_wam_artifact_output_uri = (
+        wam_artifact_output_uri
+        or _string(payload.get("wam_artifact_output_uri") or payload.get("wamArtifactOutputUri"))
+        or None
+    )
+    selected_wam_provider_max_retries = int(
+        wam_provider_max_retries
+        or _number(payload.get("wam_provider_max_retries") or payload.get("wamProviderMaxRetries"))
+        or 0
+    )
+    selected_wam_provider_timeout_seconds = (
+        int(wam_provider_timeout_seconds)
+        if wam_provider_timeout_seconds is not None
+        else int(
+            _number(
+                payload.get("wam_provider_timeout_seconds")
+                or payload.get("wamProviderTimeoutSeconds")
+            )
+            or 0
+        )
+        or None
+    )
     selected_robot = (
         _string(payload.get("robot"))
         or _string(payload.get("robot_model"))
@@ -1496,6 +1532,9 @@ def run_robot_eval_worker(
     )
     selected_artifact_output_uri = artifact_output_uri or _string(
         payload.get("artifact_output_uri")
+    )
+    selected_wam_artifact_output_uri = (
+        selected_wam_artifact_output_uri or selected_artifact_output_uri or None
     )
     selected_artifact_output_uri_scheme = None
     if selected_artifact_output_uri:
@@ -1732,6 +1771,11 @@ def run_robot_eval_worker(
             provisioner=selected_provisioner,
             simulator=selected_simulator,
             evaluation_substrate=selected_evaluation_substrate,
+            allow_wam_provider=selected_allow_wam_provider,
+            wam_provider_commands=selected_wam_provider_commands,
+            wam_artifact_output_uri=selected_wam_artifact_output_uri,
+            wam_provider_max_retries=selected_wam_provider_max_retries,
+            wam_provider_timeout_seconds=selected_wam_provider_timeout_seconds,
             allow_gpu_provisioning=allow_gpu_provisioning,
             allow_simulator_execution=allow_simulator_execution,
             allowed_simulators=selected_allowed_simulators,
@@ -2023,6 +2067,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provisioner", choices=PROVISIONERS)
     parser.add_argument("--simulator", choices=SIMULATORS)
     parser.add_argument("--evaluation-substrate")
+    parser.add_argument("--allow-wam-provider", action="store_true")
+    parser.add_argument("--wam-provider-command", action="append", default=[])
+    parser.add_argument("--wam-artifact-output-uri")
+    parser.add_argument("--wam-provider-max-retries", type=int, default=0)
+    parser.add_argument("--wam-provider-timeout-seconds", type=int)
     parser.add_argument("--allow-gpu-provisioning", action="store_true")
     parser.add_argument("--allow-simulator-execution", action="store_true")
     parser.add_argument("--allowed-simulator", action="append", default=[])
@@ -2052,6 +2101,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         provisioner=args.provisioner,
         simulator=args.simulator,
         evaluation_substrate=args.evaluation_substrate,
+        allow_wam_provider=args.allow_wam_provider,
+        wam_provider_commands=parse_wam_provider_commands(args.wam_provider_command),
+        wam_artifact_output_uri=args.wam_artifact_output_uri,
+        wam_provider_max_retries=args.wam_provider_max_retries,
+        wam_provider_timeout_seconds=args.wam_provider_timeout_seconds,
         allow_gpu_provisioning=args.allow_gpu_provisioning,
         allow_simulator_execution=args.allow_simulator_execution,
         allowed_simulators=args.allowed_simulator,

@@ -9912,3 +9912,111 @@ def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path)
     assert followup["minimum_validation_requirements"]["paired_real_outcome_records_required"] is True
     assert run_manifest["robot_readiness_proven"] is False
     assert run_manifest["public_claim_upgrade_allowed"] is False
+
+
+def test_robot_eval_job_can_run_fake_cosmos_wam_provider_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request = _full_job_request(capture_root)
+    request["evaluation_substrate"] = "cosmos3_wam"
+    request["policy_candidates"] = [
+        {
+            "policy_id": "baseline_policy",
+            "capabilities": ["clearance_aware_navigation"],
+        }
+    ]
+    request_path = tmp_path / "job-request-cosmos-wam.json"
+    _write_json(request_path, request)
+    provider_script = tmp_path / "fake_cosmos_wam_provider.py"
+    provider_script.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "from pathlib import Path",
+                "runtime = json.loads(Path(os.environ['BLUEPRINT_WAM_PROVIDER_INPUT']).read_text())",
+                "job_dir = Path(runtime['job_dir'])",
+                "matrix_path = job_dir / runtime['inputs']['scenario_eval_matrix']",
+                "matrix = json.loads(matrix_path.read_text())",
+                "run_id = matrix['runs'][0]['scenario_eval_run_id']",
+                "policy_id = runtime['policy_ids'][0]",
+                "payload = {",
+                "  'rollouts': [{",
+                "    'rollout_id': 'fake-cosmos-rollout-1',",
+                "    'policy_id': policy_id,",
+                "    'scenario_eval_run_id': run_id,",
+                "    'predicted_success': True,",
+                "    'uncertainty_score': 0.12,",
+                "    'failure_mode_ids': [],",
+                "    'ood_flags': [],",
+                "    'metrics': {'latency_ms': 7},",
+                "  }],",
+                "  'artifact_upload_evidence': {",
+                "    'provider_writable_output_verified': True,",
+                "    'api_key': 'must-redact',",
+                "  },",
+                "}",
+                "Path(os.environ['BLUEPRINT_WAM_PROVIDER_OUTPUT']).write_text(json.dumps(payload))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER", "true")
+    monkeypatch.setenv("BLUEPRINT_COSMOS3_WAM_API_KEY", "test-auth")
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-cosmos-wam",
+        provisioner="fixture_local",
+        simulator="fixture",
+        evaluation_substrate="cosmos3_wam",
+        allow_wam_provider=True,
+        wam_provider_commands={"cosmos3_wam": f"{sys.executable} {provider_script}"},
+        wam_artifact_output_uri="gs://bucket/customer-job/wam",
+        wam_provider_max_retries=1,
+        wam_provider_timeout_seconds=30,
+    )
+
+    assert result["status"] in {
+        "fixture_evaluation_completed",
+        "fixture_evaluation_completed_with_failures",
+        "completed_with_failures",
+    }
+    job_dir = Path(result["job_dir"])
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    worker_manifest = _read_json(job_dir / "worker_manifest.json")
+    provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+    provider_execution = _read_json(job_dir / "wam_provider_execution_manifest.json")
+    provider_upload = _read_json(job_dir / "wam_provider_artifact_upload_proof.json")
+    runtime_package = _read_json(job_dir / "wam_provider_runtime_package.json")
+    scorecard = _read_json(job_dir / "policy_ranking_scorecard.json")
+    claim_boundary = _read_json(job_dir / "wam_eval_claim_boundary.json")
+
+    assert run_manifest["evaluation_substrate"] == "cosmos3_wam"
+    assert run_manifest["wam_evaluation_status"] == "completed"
+    assert worker_manifest["evaluation_substrate"] == "cosmos3_wam"
+    assert worker_manifest["allow_wam_provider"] is True
+    assert worker_manifest["wam_provider_commands"]["cosmos3_wam"].endswith(
+        "fake_cosmos_wam_provider.py"
+    )
+    worker_command = provider_launch["provider_request_shape"]["command"]
+    assert "--evaluation-substrate cosmos3_wam" in worker_command
+    assert "--allow-wam-provider" in worker_command
+    assert "--wam-provider-command" in worker_command
+    assert provider_execution["status"] == "completed"
+    assert provider_execution["provider_command_used"] is True
+    assert provider_execution["attempt_count"] == 1
+    assert provider_execution["max_retries"] == 1
+    assert provider_upload["status"] == "upload_proven"
+    assert provider_upload["evidence"]["api_key"] == "<redacted>"
+    assert runtime_package["evaluation_substrate"] == "cosmos3_wam"
+    assert runtime_package["artifact_output_uri"] == "gs://bucket/customer-job/wam"
+    assert scorecard["status"] == "completed"
+    assert claim_boundary["live_provider_calls_performed"] is True
+    assert claim_boundary["robot_readiness_proven"] is False
+    assert run_manifest["public_claim_upgrade_allowed"] is False

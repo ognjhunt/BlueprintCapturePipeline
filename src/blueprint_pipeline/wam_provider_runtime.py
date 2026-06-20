@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .common import read_json_any
-from .wam_eval_substrate import build_wam_eval_claim_boundary
+from .wam_eval_substrate import (
+    WAM_EVALUATION_SUBSTRATES,
+    build_wam_eval_claim_boundary,
+    normalize_evaluation_substrate,
+)
 
 
 WAM_PROVIDER_RUNTIME_PACKAGE_SCHEMA_VERSION = "wam_provider_runtime_package.v1"
@@ -40,6 +44,9 @@ WAM_PROVIDER_AUTH_ENV_BY_SUBSTRATE = {
         "OSCAR_WAM_API_KEY",
     ),
 }
+
+LIVE_WAM_PROVIDER_ENV_VAR = "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER"
+LIVE_WAM_PROVIDER_SUBSTRATES = frozenset(WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE)
 
 
 def _mapping(value: Any) -> Dict[str, Any]:
@@ -86,6 +93,40 @@ def _claim_boundary(*, substrate: str, generated_at: str) -> Dict[str, Any]:
 
 def env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def parse_wam_provider_commands(values: Sequence[str] | None) -> Dict[str, str]:
+    commands: Dict[str, str] = {}
+    for value in values or ():
+        substrate, separator, command = _string(value).partition("=")
+        try:
+            normalized = normalize_evaluation_substrate(substrate)
+        except ValueError as exc:
+            raise ValueError(
+                "--wam-provider-command must be formatted as "
+                "<cosmos3_wam|oscar_wam>=<command>"
+            ) from exc
+        if (
+            not separator
+            or normalized not in WAM_EVALUATION_SUBSTRATES
+            or normalized not in LIVE_WAM_PROVIDER_SUBSTRATES
+            or not command.strip()
+        ):
+            raise ValueError(
+                "--wam-provider-command must be formatted as "
+                "<cosmos3_wam|oscar_wam>=<command>"
+            )
+        commands[normalized] = command.strip()
+    return commands
+
+
+def live_provider_gate_blockers(*, allow_live_provider: bool) -> list[str]:
+    blockers: list[str] = []
+    if not allow_live_provider:
+        blockers.append("allow_live_wam_provider_not_enabled")
+    if not env_truthy(LIVE_WAM_PROVIDER_ENV_VAR):
+        blockers.append(f"{LIVE_WAM_PROVIDER_ENV_VAR}_not_enabled")
+    return blockers
 
 
 def redact(value: Any) -> Any:

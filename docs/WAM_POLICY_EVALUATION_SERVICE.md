@@ -52,15 +52,60 @@ blueprint-run-wam-fixture-evaluator \
   --evaluation-substrate fixture_wam
 ```
 
+## Live Or Owner WAM Adapter Path
+
+`cosmos3_wam` and `oscar_wam` are adapter contracts, not hardwired product
+dependencies. They fail closed unless all of these are present:
+
+- an explicit local run gate: `--allow-wam-provider` for robot-eval jobs or
+  `--allow-live-provider` for the WAM evaluator CLI
+- `BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER=true`
+- a provider command such as `--wam-provider-command cosmos3_wam=/path/to/adapter`
+  or `BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND`
+- provider auth in env only: Cosmos accepts one of
+  `BLUEPRINT_COSMOS3_WAM_API_KEY`, `COSMOS_API_KEY`, or `NVIDIA_API_KEY`;
+  OSCAR accepts one of `BLUEPRINT_OSCAR_WAM_API_KEY` or `OSCAR_WAM_API_KEY`
+
+Example job-level adapter run:
+
+```bash
+BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER=true \
+BLUEPRINT_COSMOS3_WAM_API_KEY=<redacted> \
+blueprint-run-robot-eval-job \
+  --capture-root /path/to/<capture-root> \
+  --job-request /path/to/robot_eval_job_request.json \
+  --job-id <job_id> \
+  --provisioner fixture_local \
+  --simulator fixture \
+  --evaluation-substrate cosmos3_wam \
+  --allow-wam-provider \
+  --wam-provider-command cosmos3_wam="/path/to/cosmos_adapter" \
+  --wam-artifact-output-uri gs://customer-bucket/<job_id>/wam \
+  --wam-provider-max-retries 1 \
+  --wam-provider-timeout-seconds 120
+```
+
+The adapter receives `BLUEPRINT_WAM_PROVIDER_INPUT`,
+`BLUEPRINT_WAM_PROVIDER_OUTPUT`, `BLUEPRINT_WAM_PROVIDER_SUBSTRATE`, and,
+when supplied, `BLUEPRINT_WAM_PROVIDER_ARTIFACT_OUTPUT_URI`. It must write JSON
+with `rollouts` or `wam_rollout_results.rollouts`. Secrets must stay in env and
+must not be written into artifacts.
+
 ## WAM Artifact Contract
 
 When WAM evaluation is requested, the job writes:
 
 - `evaluation_substrate_registry.json`
 - `wam_evaluation_request.json`
+- `wam_provider_runtime_package.json`
+- `wam_provider_execution_manifest.json`
+- `wam_provider_cost_control_ledger.json`
+- `wam_provider_artifact_upload_proof.json`
+- `wam_policy_interface_binding.json`
 - `wam_rollout_manifest.json`
 - `wam_rollout_results.json`
 - `vision_success_labels.json`
+- `wam_vision_success_review_queue.json`
 - `normalized_attempt_trace.json`
 - `failure_labels.json`
 - `prediction_outcome_ledger.json`
@@ -70,14 +115,18 @@ When WAM evaluation is requested, the job writes:
 - `wam_eval_claim_boundary.json`
 - `real_world_validation_followup_request.json`
 - `srcc_validation_plan.json`
+- `wam_real_world_validation_anchor_manifest.json`
+- `wam_customer_validation_envelope.json`
+- `wam_production_ops_manifest.json`
+- `wam_classical_sim_cross_check_plan.json`
 - `customer_handoff_report.json`
 - `customer_handoff_report.md`
 
 The fixture evaluator deterministically generates rollout support manifests,
 fixture vision labels, normalized attempts, failure labels, a policy ranking
 scorecard, a customer handoff report, and a real-world validation follow-up
-request. Live providers are represented as blocked manifests until adapters and
-explicit gates exist.
+request. Live providers are represented through the same artifacts and remain
+blocked until adapter commands, auth envs, gates, and output rollouts are present.
 
 ## Policy Autoresearch
 

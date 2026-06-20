@@ -162,12 +162,24 @@ Artifact families and advisory downstream outputs:
   evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_evaluation_request.json` when WAM/substrate
   evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_provider_runtime_package.json` when WAM/substrate
+  evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_provider_execution_manifest.json` when
+  WAM/substrate evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_provider_cost_control_ledger.json` when
+  WAM/substrate evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_provider_artifact_upload_proof.json` when
+  WAM/substrate evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_policy_interface_binding.json` when
+  WAM/substrate evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_rollout_manifest.json` when WAM/substrate
   evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_rollout_results.json` when WAM/substrate
   evaluation is requested
 - `robot_eval_jobs/<job_id>/vision_success_labels.json` when WAM/substrate
   evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_vision_success_review_queue.json` when
+  WAM/substrate evaluation is requested
 - `robot_eval_jobs/<job_id>/policy_ranking_scorecard.json` when WAM/substrate
   evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_eval_claim_boundary.json` when WAM/substrate
@@ -176,6 +188,14 @@ Artifact families and advisory downstream outputs:
   WAM/substrate evaluation is requested
 - `robot_eval_jobs/<job_id>/srcc_validation_plan.json` when WAM/substrate
   evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_real_world_validation_anchor_manifest.json` when
+  WAM/substrate evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_customer_validation_envelope.json` when
+  WAM/substrate evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_production_ops_manifest.json` when
+  WAM/substrate evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_classical_sim_cross_check_plan.json` when
+  WAM/substrate evaluation is requested
 - `robot_eval_jobs/<job_id>/robot_pov_observation_manifest.json`
 - `robot_eval_jobs/<job_id>/robot_pov_observations.jsonl`
 - `robot_eval_jobs/<job_id>/robot_pov_frame_sequence_manifest.json`
@@ -267,6 +287,12 @@ Artifact families and advisory downstream outputs:
 uv sync --extra dev
 ```
 
+Run repository commands through the synced environment:
+
+```bash
+uv run blueprint-capture-pipeline --help
+```
+
 This is a repository development setup only. It is not the supported single-VM GPU runtime bootstrap path.
 
 Optional LLM support for the capture review agent:
@@ -275,7 +301,7 @@ Optional LLM support for the capture review agent:
 uv sync --extra dev --extra llm
 ```
 
-Local tests automatically add `src/` and the sibling `BlueprintContracts/src` to `sys.path` through [`tests/conftest.py`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py). If the contracts repo is not present beside this repo, install `blueprint-contracts` before running `pytest`.
+Local tests automatically add `src/` and the sibling `BlueprintContracts/src` to `sys.path` through [`tests/conftest.py`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py). If the contracts repo is not present beside this repo, install `blueprint-contracts` before running `uv run pytest`.
 
 Cross-repo external alpha gate:
 
@@ -830,6 +856,33 @@ blueprint-run-wam-fixture-evaluator \
   --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
   --evaluation-substrate fixture_wam
 ```
+
+Live or owner-provided WAM adapters use the same job path but remain gated. For
+example, a Cosmos-style adapter must be enabled explicitly and supplied through
+env/CLI; both `--allow-wam-provider` and
+`BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER=true` are required. Provider credentials stay
+in env and are never written to artifacts:
+
+```bash
+BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER=true \
+BLUEPRINT_COSMOS3_WAM_API_KEY=<redacted> \
+blueprint-run-robot-eval-job \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --job-request /path/to/robot-eval-job-request.json \
+  --job-id <job_id> \
+  --provisioner fixture_local \
+  --simulator fixture \
+  --evaluation-substrate cosmos3_wam \
+  --allow-wam-provider \
+  --wam-provider-command cosmos3_wam="/path/to/cosmos_wam_adapter" \
+  --wam-artifact-output-uri gs://customer-bucket/<job_id>/wam
+```
+
+The adapter receives `BLUEPRINT_WAM_PROVIDER_INPUT` and
+`BLUEPRINT_WAM_PROVIDER_OUTPUT` and must write provider rollout JSON. Missing
+adapter commands, missing auth envs, failed commands, timeouts, invalid JSON, or
+empty rollout outputs write blocked WAM provider manifests instead of making a
+readiness claim.
 
 To consume WebApp-exported request JSON files, point the same entrypoint at an
 inbox:

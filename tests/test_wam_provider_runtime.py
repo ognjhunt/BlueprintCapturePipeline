@@ -4,7 +4,9 @@ import sys
 from pathlib import Path
 
 from blueprint_pipeline.wam_provider_runtime import (
+    live_provider_gate_blockers,
     normalize_provider_rollouts,
+    parse_wam_provider_commands,
     run_provider_command,
 )
 
@@ -43,6 +45,42 @@ def test_provider_rollout_normalization_handles_empty_and_invalid_numeric_payloa
     assert rollouts[0]["uncertainty_score"] == 0.35
     assert rollouts[1]["uncertainty_score"] == 0.35
     assert rollouts[1]["predicted_success"] is False
+
+
+def test_provider_command_parser_and_live_gate_are_fail_closed(monkeypatch) -> None:
+    commands = parse_wam_provider_commands(
+        [
+            "cosmos3_wam=/opt/cosmos adapter",
+            "oscar=/opt/oscar-adapter",
+        ]
+    )
+    assert commands == {
+        "cosmos3_wam": "/opt/cosmos adapter",
+        "oscar_wam": "/opt/oscar-adapter",
+    }
+
+    for invalid in (
+        "private_model=/tmp/provider",
+        "fixture_wam=/tmp/fixture",
+        "mujoco=/tmp/sim",
+        "cosmos3_wam=",
+    ):
+        try:
+            parse_wam_provider_commands([invalid])
+        except ValueError as exc:
+            assert "--wam-provider-command" in str(exc)
+        else:  # pragma: no cover - keeps failure message concrete
+            raise AssertionError(f"accepted invalid WAM provider command: {invalid}")
+
+    assert live_provider_gate_blockers(allow_live_provider=False) == [
+        "allow_live_wam_provider_not_enabled",
+        "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER_not_enabled",
+    ]
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER", "true")
+    assert live_provider_gate_blockers(allow_live_provider=False) == [
+        "allow_live_wam_provider_not_enabled"
+    ]
+    assert live_provider_gate_blockers(allow_live_provider=True) == []
 
 
 def test_provider_command_reports_parse_launch_timeout_and_invalid_json_failures(

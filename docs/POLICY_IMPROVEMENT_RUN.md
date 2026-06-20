@@ -100,6 +100,15 @@ blueprint-run-policy-autoresearch \
   --evaluator-command "python -m blueprint_pipeline.policy_autoresearch_wam_fixture_evaluator"
 ```
 
+For live or owner-provided WAM adapters, create the robot-eval job with
+`--evaluation-substrate cosmos3_wam` or `--evaluation-substrate oscar_wam`,
+`--allow-wam-provider`, the matching `--wam-provider-command`, and env-only
+provider auth plus `BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER=true` first.
+Autoresearch can then call substrate-specific evaluator commands with
+`--evaluator-command-by-engine cosmos3_wam="..."` or
+`--evaluator-command-by-engine oscar_wam="..."`; those commands still write only
+support evidence and do not turn a WAM heldout pass into deployment approval.
+
 Run the MuJoCo cross-check/fallback policy-autoresearch loop:
 
 ```bash

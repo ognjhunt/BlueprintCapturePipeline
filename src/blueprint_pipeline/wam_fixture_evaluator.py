@@ -17,7 +17,7 @@ from .wam_eval_substrate import (
 from .wam_provider_runtime import (
     classical_sim_cross_check_plan as _classical_sim_cross_check_plan,
     customer_validation_envelope as _customer_validation_envelope,
-    env_truthy as _env_truthy,
+    live_provider_gate_blockers as _live_provider_gate_blockers,
     normalize_provider_rollouts as _normalize_provider_rollouts,
     policy_interface_binding as _policy_interface_binding,
     production_ops_manifest as _production_ops_manifest,
@@ -1022,10 +1022,10 @@ def run_wam_eval_job(
                     )
                 )
     else:
-        live_gate = bool(allow_live_provider or _env_truthy("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER"))
+        provider_execution_blockers.extend(
+            _live_provider_gate_blockers(allow_live_provider=allow_live_provider)
+        )
         auth_status = _provider_auth_status(substrate)
-        if not live_gate:
-            provider_execution_blockers.append("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER_not_enabled")
         if not provider_command_text:
             provider_execution_blockers.append(
                 f"{substrate}_provider_adapter_not_configured_for_local_run"
