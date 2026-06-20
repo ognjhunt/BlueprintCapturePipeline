@@ -94,6 +94,7 @@ blueprint-run-policy-autoresearch-wam-fixture-evaluator = "blueprint_pipeline.po
 blueprint-run-wam-fixture-evaluator = "blueprint_pipeline.wam_fixture_evaluator:main"
 blueprint-run-wam-eval-job = "blueprint_pipeline.wam_fixture_evaluator:main"
 blueprint-build-policy-improvement-run = "blueprint_pipeline.policy_improvement_run:main"
+blueprint-run-major-capability-scenarios = "blueprint_pipeline.major_capability_scenario_suite:main"
 blueprint-prepare-robot-eval-provider-inputs = "blueprint_pipeline.robot_eval_provider_input_setup:main"
 blueprint-run-gpu-provider-launcher = "blueprint_pipeline.robot_eval_provider_launcher:main"
 blueprint-run-runpod-provider-adapter = "blueprint_pipeline.runpod_provider_adapter:main"
