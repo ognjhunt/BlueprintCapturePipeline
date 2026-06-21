@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import owner_gpu_proof_runner as owner_runner
 from blueprint_pipeline.owner_gpu_default_smoke_artifacts import (
     main as smoke_artifact_main,
     write_default_smoke_artifacts,
@@ -349,6 +351,84 @@ def test_owner_gpu_proof_runner_blocks_isaac_proxy_robot_asset(tmp_path: Path) -
     assert "owner_gpu_unitree_g1_asset_not_spawned" in result["validation_blockers"]
     assert validation["isaac_sim_execution_proven"] is False
     assert validation["isaac_robot_asset_execution_proven"] is False
+
+
+def test_owner_gpu_proof_runner_records_empty_command_error(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+
+    result = run_owner_gpu_proof(
+        capture_root=capture_root,
+        command="   ",
+        owner_system_id="local-test",
+        simulator_backend="mujoco",
+        simulator_version="3.9.0",
+        gpu_model="local-cpu",
+        operator_id="operator-1",
+        operator_attestation="I attempted this command in a local test harness.",
+        timeout_seconds=30,
+    )
+
+    proof = json.loads(Path(result["proof_path"]).read_text(encoding="utf-8"))
+    stderr = (
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "owner_gpu_proof"
+        / "owner_simulator_stderr.log"
+    ).read_text(encoding="utf-8")
+    assert result["command_exit_code"] == 127
+    assert result["owner_gpu_simulator_execution_proven"] is False
+    assert proof["pass_fail_criteria"]["execution_error"] == "ValueError"
+    assert "--command must not be empty" in stderr
+
+
+def test_owner_gpu_proof_runner_records_timeout_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+
+    def raise_timeout(*args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(
+            cmd=["simulator"],
+            timeout=7,
+            output="partial stdout",
+            stderr="partial stderr",
+        )
+
+    monkeypatch.setattr(owner_runner.subprocess, "run", raise_timeout)
+
+    result = run_owner_gpu_proof(
+        capture_root=capture_root,
+        command=f"{sys.executable} -c pass",
+        owner_system_id="local-timeout-test",
+        simulator_backend="mujoco",
+        simulator_version="3.9.0",
+        gpu_model="local-cpu",
+        operator_id="operator-1",
+        operator_attestation="I attempted this command in a local test harness.",
+        timeout_seconds=7,
+    )
+
+    proof = json.loads(Path(result["proof_path"]).read_text(encoding="utf-8"))
+    proof_dir = capture_root / "pipeline" / "simulation_automation" / "owner_gpu_proof"
+    assert result["command_exit_code"] == 124
+    assert proof["pass_fail_criteria"]["execution_error"] == "timeout_after_7_seconds"
+    assert (proof_dir / "owner_simulator_stdout.log").read_text(encoding="utf-8") == "partial stdout"
+    assert (proof_dir / "owner_simulator_stderr.log").read_text(encoding="utf-8") == "partial stderr"
+
+
+def test_owner_gpu_proof_runner_keeps_external_proof_paths_absolute(tmp_path: Path) -> None:
+    outside_path = tmp_path / "external-proof" / "owner_simulator_stdout.log"
+    relative_path = Path("owner_gpu_proof") / "owner_simulator_stdout.log"
+
+    assert owner_runner._relative_or_absolute(outside_path, base=tmp_path / "capture") == str(
+        outside_path
+    )
+    assert owner_runner._relative_or_absolute(
+        tmp_path / "capture" / relative_path,
+        base=tmp_path / "capture",
+    ) == str(relative_path)
 
 
 def test_owner_gpu_proof_runner_cli_returns_nonzero_for_incomplete_proof(tmp_path: Path) -> None:

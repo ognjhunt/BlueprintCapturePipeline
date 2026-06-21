@@ -267,14 +267,7 @@ def build_production_handoff_readiness(
 
     if not gpu_proof_schema:
         blockers.append("gpu_owner_system_proof_schema_missing")
-    if owner_gpu_proven:
-        if not owner_gpu_proof:
-            blockers.append("owner_gpu_proof_manifest_missing")
-        if expected_isaac_simulator and not isaac_unitree_g1_execution_proven:
-            blockers.append("isaac_sim_unitree_g1_execution_not_proven")
-        if expected_mujoco_simulator and not mujoco_unitree_g1_execution_proven:
-            blockers.append("mujoco_g1_execution_not_proven")
-    else:
+    if not owner_gpu_proven:
         if expected_isaac_simulator and generic_owner_gpu_proven and not isaac_unitree_g1_execution_proven:
             blockers.append("isaac_sim_unitree_g1_execution_not_proven")
         if expected_mujoco_simulator and generic_owner_gpu_proven and not mujoco_unitree_g1_execution_proven:

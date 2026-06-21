@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import shlex
 import subprocess
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .logging_utils import log_event
 
 
 GPU_PROVIDER_LAUNCHER_RESULT_SCHEMA_VERSION = (
@@ -18,6 +20,7 @@ GPU_PROVIDER_LAUNCHER_RESULT_SCHEMA_VERSION = (
 ALLOW_PROVIDER_LAUNCH_ENV = "BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH"
 PROVIDER_LAUNCH_COMMAND_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND"
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+logger = logging.getLogger(__name__)
 
 
 def _string(value: Any) -> str:
@@ -236,9 +239,38 @@ def _base_result(
     }
 
 
+def _result_event_name(status: str) -> str:
+    if status == "blocked":
+        return "robot_eval_provider_launcher.blocked"
+    if status == "failed":
+        return "robot_eval_provider_launcher.failed"
+    return "robot_eval_provider_launcher.completed"
+
+
 def _write_result(output_path: Path, result: Mapping[str, Any]) -> dict[str, Any]:
-    write_json(output_path, result)
-    return dict(result)
+    persisted = dict(result)
+    write_json(output_path, persisted)
+    blockers = _string_list(persisted.get("blockers"))
+    status = _string(persisted.get("status"))
+    log_event(
+        logger,
+        logging.WARNING if status in {"blocked", "failed"} else logging.INFO,
+        _result_event_name(status),
+        output_path=str(output_path),
+        job_id=persisted.get("job_id"),
+        provider=persisted.get("provider"),
+        status=status,
+        reason=persisted.get("reason"),
+        blocker_count=len(blockers),
+        blockers=blockers,
+        execution_performed=persisted.get("execution_performed"),
+        provider_launcher_command_executed=persisted.get(
+            "provider_launcher_command_executed"
+        ),
+        exit_code=persisted.get("exit_code"),
+        timeout_seconds=persisted.get("timeout_seconds"),
+    )
+    return persisted
 
 
 def _request_blockers(
@@ -312,6 +344,18 @@ def run_gpu_provider_launcher(
     generated_at = utc_now_iso()
     payload = read_json_any(request_path)
     request = dict(payload) if isinstance(payload, Mapping) else {}
+    log_event(
+        logger,
+        logging.INFO,
+        "robot_eval_provider_launcher.started",
+        request_path=str(request_path),
+        output_path=str(resolved_output),
+        job_id=request.get("job_id"),
+        provider=request.get("provider"),
+        request_status=request.get("status"),
+        allow_provider_launch=allow_provider_launch,
+        command_provided=bool(provider_launch_command or os.getenv(PROVIDER_LAUNCH_COMMAND_ENV)),
+    )
     if not request:
         result = _base_result(
             request_path=request_path,

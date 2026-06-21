@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shlex
@@ -15,6 +16,7 @@ from typing import Any, Dict, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .logging_utils import log_event
 
 
 RUNPOD_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "runpod_provider_adapter_result.v1"
@@ -34,6 +36,7 @@ PROVIDER_ADAPTER_OUTPUT_ENV = "BLUEPRINT_GPU_PROVIDER_ADAPTER_OUTPUT"
 RUNPOD_FORWARD_SECRET_ENV_VARS_ENV = "BLUEPRINT_RUNPOD_FORWARD_SECRET_ENV_VARS"
 GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+logger = logging.getLogger(__name__)
 WORKER_IMAGE_REF_ENV_BY_SIMULATOR = {
     "isaac_sim": "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
     "isaac_lab_arena": "BLUEPRINT_ISAAC_ARENA_EVAL_WORKER_IMAGE_REF",
@@ -359,6 +362,42 @@ def _base_result(
         "request_summary": _request_summary(request),
         "cost_control_policy": _cost_control_policy(request),
     }
+
+
+def _adapter_event_name(status: str) -> str:
+    if status == "blocked":
+        return "runpod_provider_adapter.blocked"
+    if status == "failed":
+        return "runpod_provider_adapter.failed"
+    return "runpod_provider_adapter.completed"
+
+
+def _persist_result(output_path: Path, result: Mapping[str, Any]) -> Dict[str, Any]:
+    persisted = dict(result)
+    write_json(output_path, persisted)
+    blockers = _string_list(persisted.get("blockers"))
+    status = _string(persisted.get("status"))
+    log_event(
+        logger,
+        logging.WARNING if status in {"blocked", "failed"} else logging.INFO,
+        _adapter_event_name(status),
+        output_path=str(output_path),
+        provider_launch_request_path=persisted.get("provider_launch_request_path"),
+        job_id=persisted.get("job_id"),
+        provider=persisted.get("provider"),
+        mode=persisted.get("mode"),
+        status=status,
+        reason=persisted.get("reason"),
+        blocker_count=len(blockers),
+        blockers=blockers,
+        api_call_performed=persisted.get("api_call_performed"),
+        runpod_side_effects_may_have_occurred=persisted.get(
+            "runpod_side_effects_may_have_occurred"
+        ),
+        http_status_code=persisted.get("http_status_code"),
+        provider_job_submitted=persisted.get("provider_job_submitted"),
+    )
+    return persisted
 
 
 def _serverless_payload(
@@ -693,6 +732,17 @@ def run_runpod_provider_adapter(
         request=request,
         mode=mode,
     )
+    log_event(
+        logger,
+        logging.INFO,
+        "runpod_provider_adapter.started",
+        provider_launch_request_path=str(request_path),
+        output_path=str(resolved_output),
+        job_id=request.get("job_id"),
+        provider=request.get("provider"),
+        mode=mode,
+        allow_runpod_api_call=allow_runpod_api_call,
+    )
     if not request:
         result.update(
             {
@@ -701,8 +751,7 @@ def run_runpod_provider_adapter(
                 "blockers": ["invalid_provider_launch_request_json"],
             }
         )
-        write_json(resolved_output, result)
-        return result
+        return _persist_result(resolved_output, result)
 
     api_key, api_key_meta = _read_runpod_api_key()
     result.update(api_key_meta)
@@ -749,8 +798,7 @@ def run_runpod_provider_adapter(
                 "blockers": request_blockers,
             }
         )
-        write_json(resolved_output, result)
-        return result
+        return _persist_result(resolved_output, result)
 
     if mode == "dry-run":
         result.update(
@@ -760,8 +808,7 @@ def run_runpod_provider_adapter(
                 "blockers": [],
             }
         )
-        write_json(resolved_output, result)
-        return result
+        return _persist_result(resolved_output, result)
 
     gate_blockers = _api_gate_blockers(
         allow_runpod_api_call=allow_runpod_api_call,
@@ -776,8 +823,7 @@ def run_runpod_provider_adapter(
                 **api_key_meta,
             }
         )
-        write_json(resolved_output, result)
-        return result
+        return _persist_result(resolved_output, result)
 
     try:
         if mode == "serverless-run":
@@ -836,8 +882,7 @@ def run_runpod_provider_adapter(
                 "error": _redact_text(str(exc), api_key),
             }
         )
-    write_json(resolved_output, result)
-    return result
+    return _persist_result(resolved_output, result)
 
 
 def _request_path_from_args(args: argparse.Namespace) -> Path:

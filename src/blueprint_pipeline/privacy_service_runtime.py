@@ -33,6 +33,7 @@ DeepPrivacy2 requests additionally accept:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -50,6 +51,10 @@ from .common import (
     parse_bool,
     resolve_gs_uri_to_path,
 )
+from .logging_utils import log_event
+
+
+logger = logging.getLogger(__name__)
 
 
 def _gcs_root() -> Path:
@@ -67,6 +72,34 @@ def _string(value: Any) -> str:
 
 def _to_jsonable(payload: Mapping[str, Any]) -> Dict[str, Any]:
     return json.loads(json.dumps(dict(payload)))
+
+
+def _finish_privacy_service_request(
+    runner_kind: str,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    result = _to_jsonable(payload)
+    status = _string(result.get("status")).lower()
+    log_event(
+        logger,
+        logging.INFO if status == "succeeded" else logging.WARNING,
+        "privacy_service.completed" if status == "succeeded" else "privacy_service.failed",
+        runner_kind=runner_kind,
+        result_status=status,
+        reason=result.get("reason"),
+        output_json_uri_present=bool(_string(result.get("output_json_uri"))),
+        output_json_path=result.get("output_json_path"),
+        mask_path_count=len(result.get("mask_paths") or [])
+        if isinstance(result.get("mask_paths"), list)
+        else None,
+        depth_artifact_count=len(result.get("depth_artifacts") or [])
+        if isinstance(result.get("depth_artifacts"), list)
+        else None,
+        confidence_artifact_count=len(result.get("confidence_artifacts") or [])
+        if isinstance(result.get("confidence_artifacts"), list)
+        else None,
+    )
+    return result
 
 
 def _storage_client() -> Any:
@@ -375,10 +408,10 @@ def _run_sam3_backend(
                 frame_index += 1
                 continue
             while masks_array.ndim > 3:
-                if masks_array.shape[0] == 0:
+                if masks_array.shape[0] == 0:  # pragma: no cover - size check above catches zero dimensions.
                     break
                 masks_array = masks_array[0]
-            if masks_array.size == 0:
+            if masks_array.size == 0:  # pragma: no cover - size check above catches zero dimensions.
                 frame_index += 1
                 continue
             if masks_array.ndim == 2:
@@ -846,8 +879,20 @@ def _run_deepprivacy2_backend(
 
 def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[str, Any]:
     runner_kind = _string(kind).lower()
+    log_event(
+        logger,
+        logging.INFO,
+        "privacy_service.started",
+        runner_kind=runner_kind,
+        input_video_uri_present=bool(_string(body.get("input_video_uri"))),
+        input_video_path_present=bool(_string(body.get("input_video_path"))),
+        output_json_uri_present=bool(_string(body.get("output_json_uri"))),
+    )
     if runner_kind not in {"sam3", "vip", "deepprivacy2"}:
-        return {"status": "failed", "reason": f"unsupported_runner_kind:{runner_kind}"}
+        return _finish_privacy_service_request(
+            runner_kind,
+            {"status": "failed", "reason": f"unsupported_runner_kind:{runner_kind}"},
+        )
 
     with tempfile.TemporaryDirectory(prefix=f"privacy-{runner_kind}-") as temp_dir:
         workdir = Path(temp_dir)
@@ -863,7 +908,10 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 working_path=inputs_dir / "input_video.mov",
             )
         except Exception as exc:
-            return {"status": "failed", "reason": str(exc)}
+            return _finish_privacy_service_request(
+                runner_kind,
+                {"status": "failed", "reason": str(exc)},
+            )
 
         output_json_path = outputs_dir / "result.json"
         output_json_uri = _string(body.get("output_json_uri"))
@@ -891,12 +939,13 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                     mask_paths = _copy_directory_to_uri(masks_dir, _string(body.get("masks_dir_path")))
                 result["mask_paths"] = mask_paths
             _write_payload_json(result, output_json_path, output_json_uri)
-            return _to_jsonable(
+            return _finish_privacy_service_request(
+                runner_kind,
                 {
                     **result,
                     "output_json_uri": output_json_uri or None,
                     "output_json_path": str(output_json_path),
-                }
+                },
             )
 
         if runner_kind == "vip":
@@ -983,12 +1032,13 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                         }
                     )
                 _write_payload_json(result, output_json_path, output_json_uri)
-                return _to_jsonable(
+                return _finish_privacy_service_request(
+                    runner_kind,
                     {
                         **result,
                         "output_json_uri": output_json_uri or None,
                         "output_json_path": str(output_json_path),
-                    }
+                    },
                 )
 
             try:
@@ -1000,7 +1050,7 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
             except Exception as exc:
                 result = {"status": "failed", "reason": str(exc)}
                 _write_payload_json(result, output_json_path, output_json_uri)
-                return _to_jsonable(result)
+                return _finish_privacy_service_request(runner_kind, result)
 
             arkit_depth_dir: Optional[Path] = None
             arkit_confidence_dir: Optional[Path] = None
@@ -1078,12 +1128,13 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                     result["output_video_uri"] = None
                 result["output_video"] = str(local_output_video)
             _write_payload_json(result, output_json_path, output_json_uri)
-            return _to_jsonable(
+            return _finish_privacy_service_request(
+                runner_kind,
                 {
                     **result,
                     "output_json_uri": output_json_uri or None,
                     "output_json_path": str(output_json_path),
-                }
+                },
             )
 
         deepprivacy2_model_path = _materialize_model_path(
@@ -1107,12 +1158,13 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 result["output_video_uri"] = None
             result["output_video"] = str(local_output_video)
         _write_payload_json(result, output_json_path, output_json_uri)
-        return _to_jsonable(
+        return _finish_privacy_service_request(
+            runner_kind,
             {
                 **result,
                 "output_json_uri": output_json_uri or None,
                 "output_json_path": str(output_json_path),
-            }
+            },
         )
 
 

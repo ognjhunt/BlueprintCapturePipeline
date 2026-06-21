@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import runpy
+import sys
 from pathlib import Path
 
-from blueprint_pipeline.site_reference_backfill import run_site_reference_backfill
+import pytest
+
+from blueprint_pipeline.site_reference_backfill import main, run_site_reference_backfill
 
 
 def _capture_root(root: Path, *, capture_id: str = "capture-1") -> Path:
@@ -79,6 +83,32 @@ def test_site_reference_backfill_execute_reuses_retrieval_stage(monkeypatch, tmp
     assert result["captures"][0]["status"] == "indexed"
 
 
+def test_site_reference_backfill_execute_records_stage_failure(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path, capture_id="capture-stage-fails")
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-stage-fails",
+                "world_model_candidate": True,
+                "site_id": "site-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.site_reference_backfill.run_retrieval_index_stage",
+        lambda **_kwargs: {"status": "blocked", "reason": "missing_embeddings"},
+    )
+
+    result = run_site_reference_backfill(storage_roots=[tmp_path], dry_run=False)
+
+    assert result["summary"]["skipped"] == 1
+    assert result["captures"][0]["blockers"] == ["missing_embeddings"]
+
+
 def test_site_reference_backfill_reports_geometry_required_for_meta_capture(tmp_path: Path) -> None:
     capture_root = _capture_root(tmp_path, capture_id="capture-meta")
     raw_root = capture_root / "raw"
@@ -140,3 +170,199 @@ def test_site_reference_backfill_reports_geometry_required_for_meta_capture(tmp_
     )
     assert "scripts/run_geometry_lane.py" in entry["local_geometry_command"]
     assert entry["provider_blocker"]["required_env"] == ["VIDEO_TO_WORLD_URL", "VIDEO_TO_WORLD_RUNNER_TOKEN"]
+
+
+def test_site_reference_backfill_handles_discovery_and_candidate_edges(tmp_path: Path) -> None:
+    missing = run_site_reference_backfill(storage_roots=[tmp_path / "missing"], dry_run=True)
+    assert missing["summary"]["discovered"] == 0
+    assert missing["review_packet_path"] is None
+
+    skipped_root = _capture_root(tmp_path, capture_id="capture-not-candidate")
+    (skipped_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_id": "site-1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-not-candidate",
+                "world_model_candidate": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    no_scene_root = tmp_path / "loose" / "captures" / "capture-no-scene"
+    no_scene_root.mkdir(parents=True)
+    (no_scene_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_id": "site-1",
+                "capture_id": "capture-no-scene",
+                "world_model_candidate": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    marker_at_end_root = tmp_path / "lonely" / "scenes"
+    marker_at_end_root.mkdir(parents=True)
+    (marker_at_end_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_id": "site-1",
+                "capture_id": "capture-marker-at-end",
+                "world_model_candidate": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    scene_from_path_root = tmp_path / "pathcase" / "scenes" / "scene-from-path" / "captures" / "capture-path"
+    scene_from_path_root.mkdir(parents=True)
+    (scene_from_path_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_id": "site-1",
+                "capture_id": "capture-path",
+                "world_model_candidate": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_site_reference_backfill(storage_roots=[tmp_path], dry_run=True)
+    by_capture = {entry["capture_id"]: entry for entry in result["captures"]}
+
+    assert by_capture["capture-not-candidate"]["status"] == "skipped"
+    assert by_capture["capture-not-candidate"]["blockers"] == ["world_model_candidate=false"]
+    assert by_capture["capture-no-scene"]["scene_id"] == ""
+    assert by_capture["capture-marker-at-end"]["scene_id"] == ""
+    assert by_capture["capture-path"]["scene_id"] == "scene-from-path"
+
+
+def test_site_reference_backfill_merges_raw_sidecars_and_ignores_invalid_json(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path, capture_id="capture-sidecar")
+    raw_root = capture_root / "raw"
+    raw_root.mkdir()
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-sidecar",
+                "world_model_candidate": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (raw_root / "manifest.json").write_text("{}", encoding="utf-8")
+    (raw_root / "site_identity.json").write_text(
+        json.dumps({"site_id": "site-from-sidecar", "site_id_source": "fixture"}),
+        encoding="utf-8",
+    )
+    (raw_root / "capture_mode.json").write_text("{bad-json", encoding="utf-8")
+
+    result = run_site_reference_backfill(storage_roots=[tmp_path], dry_run=True)
+
+    assert result["captures"][0]["status"] == "eligible"
+    assert result["captures"][0]["site_id"] == "site-from-sidecar"
+
+
+def _write_meta_capture(
+    capture_root: Path,
+    *,
+    rights_allowed: bool,
+    raw_video: bool,
+    geometry_summary: dict[str, object] | None = None,
+) -> None:
+    capture_root.mkdir(parents=True, exist_ok=True)
+    raw_root = capture_root / "raw"
+    raw_root.mkdir()
+    if raw_video:
+        (raw_root / "walkthrough.mov").write_bytes(b"video")
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_id": "site-1",
+                "capture_source": "meta_glasses",
+                "capture_id": capture_root.name,
+                "world_model_candidate": True,
+                "metadata": {
+                    "capture_rights": {
+                        "derived_scene_generation_allowed": rights_allowed,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    if geometry_summary is not None:
+        geometry_root = capture_root / "pipeline" / "geometry"
+        geometry_root.mkdir(parents=True)
+        (geometry_root / "geometry_summary.json").write_text(
+            json.dumps(geometry_summary),
+            encoding="utf-8",
+        )
+
+
+def test_site_reference_backfill_geometry_gate_accepts_ready_provider_and_local_outputs(
+    tmp_path: Path,
+) -> None:
+    no_rights = _capture_root(tmp_path, capture_id="capture-no-rights")
+    _write_meta_capture(no_rights, rights_allowed=False, raw_video=True)
+    no_video = _capture_root(tmp_path, capture_id="capture-no-video")
+    _write_meta_capture(no_video, rights_allowed=True, raw_video=False)
+    provider_ready = _capture_root(tmp_path, capture_id="capture-provider-ready")
+    _write_meta_capture(
+        provider_ready,
+        rights_allowed=True,
+        raw_video=True,
+        geometry_summary={"geometry_live_ready": True, "geometry_source": "video_to_world"},
+    )
+    local_ready = _capture_root(tmp_path, capture_id="capture-local-ready")
+    _write_meta_capture(
+        local_ready,
+        rights_allowed=True,
+        raw_video=True,
+        geometry_summary={
+            "geometry_source": "local_sfm",
+            "contract_ready_for_world_model": True,
+        },
+    )
+    still_missing = _capture_root(tmp_path, capture_id="capture-still-missing")
+    _write_meta_capture(
+        still_missing,
+        rights_allowed=True,
+        raw_video=True,
+        geometry_summary={"geometry_source": "preview_only"},
+    )
+
+    result = run_site_reference_backfill(storage_roots=[tmp_path], dry_run=True)
+    by_capture = {entry["capture_id"]: entry for entry in result["captures"]}
+
+    assert by_capture["capture-no-rights"]["status"] == "eligible"
+    assert by_capture["capture-no-video"]["status"] == "eligible"
+    assert by_capture["capture-provider-ready"]["status"] == "eligible"
+    assert by_capture["capture-local-ready"]["status"] == "eligible"
+    assert by_capture["capture-still-missing"]["status"] == "geometry_required"
+
+
+def test_site_reference_backfill_main_and_module_entrypoint(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    report_path = tmp_path / "report.json"
+    assert main([str(tmp_path), "--report-path", str(report_path), "--execute", "--force-rebuild"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["schema_version"] == "site_reference_backfill.v1"
+    assert report_path.is_file()
+
+    monkeypatch.setattr(sys, "argv", ["site_reference_backfill.py", str(tmp_path)])
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("blueprint_pipeline.site_reference_backfill", run_name="__main__")
+    assert exc_info.value.code == 0
+    assert json.loads(capsys.readouterr().out)["schema_version"] == "site_reference_backfill.v1"

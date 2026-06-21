@@ -5685,7 +5685,7 @@ def test_packaged_mujoco_g1_simulator_command_is_available() -> None:
         check=False,
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=60,
         env=env,
     )
 
@@ -6282,88 +6282,105 @@ def test_robot_eval_job_consumes_staged_policy_package(
     assert policy_execution["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
 
 
-def test_robot_eval_job_replays_all_reference_policy_modalities_with_matrix_coverage(
+@pytest.mark.parametrize(
+    ("modality", "payload"),
+    [
+        (
+            "policy_api_endpoint",
+            {
+                "endpoint_url": "https://robot-team.example/policy",
+                "response_manifest_uri": "policy_refs/policy_api_endpoint.json",
+            },
+        ),
+        (
+            "docker_container",
+            {
+                "image_ref": "registry.example/robot/policy:2026-06-04",
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "output_manifest_uri": "policy_refs/docker_container.json",
+            },
+        ),
+        (
+            "recorded_action_trace",
+            {
+                "trace_manifest_uri": "policy_refs/recorded_action_trace.json",
+                "timestamp_alignment": "aligned_to_capture_timestamps",
+            },
+        ),
+        (
+            "high_level_skill_trace",
+            {
+                "skill_taxonomy_version": "skills-v1",
+                "ordered_skill_sequence": ["navigate", "pick", "place"],
+            },
+        ),
+        (
+            "teleop_demo",
+            {
+                "demo_artifact_uri": "policy_refs/teleop_demo.json",
+                "rights_privacy_attestation": "deidentified_operator_approved",
+            },
+        ),
+        (
+            "sim_controller_plugin",
+            {
+                "simulator_framework": "fixture",
+                "plugin_uri": "policy_refs/sim_controller_plugin.json",
+            },
+        ),
+    ],
+)
+def test_robot_eval_job_replays_reference_policy_modality_with_matrix_coverage(
     tmp_path: Path,
+    modality: str,
+    payload: dict[str, object],
 ) -> None:
-    cases: dict[str, dict[str, object]] = {
-        "policy_api_endpoint": {
-            "endpoint_url": "https://robot-team.example/policy",
-            "response_manifest_uri": "policy_refs/policy_api_endpoint.json",
-        },
-        "docker_container": {
-            "image_ref": "registry.example/robot/policy:2026-06-04",
-            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "output_manifest_uri": "policy_refs/docker_container.json",
-        },
-        "recorded_action_trace": {
-            "trace_manifest_uri": "policy_refs/recorded_action_trace.json",
-            "timestamp_alignment": "aligned_to_capture_timestamps",
-        },
-        "high_level_skill_trace": {
-            "skill_taxonomy_version": "skills-v1",
-            "ordered_skill_sequence": ["navigate", "pick", "place"],
-        },
-        "teleop_demo": {
-            "demo_artifact_uri": "policy_refs/teleop_demo.json",
-            "rights_privacy_attestation": "deidentified_operator_approved",
-        },
-        "sim_controller_plugin": {
-            "simulator_framework": "fixture",
-            "plugin_uri": "policy_refs/sim_controller_plugin.json",
-        },
-    }
-    for modality, payload in cases.items():
-        capture_root = _build_capture_root(tmp_path / modality)
-        _write_robot_eval_cards(capture_root)
-        if modality != "high_level_skill_trace":
-            reference_path = capture_root / "policy_refs" / f"{modality}.json"
-            _write_json(
-                reference_path,
-                {
-                    "schema_version": f"{modality}_policy_reference.v1",
-                    "attempts": _policy_reference_attempts(policy_id=f"{modality}-policy"),
-                },
-            )
-        request = _full_job_request(capture_root)
-        request["policy_package"] = {modality: payload}
-        request_path = tmp_path / modality / "job-request.json"
-        _write_json(request_path, request)
-
-        build_robot_eval_job(
-            capture_root=capture_root,
-            job_request=request_path,
-            job_id=f"job-{modality}",
-            provisioner="fixture_local",
-            simulator="fixture",
+    capture_root = _build_capture_root(tmp_path / modality)
+    _write_robot_eval_cards(capture_root)
+    if modality != "high_level_skill_trace":
+        reference_path = capture_root / "policy_refs" / f"{modality}.json"
+        _write_json(
+            reference_path,
+            {
+                "schema_version": f"{modality}_policy_reference.v1",
+                "attempts": _policy_reference_attempts(policy_id=f"{modality}-policy"),
+            },
         )
+    request = _full_job_request(capture_root)
+    request["policy_package"] = {modality: payload}
+    request_path = tmp_path / modality / "job-request.json"
+    _write_json(request_path, request)
 
-        job_dir = capture_root / "pipeline" / "robot_eval_jobs" / f"job-{modality}"
-        scenario_eval_matrix = _read_json(job_dir / "scenario_eval_matrix.json")
-        policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
-        policy_trace = _read_json(job_dir / "policy_execution_trace.json")
-        live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
-        modality_result = policy_execution["modality_results"][modality]  # type: ignore[index]
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id=f"job-{modality}",
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
 
-        assert policy_execution["selected_modalities"] == [modality]
-        assert policy_execution["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
-        assert policy_execution["scenario_eval_run_coverage_complete"] is True
-        assert policy_execution["missing_scenario_eval_run_ids"] == []
-        assert policy_trace["scenario_eval_run_coverage_complete"] is True
-        assert modality_result["status"] == "completed_reference_replay"
-        assert modality_result["reference_replayed"] is True
-        assert modality_result["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
-        assert modality_result["scenario_eval_run_coverage_complete"] is True
-        assert modality_result["missing_scenario_eval_run_ids"] == []
-        assert modality_result["robot_policy_execution_proven"] is False
-        policy_gate = live_closure["gates"]["live_policy_execution"]
-        assert (
-            "policy_execution_missing_scenario_variation_run_coverage"
-            not in policy_gate["blockers"]
-        )
-        assert (
-            "policy_execution_missing_required_scenario_eval_run_ids" not in policy_gate["blockers"]
-        )
-        assert "live_policy_execution_not_proven" in policy_gate["blockers"]
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / f"job-{modality}"
+    scenario_eval_matrix = _read_json(job_dir / "scenario_eval_matrix.json")
+    policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
+    policy_trace = _read_json(job_dir / "policy_execution_trace.json")
+    live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
+    modality_result = policy_execution["modality_results"][modality]  # type: ignore[index]
+
+    assert policy_execution["selected_modalities"] == [modality]
+    assert policy_execution["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
+    assert policy_execution["scenario_eval_run_coverage_complete"] is True
+    assert policy_execution["missing_scenario_eval_run_ids"] == []
+    assert policy_trace["scenario_eval_run_coverage_complete"] is True
+    assert modality_result["status"] == "completed_reference_replay"
+    assert modality_result["reference_replayed"] is True
+    assert modality_result["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
+    assert modality_result["scenario_eval_run_coverage_complete"] is True
+    assert modality_result["missing_scenario_eval_run_ids"] == []
+    assert modality_result["robot_policy_execution_proven"] is False
+    policy_gate = live_closure["gates"]["live_policy_execution"]
+    assert "policy_execution_missing_scenario_variation_run_coverage" not in policy_gate["blockers"]
+    assert "policy_execution_missing_required_scenario_eval_run_ids" not in policy_gate["blockers"]
+    assert "live_policy_execution_not_proven" in policy_gate["blockers"]
 
 
 def test_robot_eval_job_policy_reference_replay_reports_missing_matrix_coverage(

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import threading
+import builtins
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import manipulation_physics_simulator_command as physics
+from blueprint_pipeline import manipulation_task_stack as stack
 from blueprint_pipeline.manipulation_task_stack import (
     build_manipulation_object_contract,
     build_manipulation_task_stack,
@@ -172,6 +175,100 @@ def test_manipulation_physics_command_proves_grasp_carry_place(tmp_path: Path) -
     assert "slip_event" in first_trace
 
 
+def test_manipulation_physics_helper_edges(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert physics._number(True, 7.0) == 7.0
+    assert physics._number("bad", 7.0) == 7.0
+    assert physics._pose({"xyz": [1, 2]}, (0.0, 0.0, 0.5, 0.0)) == [1.0, 2.0, 0.5, 0.0]
+    assert physics._pose("bad", (0.0, 0.0, 0.5, 0.0)) == [0.0, 0.0, 0.5, 0.0]
+
+    class MissingMujoco:
+        class mjtObj:
+            mjOBJ_BODY = object()
+
+        @staticmethod
+        def mj_name2id(_model: object, _obj_type: object, _name: str) -> int:
+            return -1
+
+    with pytest.raises(RuntimeError, match="MuJoCo model missing missing"):
+        physics._id_map(object(), MissingMujoco, MissingMujoco.mjtObj.mjOBJ_BODY, ["missing"])
+
+    object_pose = [1.0, 2.0, 0.2, 0.0]
+    return_pose = [3.0, 4.0, 0.8, 0.0]
+    assert physics._phase_target(
+        phase="approach",
+        step_in_phase=0,
+        phase_steps=3,
+        object_pose=object_pose,
+        return_pose=return_pose,
+        lifted_z=1.0,
+        placed_z=0.3,
+    ) == [1.0, 2.0, 0.23]
+    assert physics._phase_target(
+        phase="lift",
+        step_in_phase=2,
+        phase_steps=3,
+        object_pose=object_pose,
+        return_pose=return_pose,
+        lifted_z=1.0,
+        placed_z=0.3,
+    ) == [1.0, 2.0, 1.0]
+    assert physics._phase_target(
+        phase="carry",
+        step_in_phase=2,
+        phase_steps=3,
+        object_pose=object_pose,
+        return_pose=return_pose,
+        lifted_z=1.0,
+        placed_z=0.3,
+    ) == [3.0, 4.0, 1.0]
+    assert physics._phase_target(
+        phase="place",
+        step_in_phase=2,
+        phase_steps=3,
+        object_pose=object_pose,
+        return_pose=return_pose,
+        lifted_z=1.0,
+        placed_z=0.3,
+    ) == pytest.approx([3.0, 4.0, 0.3])
+    assert physics._phase_target(
+        phase="release",
+        step_in_phase=0,
+        phase_steps=3,
+        object_pose=object_pose,
+        return_pose=return_pose,
+        lifted_z=1.0,
+        placed_z=0.3,
+    ) == [3.0, 4.0, 0.3]
+
+    monkeypatch.setattr(physics.platform, "system", lambda: "Linux")
+    original_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "mujoco":
+            raise ImportError("missing")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(RuntimeError, match="mujoco is required"):
+        physics.run_mujoco_manipulation_physics(capture_root=tmp_path)
+
+    monkeypatch.setattr(
+        physics,
+        "run_mujoco_manipulation_physics",
+        lambda **kwargs: {"status": "complete", "output_path": str(Path(kwargs["capture_root"]) / "out.json")},
+    )
+    assert physics.main(["--capture-root", str(tmp_path), "--object-x", "1.0"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-2:] == [str(tmp_path / "out.json"), "complete"]
+
+    monkeypatch.setattr(
+        physics,
+        "run_mujoco_manipulation_physics",
+        lambda **kwargs: {"status": "blocked", "output_path": str(Path(kwargs["capture_root"]) / "blocked.json")},
+    )
+    assert physics.main(["--capture-root", str(tmp_path)]) == 1
+
+
 def test_team_endpoint_adapter_and_inline_contract_are_preserved(tmp_path: Path) -> None:
     contract = build_manipulation_object_contract(
         object_id="custom_tote",
@@ -256,6 +353,179 @@ def test_default_manipulation_policy_runs_through_policy_execution_bundle(
     assert attempt["metrics"]["simulator_physics_execution_proven"] is False
     assert (job_dir / "policy_execution_manifest.json").is_file()
     assert (job_dir / "policy_execution_trace.json").is_file()
+
+
+def test_manipulation_stack_helper_edges_and_missing_asset_contract(tmp_path: Path) -> None:
+    assert stack._boolish(True) is True
+    assert stack._boolish("enabled") is True
+    assert stack._boolish("disabled") is False
+    assert stack._number(True, 1.5) == 1.5
+    assert stack._number("2.25") == 2.25
+    assert stack._number(object(), 3.5) == 3.5
+    assert stack._pose({"position": [1, 2]}, [0, 0, 0.5, 0]) == [1.0, 2.0, 0.5, 0.0]
+    assert stack._load_optional_json(tmp_path / "missing.json") == {}
+
+    contract = build_manipulation_object_contract(object_asset_path=None)
+
+    assert contract["status"] == "blocked"
+    assert "simready_object_asset_uri_missing" in contract["blockers"]
+
+
+def test_job_request_overrides_asset_pose_and_disables_physics(tmp_path: Path) -> None:
+    asset = tmp_path / "request_tote.xml"
+    asset.write_text("<mujoco/>", encoding="utf-8")
+    request_path = tmp_path / "job_request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "manipulationTask": {
+                    "task_id": "request-task",
+                    "object_id": "request-tote",
+                    "objectAssetPath": str(asset),
+                    "start_pose": {"xyz": [0.1, 0.2, 0.8], "yaw": 0.0},
+                    "object_pose": {"pose": [1.0, 1.5, 0.2, 0.3]},
+                    "return_pose": [0.3, 0.4, 0.8, 0.5],
+                    "run_physics_sim": "false",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_manipulation_task_stack(
+        capture_root=tmp_path,
+        job_request_path=request_path,
+    )
+
+    task = _read(result["artifacts"]["manipulation_task_request"])
+    contracts = _read(result["artifacts"]["manipulation_object_contracts"])
+    assert task["task_id"] == "request-task"
+    assert task["object_id"] == "request-tote"
+    assert task["return_pose_xyz_yaw"] == [0.3, 0.4, 0.8, 0.5]
+    assert contracts["contracts"][0]["asset"]["uri"] == str(asset)
+    assert not Path(result["artifacts"]["manipulation_physics_output"]).exists()
+    assert "manipulation_physics_simulator_not_complete" in result["blockers"]
+
+
+def test_lucky_reference_adapter_branch_adds_output_and_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lucky_manifest = tmp_path / "lucky" / "manifest.json"
+    lucky_trace = tmp_path / "lucky" / "trace.json"
+
+    def fake_lucky_adapter(**kwargs: object) -> dict[str, object]:
+        lucky_manifest.parent.mkdir(parents=True, exist_ok=True)
+        lucky_manifest.write_text("{}", encoding="utf-8")
+        lucky_trace.write_text("{}", encoding="utf-8")
+        return {
+            "schema_version": "lucky_g1_reference_adapter_manifest.v1",
+            "status": "ready",
+            "output_path": str(lucky_manifest),
+            "official_lucky_walker_reacher_policy_assets_executed": True,
+            "lucky_g1_reference_adapter_ready": True,
+            "artifacts": {"lucky_reference_trace": str(lucky_trace)},
+            "claim_boundary": {
+                "official_lucky_pick_place_physics_validated": True,
+            },
+        }
+
+    monkeypatch.setattr(stack, "run_lucky_g1_reference_adapter", fake_lucky_adapter)
+
+    result = build_manipulation_task_stack(
+        capture_root=tmp_path,
+        object_asset_path="simready://request-tote.xml",
+        run_physics_sim=False,
+        run_lucky_reference_adapter=True,
+    )
+
+    assert result["official_lucky_adapter_status"] == "ready"
+    assert result["official_lucky_walker_reacher_policy_assets_executed"] is True
+    assert result["official_lucky_pick_place_physics_validated"] is True
+    assert result["artifacts"]["lucky_g1_reference_adapter_manifest"] == str(lucky_manifest)
+    assert result["artifacts"]["lucky_reference_trace"] == str(lucky_trace)
+
+
+def test_manipulation_task_stack_main_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_build_manipulation_task_stack(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "manifest_path": str(tmp_path / f"manifest-{len(calls)}.json"),
+            "status": "complete" if len(calls) == 1 else "blocked",
+        }
+
+    monkeypatch.setattr(stack, "build_manipulation_task_stack", fake_build_manipulation_task_stack)
+
+    assert stack.main(
+        [
+            "--capture-root",
+            str(tmp_path / "capture"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--object-id",
+            "custom-object",
+            "--object-class",
+            "crate",
+            "--object-asset-path",
+            "simready://crate.usd",
+            "--object-contract",
+            str(tmp_path / "contract.json"),
+            "--job-request",
+            str(tmp_path / "job.json"),
+            "--start-x",
+            "1.0",
+            "--start-y",
+            "2.0",
+            "--start-z",
+            "0.9",
+            "--start-yaw",
+            "0.1",
+            "--object-x",
+            "3.0",
+            "--object-y",
+            "4.0",
+            "--object-z",
+            "0.2",
+            "--object-yaw",
+            "0.3",
+            "--return-x",
+            "5.0",
+            "--return-y",
+            "6.0",
+            "--return-z",
+            "0.8",
+            "--return-yaw",
+            "0.4",
+            "--team-policy-endpoint",
+            "https://example.test/policy",
+            "--disable-default-policy",
+            "--disable-lucky-reference",
+            "--run-lucky-reference-adapter",
+            "--lucky-reference-root",
+            str(tmp_path / "lucky"),
+            "--fetch-lucky-reference",
+            "--no-physics-sim",
+            "--no-template-inference",
+        ]
+    ) == 0
+    assert stack.main(["--capture-root", str(tmp_path / "capture")]) == 1
+
+    output = capsys.readouterr().out
+    assert "manifest-1.json" in output
+    assert "blocked" in output
+    assert calls[0]["return_pose"] == [5.0, 6.0, 0.8, 0.4]
+    assert calls[0]["default_policy_enabled"] is False
+    assert calls[0]["lucky_reference_enabled"] is False
+    assert calls[0]["fetch_lucky_reference"] is True
+    assert calls[0]["run_physics_sim"] is False
+    assert calls[0]["allow_template_inference"] is False
+    assert calls[1]["return_pose"] == [0.0, 0.0, 0.793, 0.0]
 
 
 def test_team_manipulation_policy_endpoint_runs_through_policy_execution_bundle(

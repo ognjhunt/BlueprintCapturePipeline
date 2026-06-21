@@ -1,7 +1,16 @@
 import json
 from pathlib import Path
 
-from blueprint_pipeline.policy_improvement_run import build_policy_improvement_run_offer
+import pytest
+
+from blueprint_pipeline.policy_improvement_run import (
+    _failure_mode_summary,
+    _float,
+    _split_counts,
+    _status_and_blockers,
+    build_policy_improvement_run_offer,
+    main,
+)
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -271,3 +280,202 @@ def test_policy_improvement_run_offer_blocks_missing_customer_inputs_and_holdout
     assert "missing_customer_input_robot_embodiment" in result["blockers"]
     assert "missing_heldout_or_sealed_audit_split" in result["blockers"]
     assert result["claim_boundary"]["source_code_required_by_default"] is False
+
+
+def test_policy_improvement_run_helpers_cover_parse_and_split_edges() -> None:
+    assert _float("0.75") == 0.75
+    assert _float("not-a-number") is None
+    assert _split_counts({"runs": "not-a-list"}) == {
+        "development": 0,
+        "validation": 0,
+        "heldout": 0,
+        "sealed_audit": 0,
+        "unknown": 0,
+    }
+    assert _split_counts(
+        {
+            "runs": [
+                "bad-row",
+                {"split": "sealed"},
+                {"scenario_split": "something-new"},
+            ]
+        }
+    ) == {
+        "development": 0,
+        "validation": 0,
+        "heldout": 0,
+        "sealed_audit": 1,
+        "unknown": 2,
+    }
+    assert _failure_mode_summary(
+        {"failures": [{"reason": "drop"}, {"label": "drop"}, "skip"]}
+    )["dominant_failure_modes"] == [{"failure_mode": "drop", "count": 2}]
+
+
+def test_policy_improvement_run_status_gate_progression() -> None:
+    present_inputs = {
+        key: {"status": "present", "value": "x"}
+        for key in (
+            "base_policy_or_model",
+            "robot_embodiment",
+            "action_interface",
+            "target_task",
+            "success_threshold",
+            "cycle_time_threshold_seconds",
+        )
+    }
+    split_counts = {"heldout": 1, "sealed_audit": 0}
+    policy_summary = {
+        "candidate_status": "promoted_sim_only_policy_candidate",
+        "safety_contact_gate_passed": True,
+    }
+    ready_package = {"status": "export_ready_review_required"}
+
+    assert _status_and_blockers(
+        customer_inputs=present_inputs,
+        included_artifacts={},
+        split_counts=split_counts,
+        policy_summary=policy_summary,
+        post_training_package=ready_package,
+    ) == (
+        "blocked_missing_policy_improvement_inputs",
+        ["missing_scenario_eval_matrix"],
+    )
+    assert _status_and_blockers(
+        customer_inputs=present_inputs,
+        included_artifacts={"scenario_eval_matrix": "matrix.json"},
+        split_counts=split_counts,
+        policy_summary=policy_summary,
+        post_training_package=ready_package,
+    ) == (
+        "ready_for_baseline_evaluation",
+        ["baseline_normalized_attempt_trace_missing"],
+    )
+    assert _status_and_blockers(
+        customer_inputs=present_inputs,
+        included_artifacts={
+            "scenario_eval_matrix": "matrix.json",
+            "normalized_attempt_trace": "trace.json",
+        },
+        split_counts=split_counts,
+        policy_summary=policy_summary,
+        post_training_package=ready_package,
+    ) == ("ready_for_failure_diagnosis", ["failure_labels_missing"])
+    assert _status_and_blockers(
+        customer_inputs=present_inputs,
+        included_artifacts={
+            "scenario_eval_matrix": "matrix.json",
+            "normalized_attempt_trace": "trace.json",
+            "failure_labels": "labels.json",
+        },
+        split_counts=split_counts,
+        policy_summary=policy_summary,
+        post_training_package={"status": "missing"},
+    ) == (
+        "ready_for_post_training_data_package",
+        ["post_training_data_package_export_not_ready"],
+    )
+    assert _status_and_blockers(
+        customer_inputs=present_inputs,
+        included_artifacts={
+            "scenario_eval_matrix": "matrix.json",
+            "normalized_attempt_trace": "trace.json",
+            "failure_labels": "labels.json",
+        },
+        split_counts=split_counts,
+        policy_summary=policy_summary,
+        post_training_package=ready_package,
+    ) == ("ready_for_policy_autoresearch", ["policy_autoresearch_report_missing"])
+    assert _status_and_blockers(
+        customer_inputs=present_inputs,
+        included_artifacts={
+            "scenario_eval_matrix": "matrix.json",
+            "normalized_attempt_trace": "trace.json",
+            "failure_labels": "labels.json",
+            "policy_autoresearch_report": "report.json",
+        },
+        split_counts=split_counts,
+        policy_summary={"candidate_status": "searched", "safety_contact_gate_passed": True},
+        post_training_package=ready_package,
+    ) == ("completed_no_promoted_candidate", ["promoted_policy_candidate_missing"])
+    assert _status_and_blockers(
+        customer_inputs=present_inputs,
+        included_artifacts={
+            "scenario_eval_matrix": "matrix.json",
+            "normalized_attempt_trace": "trace.json",
+            "failure_labels": "labels.json",
+            "policy_autoresearch_report": "report.json",
+        },
+        split_counts=split_counts,
+        policy_summary={
+            "candidate_status": "promoted_sim_only_policy_candidate",
+            "safety_contact_gate_passed": False,
+        },
+        post_training_package=ready_package,
+    ) == (
+        "blocked_candidate_failed_safety_contact_gate",
+        ["policy_candidate_safety_contact_gate_not_passed"],
+    )
+
+
+def test_policy_improvement_run_rejects_unknown_access_and_targets(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    job_dir = _complete_job_dir(capture_root)
+
+    with pytest.raises(ValueError, match="Unsupported access level"):
+        build_policy_improvement_run_offer(
+            capture_root=capture_root,
+            job_dir=job_dir,
+            access_level="unknown",
+        )
+
+    with pytest.raises(ValueError, match="Unsupported improvement target"):
+        build_policy_improvement_run_offer(
+            capture_root=capture_root,
+            job_dir=job_dir,
+            improvement_targets=("adapter", "unsupported"),
+        )
+
+
+def test_policy_improvement_run_main_returns_success_and_blocked_status(
+    tmp_path: Path,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    capture_root = _capture_root(tmp_path)
+    job_dir = _complete_job_dir(capture_root)
+    output_dir = tmp_path / "offer"
+
+    assert (
+        main(
+            [
+                "--capture-root",
+                str(capture_root),
+                "--job-dir",
+                str(job_dir),
+                "--output-dir",
+                str(output_dir),
+                "--access-level",
+                "source_training",
+                "--customer-policy-ref",
+                "cli-policy",
+                "--embodiment",
+                "unitree-g1",
+                "--action-interface",
+                "joint-delta",
+                "--target-task",
+                "tote-transfer",
+                "--success-threshold",
+                "0.9",
+                "--cycle-time-threshold-seconds",
+                "80",
+                "--improvement-target",
+                "complete_policy",
+            ]
+        )
+        == 0
+    )
+    assert "status=improvement_candidate_ready_for_customer_review" in capsys.readouterr().out
+
+    blocked_job = capture_root / "pipeline" / "robot_eval_jobs" / "blocked"
+    assert main(["--capture-root", str(capture_root), "--job-dir", str(blocked_job)]) == 1
+    assert "status=blocked_missing_policy_improvement_inputs" in capsys.readouterr().out

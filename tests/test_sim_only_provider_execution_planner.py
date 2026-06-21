@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from blueprint_pipeline.agent_operator_runtime import LIVE_AGENTS_SDK_ENV
+from blueprint_pipeline import sim_only_provider_execution_planner as planner
 from blueprint_pipeline.sim_only_provider_execution_planner import (
     LIVE_AGENT_PLANNER_ENV,
     build_sim_only_provider_execution_layer,
@@ -409,3 +411,261 @@ def test_agent_planner_is_advisory_and_redacts_secret_context(
         encoding="utf-8"
     )
     assert "secret-runpod-key" not in persisted
+
+
+def test_planner_helper_edges_and_policy_fallbacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert planner._string_list("one") == ["one"]
+    assert planner._string_list("") == []
+    assert planner._number("not-a-number", 2.5) == 2.5
+    assert planner._redact_uri("https://example.test/path?keep=1&token=secret") == (
+        "https://example.test/path?keep=1&token=%3Credacted%3Atoken%3E"
+    )
+    assert planner._redact_runtime_value("secret", "api_key") == "<redacted:api_key>"
+    assert planner._redact_runtime_value("", "api_key") == ""
+    with pytest.raises(ValueError, match="job_id or job_dir"):
+        planner._job_dir(tmp_path, None, None)
+    assert planner._job_dir(tmp_path, "job-1", None) == (
+        tmp_path / "pipeline" / "robot_eval_jobs" / "job-1"
+    ).resolve()
+
+    monkeypatch.setenv("BLUEPRINT_PROVIDER_CACHE_ROOT", "/cache")
+    assert planner._cache_paths("isaac_sim") == {
+        "scene_assets": "/cache/scene_assets",
+        "policy_files": "/cache/policy_files",
+        "worker_deps": "/cache/worker_deps",
+    }
+    assert planner._provider_gpu_priority(
+        "mujoco",
+        {"gpu": {"provider_gpu_priority": [" NVIDIA L4 ", "NVIDIA RTX A4000"]}},
+    ) == ["NVIDIA L4", "NVIDIA RTX A4000"]
+    assert planner._provider_gpu_priority("isaac_sim", {}) == [
+        "NVIDIA RTX 4090",
+        "NVIDIA RTX A6000",
+        "NVIDIA RTX 6000 Ada Generation",
+    ]
+    warm_policy = planner._warm_pool_policy(
+        request={
+            "execution_request": {
+                "gpu_allocation": {
+                    "warm_pool_policy": {
+                        "enabled": True,
+                        "latency_slo_seconds": 120,
+                        "estimated_idle_cost_usd_per_hour": 2.0,
+                        "max_idle_cost_usd_per_hour": 1.0,
+                    }
+                }
+            }
+        },
+        worker_launch_plan={},
+        provider_shape={},
+    )
+    assert warm_policy["decision"] == "scale_to_zero_on_demand"
+    assert warm_policy["decision_reasons"] == [
+        "latency_policy_does_not_justify_idle_cost",
+        "warm_idle_cost_exceeds_policy",
+    ]
+    assert planner._artifact_output_writable("") is False
+
+
+def test_provider_preflight_reports_unready_inputs_timeouts_and_gpu_priority(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    job_dir = _seed_ready_job(capture_root)
+    worker_plan = _read_json(job_dir / "worker_launch_plan.json")
+    worker_plan["simulator"] = "unknown_sim"
+    _write_json(job_dir / "worker_launch_plan.json", worker_plan)
+    provider = _read_json(job_dir / "gpu_provider_launch_request.json")
+    provider["status"] = "draft"
+    shape = provider["provider_request_shape"]  # type: ignore[index]
+    shape["inputs"]["manifest_uri_fetchable_by_provider"] = False  # type: ignore[index]
+    shape["inputs"]["capture_root_bundle_uri_fetchable_by_provider"] = False  # type: ignore[index]
+    shape["inputs"]["artifact_output_uri"] = "https://example.test/output"  # type: ignore[index]
+    shape["limits"]["hard_timeout_seconds"] = ""  # type: ignore[index]
+    shape["limits"]["external_watchdog_ttl_seconds"] = ""  # type: ignore[index]
+    shape["gpu"] = {}  # type: ignore[index]
+    _write_json(job_dir / "gpu_provider_launch_request.json", provider)
+
+    plan = build_sim_only_provider_execution_layer(capture_root=capture_root, job_dir=job_dir)
+
+    assert plan["status"] == "blocked_before_spend"
+    assert plan["blockers"] == [
+        "provider_launch_request_not_ready",
+        "worker_manifest_uri_not_fetchable_by_provider",
+        "capture_root_bundle_uri_not_fetchable_by_provider",
+        "provider_artifact_output_uri_not_writable",
+        "missing_hard_timeout_seconds",
+        "missing_external_watchdog_ttl_seconds",
+        "missing_provider_gpu_priority_fallback_list",
+    ]
+    missing_output = planner._preflight_result(
+        artifacts={
+            "gpu_provider_launch_request": {
+                "status": "request_manifest_ready",
+                "provider_request_shape": {
+                    "image": {
+                        "configured_image_ref": "registry/worker:tag",
+                        "configured_image_ref_is_versioned": True,
+                    },
+                    "inputs": {
+                        "manifest_uri": "r2://bucket/worker.json",
+                        "manifest_uri_fetchable_by_provider": True,
+                        "capture_root_bundle_uri": "r2://bucket/root.zip",
+                        "capture_root_bundle_uri_fetchable_by_provider": True,
+                    },
+                    "limits": {
+                        "hard_timeout_seconds": 30,
+                        "external_watchdog_ttl_seconds": 60,
+                    },
+                },
+            }
+        },
+        provider_gpu_priority=["NVIDIA L4"],
+    )
+    assert missing_output["blockers"] == ["missing_provider_artifact_output_uri"]
+
+
+def test_runtime_and_cost_status_cover_pending_blocked_and_failed_paths(tmp_path: Path) -> None:
+    pending_capture = tmp_path / "pending"
+    pending_job = _seed_ready_job(pending_capture)
+    _write_json(
+        pending_job / "runpod_provider_adapter_result.json",
+        {"api_call_performed": True},
+    )
+
+    pending = build_sim_only_provider_execution_layer(
+        capture_root=pending_capture,
+        job_dir=pending_job,
+    )
+
+    assert pending["runtime_manifest"]["status"] == "provider_submitted_runtime_pending"  # type: ignore[index]
+    assert pending["cost_ledger"]["status"] == "running"  # type: ignore[index]
+
+    blocked_capture = tmp_path / "blocked"
+    blocked_job = _seed_ready_job(blocked_capture)
+    _write_json(
+        blocked_job / "runpod_live_execution_proof.json",
+        {"status": "blocked", "blockers": ["provider_runtime_not_observed"]},
+    )
+
+    blocked = build_sim_only_provider_execution_layer(
+        capture_root=blocked_capture,
+        job_dir=blocked_job,
+    )
+
+    assert blocked["runtime_manifest"]["status"] == "blocked"  # type: ignore[index]
+    assert blocked["runtime_manifest"]["blockers"] == ["provider_runtime_not_observed"]  # type: ignore[index]
+
+    failed_capture = tmp_path / "failed"
+    failed_job = _seed_ready_job(failed_capture)
+    _write_json(failed_job / "worker_runtime_manifest.json", {"status": "failed"})
+
+    failed = build_sim_only_provider_execution_layer(
+        capture_root=failed_capture,
+        job_dir=failed_job,
+    )
+
+    assert failed["runtime_manifest"]["status"] == "failed"  # type: ignore[index]
+    assert failed["cost_ledger"]["status"] == "failed"  # type: ignore[index]
+
+
+def test_runtime_preflight_simulator_fallback_drives_isaac_priority_and_cache(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    job_dir = _seed_ready_job(capture_root)
+    worker_plan = _read_json(job_dir / "worker_launch_plan.json")
+    worker_plan.pop("simulator")
+    _write_json(job_dir / "worker_launch_plan.json", worker_plan)
+    scheduler = _read_json(job_dir / "scheduler_decision.json")
+    scheduler.pop("simulator", None)
+    _write_json(job_dir / "scheduler_decision.json", scheduler)
+    provider = _read_json(job_dir / "gpu_provider_launch_request.json")
+    provider["provider_request_shape"]["runtime_preflight"] = {"simulator": "isaac_sim"}  # type: ignore[index]
+    provider["provider_request_shape"]["gpu"] = {}  # type: ignore[index]
+    _write_json(job_dir / "gpu_provider_launch_request.json", provider)
+
+    plan = build_sim_only_provider_execution_layer(capture_root=capture_root, job_dir=job_dir)
+
+    assert plan["simulator_scope"]["simulator_backend"] == "isaac_sim"  # type: ignore[index]
+    assert plan["provider_gpu_priority_fallback_list"][0] == "NVIDIA RTX 4090"
+    assert plan["persistent_cache_paths"]["scene_assets"].endswith("/scene_assets")  # type: ignore[index]
+
+
+def test_agent_planner_blockers_include_missing_sdk_when_module_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(planner, "module_available", lambda _names: False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv(LIVE_AGENTS_SDK_ENV, raising=False)
+    monkeypatch.delenv(LIVE_AGENT_PLANNER_ENV, raising=False)
+
+    agent_plan = planner._agent_planner(
+        plan_context={"api_key": "secret"},
+        allow_live_agent_planner=False,
+        executor=None,
+        model="test-model",
+    )
+
+    assert agent_plan["status"] == "blocked"
+    assert agent_plan["blockers"][:3] == [
+        "missing_openai_agents_sdk",
+        "missing_openai_api_key",
+        "missing_cli_allow_sim_only_provider_agent_planner",
+    ]
+
+
+def test_sim_only_provider_execution_planner_main_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_build_sim_only_provider_execution_layer(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "status": "ready_for_provider_launch" if len(calls) == 1 else "blocked_before_spend",
+            "artifacts_manifest_path": "sim_only_provider_artifacts_manifest.json",
+        }
+
+    monkeypatch.setattr(
+        planner,
+        "build_sim_only_provider_execution_layer",
+        fake_build_sim_only_provider_execution_layer,
+    )
+
+    output_dir = tmp_path / "out"
+    assert planner.main(
+        [
+            "--capture-root",
+            str(tmp_path / "capture"),
+            "--job-id",
+            "job-1",
+            "--output-dir",
+            str(output_dir),
+            "--allow-live-agent-planner",
+            "--agent-model",
+            "gpt-test",
+            "--update-simulator-beta-readiness",
+        ]
+    ) == 0
+    assert planner.main(
+        [
+            "--capture-root",
+            str(tmp_path / "capture"),
+            "--job-dir",
+            str(tmp_path / "job-dir"),
+        ]
+    ) == 2
+
+    output = capsys.readouterr().out
+    assert "ready_for_provider_launch" in output
+    assert str(output_dir) in output
+    assert "sim_only_provider_artifacts_manifest.json" in output
+    assert calls[0]["allow_live_agent_planner"] is True
+    assert calls[0]["agent_model"] == "gpt-test"
+    assert calls[0]["update_simulator_beta_readiness"] is True

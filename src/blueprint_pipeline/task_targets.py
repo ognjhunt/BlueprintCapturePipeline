@@ -657,7 +657,7 @@ def _dedupe_hint_entries(entries: Iterable[Mapping[str, Any]]) -> List[Dict[str,
         instance_id = str(entry.get("instance_id") or "").strip()
         label = str(entry.get("label") or "object").strip()
         key = instance_id or f"label:{label.lower()}"
-        if not key:
+        if not key:  # pragma: no cover - fallback label key is always non-empty.
             continue
 
         existing = by_key.get(key)

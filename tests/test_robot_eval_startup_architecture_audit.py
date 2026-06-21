@@ -6,8 +6,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import robot_eval_startup_architecture_audit as startup_audit
 from blueprint_pipeline.robot_eval_startup_architecture_audit import (
     build_robot_eval_startup_architecture_audit,
+    main as startup_audit_main,
 )
 from blueprint_pipeline.robot_eval_worker import _copy_worker_runtime_files_to_job_dir
 
@@ -963,3 +967,90 @@ def test_robot_eval_startup_architecture_audit_module_cli(tmp_path: Path) -> Non
     assert completed.returncode == 0, completed.stderr
     assert "status=passed" in completed.stdout
     assert "job_id=startup-job-1" in completed.stdout
+
+
+def test_robot_eval_startup_architecture_audit_helper_and_non_object_edges(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "pipeline" / "robot_eval_jobs" / "edge-job"
+    for artifact_name, relative_path in startup_audit.EXPECTED_JOB_ARTIFACTS.items():
+        payload: object = {
+            "schema_version": f"{artifact_name}.v1",
+        }
+        if artifact_name == "job_request":
+            payload = []
+        path = job_dir / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    (job_dir / "worker_runtime_manifest.json").write_text("[]", encoding="utf-8")
+
+    artifacts, issues = startup_audit._read_artifacts(job_dir)
+
+    assert startup_audit._number(True) is None
+    assert startup_audit._get({"a": 1}, ("a", "b")) is None
+    assert startup_audit._artifact_path(job_dir, "job_request") == job_dir / "job_request.json"
+    assert artifacts["job_request"] == {}
+    assert artifacts["worker_runtime_manifest"] == {}
+    assert any(issue["id"] == "non_object_job_request" for issue in issues)
+    assert any(issue["id"] == "non_object_worker_runtime_manifest" for issue in issues)
+
+
+def test_robot_eval_startup_architecture_audit_uses_proof_boundary_and_warnings(
+    tmp_path: Path,
+) -> None:
+    job_dir = _startup_job_dir(tmp_path)
+    run_manifest = json.loads((job_dir / "job_run_manifest.json").read_text(encoding="utf-8"))
+    run_manifest.pop("claim_boundary")
+    run_manifest["proof_boundary"] = {
+        "simulator_execution_proven": False,
+        "robot_readiness_proven": False,
+        "public_claim_upgrade_allowed": False,
+    }
+    _write_json(job_dir / "job_run_manifest.json", run_manifest)
+    scheduler = json.loads((job_dir / "scheduler_decision.json").read_text(encoding="utf-8"))
+    scheduler["selection"] = {"provisioner": "fixture_local"}
+    _write_json(job_dir / "scheduler_decision.json", scheduler)
+
+    result = build_robot_eval_startup_architecture_audit(job_dir=job_dir)
+
+    assert result["proof_boundary"]["simulator_execution_proven"] is False
+    assert "scheduler_selection_missing_simulator" in result["warnings"]
+
+
+def test_robot_eval_startup_architecture_audit_blocks_isaac_without_rt_disallowance(
+    tmp_path: Path,
+) -> None:
+    job_dir = _startup_job_dir(tmp_path)
+    scheduler = json.loads((job_dir / "scheduler_decision.json").read_text(encoding="utf-8"))
+    scheduler["selection"] = {"provisioner": "runpod", "simulator": "isaac_sim"}
+    _write_json(job_dir / "scheduler_decision.json", scheduler)
+    provider = json.loads((job_dir / "gpu_provider_launch_request.json").read_text(encoding="utf-8"))
+    provider["provider_request_shape"]["gpu"] = {
+        "preferred_gpu_class": "a100",
+        "disallowed_gpu_classes": [],
+    }
+    _write_json(job_dir / "gpu_provider_launch_request.json", provider)
+
+    result = build_robot_eval_startup_architecture_audit(job_dir=job_dir)
+
+    assert "gpu_selection:isaac_requires_rt_class" in result["blockers"]
+
+
+def test_robot_eval_startup_architecture_audit_main_paths(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    job_dir = _startup_job_dir(tmp_path)
+    capture_root = tmp_path
+
+    assert startup_audit_main(["--capture-root", str(capture_root), "--job-id", "startup-job-1"]) == 0
+    assert "[robot-eval-startup-audit] status=passed" in capsys.readouterr().out
+
+    blocked_job = tmp_path / "pipeline" / "robot_eval_jobs" / "blocked-job"
+    blocked_job.mkdir(parents=True)
+    assert startup_audit_main(["--job-dir", str(blocked_job)]) == 1
+    blocked_output = capsys.readouterr().out
+    assert "[robot-eval-startup-audit] blockers=" in blocked_output
+
+    with pytest.raises(SystemExit):
+        startup_audit_main([])

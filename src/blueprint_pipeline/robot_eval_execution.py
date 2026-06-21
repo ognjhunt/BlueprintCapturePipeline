@@ -508,8 +508,6 @@ def _requested_scenarios(
             rows.append({"task_id": task_id, "scenario_id": scenario_id})
     if explicit_requested_tasks:
         return [row for row in rows if row["scenario_id"]]
-    if rows:
-        return rows
     for item in scenario_cards.get("cards", []) or []:
         if isinstance(item, Mapping):
             rows.append(

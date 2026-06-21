@@ -5,6 +5,17 @@ from pathlib import Path
 
 from blueprint_pipeline.cross_repo_first_gpu_readiness import (
     CROSS_REPO_FIRST_GPU_READINESS_SCHEMA_VERSION,
+    _build_first_gpu_external_input_packet,
+    _build_gpu_spend_decision,
+    _build_remediation_plan,
+    _file_contains_check,
+    _first_gpu_external_input_packet_markdown,
+    _guarded_commands_by_category,
+    _read_text,
+    _remediation_for_blocker,
+    _runtime_has_local_webapp_rehearsal,
+    _runtime_preflight_result_summary,
+    _run_packet_phase,
     build_cross_repo_first_gpu_readiness,
     main,
 )
@@ -1356,3 +1367,331 @@ def test_cross_repo_first_gpu_readiness_cli_writes_manifest(
     assert "Missing Inputs" in markdown
     assert "Secret input names" in markdown
     assert "secret-token" not in markdown
+
+
+def _write_run_packet_required_jsons(
+    packet_dir: Path,
+    *,
+    packet: dict[str, object] | None = None,
+    blocker_resolution: dict[str, object] | None = None,
+) -> None:
+    _write_json(
+        packet_dir / "first_gpu_run_packet.json",
+        packet if packet is not None else {"ready_for_first_gpu_attempt": True},
+    )
+    _write_json(
+        packet_dir / "first_gpu_blocker_resolution.json",
+        blocker_resolution if blocker_resolution is not None else {},
+    )
+    for name in (
+        "first_gpu_webapp_handoff.json",
+        "first_gpu_scene_asset_acquisition.json",
+        "first_gpu_launch_order.json",
+        "gpu_vm_runtime_preflight_plan.json",
+        "gpu_vm_sync_manifest.json",
+    ):
+        _write_json(packet_dir / name, {})
+
+
+def test_cross_repo_helpers_cover_invalid_runtime_inputs(tmp_path: Path) -> None:
+    latin_path = tmp_path / "latin.txt"
+    latin_path.write_bytes(b"hello \xff world")
+    assert _read_text(latin_path) == "hello  world"
+
+    assert _runtime_preflight_result_summary(None)["blockers"] == [
+        "gpu_vm_runtime_preflight_result_path_missing"
+    ]
+    assert _runtime_preflight_result_summary(tmp_path / "missing.json")["blockers"] == [
+        "gpu_vm_runtime_preflight_result_missing"
+    ]
+
+    invalid_json = tmp_path / "invalid.json"
+    invalid_json.write_text("{not-json", encoding="utf-8")
+    assert _runtime_preflight_result_summary(invalid_json)["blockers"] == [
+        "invalid_json:invalid.json:JSONDecodeError"
+    ]
+
+    invalid_payload = tmp_path / "invalid-payload.json"
+    invalid_payload.write_text("[]", encoding="utf-8")
+    assert _runtime_preflight_result_summary(invalid_payload)["blockers"] == [
+        "invalid_json_payload:invalid-payload.json:list"
+    ]
+
+    blocked_result = tmp_path / "blocked-result.json"
+    _write_json(
+        blocked_result,
+        {
+            "status": "blocked",
+            "blockers": ["nvidia_smi_missing", "owner_command_missing"],
+        },
+    )
+    blocked_summary = _runtime_preflight_result_summary(blocked_result)
+    assert blocked_summary["ready_for_owner_command_attempt"] is False
+    assert blocked_summary["blockers"] == [
+        "gpu_vm_runtime_preflight_result_blocker:nvidia_smi_missing",
+        "gpu_vm_runtime_preflight_result_blocker:owner_command_missing",
+        "gpu_vm_runtime_preflight_result_status:blocked",
+    ]
+
+    missing_file = _file_contains_check(
+        tmp_path,
+        "contracts/missing.txt",
+        required=(("needle", "required text"),),
+    )
+    assert missing_file == {
+        "path": str(tmp_path / "contracts/missing.txt"),
+        "exists": False,
+        "ready": False,
+        "matched": {"needle": False},
+        "blockers": ["missing_file:contracts/missing.txt"],
+    }
+
+
+def test_cross_repo_runtime_rehearsal_helper_handles_non_mapping_stages() -> None:
+    assert _runtime_has_local_webapp_rehearsal({"readiness": {"stages": []}}) is False
+
+
+def test_cross_repo_run_packet_phase_reports_fallback_generated_file_gaps(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    packet_dir = capture_root / "pipeline" / "first_gpu_e2e_run_packet"
+    _write_run_packet_required_jsons(
+        packet_dir,
+        packet={"ready_for_first_gpu_attempt": True, "generated_files": {}},
+    )
+
+    result = _run_packet_phase(capture_root=capture_root)
+
+    packet_check = result["checks"]["first_gpu_run_packet"]
+    assert packet_check["owner_command_binding_template_path"].endswith(
+        "owner_default_smoke_command_binding.sh"
+    )
+    assert packet_check["live_policy_execution_contract_path"].endswith(
+        "live_policy_execution_contract.md"
+    )
+    assert packet_check["default_test_robot_eval_job_request_template_path"].endswith(
+        "default_test_robot_eval_job_request.template.json"
+    )
+    assert set(result["blockers"]) >= {
+        "owner_command_binding_template_missing",
+        "live_policy_execution_contract_missing",
+        "default_test_robot_eval_job_request_template_missing",
+        "real_robot_pov_manifest_template_missing",
+        "live_input_staging_commands_missing",
+    }
+
+
+def test_cross_repo_run_packet_phase_reports_blocker_resolution_mismatches(
+    tmp_path: Path,
+) -> None:
+    mismatch_capture = tmp_path / "mismatch-capture"
+    _write_run_packet_required_jsons(
+        mismatch_capture / "pipeline" / "first_gpu_e2e_run_packet",
+        packet={"ready_for_first_gpu_attempt": True, "generated_files": {}},
+        blocker_resolution={
+            "action_count": 2,
+            "blocked_action_count": 0,
+            "actions": [{"category_id": "first_gpu_run_packet"}],
+        },
+    )
+
+    mismatch = _run_packet_phase(capture_root=mismatch_capture)
+
+    assert "blocker_resolution_action_count_mismatch" in mismatch["blockers"]
+
+    no_actions_capture = tmp_path / "no-actions-capture"
+    _write_run_packet_required_jsons(
+        no_actions_capture / "pipeline" / "first_gpu_e2e_run_packet",
+        packet={"ready_for_first_gpu_attempt": False, "generated_files": {}},
+        blocker_resolution={"action_count": 0, "blocked_action_count": 0, "actions": []},
+    )
+
+    no_actions = _run_packet_phase(capture_root=no_actions_capture)
+
+    assert "blocker_resolution_missing_actions_for_blocked_packet" in no_actions[
+        "blockers"
+    ]
+
+
+def test_cross_repo_remediation_maps_remaining_blocker_categories() -> None:
+    expectations = {
+        "webapp_forwarding_preflight:blocked": "webapp_forwarding_env",
+        "webapp_staged_inputs_local_rehearsal_only": "webapp_staged_request",
+        "webapp_handoff_blocker:missing_upstream_truth": "webapp_handoff_packet",
+        "spawn_validation_blocked": "scene_spawn_preflight",
+        "owner_command_binding_template_missing": "owner_gpu_command",
+        "missing_simulator_command": "owner_gpu_command",
+        "missing_local_scene_asset": "scene_spawn_preflight",
+        "missing_scene_frame_estimate": "scene_spawn_preflight",
+    }
+
+    for blocker, category in expectations.items():
+        assert _remediation_for_blocker(blocker)["category"] == category
+
+
+def test_cross_repo_remediation_plan_preserves_unknown_custom_categories(
+    monkeypatch,
+) -> None:
+    def custom_remediation(blocker: str) -> dict[str, object]:
+        return {
+            "blocker": blocker,
+            "category": "custom_operator_step",
+            "next_action": "Do the custom step.",
+            "evidence_required": "The custom evidence exists.",
+            "safe_command": "custom-command",
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.cross_repo_first_gpu_readiness._remediation_for_blocker",
+        custom_remediation,
+    )
+
+    plan = _build_remediation_plan(["custom:blocker"])
+
+    assert list(plan["categories"]) == ["custom_operator_step"]
+    assert plan["categories"]["custom_operator_step"]["safe_commands"] == [
+        "custom-command"
+    ]
+
+
+def test_cross_repo_gpu_spend_decision_adds_live_forwarding_category_for_rehearsal() -> None:
+    decision = _build_gpu_spend_decision(
+        blockers=[],
+        remediation_plan={"categories": {}},
+        runtime_phase={
+            "ready": True,
+            "readiness": {
+                "stages": {
+                    "webapp_staged_request": {"local_rehearsal_only": True},
+                },
+            },
+        },
+        simulator="isaac_sim",
+        provisioner="runpod",
+    )
+
+    assert decision["status"] == "do_not_rent_gpu_yet"
+    assert decision["gpu_rental_recommended_now"] is False
+    assert decision["pre_spend_blocker_categories"] == ["webapp_live_forwarding_proof"]
+
+
+def test_cross_repo_guarded_commands_use_fallback_packet_paths(tmp_path: Path) -> None:
+    assert _guarded_commands_by_category(None) == {}
+
+    packet_dir = tmp_path / "packet"
+    upstream = packet_dir / "webapp_upstream_truth_verification_commands.sh"
+    _write(upstream, "#!/usr/bin/env bash\n")
+
+    guarded = _guarded_commands_by_category({"packet_dir": str(packet_dir), "checks": {}})
+
+    upstream_command = guarded["webapp_upstream_truth"][0]
+    assert upstream_command["path"] == str(upstream)
+    assert upstream_command["safe_to_run_now"] is True
+
+
+def test_cross_repo_external_input_packet_skips_non_mapping_categories() -> None:
+    packet = _build_first_gpu_external_input_packet(
+        capture_root=None,
+        webapp_site_slug="site-1",
+        simulator="isaac_sim",
+        provisioner="runpod",
+        remediation_plan={
+            "categories": {
+                "not-a-category": "skip-me",
+                "owner_gpu_gate": {
+                    "blocker_count": 1,
+                    "blockers": ["missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"],
+                    "next_actions": ["set the gate"],
+                    "evidence_required": ["gate is true"],
+                    "safe_commands": ["export BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true"],
+                },
+            },
+        },
+        gpu_spend_decision={
+            "gpu_rental_recommended_now": False,
+            "must_not_do_until_ready": ["do_not_allocate_runpod_or_equivalent_gpu_vm"],
+        },
+        run_packet_phase=None,
+    )
+
+    assert packet["missing_input_category_count"] == 1
+    assert packet["missing_inputs"][0]["category_id"] == "owner_gpu_gate"
+
+
+def test_cross_repo_external_input_markdown_reports_no_missing_inputs() -> None:
+    markdown = _first_gpu_external_input_packet_markdown(
+        {
+            "schema_version": "first_gpu_external_input_packet.v1",
+            "status": "ready",
+            "generated_at": "2026-06-21T00:00:00Z",
+            "gpu_rental_recommended_now": True,
+            "selected_simulator": "isaac_sim",
+            "selected_provisioner": "runpod",
+            "missing_input_category_count": 0,
+            "missing_input_count": 0,
+            "secret_handling": {
+                "secrets_are_named_but_values_are_not_serialized": True,
+                "secret_input_names": [],
+            },
+            "forbidden_actions_until_ready": [],
+            "first_gpu_proof_scope": {},
+            "missing_inputs": [],
+        }
+    )
+
+    assert "## Missing Inputs" in markdown
+    assert "- None." in markdown
+
+
+def test_cross_repo_first_gpu_readiness_cli_returns_zero_for_ready_packet(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    capture_root = _runtime_capture_root(tmp_path)
+    _make_runtime_ready(capture_root, monkeypatch)
+    _write_scene_asset_artifacts(capture_root)
+    build_first_gpu_run_packet(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        owner_command_location="remote",
+    )
+    _write_gpu_vm_runtime_preflight_result(capture_root)
+    build_first_gpu_run_packet(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+        owner_command_location="remote",
+    )
+    output = tmp_path / "ready-cross-repo.json"
+
+    exit_code = main(
+        [
+            "--pipeline-repo",
+            str(_pipeline_repo(tmp_path)),
+            "--capture-repo",
+            str(_capture_repo(tmp_path)),
+            "--webapp-repo",
+            str(_webapp_repo(tmp_path)),
+            "--capture-root",
+            str(capture_root),
+            "--webapp-site-slug",
+            "site-1",
+            "--simulator-command",
+            "/opt/blueprint/run_isaac_gpu_proof.sh --capture-root /mnt/capture",
+            "--simulator-command-location",
+            "remote",
+            "--output",
+            str(output),
+        ]
+    )
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "status=ready_for_owner_gpu_attempt" in stdout
+    assert "gpu_rental_recommended_now=True" in stdout
+    assert "next_missing_category=" not in stdout
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["blockers"] == []

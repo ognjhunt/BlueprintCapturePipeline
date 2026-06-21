@@ -434,7 +434,7 @@ def _build_conditioning_image(
         return base
 
     loaded_refs: list[np.ndarray] = []
-    strip_w = max(64, W // 5)  # 20% of width for the lookahead strip
+    strip_w = min(max(64, W // 5), max(1, W - 1))  # 20% strip, clamped for tiny test frames
     n_refs = min(3, len(lookahead_ref_uris))
     slot_h = max(1, H // n_refs) if n_refs > 0 else H
 
@@ -648,5 +648,5 @@ def main(argv: Optional[List[str]] = None) -> int:
     return 0 if result.get("status") == "completed" else 1
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

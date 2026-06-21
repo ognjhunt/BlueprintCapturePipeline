@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+import blueprint_pipeline.mujoco_scene_scenario_packet as packet
 from blueprint_pipeline.mujoco_scene_scenario_packet import (
     DEFAULT_SCENARIO_COUNT,
     build_mujoco_scene_asset_research,
@@ -212,3 +215,216 @@ def test_materialize_aws_scene_asset_writes_mujoco_consumable_glb(tmp_path: Path
     assert manifest["vertex_count"] > 0
     assert glb_path.is_file()
     assert materialization_path.is_file()
+
+
+def test_packet_helper_edges(tmp_path: Path) -> None:
+    assert packet._repo_root().name == "BlueprintCapturePipeline"
+    scene = {
+        "asset_id": "asset",
+        "scene_id": "scene",
+        "site_type": "warehouse",
+        "source_url": "https://example.com",
+        "license_id": "MIT",
+        "tasks": ["bad", {"task_id": "task-1", "task_statement": "Inspect shelf"}],
+        "scenario_families": ["bad", {"scenario_id": "scenario-1", "task_id": "task-1", "family_label": "A"}],
+    }
+    assert packet._task_cards(scene)["count"] == 1
+    assert packet._scenario_cards(scene)["count"] == 1
+    assert packet._scenario_family_library(scene, generated_at="now")["family_count"] == 1
+    assert packet._asset_inventory(None)["status"] == "not_inspected_no_local_asset_root"
+    assert packet._asset_inventory(tmp_path / "missing")["status"] == "blocked_missing_local_asset_root"
+
+    bad_world = tmp_path / "bad.world"
+    bad_world.write_text("<sdf>", encoding="utf-8")
+    assert packet._world_included_models(bad_world) == []
+    mixed_world = tmp_path / "mixed.world"
+    mixed_world.write_text(
+        """<sdf><world>
+        <model name="without_include" />
+        <model name="bad_pose"><include><uri>model://box</uri></include><pose>1 bad 3</pose></model>
+        </world></sdf>""",
+        encoding="utf-8",
+    )
+    assert packet._world_included_models(mixed_world)[0]["pose"] == [1.0, 0.0, 3.0]
+
+    worlds = tmp_path / "worlds"
+    worlds.mkdir()
+    fallback_world = worlds / "z.world"
+    fallback_world.write_text("<sdf />", encoding="utf-8")
+    assert packet._preferred_aws_world_file(tmp_path) == fallback_world
+
+    assert packet._parse_pose_values([1, "bad"]) == [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert packet._parse_pose_values("1 bad") == [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert packet._parse_scale_values("2 bad") == [2.0, 1.0, 1.0]
+    assert packet._model_name_from_uri("model://box/meshes/mesh.dae") == "box"
+    assert packet._resolve_model_uri(tmp_path, "model://") is None
+    assert packet._resolve_model_uri(tmp_path, "meshes/a.dae") == tmp_path / "meshes" / "a.dae"
+    assert packet._sdf_visual_meshes(tmp_path, "missing") == []
+
+    malformed_model = tmp_path / "models" / "bad"
+    malformed_model.mkdir(parents=True)
+    (malformed_model / "model.sdf").write_text("<sdf>", encoding="utf-8")
+    assert packet._sdf_visual_meshes(tmp_path, "bad") == []
+    no_mesh_model = tmp_path / "models" / "no_mesh"
+    no_mesh_model.mkdir(parents=True)
+    (no_mesh_model / "model.sdf").write_text(
+        "<sdf><model><link><visual><geometry><box /></geometry></visual></link></model></sdf>",
+        encoding="utf-8",
+    )
+    assert packet._sdf_visual_meshes(tmp_path, "no_mesh") == []
+    empty_uri_model = tmp_path / "models" / "empty_uri"
+    empty_uri_model.mkdir(parents=True)
+    (empty_uri_model / "model.sdf").write_text(
+        "<sdf><model><link><visual><geometry><mesh><uri>model://</uri></mesh></geometry></visual></link></model></sdf>",
+        encoding="utf-8",
+    )
+    assert packet._sdf_visual_meshes(tmp_path, "empty_uri") == []
+
+    assert packet._collada_unit_scale(type("Loaded", (), {"units": "0.01 meter"})()) == 0.01
+    assert packet._collada_unit_scale(type("Loaded", (), {"units": "centimeter"})()) == 0.01
+    assert packet._collada_unit_scale(type("Loaded", (), {"units": "meters"})()) == 1.0
+    assert packet._collada_unit_scale(type("Loaded", (), {"units": "unknown"})()) == 1.0
+    assert packet._scale_matrix([2.0]).shape == (4, 4)
+
+    class BytesLikeScene:
+        def export(self, *, file_type: str) -> bytearray:
+            assert file_type == "glb"
+            return bytearray(b"glb")
+
+    output = tmp_path / "scene.glb"
+    packet._export_scene_glb(BytesLikeScene(), output)
+    assert output.read_bytes() == b"glb"
+
+
+def test_materialization_guard_edges_and_blocker_collection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    packet_dir = tmp_path / "packet"
+    packet_dir.mkdir()
+    assert packet._materialize_aws_scene_asset(
+        local_asset_root=None,
+        capture_root=tmp_path / "capture-none",
+        packet_dir=packet_dir,
+        generated_at="now",
+    )["status"] == "skipped_no_local_asset_root"
+    assert packet._materialize_aws_scene_asset(
+        local_asset_root=tmp_path / "missing-root",
+        capture_root=tmp_path / "capture-missing",
+        packet_dir=packet_dir,
+        generated_at="now",
+    )["status"] == "blocked_missing_local_asset_root"
+
+    no_world_root = tmp_path / "no-world"
+    no_world_root.mkdir()
+    assert packet._materialize_aws_scene_asset(
+        local_asset_root=no_world_root,
+        capture_root=tmp_path / "capture-no-world",
+        packet_dir=packet_dir,
+        generated_at="now",
+    )["status"] == "blocked_missing_world_file"
+
+    import trimesh
+
+    asset_root = tmp_path / "asset-root"
+    (asset_root / "worlds").mkdir(parents=True)
+    (asset_root / "worlds" / "small_warehouse.world").write_text(
+        """<sdf><world>
+        <model name="missing_uri"><include><uri></uri></include></model>
+        <model name="missing_dir"><include><uri>model://missing_dir</uri></include></model>
+        <model name="no_visual"><include><uri>model://no_visual</uri></include></model>
+        <model name="missing_mesh"><include><uri>model://missing_mesh</uri></include></model>
+        <model name="bad_load"><include><uri>model://bad_load</uri></include></model>
+        <model name="empty_scene"><include><uri>model://empty_scene</uri></include></model>
+        <model name="box_model"><include><uri>model://box_model</uri></include></model>
+        </world></sdf>""",
+        encoding="utf-8",
+    )
+    for model_name, mesh_name in {
+        "no_visual": None,
+        "missing_mesh": "missing.dae",
+        "bad_load": "bad_load.dae",
+        "empty_scene": "empty_scene.dae",
+        "box_model": "box_model.dae",
+    }.items():
+        model_root = asset_root / "models" / model_name
+        (model_root / "meshes").mkdir(parents=True)
+        if mesh_name is None:
+            (model_root / "model.sdf").write_text("<sdf><model /></sdf>", encoding="utf-8")
+            continue
+        (model_root / "model.sdf").write_text(
+            f"""<sdf><model><link><visual name="{model_name}_visual">
+            <geometry><mesh><uri>model://{model_name}/meshes/{mesh_name}</uri><scale>1 1 1</scale></mesh></geometry>
+            </visual></link></model></sdf>""",
+            encoding="utf-8",
+        )
+        if model_name != "missing_mesh":
+            (model_root / "meshes" / mesh_name).write_text("mesh", encoding="utf-8")
+
+    def fake_load(path: Path, *, force: str) -> object:
+        text = str(path)
+        if "bad_load" in text:
+            raise RuntimeError("bad mesh")
+        if "empty_scene" in text:
+            return trimesh.Scene()
+        return trimesh.creation.box(extents=(1, 1, 1))
+
+    monkeypatch.setattr(trimesh, "load", fake_load)
+    manifest = packet._materialize_aws_scene_asset(
+        local_asset_root=asset_root,
+        capture_root=tmp_path / "capture-blockers",
+        packet_dir=packet_dir,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed_with_warnings"
+    blockers = "\n".join(manifest["blockers"])
+    assert "missing_model_uri" in blockers
+    assert "missing_model_directory" in blockers
+    assert "no_visual_meshes_in_model_sdf" in blockers
+    assert "missing_mesh" in blockers
+    assert "load_failed:RuntimeError" in blockers
+    assert "no_geometry_nodes" in blockers
+    assert manifest["materialized_geometry_count"] > 0
+
+
+def test_run_generation_edges_and_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert packet._pose_with_jitter({"zone_id": "z", "xyz": [1.0, 2.0]}, seed=1)["xyz"][2] == 0.793
+    assert packet._runs_for_scene(scene={"asset_id": "a", "scenario_families": []}, scenario_count=3, variation_manifest={}) == []
+    scene = {
+        "asset_id": "asset",
+        "spawn_zones": [],
+        "target_zones": [],
+        "scenario_families": [{"scenario_id": "scenario", "task_id": "task", "spawn_zones": ["missing"], "target_zones": ["missing"]}],
+    }
+    assert packet._runs_for_scene(
+        scene=scene,
+        scenario_count=3,
+        variation_manifest={"instances": ["bad", {"scenario_id": "scenario", "variation_name": "v"}]},
+    ) == []
+
+    with pytest.raises(ValueError, match="unsupported scene_asset_id"):
+        build_mujoco_scene_scenario_packet(output_dir=tmp_path, scene_asset_id="other")
+
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-cli" / "captures" / "capture-cli"
+    result = build_mujoco_scene_scenario_packet(
+        capture_root=capture_root,
+        scenario_count=1,
+        generated_at="now",
+    )
+    assert result["scenario_eval_run_count"] == 1
+
+    monkeypatch.setattr(
+        packet,
+        "build_mujoco_scene_scenario_packet",
+        lambda **_kwargs: {
+            "status": "ok",
+            "capture_root": "capture",
+            "packet_path": "packet.json",
+            "scenario_eval_matrix_path": "matrix.json",
+            "scenario_eval_run_count": 7,
+            "local_asset_inventory_status": "not_inspected",
+            "scene_materialization_status": "skipped",
+            "scene_glb_path": None,
+        },
+    )
+    assert packet.main(["--scenario-count", "7"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["scenario_eval_run_count"] == 7

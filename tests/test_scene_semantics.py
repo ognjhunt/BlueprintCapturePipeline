@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import builtins
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 from pathlib import Path
 
+from blueprint_pipeline import scene_semantics as semantics
 from blueprint_pipeline.scene_semantics import infer_capture_fidelity_review, infer_scene_semantics
 
 
@@ -221,3 +224,386 @@ def test_scene_semantics_uses_local_fallback_when_video_fails(monkeypatch, tmp_p
     assert report["resolved_environment"] == "default"
     assert report["environment_source"] == "local_auto_fallback"
     assert report["fallback_reason"] == "gemini_video_unavailable_or_failed"
+
+
+def _fake_genai_module(client):
+    return SimpleNamespace(
+        Client=lambda api_key: client,
+        types=SimpleNamespace(
+            FileData=lambda **kwargs: SimpleNamespace(**kwargs),
+            VideoMetadata=lambda **kwargs: SimpleNamespace(**kwargs),
+            Part=lambda **kwargs: SimpleNamespace(**kwargs),
+        ),
+    )
+
+
+def test_scene_semantics_edge_branches(monkeypatch, tmp_path: Path) -> None:
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"video")
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+
+    assert semantics._normalize_environment("") == "default"
+    assert semantics._normalize_environment("factory") == "manufacturing"
+    assert semantics._extract_json_object("no json here") == {}
+    assert semantics._extract_json_object('prefix {"room_type":"warehouse"} suffix') == {
+        "room_type": "warehouse"
+    }
+    assert semantics._extract_json_object("prefix {bad json} suffix") == {}
+
+    assert semantics._extract_response_text(SimpleNamespace(candidates=None)) == ""
+    response = SimpleNamespace(
+        candidates=[
+            SimpleNamespace(content=SimpleNamespace(parts="not-list")),
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(thought=True, text="hidden reasoning"),
+                        SimpleNamespace(text="final text"),
+                    ]
+                )
+            ),
+        ]
+    )
+    assert semantics._extract_response_text(response) == "final text"
+    assert (
+        semantics._extract_response_text(
+            SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[]))])
+        )
+        == ""
+    )
+
+    monkeypatch.setenv("GEMINI_VIDEO_ANALYSIS_FPS", "not-a-number")
+    assert semantics._gemini_video_analysis_fps() == 5.0
+    monkeypatch.setenv("GEMINI_VIDEO_ANALYSIS_FPS", "99")
+    assert semantics._gemini_video_analysis_fps() == 24.0
+
+    class UploadRaises:
+        files = None
+
+        def __init__(self) -> None:
+            self.files = self
+
+        def upload(self, *, file: str):
+            raise RuntimeError(file)
+
+    assert semantics._upload_gemini_video_file(UploadRaises(), video, 5) is None
+
+    class UploadFailed:
+        files = None
+
+        def __init__(self) -> None:
+            self.files = self
+
+        def upload(self, *, file: str):
+            return SimpleNamespace(name="files/1", state=SimpleNamespace(name="FAILED"))
+
+    assert semantics._upload_gemini_video_file(UploadFailed(), video, 5) is None
+
+    class UploadTimeout:
+        files = None
+
+        def __init__(self) -> None:
+            self.files = self
+
+        def upload(self, *, file: str):
+            return SimpleNamespace(name="files/1", state=SimpleNamespace(name="PROCESSING"))
+
+        def get(self, *, name: str):
+            raise AssertionError("timeout should happen before polling")
+
+    times = iter([0.0, 6.0])
+    monkeypatch.setattr(semantics.time, "time", lambda: next(times))
+    assert semantics._upload_gemini_video_file(UploadTimeout(), video, 1) is None
+
+    class UploadGetRaises:
+        files = None
+
+        def __init__(self) -> None:
+            self.files = self
+
+        def upload(self, *, file: str):
+            return SimpleNamespace(name="files/1", state=SimpleNamespace(name="PROCESSING"))
+
+        def get(self, *, name: str):
+            raise RuntimeError(name)
+
+    times = iter([0.0, 1.0])
+    monkeypatch.setattr(semantics.time, "time", lambda: next(times))
+    monkeypatch.setattr(semantics.time, "sleep", lambda *_args, **_kwargs: None)
+    assert semantics._upload_gemini_video_file(UploadGetRaises(), video, 10) is None
+
+    assert semantics._extract_json_array("```json\n[{\"a\": 1}]\n```") == [{"a": 1}]
+    assert semantics._extract_json_array('{"items": [1, 2]}') == [1, 2]
+    assert semantics._extract_json_array("prefix [1, 2] suffix") == [1, 2]
+    assert semantics._extract_json_array("prefix [bad] suffix") == []
+
+    report_path = tmp_path / "reports" / "scene.json"
+    semantics.write_scene_semantics_report(report_path, {"ok": True})
+    assert json.loads(report_path.read_text(encoding="utf-8")) == {"ok": True}
+    assert semantics._string_list("a") == ["a"]
+    assert semantics._string_list(["a", "a", " b "]) == ["a", "b"]
+    assert "Capture context" in semantics._gemini_capture_review_prompt(
+        descriptor={},
+        qa_report={},
+        task_hypothesis_report=None,
+        capture_context={"site_id": "site-1"},
+    )
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_API_KEY", raising=False)
+    assert semantics._infer_with_gemini_video(raw_video_path=video, timeout_sec=5) is None
+    assert (
+        semantics._infer_capture_review_with_gemini_video(
+            raw_video_path=video,
+            descriptor={},
+            qa_report={},
+            task_hypothesis_report=None,
+            capture_context=None,
+            timeout_sec=5,
+        )
+        is None
+    )
+
+    explicit = infer_scene_semantics(
+        frames_dir=frames_dir,
+        raw_video_path=None,
+        requested_environment="bed room",
+    )
+    assert explicit["environment_source"] == "explicit_hint"
+    assert explicit["resolved_environment"] == "bedroom"
+
+    missing_video = infer_scene_semantics(
+        frames_dir=frames_dir,
+        raw_video_path=None,
+        requested_environment="auto",
+    )
+    assert missing_video["fallback_reason"] == "raw_walkthrough_video_missing"
+
+    monkeypatch.setattr(
+        semantics,
+        "_infer_with_gemini_video",
+        lambda **_kwargs: semantics._GeminiResult(
+            environment="kitchen",
+            confidence=0.4,
+            model="gemini",
+            raw_text="{}",
+            detected_objects=["skip", {"sam_prompt": ""}],
+        ),
+    )
+    fallback_prompts = infer_scene_semantics(
+        frames_dir=frames_dir,
+        raw_video_path=video,
+        requested_environment="auto",
+    )
+    assert fallback_prompts["prompt_source"] == "gemini_object_enumeration"
+    assert fallback_prompts["detection_prompts"] == semantics._PROMPTS_BY_ENV["kitchen"]
+
+    monkeypatch.setattr(
+        semantics,
+        "_infer_with_gemini_video",
+        lambda **_kwargs: semantics._GeminiResult(
+            environment="warehouse",
+            confidence=0.6,
+            model="gemini",
+            raw_text="{}",
+            detected_objects=[{"object_id": 42}],
+        ),
+    )
+    non_string_prompt = infer_scene_semantics(
+        frames_dir=frames_dir,
+        raw_video_path=video,
+        requested_environment="auto",
+    )
+    assert non_string_prompt["detection_prompts"] == ["42"]
+
+    monkeypatch.setattr(
+        semantics,
+        "_infer_with_gemini_video",
+        lambda **_kwargs: semantics._GeminiResult(
+            environment="warehouse",
+            confidence=0.6,
+            model="gemini",
+            raw_text="{}",
+            detected_objects=[],
+        ),
+    )
+    no_objects = infer_scene_semantics(
+        frames_dir=frames_dir,
+        raw_video_path=video,
+        requested_environment="auto",
+    )
+    assert no_objects["prompt_source"] == "gemini_video_inference"
+
+    no_video_review = infer_capture_fidelity_review(
+        capture_root=tmp_path,
+        raw_video_path=None,
+        keyframe_path=None,
+        descriptor={},
+        qa_report={},
+    )
+    assert no_video_review["findings"]["blocker_summaries"] == [
+        "raw walkthrough video is missing"
+    ]
+
+
+def test_scene_semantics_gemini_import_and_model_edges(monkeypatch, tmp_path: Path) -> None:
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"video")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    fake_google = ModuleType("google")
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    assert semantics._infer_with_gemini_video(raw_video_path=video, timeout_sec=5) is None
+    assert (
+        semantics._infer_capture_review_with_gemini_video(
+            raw_video_path=video,
+            descriptor={},
+            qa_report={},
+            task_hypothesis_report=None,
+            capture_context=None,
+            timeout_sec=5,
+        )
+        is None
+    )
+
+    original_import = builtins.__import__
+
+    def raise_on_google(name, *args, **kwargs):
+        if name == "google":
+            raise RuntimeError("import exploded")
+        return original_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as import_patch:
+        import_patch.setattr(builtins, "__import__", raise_on_google)
+        assert semantics._infer_with_gemini_video(raw_video_path=video, timeout_sec=5) is None
+        assert (
+            semantics._infer_capture_review_with_gemini_video(
+                raw_video_path=video,
+                descriptor={},
+                qa_report={},
+                task_hypothesis_report=None,
+                capture_context=None,
+                timeout_sec=5,
+            )
+            is None
+        )
+
+    class ActiveFiles:
+        def upload(self, *, file: str):
+            return SimpleNamespace(
+                name="files/1",
+                uri="uri://1",
+                mime_type="video/mp4",
+                state=SimpleNamespace(name="ACTIVE"),
+            )
+
+    class UploadRaisingFiles:
+        def upload(self, *, file: str):
+            raise RuntimeError(file)
+
+    class UploadNoneClient:
+        files = UploadRaisingFiles()
+        models = SimpleNamespace(generate_content=lambda **_kwargs: None)
+
+    fake_google.genai = _fake_genai_module(UploadNoneClient())
+    assert semantics._infer_with_gemini_video(raw_video_path=video, timeout_sec=5) is None
+    assert (
+        semantics._infer_capture_review_with_gemini_video(
+            raw_video_path=video,
+            descriptor={},
+            qa_report={},
+            task_hypothesis_report=None,
+            capture_context=None,
+            timeout_sec=5,
+        )
+        is None
+    )
+
+    class RaisingModelsClient:
+        files = ActiveFiles()
+
+        class models:
+            @staticmethod
+            def generate_content(**_kwargs):
+                raise RuntimeError("model unavailable")
+
+    fake_google.genai = _fake_genai_module(RaisingModelsClient())
+    assert semantics._infer_with_gemini_video(raw_video_path=video, timeout_sec=5) is None
+    assert (
+        semantics._infer_capture_review_with_gemini_video(
+            raw_video_path=video,
+            descriptor={},
+            qa_report={},
+            task_hypothesis_report=None,
+            capture_context=None,
+            timeout_sec=5,
+        )
+        is None
+    )
+
+    class EmptyTextClient:
+        files = ActiveFiles()
+
+        class models:
+            @staticmethod
+            def generate_content(**_kwargs):
+                return SimpleNamespace(text="")
+
+    fake_google.genai = _fake_genai_module(EmptyTextClient())
+    assert semantics._infer_with_gemini_video(raw_video_path=video, timeout_sec=5) is None
+    assert (
+        semantics._infer_capture_review_with_gemini_video(
+            raw_video_path=video,
+            descriptor={},
+            qa_report={},
+            task_hypothesis_report=None,
+            capture_context=None,
+            timeout_sec=5,
+        )
+        is None
+    )
+
+    class NonJsonReviewClient:
+        files = ActiveFiles()
+
+        class models:
+            @staticmethod
+            def generate_content(**_kwargs):
+                return SimpleNamespace(text="not json")
+
+    fake_google.genai = _fake_genai_module(NonJsonReviewClient())
+    assert (
+        semantics._infer_capture_review_with_gemini_video(
+            raw_video_path=video,
+            descriptor={},
+            qa_report={},
+            task_hypothesis_report=None,
+            capture_context=None,
+            timeout_sec=5,
+        )
+        is None
+    )
+
+    class SuccessClient:
+        files = ActiveFiles()
+
+        class models:
+            @staticmethod
+            def generate_content(**_kwargs):
+                return SimpleNamespace(
+                    text=json.dumps(
+                        {
+                            "environment": "factory",
+                            "confidence": "not-a-number",
+                            "objects": [{"sam_prompt": "red bin"}, "skip"],
+                        }
+                    )
+                )
+
+    fake_google.genai = _fake_genai_module(SuccessClient())
+    result = semantics._infer_with_gemini_video(raw_video_path=video, timeout_sec=5)
+    assert result is not None
+    assert result.environment == "manufacturing"
+    assert result.confidence == 0.0
+    assert result.detected_objects == [{"sam_prompt": "red bin"}]

@@ -295,7 +295,7 @@ def _sample_keyframes(
         selected: List[Dict[str, Any]] = []
         for start in range(0, total, window):
             chunk = frames_entries[start : min(total, start + window)]
-            if not chunk:
+            if not chunk:  # pragma: no cover - window/range construction keeps slices non-empty.
                 continue
             best = min(
                 chunk,
@@ -1746,5 +1746,5 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - exercised through main().
     raise SystemExit(main())

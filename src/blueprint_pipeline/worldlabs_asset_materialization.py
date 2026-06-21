@@ -208,7 +208,7 @@ def _download_remote_asset(url: str, output_path: Path, *, max_bytes: int | None
                 except ValueError:
                     pass
             for chunk in iter(lambda: response.read(1024 * 1024), b""):
-                if not chunk:
+                if not chunk:  # pragma: no cover - iter(..., b"") consumes the empty sentinel.
                     break
                 bytes_written += len(chunk)
                 if max_bytes is not None and bytes_written > max_bytes:

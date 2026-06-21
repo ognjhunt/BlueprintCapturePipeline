@@ -222,12 +222,12 @@ def _normalize_requested_lanes(raw_requested_lanes: Any) -> List[str]:
                     normalized.append("qualification")
                 if "evaluation_prep" not in normalized:
                     normalized.append("evaluation_prep")
-    if (
+    if (  # pragma: no cover - defensive; dependency lanes add qualification inside the loop.
         {"retrieval_index", "frame_alignment", "evaluation_prep"} & set(normalized)
         and "qualification" not in normalized
     ):
         normalized.append("qualification")
-    if "simulation_automation" in normalized:
+    if "simulation_automation" in normalized:  # pragma: no cover - defensive; simulation lane adds dependencies inside the loop.
         if "qualification" not in normalized:
             normalized.append("qualification")
         if "evaluation_prep" not in normalized:

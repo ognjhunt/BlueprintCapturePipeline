@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import yaml
@@ -77,6 +77,7 @@ def build_unitree_g1_policy_execution(
     duration_seconds: float = 4.0,
     max_steps: int | None = None,
     output_dir: str | Path | None = None,
+    command_xyz: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     # Local macOS Python environments often load duplicate OpenMP runtimes via
     # torch/mujoco. Set before importing torch so the execution can be audited.
@@ -110,7 +111,14 @@ def build_unitree_g1_policy_execution(
     kps = np.array(config["kps"], dtype=np.float32)
     kds = np.array(config["kds"], dtype=np.float32)
     default_angles = np.array(config["default_angles"], dtype=np.float32)
-    cmd = np.array(config["cmd_init"], dtype=np.float32)
+    if command_xyz is not None:
+        if len(command_xyz) != 3:
+            raise ValueError("command_xyz must contain [vx_mps, vy_mps, yaw_rate_rad_s]")
+        cmd = np.array([float(value) for value in command_xyz], dtype=np.float32)
+        command_source = "caller_override"
+    else:
+        cmd = np.array(config["cmd_init"], dtype=np.float32)
+        command_source = "unitree_rl_gym_config_cmd_init"
     cmd_scale = np.array(config["cmd_scale"], dtype=np.float32)
     num_actions = int(config["num_actions"])
     num_obs = int(config["num_obs"])
@@ -192,6 +200,7 @@ def build_unitree_g1_policy_execution(
         "steps": total_steps,
         "control_updates": len(update_rows),
         "command_xyz": cmd.astype(float).tolist(),
+        "command_source": command_source,
         "final_base_position_xyz": data.qpos[:3].astype(float).tolist(),
         "final_base_yaw_quat_wxyz": data.qpos[3:7].astype(float).tolist(),
         "finite_state": finite_state,
@@ -229,6 +238,7 @@ def build_unitree_g1_policy_execution(
             "trace_path": str(trace_path),
             "metrics_path": str(metrics_path),
             "kmp_duplicate_lib_ok_set": os.environ.get("KMP_DUPLICATE_LIB_OK") == "TRUE",
+            "command_source": command_source,
         },
         "metrics": metrics,
         "proof_boundary": {
@@ -260,6 +270,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration-seconds", type=float, default=4.0)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument(
+        "--command-xyz",
+        nargs=3,
+        type=float,
+        metavar=("VX_MPS", "VY_MPS", "YAW_RATE_RAD_S"),
+    )
     args = parser.parse_args(argv)
     manifest = build_unitree_g1_policy_execution(
         capture_root=args.capture_root,
@@ -268,10 +284,11 @@ def main(argv: list[str] | None = None) -> int:
         duration_seconds=args.duration_seconds,
         max_steps=args.max_steps,
         output_dir=args.output_dir,
+        command_xyz=args.command_xyz,
     )
     print(manifest["output_path"])
     return 0 if manifest["status"] == "completed" else 1
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

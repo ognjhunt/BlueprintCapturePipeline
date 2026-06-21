@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import os
 import py_compile
+import runpy
 import subprocess
 import sys
+import types
 import zipfile
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
+import blueprint_pipeline.lightwheel_kitchen_isaac_scenarios as lks
 from blueprint_pipeline.lightwheel_kitchen_isaac_scenarios import (
     CONTACT_COLLISION_MANIFEST_NAME,
     FINAL_READINESS_MANIFEST_NAME,
@@ -40,6 +44,46 @@ from blueprint_pipeline.lightwheel_kitchen_isaac_scenarios import (
     _write_runpod_direct_launch_request,
     _write_isaac_runner_script,
 )
+
+
+def _make_provider_fixture(tmp_path: Path) -> tuple[Path, dict, dict, Path]:
+    source_zip = tmp_path / "Lightwheel_Kitchen.zip"
+    with zipfile.ZipFile(source_zip, "w") as archive:
+        archive.writestr(MAIN_USD_RELATIVE, "PXR-USDC")
+    runner_script = tmp_path / "run_lightwheel_kitchen_isaac_scenarios.py"
+    runner_script.write_text("print('runner')\n", encoding="utf-8")
+    local_request = tmp_path / "isaac_execution_request.json"
+    local_request.write_text("{}", encoding="utf-8")
+    provider_request = tmp_path / PROVIDER_REQUEST_NAME
+    scenario_manifest = tmp_path / "lightwheel_kitchen_scenarios.json"
+    runtime_preflight = tmp_path / "lightwheel_kitchen_isaac_runtime_preflight.json"
+    handoff = tmp_path / "lightwheel_kitchen_isaac_handoff_manifest.json"
+    scenario_manifest.write_text("{}", encoding="utf-8")
+    runtime_preflight.write_text("{}", encoding="utf-8")
+    handoff.write_text("{}", encoding="utf-8")
+    unitree_root = tmp_path / "unitree_g1"
+    unitree_root.mkdir()
+    (unitree_root / "g1.xml").write_text("<mujoco/>\n", encoding="utf-8")
+    (unitree_root / "mesh.stl").write_text("solid mesh\nendsolid mesh\n", encoding="utf-8")
+    (unitree_root / "LICENSE").write_text("license\n", encoding="utf-8")
+    unitree_summary = _unitree_g1_mjcf_summary(unitree_root)
+    _write_provider_request(
+        path=provider_request,
+        scenarios=_default_scenarios(),
+        unitree_g1_mjcf=unitree_summary,
+    )
+    bundle = _write_provider_bundle(
+        output_dir=tmp_path,
+        source_zip=source_zip,
+        unitree_g1_mjcf_root=unitree_root,
+        runner_script=runner_script,
+        local_execution_request_path=local_request,
+        provider_execution_request_path=provider_request,
+        scenario_manifest_path=scenario_manifest,
+        runtime_preflight_path=runtime_preflight,
+        handoff_path=handoff,
+    )
+    return source_zip, bundle, unitree_summary, provider_request
 
 
 def test_lightwheel_inventory_routes_usd_only_scene_to_isaac(tmp_path: Path) -> None:
@@ -713,3 +757,574 @@ def test_blocked_execution_outputs_are_fail_closed_and_scan_clean(tmp_path: Path
     assert readiness["readiness"]["ready_for_customer_delivery"] is False
     assert ("r" + "pa_") not in persisted
     assert ("x-goog-" + "signature=") not in persisted
+
+
+def test_lightwheel_private_helpers_cover_fail_closed_edges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("{not-json", encoding="utf-8")
+    assert lks._read_json_mapping(bad_json) == {}
+    assert lks._read_json_mapping(tmp_path / "missing.json") == {}
+
+    redacted = lks._redacted_jsonable(
+        ("https://storage.example/object?X-Goog-Signature=secret", {"nested": ["ok"]})
+    )
+    assert redacted[0].endswith("<redacted:signed-url-signature>")
+
+    assert lks._provider_uri_is_fetchable_without_extra_credentials("") is False
+    assert lks._provider_uri_is_fetchable_without_extra_credentials(
+        "https://storage.example/bundle.zip?X-Goog-Signature=abc"
+    )
+    assert lks._provider_uri_is_fetchable_without_extra_credentials(
+        "https://s3.example/bundle.zip?X-Amz-Signature=abc"
+    )
+    assert lks._provider_uri_requires_storage_credentials("s3://bucket/object")
+    assert not lks._provider_uri_requires_storage_credentials("file:///tmp/object")
+
+    assert lks._classify_upload_error(
+        scheme="gs",
+        error=RuntimeError("The billing account for the owning project is disabled"),
+    ) == "upload_failed:gs_billing_account_disabled"
+    assert lks._classify_upload_error(
+        scheme="s3",
+        error=RuntimeError("AccessDenied"),
+    ) == "upload_failed:s3_access_denied"
+    assert lks._classify_upload_error(
+        scheme="r2",
+        error=RuntimeError("403 Forbidden"),
+    ) == "upload_failed:r2_forbidden"
+    assert lks._classify_upload_error(
+        scheme="file",
+        error=ValueError("nope"),
+    ) == "upload_failed:ValueError"
+
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"bundle")
+    copied = lks._upload_provider_file(source, str(tmp_path / "copy.bin"))
+    assert copied["status"] == "uploaded"
+    assert Path(copied["destination_uri"]).read_bytes() == b"bundle"
+    monkeypatch.chdir(tmp_path)
+    relative_copy = lks._upload_provider_file(source, "relative-copy.bin")
+    assert Path(relative_copy["destination_uri"]).read_bytes() == b"bundle"
+    unsupported = lks._upload_provider_file(source, "https://storage.example/copy.bin")
+    assert unsupported["status"] == "blocked"
+    blocking_parent = tmp_path / "blocking-parent"
+    blocking_parent.write_text("not a directory", encoding="utf-8")
+    failed = lks._upload_provider_file(source, str(blocking_parent / "copy.bin"))
+    assert failed["status"] == "blocked"
+
+    uploads: list[tuple[str, str, str]] = []
+
+    class FakeBlob:
+        def __init__(self, bucket_name: str, key: str) -> None:
+            self.bucket_name = bucket_name
+            self.key = key
+
+        def upload_from_filename(self, filename: str) -> None:
+            uploads.append((self.bucket_name, self.key, filename))
+
+    class FakeBucket:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def blob(self, key: str) -> FakeBlob:
+            return FakeBlob(self.name, key)
+
+    class FakeClient:
+        def bucket(self, name: str) -> FakeBucket:
+            return FakeBucket(name)
+
+    google_module = types.ModuleType("google")
+    cloud_module = types.ModuleType("google.cloud")
+    storage_module = types.ModuleType("google.cloud.storage")
+    storage_module.Client = FakeClient
+    cloud_module.storage = storage_module
+    google_module.cloud = cloud_module
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.cloud", cloud_module)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", storage_module)
+    gs_result = lks._upload_provider_file(source, "gs://bucket/path/provider.zip")
+    assert gs_result["status"] == "uploaded"
+    assert uploads == [("bucket", "path/provider.zip", str(source))]
+
+    assert lks._signed_url_from_private_inputs(
+        {"bundle_get": {"signed_url": "https://example"}},
+        "bundle_get",
+    ) == "https://example"
+    summary = lks._signed_url_entry_summary(
+        private_inputs={"bundle_get": {"signed_url": "https://example?X-Goog-Signature=abc"}},
+        key="bundle_get",
+        private_input_path=tmp_path / "private.json",
+    )
+    assert summary["signed_url_signature_present"] is True
+
+
+def test_asset_materialization_commands_and_unitree_resolution_edges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_zip = tmp_path / "Lightwheel_Kitchen.zip"
+    with zipfile.ZipFile(source_zip, "w") as archive:
+        archive.writestr("Collected_KitchenRoom/", "")
+        archive.writestr(MAIN_USD_RELATIVE, "PXR-USDC")
+        archive.writestr("Collected_KitchenRoom/robot.gltf", "{}")
+
+    inventory = _asset_inventory_from_zip(source_zip)
+    assert inventory["extension_counts"][".gltf"] == 1
+    assert inventory["mujoco_native_asset_present"] is True
+
+    asset_root = lks._materialize_assets(
+        source_zip=source_zip,
+        asset_output_dir=tmp_path / "assets",
+    )
+    assert (asset_root / MAIN_USD_RELATIVE).is_file()
+    assert lks._materialize_assets(source_zip=source_zip, asset_output_dir=asset_root) == asset_root
+
+    bad_zip = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad_zip, "w") as archive:
+        archive.writestr("other.usd", "PXR-USDC")
+    with pytest.raises(FileNotFoundError):
+        lks._materialize_assets(source_zip=bad_zip, asset_output_dir=tmp_path / "bad-assets")
+
+    assert lks._run_command([str(tmp_path / "definitely-missing-command")])["status"] == (
+        "not_available"
+    )
+    timeout = lks._run_command(
+        [sys.executable, "-c", "import time; time.sleep(1)"],
+        timeout=0,
+    )
+    assert timeout["status"] == "failed"
+    assert timeout["reason"] == "timeout"
+
+    unitree_root = tmp_path / "unitree_g1"
+    unitree_root.mkdir()
+    (unitree_root / "g1.xml").write_text("<mujoco/>\n", encoding="utf-8")
+    assert lks._resolve_unitree_g1_mjcf_root(explicit_root=unitree_root) == unitree_root
+    monkeypatch.delenv("BLUEPRINT_MUJOCO_G1_MODEL_ROOT", raising=False)
+    fake_repo = tmp_path / "fake_repo"
+    relative_unitree_root = fake_repo / "relative_unitree"
+    relative_unitree_root.mkdir(parents=True)
+    (relative_unitree_root / "g1.xml").write_text("<mujoco/>\n", encoding="utf-8")
+    monkeypatch.setattr(
+        lks,
+        "__file__",
+        str(fake_repo / "src" / "blueprint_pipeline" / "lightwheel.py"),
+    )
+    assert lks._resolve_unitree_g1_mjcf_root(explicit_root="relative_unitree") == (
+        relative_unitree_root
+    )
+    (tmp_path / "fake_cwd").mkdir()
+    monkeypatch.chdir(tmp_path / "fake_cwd")
+    assert lks._resolve_unitree_g1_mjcf_root(explicit_root=tmp_path / "missing") is None
+    assert _unitree_g1_mjcf_summary(None)["status"] == "not_found"
+
+    legacy_runner = tmp_path / "legacy_runner.py"
+    lks._write_isaac_runner_script_legacy_unused(legacy_runner)
+    assert "Isaac Sim runtime entrypoint" in legacy_runner.read_text(encoding="utf-8")
+
+
+def test_usd_stage_and_checker_summaries_cover_runtime_branches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    usd_path = tmp_path / "KitchenRoom.usd"
+    usd_path.write_text("#usda 1.0\n", encoding="utf-8")
+
+    mesh_type = type("Mesh", (), {})
+    xformable_type = type("Xformable", (), {})
+
+    class FakePrim:
+        def __init__(self, type_name: str, *apis: type) -> None:
+            self._type_name = type_name
+            self._apis = apis
+
+        def GetTypeName(self) -> str:
+            return self._type_name
+
+        def IsA(self, api: type) -> bool:
+            return api in self._apis
+
+        def GetPath(self) -> str:
+            return "/World"
+
+    class FakeBox:
+        def GetMin(self) -> tuple[float, float, float]:
+            return (0.0, 1.0, 2.0)
+
+        def GetMax(self) -> tuple[float, float, float]:
+            return (3.0, 4.0, 5.0)
+
+    class FakeBound:
+        def ComputeAlignedBox(self) -> FakeBox:
+            return FakeBox()
+
+    class FakeBBoxCache:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def ComputeWorldBound(self, root) -> FakeBound:
+            return FakeBound()
+
+    class FakeTimeCode:
+        @staticmethod
+        def Default() -> str:
+            return "default"
+
+    class FakeStageObject:
+        def Traverse(self) -> list[FakePrim]:
+            return [
+                FakePrim("Mesh", mesh_type, xformable_type),
+                FakePrim("Xform", xformable_type),
+            ]
+
+        def GetPseudoRoot(self) -> object:
+            return object()
+
+        def GetDefaultPrim(self) -> FakePrim:
+            return FakePrim("Xform")
+
+    class FakeStage:
+        open_result: object | None = FakeStageObject()
+        should_raise = False
+
+        @staticmethod
+        def Open(path: str) -> object | None:
+            if FakeStage.should_raise:
+                raise RuntimeError(f"cannot open {path}")
+            return FakeStage.open_result
+
+    usd_module = types.ModuleType("pxr.Usd")
+    usd_module.Stage = FakeStage
+    usd_module.TimeCode = FakeTimeCode
+    usd_geom_module = types.ModuleType("pxr.UsdGeom")
+    usd_geom_module.BBoxCache = FakeBBoxCache
+    usd_geom_module.Mesh = mesh_type
+    usd_geom_module.Xformable = xformable_type
+    pxr_module = types.ModuleType("pxr")
+    pxr_module.Usd = usd_module
+    pxr_module.UsdGeom = usd_geom_module
+    monkeypatch.setitem(sys.modules, "pxr", pxr_module)
+    monkeypatch.setitem(sys.modules, "pxr.Usd", usd_module)
+    monkeypatch.setitem(sys.modules, "pxr.UsdGeom", usd_geom_module)
+
+    opened = lks._usd_stage_summary(usd_path)
+    assert opened["status"] == "opened"
+    assert opened["prim_count"] == 2
+    assert opened["mesh_count"] == 1
+
+    FakeStage.open_result = None
+    assert lks._usd_stage_summary(usd_path)["reason"] == "stage_open_returned_none"
+    FakeStage.should_raise = True
+    assert lks._usd_stage_summary(usd_path)["status"] == "failed"
+
+    monkeypatch.setattr(lks, "_command_path", lambda name: None)
+    assert lks._usdchecker_summary(usd_path)["reason"] == "usdchecker_unavailable"
+
+    monkeypatch.setattr(lks, "_command_path", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        lks,
+        "_run_command",
+        lambda command, timeout=60: {
+            "status": "failed",
+            "stdout_head": "Could not load sublayer UnitsAdjust-deadbeef.metricsAssembler",
+            "stderr_head": "OmniPBR.mdl UnresolvableDependency ShaderSdrCompliance",
+        },
+    )
+    checked = lks._usdchecker_summary(usd_path)
+    assert checked["status"] == "failed"
+    assert "usd_missing_sublayer_metrics_assembler" in checked["blockers"]
+    assert "usd_shader_registry_or_type_compliance_errors" in checked["blockers"]
+
+    no_refs_zip = tmp_path / "no_refs.zip"
+    with zipfile.ZipFile(no_refs_zip, "w") as archive:
+        archive.writestr(MAIN_USD_RELATIVE, "PXR-USDC")
+    no_refs = _usd_dependency_presence_audit(
+        asset_root=tmp_path,
+        source_zip=no_refs_zip,
+        usdchecker={"status": "passed"},
+    )
+    assert no_refs["status"] == "not_applicable"
+
+
+def test_runtime_preflight_docker_success_and_malformed_output_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lks, "_command_path", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(lks, "_module_available", lambda name: True)
+
+    def fake_run_command(command, timeout=60):
+        if command[0] == "docker":
+            return {
+                "status": "passed",
+                "stdout_head": "x86_64\nlinux\n1048576\nfalse\n",
+                "stderr_head": "",
+            }
+        return {"status": "passed", "stdout_head": "RTX 4090, 24576 MiB, 555.0", "stderr_head": ""}
+
+    monkeypatch.setattr(lks, "_run_command", fake_run_command)
+    preflight = _runtime_preflight()
+    assert preflight["docker"]["architecture"] == "x86_64"
+    assert preflight["docker"]["memory_total_bytes"] == 1048576
+    assert "docker_nvidia_runtime_unavailable" in preflight["blockers"]
+
+    def malformed_docker(command, timeout=60):
+        if command[0] == "docker":
+            return {"status": "passed", "stdout_head": "too-few-lines\n", "stderr_head": ""}
+        return {"status": "passed", "stdout_head": "RTX 4090", "stderr_head": ""}
+
+    monkeypatch.setattr(lks, "_run_command", malformed_docker)
+    malformed = _runtime_preflight()
+    assert malformed["docker"]["architecture"] is None
+    assert malformed["docker"]["nvidia_runtime_present"] is False
+
+
+def test_draw_previews_skips_missing_or_invalid_points(tmp_path: Path) -> None:
+    assert _draw_previews(
+        thumbnail_path=tmp_path / "missing.png",
+        scenarios=_default_scenarios()[:1],
+        output_dir=tmp_path / "previews",
+    ) == []
+
+    thumb = tmp_path / THUMBNAIL_RELATIVE
+    thumb.parent.mkdir(parents=True)
+    Image.new("RGBA", (64, 64), (240, 230, 210, 255)).save(thumb)
+    previews = _draw_previews(
+        thumbnail_path=thumb,
+        scenarios=[
+            {
+                "scenario_id": "invalid_points",
+                "spawn_position_xyz": None,
+                "waypoints_xyz": [["bad"], [0.0, 0.0, 0.0]],
+                "target_position_xyz": [1.0, 1.0, 0.0],
+            }
+        ],
+        output_dir=tmp_path / "previews",
+    )
+    assert len(previews) == 1
+    assert Path(previews[0]["path"]).is_file()
+
+
+def test_provider_packet_uploads_local_bundle_and_packet_with_private_signed_inputs(
+    tmp_path: Path,
+) -> None:
+    source_zip, bundle, unitree_summary, provider_request = _make_provider_fixture(tmp_path)
+    remote_root = tmp_path / "remote"
+    private_file = tmp_path / "signed_urls.local"
+    private_file.write_text(
+        json.dumps(
+            {
+                "bundle_get": {
+                    "signed_url": "https://storage.example/bundle.zip?X-Goog-Signature=secret",
+                    "resource": "gs://bucket/bundle.zip",
+                    "http_verb": "GET",
+                },
+                "runtime_result_put": {
+                    "signed_url": "https://storage.example/result.json?X-Goog-Signature=secret",
+                    "resource": "gs://bucket/result.json",
+                    "http_verb": "PUT",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    packet = _write_provider_packet(
+        output_dir=tmp_path,
+        source_zip=source_zip,
+        bundle=bundle,
+        unitree_g1_mjcf=unitree_summary,
+        provider_execution_request_path=provider_request,
+        runtime={"blockers": [], "provider_credentials": {}},
+        provider_proof_path=None,
+        provider_artifact_root_uri=f"file://{remote_root}",
+        upload_provider_packet=True,
+        provider_private_signed_url_file=private_file,
+        repo_commit="abc123",
+        selected_isaac_runtime_image_ref="nvcr.io/nvidia/isaac-sim:5.0.0",
+    )
+
+    assert packet["status"] == "provider_packet_uploaded_ready_for_runtime_probe"
+    assert packet["asset_bundle"]["upload_status"] == "uploaded"
+    assert packet["provider_packet_upload"]["status"] == "uploaded"
+    assert (remote_root / PROVIDER_BUNDLE_NAME).is_file()
+    assert (remote_root / PROVIDER_PACKET_NAME).is_file()
+
+
+def test_provider_packet_upload_blockers_and_missing_image_ref_are_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_zip, bundle, unitree_summary, provider_request = _make_provider_fixture(tmp_path)
+    monkeypatch.delenv("BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF", raising=False)
+    monkeypatch.delenv("BLUEPRINT_LIGHTWHEEL_ISAAC_RUNTIME_IMAGE_REF", raising=False)
+    monkeypatch.setattr(lks, "DEFAULT_ISAAC_RUNTIME_IMAGE_REF", "")
+
+    missing_root = _write_provider_packet(
+        output_dir=tmp_path,
+        source_zip=source_zip,
+        bundle=bundle,
+        unitree_g1_mjcf=unitree_summary,
+        provider_execution_request_path=provider_request,
+        runtime={"blockers": [], "provider_credentials": {}},
+        provider_proof_path=None,
+        provider_artifact_root_uri=None,
+        upload_provider_packet=True,
+        provider_private_signed_url_file=None,
+        repo_commit="abc123",
+    )
+    assert missing_root["status"] == "provider_packet_upload_blocked"
+    assert "missing_provider_artifact_root_uri" in missing_root["blockers"]
+    assert "versioned_provider_fetchable_BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF" in missing_root[
+        "required_missing_inputs"
+    ]
+
+    unsupported = _write_provider_packet(
+        output_dir=tmp_path,
+        source_zip=source_zip,
+        bundle=bundle,
+        unitree_g1_mjcf=unitree_summary,
+        provider_execution_request_path=provider_request,
+        runtime={"blockers": [], "provider_credentials": {}},
+        provider_proof_path=None,
+        provider_artifact_root_uri="ftp://provider.example/lightwheel",
+        upload_provider_packet=True,
+        provider_private_signed_url_file=None,
+        repo_commit="abc123",
+        selected_isaac_runtime_image_ref="nvcr.io/nvidia/isaac-sim:5.0.0",
+    )
+    assert unsupported["status"] == "provider_packet_upload_blocked"
+    assert any("unsupported_provider_packet_upload_scheme:ftp" in item for item in unsupported["blockers"])
+
+
+def test_build_lightwheel_scenarios_writes_fail_closed_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_zip = repo_root / "Lightwheel_Kitchen.zip"
+    with zipfile.ZipFile(source_zip, "w") as archive:
+        archive.writestr(MAIN_USD_RELATIVE, "PXR-USDC")
+
+    real_inventory = lks._asset_inventory_from_zip
+
+    def inventory_with_missing_main(path: Path) -> dict:
+        inventory = real_inventory(path)
+        inventory["main_usd_present"] = False
+        return inventory
+
+    monkeypatch.setattr(lks, "_asset_inventory_from_zip", inventory_with_missing_main)
+    monkeypatch.setattr(lks, "_usd_stage_summary", lambda path: {"status": "opened"})
+    monkeypatch.setattr(
+        lks,
+        "_usdchecker_summary",
+        lambda path: {
+            "status": "failed",
+            "blockers": ["usd_requires_omniverse_mdl_material_registry"],
+        },
+    )
+    monkeypatch.setattr(
+        lks,
+        "_usd_dependency_presence_audit",
+        lambda **kwargs: {
+            "status": "missing_required_dependencies",
+            "blockers": ["usd_unresolvable_texture_dependencies"],
+            "missing_dependency_names": ["3d66Model-missing.png"],
+        },
+    )
+    monkeypatch.setattr(
+        lks,
+        "_runtime_preflight",
+        lambda: {
+            "status": "blocked",
+            "blockers": ["isaac_sim_runtime_unavailable"],
+            "isaac_local_runtime_ready": False,
+            "provider_credentials": {},
+        },
+    )
+
+    result = lks.build_lightwheel_kitchen_isaac_scenarios(
+        source_repo_root=repo_root,
+        output_dir=tmp_path / "out",
+        repo_commit="abc123",
+    )
+
+    assert result["status"] == "blocked"
+    assert "lightwheel_kitchen_main_usd_missing" in result["blockers"]
+    assert "usd_requires_omniverse_mdl_material_registry" in result["blockers"]
+    assert "usd_unresolvable_texture_dependencies" in result["blockers"]
+    assert result["scenario_execution_status"] == "blocked_not_executed"
+    assert Path(result["manifest_path"]).is_file()
+    assert Path(result["provider_packet_manifest"]).is_file()
+    assert result["final_output_manifests"]["execution_manifest"].endswith(
+        ISAAC_EXECUTION_MANIFEST_NAME
+    )
+
+
+def test_build_requires_source_zip(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        lks.build_lightwheel_kitchen_isaac_scenarios(
+            source_repo_root=tmp_path / "empty-repo",
+            output_dir=tmp_path / "out",
+        )
+
+
+def test_main_passes_cli_arguments_and_reports_status(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+
+    def fake_build(**kwargs) -> dict[str, str]:
+        received.update(kwargs)
+        return {"status": "ready_for_isaac_execution", "manifest_path": "/tmp/handoff.json"}
+
+    monkeypatch.setattr(lks, "build_lightwheel_kitchen_isaac_scenarios", fake_build)
+    code = lks.main(
+        [
+            "--capture-root",
+            "/tmp/capture",
+            "--source-zip",
+            "/tmp/source.zip",
+            "--output-dir",
+            "/tmp/out",
+            "--upload-provider-packet",
+            "--repo-commit",
+            "abc123",
+        ]
+    )
+
+    assert code == 0
+    assert received["capture_root"] == "/tmp/capture"
+    assert received["source_zip"] == "/tmp/source.zip"
+    assert received["upload_provider_packet"] is True
+    assert json.loads(capsys.readouterr().out)["status"] == "ready_for_isaac_execution"
+
+
+def test_module_entrypoint_uses_main_guard_without_external_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_zip = tmp_path / "Lightwheel_Kitchen.zip"
+    with zipfile.ZipFile(source_zip, "w") as archive:
+        archive.writestr(MAIN_USD_RELATIVE, "PXR-USDC")
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "lightwheel_kitchen_isaac_scenarios.py",
+            "--source-zip",
+            str(source_zip),
+            "--output-dir",
+            str(tmp_path / "entrypoint-out"),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("blueprint_pipeline.lightwheel_kitchen_isaac_scenarios", run_name="__main__")
+
+    assert exc_info.value.code == 2

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
+from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.live_pipeline_control_plane import (
     CONTROL_PLANE_OUTPUT_PATH_ENV,
     run_live_pipeline_control_plane,
@@ -144,6 +148,152 @@ def _live_closure_evidence(job_id: str = "webapp-job-1") -> dict[str, object]:
                 "attestation": "Owner accepted contact, physics, and safety evidence.",
             },
         },
+    }
+
+
+def test_live_pipeline_intake_service_helper_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest_path = tmp_path / "control" / "manifest.json"
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "custom-work"))
+    assert service._work_dir(manifest_path) == tmp_path / "custom-work"
+    assert service._request_from_payload({"schema_version": "robot_eval_job_request.v1"})["schema_version"] == "robot_eval_job_request.v1"
+    assert service._request_from_payload({"schema_version": "other"}) == {}
+    assert service._first_string("", None) == ""
+    assert service._list_from_payload(("a", "b")) == ["a", "b"]
+    assert service._list_from_payload("bad") == []
+    cards_path = tmp_path / "cards.json"
+    _write_json(cards_path, [{"task_id": "task-1"}, "bad"])
+    assert service._cards_from_file(cards_path) == [{"task_id": "task-1"}]
+
+    missing_root = tmp_path / "missing-cards"
+    assert service._select_dataset_task(missing_root) == (
+        None,
+        ["robot_eval_task_cards_missing", "robot_eval_scenario_cards_missing"],
+    )
+    empty_root = tmp_path / "empty-cards"
+    _write_json(empty_root / "pipeline" / "robot_eval_dataset" / "task_cards.json", {"cards": []})
+    _write_json(empty_root / "pipeline" / "robot_eval_dataset" / "scenario_cards.json", {"cards": []})
+    assert service._select_dataset_task(empty_root) == (
+        None,
+        ["robot_eval_task_cards_empty", "robot_eval_scenario_cards_empty"],
+    )
+    unmatched_root = tmp_path / "unmatched-cards"
+    _write_json(
+        unmatched_root / "pipeline" / "robot_eval_dataset" / "task_cards.json",
+        {"cards": [{}, {"task_id": "task-1"}]},
+    )
+    _write_json(
+        unmatched_root / "pipeline" / "robot_eval_dataset" / "scenario_cards.json",
+        {"cards": [{"task_id": "other", "scenario_id": "scenario-1"}]},
+    )
+    assert service._select_dataset_task(unmatched_root) == (
+        None,
+        ["robot_eval_no_task_scenario_pair"],
+    )
+
+
+def test_capture_handoff_blocker_edges(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    payload = {
+        "scene_id": "other-scene",
+        "capture_id": "other-capture",
+        "requested_outputs": ["task_evaluation_run"],
+    }
+    envelope, audit = service._capture_handoff_to_webapp_request(payload=payload, capture_root=capture_root)
+
+    assert envelope is None
+    assert "capture_handoff_scene_id_mismatch" in audit["blockers"]
+    assert "capture_handoff_capture_id_mismatch" in audit["blockers"]
+    assert "capture_handoff_missing_site_submission_id" in audit["blockers"]
+
+
+def test_trigger_control_plane_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(service.INTAKE_TRIGGER_ENV, "echo trigger")
+    monkeypatch.delenv(service.INTAKE_ALLOW_TRIGGER_ENV, raising=False)
+    assert service._trigger_control_plane()["status"] == "blocked"
+
+    class Completed:
+        returncode = 0
+        stdout = "x" * 2100
+        stderr = "err"
+
+    monkeypatch.setenv(service.INTAKE_ALLOW_TRIGGER_ENV, "true")
+    monkeypatch.setattr(service.subprocess, "run", lambda *_args, **_kwargs: Completed())
+    triggered = service._trigger_control_plane()
+    assert triggered["status"] == "triggered"
+    assert len(triggered["stdout_tail"]) == 2000
+
+
+def test_live_pipeline_intake_service_error_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TestClient(create_app())
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
+    missing_manifest = tmp_path / "missing-manifest.json"
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(missing_manifest))
+    headers = {"x-blueprint-intake-token": "token"}
+
+    assert client.get("/health").json()["manifest_path"] == str(missing_manifest)
+    assert client.get("/health").json()["manifest_exists"] is False
+    assert client.post("/api/live-pipeline/job-requests", json={}, headers={"x-blueprint-intake-token": "bad"}).status_code == 401
+
+    endpoints = [
+        "/api/live-pipeline/job-requests",
+        "/api/live-pipeline/capture-handoffs",
+        "/api/live-pipeline/policy-packages",
+        "/api/live-pipeline/real-robot-pov",
+        "/api/live-pipeline/deployment-outcomes",
+        "/api/live-pipeline/live-closure-evidence",
+    ]
+    for endpoint in endpoints:
+        assert client.post(endpoint, data="{", headers={**headers, "content-type": "application/json"}).status_code == 400
+        assert client.post(endpoint, json=[], headers=headers).status_code == 400
+        assert client.post(endpoint, json={}, headers=headers).status_code == 503
+
+    manifest_path = tmp_path / "control" / "live_pipeline_control_plane_manifest.json"
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    _write_json(manifest_path, ["bad"])
+    assert client.post("/api/live-pipeline/capture-handoffs", json={}, headers=headers).status_code == 503
+    _write_json(manifest_path, {})
+    assert client.post("/api/live-pipeline/capture-handoffs", json={}, headers=headers).status_code == 503
+
+    assert client.get("/api/live-pipeline/intake-audit", headers=headers).status_code == 404
+    _write_json(manifest_path.parent / "live_pipeline_input_intake_audit.json", ["bad"])
+    assert client.get("/api/live-pipeline/intake-audit", headers=headers).status_code == 500
+
+
+def test_capture_handoff_blocked_after_conversion_and_main(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_robot_eval_dataset_cards(capture_root)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
+    monkeypatch.setattr(
+        service,
+        "build_live_pipeline_input_intake",
+        lambda **_kwargs: {"status": "blocked", "input_blockers": ["blocked_after_conversion"]},
+    )
+
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/capture-handoffs",
+        json=_capture_handoff(),
+        headers={"x-blueprint-intake-token": "token"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["capture_handoff"]["converted_to_job_request"] is True
+
+    calls: dict[str, object] = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "uvicorn",
+        SimpleNamespace(run=lambda app, host, port: calls.update({"app": app, "host": host, "port": port})),
+    )
+    assert service.main(["--host", "0.0.0.0", "--port", "9999"]) == 0
+    assert calls == {
+        "app": "blueprint_pipeline.live_pipeline_intake_service:app",
+        "host": "0.0.0.0",
+        "port": 9999,
     }
 
 

@@ -3356,7 +3356,7 @@ def run_mujoco_g1_simulator_command(
         step: int,
         reason: str,
     ) -> list[dict[str, Any]]:
-        if renderer is None or Image is None:
+        if renderer is None or Image is None:  # pragma: no cover - guarded by should_render_episode.
             return []
         x, y, z = float(pose[0]), float(pose[1]), float(pose[2])
         records: list[dict[str, Any]] = []
@@ -4873,8 +4873,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--menagerie-ref", default=DEFAULT_MENAGERIE_REF)
     args = parser.parse_args(argv)
 
-    capture_root = args.capture_root or Path(os.environ.get("BLUEPRINT_CAPTURE_ROOT", ""))
-    if not _string(capture_root):
+    capture_root_env = os.environ.get("BLUEPRINT_CAPTURE_ROOT")
+    capture_root = args.capture_root or (Path(capture_root_env) if capture_root_env else None)
+    if capture_root is None:
         parser.error("--capture-root or BLUEPRINT_CAPTURE_ROOT is required")
     allow_fetch = bool(args.allow_fetch_g1_assets) and not bool(args.no_fetch_g1_assets)
     payload = run_mujoco_g1_simulator_command(
@@ -4915,5 +4916,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

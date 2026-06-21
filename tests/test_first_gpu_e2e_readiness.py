@@ -3,9 +3,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import blueprint_pipeline.first_gpu_e2e_readiness as readiness
 from blueprint_pipeline.first_gpu_e2e_readiness import (
     FIRST_GPU_E2E_READINESS_SCHEMA_VERSION,
     LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND,
+    _default_simulator_command,
+    _default_staged_inputs_path,
+    _first_executable,
+    _nested_webapp_source,
+    _parse_by_site_override,
+    _path_matches,
+    _pipeline_handoff_stage,
+    _request_from_webapp_payload,
+    _simulator_runtime_stage,
+    _string_list,
+    _webapp_forwarding_preflight_stage,
+    _webapp_forwarding_stage,
+    _webapp_staged_request_stage,
+    _webapp_upstream_truth_stage,
     build_first_gpu_e2e_readiness,
     main,
 )
@@ -602,3 +617,574 @@ def test_first_gpu_readiness_cli_writes_manifest(tmp_path: Path, monkeypatch) ->
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["schema_version"] == FIRST_GPU_E2E_READINESS_SCHEMA_VERSION
     assert "simulator_runtime:simulator_command_executable_missing" in payload["blockers"]
+
+
+def _write_placeholder_upstream_ids(capture_root: Path) -> None:
+    payload = {
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "video_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw/walkthrough.mov",
+        "capture_capabilities": {"camera_pose": True},
+        "requested_outputs": ["qualification", "robot_eval_dataset", "task_evaluation_run"],
+        "site_submission_id": "capture-1",
+        "request_id": "capture-1",
+        "buyer_request_id": "capture-1",
+        "capture_job_id": "capture-1",
+    }
+    _write_json(capture_root / "raw" / "manifest.json", payload)
+    _write_json(capture_root / "capture_descriptor.json", payload)
+
+
+def test_first_gpu_readiness_small_helper_edges(tmp_path: Path, monkeypatch) -> None:
+    assert _string_list("one") == ["one"]
+    assert _string_list(42) == ["42"]
+    assert _first_executable('"unterminated') == ""
+    assert _first_executable("FOO=bar /bin/echo hello") == "/bin/echo"
+    assert readiness._placeholder_like("", scene_id="scene-1", capture_id="capture-1")
+    assert _request_from_webapp_payload(
+        {"queue_contract": "robot_eval_job_request_inbox.v1", "job_request": {"job_id": "job-1"}}
+    ) == {"job_id": "job-1"}
+    assert _request_from_webapp_payload(
+        {"schema_version": "robot_eval_job_request.v1", "job_id": "job-2"}
+    )["job_id"] == "job-2"
+    assert _request_from_webapp_payload({}) == {}
+    assert _nested_webapp_source({}, "site_submission_id") == ""
+    assert _path_matches("", tmp_path) is False
+
+    loop = tmp_path / "loop"
+    try:
+        loop.symlink_to(loop)
+        assert _path_matches(str(loop), tmp_path) is False
+    except OSError:
+        pass
+
+    staged_inputs = tmp_path / "configured-staged.json"
+    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH", str(staged_inputs))
+    assert _default_staged_inputs_path(tmp_path, None) == staged_inputs.resolve()
+    monkeypatch.setenv("BLUEPRINT_ISAAC_LAB_ARENA_COMMAND", "/opt/arena/run.sh")
+    assert _default_simulator_command("isaac_lab_arena", None) == "/opt/arena/run.sh"
+
+    env_preflight = tmp_path / "env-preflight.json"
+    _write_webapp_forwarding_preflight_report(env_preflight)
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT", str(env_preflight))
+    assert _webapp_forwarding_preflight_stage(
+        webapp_site_slug="site-1",
+        require_webapp_forwarding=True,
+        preflight_report_path=None,
+    )["path"] == str(env_preflight.resolve())
+
+
+def test_first_gpu_readiness_upstream_truth_handles_staged_request_edges(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _write_placeholder_upstream_ids(capture_root)
+    no_request_id_payload = {
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "video_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw/walkthrough.mov",
+        "capture_capabilities": {"camera_pose": True},
+        "requested_outputs": ["qualification", "robot_eval_dataset", "task_evaluation_run"],
+        "site_submission_id": "capture-1",
+        "buyer_request_id": "capture-1",
+        "capture_job_id": "capture-1",
+    }
+    _write_json(capture_root / "raw" / "manifest.json", no_request_id_payload)
+    _write_json(capture_root / "capture_descriptor.json", no_request_id_payload)
+    _write_json(
+        capture_root / "pipeline_handoff.json",
+        {"owner_system": {"request_id": "request-from-owner-system"}},
+    )
+    stage = _webapp_upstream_truth_stage(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        staged_inputs_path=None,
+    )
+    assert stage["source_artifacts"]["request_id"] == "pipeline_handoff.json owner_system"
+    _write_placeholder_upstream_ids(capture_root)
+
+    invalid_staged = tmp_path / "invalid-staged.json"
+    invalid_staged.write_text("{bad", encoding="utf-8")
+    stage = _webapp_upstream_truth_stage(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        staged_inputs_path=invalid_staged,
+    )
+    assert "staged_webapp_request_read_failed:JSONDecodeError" in stage["warnings"]
+
+    _write_json(
+        tmp_path / "local-rehearsal-staged.json",
+        {"local_rehearsal_only": True, "webapp_request": {}},
+    )
+    stage = _webapp_upstream_truth_stage(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        staged_inputs_path=tmp_path / "local-rehearsal-staged.json",
+    )
+    assert "staged_webapp_request_local_rehearsal_only" in stage["warnings"]
+
+    invalid_request = tmp_path / "invalid-request.json"
+    invalid_request.write_text("{bad", encoding="utf-8")
+    _write_json(
+        tmp_path / "invalid-request-staged.json",
+        {"webapp_request": {"path": str(invalid_request)}},
+    )
+    stage = _webapp_upstream_truth_stage(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        staged_inputs_path=tmp_path / "invalid-request-staged.json",
+    )
+    assert "staged_webapp_request_payload_read_failed:JSONDecodeError" in stage["warnings"]
+
+    _write_json(
+        tmp_path / "path-missing-staged.json",
+        {"webapp_request": {}},
+    )
+    stage = _webapp_upstream_truth_stage(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        staged_inputs_path=tmp_path / "path-missing-staged.json",
+    )
+    assert "staged_webapp_request_path_missing" in stage["warnings"]
+
+    _write_json(
+        tmp_path / "missing-file-staged.json",
+        {"webapp_request": {"path": str(tmp_path / "missing-request.json")}},
+    )
+    stage = _webapp_upstream_truth_stage(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        staged_inputs_path=tmp_path / "missing-file-staged.json",
+    )
+    assert "staged_webapp_request_file_missing" in stage["warnings"]
+
+    mismatch_request = tmp_path / "mismatch-request.json"
+    _write_json(
+        mismatch_request,
+        {
+            "schema_version": "robot_eval_job_request.v1",
+            "job_id": "job-1",
+            "site_package": {"capture_root": str(tmp_path / "other-capture")},
+        },
+    )
+    _write_json(
+        tmp_path / "mismatch-staged.json",
+        {"webapp_request": {"path": str(mismatch_request)}},
+    )
+    stage = _webapp_upstream_truth_stage(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        staged_inputs_path=tmp_path / "mismatch-staged.json",
+    )
+    assert "staged_webapp_request_capture_root_mismatch" in stage["warnings"]
+
+    list_staged = tmp_path / "list-staged.json"
+    list_staged.write_text("[]", encoding="utf-8")
+    stage = _webapp_upstream_truth_stage(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        staged_inputs_path=list_staged,
+    )
+    assert "staged_webapp_inputs_not_json_object" in stage["warnings"]
+
+
+def test_first_gpu_readiness_forwarding_preflight_edges(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON", "{bad")
+    assert _parse_by_site_override()["blockers"] == [
+        "invalid_env_ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON"
+    ]
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON", "[]")
+    assert _parse_by_site_override()["blockers"] == [
+        "invalid_env_ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON"
+    ]
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON", raising=False)
+
+    missing = _webapp_forwarding_preflight_stage(
+        webapp_site_slug="site-1",
+        require_webapp_forwarding=True,
+        preflight_report_path=tmp_path / "missing.json",
+    )
+    assert missing["blockers"] == ["webapp_forwarding_preflight_report_missing"]
+
+    invalid_json = tmp_path / "invalid-preflight.json"
+    invalid_json.write_text("{bad", encoding="utf-8")
+    invalid = _webapp_forwarding_preflight_stage(
+        webapp_site_slug="site-1",
+        require_webapp_forwarding=True,
+        preflight_report_path=invalid_json,
+    )
+    assert invalid["blockers"] == [
+        "webapp_forwarding_preflight_report_read_failed:JSONDecodeError"
+    ]
+
+    non_mapping = tmp_path / "non-mapping-preflight.json"
+    non_mapping.write_text("[]", encoding="utf-8")
+    assert _webapp_forwarding_preflight_stage(
+        webapp_site_slug="site-1",
+        require_webapp_forwarding=True,
+        preflight_report_path=non_mapping,
+    )["blockers"] == ["webapp_forwarding_preflight_report_not_json_object"]
+
+    optional = tmp_path / "optional-preflight.json"
+    _write_webapp_forwarding_preflight_report(
+        optional,
+        status="ready_for_optional_forwarding",
+    )
+    optional_stage = _webapp_forwarding_preflight_stage(
+        webapp_site_slug="site-1",
+        require_webapp_forwarding=False,
+        preflight_report_path=optional,
+    )
+    assert optional_stage["preflight_status"] == "ready_for_optional_forwarding"
+
+    bad = tmp_path / "bad-preflight.json"
+    _write_json(
+        bad,
+        {
+            "schema_version": "wrong",
+            "status": "blocked",
+            "forwarding_required": False,
+            "endpoint_configured": False,
+            "configured_env": {
+                "forward_url": {"valid": False},
+                "forward_token": {"configured": False, "redacted": False},
+                "forward_timeout_ms": {"valid": False},
+                "capture_root_by_site_json": {
+                    "configured": True,
+                    "valid": False,
+                    "site_slugs": [],
+                },
+                "single_capture_root_override": {"configured": False},
+            },
+            "blockers": ["preflight_report_blocked"],
+            "proof_boundary": {},
+            "probe": {"requested": True, "status": "unreachable"},
+        },
+    )
+    bad_stage = _webapp_forwarding_preflight_stage(
+        webapp_site_slug="",
+        require_webapp_forwarding=True,
+        preflight_report_path=bad,
+    )
+    assert set(bad_stage["blockers"]) >= {
+        "webapp_forwarding_preflight_schema_mismatch",
+        "webapp_forwarding_preflight_status:blocked",
+        "webapp_forwarding_preflight_not_required_mode",
+        "webapp_forwarding_preflight_endpoint_not_configured",
+        "webapp_forwarding_preflight_forward_url_invalid",
+        "webapp_forwarding_preflight_token_not_configured",
+        "webapp_forwarding_preflight_token_not_redacted",
+        "webapp_forwarding_preflight_timeout_invalid",
+        "webapp_forwarding_preflight_capture_root_map_invalid",
+        "webapp_forwarding_preflight_report_has_blockers",
+        "webapp_forwarding_preflight_probe_not_reachable",
+    }
+    assert any(
+        blocker.startswith("webapp_forwarding_preflight_boundary_missing:")
+        for blocker in bad_stage["blockers"]
+    )
+    assert "webapp_forwarding_preflight_site_slug_not_checked" in bad_stage["warnings"]
+
+    not_probed = tmp_path / "not-probed-preflight.json"
+    _write_webapp_forwarding_preflight_report(not_probed)
+    payload = json.loads(not_probed.read_text(encoding="utf-8"))
+    payload["probe"] = {"requested": False}
+    _write_json(not_probed, payload)
+    not_probed_stage = _webapp_forwarding_preflight_stage(
+        webapp_site_slug="site-1",
+        require_webapp_forwarding=True,
+        preflight_report_path=not_probed,
+    )
+    assert "webapp_forwarding_preflight_not_network_probed" in not_probed_stage["warnings"]
+
+
+def test_first_gpu_readiness_staged_request_stage_edges(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    assert _webapp_staged_request_stage(
+        capture_root,
+        staged_inputs_path=None,
+        require_webapp_staged_request=False,
+        allow_local_webapp_rehearsal=False,
+    )["status"] == "not_required"
+
+    invalid = tmp_path / "invalid-staged.json"
+    invalid.write_text("{bad", encoding="utf-8")
+    assert _webapp_staged_request_stage(
+        capture_root,
+        staged_inputs_path=invalid,
+        require_webapp_staged_request=True,
+        allow_local_webapp_rehearsal=False,
+    )["blockers"] == ["webapp_staged_inputs_read_failed:JSONDecodeError"]
+
+    non_mapping = tmp_path / "non-mapping-staged.json"
+    non_mapping.write_text("[]", encoding="utf-8")
+    assert _webapp_staged_request_stage(
+        capture_root,
+        staged_inputs_path=non_mapping,
+        require_webapp_staged_request=True,
+        allow_local_webapp_rehearsal=False,
+    )["blockers"] == ["webapp_staged_inputs_not_json_object"]
+
+    malformed = tmp_path / "malformed-staged.json"
+    _write_json(
+        malformed,
+        {
+            "schema_version": "wrong",
+            "configured_capture_root": str(tmp_path / "other"),
+            "webapp_request": {"staged": False, "ready": False},
+        },
+    )
+    malformed_stage = _webapp_staged_request_stage(
+        capture_root,
+        staged_inputs_path=malformed,
+        require_webapp_staged_request=True,
+        allow_local_webapp_rehearsal=False,
+    )
+    assert set(malformed_stage["blockers"]) >= {
+        "webapp_staged_inputs_schema_mismatch",
+        "webapp_staged_inputs_capture_root_mismatch",
+        "webapp_request_not_staged",
+        "webapp_request_not_ready",
+        "webapp_request_path_missing",
+        "webapp_request_job_id_missing",
+    }
+
+    missing_configured = tmp_path / "missing-configured-staged.json"
+    _write_json(
+        missing_configured,
+        {
+            "schema_version": "blueprint_live_pipeline_staged_inputs.v1",
+            "webapp_request": {"staged": True, "ready": True, "job_id": "job-1"},
+        },
+    )
+    assert "webapp_staged_inputs_missing_configured_capture_root" in _webapp_staged_request_stage(
+        capture_root,
+        staged_inputs_path=missing_configured,
+        require_webapp_staged_request=True,
+        allow_local_webapp_rehearsal=False,
+    )["blockers"]
+
+    invalid_request = tmp_path / "invalid-request.json"
+    invalid_request.write_text("{bad", encoding="utf-8")
+    request_cases = {
+        "missing-file": tmp_path / "missing-request.json",
+        "invalid-json": invalid_request,
+    }
+    for name, request_path in request_cases.items():
+        staged = tmp_path / f"{name}-staged.json"
+        _write_json(
+            staged,
+            {
+                "schema_version": "blueprint_live_pipeline_staged_inputs.v1",
+                "configured_capture_root": str(capture_root.resolve()),
+                "webapp_request": {
+                    "staged": True,
+                    "ready": True,
+                    "job_id": "job-1",
+                    "path": str(request_path),
+                },
+            },
+        )
+        blockers = _webapp_staged_request_stage(
+            capture_root,
+            staged_inputs_path=staged,
+            require_webapp_staged_request=True,
+            allow_local_webapp_rehearsal=False,
+        )["blockers"]
+        expected = (
+            "webapp_request_file_missing"
+            if name == "missing-file"
+            else "webapp_request_read_failed:JSONDecodeError"
+        )
+        assert expected in blockers
+
+    list_request = tmp_path / "list-request.json"
+    list_request.write_text("[]", encoding="utf-8")
+    mismatch_request = tmp_path / "mismatch-request.json"
+    _write_json(
+        mismatch_request,
+        {
+            "schema_version": "robot_eval_job_request.v1",
+            "job_id": "job-1",
+            "site_package": {"capture_root": str(tmp_path / "other")},
+        },
+    )
+    missing_upstream_request = tmp_path / "missing-upstream-request.json"
+    _write_json(
+        missing_upstream_request,
+        {
+            "schema_version": "robot_eval_job_request.v1",
+            "job_id": "job-1",
+            "site_package": {"capture_root": str(capture_root.resolve())},
+        },
+    )
+    for request_path, expected in (
+        (list_request, "webapp_request_not_robot_eval_job_request_v1"),
+        (mismatch_request, "webapp_request_capture_root_mismatch"),
+        (missing_upstream_request, "webapp_request_missing_required_upstream_ids"),
+    ):
+        staged = tmp_path / f"{request_path.stem}-staged.json"
+        _write_json(
+            staged,
+            {
+                "schema_version": "blueprint_live_pipeline_staged_inputs.v1",
+                "configured_capture_root": str(capture_root.resolve()),
+                "webapp_request": {
+                    "staged": True,
+                    "ready": True,
+                    "job_id": "job-1",
+                    "path": str(request_path),
+                },
+            },
+        )
+        assert expected in _webapp_staged_request_stage(
+            capture_root,
+            staged_inputs_path=staged,
+            require_webapp_staged_request=True,
+            allow_local_webapp_rehearsal=False,
+        )["blockers"]
+
+
+def test_first_gpu_readiness_forwarding_stage_override_edges(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL", "https://pipeline.example/intake")
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", "secret-token")
+
+    missing_slug = _webapp_forwarding_stage(
+        capture_root,
+        webapp_site_slug="",
+        require_webapp_forwarding=True,
+        webapp_forwarding_preflight_path=None,
+    )
+    assert "missing_webapp_site_slug_for_capture_root_override" in missing_slug["blockers"]
+
+    monkeypatch.setenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT",
+        str(tmp_path / "wrong-capture-root"),
+    )
+    mismatch = _webapp_forwarding_stage(
+        capture_root,
+        webapp_site_slug="site-1",
+        require_webapp_forwarding=True,
+        webapp_forwarding_preflight_path=None,
+    )
+    assert mismatch["capture_root_override_source"] == "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT"
+    assert "pipeline_capture_root_override_does_not_match_capture_root" in mismatch[
+        "blockers"
+    ]
+
+
+def test_first_gpu_readiness_pipeline_handoff_rejects_illegal_claim_upgrade(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _write_gpu_handoff_artifacts(capture_root)
+    handoff_path = (
+        capture_root / "pipeline" / "simulation_automation" / "gpu_handoff_packet.json"
+    )
+    payload = json.loads(handoff_path.read_text(encoding="utf-8"))
+    payload["status"] = "blocked"
+    payload["robot_readiness_proven"] = True
+    payload["public_claim_upgrade_allowed"] = True
+    payload["blockers"] = [
+        "owner_gpu_simulator_execution_not_run",
+        "operator_gpu_driver_missing",
+    ]
+    _write_json(handoff_path, payload)
+
+    stage = _pipeline_handoff_stage(capture_root)
+
+    assert "gpu_handoff_packet_not_ready" in stage["blockers"]
+    assert "gpu_handoff_illegally_marks_robot_readiness" in stage["blockers"]
+    assert "gpu_handoff_illegally_allows_public_claim_upgrade" in stage["blockers"]
+    assert "operator_gpu_driver_missing" in stage["blockers"]
+
+
+def test_first_gpu_readiness_build_normalizes_invalid_location_and_owner_ready(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    seen: dict[str, str] = {}
+
+    def ready_stage(*_args, **_kwargs):
+        return {"status": "ready", "ready": True, "blockers": [], "warnings": []}
+
+    def simulator_stage(**kwargs):
+        seen["location"] = kwargs["simulator_command_location"]
+        return {"status": "ready", "ready": True, "blockers": [], "warnings": []}
+
+    monkeypatch.setattr(readiness, "_capture_preflight_stage", ready_stage)
+    monkeypatch.setattr(readiness, "_requested_outputs_stage", ready_stage)
+    monkeypatch.setattr(readiness, "_webapp_upstream_truth_stage", ready_stage)
+    monkeypatch.setattr(readiness, "_webapp_forwarding_stage", ready_stage)
+    monkeypatch.setattr(readiness, "_webapp_staged_request_stage", ready_stage)
+    monkeypatch.setattr(readiness, "_pipeline_handoff_stage", ready_stage)
+    monkeypatch.setattr(readiness, "_simulator_runtime_stage", simulator_stage)
+    monkeypatch.setattr(
+        readiness,
+        "_owner_gpu_proof_stage",
+        lambda _capture_root: {
+            "status": "proven",
+            "ready": True,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
+
+    result = build_first_gpu_e2e_readiness(
+        capture_root=capture_root,
+        simulator_command="/remote/command",
+        simulator_command_location="invalid",
+    )
+
+    assert seen["location"] == "local"
+    assert result["status"] == "owner_gpu_proof_present_audit_closure_next"
+
+
+def test_first_gpu_readiness_cli_returns_zero_for_ready_attempt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _write_gpu_handoff_artifacts(capture_root)
+    _write_staged_webapp_request(capture_root)
+    command = tmp_path / "run_isaac_gpu_proof.sh"
+    command.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL", "https://pipeline.example/intake")
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", "secret-token")
+    monkeypatch.setenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        json.dumps({"site-1": str(capture_root.resolve())}),
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+    output = tmp_path / "ready-readiness.json"
+
+    exit_code = main(
+        [
+            "--capture-root",
+            str(capture_root),
+            "--webapp-site-slug",
+            "site-1",
+            "--simulator-command",
+            f"{command} --capture-root {capture_root}",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "ready_for_owner_gpu_attempt"

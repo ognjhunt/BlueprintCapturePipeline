@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -13,6 +14,10 @@ from typing import Any, Dict, List, Mapping
 import numpy as np
 
 from .common import ensure_dir, ensure_local_uri_path, is_gs_uri, resolve_gs_uri_to_path
+from .logging_utils import log_event
+
+
+logger = logging.getLogger(__name__)
 
 
 def _gcs_root() -> Path:
@@ -209,7 +214,32 @@ def _normalize_npz_outputs(*, scene_root: Path, geometry_root: Path) -> Dict[str
     return result
 
 
+def _finish_video_to_world_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    status = _string(payload.get("status")).lower()
+    log_event(
+        logger,
+        logging.INFO if status == "succeeded" else logging.WARNING,
+        "video_to_world_service.completed" if status == "succeeded" else "video_to_world_service.failed",
+        result_status=status,
+        reason=payload.get("reason"),
+        command_preset=_command_preset(),
+        repo_dir=_repo_dir(),
+        frame_count=len(payload.get("frames") or []) if isinstance(payload.get("frames"), list) else None,
+    )
+    return payload
+
+
 def execute_video_to_world_request(body: Mapping[str, Any]) -> Dict[str, Any]:
+    log_event(
+        logger,
+        logging.INFO,
+        "video_to_world_service.started",
+        command_preset=_command_preset(),
+        repo_dir=_repo_dir(),
+        input_video_uri_present=bool(_string(body.get("input_video_uri"))),
+        input_video_path_present=bool(_string(body.get("input_video_path"))),
+        geometry_root_path_present=bool(_string(body.get("geometry_root_path"))),
+    )
     with tempfile.TemporaryDirectory(prefix="video_to_world_runner_") as tmp_dir:
         tmp = Path(tmp_dir)
         input_video = _materialize_file(
@@ -224,7 +254,9 @@ def execute_video_to_world_request(body: Mapping[str, Any]) -> Dict[str, Any]:
         result_json = tmp / "video_to_world_result.json"
         template = _command_template()
         if not template:
-            return {"status": "failed", "reason": "video_to_world_command_not_configured"}
+            return _finish_video_to_world_request(
+                {"status": "failed", "reason": "video_to_world_command_not_configured"}
+            )
         proc = _run_template(
             template,
             {
@@ -241,27 +273,33 @@ def execute_video_to_world_request(body: Mapping[str, Any]) -> Dict[str, Any]:
             try:
                 payload = json.loads(result_json.read_text(encoding="utf-8"))
             except Exception:
-                return {
-                    "status": "failed",
-                    "reason": "video_to_world_result_invalid_json",
-                    "stdout": proc.stdout[-4000:],
-                    "stderr": proc.stderr[-4000:],
-                }
+                return _finish_video_to_world_request(
+                    {
+                        "status": "failed",
+                        "reason": "video_to_world_result_invalid_json",
+                        "stdout": proc.stdout[-4000:],
+                        "stderr": proc.stderr[-4000:],
+                    }
+                )
         else:
             try:
                 payload = _normalize_npz_outputs(scene_root=scene_root, geometry_root=geometry_root)
             except Exception:
-                return {
-                    "status": "failed",
-                    "reason": f"video_to_world_command_failed:{proc.returncode}",
-                    "stdout": proc.stdout[-4000:],
-                    "stderr": proc.stderr[-4000:],
-                }
+                return _finish_video_to_world_request(
+                    {
+                        "status": "failed",
+                        "reason": f"video_to_world_command_failed:{proc.returncode}",
+                        "stdout": proc.stdout[-4000:],
+                        "stderr": proc.stderr[-4000:],
+                    }
+                )
         if not isinstance(payload, dict):
-            return {"status": "failed", "reason": "video_to_world_result_invalid_payload"}
+            return _finish_video_to_world_request(
+                {"status": "failed", "reason": "video_to_world_result_invalid_payload"}
+            )
         provider_metrics = dict(payload.get("provider_metrics") or {})
         provider_metrics.setdefault("runner", "video_to_world")
         provider_metrics.setdefault("command_preset", _command_preset())
         provider_metrics.setdefault("repo_dir", _repo_dir())
         payload["provider_metrics"] = provider_metrics
-        return payload
+        return _finish_video_to_world_request(payload)

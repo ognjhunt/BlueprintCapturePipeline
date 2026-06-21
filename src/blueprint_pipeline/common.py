@@ -137,7 +137,10 @@ def ensure_dir(path: Path) -> None:
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
     ensure_dir(path.parent)
-    path.write_text(json.dumps(dict(payload), indent=2), encoding="utf-8")
+    content = json.dumps(dict(payload), indent=2)
+    content = content.replace("<redacted:secret-field>", "REDACTED_SECRET_FIELD")
+    content = content.replace("<redacted:secret>", "REDACTED_SECRET")
+    path.write_text(content, encoding="utf-8")
 
 
 def write_text(path: Path, content: str) -> None:

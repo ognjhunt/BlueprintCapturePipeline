@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image
+from starlette.websockets import WebSocketDisconnect
 
 from blueprint_pipeline.native_runtime_backend import NativeRuntimeConfig, NativeWorldModelRuntimeStore
 from blueprint_pipeline.runtime_service_app import create_runtime_app
@@ -637,6 +639,308 @@ def test_explorer_frame_bytes_falls_back_when_cached_frame_is_unreadable(
     assert payload.startswith(b"\x89PNG")
 
 
+class _BranchRuntimeBackend:
+    base_url = "http://runtime.test"
+    ws_base_url = "ws://runtime.test"
+
+    def __init__(self) -> None:
+        self.failures: dict[str, Exception] = {}
+
+    def _maybe_fail(self, method_name: str) -> None:
+        exc = self.failures.get(method_name)
+        if exc is not None:
+            raise exc
+
+    def runtime_info(self, *, service_version: str) -> dict[str, object]:
+        self._maybe_fail("runtime_info")
+        return {
+            "service": "test-runtime",
+            "runtime_kind": "native_world_model",
+            "production_grade": False,
+            "readiness": {"model_ready": True, "checkpoint_ready": True},
+            "service_version": service_version,
+        }
+
+    def register_site_world_package(self, **_kwargs: object) -> dict[str, object]:
+        self._maybe_fail("register_site_world_package")
+        return {"site_world_id": "siteworld-1", "status": "registered"}
+
+    def load_site_world(self, site_world_id: str) -> dict[str, object]:
+        self._maybe_fail("load_site_world")
+        return {"site_world_id": site_world_id, "status": "loaded"}
+
+    def load_site_world_health(self, site_world_id: str) -> dict[str, object]:
+        self._maybe_fail("load_site_world_health")
+        return {"site_world_id": site_world_id, "status": "healthy"}
+
+    def create_session(self, site_world_id: str, **kwargs: object) -> dict[str, object]:
+        self._maybe_fail("create_session")
+        return {
+            "session_id": str(kwargs.get("session_id") or "session-1"),
+            "site_world_id": site_world_id,
+            "robot_profile_id": kwargs.get("robot_profile_id"),
+        }
+
+    def reset_session(self, session_id: str, **kwargs: object) -> dict[str, object]:
+        self._maybe_fail("reset_session")
+        return {"session_id": session_id, "status": "reset", "task_id": kwargs.get("task_id")}
+
+    def step_session(self, session_id: str, *, action: object) -> dict[str, object]:
+        self._maybe_fail("step_session")
+        return {"session_id": session_id, "status": "stepped", "action": action}
+
+    def session_state(self, session_id: str) -> dict[str, object]:
+        self._maybe_fail("session_state")
+        return {"session_id": session_id, "status": "active", "rollout": {"status": "idle"}}
+
+    def control_session(self, session_id: str, *, control: dict[str, object]) -> dict[str, object]:
+        self._maybe_fail("control_session")
+        return {"session_id": session_id, "status": "controlled", "control": control}
+
+    def render_bytes(self, _session_id: str, _camera_id: str) -> bytes:
+        self._maybe_fail("render_bytes")
+        return b"\x89PNG\r\n\x1a\nrender"
+
+    def media_response(
+        self,
+        _session_id: str,
+        *,
+        camera_id: str,
+        chunk_id: str | None,
+    ) -> dict[str, object]:
+        self._maybe_fail("media_response")
+        return {
+            "content": b"media",
+            "media_type": "application/octet-stream",
+            "headers": {"x-camera-id": camera_id, "x-chunk-id": chunk_id or ""},
+        }
+
+    def drain_media_events(self, _session_id: str) -> list[dict[str, object]]:
+        self._maybe_fail("drain_media_events")
+        return [{"event": "chunk_ready", "chunk_id": "chunk-0000"}]
+
+    def explorer_render(self, session_id: str, **_kwargs: object) -> dict[str, object]:
+        self._maybe_fail("explorer_render")
+        return {"session_id": session_id, "frame_path": "/tmp/frame.png"}
+
+    def explorer_frame_bytes(self, _session_id: str, _camera_id: str) -> bytes:
+        self._maybe_fail("explorer_frame_bytes")
+        return b"\x89PNG\r\n\x1a\nexplorer"
+
+
+class _PrewarmFailRuntimeBackend(_BranchRuntimeBackend):
+    def prewarm_runtime(self) -> dict[str, object]:
+        raise RuntimeError("prewarm failed")
+
+
+def _session_create_payload() -> dict[str, object]:
+    return {
+        "robot_profile_id": "robot-1",
+        "task_id": "task-1",
+        "scenario_id": "scenario-1",
+        "start_state_id": "start-1",
+    }
+
+
+def _assert_failure_pair(
+    client: TestClient,
+    backend: _BranchRuntimeBackend,
+    method_name: str,
+    request_method: str,
+    path: str,
+    *,
+    json_payload: dict[str, object] | None = None,
+) -> None:
+    request = getattr(client, request_method)
+    backend.failures[method_name] = FileNotFoundError("missing")
+    missing = request(path, json=json_payload) if json_payload is not None else request(path)
+    assert missing.status_code == 404
+
+    backend.failures[method_name] = ValueError("invalid request")
+    invalid = request(path, json=json_payload) if json_payload is not None else request(path)
+    assert invalid.status_code == 400
+
+    backend.failures.clear()
+
+
+def test_runtime_service_app_branches_use_backend_errors_and_success_paths() -> None:
+    backend = _BranchRuntimeBackend()
+    app = create_runtime_app(backend=backend, title="branch-runtime")
+    client = TestClient(app)
+
+    healthz = client.get("/healthz")
+    assert healthz.status_code == 200
+    assert healthz.json()["status"] == "ok"
+    assert healthz.json()["model_ready"] is True
+
+    invalid_registration = client.post("/v1/site-worlds", json={})
+    assert invalid_registration.status_code == 400
+    assert "spec + registration + health" in invalid_registration.json()["detail"]
+
+    registration = client.post(
+        "/v1/site-worlds",
+        json={"spec": {}, "registration": {"site_world_id": "siteworld-1"}, "health": {}},
+    )
+    assert registration.status_code == 200
+    assert registration.json()["health"]["status"] == "healthy"
+
+    assert client.get("/v1/site-worlds/siteworld-1").json()["status"] == "loaded"
+    assert client.get("/v1/site-worlds/siteworld-1/health").json()["status"] == "healthy"
+    backend.failures["load_site_world_health"] = FileNotFoundError("missing")
+    assert client.get("/v1/site-worlds/missing/health").status_code == 404
+    backend.failures.clear()
+
+    _assert_failure_pair(
+        client,
+        backend,
+        "create_session",
+        "post",
+        "/v1/site-worlds/siteworld-1/sessions",
+        json_payload=_session_create_payload(),
+    )
+
+    session = client.post(
+        "/v1/site-worlds/siteworld-1/sessions",
+        json=_session_create_payload(),
+    )
+    assert session.status_code == 200
+    assert session.json()["session_id"] == "session-1"
+
+    reset = client.post("/v1/sessions/session-1/reset", json={"task_id": "task-2"})
+    assert reset.status_code == 200
+    assert reset.json()["task_id"] == "task-2"
+
+    control = client.post("/v2/sessions/session-1/control", json={"seq": 7})
+    assert control.status_code == 200
+    assert control.json()["control"]["seq"] == 7
+
+    media = client.get("/v2/sessions/session-1/media/head_rgb?chunk_id=chunk-1")
+    assert media.status_code == 200
+    assert media.headers["x-camera-id"] == "head_rgb"
+    assert media.headers["x-chunk-id"] == "chunk-1"
+
+    rollout = client.get("/v2/sessions/session-1/rollout")
+    assert rollout.status_code == 200
+    assert rollout.json()["status"] == "idle"
+
+    explorer = client.post(
+        "/v1/sessions/session-1/explorer/render",
+        json={"camera_id": "wrist_rgb", "pose": {"x": 1.0}, "refine_mode": "fast"},
+    )
+    assert explorer.status_code == 200
+    assert explorer.json()["frame_path"] == "/tmp/frame.png"
+
+    assert client.get("/v1/sessions/session-1/explorer/frame/wrist_rgb").status_code == 200
+
+    _assert_failure_pair(
+        client,
+        backend,
+        "reset_session",
+        "post",
+        "/v1/sessions/missing/reset",
+        json_payload={},
+    )
+    _assert_failure_pair(
+        client,
+        backend,
+        "step_session",
+        "post",
+        "/v1/sessions/missing/step",
+        json_payload={"action": [0.0]},
+    )
+    _assert_failure_pair(client, backend, "session_state", "get", "/v1/sessions/missing/state")
+    _assert_failure_pair(client, backend, "render_bytes", "get", "/v1/sessions/missing/render")
+    _assert_failure_pair(
+        client,
+        backend,
+        "control_session",
+        "post",
+        "/v2/sessions/missing/control",
+        json_payload={},
+    )
+    _assert_failure_pair(client, backend, "media_response", "get", "/v2/sessions/missing/media")
+    _assert_failure_pair(client, backend, "session_state", "get", "/v2/sessions/missing/rollout")
+    _assert_failure_pair(
+        client,
+        backend,
+        "explorer_render",
+        "post",
+        "/v1/sessions/missing/explorer/render",
+        json_payload={},
+    )
+    _assert_failure_pair(
+        client,
+        backend,
+        "explorer_frame_bytes",
+        "get",
+        "/v1/sessions/missing/explorer/frame/head_rgb",
+    )
+
+
+def test_runtime_service_app_prewarm_failure_is_not_swallowed() -> None:
+    app = create_runtime_app(backend=_PrewarmFailRuntimeBackend(), title="branch-runtime")
+
+    try:
+        with TestClient(app):
+            pass
+    except RuntimeError as exc:
+        assert str(exc) == "prewarm failed"
+    else:  # pragma: no cover - startup errors must remain visible to operators.
+        raise AssertionError("startup prewarm failure was swallowed")
+
+
+class _FakeWebSocket:
+    def __init__(self, *, disconnect_on_send: bool = False, close_error: bool = False) -> None:
+        self.accepted = False
+        self.closed = False
+        self.disconnect_on_send = disconnect_on_send
+        self.close_error = close_error
+        self.messages: list[dict[str, object]] = []
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def send_json(self, payload: dict[str, object]) -> None:
+        self.messages.append(payload)
+        if self.disconnect_on_send:
+            raise WebSocketDisconnect(code=1000)
+
+    async def close(self) -> None:
+        if self.close_error:
+            raise RuntimeError("already closed")
+        self.closed = True
+
+
+def _stream_endpoint(app):
+    return next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", "") == "/v1/sessions/{session_id}/stream"
+    )
+
+
+def test_runtime_service_app_websocket_error_and_disconnect_cleanup() -> None:
+    missing_backend = _BranchRuntimeBackend()
+    missing_backend.failures["session_state"] = FileNotFoundError("missing")
+    missing_app = create_runtime_app(backend=missing_backend, title="branch-runtime")
+    missing_socket = _FakeWebSocket()
+
+    asyncio.run(_stream_endpoint(missing_app)(session_id="missing", websocket=missing_socket))
+
+    assert missing_socket.accepted is True
+    assert missing_socket.closed is True
+    assert missing_socket.messages == [{"error": "session not found: missing"}]
+
+    disconnect_backend = _BranchRuntimeBackend()
+    disconnect_app = create_runtime_app(backend=disconnect_backend, title="branch-runtime")
+    disconnect_socket = _FakeWebSocket(disconnect_on_send=True, close_error=True)
+
+    asyncio.run(_stream_endpoint(disconnect_app)(session_id="session-1", websocket=disconnect_socket))
+
+    assert disconnect_socket.accepted is True
+    assert disconnect_socket.messages[0]["type"] == "state"
+
+
 def test_runtime_control_prefers_truthful_preview_even_when_generation_owner_is_busy(
     tmp_path: Path,
     monkeypatch,
@@ -723,11 +1027,13 @@ def test_runtime_control_prefers_truthful_preview_even_when_generation_owner_is_
     )
     session_id = session["session_id"]
     store._generation_owner_session_id = "other-session"
+    monkeypatch.setattr(store, "_queue_chunk_generation", lambda queued_session_id: None)
 
     store.control_session(
         session_id,
         control={"seq": 1, "vx": 0.5, "yawRate": 0.25, "durationMs": 900},
     )
+    store._generate_next_chunk(session_id)
 
     deadline = time.time() + 5
     state = store._load_session_state(session_id)
@@ -852,14 +1158,26 @@ def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
     state = store._load_session_state(session_id)
     rollout = dict(state.get("rollout") or {})
     chunk = dict((rollout.get("chunks") or [])[0]) if rollout.get("chunks") else {}
+    events: list[dict[str, object]] = []
     while chunk.get("refinement_status") != "completed" and time.time() < deadline:
         time.sleep(0.05)
+        events.extend(store.drain_media_events(session_id))
         state = store._load_session_state(session_id)
         rollout = dict(state.get("rollout") or {})
         chunk = dict((rollout.get("chunks") or [])[0]) if rollout.get("chunks") else {}
 
-    events = store.drain_media_events(session_id)
+    events.extend(store.drain_media_events(session_id))
     event_names = [str(event.get("event") or "") for event in events]
+    event_deadline = time.time() + 5
+    while "chunk_refinement_ready" not in event_names and time.time() < event_deadline:
+        time.sleep(0.05)
+        events.extend(store.drain_media_events(session_id))
+        event_names = [str(event.get("event") or "") for event in events]
+    ready_event = next(event for event in events if event.get("event") == "chunk_refinement_ready")
+    state = store._load_session_state(session_id)
+    rollout = dict(state.get("rollout") or {})
+    chunks = [dict(item) for item in rollout.get("chunks") or []]
+    chunk = next(item for item in chunks if item.get("chunk_id") == ready_event.get("chunk_id"))
 
     assert calls[:2] == ["splat_only", "cosmos_i2w"]
     assert chunk["refinement_status"] == "completed"

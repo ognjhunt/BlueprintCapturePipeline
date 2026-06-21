@@ -219,5 +219,5 @@ def main() -> int:
     return 0 if manifest["status"] == "completed" else 1
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

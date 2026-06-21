@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import live_pipeline_setup as lps
 from blueprint_pipeline.live_pipeline_setup import build_live_pipeline_setup_manifest
 
 
@@ -211,3 +215,176 @@ def test_live_pipeline_setup_allows_codex_cli_host_oauth_when_gated(
         ]
         is True
     )
+
+
+def test_live_pipeline_setup_helper_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lps.shlex, "split", lambda _text: (_ for _ in ()).throw(ValueError("bad quote")))
+    assert lps._first_executable("'unterminated") is None
+    monkeypatch.setattr(lps.shlex, "split", lambda _text: [])
+    assert lps._first_executable("present") is None
+    monkeypatch.undo()
+    assert lps._first_executable("FOO=bar python -c 'print(1)'") == "python"
+
+    missing_dir = tmp_path / "missing-results"
+    assert lps._arena_results_status(missing_dir)["blockers"] == ["arena_results_dir_missing"]
+    empty_dir = tmp_path / "empty-results"
+    empty_dir.mkdir()
+    assert lps._arena_results_status(empty_dir)["blockers"] == ["arena_results_dir_has_no_json_artifacts"]
+    assert lps._capture_upstream_truth(None)["blockers"] == ["capture_root_not_provided"]
+    capture_root = _capture_root(tmp_path, with_webapp_ids=False)
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    descriptor["site_submission_id"] = "site-submission-only"
+    _write_json(capture_root / "capture_descriptor.json", descriptor)
+    upstream = lps._capture_upstream_truth(capture_root)
+    assert upstream["fields_present"]["request_id"] is True
+    assert lps._package_audit_status(None)["blockers"] == ["package_dir_not_provided"]
+    assert lps._overall_status({name: {"ready": True} for name in (
+        "real_arena_execution",
+        "rollout_vision_labeling",
+        "delivery_upload",
+        "live_agents_operator",
+        "live_codex_operator",
+        "webapp_upstream_truth",
+    )}) == "ready_for_live_external_execution"
+    blocked_sections = {
+        name: {"ready": False}
+        for name in (
+            "real_arena_execution",
+            "rollout_vision_labeling",
+            "delivery_upload",
+            "live_agents_operator",
+            "live_codex_operator",
+            "webapp_upstream_truth",
+        )
+    }
+    blocked_sections["local_deterministic_lane"] = {"ready": False}
+    assert lps._overall_status(blocked_sections) == "blocked"
+
+
+def test_live_pipeline_setup_digitalocean_read_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DO_TOKEN", raising=False)
+    missing = lps._digitalocean_read(
+        allow_read=True,
+        token_env="DO_TOKEN",
+        droplet_name=None,
+        droplet_ip=None,
+        timeout_seconds=1,
+    )
+    assert missing["status"] == "blocked"
+    assert "missing_env_DO_TOKEN" in missing["blockers"]
+    assert "missing_droplet_name_or_ip" in missing["blockers"]
+
+    monkeypatch.setenv("DO_TOKEN", "secret-token")
+    monkeypatch.setattr(
+        lps.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError("offline")),
+    )
+    failed = lps._digitalocean_read(
+        allow_read=True,
+        token_env="DO_TOKEN",
+        droplet_name="worker",
+        droplet_ip=None,
+        timeout_seconds=1,
+    )
+    assert failed["blockers"] == ["digitalocean_api_read_failed:URLError"]
+
+    class FakeResponse:
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(self.payload).encode("utf-8")
+
+    monkeypatch.setattr(
+        lps.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: FakeResponse(
+            {
+                "droplets": [
+                    "not-a-droplet",
+                    {
+                        "id": 1,
+                        "name": "worker",
+                        "status": "active",
+                        "region": {"slug": "nyc3"},
+                        "memory": 4096,
+                        "vcpus": 2,
+                        "disk": 80,
+                        "networks": {"v4": [{"type": "public", "ip_address": "203.0.113.10"}]},
+                        "image": {"slug": "ubuntu-24-04"},
+                    },
+                ]
+            }
+        ),
+    )
+    no_match = lps._digitalocean_read(
+        allow_read=True,
+        token_env="DO_TOKEN",
+        droplet_name="worker",
+        droplet_ip="203.0.113.99",
+        timeout_seconds=1,
+    )
+    assert no_match["status"] == "blocked"
+    assert no_match["blockers"] == ["digitalocean_droplet_not_found"]
+    matched = lps._digitalocean_read(
+        allow_read=True,
+        token_env="DO_TOKEN",
+        droplet_name="worker",
+        droplet_ip="203.0.113.10",
+        timeout_seconds=1,
+    )
+    assert matched["status"] == "ready_control_plane"
+    assert matched["matches"][0]["public_ipv4_present"] is True
+    assert matched["matches"][0]["gpu_proof"] is False
+
+
+def test_live_pipeline_setup_output_paths_and_missing_ffmpeg(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lps.shutil, "which", lambda _name: None)
+    output_path = tmp_path / "explicit" / "setup.json"
+    explicit = build_live_pipeline_setup_manifest(
+        load_local_env=False,
+        output_path=output_path,
+    )
+    assert output_path.is_file()
+    assert "local_deterministic_lane:missing_ffmpeg_for_clip_keyframe_paths" in explicit["blockers"]
+
+    monkeypatch.chdir(tmp_path)
+    default = build_live_pipeline_setup_manifest(load_local_env=False)
+    assert (tmp_path / "live_pipeline_setup_manifest.json").is_file()
+    assert default["capture_root"] is None
+
+
+def test_live_pipeline_setup_main_success_and_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        lps,
+        "build_live_pipeline_setup_manifest",
+        lambda **_: {"status": "local_ready_live_external_blocked", "blockers": []},
+    )
+    output_path = tmp_path / "setup.json"
+    assert lps.main(["--output-path", str(output_path), "--no-load-env-files"]) == 0
+    assert f"manifest={output_path}" in capsys.readouterr().out
+
+    capture_root = _capture_root(tmp_path)
+    monkeypatch.setattr(
+        lps,
+        "build_live_pipeline_setup_manifest",
+        lambda **_: {"status": "blocked", "blockers": ["missing"]},
+    )
+    assert lps.main(["--capture-root", str(capture_root), "--timeout-seconds", "1"]) == 1
+    blocked_output = capsys.readouterr().out
+    assert "status=blocked" in blocked_output
+    assert "blockers=1" in blocked_output

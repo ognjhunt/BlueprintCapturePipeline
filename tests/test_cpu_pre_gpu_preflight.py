@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 import struct
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from blueprint_pipeline import cpu_simulator_preflight as csp
 from blueprint_pipeline.cpu_simulator_preflight import build_cpu_simulator_preflight
 from blueprint_pipeline.episode_spec import (
     FakeEpisodeSpecAgentAdapter,
@@ -571,3 +576,229 @@ def test_simulation_automation_conversion_plan_splits_usd_and_portable_collider_
     assert isaac["blockers"] == ["isaac_usd_collision_unverified"]
     assert mujoco["blockers"] == ["portable_collider_glb_missing"]
     assert pybullet["blockers"] == ["portable_collider_glb_missing"]
+
+
+def test_cpu_preflight_helper_edges(tmp_path: Path) -> None:
+    assert csp._string_list(None) == []
+    assert csp._string_list("one") == ["one"]
+    assert csp._string_list(123) == ["123"]
+    assert csp._read_optional_mapping(tmp_path / "missing.json") == {}
+    assert csp._float_list(["bad"], fallback=(1.0, 2.0, 3.0)) == [1.0, 2.0, 3.0]
+    assert csp._finite_xyz(["bad", 0, 0]) is None
+    assert csp._finite_xyz([float("nan"), 0, 0]) is None
+
+    automation_dir = tmp_path / "automation"
+    _write_json(
+        automation_dir / "scene_frame_estimate.json",
+        {"frame": {"bounds": {"min": [0, 0, 2], "max": [1, 1, 3]}, "floor_z_estimate": "bad"}},
+    )
+    assert csp._frame_bounds(automation_dir)["floor_z"] == 2.0
+
+    frame = {"bounds": {"min": [0, 0, 0], "max": [1, 1, 1]}, "floor_z": 0.0}
+    duplicate_candidates = csp._candidate_spawn_poses(
+        {"robot_spawn_pose": {"xyz": [0.5, 0.5, 0.05], "rpy": []}},
+        frame,
+    )
+    assert [item["candidate_id"] for item in duplicate_candidates].count("frame_center_floor") == 0
+    invalid_candidates = csp._candidate_spawn_poses(
+        {"robot_spawn_pose": {"xyz": [float("nan"), 0, 0], "rpy": []}},
+        {},
+    )
+    assert invalid_candidates[0]["xyz"][0] != invalid_candidates[0]["xyz"][0]
+
+
+def test_cpu_preflight_spawn_validation_edges() -> None:
+    invalid = csp._validate_spawn_candidate(
+        {"candidate_id": "bad", "xyz": ["bad", 0, 0]},
+        frame={},
+        proxy_manifest={},
+    )
+    assert "spawn_pose_not_finite" in invalid["blockers"]
+    assert "scene_bounds_missing_or_invalid" in invalid["blockers"]
+
+    frame = {"bounds": {"min": [0, 0, 0], "max": [0.01, 2000, 0.01]}, "floor_z": 1.0}
+    result = csp._validate_spawn_candidate(
+        {"candidate_id": "edge", "xyz": [10, 10, 4], "rpy": ["bad"]},
+        frame=frame,
+        proxy_manifest={
+            "proxy_obstacles": [
+                {"obstacle_id": "box", "min_xyz": [9, 9, 3], "max_xyz": [11, 11, 5]}
+            ]
+        },
+    )
+    assert "scene_scale_suspiciously_small" in result["warnings"]
+    assert "scene_scale_suspiciously_large" in result["warnings"]
+    assert "spawn_outside_scene_bounds" in result["blockers"]
+    assert "spawn_height_far_above_floor_estimate" in result["warnings"]
+    assert "spawn_inside_known_or_proxy_geometry" in result["blockers"]
+
+    below = csp._validate_spawn_candidate(
+        {"candidate_id": "below", "xyz": [0, 0, 0]},
+        frame={"bounds": {"min": [-1, -1, -1], "max": [1, 1, 2]}, "floor_z": 1.0},
+        proxy_manifest={},
+    )
+    assert "spawn_below_floor_estimate" in below["blockers"]
+
+    inverted = csp._validate_spawn_candidate(
+        {"candidate_id": "inverted", "xyz": [0, 0, 0]},
+        frame={"bounds": {"min": [1, 1, 1], "max": [0, 0, 0]}, "floor_z": 0.0},
+        proxy_manifest={},
+    )
+    assert "scene_bounds_empty_or_inverted" in inverted["blockers"]
+
+
+def test_cpu_preflight_optional_backend_smokes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pybullet_calls: list[str] = []
+    fake_pybullet = SimpleNamespace(
+        DIRECT=0,
+        ER_TINY_RENDERER=1,
+        connect=lambda _mode: 7,
+        resetSimulation=lambda **_kwargs: pybullet_calls.append("reset"),
+        setGravity=lambda *_args, **_kwargs: pybullet_calls.append("gravity"),
+        loadURDF=lambda *_args, **_kwargs: 42,
+        stepSimulation=lambda **_kwargs: pybullet_calls.append("step"),
+        getCameraImage=lambda *_args, **_kwargs: (32, 32, None),
+        disconnect=lambda **_kwargs: pybullet_calls.append("disconnect"),
+    )
+    monkeypatch.setitem(sys.modules, "pybullet", fake_pybullet)
+    pybullet = csp._run_pybullet_smoke(
+        urdf_path=tmp_path / "scene.urdf",
+        steps=0,
+        allow_render=True,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+    assert pybullet["status"] == "completed_local_cpu_smoke"
+    assert pybullet["render_result_shape"] == [32, 32]
+    assert "disconnect" in pybullet_calls
+
+    class FakeModel:
+        @staticmethod
+        def from_xml_path(_path: str) -> str:
+            return "model"
+
+    class FakeData:
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+    steps: list[str] = []
+    fake_mujoco = SimpleNamespace(
+        MjModel=FakeModel,
+        MjData=FakeData,
+        mj_step=lambda _model, _data: steps.append("step"),
+    )
+    monkeypatch.setitem(sys.modules, "mujoco", fake_mujoco)
+    mujoco = csp._run_mujoco_smoke(
+        mjcf_path=tmp_path / "scene.xml",
+        steps=2,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+    assert mujoco["status"] == "completed_local_cpu_smoke"
+    assert steps == ["step", "step"]
+
+    unsupported = csp._backend_result(
+        backend="unknown",
+        automation_dir=tmp_path,
+        allow_cpu_simulator_preflight=True,
+        env_allowed=True,
+        steps=1,
+        allow_render=False,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+    assert unsupported["reason"] == "unsupported_cpu_backend"
+    monkeypatch.setattr(csp.importlib.util, "find_spec", lambda _name: object())
+    delegated = csp._backend_result(
+        backend="pybullet",
+        automation_dir=tmp_path,
+        allow_cpu_simulator_preflight=True,
+        env_allowed=True,
+        steps=1,
+        allow_render=False,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+    assert delegated["status"] == "completed_local_cpu_smoke"
+    delegated_mujoco = csp._backend_result(
+        backend="mujoco",
+        automation_dir=tmp_path,
+        allow_cpu_simulator_preflight=True,
+        env_allowed=True,
+        steps=1,
+        allow_render=False,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+    assert delegated_mujoco["status"] == "completed_local_cpu_smoke"
+
+
+def test_cpu_preflight_builds_episode_specs_when_missing_and_defaults_backends(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    automation_dir = capture_root / "pipeline" / "simulation_automation"
+
+    def fake_build_episode_specs(*, capture_root: Path) -> dict[str, object]:
+        _write_json(
+            Path(capture_root) / "pipeline" / "simulation_automation" / "episode_spec.v1.json",
+            {
+                "episodes": [
+                    {
+                        "episode_id": "episode-1",
+                        "task_id": "task-1",
+                        "scenario_id": "scenario-1",
+                        "robot_spawn_pose": {"xyz": [0.0, 0.0, 0.25]},
+                        "missing_proof_labels": ["simulator_execution_not_run"],
+                    }
+                ]
+            },
+        )
+        return {"episode_count": 1}
+
+    monkeypatch.setattr(csp, "build_episode_specs", fake_build_episode_specs)
+    monkeypatch.setattr(csp.importlib.util, "find_spec", lambda _name: None)
+
+    result = build_cpu_simulator_preflight(
+        capture_root=capture_root,
+        allow_cpu_simulator_preflight=False,
+        backends=["unsupported"],
+    )
+    manifest = _read_json(automation_dir / "cpu_simulator_preflight_manifest.json")
+
+    assert result["status"] == "ready_blocked_optional_dependencies_or_gates"
+    assert manifest["selected_backends"] == ["mujoco", "pybullet"]
+    assert (automation_dir / "episode_spec.v1.json").is_file()
+
+
+def test_cpu_preflight_main_success_and_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    monkeypatch.setattr(
+        csp,
+        "build_cpu_simulator_preflight",
+        lambda **_: {
+            "cpu_simulator_preflight_manifest_path": str(tmp_path / "manifest.json"),
+            "status": "ready_blocked_optional_dependencies_or_gates",
+        },
+    )
+
+    assert csp.main(
+        [
+            "--capture-root",
+            str(capture_root),
+            "--allow-cpu-simulator-preflight",
+            "--backend",
+            "mujoco",
+            "--smoke-steps",
+            "1",
+            "--allow-render",
+        ]
+    ) == 0
+    assert "status=ready_blocked_optional_dependencies_or_gates" in capsys.readouterr().out
+
+    def raise_value_error(**_kwargs: object) -> dict[str, object]:
+        raise ValueError("bad capture")
+
+    monkeypatch.setattr(csp, "build_cpu_simulator_preflight", raise_value_error)
+    assert csp.main(["--capture-root", str(capture_root)]) == 1
+    assert "[cpu-simulator-preflight] FAILED: bad capture" in capsys.readouterr().out

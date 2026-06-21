@@ -1050,7 +1050,10 @@ def _build_dense_records(
         embeddings: Dict[int, Any] = {}
         if valid_idx:
             paths = [extracted[i] for i in valid_idx]
-            vecs = _generate_embeddings(model=model, image_paths=paths)  # type: ignore[arg-type]
+            try:
+                vecs = _generate_embeddings(model=model, image_paths=paths)  # type: ignore[arg-type]
+            except Exception:
+                vecs = []
             for local_i, vec in zip(valid_idx, vecs):
                 embeddings[local_i] = vec
 

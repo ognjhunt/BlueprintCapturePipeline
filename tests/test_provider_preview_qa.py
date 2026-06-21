@@ -4,7 +4,14 @@ import json
 from hashlib import sha256
 from pathlib import Path
 
-from blueprint_pipeline.provider_preview_qa import validate_provider_preview_packet
+import pytest
+
+from blueprint_pipeline.provider_preview_qa import (
+    _latest_webapp_sync_stage,
+    _string_list,
+    main,
+    validate_provider_preview_packet,
+)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -532,3 +539,201 @@ def test_provider_preview_qa_uses_webapp_route_proof_ids_without_live_claim(
     assert "webapp_sync_failed" not in result["blockers"]
     assert "webapp_sync_not_succeeded" not in result["blockers"]
     assert "production_live_webapp_forwarding_not_proven" in result["blockers"]
+
+
+def test_provider_preview_helper_branches_normalize_strings_and_latest_stage_fallback() -> None:
+    assert _string_list("single") == ["single"]
+    assert _string_list(7) == ["7"]
+    assert _latest_webapp_sync_stage(
+        {
+            "latest_stage": "missing",
+            "syncs": {
+                "qualification": {"status": "failed"},
+                "provider_preview": {"status": "succeeded"},
+            },
+        }
+    ) == {"status": "succeeded"}
+
+
+def test_provider_preview_qa_rejects_unknown_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="mode must be production or advisory"):
+        validate_provider_preview_packet(capture_root=tmp_path / "capture", mode="review")
+
+
+def test_provider_preview_qa_reports_missing_privacy_and_input_lineage(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+
+    result = validate_provider_preview_packet(capture_root=root, mode="production")
+
+    assert result["status"] == "blocked"
+    assert "missing_privacy_final_walkthrough" in result["blockers"]
+    assert "privacy_manifest_or_verification_not_complete" in result["blockers"]
+    assert "privacy_output_not_final_walkthrough" in result["blockers"]
+    assert "worldlabs_audit_output_uri_mismatch" in result["blockers"]
+    assert "missing_worldlabs_input_audit_uri" in result["blockers"]
+    assert "missing_worldlabs_source_manifest_uri" in result["blockers"]
+    assert "missing_worldlabs_input_checksum" in result["blockers"]
+    assert "canonical_package_missing_privacy_safe_rgb_video" in result["blockers"]
+    assert "provider_adapter_missing_rgb_video" in result["blockers"]
+
+
+def test_provider_preview_qa_flags_mismatched_artifacts_and_geometry_labels(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path / "mismatch")
+    _write_privacy_safe_packet(root)
+    selected_uri = _uri("pipeline/worldlabs_input/worldlabs_input.mp4")
+    other_uri = _uri("pipeline/worldlabs_input/other.mp4")
+
+    input_manifest = _read_json(root / "pipeline" / "worldlabs_input" / "worldlabs_input_manifest.json")
+    input_manifest["output_video_uri"] = other_uri
+    _write_json(root / "pipeline" / "worldlabs_input" / "worldlabs_input_manifest.json", input_manifest)
+
+    input_audit = _read_json(root / "pipeline" / "worldlabs_input_audit.json")
+    input_audit["output_video_uri"] = _uri("pipeline/worldlabs_input/audit-other.mp4")
+    _write_json(root / "pipeline" / "worldlabs_input_audit.json", input_audit)
+
+    canonical = _read_json(root / "pipeline" / "site_package" / "canonical_site_package.json")
+    canonical["conditioning"]["rgb_video"]["privacy_safe_world_model_input"]["uri"] = other_uri  # type: ignore[index]
+    _write_json(root / "pipeline" / "site_package" / "canonical_site_package.json", canonical)
+
+    adapter = _read_json(
+        root / "pipeline" / "site_package" / "provider_adapter_inputs" / "world_labs_marble.json"
+    )
+    adapter["conditioning_inputs"]["rgb_video"]["uri"] = other_uri  # type: ignore[index]
+    _write_json(
+        root / "pipeline" / "site_package" / "provider_adapter_inputs" / "world_labs_marble.json",
+        adapter,
+    )
+    _write_json(
+        root / "pipeline" / "geometry" / "geometry_summary.json",
+        {"geometry_live_ready": True, "geometry_source": "local_sfm"},
+    )
+
+    result = validate_provider_preview_packet(capture_root=root, mode="production")
+
+    assert result["status"] == "blocked"
+    assert selected_uri != other_uri
+    assert "worldlabs_audit_output_uri_mismatch" in result["blockers"]
+    assert "worldlabs_input_manifest_output_uri_mismatch" in result["blockers"]
+    assert "canonical_package_rgb_video_mismatch" in result["blockers"]
+    assert "provider_adapter_rgb_video_mismatch" in result["blockers"]
+    assert "fallback_geometry_marked_live_ready" in result["blockers"]
+
+    warning_root = _capture_root(tmp_path / "geometry-warning")
+    _write_privacy_safe_packet(warning_root)
+    _write_json(
+        warning_root / "pipeline" / "geometry" / "geometry_summary.json",
+        {"geometry_live_ready": False, "geometry_source": "video_to_world"},
+    )
+
+    warning_result = validate_provider_preview_packet(
+        capture_root=warning_root,
+        mode="production",
+    )
+
+    assert warning_result["status"] == "passed"
+    assert "geometry_present_but_not_live_ready" in warning_result["warnings"]
+
+
+def test_provider_preview_qa_reports_missing_sync_and_placeholder_ids(
+    tmp_path: Path,
+) -> None:
+    missing_sync_root = _capture_root(tmp_path / "missing-sync")
+    _write_privacy_safe_packet(missing_sync_root)
+    (missing_sync_root / "pipeline" / "webapp_sync_result.json").unlink()
+
+    required_result = validate_provider_preview_packet(
+        capture_root=missing_sync_root,
+        mode="production",
+        require_webapp_sync=True,
+    )
+    advisory_result = validate_provider_preview_packet(
+        capture_root=missing_sync_root,
+        mode="production",
+        require_webapp_sync=False,
+    )
+
+    assert "missing_webapp_sync_result" in required_result["blockers"]
+    assert "webapp_sync_not_required_or_not_present" in advisory_result["warnings"]
+
+    placeholder_root = _capture_root(tmp_path / "placeholder-sync")
+    _write_privacy_safe_packet(placeholder_root)
+    webapp_sync = _read_json(placeholder_root / "pipeline" / "webapp_sync_result.json")
+    webapp_sync["status"] = "succeeded"
+    qualification = webapp_sync["syncs"]["qualification"]  # type: ignore[index]
+    qualification["status"] = "succeeded"  # type: ignore[index]
+    qualification["attachment_payload"] = {  # type: ignore[index]
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "site_submission_id": "example-site-submission",
+        "request_id": "placeholder-request",
+        "buyer_request_id": "test-buyer-request",
+        "capture_job_id": "mock-capture-job",
+        "upstream_links_verified": True,
+        "missing_upstream_links": [],
+    }
+    _write_json(placeholder_root / "pipeline" / "webapp_sync_result.json", webapp_sync)
+
+    placeholder_result = validate_provider_preview_packet(
+        capture_root=placeholder_root,
+        mode="production",
+        require_webapp_sync=True,
+    )
+
+    assert "webapp_sync_placeholder_upstream_ids" in placeholder_result["blockers"]
+    assert "placeholder_webapp_site_submission_id" in placeholder_result["blockers"]
+    assert "placeholder_webapp_request_id" in placeholder_result["blockers"]
+    assert "placeholder_webapp_buyer_request_id" in placeholder_result["blockers"]
+    assert "placeholder_webapp_capture_job_id" in placeholder_result["blockers"]
+    assert "webapp_sync_upstream_links_not_verified" in placeholder_result["blockers"]
+    assert placeholder_result["webapp_sync_projection"]["placeholder_upstream_ids"] == [
+        "site_submission_id",
+        "request_id",
+        "buyer_request_id",
+        "capture_job_id",
+    ]
+
+
+def test_provider_preview_qa_sets_local_repo_claim_when_operation_world_manifests_are_current(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_safe_packet(root)
+    _write_json(
+        root / "pipeline" / "worldlabs_operation_manifest.json",
+        {"schema_version": "v1", "status": "completed", "operation_id": "operation-1"},
+    )
+    _write_json(
+        root / "pipeline" / "worldlabs_world_manifest.json",
+        {"schema_version": "v1", "status": "ready", "world_id": "world-1"},
+    )
+
+    result = validate_provider_preview_packet(capture_root=root, mode="production")
+
+    assert result["status"] == "passed"
+    assert result["claim_ceiling"] == "local_repo_proof"
+    assert result["provider_operation_proof"]["status"] == "proven"
+
+
+def test_provider_preview_qa_main_reports_error_blocked_and_passed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--capture-root", str(tmp_path / "not-a-capture")]) == 2
+    assert "status=error" in capsys.readouterr().out
+
+    blocked_root = _capture_root(tmp_path / "blocked")
+    assert main(["--capture-root", str(blocked_root)]) == 1
+    blocked_output = capsys.readouterr().out
+    assert "status=blocked" in blocked_output
+    assert "blockers=missing_privacy_final_walkthrough" in blocked_output
+
+    passed_root = _capture_root(tmp_path / "passed")
+    _write_privacy_safe_packet(passed_root)
+    assert main(["--capture-root", str(passed_root), "--mode", "advisory"]) == 0
+    passed_output = capsys.readouterr().out
+    assert "provider_preview_qa_manifest.json" in passed_output
+    assert "status=passed" in passed_output

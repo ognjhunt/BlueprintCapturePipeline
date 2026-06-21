@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from typing import List, Optional
 
 from .agent_runtime.orchestrator import run_agent_review
@@ -13,10 +14,14 @@ from .capture_orchestrator import (
 )
 from .common import PipelineError
 from .evaluation_prep_stage import run_evaluation_prep_stage
+from .logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .preflight_capture import build_capture_preflight_report
 from .synthesis.cosmos_benchmark import run_cosmos_zero_shot_validation_lane
+
+
+logger = logging.getLogger(__name__)
 
 
 def run_end_to_end(
@@ -29,13 +34,48 @@ def run_end_to_end(
     evaluation_prep_provider: str = "manual",
     run_cosmos_validation: bool = False,
 ) -> dict:
+    log_event(
+        logger,
+        logging.INFO,
+        "run_e2e.started",
+        capture_root=capture_root,
+        provider=provider,
+        pipeline_lane=pipeline_lane,
+        run_evaluation_prep=run_evaluation_prep,
+        run_cosmos_validation=run_cosmos_validation,
+    )
     context = resolve_local_capture_context(capture_root)
     preflight = build_capture_preflight_report(context.capture_root)
     if preflight.get("missing_required_inputs"):
+        missing_inputs = [str(item) for item in preflight["missing_required_inputs"]]
+        log_event(
+            logger,
+            logging.WARNING,
+            "run_e2e.preflight_failed",
+            capture_root=str(context.capture_root),
+            provider=provider,
+            missing_required_input_count=len(missing_inputs),
+            missing_required_inputs=missing_inputs,
+        )
         missing = ",".join(str(item) for item in preflight["missing_required_inputs"])
         raise PipelineError(f"Preflight failed; missing required inputs: {missing}")
+    log_event(
+        logger,
+        logging.INFO,
+        "run_e2e.preflight_completed",
+        capture_root=str(context.capture_root),
+        provider=provider,
+        preflight_status=preflight.get("status"),
+    )
 
     if context.raw_complete_path.is_file():
+        log_event(
+            logger,
+            logging.INFO,
+            "run_e2e.materialization_started",
+            capture_root=str(context.capture_root),
+            raw_prefix_uri=context.raw_prefix_uri,
+        )
         materialize_capture_bundle(
             bucket=context.bucket,
             scene_id=context.scene_id,
@@ -43,7 +83,22 @@ def run_end_to_end(
             gcs_root=context.storage_root,
             raw_prefix_uri=context.raw_prefix_uri,
         )
+        log_event(
+            logger,
+            logging.INFO,
+            "run_e2e.materialization_completed",
+            capture_root=str(context.capture_root),
+            raw_prefix_uri=context.raw_prefix_uri,
+        )
     elif not context.descriptor_path.is_file():
+        log_event(
+            logger,
+            logging.WARNING,
+            "run_e2e.descriptor_missing",
+            capture_root=str(context.capture_root),
+            raw_complete_path=str(context.raw_complete_path),
+            descriptor_path=str(context.descriptor_path),
+        )
         raise PipelineError(
             "Descriptor is missing and raw/capture_upload_complete.json was not found."
         )
@@ -76,7 +131,7 @@ def run_end_to_end(
         if run_cosmos_validation
         else None
     )
-    return {
+    result = {
         "schema_version": "v1",
         "capture_root": str(context.capture_root),
         "provider": provider,
@@ -114,6 +169,19 @@ def run_end_to_end(
         ),
         "cosmos_validation": cosmos_validation,
     }
+    log_event(
+        logger,
+        logging.INFO,
+        "run_e2e.completed",
+        capture_root=str(context.capture_root),
+        provider=provider,
+        preflight_status=result.get("preflight_status"),
+        pipeline_status=result.get("pipeline_status"),
+        pipeline_lanes=result.get("pipeline_lanes"),
+        evaluation_prep_enabled=run_evaluation_prep,
+        cosmos_validation_enabled=run_cosmos_validation,
+    )
+    return result
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -182,6 +250,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             run_cosmos_validation=bool(args.run_cosmos_validation),
         )
     except Exception as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "run_e2e.failed",
+            capture_root=args.capture_root,
+            provider=args.provider,
+            reason=str(exc),
+        )
         print(f"[run-e2e] FAILED: {exc}")
         return 1
 

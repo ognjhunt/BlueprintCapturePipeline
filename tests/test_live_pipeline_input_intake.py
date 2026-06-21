@@ -6,6 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+import blueprint_pipeline.live_pipeline_input_intake as intake
 from blueprint_pipeline.live_pipeline_control_plane import run_live_pipeline_control_plane
 from blueprint_pipeline.live_pipeline_input_intake import (
     LIVE_PIPELINE_INPUT_INTAKE_SCHEMA_VERSION,
@@ -996,3 +999,588 @@ def test_live_pipeline_input_intake_module_cli(tmp_path: Path) -> None:
     assert audit["webapp_request_metadata_valid"] is True
     assert audit["local_webapp_rehearsal_only"] is False
     assert audit["webapp_truth_proven"] is True
+
+
+def test_live_pipeline_input_intake_helper_edge_branches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert intake._boolish(True) is True
+    assert intake._attestation_ok("owner accepted") is True
+    assert intake._attestation_ok(None) is False
+    assert (
+        intake._attestation_ok(
+            {"operatorId": "ops-1", "acceptedClaimBoundary": "owner accepted"}
+        )
+        is True
+    )
+    assert intake._delivery_access_ready({}) is True
+    assert intake._delivery_access_ready({"status": "ready"}) is True
+    assert intake._delivery_access_ready({"artifactRefs": ["owner://artifact"]}) is True
+    assert intake._request_from_payload({"queue_contract": "robot_eval_job_request_inbox.v1"}) is None
+    direct_request = {
+        "schema_version": "robot_eval_job_request.v1",
+        "job_id": "direct-job",
+    }
+    assert intake._request_from_payload(direct_request) == direct_request
+    assert intake._request_from_payload({"schema_version": "other"}) is None
+    assert (
+        intake._source_kind_from_request(
+            {"source": {"selection_state": {"source_kind": "site_library"}}}
+        )
+        == "site_library"
+    )
+    assert intake._field_value({"source": {}}, "buyer_request_id") is None
+    assert intake._path_matches(None, tmp_path) is False
+    assert intake._policy_package_from_payload(
+        {"policyApiEndpoint": {"url": "https://robot-team.example/policy"}}
+    ) == {"policy_api_endpoint": {"url": "https://robot-team.example/policy"}}
+    assert intake._record_has_owner_evidence({"evidence_refs": ["owner://record"]}) is True
+
+    array_path = tmp_path / "array.json"
+    array_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="Expected JSON object"):
+        intake._read_mapping(array_path)
+
+    wrong_manifest = tmp_path / "manifest.json"
+    _write_json(wrong_manifest, {"schema_version": "other"})
+    with pytest.raises(ValueError, match="blueprint_live_pipeline_control_plane_run.v1"):
+        intake._load_control_plane_manifest(wrong_manifest)
+
+    class BrokenPath:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def resolve(self) -> Path:
+            raise OSError("cannot resolve")
+
+    monkeypatch.setattr(intake, "Path", BrokenPath)
+    assert intake._path_matches("unresolvable", tmp_path) is False
+
+
+def test_live_pipeline_input_intake_audit_missing_and_malformed_inputs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    missing_request = tmp_path / "missing" / "request.json"
+    malformed_request = tmp_path / "incoming" / "malformed-request.json"
+    malformed_request.parent.mkdir(parents=True, exist_ok=True)
+    malformed_request.write_text("[]", encoding="utf-8")
+    non_request = tmp_path / "incoming" / "not-request.json"
+    _write_json(non_request, {"schema_version": "not-a-request"})
+    incomplete_request = tmp_path / "incoming" / "incomplete-request.json"
+    _write_json(
+        incomplete_request,
+        {
+            "schema_version": "robot_eval_job_request.v1",
+            "job_id": "incomplete-job",
+            "site_package": {"capture_root": str(capture_root)},
+        },
+    )
+    empty_arena = tmp_path / "empty-arena"
+    empty_arena.mkdir()
+
+    assert intake._audit_webapp_request(
+        request_path=None,
+        expected_capture_root=capture_root,
+        configured_inbox=None,
+    )["blockers"] == ["webapp_job_request_not_provided"]
+    assert intake._audit_webapp_request(
+        request_path=missing_request,
+        expected_capture_root=capture_root,
+        configured_inbox=None,
+    )["blockers"] == ["webapp_job_request_missing"]
+    assert intake._audit_webapp_request(
+        request_path=malformed_request,
+        expected_capture_root=capture_root,
+        configured_inbox=None,
+    )["blockers"] == ["webapp_job_request_read_failed:ValueError"]
+    assert intake._audit_webapp_request(
+        request_path=non_request,
+        expected_capture_root=capture_root,
+        configured_inbox=None,
+    )["blockers"] == ["not_robot_eval_job_request_v1_or_queue_envelope"]
+    missing_fields_audit = intake._audit_webapp_request(
+        request_path=incomplete_request,
+        expected_capture_root=capture_root,
+        configured_inbox=None,
+    )
+    assert missing_fields_audit["status"] == "blocked"
+    assert "missing_required_webapp_ids" in missing_fields_audit["blockers"]
+
+    assert intake._audit_arena_results(tmp_path / "missing-arena")["blockers"] == [
+        "arena_results_dir_missing"
+    ]
+    assert intake._audit_arena_results(empty_arena)["blockers"] == [
+        "arena_results_dir_has_no_json_artifacts"
+    ]
+
+
+def test_live_pipeline_input_intake_optional_artifact_audit_blockers(
+    tmp_path: Path,
+) -> None:
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("[]", encoding="utf-8")
+
+    deployment_missing = intake._audit_deployment_outcomes(
+        path=tmp_path / "missing-deployment.json",
+        expected_job_id="webapp-job-1",
+    )
+    assert deployment_missing["blockers"] == ["deployment_outcomes_missing"]
+    deployment_read_failed = intake._audit_deployment_outcomes(
+        path=malformed,
+        expected_job_id="webapp-job-1",
+    )
+    assert deployment_read_failed["blockers"] == [
+        "deployment_outcomes_read_failed:ValueError"
+    ]
+    bad_deployment = tmp_path / "bad-deployment.json"
+    _write_json(
+        bad_deployment,
+        {
+            "schema_version": "deployment_outcome_manifest.v0",
+            "job_id": "other-job",
+            "records": {"not": "a list"},
+        },
+    )
+    deployment_audit = intake._audit_deployment_outcomes(
+        path=bad_deployment,
+        expected_job_id="webapp-job-1",
+    )
+    assert "deployment_outcomes_schema_mismatch" in deployment_audit["blockers"]
+    assert "deployment_outcomes_job_id_mismatch" in deployment_audit["blockers"]
+    assert "deployment_outcomes_no_records" in deployment_audit["blockers"]
+    missing_job_deployment = tmp_path / "missing-job-deployment.json"
+    _write_json(
+        missing_job_deployment,
+        {
+            "schema_version": "deployment_outcome_manifest.v1",
+            "records": [
+                {
+                    "task_id": "task-1",
+                    "scenario_id": "scenario-1",
+                    "actual_success": True,
+                    "scenario_eval_run_id": "run-1",
+                    "scenario_variation_instance_id": "variation-1",
+                    "evidence_refs": {"log": "owner://log"},
+                }
+            ],
+        },
+    )
+    assert intake._audit_deployment_outcomes(
+        path=missing_job_deployment,
+        expected_job_id=None,
+    )["blockers"] == ["deployment_outcomes_job_id_missing"]
+
+    assert intake._audit_real_robot_pov(
+        path=tmp_path / "missing-pov.json",
+        expected_job_id="webapp-job-1",
+    )["blockers"] == ["real_robot_pov_missing"]
+    assert intake._audit_real_robot_pov(
+        path=malformed,
+        expected_job_id="webapp-job-1",
+    )["blockers"] == ["real_robot_pov_read_failed:ValueError"]
+    bad_pov = tmp_path / "bad-pov.json"
+    _write_json(
+        bad_pov,
+        {
+            "schema_version": "real_robot_pov_manifest.v0",
+            "job_id": "../escape",
+            "records": [],
+        },
+    )
+    pov_audit = intake._audit_real_robot_pov(path=bad_pov, expected_job_id=None)
+    assert "real_robot_pov_schema_mismatch" in pov_audit["blockers"]
+    assert "real_robot_pov_job_id_unsafe" in pov_audit["blockers"]
+    assert "real_robot_pov_no_records" in pov_audit["blockers"]
+    camera_missing = tmp_path / "camera-missing-pov.json"
+    _write_json(
+        camera_missing,
+        {
+            "schema_version": "real_robot_pov_manifest.v1",
+            "job_id": "other-job",
+            "records": [
+                {
+                    "task_id": "task-1",
+                    "scenario_id": "scenario-1",
+                    "scenario_eval_run_id": "run-1",
+                    "scenario_variation_instance_id": "variation-1",
+                    "action_log_uri": "owner://actions.jsonl",
+                    "timestamp_alignment": "aligned",
+                    "owner_evidence_refs": {"action": "owner://actions.jsonl"},
+                }
+            ],
+        },
+    )
+    camera_missing_audit = intake._audit_real_robot_pov(
+        path=camera_missing,
+        expected_job_id="webapp-job-1",
+    )
+    assert "real_robot_pov_job_id_mismatch" in camera_missing_audit["blockers"]
+    assert "real_robot_pov_missing_camera_video" in camera_missing_audit["blockers"]
+
+
+def test_live_pipeline_input_intake_policy_and_closure_blocker_edges(
+    tmp_path: Path,
+) -> None:
+    malformed = tmp_path / "malformed-policy.json"
+    malformed.write_text("[]", encoding="utf-8")
+
+    assert intake._audit_policy_modality(
+        modality="policy_api_endpoint",
+        payload={},
+    ) == []
+    assert intake._audit_policy_modality(
+        modality="policy_api_endpoint",
+        payload={"endpoint_url": "ftp://policy"},
+    ) == ["policy_package.policy_api_endpoint.endpoint_url"]
+    assert intake._audit_policy_modality(
+        modality="docker_container",
+        payload={"name": "missing-inputs"},
+    ) == [
+        "policy_package.docker_container.image_ref",
+        "policy_package.docker_container.digest",
+    ]
+    assert intake._audit_policy_modality(
+        modality="recorded_action_trace",
+        payload={"name": "missing-inputs"},
+    ) == [
+        "policy_package.recorded_action_trace.trace_manifest_uri",
+        "policy_package.recorded_action_trace.timestamp_alignment",
+    ]
+    assert intake._audit_policy_modality(
+        modality="high_level_skill_trace",
+        payload={"name": "missing-inputs"},
+    ) == ["policy_package.high_level_skill_trace.ordered_skill_sequence"]
+    assert intake._audit_policy_modality(
+        modality="teleop_demo",
+        payload={"name": "missing-inputs"},
+    ) == [
+        "policy_package.teleop_demo.demo_artifact_uri",
+        "policy_package.teleop_demo.rights_privacy_attestation",
+    ]
+    assert intake._audit_policy_modality(
+        modality="sim_controller_plugin",
+        payload={"name": "missing-inputs"},
+    ) == [
+        "policy_package.sim_controller_plugin.simulator_framework",
+        "policy_package.sim_controller_plugin.plugin_uri",
+    ]
+
+    assert intake._audit_policy_package(
+        path=tmp_path / "missing-policy.json",
+        expected_job_id="webapp-job-1",
+    )["blockers"] == ["policy_package_missing"]
+    assert intake._audit_policy_package(
+        path=malformed,
+        expected_job_id="webapp-job-1",
+    )["blockers"] == ["policy_package_read_failed:ValueError"]
+    bad_policy = tmp_path / "bad-policy.json"
+    _write_json(bad_policy, {"schema_version": "bad"})
+    policy_audit = intake._audit_policy_package(path=bad_policy, expected_job_id=None)
+    assert "policy_package_schema_mismatch" in policy_audit["blockers"]
+    assert "policy_package_job_id_missing" in policy_audit["blockers"]
+    assert "policy_package_no_supported_modality" in policy_audit["blockers"]
+    mismatched_policy = tmp_path / "mismatched-policy.json"
+    _write_json(
+        mismatched_policy,
+        {
+            "schema_version": "robot_team_policy_package.v1",
+            "job_id": "other-job",
+            "policy_package": {
+                "policy_api_endpoint": {
+                    "endpoint_url": "https://robot-team.example/policy"
+                }
+            },
+        },
+    )
+    assert intake._audit_policy_package(
+        path=mismatched_policy,
+        expected_job_id="webapp-job-1",
+    )["blockers"] == ["policy_package_job_id_mismatch"]
+
+    assert intake._audit_live_closure_evidence(
+        path=tmp_path / "missing-closure.json",
+        expected_job_id="webapp-job-1",
+    )["blockers"] == ["live_closure_evidence_missing"]
+    assert intake._audit_live_closure_evidence(
+        path=malformed,
+        expected_job_id="webapp-job-1",
+    )["blockers"] == ["live_closure_evidence_read_failed:ValueError"]
+    bad_closure = tmp_path / "bad-closure.json"
+    _write_json(
+        bad_closure,
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v0",
+            "delivery": {"status": "pending"},
+            "rights_privacy": {"accepted": False},
+        },
+    )
+    closure_audit = intake._audit_live_closure_evidence(
+        path=bad_closure,
+        expected_job_id=None,
+    )
+    assert "live_closure_evidence_schema_mismatch" in closure_audit["blockers"]
+    assert "live_closure_evidence_job_id_missing" in closure_audit["blockers"]
+    assert "delivery_access_evidence_incomplete" in closure_audit["blockers"]
+    assert "rights_privacy_evidence_blocked" in closure_audit["blockers"]
+
+
+def test_live_pipeline_input_intake_staging_blocker_edges(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    request_path = tmp_path / "incoming" / "webapp-job-1.json"
+    evidence_path = _live_closure_evidence(tmp_path / "incoming" / "closure.json")
+    outcome_path = _deployment_outcomes(tmp_path / "incoming" / "deployment.json")
+    policy_path = _policy_package(tmp_path / "incoming" / "policy.json")
+    pov_path = _real_robot_pov_manifest(tmp_path / "incoming" / "pov.json")
+    _write_json(request_path, _webapp_request(capture_root))
+
+    assert intake._stage_webapp_request(
+        request_path=request_path,
+        audit={"ready": False},
+        inbox=tmp_path / "inbox",
+        overwrite=False,
+    )["blockers"] == ["webapp_request_not_ready_for_staging"]
+    assert intake._stage_webapp_request(
+        request_path=request_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        inbox=None,
+        overwrite=False,
+    )["blockers"] == ["missing_env_or_manifest_BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX"]
+    inbox = tmp_path / "inbox"
+    _write_json(inbox / "webapp-job-1.json", {"already": True})
+    assert intake._stage_webapp_request(
+        request_path=request_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        inbox=inbox,
+        overwrite=False,
+    )["blockers"] == ["target_request_already_exists"]
+
+    assert intake._stage_live_closure_evidence(
+        evidence_path=evidence_path,
+        audit={"ready": False},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["live_closure_evidence_not_ready_for_staging"]
+    assert intake._stage_live_closure_evidence(
+        evidence_path=evidence_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        capture_root=None,
+        overwrite=False,
+    )["blockers"] == ["missing_control_plane_capture_root"]
+    assert intake._stage_live_closure_evidence(
+        evidence_path=evidence_path,
+        audit={"ready": True},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["live_closure_evidence_job_id_missing"]
+    assert intake._stage_live_closure_evidence(
+        evidence_path=evidence_path,
+        audit={"ready": True, "job_id": "../escape"},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["live_closure_evidence_job_id_unsafe"]
+    closure_target = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / "webapp-job-1"
+        / "live_eval_closure_evidence.json"
+    )
+    _write_json(closure_target, {"already": True})
+    assert intake._stage_live_closure_evidence(
+        evidence_path=evidence_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["target_live_closure_evidence_already_exists"]
+
+    assert intake._stage_deployment_outcomes(
+        outcome_path=outcome_path,
+        audit={"ready": False},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["deployment_outcomes_not_ready_for_staging"]
+    assert intake._stage_deployment_outcomes(
+        outcome_path=outcome_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        capture_root=None,
+        overwrite=False,
+    )["blockers"] == ["missing_control_plane_capture_root"]
+    assert intake._stage_deployment_outcomes(
+        outcome_path=outcome_path,
+        audit={"ready": True},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["deployment_outcomes_job_id_missing"]
+    assert intake._stage_deployment_outcomes(
+        outcome_path=outcome_path,
+        audit={"ready": True, "job_id": "../escape"},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["deployment_outcomes_job_id_unsafe"]
+    deployment_target = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / "webapp-job-1"
+        / "deployment_outcomes"
+        / "inbox"
+        / "pilot-outcome-1.json"
+    )
+    _write_json(deployment_target, {"already": True})
+    assert intake._stage_deployment_outcomes(
+        outcome_path=outcome_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["target_deployment_outcome_already_exists"]
+
+    assert intake._stage_real_robot_pov(
+        pov_path=pov_path,
+        audit={"ready": False},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["real_robot_pov_not_ready_for_staging"]
+    assert intake._stage_real_robot_pov(
+        pov_path=pov_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        capture_root=None,
+        overwrite=False,
+    )["blockers"] == ["missing_control_plane_capture_root"]
+    pov_target = capture_root / "pipeline" / "robot_eval_inputs" / "real_robot_pov_manifest.json"
+    _write_json(pov_target, {"already": True})
+    assert intake._stage_real_robot_pov(
+        pov_path=pov_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["target_real_robot_pov_already_exists"]
+
+    assert intake._stage_policy_package(
+        policy_path=policy_path,
+        audit={"ready": False},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["policy_package_not_ready_for_staging"]
+    assert intake._stage_policy_package(
+        policy_path=policy_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        capture_root=None,
+        overwrite=False,
+    )["blockers"] == ["missing_control_plane_capture_root"]
+    assert intake._stage_policy_package(
+        policy_path=policy_path,
+        audit={"ready": True},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["policy_package_job_id_missing"]
+    assert intake._stage_policy_package(
+        policy_path=policy_path,
+        audit={"ready": True, "job_id": "../escape"},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["policy_package_job_id_unsafe"]
+    policy_target = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / "webapp-job-1"
+        / "policy_package.json"
+    )
+    _write_json(policy_target, {"already": True})
+    assert intake._stage_policy_package(
+        policy_path=policy_path,
+        audit={"ready": True, "job_id": "webapp-job-1"},
+        capture_root=capture_root,
+        overwrite=False,
+    )["blockers"] == ["target_policy_package_already_exists"]
+
+
+def test_live_pipeline_input_intake_waiting_and_blocked_staged_inputs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    output_path = tmp_path / "custom" / "audit.json"
+
+    waiting = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        output_path=output_path,
+    )
+    assert waiting["status"] == "waiting_for_inputs"
+    assert waiting["output_path"] == str(output_path.resolve())
+
+    blocked = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        arena_results_dir=tmp_path / "missing-arena",
+        stage_arena_results=True,
+        staged_inputs_path=tmp_path / "custom" / "staged.json",
+    )
+    assert blocked["status"] == "blocked"
+    assert "arena:arena_results_dir_missing" in blocked["input_blockers"]
+    assert "staged_inputs:arena_results_not_ready_for_staging" in blocked[
+        "input_blockers"
+    ]
+    assert blocked["staged_inputs"]["blockers"] == ["arena_results_not_ready_for_staging"]
+
+
+def test_live_pipeline_input_intake_main_covers_success_and_blocker_output(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    request_path = tmp_path / "incoming" / "webapp-job-1.json"
+    results_dir = _arena_results(tmp_path / "arena-results")
+    evidence_path = _live_closure_evidence(tmp_path / "incoming" / "closure.json")
+    outcome_path = _deployment_outcomes(tmp_path / "incoming" / "deployment.json")
+    policy_path = _policy_package(tmp_path / "incoming" / "policy.json")
+    pov_path = _real_robot_pov_manifest(tmp_path / "incoming" / "pov.json")
+    _write_json(request_path, _webapp_request(capture_root))
+
+    assert intake.main(
+        [
+            "--manifest-path",
+            str(manifest_path),
+            "--webapp-job-request",
+            str(request_path),
+            "--arena-results-dir",
+            str(results_dir),
+            "--live-closure-evidence",
+            str(evidence_path),
+            "--deployment-outcomes",
+            str(outcome_path),
+            "--policy-package",
+            str(policy_path),
+            "--real-robot-pov",
+            str(pov_path),
+            "--stage-webapp-request",
+            "--stage-arena-results",
+            "--stage-live-closure-evidence",
+            "--stage-deployment-outcomes",
+            "--stage-policy-package",
+            "--stage-real-robot-pov",
+            "--overwrite",
+            "--output-path",
+            str(tmp_path / "cli" / "audit.json"),
+            "--staged-inputs-path",
+            str(tmp_path / "cli" / "staged.json"),
+        ]
+    ) == 0
+    success = capsys.readouterr().out
+    assert "status=staged_for_control_plane" in success
+    assert "webapp_truth_proven=true" in success
+
+    assert intake.main(
+        [
+            "--manifest-path",
+            str(manifest_path),
+            "--arena-results-dir",
+            str(tmp_path / "missing-arena"),
+            "--stage-arena-results",
+        ]
+    ) == 1
+    blocked = capsys.readouterr().out
+    assert "status=blocked" in blocked
+    assert "blockers=" in blocked

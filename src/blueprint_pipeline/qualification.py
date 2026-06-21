@@ -3607,7 +3607,7 @@ def _build_scene_graph(
     for object_id in _string_list(scope_record.get("target_object_ids")):
         edges.append({"source": "task_zone", "target": object_id, "relation": "contains_target"})
     for node in nodes:
-        if not isinstance(node, Mapping):
+        if not isinstance(node, Mapping):  # pragma: no cover - nodes are constructed as mappings above.
             continue
         if node.get("id") == "task_zone":
             continue

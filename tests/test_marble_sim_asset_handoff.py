@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import marble_sim_assets as msa
 from blueprint_pipeline.marble_sim_assets import build_marble_sim_assets
 from blueprint_pipeline.provider_preview import WorldLabsPreviewProvider, run_preview_provider
 
@@ -314,3 +317,94 @@ def test_run_preview_provider_persists_marble_sim_asset_handoff(tmp_path: Path, 
     )
     assert (pipeline_dir / "marble_sim_assets" / "marble_asset_manifest.json").is_file()
     assert (pipeline_dir / "marble_sim_assets" / "simulators" / "pybullet_review_manifest.json").is_file()
+
+
+def test_marble_helper_normalization_edges(tmp_path: Path) -> None:
+    assert msa._string_list(None) == []
+    assert msa._string_list("one") == ["one"]
+    assert msa._string_list(["one", "one", "", "two"]) == ["one", "two"]
+    assert msa._string_list(123) == ["123"]
+    assert msa._maybe_float("") is None
+    assert msa._maybe_float("not-a-number") is None
+    assert msa._deterministic_timestamp({}) is None
+
+    assert msa._collect_urls({"a": {"uri": "gs://bucket/a"}, "b": {"asset_url": "https://b"}, "c": 3}, default_key="asset") == {
+        "a": "gs://bucket/a",
+        "b": "https://b",
+    }
+    assert msa._collect_urls(
+        ["https://cdn/a", {"name": "full", "path": "/tmp/full.ply"}, 3],
+        default_key="ply",
+    ) == {"ply_0": "https://cdn/a", "full": "/tmp/full.ply"}
+    assert msa._first_value({"empty": "", "remote": "https://cdn/a"}, remote=False) == ""
+    assert msa._first_value({"local": "/tmp/a", "remote": "https://cdn/a"}, remote=True) == "https://cdn/a"
+    assert msa._first_value({"remote": "https://cdn/a", "local": "/tmp/a"}, remote=False) == "/tmp/a"
+
+    pipeline_dir = tmp_path / "pipeline"
+    marble_dir = pipeline_dir / "marble_sim_assets"
+    local_collider = tmp_path / "collider.glb"
+    local_collider.write_bytes(b"glb")
+    _write_json(
+        pipeline_dir / "worldlabs_export_manifest.json",
+        {"output_collider_mesh_path": str(local_collider)},
+    )
+    mesh = msa._normalize_mesh_assets(world_manifest={"assets": {"mesh": {}}}, pipeline_dir=pipeline_dir, marble_dir=marble_dir)
+    assert mesh["local_collider_mesh_glb_path"] == str(local_collider)
+    assert mesh["collider_mesh_glb_url"] == str(local_collider)
+
+
+def test_marble_validation_warning_and_blocker_edges() -> None:
+    blocked = msa._validation_payload({"world": {}, "assets": {}, "semantics": {}, "request_input_lineage": {}})
+    assert blocked["overall_status"] == "blocked"
+    assert "missing_world_id" in blocked["blockers"]
+    assert "missing_splat_assets" in blocked["blockers"]
+    assert "missing_collider_mesh_glb" in blocked["blockers"]
+    assert "missing_metric_scale_factor" in blocked["blockers"]
+    assert "missing_ground_plane_offset" in blocked["blockers"]
+    assert "missing_world_marble_url" in blocked["warnings"]
+    assert "privacy_safe_input_not_proven_in_request_manifest" in blocked["warnings"]
+    assert "missing_worldlabs_input_audit_uri" in blocked["warnings"]
+    assert "missing_input_checksums" in blocked["warnings"]
+
+    warning_only = msa._validation_payload(
+        {
+            "world": {"world_id": "world-1", "world_marble_url": "https://marble"},
+            "assets": {
+                "splats": {"ply_urls": {"full": "https://cdn/full.ply"}},
+                "mesh": {"collider_mesh_glb_url": "https://cdn/collider.glb"},
+            },
+            "semantics": {"metric_scale_factor": 1.0, "ground_plane_offset": 0.0},
+            "request_input_lineage": {},
+        }
+    )
+    assert warning_only["overall_status"] == "review_ready_with_warnings"
+
+
+def test_marble_manifest_override_and_main_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    with pytest.raises(msa.PipelineError, match="World manifest override does not exist"):
+        build_marble_sim_assets(capture_root=capture_root, world_manifest=tmp_path / "missing.json")
+
+    monkeypatch.setattr(
+        msa,
+        "build_marble_sim_assets",
+        lambda **_: {
+            "manifest_path": str(tmp_path / "asset.json"),
+            "validation_path": str(tmp_path / "validation.json"),
+            "bridge_path": str(tmp_path / "bridge.json"),
+            "status": "review_ready",
+        },
+    )
+    assert msa.main(["--capture-root", str(capture_root), "--world-manifest", str(tmp_path / "world.json")]) == 0
+    assert "status=review_ready" in capsys.readouterr().out
+
+    def raise_pipeline_error(**_kwargs: object) -> dict[str, object]:
+        raise msa.PipelineError("bad world")
+
+    monkeypatch.setattr(msa, "build_marble_sim_assets", raise_pipeline_error)
+    assert msa.main(["--capture-root", str(capture_root)]) == 1
+    assert "[marble-sim-assets] FAILED: bad world" in capsys.readouterr().out

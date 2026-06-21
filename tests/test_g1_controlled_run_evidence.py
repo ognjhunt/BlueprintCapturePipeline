@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import g1_controlled_run_evidence as g1
 from blueprint_pipeline.g1_controlled_run_evidence import (
     G1_CONTROLLED_RUN_EVIDENCE_SCHEMA_VERSION,
     assemble_g1_controlled_run_evidence,
@@ -341,3 +344,215 @@ def test_g1_evidence_template_cli_writes_inputs(tmp_path: Path, capsys) -> None:
     assert output_path.is_file()
     template = _read_json(output_path)
     assert template["schema_version"] == "g1_controlled_run_inputs.v1"
+
+
+def test_g1_evidence_low_level_helper_edges(tmp_path: Path) -> None:
+    assert g1._bool("passed") is True
+    assert g1._number(True, default=9.0) == 9.0
+    assert g1._number("bad", default=3.0) == 3.0
+    assert g1._number(object(), default=4.0) == 4.0
+    assert g1._safe_id("", "fallback") == "fallback"
+    assert g1._file_ref(None) is None
+
+    invalid_json = tmp_path / "invalid.json"
+    invalid_json.write_text("{", encoding="utf-8")
+    assert g1._read_json_file(invalid_json, "bad") == (None, ["invalid_json_evidence:bad"])
+    assert g1._read_json_records(invalid_json, "bad-records") == (
+        [],
+        ["invalid_json_evidence:bad-records"],
+    )
+
+    list_json = tmp_path / "records.json"
+    list_json.write_text("[{\"a\": 1}]", encoding="utf-8")
+    assert g1._read_json_records(list_json, "records") == ([{"a": 1}], [])
+    mapping_json = tmp_path / "mapping.json"
+    mapping_json.write_text("{\"a\": 1}", encoding="utf-8")
+    assert g1._read_json_records(mapping_json, "mapping") == ([{"a": 1}], [])
+    scalar_json = tmp_path / "scalar.json"
+    scalar_json.write_text("1", encoding="utf-8")
+    assert g1._read_json_records(scalar_json, "scalar") == (
+        [],
+        ["invalid_json_evidence:scalar"],
+    )
+
+    jsonl = tmp_path / "records.jsonl"
+    jsonl.write_text("\nnot-json\n", encoding="utf-8")
+    assert g1._read_json_records(jsonl, "jsonl")[1] == [
+        "invalid_jsonl_evidence:jsonl:line_2"
+    ]
+    empty_jsonl = tmp_path / "empty.jsonl"
+    empty_jsonl.write_text("\n", encoding="utf-8")
+    assert g1._read_json_records(empty_jsonl, "empty") == (
+        [],
+        ["empty_evidence_records:empty"],
+    )
+
+
+def test_g1_evidence_config_validation_edges() -> None:
+    blockers = g1._required_config_blockers(
+        {
+            "run_id": "<placeholder>",
+            "robot_serial_or_fleet_id": "",
+            "site_or_lab_location_id": "",
+            "operator_id": "",
+            "hardware_owner_id": "",
+            "safety_reviewer_id": "",
+            "robot_team_reviewer_id": "",
+            "start_time_utc": "",
+            "end_time_utc": "",
+            "cycle_time_seconds": "not-a-number",
+            "production_webapp_request_id": "",
+            "pipeline_intake_request_id": "",
+            "production_forward_url": "",
+            "webapp_response_status_code": "",
+            "operator_statement": "",
+            "hardware_owner_statement": "<placeholder>",
+            "safety_reviewer_statement": "",
+            "robot_team_review_statement": "",
+            "accepted_safety_thresholds": {
+                "max_speed_mps": "<speed>",
+                "min_human_clearance_m": "not-a-number",
+                "max_contact_force_n": "",
+            },
+            "actual_status": "failed",
+            "actual_success": False,
+            "review_decision": "rejected",
+            "sync_status": "failed",
+            "signed_customer_delivery_url": "<url>",
+            "storage_upload_performed": False,
+            "entitlement_verified": False,
+            "external_use_allowed": False,
+        }
+    )
+
+    assert "missing_or_placeholder_config:run_id" in blockers
+    assert "missing_or_placeholder_config:hardware_owner_statement" in blockers
+    assert "missing_or_placeholder_safety_threshold:max_speed_mps" in blockers
+    assert "non_numeric_safety_threshold:min_human_clearance_m" in blockers
+    assert "non_numeric_config:cycle_time_seconds" in blockers
+    assert "physical_run_status_not_passed" in blockers
+    assert "physical_run_actual_success_not_true" in blockers
+    assert "safety_review_decision_not_accepted" in blockers
+    assert "webapp_sync_status_not_succeeded" in blockers
+    assert "missing_or_placeholder_config:signed_customer_delivery_url" in blockers
+    assert "storage_upload_not_performed" in blockers
+    assert "entitlement_not_verified" in blockers
+    assert "rights_privacy_external_use_not_allowed" in blockers
+
+
+def test_g1_evidence_content_blocker_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    unreadable = tmp_path / "unreadable.jsonl"
+    unreadable.write_text("{}", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def raise_for_unreadable(self: Path, *args: object, **kwargs: object) -> str:
+        if self == unreadable:
+            raise OSError("unreadable")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", raise_for_unreadable)
+    assert g1._read_json_records(unreadable, "unreadable") == (
+        [],
+        ["unreadable_evidence_file:unreadable"],
+    )
+
+    video = tmp_path / "robot_camera_video.mp4"
+    video.write_bytes(b"")
+    alignment = tmp_path / "timestamp_alignment.json"
+    _write_json(alignment, {})
+    command = tmp_path / "command_log.jsonl"
+    command.write_text(json.dumps({"kind": "policy_command_started"}) + "\n", encoding="utf-8")
+    trace = tmp_path / "policy_execution_trace.jsonl"
+    trace.write_text(json.dumps({"kind": "trace"}) + "\n", encoding="utf-8")
+    contact = tmp_path / "contact_collision_log.json"
+    _write_json(contact, {"status": "operator_review_required"})
+    metrics = tmp_path / "policy_metrics.json"
+    _write_json(metrics, {"status": "draft"})
+    review = tmp_path / "robot_team_review.json"
+    _write_json(review, {"accepted": True, "review_decision": "accepted", "reviewer_id": "<reviewer>"})
+
+    blockers = g1._evidence_content_blockers(
+        {
+            "robot_camera_video": video,
+            "timestamp_alignment": alignment,
+            "command_log": command,
+            "policy_execution_trace": trace,
+            "contact_collision_log": contact,
+            "policy_metrics": metrics,
+            "robot_team_review": review,
+        },
+        {"accepted_safety_thresholds": {"max_contact_force_n": 5}},
+    )
+
+    assert "empty_evidence_file:robot_camera_video" in blockers
+    assert "timestamp_alignment_missing_max_alignment_error_ms" in blockers
+    assert "command_log_missing_policy_command_completed" in blockers
+    assert "policy_execution_trace_missing_policy_id" in blockers
+    assert "contact_collision_log_still_operator_review_required" in blockers
+    assert "contact_collision_log_missing_max_contact_force_n" in blockers
+    assert "policy_metrics_missing_episode_count" in blockers
+    assert "policy_metrics_missing_success_rate" in blockers
+    assert "policy_metrics_missing_intervention_count" in blockers
+    assert "policy_metrics_status_not_accepted" in blockers
+    assert "robot_team_review_missing_reviewer_id" in blockers
+
+    _write_json(alignment, {"max_alignment_error_ms": 251})
+    command.write_text(
+        json.dumps({"kind": "policy_command_completed", "exit_code": 7}) + "\n",
+        encoding="utf-8",
+    )
+    _write_json(contact, {"status": "accepted", "max_contact_force_n": 10})
+    blockers = g1._evidence_content_blockers(
+        {
+            "timestamp_alignment": alignment,
+            "command_log": command,
+            "contact_collision_log": contact,
+        },
+        {"accepted_safety_thresholds": {"max_contact_force_n": 5}},
+    )
+    assert "timestamp_alignment_error_exceeds_250_ms" in blockers
+    assert "command_log_policy_command_exit_nonzero" in blockers
+    assert "contact_collision_log_exceeds_accepted_threshold" in blockers
+
+
+def test_g1_evidence_assemble_cli_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    capture_root = tmp_path / "capture"
+    evidence_dir = tmp_path / "evidence"
+    output_dir = tmp_path / "assembled"
+    monkeypatch.setattr(
+        g1,
+        "assemble_g1_controlled_run_evidence",
+        lambda **_: {"status": "blocked_missing_evidence", "output_dir": str(output_dir)},
+    )
+
+    assert g1.main(
+        [
+            "assemble",
+            "--capture-root",
+            str(capture_root),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--output-dir",
+            str(output_dir),
+        ]
+    ) == 0
+    assert "blocked_missing_evidence" in capsys.readouterr().out
+    assert g1.main(
+        [
+            "assemble",
+            "--capture-root",
+            str(capture_root),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--output-dir",
+            str(output_dir),
+            "--require-ready",
+        ]
+    ) == 1
+
+    with pytest.raises(SystemExit):
+        g1.main([])

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from blueprint_pipeline import major_capability_scenario_suite as major_suite
 from blueprint_pipeline.major_capability_scenario_suite import (
     EVALUATION_METHOD_ID,
     MAJOR_CAPABILITY_SCENARIO_SUITE_SCHEMA_VERSION,
@@ -393,3 +394,58 @@ def test_major_capability_scenario_suite_cli_writes_report(tmp_path: Path) -> No
         / "major_capability_scenarios"
         / "major_capability_scenario_report.json"
     ).is_file()
+
+
+def test_major_capability_scenario_helpers_fail_closed_on_missing_inputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = tmp_path / "capture"
+    jobs_root = capture_root / "pipeline" / "robot_eval_jobs"
+
+    assert major_suite._find_primary_job_id(capture_root, None) is None
+
+    (jobs_root / "job-b").mkdir(parents=True)
+    assert major_suite._find_primary_job_id(capture_root, None) == "job-b"
+
+    _write_json(jobs_root / "job-a" / "job_request.json", {"schema_version": "robot_eval_job_request.v1"})
+    assert major_suite._find_primary_job_id(capture_root, None) == "job-a"
+    assert major_suite._field_value({"a": {"b": 3}}, None) == {"a": {"b": 3}}
+    assert major_suite._field_value({"a": {}}, "a.missing|other") is major_suite._MISSING
+    assert major_suite._expected_for({"check": "unknown"}) is None
+    assert major_suite._json_payload_for(tmp_path / "missing.json") == (None, "artifact_missing")
+
+    list_payload = tmp_path / "list.json"
+    list_payload.write_text("{}", encoding="utf-8")
+    original_optional_read_json = major_suite.optional_read_json
+
+    def read_list_for_payload(path: Path):
+        if path == list_payload:
+            return []
+        return original_optional_read_json(path)
+
+    monkeypatch.setattr(major_suite, "optional_read_json", read_list_for_payload)
+    assert major_suite._json_payload_for(list_payload) == (None, "artifact_not_json_object")
+
+    assert major_suite._evaluate_json_criterion(
+        criterion={"check": "json_field_present", "field": "missing"},
+        payload={},
+    ) == (False, None, "field_missing")
+    assert major_suite._evaluate_json_criterion(
+        criterion={"check": "unknown", "field": "value"},
+        payload={"value": "present"},
+    ) == (False, "present", "unsupported_check:unknown")
+    missing_result = major_suite._evaluate_criterion(
+        capture_root=capture_root,
+        job_id=None,
+        criterion={
+            "criterion_id": "missing-json",
+            "description": "Missing JSON is fail-closed.",
+            "artifact": "missing.json",
+            "check": "json_field_equals",
+            "field": "status",
+            "expected": "ready",
+        },
+    )
+    assert missing_result["status"] == "failed"
+    assert missing_result["message"] == "artifact_missing"

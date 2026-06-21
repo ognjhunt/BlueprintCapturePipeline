@@ -15,6 +15,26 @@ from blueprint_pipeline.first_gpu_run_packet import (
     FIRST_GPU_VM_RUNTIME_PREFLIGHT_PLAN_SCHEMA_VERSION,
     FIRST_GPU_VM_SYNC_SCHEMA_VERSION,
     FIRST_GPU_WEBAPP_HANDOFF_SCHEMA_VERSION,
+    _append_file_entry,
+    _blocker_details_matching,
+    _blocker_resolution_markdown,
+    _capture_root_by_site_json,
+    _default_owner_command,
+    _env_example,
+    _first_gpu_launch_order_manifest,
+    _gpu_provider_bootstrap_manifest,
+    _gpu_vm_runtime_preflight_plan_manifest,
+    _gpu_vm_runtime_preflight_result_summary,
+    _gpu_vm_sync_manifest,
+    _launch_order_markdown,
+    _mujoco_unitree_g1_smoke_script,
+    _raw_video_path,
+    _scene_asset_acquisition_manifest,
+    _selected_webapp_forwarding_preflight_path,
+    _sha_file,
+    _simulator_path_matrix_markdown,
+    _source_video_category,
+    _webapp_handoff_manifest,
     build_first_gpu_run_packet,
     main,
 )
@@ -1702,3 +1722,310 @@ def test_first_gpu_run_packet_threads_local_rehearsal_flag(tmp_path: Path) -> No
 
     assert packet["allow_local_webapp_rehearsal"] is True
     assert "--allow-local-webapp-rehearsal" in local_commands
+
+
+def test_first_gpu_run_packet_helper_fallbacks_cover_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    invalid_payload = tmp_path / "runtime-result.json"
+    invalid_payload.write_text("[]", encoding="utf-8")
+    assert _gpu_vm_runtime_preflight_result_summary(invalid_payload)["blockers"] == [
+        "gpu_vm_runtime_preflight_result_invalid_payload:list"
+    ]
+
+    blocked_result = tmp_path / "blocked-result.json"
+    _write_json(blocked_result, {"status": "blocked", "blockers": ["missing_gpu"]})
+    assert _gpu_vm_runtime_preflight_result_summary(blocked_result)["blockers"] == [
+        "gpu_vm_runtime_preflight_result_blocker:missing_gpu",
+        "gpu_vm_runtime_preflight_result_status:blocked",
+    ]
+
+    explicit = tmp_path / "explicit-preflight.json"
+    assert _selected_webapp_forwarding_preflight_path(tmp_path, explicit) == explicit.resolve()
+    env_path = tmp_path / "env-preflight.json"
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT", str(env_path))
+    assert _selected_webapp_forwarding_preflight_path(tmp_path, None) == env_path.resolve()
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT", raising=False)
+    default_path = tmp_path / "pipeline" / "webapp_forwarding_preflight.json"
+    _write_json(default_path, {"status": "ready"})
+    assert _selected_webapp_forwarding_preflight_path(tmp_path, None) == default_path.resolve()
+
+    assert _default_owner_command("isaac_lab_arena").endswith(
+        "run_isaac_lab_arena_gpu_proof.sh"
+    )
+    assert _default_owner_command("newton") == "/opt/blueprint/run_owner_gpu_proof.sh"
+    assert _sha_file(tmp_path / "missing.bin") is None
+
+    entries: list[dict[str, object]] = []
+    existing = tmp_path / "existing.txt"
+    existing.write_text("same", encoding="utf-8")
+    _append_file_entry(entries, existing, role="existing")
+    _append_file_entry(entries, existing, role="existing")
+    assert len(entries) == 1
+
+    capture_root = tmp_path / "capture"
+    _write_json(capture_root / "raw" / "manifest.json", {"video_uri": "relative.mov"})
+    relative_video = capture_root / "relative.mov"
+    relative_video.parent.mkdir(parents=True, exist_ok=True)
+    relative_video.write_bytes(b"video")
+    assert _raw_video_path(capture_root) == relative_video
+
+    no_video_root = tmp_path / "no-video"
+    _write_json(no_video_root / "raw" / "manifest.json", {"video_uri": "missing.mov"})
+    assert _raw_video_path(no_video_root) is None
+    assert _capture_root_by_site_json(site_slug="", capture_root=capture_root) == "{}"
+
+
+def test_first_gpu_run_packet_env_and_script_fallbacks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    packet_dir = tmp_path / "packet"
+    env_text = _env_example(
+        capture_root=tmp_path / "capture",
+        packet_dir=packet_dir,
+        webapp_site_slug="site-1",
+        webapp_staged_inputs_path=tmp_path / "staged.json",
+        webapp_forwarding_preflight_path=None,
+        simulator="newton",
+        provisioner="runpod",
+        owner_command="/opt/blueprint/newton.sh",
+    )
+    assert 'export OWNER_SIMULATOR_COMMAND="bash $OWNER_DEFAULT_SMOKE_COMMAND_BINDING"' in env_text
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.first_gpu_run_packet._repo_root",
+        lambda: tmp_path / "repo-without-scripts",
+    )
+    fallback_script = _mujoco_unitree_g1_smoke_script()
+    assert "owner_gpu_mujoco_walk_to_target_smoke.py was not available" in fallback_script
+
+    guidance = _gpu_provider_bootstrap_manifest(
+        capture_root=tmp_path / "capture",
+        simulator="newton",
+        provisioner="runpod",
+        owner_command="/opt/blueprint/newton.sh",
+        owner_command_location="remote",
+    )
+    assert guidance["gpu_guidance"]["recommended_gpu_class"].startswith("CUDA-capable")
+    assert guidance["first_smoke_path"]["requires_paid_gpu_for_owner_runtime"] is True
+
+
+def test_first_gpu_run_packet_markdown_skips_non_mapping_items() -> None:
+    simulator_markdown = _simulator_path_matrix_markdown(
+        {
+            "status": "selected_simulator_path_clear",
+            "selected_simulator": "isaac_sim",
+            "selected_provisioner": "runpod",
+            "paths": ["skip-me", {"framework": "isaac_sim"}],
+            "selected_path_blockers": [],
+            "safe_commands": [],
+            "claim_boundary": {},
+        }
+    )
+    assert "`isaac_sim`" in simulator_markdown
+
+    blocker_markdown = _blocker_resolution_markdown(
+        {
+            "status": "blocked",
+            "actions": ["skip-me", {"title": "Owner command", "category_id": "owner"}],
+            "categories": ["skip-me", {"title": "Owner command", "category_id": "owner"}],
+        }
+    )
+    assert "Owner command" in blocker_markdown
+
+    launch_markdown = _launch_order_markdown(
+        {
+            "status": "blocked",
+            "selected_simulator": "isaac_sim",
+            "next_action_step_ids": [],
+            "steps": ["skip-me", {"title": "Runtime preflight", "step_id": "runtime"}],
+        }
+    )
+    assert "Runtime preflight" in launch_markdown
+
+
+def test_first_gpu_run_packet_runtime_and_launch_sync_status_fallbacks(
+    tmp_path: Path,
+) -> None:
+    runtime_plan = _gpu_vm_runtime_preflight_plan_manifest(
+        capture_root=tmp_path / "capture",
+        packet_dir=tmp_path / "packet",
+        script_path=tmp_path / "packet" / "gpu_vm_runtime_preflight.sh",
+        result_path=tmp_path / "packet" / "gpu_vm_runtime_preflight_result.json",
+        sync_manifest_path=tmp_path / "packet" / "gpu_vm_sync_manifest.json",
+        readiness={"blockers": []},
+        simulator="isaac_sim",
+        provisioner="runpod",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh",
+        owner_command_location="remote",
+        owner_command_supplied=True,
+        vm_sync_manifest={"status": "blocked", "blockers": []},
+    )
+    assert "gpu_vm_sync_manifest_status:blocked" in runtime_plan["hard_stop_blockers"]
+
+    launch = _first_gpu_launch_order_manifest(
+        capture_root=tmp_path / "capture",
+        packet_dir=tmp_path / "packet",
+        readiness={"blockers": []},
+        webapp_handoff={"blockers": [], "warnings": []},
+        scene_asset_acquisition={"blockers": [], "warnings": []},
+        simulator_path_matrix={"selected_path_blockers": []},
+        gpu_vm_runtime_preflight_plan={"hard_stop_blockers": [], "result": {"ready": True}},
+        webapp_site_slug="site-1",
+        webapp_staged_inputs_path=tmp_path / "staged.json",
+        simulator="isaac_sim",
+        provisioner="runpod",
+        owner_command_supplied=True,
+        vm_sync_manifest={"status": "blocked", "blockers": []},
+    )
+    runtime_step = next(
+        step for step in launch["steps"] if step["step_id"] == "gpu_vm_runtime_preflight"
+    )
+    assert "gpu_vm_sync_not_ready" in runtime_step["blockers"]
+
+
+def test_first_gpu_run_packet_source_video_and_blocker_detail_edges(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    _write_json(
+        capture_root / "pipeline" / "source_video_preflight_manifest.json",
+        {
+            "status": "blocked",
+            "blockers": ["source_too_short"],
+            "candidates": [
+                {
+                    "staging_blockers": ["no_stageable_clip"],
+                    "worldlabs_blockers": ["no_worldlabs_clip"],
+                    "warnings": ["low_light"],
+                }
+            ],
+        },
+    )
+
+    category = _source_video_category(capture_root)
+
+    assert category["blockers"] == [
+        "source_too_short",
+        "no_stageable_clip",
+        "no_worldlabs_clip",
+    ]
+    assert category["warnings"] == ["low_light"]
+    assert _blocker_details_matching(["skip-me", {"blocker_id": "a"}], ["a"]) == [
+        {"blocker_id": "a"}
+    ]
+
+
+def test_first_gpu_run_packet_sync_manifest_uses_default_raw_video_when_missing(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    _write_json(capture_root / "raw" / "manifest.json", {"video_uri": "missing.mov"})
+    _write_json(capture_root / "raw" / "capture_context.json", {})
+    _write_json(capture_root / "raw" / "capture_upload_complete.json", {})
+
+    manifest = _gpu_vm_sync_manifest(
+        capture_root=capture_root,
+        packet_dir=tmp_path / "packet",
+        generated_files={},
+        readiness={"simulator": "isaac_sim"},
+    )
+
+    raw_video_entry = next(
+        item for item in manifest["files"] if item["role"] == "raw_walkthrough_video"
+    )
+    assert raw_video_entry["path"].endswith("raw/walkthrough.mov")
+    assert raw_video_entry["exists"] is False
+
+
+def test_first_gpu_run_packet_scene_asset_acquisition_edges(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = tmp_path / "capture"
+    pipeline_dir = capture_root / "pipeline"
+    _write_json(
+        pipeline_dir / "source_video_preflight_manifest.json",
+        {"status": "ready", "ready_for_worldlabs_first_clip_count": 1},
+    )
+    _write_json(
+        pipeline_dir / "worldlabs_export_manifest.json",
+        {"output_collider_mesh_path": "relative-scene.glb"},
+    )
+    _write_json(
+        pipeline_dir / "worldlabs_assets" / "materialized_assets_manifest.json",
+        {"downloads": ["skip-me", {"local_path": ""}]},
+    )
+    monkeypatch.setenv("WORLDLABS_API_KEY", "secret")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WORLDLABS_PROVIDER_SUBMISSION", "true")
+
+    waiting_for_world = _scene_asset_acquisition_manifest(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        provider_submission_script_path=tmp_path / "submit.sh",
+    )
+    assert waiting_for_world["provider_submission"]["status"] == (
+        "ready_to_submit_worldlabs_request"
+    )
+    assert any(
+        item["path"].endswith("relative-scene.glb")
+        for item in waiting_for_world["materialization"]["candidate_assets"]
+    )
+
+    _write_json(pipeline_dir / "worldlabs_request_manifest.json", {"status": "submitted"})
+    waiting_for_world = _scene_asset_acquisition_manifest(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        provider_submission_script_path=tmp_path / "submit.sh",
+    )
+    assert waiting_for_world["provider_submission"]["status"] == (
+        "waiting_for_worldlabs_world_manifest"
+    )
+
+    _write_json(pipeline_dir / "worldlabs_world_manifest.json", {"status": "completed"})
+    ready_to_materialize = _scene_asset_acquisition_manifest(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        provider_submission_script_path=tmp_path / "submit.sh",
+    )
+    assert ready_to_materialize["provider_submission"]["status"] == (
+        "ready_to_materialize_worldlabs_assets"
+    )
+
+
+def test_first_gpu_run_packet_webapp_handoff_reports_missing_stages(tmp_path: Path) -> None:
+    handoff = _webapp_handoff_manifest(
+        capture_root=tmp_path / "capture",
+        webapp_site_slug="site-1",
+        webapp_staged_inputs_path=tmp_path / "staged.json",
+        verification_script_path=tmp_path / "verify.sh",
+        verification_result_path=tmp_path / "verify-result.json",
+        readiness={"stages": {}},
+        allow_local_webapp_rehearsal=False,
+        simulator="isaac_sim",
+        provisioner="runpod",
+        owner_command_location="remote",
+    )
+
+    assert handoff["blockers"] == [
+        "webapp_upstream_truth:stage_missing",
+        "webapp_forwarding:stage_missing",
+        "webapp_staged_request:stage_missing",
+    ]
+
+
+def test_first_gpu_run_packet_normalizes_invalid_owner_command_location(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+
+    result = build_first_gpu_run_packet(
+        capture_root=capture_root,
+        webapp_site_slug="site-1",
+        owner_command="/opt/blueprint/run_isaac_gpu_proof.sh",
+        owner_command_location="invalid-location",
+        output_dir=tmp_path / "packet",
+    )
+    packet = json.loads(Path(result["packet_path"]).read_text(encoding="utf-8"))
+
+    assert packet["owner_command_location"] == "remote"

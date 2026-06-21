@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import json
+import runpy
+import sys
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import local_bundle_workflow as local_workflow
+from blueprint_pipeline import preflight_capture as preflight
+from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.local_bundle_workflow import (
     detect_bundle_identity,
     run_local_bundle_workflow,
@@ -10,6 +17,23 @@ from blueprint_pipeline.local_bundle_workflow import (
 )
 from blueprint_pipeline.materialization import capture_materialization_readiness
 from blueprint_pipeline.preflight_capture import build_capture_preflight_report
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_source_bundle(source_root: Path, *, scene_id: str = "scene-1", capture_id: str = "capture-1") -> None:
+    raw_dir = source_root / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    payloads = {
+        "manifest.json": {"scene_id": scene_id, "capture_id": capture_id},
+        "capture_context.json": {"scene_id": scene_id, "capture_id": capture_id},
+        "capture_upload_complete.json": {"scene_id": scene_id, "capture_id": capture_id},
+    }
+    for name, payload in payloads.items():
+        _write_json(raw_dir / name, payload)
 
 
 def test_detect_bundle_identity_reads_raw_bundle_metadata(tmp_path: Path) -> None:
@@ -248,3 +272,226 @@ def test_run_local_bundle_workflow_can_request_deeper_pipeline_lanes(
 
     assert result["pipeline_lane"] == "evaluation_prep"
     assert captured["lane"] == "evaluation_prep"
+
+
+def test_local_bundle_workflow_rejects_invalid_bundle_metadata_and_modes(tmp_path: Path) -> None:
+    with pytest.raises(PipelineError, match="missing raw"):
+        detect_bundle_identity(tmp_path / "no-raw")
+
+    missing = tmp_path / "missing"
+    (missing / "raw").mkdir(parents=True)
+    with pytest.raises(PipelineError, match="Required bundle file is missing"):
+        local_workflow._read_json_object(missing / "raw" / "manifest.json")
+
+    invalid = tmp_path / "invalid"
+    (invalid / "raw").mkdir(parents=True)
+    (invalid / "raw" / "manifest.json").write_text("{not-json", encoding="utf-8")
+    with pytest.raises(PipelineError, match="Invalid JSON"):
+        local_workflow._read_json_object(invalid / "raw" / "manifest.json")
+
+    non_object = tmp_path / "non-object"
+    (non_object / "raw").mkdir(parents=True)
+    (non_object / "raw" / "manifest.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(PipelineError, match="Expected JSON object"):
+        local_workflow._read_json_object(non_object / "raw" / "manifest.json")
+
+    source_root = tmp_path / "source-errors"
+    _write_source_bundle(source_root)
+    with pytest.raises(PipelineError, match="Unsupported staging mode"):
+        stage_local_bundle(source_bundle=source_root, storage_root=tmp_path / "storage", mode="move")
+
+    no_ids = tmp_path / "no-ids"
+    _write_source_bundle(no_ids, scene_id="", capture_id="")
+    with pytest.raises(PipelineError, match="Could not determine scene_id"):
+        detect_bundle_identity(no_ids)
+
+    no_capture_id = tmp_path / "no-capture-id"
+    _write_source_bundle(no_capture_id, scene_id="scene-1", capture_id="")
+    with pytest.raises(PipelineError, match="Could not determine capture_id"):
+        detect_bundle_identity(no_capture_id)
+
+    conflicting = tmp_path / "conflicting"
+    _write_source_bundle(conflicting)
+    _write_json(conflicting / "raw" / "capture_context.json", {"scene_id": "scene-2", "capture_id": "capture-1"})
+    with pytest.raises(PipelineError, match="Conflicting scene IDs"):
+        detect_bundle_identity(conflicting)
+
+    conflicting_capture = tmp_path / "conflicting-capture"
+    _write_source_bundle(conflicting_capture)
+    _write_json(
+        conflicting_capture / "raw" / "capture_upload_complete.json",
+        {"scene_id": "scene-1", "capture_id": "capture-2"},
+    )
+    with pytest.raises(PipelineError, match="Conflicting capture IDs"):
+        detect_bundle_identity(conflicting_capture)
+
+
+def test_stage_local_bundle_replaces_existing_roots_and_can_symlink(tmp_path: Path) -> None:
+    source_root = tmp_path / "source-stage"
+    _write_source_bundle(source_root)
+
+    linked_capture = stage_local_bundle(
+        source_bundle=source_root,
+        storage_root=tmp_path / "linked-storage",
+        mode="link",
+    )
+    assert (linked_capture / "raw").is_symlink()
+
+    copied_capture = stage_local_bundle(
+        source_bundle=source_root,
+        storage_root=tmp_path / "copy-storage",
+        mode="copy",
+    )
+    with pytest.raises(PipelineError, match="already exists"):
+        stage_local_bundle(source_bundle=source_root, storage_root=tmp_path / "copy-storage", mode="copy")
+    replaced_capture = stage_local_bundle(
+        source_bundle=source_root,
+        storage_root=tmp_path / "copy-storage",
+        mode="copy",
+        force=True,
+    )
+    assert replaced_capture == copied_capture
+    assert (replaced_capture / "raw" / "manifest.json").is_file()
+
+    file_storage = tmp_path / "file-storage"
+    target = file_storage / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
+    target.parent.mkdir(parents=True)
+    target.write_text("stale", encoding="utf-8")
+    unlinked_capture = stage_local_bundle(
+        source_bundle=source_root,
+        storage_root=file_storage,
+        mode="copy",
+        force=True,
+    )
+    assert unlinked_capture.is_dir()
+
+    with pytest.raises(PipelineError, match="missing raw"):
+        stage_local_bundle(source_bundle=tmp_path / "missing-raw", storage_root=tmp_path / "storage")
+
+
+def test_run_local_bundle_workflow_validates_lane_and_preflight_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source-workflow-errors"
+    _write_source_bundle(source_root)
+
+    with pytest.raises(PipelineError, match="requires --run-qualification"):
+        run_local_bundle_workflow(
+            source_bundle=source_root,
+            storage_root=tmp_path / "storage-a",
+            run_evaluation_prep=True,
+        )
+    with pytest.raises(PipelineError, match="Unsupported local workflow pipeline lane"):
+        run_local_bundle_workflow(
+            source_bundle=source_root,
+            storage_root=tmp_path / "storage-b",
+            pipeline_lane="not-a-lane",
+        )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.local_bundle_workflow.build_capture_preflight_report",
+        lambda *_args, **_kwargs: {"status": "blocked", "missing_required_inputs": ["video"]},
+    )
+    with pytest.raises(PipelineError, match="missing required inputs: video"):
+        run_local_bundle_workflow(
+            source_bundle=source_root,
+            storage_root=tmp_path / "storage-c",
+            mode="copy",
+        )
+
+
+def test_preflight_capture_reports_missing_intake_and_video_uri_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source-preflight"
+    _write_source_bundle(source_root)
+    _write_json(
+        source_root / "raw" / "manifest.json",
+        {"scene_id": "scene-1", "capture_id": "capture-1", "video_uri": "gs://bucket/video.mov"},
+    )
+    capture_root = stage_local_bundle(
+        source_bundle=source_root,
+        storage_root=tmp_path / "storage-preflight",
+        mode="copy",
+    )
+    (capture_root / "raw" / "intake_packet.json").unlink(missing_ok=True)
+    monkeypatch.setattr(
+        "blueprint_pipeline.preflight_capture.preview_capture_bundle",
+        lambda **_kwargs: {
+            "descriptor": {"capture_modality": "iphone_video_only", "evidence_tier": "pre_screen_video"},
+            "qa_report": {"status": "passed", "escalation_recommendation": {"human_review_required": False}},
+        },
+    )
+
+    assert preflight._string_value(None, "") == ""
+    report = build_capture_preflight_report(capture_root)
+    assert "intake_packet" in report["missing_required_inputs"]
+    assert report["video_candidates"] == ["gs://bucket/video.mov"]
+
+    _write_json(source_root / "raw" / "manifest.json", {"scene_id": "scene-1", "capture_id": "capture-1"})
+    capture_without_video = stage_local_bundle(
+        source_bundle=source_root,
+        storage_root=tmp_path / "storage-preflight-missing-video",
+        mode="copy",
+    )
+    (capture_without_video / "raw" / "intake_packet.json").unlink(missing_ok=True)
+    missing_video = build_capture_preflight_report(capture_without_video)
+    assert "video" in missing_video["missing_required_inputs"]
+
+
+def test_preflight_capture_main_writes_output_and_reports_failures(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    success_report = {
+        "status": "ready_for_materialization",
+        "mode_decision": "qualified_metric_capture",
+        "human_review_required": False,
+        "missing_required_inputs": [],
+    }
+    monkeypatch.setattr(preflight, "build_capture_preflight_report", lambda _root: success_report)
+    output = tmp_path / "preflight.json"
+
+    assert preflight.main(["--capture-root", str(tmp_path), "--output", str(output)]) == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "ready_for_materialization"
+
+    blocked_report = {
+        **success_report,
+        "status": "blocked",
+        "missing_required_inputs": ["video", "intake_packet"],
+    }
+    monkeypatch.setattr(preflight, "build_capture_preflight_report", lambda _root: blocked_report)
+    assert preflight.main(["--capture-root", str(tmp_path)]) == 1
+    assert "missing_required_inputs=video,intake_packet" in capsys.readouterr().out
+
+    monkeypatch.setattr(
+        preflight,
+        "build_capture_preflight_report",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert preflight.main(["--capture-root", str(tmp_path)]) == 1
+    assert "[capture-preflight] FAILED: boom" in capsys.readouterr().out
+
+
+def test_preflight_capture_module_entrypoint_runs(tmp_path: Path, monkeypatch) -> None:
+    source_root = tmp_path / "source-preflight-main"
+    _write_source_bundle(source_root)
+    _write_json(
+        source_root / "raw" / "intake_packet.json",
+        {"workflowName": "Inspect station", "taskSteps": ["walk"], "zone": "zone-a"},
+    )
+    (source_root / "raw" / "walkthrough.mov").write_bytes(b"video")
+    capture_root = stage_local_bundle(
+        source_bundle=source_root,
+        storage_root=tmp_path / "storage-preflight-main",
+        mode="copy",
+    )
+    monkeypatch.setattr(sys, "argv", ["preflight_capture", "--capture-root", str(capture_root)])
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("blueprint_pipeline.preflight_capture", run_name="__main__")
+
+    assert exc_info.value.code == 0

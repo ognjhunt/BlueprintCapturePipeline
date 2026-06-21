@@ -72,4 +72,9 @@ tmp/
 runs/
 local_runs/
 .local_runs/
+pipeline/
+robot_eval_jobs/
+policy_endpoint_setups/
+frame_*.png
+MUJOCO_LOG.TXT
 uv.lock

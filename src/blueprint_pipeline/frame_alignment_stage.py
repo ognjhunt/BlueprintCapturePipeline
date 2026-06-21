@@ -175,7 +175,7 @@ def run_frame_alignment_stage(
                 )
                 if best_result is None or float(session_result.get("combined_score") or 0.0) > float(best_result.get("combined_score") or 0.0):
                     best_result = session_result
-            if best_result is None:
+            if best_result is None:  # pragma: no cover - defensive; aligned_sessions is seeded with the reference session.
                 continue
             results.append(best_result)
             if best_result["status"] == "aligned":

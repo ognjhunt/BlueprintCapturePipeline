@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import logging
 import os
 import shlex
 import sys
@@ -14,6 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from .common import PipelineError, parse_bool, parse_gs_uri, resolve_gs_uri_to_path
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .geometry_sources import load_capture_geometry
+from .logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .qualification import run_qualification_pipeline
@@ -30,6 +32,8 @@ from .simulation_automation import (
     build_simulation_automation,
 )
 from .synthesis.synthesize import synthesize_view
+
+logger = logging.getLogger(__name__)
 
 _CURRENT_PIPELINE_LANES = ("qualification", "evaluation_prep", "simulation_automation")
 _LEGACY_PIPELINE_LANES = (
@@ -1426,10 +1430,43 @@ def run_capture_pipeline(
         lane=lane,
         requested_lanes=requested_lanes,
     ) or _sim_only_beta_default_task_eval_enabled()
+    log_event(
+        logger,
+        logging.INFO,
+        "capture_pipeline.started",
+        descriptor_gcs_uri=descriptor_gcs_uri,
+        descriptor_path=str(descriptor_path),
+        requested_lane=lane,
+        lanes=lanes,
+        auto_stage_task_eval=auto_stage_task_eval,
+    )
 
     results: List[Dict[str, Any]] = []
     qualification_result: Optional[Dict[str, Any]] = None
+
+    def _append_lane_result(selected_lane: str, lane_result: Mapping[str, Any]) -> None:
+        results.append(dict(lane_result))
+        log_event(
+            logger,
+            logging.INFO,
+            "capture_pipeline.lane_completed",
+            descriptor_gcs_uri=descriptor_gcs_uri,
+            selected_lane=selected_lane,
+            lane=lane_result.get("lane") or selected_lane,
+            lane_status=lane_result.get("status"),
+            result_count=len(results),
+            manifest_path=lane_result.get("manifest_path"),
+            source=lane_result.get("source"),
+        )
+
     for selected_lane in lanes:
+        log_event(
+            logger,
+            logging.INFO,
+            "capture_pipeline.lane_started",
+            descriptor_gcs_uri=descriptor_gcs_uri,
+            selected_lane=selected_lane,
+        )
         if selected_lane in {"qualification", "scene_memory"}:
             if qualification_result is None:
                 qualification_result = run_qualification_pipeline(
@@ -1438,9 +1475,10 @@ def run_capture_pipeline(
                     requested_lanes=lanes,
                 )
             if selected_lane == "qualification":
-                results.append(qualification_result)
+                _append_lane_result(selected_lane, qualification_result)
             else:
-                results.append(
+                _append_lane_result(
+                    selected_lane,
                     _build_derived_lane_result(
                         lane="scene_memory",
                         source="qualification_artifacts",
@@ -1465,7 +1503,7 @@ def run_capture_pipeline(
                 qualification_result=qualification_result,
                 extra_fields={"manifest_path": evaluation_prep_result.get("manifest_path")},
             )
-            results.append(lane_result)
+            _append_lane_result(selected_lane, lane_result)
             continue
         if selected_lane == "simulation_automation":
             capture_root = descriptor_path.parent
@@ -1574,7 +1612,7 @@ def run_capture_pipeline(
                     ),
                 },
             )
-            results.append(lane_result)
+            _append_lane_result(selected_lane, lane_result)
             continue
         if selected_lane == "retrieval_index":
             capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
@@ -1582,7 +1620,7 @@ def run_capture_pipeline(
                 capture_root=capture_root,
                 force_rebuild=parse_bool(os.getenv("RETRIEVAL_INDEX_FORCE_REBUILD"), default=False),
             )
-            results.append({"lane": "retrieval_index", **retrieval_result})
+            _append_lane_result(selected_lane, {"lane": "retrieval_index", **retrieval_result})
             continue
         if selected_lane == "frame_alignment":
             capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
@@ -1590,7 +1628,7 @@ def run_capture_pipeline(
                 capture_root=capture_root,
                 force_realign=parse_bool(os.getenv("FRAME_ALIGNMENT_FORCE_REALIGN"), default=False),
             )
-            results.append({"lane": "frame_alignment", **alignment_result})
+            _append_lane_result(selected_lane, {"lane": "frame_alignment", **alignment_result})
             continue
         if selected_lane == "synthesis_coverage_validation":
             capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
@@ -1599,7 +1637,10 @@ def run_capture_pipeline(
                 descriptor_gcs_uri=descriptor_gcs_uri,
                 cfg=cfg,
             )
-            results.append({"lane": "synthesis_coverage_validation", **synthesis_result})
+            _append_lane_result(
+                selected_lane,
+                {"lane": "synthesis_coverage_validation", **synthesis_result},
+            )
             continue
         if selected_lane == "cosmos_single_capture_smoke":
             from .synthesis.cosmos_benchmark import run_cosmos_single_capture_smoke_lane
@@ -1610,18 +1651,38 @@ def run_capture_pipeline(
                 descriptor_gcs_uri=descriptor_gcs_uri,
                 cfg=cfg,
             )
-            results.append({"lane": "cosmos_single_capture_smoke", **smoke_result})
+            _append_lane_result(
+                selected_lane,
+                {"lane": "cosmos_single_capture_smoke", **smoke_result},
+            )
             continue
+        log_event(
+            logger,
+            logging.ERROR,
+            "capture_pipeline.unsupported_lane",
+            descriptor_gcs_uri=descriptor_gcs_uri,
+            selected_lane=selected_lane,
+        )
         raise ValueError(f"Unsupported pipeline lane: {selected_lane}")
 
     parsed = parse_gs_uri(descriptor_gcs_uri)
-    return {
+    result = {
         "status": "completed",
         "descriptor_gcs_uri": descriptor_gcs_uri,
         "bucket": parsed.bucket,
         "lanes": lanes,
         "results": results,
     }
+    log_event(
+        logger,
+        logging.INFO,
+        "capture_pipeline.completed",
+        descriptor_gcs_uri=descriptor_gcs_uri,
+        bucket=parsed.bucket,
+        lanes=lanes,
+        result_count=len(results),
+    )
+    return result
 
 
 def _run_synthesis_coverage_validation(

@@ -724,3 +724,311 @@ def test_autonomous_city_launch_harness_reports_release_config_validation_failur
     run_root = tmp_path / "ops" / "city-launch-runs" / "durham-nc" / "test-run"
     blockers = (run_root / "blockers.jsonl").read_text(encoding="utf-8")
     assert "BLUEPRINT_BACKEND_BASE_URL must be set in /tmp/release.xcconfig." in blockers
+
+
+def test_default_launch_proof_fills_missing_numeric_required_fields(monkeypatch) -> None:
+    monkeypatch.setattr(
+        harness,
+        "REQUIRED_LAUNCH_PROOF_FIELDS",
+        harness.REQUIRED_LAUNCH_PROOF_FIELDS
+        + (("metrics.synthetic_count", "number>=1", "proof", "missing synthetic count", False),),
+    )
+
+    proof = harness.default_proof("durham-nc", 250000, ["iphone"])
+
+    assert proof["metrics"]["synthetic_count"] == 0
+
+
+def test_status_and_gap_helpers_cover_default_classification_paths(tmp_path: Path) -> None:
+    proof = harness.default_proof("durham-nc", 250000, ["iphone"])
+    assert harness.determine_status(proof, []) == "ready_to_market_iphone_city_beta"
+    assert harness._work_packet_for_proof_field("unknown.field") == "proof"
+    assert harness._dependency_class({"proof_field": "unknown.field", "lane_id": "marketing"}) == (
+        "launch_policy_gap"
+    )
+
+    payout_provider = harness._expected_evidence_for_blocker(
+        {"proof_field": "payouts.provider_name"}
+    )
+    payout_gate = harness._expected_evidence_for_blocker(
+        {"proof_field": "payouts.live_payout_execution_human_gate"}
+    )
+    payout_generic = harness._expected_evidence_for_blocker(
+        {"proof_field": "payouts.some_other_state"}
+    )
+    ops_gate = harness._expected_evidence_for_blocker(
+        {"proof_field": "ops.payout_exception_monitor_repo_contract"}
+    )
+    assert "separates mocked contract readiness" in payout_provider
+    assert "KYC/background posture" in payout_gate
+    assert "Stripe/payment backend state" in payout_generic
+    assert "finance review" in ops_gate
+
+    lane_results = tmp_path / "lane-results"
+    lane_results.mkdir()
+    (lane_results / "city_backend.webapp-status-route.json").write_text(
+        json.dumps({"status": "blocked"}),
+        encoding="utf-8",
+    )
+    report = harness.build_launch_gap_report(
+        city_slug="durham-nc",
+        status="blocked_external_dependency",
+        blockers=[
+            {
+                "id": "city.backend_supported",
+                "proof_field": "city.backend_supported",
+                "lane_id": "city_backend",
+                "message": "city missing",
+            }
+        ],
+        packets=[],
+        capture_root="",
+        run_root=tmp_path / "run",
+        work_packet_root=tmp_path / "work-packets",
+        lane_results_root=lane_results,
+    )
+    assert report["external_dependencies"][0]["lane_result_paths"] == [
+        str(lane_results / "city_backend.webapp-status-route.json")
+    ]
+
+
+def test_city_launch_private_path_helpers_cover_fallbacks(tmp_path: Path, monkeypatch) -> None:
+    invalid_json = tmp_path / "invalid.json"
+    invalid_json.write_text("{bad", encoding="utf-8")
+    assert harness._optional_json(invalid_json) == {}
+
+    monkeypatch.setattr(
+        harness,
+        "resolve_local_capture_context",
+        lambda _capture_root: (_ for _ in ()).throw(RuntimeError("invalid root")),
+    )
+    assert harness._capture_root_site_reference_candidates(
+        capture_root=tmp_path / "capture",
+        descriptor={"site_id": "site-1"},
+    ) == []
+
+    mov_root = tmp_path / "mov-root"
+    (mov_root / "privacy").mkdir(parents=True)
+    (mov_root / "privacy" / "final_walkthrough.mov").write_bytes(b"mov")
+    assert harness._has_privacy_safe_walkthrough(
+        capture_root=mov_root,
+        descriptor={},
+        privacy_manifest={},
+    ) is True
+
+    mp4_root = tmp_path / "mp4-root"
+    (mp4_root / "privacy").mkdir(parents=True)
+    (mp4_root / "privacy" / "final_walkthrough.mp4").write_bytes(b"mp4")
+    assert harness._has_privacy_safe_walkthrough(
+        capture_root=mp4_root,
+        descriptor={},
+        privacy_manifest={},
+    ) is True
+
+    assert harness._city_query_from_slug("durham") == ("Durham", None)
+    assert harness._webapp_origin_from_configured_url("localhost:3000/internal") == (
+        "localhost:3000/internal"
+    )
+
+
+def test_webapp_city_status_route_records_missing_url(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+
+    results = harness.collect_webapp_city_status_evidence(
+        city_slug="durham-nc",
+        lane_results_root=tmp_path / "lane-results",
+    )
+
+    assert results[0]["status"] == "blocked"
+    assert results[0]["blockers"] == ["PIPELINE_SYNC_WEBAPP_URL_missing"]
+
+
+def test_webapp_city_status_route_ignores_unparseable_http_error_body(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fake_urlopen(url: str, timeout: int):
+        raise harness.urllib.error.HTTPError(
+            url,
+            502,
+            "Bad Gateway",
+            {},
+            BytesIO(b"not-json"),
+        )
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://webapp.test")
+    monkeypatch.setattr(harness.urllib.request, "urlopen", fake_urlopen)
+
+    results = harness.collect_webapp_city_status_evidence(
+        city_slug="durham-nc",
+        lane_results_root=tmp_path / "lane-results",
+    )
+
+    assert results[0]["blockers"][0] == "webapp_status_route_http_502"
+    assert not any("webapp_status_route_error:" in item for item in results[0]["blockers"])
+
+
+def test_webapp_city_status_route_records_unreachable_exception(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fake_urlopen(_url: str, timeout: int):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://webapp.test")
+    monkeypatch.setattr(harness.urllib.request, "urlopen", fake_urlopen)
+
+    results = harness.collect_webapp_city_status_evidence(
+        city_slug="durham-nc",
+        lane_results_root=tmp_path / "lane-results",
+    )
+
+    assert "webapp_status_route_unreachable:TimeoutError" in results[0]["blockers"]
+
+
+def test_webapp_city_status_route_rejects_non_mapping_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fake_urlopen(_url: str, timeout: int):
+        return _FakeHttpResponse(["not", "a", "mapping"])
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://webapp.test")
+    monkeypatch.setattr(harness.urllib.request, "urlopen", fake_urlopen)
+
+    results = harness.collect_webapp_city_status_evidence(
+        city_slug="durham-nc",
+        lane_results_root=tmp_path / "lane-results",
+    )
+
+    assert "webapp_status_route_invalid_json" in results[0]["blockers"]
+
+
+def test_cross_repo_proof_evidence_reports_missing_mismatch_and_empty_files(
+    tmp_path: Path,
+) -> None:
+    lane_results = tmp_path / "lane-results"
+    mismatch = tmp_path / "mismatch.launch-proof.json"
+    mismatch.write_text(
+        json.dumps({"contract_only": False, "city_slug": "raleigh-nc", "city": {"backend_supported": True}}),
+        encoding="utf-8",
+    )
+    empty = tmp_path / "empty.launch-proof.json"
+    empty.write_text(
+        json.dumps({"contract_only": False, "city_slug": "durham-nc", "unrelated": True}),
+        encoding="utf-8",
+    )
+
+    results = harness.collect_cross_repo_proof_evidence(
+        city_slug="durham-nc",
+        proof_files=[tmp_path / "missing.launch-proof.json", mismatch, empty],
+        lane_results_root=lane_results,
+    )
+
+    assert results[0]["blockers"] == [
+        f"proof_file_missing:{tmp_path / 'missing.launch-proof.json'}"
+    ]
+    assert results[1]["blockers"] == [
+        "city_slug_mismatch:raleigh-nc"
+    ]
+    assert results[2]["blockers"] == [
+        "proof_file_contains_no_required_evidence"
+    ]
+
+
+def test_capture_root_evidence_uses_final_walkthrough_file_when_manifest_uri_missing(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    (capture_root / "privacy").mkdir(parents=True)
+    final_walkthrough = capture_root / "privacy" / "final_walkthrough.mov"
+    final_walkthrough.write_bytes(b"privacy-safe")
+
+    results = harness.collect_capture_root_evidence(
+        capture_root=capture_root,
+        lane_results_root=tmp_path / "lane-results",
+    )
+
+    privacy_result = next(result for result in results if result["lane_id"] == "privacy_safe_provider")
+    assert privacy_result["evidence"]["privacy_provider.final_walkthrough_uri"] == str(
+        final_walkthrough
+    )
+
+
+def test_execute_local_with_cross_repo_proof_applies_generated_lane_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    proof_file = tmp_path / "capture.launch-proof.json"
+    proof_file.write_text(
+        json.dumps(
+            {
+                "contract_only": False,
+                "city_slug": "durham-nc",
+                "city": {"backend_supported": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        harness,
+        "execute_local_packets",
+        lambda *, packets, proof, run_root, args: [],
+    )
+    args = _args(tmp_path)
+    args.execute_local = True
+    args.proof_file = [str(proof_file)]
+
+    run_harness(args)
+
+    run_root = tmp_path / "ops" / "city-launch-runs" / "durham-nc" / "test-run"
+    proof = json.loads((run_root / "proof.launch-proof.json").read_text(encoding="utf-8"))
+    assert proof["city"]["backend_supported"] is True
+
+
+def test_city_launch_main_prints_summary_and_maps_status_codes(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        harness,
+        "run_harness",
+        lambda _args: {"status": "ready_to_market_iphone_city_beta", "blocker_count": 0},
+    )
+    ready_code = harness.main(
+        [
+            "--city-slug",
+            "durham-nc",
+            "--budget-cents",
+            "250000",
+            "--capture-path",
+            "iphone",
+            "--output-root",
+            str(tmp_path),
+        ]
+    )
+    ready_stdout = capsys.readouterr().out
+
+    assert ready_code == 0
+    assert "ready_to_market_iphone_city_beta" in ready_stdout
+
+    monkeypatch.setattr(
+        harness,
+        "run_harness",
+        lambda _args: {"status": "blocked_repo_or_contract_failure", "blocker_count": 1},
+    )
+    blocked_code = harness.main(
+        [
+            "--city-slug",
+            "durham-nc",
+            "--budget-cents",
+            "250000",
+            "--capture-path",
+            "iphone",
+            "--output-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert blocked_code == 2

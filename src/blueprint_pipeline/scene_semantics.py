@@ -498,21 +498,6 @@ def infer_scene_semantics(
             "explicit_hint": normalized_requested if has_explicit_hint else None,
         }
 
-    # Gemini unavailable — fall back to explicit hint if provided.
-    if has_explicit_hint:
-        return {
-            "schema_version": "v1",
-            "generated_at": _utc_now_iso(),
-            "requested_environment": requested,
-            "resolved_environment": normalized_requested,
-            "environment_source": "explicit_hint_fallback",
-            "environment_confidence": 0.7,
-            "prompt_source": "explicit_hint_fallback",
-            "detection_prompts": list(_PROMPTS_BY_ENV[normalized_requested]),
-            "keyframes_used": [],
-            "fallback_reason": "gemini_unavailable_used_explicit_hint",
-        }
-
     failure_reason = "gemini_video_unavailable_or_failed"
     if raw_video_path is None or not raw_video_path.is_file():
         failure_reason = "raw_walkthrough_video_missing"

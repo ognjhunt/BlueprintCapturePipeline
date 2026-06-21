@@ -1139,7 +1139,7 @@ def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> 
             return "android"
         if candidate == "iphonevideo":
             return "iphone"
-        if candidate == "metaglasses":
+        if candidate == "metaglasses":  # pragma: no cover - kept for readability; handled by alias set above.
             return "glasses"
     return "unknown"
 

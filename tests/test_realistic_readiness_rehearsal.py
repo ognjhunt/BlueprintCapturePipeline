@@ -5,6 +5,7 @@ from pathlib import Path
 
 from blueprint_pipeline.g1_controlled_run_evidence import assemble_g1_controlled_run_evidence
 from blueprint_pipeline.g1_controlled_proof_setup import build_g1_controlled_proof_setup
+from blueprint_pipeline import realistic_readiness_rehearsal as rehearsal
 from blueprint_pipeline.realistic_readiness_rehearsal import (
     REALISTIC_READINESS_REHEARSAL_SCHEMA_VERSION,
     build_realistic_readiness_rehearsal,
@@ -980,3 +981,95 @@ def test_realistic_rehearsal_cli_writes_manifest(tmp_path: Path) -> None:
         / "realistic_readiness_rehearsal"
         / "realistic_readiness_rehearsal_manifest.json"
     ).is_file()
+
+
+def test_realistic_rehearsal_g1_assembly_helpers_collect_artifact_blockers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ready_artifact = tmp_path / "ready.json"
+    invalid_artifact = tmp_path / "invalid.json"
+    blocked_artifact = tmp_path / "blocked.json"
+    _write_json(ready_artifact, {"status": rehearsal.G1_READY_FOR_LIVE_STAGING_STATUS})
+    invalid_artifact.write_text("{}", encoding="utf-8")
+    _write_json(blocked_artifact, {"status": "blocked", "blockers": ["nested_blocker"]})
+    original_optional_read_json = rehearsal.optional_read_json
+
+    def read_none_for_invalid(path: Path):
+        if path == invalid_artifact:
+            return None
+        return original_optional_read_json(path)
+
+    monkeypatch.setattr(rehearsal, "optional_read_json", read_none_for_invalid)
+
+    ready, evidence, blockers = rehearsal._ready_g1_assembly_artifacts(
+        assembly_manifest={
+            "status": "blocked",
+            "blockers": ["assembly_blocker"],
+            "file_blockers": ["file_blocker"],
+            "config_blockers": ["config_blocker"],
+            "content_blockers": ["content_blocker"],
+            "artifacts": {
+                "ready": str(ready_artifact),
+                "missing_file": str(tmp_path / "missing.json"),
+                "invalid": str(invalid_artifact),
+                "blocked": str(blocked_artifact),
+            },
+        },
+        assembly_path=tmp_path / "assembly.json",
+        artifact_keys=["ready", "missing_ref", "missing_file", "invalid", "blocked"],
+    )
+
+    assert ready is False
+    assert str(ready_artifact) in evidence
+    assert "g1_controlled_run_evidence_assembly_not_ready" in blockers
+    assert "missing_g1_assembly_artifact_ref:missing_ref" in blockers
+    assert "missing_g1_assembly_artifact:missing_file" in blockers
+    assert "invalid_g1_assembly_artifact_json:invalid" in blockers
+    assert "g1_assembly_artifact_not_ready:blocked:blocked" in blockers
+    assert "nested_blocker" in blockers
+
+
+def test_realistic_rehearsal_container_and_webapp_route_helpers_block_unproven_inputs(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    jobs_root = capture_root / "pipeline" / "robot_eval_jobs"
+
+    assert rehearsal._find_primary_job_id(capture_root, None) is None
+    (jobs_root / "job-c").mkdir(parents=True)
+    assert rehearsal._find_primary_job_id(capture_root, None) == "job-c"
+    _write_json(jobs_root / "job-b" / "job_request.json", {"schema_version": "robot_eval_job_request.v1"})
+    assert rehearsal._find_primary_job_id(capture_root, None) == "job-b"
+    _write_json(jobs_root / "job-a" / "runpod_provider_adapter_result.json", {"status": "completed"})
+    assert rehearsal._find_primary_job_id(capture_root, None) == "job-a"
+
+    blockers = rehearsal._container_rehearsal_blockers(
+        {"job_status": "failed"},
+        None,
+    )
+    assert "worker_job_status:failed" in blockers
+
+    proof_path = tmp_path / "webapp_route_forwarding_proof.json"
+    _write_json(
+        proof_path,
+        {
+            "proof_boundary": {
+                "pipeline_intake_staged_request_proven": True,
+                "full_webapp_db_persistence_proven": True,
+                "production_live_webapp_forwarding_proven": True,
+            },
+            "webapp_route": {},
+            "pipeline_forward": {"accepted": True},
+            "pipeline_intake": {},
+        },
+    )
+
+    item = rehearsal._webapp_route_proof_item(
+        proof_path=proof_path,
+        proof=_read_json(proof_path),
+    )
+
+    assert item["proven"] is True
+    assert "production_webapp_route_not_proven" in item["blockers"]
+    assert str(proof_path) in item["evidence"]

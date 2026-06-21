@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from blueprint_pipeline.synthesis import cosmos3_readiness as c3
 from blueprint_pipeline.synthesis.cosmos3_readiness import (
     COSMOS3_READINESS_SCHEMA_VERSION,
     evaluate_cosmos3_capture_readiness,
@@ -206,3 +207,217 @@ def test_write_cosmos3_readiness_artifacts(tmp_path: Path) -> None:
     assert json_path.is_file()
     assert markdown_path.is_file()
     assert "Cosmos 3 Capture-Grounded Readiness" in markdown_path.read_text(encoding="utf-8")
+
+
+def test_cosmos3_readiness_blocks_when_capture_evidence_is_missing(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    capture_root.mkdir(parents=True)
+
+    report = evaluate_cosmos3_capture_readiness(capture_root)
+
+    raw_check = report["stack_checks"]["raw_capture_contract"]
+    assert raw_check["state"] == "blocked"
+    assert raw_check["blockers"] == [
+        "missing_capture_descriptor_or_raw_manifest",
+        "missing_capture_upload_complete",
+        "missing_raw_walkthrough_video",
+        "derived_scene_generation_not_allowed",
+    ]
+    assert raw_check["warnings"] == [
+        "privacy_safe_conditioning_video_not_found",
+        "raw_pose_stream_not_found",
+        "raw_intrinsics_not_found",
+        "raw_depth_dir_not_found",
+    ]
+    assert report["stack_checks"]["geometry_lane"]["blockers"] == ["missing_geometry_summary"]
+    assert report["stack_checks"]["site_reference_database"]["blockers"] == ["missing_site_id"]
+    assert report["stack_checks"]["cosmos_predict25_export"]["blockers"] == [
+        "missing_cosmos_training_export_manifest"
+    ]
+    assert report["stack_checks"]["cosmos_predict25_benchmark"]["warnings"] == [
+        "missing_cosmos_benchmark_manifest"
+    ]
+    assert report["public_claims"]["allowed_internal_claim"] == (
+        "Cosmos 3 feasibility is still blocked on local evidence gaps"
+    )
+
+
+def test_cosmos3_readiness_recommends_stackable_work_for_missing_site_and_export(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    capture_root.mkdir(parents=True)
+
+    report = evaluate_cosmos3_capture_readiness(capture_root, site_id="site-missing")
+
+    assert report["stack_checks"]["site_reference_database"]["blockers"] == [
+        "missing_site_reference_manifest"
+    ]
+    assert {item["lane"] for item in report["today_stackable_work"]} == {
+        "local_geometry",
+        "site_reference_database",
+        "cosmos_predict25_export",
+    }
+
+
+def test_cosmos3_readiness_reports_site_export_and_benchmark_edges(tmp_path: Path) -> None:
+    capture_root = _write_base_capture(tmp_path)
+    pipeline_root = capture_root / "pipeline"
+    site_root = tmp_path / "bucket" / "sites" / "site-1" / "reference_memory"
+    (site_root / "site_reference_index.jsonl").unlink()
+    _write_json(
+        site_root / "site_reference_manifest.json",
+        {
+            "schema_version": "site_reference_database.v1",
+            "site_id": "site-1",
+            "total_reference_frames": 0,
+            "capture_count": 0,
+            "readiness": {"blockers": ["stale_reference_memory"]},
+            "site_frame_established": True,
+        },
+    )
+    _write_json(
+        pipeline_root / "cosmos_training_export" / "manifest.json",
+        {
+            "status": "blocked",
+            "reason": "source_exports_missing",
+            "paired_example_count": 0,
+            "val_count": 0,
+        },
+    )
+    (
+        pipeline_root
+        / "cosmos_single_capture_smoke"
+        / "cosmos_single_capture_smoke_manifest.json"
+    ).unlink()
+
+    report = evaluate_cosmos3_capture_readiness(capture_root)
+
+    site_check = report["stack_checks"]["site_reference_database"]
+    assert site_check["blockers"] == [
+        "missing_site_reference_index",
+        "no_site_reference_frames",
+        "no_site_reference_captures",
+    ]
+    assert site_check["warnings"] == ["stale_reference_memory"]
+    export_check = report["stack_checks"]["cosmos_predict25_export"]
+    assert export_check["blockers"] == ["source_exports_missing", "no_cosmos_paired_examples"]
+    assert export_check["warnings"] == ["no_validation_split_examples"]
+    assert report["stack_checks"]["cosmos_predict25_benchmark"]["warnings"] == [
+        "missing_cosmos_benchmark_manifest"
+    ]
+
+
+def test_cosmos3_readiness_marks_action_eval_data_ready_with_action_evidence(
+    tmp_path: Path,
+) -> None:
+    capture_root = _write_base_capture(tmp_path)
+    pipeline_root = capture_root / "pipeline"
+    _write_json(
+        pipeline_root / "geometry" / "geometry_summary.json",
+        {
+            "status": "completed",
+            "geometry_source": "video_to_world",
+            "fallback_used": False,
+            "geometry_live_ready": True,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_track_count": 12,
+        },
+    )
+    site_root = tmp_path / "bucket" / "sites" / "site-1" / "reference_memory"
+    _write_json(
+        site_root / "site_reference_manifest.json",
+        {
+            "schema_version": "site_reference_database.v1",
+            "site_id": "site-1",
+            "total_reference_frames": 8,
+            "capture_count": 2,
+            "site_frame_established": True,
+        },
+    )
+    (capture_root / "raw" / "action_labels.jsonl").write_text(
+        json.dumps({"frame_id": "000001", "action": "open"}) + "\n",
+        encoding="utf-8",
+    )
+
+    report = evaluate_cosmos3_capture_readiness(capture_root)
+
+    assert report["stack_checks"]["geometry_lane"]["state"] == "ready"
+    assert report["stack_checks"]["site_reference_database"]["state"] == "ready"
+    assert report["stack_checks"]["action_evidence"]["state"] == "ready"
+    assert report["capabilities"]["world_action_policy"]["state"] == "data_ready"
+    assert report["simulation_boundary"]["robot_action_or_collision_eval_without_sim_ready_twin"] is True
+
+
+def test_cosmos3_readiness_helper_fallbacks_and_normalizers(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    raw_root = capture_root / "raw"
+    raw_root.mkdir(parents=True)
+    context = c3.resolve_local_capture_context(capture_root)
+    bad_json = raw_root / "bad.json"
+    bad_json.write_text("{not-json", encoding="utf-8")
+    _write_json(raw_root / "site_identity.json", {"site_id": "sidecar-site"})
+
+    class GetOnly:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def get(self, key: str, default: object = None) -> object:
+            return self.payload.get(key, default)
+
+    assert c3._read_optional_json(bad_json) == {}
+    assert c3._merge_raw_sidecars({}, raw_root)["site_identity"] == {"site_id": "sidecar-site"}
+    assert (
+        c3._raw_video_path(
+            context=context,
+            descriptor={},
+            raw_manifest={"raw_video_uri": "gs://bucket/raw-video.mov"},
+        )
+        == "gs://bucket/raw-video.mov"
+    )
+    assert (
+        c3._privacy_safe_video_path(
+            context=context,
+            descriptor={"metadata": {"world_model_video_uri": "gs://bucket/privacy.mov"}},
+        )
+        == "gs://bucket/privacy.mov"
+    )
+    assert c3._derived_scene_generation_allowed(
+        descriptor={
+            "capture_rights": "not-a-mapping",
+            "metadata": {"rights_lineage": {"derived_generation_allowed": True}},
+        },
+        raw_manifest={},
+    )
+    assert not c3._derived_scene_generation_allowed(descriptor={}, raw_manifest={})
+    assert c3._world_model_candidate(
+        descriptor={"quality": {"world_model_candidate": True}},
+        raw_manifest={},
+    )
+    assert c3._resolve_site_reference_root(context=context, site_id=None) is None
+    assert c3._resolve_site_reference_root(context=context, site_id="missing-site") == (
+        context.storage_root / context.bucket / "sites" / "missing-site" / "reference_memory"
+    )
+    assert (
+        c3._resolve_site_id(
+            descriptor=GetOnly({"site_id": "", "metadata": {}}),
+            raw_manifest=GetOnly({"site_id": ""}),
+        )
+        is None
+    )
+    assert c3._first_int(None, "", "not-an-int", [], "7") == 7
+    assert c3._first_int("not-an-int") is None
+    assert c3._string_list(None) == []
+    assert c3._string_list(" one ") == ["one"]
+    assert c3._string_list(5) == ["5"]
+    assert c3._string_list(["one", " one ", "", "two"]) == ["one", "two"]
+    markdown = c3._render_markdown(
+        {
+            "capture": "not-a-mapping",
+            "stack_checks": {"ignored": "not-a-mapping"},
+            "capabilities": {"ignored": "not-a-mapping"},
+            "simulation_boundary": "not-a-mapping",
+        }
+    )
+    assert "Cosmos 3 Capture-Grounded Readiness" in markdown

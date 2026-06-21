@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from pathlib import Path
 
+from blueprint_pipeline import runpod_live_execution_proof as runpod_proof
 from blueprint_pipeline.runpod_live_execution_proof import (
     RUNPOD_GPU_LAUNCH_GATE_ENV,
     collect_runpod_live_execution_proof,
@@ -322,3 +324,177 @@ def test_runpod_live_execution_proof_accepts_runpod_config_without_persisting_se
     assert result["api_key_source"] == RUNPOD_CONFIG_FILE_ENV
     assert calls[0]["headers"]["Authorization"] == "Bearer secret-runpod-key-from-config"  # type: ignore[index]
     assert "secret-runpod-key-from-config" not in persisted
+
+
+def test_runpod_live_execution_helpers_parse_ids_pods_and_empty_http(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    assert runpod_proof._redact("secret-runpod-key appears", "secret-runpod-key") != (
+        "secret-runpod-key appears"
+    )
+    assert runpod_proof._derive_pod_id({}, "explicit-pod") == "explicit-pod"
+    assert runpod_proof._derive_pod_id({"id": "direct-pod"}, None) == "direct-pod"
+    assert runpod_proof._pods_from_response({"items": [{"id": "item-pod"}, "skip"]}) == [
+        {"id": "item-pod"}
+    ]
+    assert runpod_proof._pods_from_response({"pods": [{"id": "pods-pod"}]}) == [
+        {"id": "pods-pod"}
+    ]
+    assert runpod_proof._pods_from_response(
+        {"data": {"myself": {"pods": [{"id": "nested-pod"}, "skip"]}}}
+    ) == [{"id": "nested-pod"}]
+    assert runpod_proof._pods_from_response({"data": {"myself": {"pods": "not-a-list"}}}) == []
+
+    class EmptyResponse:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return b""
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda _request, timeout: EmptyResponse())
+
+    status, payload = runpod_proof._http_json(
+        url="https://rest.runpod.io/v1/pods",
+        payload=None,
+        method="GET",
+        api_key="secret-runpod-key",
+        timeout_seconds=5,
+    )
+
+    assert status == 204
+    assert payload == {}
+
+
+def test_runpod_live_execution_proof_records_missing_stop_and_runtime_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _provider_launch_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_GPU_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return b"[]"
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda _request, timeout: FakeResponse())
+
+    result = collect_runpod_live_execution_proof(
+        provider_launch_request_path=request_path,
+        runtime_manifest_path=tmp_path / "missing-runtime.json",
+        output_path=tmp_path / "runpod_live_execution_proof.json",
+        stop_pod=True,
+        allow_runpod_api_call=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert "runtime_manifest_missing" in result["blockers"]
+    assert "missing_pod_id_for_stop" in result["blockers"]
+    assert "pod_stop_not_performed" in result["blockers"]
+
+
+def test_runpod_live_execution_proof_records_unverified_counts_and_increased_after_stop(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _provider_launch_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_GPU_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda _request, timeout: FakeResponse(b"[]"))
+    monkeypatch.setattr(runpod_proof, "_active_pod_count", lambda _pods: None)
+    unverified = collect_runpod_live_execution_proof(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "runpod_live_execution_proof.unverified.json",
+        allow_runpod_api_call=True,
+    )
+    assert "active_pod_counts_not_verified" in unverified["blockers"]
+
+    calls: list[str] = []
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        calls.append(request.full_url)
+        if request.full_url.endswith("/pods/pod-123/stop"):
+            return FakeResponse(b'{"id":"pod-123","desiredStatus":"RUNNING"}')
+        if len([url for url in calls if url.endswith("/pods")]) == 1:
+            return FakeResponse(b"[]")
+        return FakeResponse(b'[{"id":"pod-123","desiredStatus":"RUNNING"}]')
+
+    monkeypatch.setattr(runpod_proof, "_active_pod_count", lambda pods: len(pods))
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    increased = collect_runpod_live_execution_proof(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "runpod_live_execution_proof.increased.json",
+        pod_id="pod-123",
+        stop_pod=True,
+        allow_runpod_api_call=True,
+    )
+    assert "active_pod_count_increased_after_stop" in increased["blockers"]
+
+
+def test_runpod_live_execution_proof_redacts_http_errors(tmp_path: Path, monkeypatch) -> None:
+    request_path = _provider_launch_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_GPU_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    class ErrorBody:
+        def read(self) -> bytes:
+            return b'{"error":"secret-runpod-key failed"}'
+
+    def raise_http_error(_request, timeout):  # type: ignore[no-untyped-def]
+        raise urllib.error.HTTPError(
+            url="https://rest.runpod.io/v1/pods",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=ErrorBody(),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+
+    result = collect_runpod_live_execution_proof(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "runpod_live_execution_proof.http-error.json",
+        allow_runpod_api_call=True,
+    )
+
+    persisted = (tmp_path / "runpod_live_execution_proof.http-error.json").read_text(
+        encoding="utf-8"
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "runpod_live_proof_http_error"
+    assert result["http_status_code"] == 401
+    assert "secret-runpod-key" not in persisted

@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from blueprint_pipeline import same_capture_lineage as lineage
 from blueprint_pipeline.same_capture_lineage import (
     build_same_capture_lineage_packet,
+    validate_same_capture_lineage_packet,
     write_same_capture_lineage_packet,
 )
 
@@ -264,3 +266,184 @@ def test_same_capture_lineage_writer_persists_packet(tmp_path: Path) -> None:
     assert path == capture_root / "pipeline" / "same_capture_lineage_packet.json"
     assert packet["status"] == "repo_proven"
     assert packet["capture_id"] == "capture-001"
+
+
+def test_same_capture_lineage_validation_rejects_bad_claims() -> None:
+    summary = validate_same_capture_lineage_packet(
+        {
+            "schema_version": "wrong",
+            "status": "unexpected",
+            "capture_id": "",
+            "repo_blockers": "not-a-list",
+            "claims": {
+                "launch_claim_allowed": True,
+                "world_model_ready_claim_allowed": True,
+            },
+            "pipeline_result": {"geometry": {"exists": False}},
+        }
+    )
+
+    assert summary["status"] == "blocked"
+    assert "same_capture_lineage_schema_version_invalid" in summary["blockers"]
+    assert "same_capture_lineage_status_invalid" in summary["blockers"]
+    assert "same_capture_lineage_capture_id_missing" in summary["blockers"]
+    assert "same_capture_lineage_repo_blockers_missing" in summary["blockers"]
+    assert "same_capture_lineage_launch_claim_must_remain_false" in summary["blockers"]
+    assert "same_capture_lineage_world_model_claim_not_backed_by_live_geometry" in summary["blockers"]
+
+
+def test_same_capture_lineage_low_level_missing_and_mismatch_packets(tmp_path: Path) -> None:
+    invalid_json = tmp_path / "invalid.json"
+    invalid_json.write_text("{", encoding="utf-8")
+    assert lineage._read_json(tmp_path / "missing.json") == {}
+    assert lineage._read_json(invalid_json) == {}
+
+    identity_missing = lineage._identity_blockers(
+        identity_sources=[],
+        primary_scene_id="",
+        primary_capture_id="",
+    )
+    assert "same_capture_scene_id_missing" in identity_missing
+    assert "same_capture_capture_id_missing" in identity_missing
+    identity_mismatch = lineage._identity_blockers(
+        identity_sources=[{"name": "source", "scene_id": "other-scene", "capture_id": "other-capture"}],
+        primary_scene_id="scene-1",
+        primary_capture_id="capture-1",
+    )
+    assert "same_capture_scene_id_mismatch:source" in identity_mismatch
+    assert "same_capture_capture_id_mismatch:source" in identity_mismatch
+
+    raw_missing = lineage._raw_bundle_packet(
+        raw_root=tmp_path / "raw",
+        manifest={},
+        capture_context={},
+        upload_completion={},
+        primary_scene_id="scene-1",
+        primary_capture_id="capture-1",
+    )
+    assert raw_missing["blockers"] == [
+        "raw_manifest_missing",
+        "raw_capture_context_missing",
+        "raw_capture_upload_completion_missing",
+    ]
+    raw_mismatch = lineage._raw_bundle_packet(
+        raw_root=tmp_path / "raw",
+        manifest={"scene_id": "scene-1", "capture_id": "capture-1"},
+        capture_context={"scene_id": "scene-1", "capture_id": "capture-1"},
+        upload_completion={"scene_id": "other-scene", "capture_id": "other-capture"},
+        primary_scene_id="scene-1",
+        primary_capture_id="capture-1",
+    )
+    assert "raw_capture_upload_completion_capture_id_mismatch" in raw_mismatch["blockers"]
+    assert "raw_capture_upload_completion_scene_id_mismatch" in raw_mismatch["blockers"]
+
+    bridge_missing = lineage._bridge_handoff_packet(
+        descriptor={},
+        qa_report={},
+        pipeline_handoff={},
+        primary_scene_id="scene-1",
+        primary_capture_id="capture-1",
+    )
+    assert bridge_missing["blockers"] == [
+        "bridge_capture_descriptor_missing",
+        "bridge_qa_report_missing",
+        "bridge_pipeline_handoff_missing",
+    ]
+    bridge_mismatch = lineage._bridge_handoff_packet(
+        descriptor={"scene_id": "other-scene", "capture_id": "other-capture"},
+        qa_report={"scene_id": "scene-1", "capture_id": "capture-1"},
+        pipeline_handoff={"scene_id": "scene-1", "capture_id": "capture-1"},
+        primary_scene_id="scene-1",
+        primary_capture_id="capture-1",
+    )
+    assert "bridge_capture_descriptor_capture_id_mismatch" in bridge_mismatch["blockers"]
+    assert "bridge_capture_descriptor_scene_id_mismatch" in bridge_mismatch["blockers"]
+
+    pipeline_missing = lineage._pipeline_result_packet(
+        pipeline_root=tmp_path / "pipeline",
+        opportunity_handoff={},
+        qualification_summary={},
+        geometry_summary={},
+        primary_scene_id="scene-1",
+        primary_capture_id="capture-1",
+    )
+    assert "pipeline_opportunity_handoff_missing" in pipeline_missing["blockers"]
+    assert "pipeline_qualification_summary_missing" in pipeline_missing["blockers"]
+    assert "pipeline_completion_marker_missing" in pipeline_missing["blockers"]
+    pipeline_mismatch = lineage._pipeline_result_packet(
+        pipeline_root=tmp_path / "pipeline",
+        opportunity_handoff={"scene_id": "other-scene", "capture_id": "other-capture"},
+        qualification_summary={"scene_id": "scene-1", "capture_id": "capture-1"},
+        geometry_summary={"scene_id": "scene-1", "capture_id": "capture-1"},
+        primary_scene_id="scene-1",
+        primary_capture_id="capture-1",
+    )
+    assert "pipeline_opportunity_handoff_capture_id_mismatch" in pipeline_mismatch["blockers"]
+    assert "pipeline_opportunity_handoff_scene_id_mismatch" in pipeline_mismatch["blockers"]
+
+
+def test_same_capture_lineage_webapp_payload_edges() -> None:
+    packet = lineage._webapp_upstream_ids_packet(
+        webapp_sync={
+            "status": "failed",
+            "latest_stage": "qualification",
+            "syncs": {
+                "qualification": {
+                    "attachment_payload": {
+                        "scene_id": "other-scene",
+                        "capture_id": "other-capture",
+                        "site_submission_id": "example-submission",
+                        "request_id": "scene-1/capture-1",
+                        "buyer_request_id": "buyer-request-1",
+                        "capture_job_id": "capture-1",
+                        "upstream_links_verified": False,
+                        "missing_upstream_links": ("buyer_request_id",),
+                    }
+                }
+            },
+        },
+        opportunity_handoff={},
+        descriptor={},
+        manifest={},
+        primary_scene_id="scene-1",
+        primary_capture_id="capture-1",
+    )
+
+    assert "placeholder_webapp_site_submission_id" in packet["blockers"]
+    assert "generated_capture_id_used_for_webapp_request_id" in packet["blockers"]
+    assert "generated_capture_id_used_for_webapp_capture_job_id" in packet["blockers"]
+    assert "webapp_sync_capture_id_mismatch" in packet["blockers"]
+    assert "webapp_sync_scene_id_mismatch" in packet["blockers"]
+    assert "webapp_sync_missing_buyer_request_id" in packet["blockers"]
+
+    latest_payload, latest_source = lineage._latest_webapp_sync_payload(
+        {
+            "syncs": {
+                "first": {"attachment_payload": {"request_id": "first"}},
+                "second": {"attachment_payload": {"request_id": "second"}},
+            }
+        }
+    )
+    assert latest_payload["request_id"] == "second"
+    assert latest_source == "pipeline.webapp_sync_result:latest"
+    raw_payload, raw_source = lineage._latest_webapp_sync_payload({"request_id": "raw"})
+    assert raw_payload["request_id"] == "raw"
+    assert raw_source == "pipeline.webapp_sync_result"
+
+
+def test_same_capture_lineage_hardware_gap_and_string_list_edges() -> None:
+    assert (
+        lineage._remaining_hardware_gaps(
+            profile={},
+            manifest={"physical_device_proof": {"physical_device_smoke_passed": True, "evidence_uri": "gs://proof"}},
+            descriptor={},
+        )
+        == []
+    )
+    assert lineage._remaining_hardware_gaps(
+        profile={"capture_profile_id": "meta_glasses", "capture_source": "meta"},
+        manifest={},
+        descriptor={},
+    ) == ["glasses_physical_device_proof_not_in_repo_packet"]
+    assert lineage._string_list(("one", "", "two")) == ["one", "two"]
+    assert lineage._string_list("one") == []

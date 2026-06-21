@@ -5,7 +5,10 @@ import struct
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.marble_sim_assets import build_marble_sim_assets
+from blueprint_pipeline import production_handoff_readiness as readiness
 from blueprint_pipeline.production_handoff_readiness import build_production_handoff_readiness
 from blueprint_pipeline.simulation_automation import build_simulation_automation
 
@@ -552,3 +555,177 @@ def test_production_handoff_readiness_requires_webapp_upstream_link_truth(
     assert "missing_webapp_buyer_request_id" in result["blockers"]
     assert result["proof_summary"]["webapp_sync_succeeded"] is True
     assert result["proof_summary"]["webapp_upstream_links_verified"] is False
+
+
+def test_production_handoff_readiness_helper_string_list_edges() -> None:
+    marker = object()
+
+    assert readiness._string_list(None) == []
+    assert readiness._string_list("one") == ["one"]
+    assert readiness._string_list(["one", "one", "two", ""]) == ["one", "two"]
+    assert readiness._string_list(marker) == [str(marker)]
+
+
+def test_production_handoff_readiness_reports_missing_artifacts_when_qa_is_skipped(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+
+    result = build_production_handoff_readiness(
+        capture_root=root,
+        mode="",
+        run_provider_preview_qa=False,
+    )
+
+    assert result["mode"] == "production"
+    assert result["status"] == "blocked_before_owner_gpu_handoff"
+    assert "provider_preview_qa_missing" in result["blockers"]
+    assert "worldlabs_request_manifest_missing" in result["blockers"]
+    assert "worldlabs_operation_manifest_missing" in result["blockers"]
+    assert "worldlabs_asset_materialization_manifest_missing" in result["blockers"]
+    assert "worldlabs_export_manifest_missing" in result["blockers"]
+    assert "scene_asset_inventory_missing" in result["blockers"]
+    assert "scene_asset_preflight_missing" in result["blockers"]
+    assert "cpu_preflight_manifest_missing" in result["blockers"]
+    assert "arena_environment_packet_missing" in result["blockers"]
+    assert "gpu_handoff_packet_missing" in result["blockers"]
+    assert "gpu_owner_system_proof_schema_missing" in result["blockers"]
+    assert "owner_gpu_blocked_manifest_missing" in result["blockers"]
+
+
+def test_production_handoff_readiness_reports_malformed_artifacts(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_and_worldlabs(root)
+    build_marble_sim_assets(capture_root=root)
+    build_simulation_automation(capture_root=root)
+    pipeline_dir = root / "pipeline"
+    automation_dir = pipeline_dir / "simulation_automation"
+
+    _write_json(pipeline_dir / "worldlabs_request_manifest.json", {"privacy_safe_input": False})
+    _write_json(pipeline_dir / "worldlabs_operation_manifest.json", {"status": "blocked"})
+    _write_json(pipeline_dir / "worldlabs_world_manifest.json", {"status": "blocked", "world_id": "world-1"})
+    _write_json(
+        pipeline_dir / "worldlabs_assets" / "materialized_assets_manifest.json",
+        {"status": "complete", "download_count": 0},
+    )
+    _write_json(automation_dir / "scene_asset_inventory.json", {"asset_count": 0})
+    _write_json(automation_dir / "cpu_preflight_manifest.json", {"ready_for_owner_gpu_preflight": False})
+    _write_json(
+        automation_dir / "arena_environment_packet.json",
+        {"simulator_execution_proven": True, "robot_readiness_proven": True},
+    )
+    _write_json(
+        automation_dir / "gpu_handoff_packet.json",
+        {
+            "status": "not_ready",
+            "robot_readiness_proven": True,
+            "blockers": ["custom_blocker"],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_blocked_manifest.json",
+        {"blocker_id": "wrong_blocker"},
+    )
+
+    result = build_production_handoff_readiness(capture_root=root, mode="production")
+
+    assert result["status"] == "blocked_before_owner_gpu_handoff"
+    assert "worldlabs_request_not_privacy_safe" in result["blockers"]
+    assert "worldlabs_operation_not_current_for_privacy_safe_input" in result["blockers"]
+    assert "worldlabs_world_not_current_for_privacy_safe_input" in result["blockers"]
+    assert "worldlabs_materialized_asset_download_missing" in result["blockers"]
+    assert "scene_asset_inventory_empty" in result["blockers"]
+    assert "cpu_preflight_not_ready_for_owner_gpu" in result["blockers"]
+    assert "arena_packet_illegally_marks_simulator_execution" in result["blockers"]
+    assert "arena_packet_illegally_marks_robot_readiness" in result["blockers"]
+    assert "gpu_handoff_packet_not_ready" in result["blockers"]
+    assert "gpu_handoff_illegally_marks_robot_readiness" in result["blockers"]
+    assert "custom_blocker" in result["blockers"]
+    assert "gpu_handoff_missing_owner_gpu_blocker" in result["blockers"]
+    assert "owner_gpu_blocked_manifest_wrong_blocker" in result["blockers"]
+
+
+def test_production_handoff_readiness_reports_missing_world_id(tmp_path: Path) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_and_worldlabs(root)
+    build_marble_sim_assets(capture_root=root)
+    build_simulation_automation(capture_root=root)
+    _write_json(root / "pipeline" / "worldlabs_world_manifest.json", {"status": "ready"})
+
+    result = build_production_handoff_readiness(capture_root=root, mode="production")
+
+    assert result["status"] == "blocked_before_owner_gpu_handoff"
+    assert "worldlabs_world_id_missing" in result["blockers"]
+
+
+def test_production_handoff_readiness_preserves_post_proof_handoff_blockers(
+    tmp_path: Path,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_privacy_and_worldlabs(root)
+    build_marble_sim_assets(capture_root=root)
+    build_simulation_automation(capture_root=root)
+    automation_dir = root / "pipeline" / "simulation_automation"
+    _write_json(
+        automation_dir / "gpu_handoff_packet.json",
+        {
+            "schema_version": "gpu_handoff_packet.v1",
+            "status": "ready_for_owner_gpu_preflight_handoff",
+            "ready_for_owner_gpu_preflight": True,
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": ["post_proof_blocker"],
+        },
+    )
+    _write_json(
+        automation_dir / "owner_gpu_simulator_execution_proof_manifest.json",
+        {
+            "schema_version": "owner_gpu_simulator_execution_proof_manifest.v1",
+            "status": "accepted",
+            "owner_gpu_simulator_execution_proven": True,
+            "simulator_execution_proven": True,
+            "robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "blockers": [],
+        },
+    )
+
+    result = build_production_handoff_readiness(capture_root=root, mode="production")
+
+    assert result["status"] == "blocked_after_owner_gpu_handoff"
+    assert result["blockers"] == ["post_proof_blocker"]
+
+
+def test_production_handoff_readiness_main_returns_success_blocked_and_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        readiness,
+        "build_production_handoff_readiness",
+        lambda **_: {"status": "ready_except_owner_gpu_simulator_execution", "blockers": []},
+    )
+    assert readiness.main(["--capture-root", str(tmp_path), "--mode", "advisory", "--skip-provider-preview-qa"]) == 0
+    assert "[production-handoff-readiness] status=ready_except_owner_gpu_simulator_execution" in capsys.readouterr().out
+
+    monkeypatch.setattr(
+        readiness,
+        "build_production_handoff_readiness",
+        lambda **_: {"status": "blocked_before_owner_gpu_handoff", "blockers": ["missing"]},
+    )
+    assert readiness.main(["--capture-root", str(tmp_path)]) == 1
+    blocked_output = capsys.readouterr().out
+    assert "[production-handoff-readiness] status=blocked_before_owner_gpu_handoff" in blocked_output
+    assert "[production-handoff-readiness] blockers=missing" in blocked_output
+
+    def raise_value_error(**_: object) -> dict[str, object]:
+        raise ValueError("bad capture")
+
+    monkeypatch.setattr(readiness, "build_production_handoff_readiness", raise_value_error)
+    assert readiness.main(["--capture-root", str(tmp_path)]) == 2
+    assert "[production-handoff-readiness] status=error reason=bad capture" in capsys.readouterr().out

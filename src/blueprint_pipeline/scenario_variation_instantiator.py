@@ -54,7 +54,7 @@ def _cards_from_payload(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
     cards = payload.get("cards")
     if isinstance(cards, list):
         return [dict(item) for item in cards if isinstance(item, Mapping)]
-    if isinstance(payload, list):  # type: ignore[unreachable]
+    if isinstance(payload, list):  # pragma: no cover - kept for legacy callers that bypass typing.
         return [dict(item) for item in payload if isinstance(item, Mapping)]
     return []
 

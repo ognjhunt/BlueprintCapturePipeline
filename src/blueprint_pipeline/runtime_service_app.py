@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Dict, Protocol
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from blueprint_contracts.site_world_contract import normalize_trajectory_payload
+
+from .logging_utils import log_event
+
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeBackend(Protocol):
@@ -130,11 +136,50 @@ class ExplorerRenderRequest(BaseModel):
 def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
     app = FastAPI(title=title, version="1.0.0")
 
+    def _http_error(
+        *,
+        route: str,
+        status_code: int,
+        detail: str,
+        exc: Exception,
+        **fields: Any,
+    ) -> HTTPException:
+        log_event(
+            logger,
+            logging.WARNING,
+            "runtime_service.request_failed",
+            route=route,
+            status_code=status_code,
+            detail=detail,
+            error_type=type(exc).__name__,
+            **fields,
+        )
+        return HTTPException(status_code=status_code, detail=detail)
+
     @app.on_event("startup")
     async def prewarm_backend() -> None:
         prewarm = getattr(backend, "prewarm_runtime", None)
         if callable(prewarm):
-            await asyncio.to_thread(prewarm)
+            log_event(logger, logging.INFO, "runtime_service.prewarm_started", title=title)
+            try:
+                result = await asyncio.to_thread(prewarm)
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "runtime_service.prewarm_failed",
+                    title=title,
+                    error_type=type(exc).__name__,
+                    reason=str(exc),
+                )
+                raise
+            log_event(
+                logger,
+                logging.INFO,
+                "runtime_service.prewarm_completed",
+                title=title,
+                result_status=dict(result).get("status") if isinstance(result, dict) else None,
+            )
 
     @app.get("/healthz")
     def healthz() -> Dict[str, Any]:
@@ -168,7 +213,19 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
             )
             health = dict(backend.load_site_world_health(str(registration.get("site_world_id") or "")))
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="register_site_world",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+            ) from exc
+        log_event(
+            logger,
+            logging.INFO,
+            "runtime_service.site_world_registered",
+            site_world_id=registration.get("site_world_id"),
+            health_status=health.get("status"),
+        )
         return {
             **registration,
             "health": health,
@@ -177,21 +234,50 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
     @app.get("/v1/site-worlds/{site_world_id}")
     def get_site_world(site_world_id: str) -> Dict[str, Any]:
         try:
-            return dict(backend.load_site_world(site_world_id))
+            payload = dict(backend.load_site_world(site_world_id))
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"site world not found: {site_world_id}") from exc
+            detail = f"site world not found: {site_world_id}"
+            raise _http_error(
+                route="get_site_world",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                site_world_id=site_world_id,
+            ) from exc
+        log_event(
+            logger,
+            logging.DEBUG,
+            "runtime_service.site_world_loaded",
+            site_world_id=site_world_id,
+        )
+        return payload
 
     @app.get("/v1/site-worlds/{site_world_id}/health")
     def get_site_world_health(site_world_id: str) -> Dict[str, Any]:
         try:
-            return dict(backend.load_site_world_health(site_world_id))
+            payload = dict(backend.load_site_world_health(site_world_id))
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"site world not found: {site_world_id}") from exc
+            detail = f"site world not found: {site_world_id}"
+            raise _http_error(
+                route="get_site_world_health",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                site_world_id=site_world_id,
+            ) from exc
+        log_event(
+            logger,
+            logging.DEBUG,
+            "runtime_service.site_world_health_loaded",
+            site_world_id=site_world_id,
+            health_status=payload.get("status"),
+        )
+        return payload
 
     @app.post("/v1/site-worlds/{site_world_id}/sessions")
     def create_session(site_world_id: str, request: SessionCreateRequest) -> Dict[str, Any]:
         try:
-            return dict(
+            session = dict(
                 backend.create_session(
                     site_world_id,
                     session_id=request.session_id,
@@ -211,14 +297,41 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
                 )
             )
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"site world not found: {site_world_id}") from exc
+            detail = f"site world not found: {site_world_id}"
+            raise _http_error(
+                route="create_session",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                site_world_id=site_world_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="create_session",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                site_world_id=site_world_id,
+            ) from exc
+        log_event(
+            logger,
+            logging.INFO,
+            "runtime_service.session_created",
+            site_world_id=site_world_id,
+            session_id=session.get("session_id"),
+            robot_profile_id=request.robot_profile_id,
+            task_id=request.task_id,
+            scenario_id=request.scenario_id,
+            start_state_id=request.start_state_id,
+            requested_backend=request.requested_backend,
+            debug_mode=request.debug_mode,
+        )
+        return session
 
     @app.post("/v1/sessions/{session_id}/reset")
     def reset_session(session_id: str, request: SessionResetRequest) -> Dict[str, Any]:
         try:
-            return dict(
+            payload = dict(
                 backend.reset_session(
                     session_id,
                     task_id=request.task_id,
@@ -227,27 +340,84 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
                 )
             )
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="reset_session",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="reset_session",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+            ) from exc
+        log_event(
+            logger,
+            logging.INFO,
+            "runtime_service.session_reset",
+            session_id=session_id,
+            task_id=request.task_id,
+            scenario_id=request.scenario_id,
+            start_state_id=request.start_state_id,
+        )
+        return payload
 
     @app.post("/v1/sessions/{session_id}/step")
     def step_session(session_id: str, request: SessionStepRequest) -> Dict[str, Any]:
         try:
-            return dict(backend.step_session(session_id, action=request.action))
+            payload = dict(backend.step_session(session_id, action=request.action))
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="step_session",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="step_session",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+            ) from exc
+        log_event(
+            logger,
+            logging.INFO,
+            "runtime_service.session_stepped",
+            session_id=session_id,
+            action_type=type(request.action).__name__,
+        )
+        return payload
 
     @app.get("/v1/sessions/{session_id}/state")
     def session_state(session_id: str) -> Dict[str, Any]:
         try:
             return dict(backend.session_state(session_id))
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="session_state",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="session_state",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+            ) from exc
 
     @app.get("/v1/sessions/{session_id}/render")
     @app.get("/v1/sessions/{session_id}/render/{camera_id}")
@@ -255,19 +425,55 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         try:
             payload = backend.render_bytes(session_id, camera_id)
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="render_session",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+                camera_id=camera_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="render_session",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+                camera_id=camera_id,
+            ) from exc
         return Response(content=payload, media_type="image/png")
 
     @app.post("/v2/sessions/{session_id}/control")
     def control_session(session_id: str, request: SessionControlRequest) -> Dict[str, Any]:
         try:
-            return dict(backend.control_session(session_id, control=request.model_dump()))
+            payload = dict(backend.control_session(session_id, control=request.model_dump()))
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="control_session",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="control_session",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+            ) from exc
+        log_event(
+            logger,
+            logging.INFO,
+            "runtime_service.session_controlled",
+            session_id=session_id,
+            seq=request.seq,
+        )
+        return payload
 
     @app.get("/v2/sessions/{session_id}/media")
     @app.get("/v2/sessions/{session_id}/media/{camera_id}")
@@ -275,9 +481,26 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         try:
             payload = dict(backend.media_response(session_id, camera_id=camera_id, chunk_id=chunk_id))
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="media_session",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+                camera_id=camera_id,
+                chunk_id=chunk_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="media_session",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+                camera_id=camera_id,
+                chunk_id=chunk_id,
+            ) from exc
         response = Response(
             content=payload.get("content") or b"",
             media_type=str(payload.get("media_type") or "application/octet-stream"),
@@ -291,9 +514,22 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         try:
             state = dict(backend.session_state(session_id))
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="rollout_session",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="rollout_session",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+            ) from exc
         rollout = state.get("rollout")
         return dict(rollout) if isinstance(rollout, dict) else {}
 
@@ -301,7 +537,7 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
     @app.post("/v1/sessions/{session_id}/explorer-render")
     def explorer_render(session_id: str, request: ExplorerRenderRequest) -> Dict[str, Any]:
         try:
-            return dict(
+            payload = dict(
                 backend.explorer_render(
                     session_id,
                     camera_id=request.camera_id,
@@ -312,9 +548,33 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
                 )
             )
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="explorer_render",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+                camera_id=request.camera_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="explorer_render",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+                camera_id=request.camera_id,
+            ) from exc
+        log_event(
+            logger,
+            logging.INFO,
+            "runtime_service.explorer_rendered",
+            session_id=session_id,
+            camera_id=request.camera_id,
+            refine_mode=request.refine_mode,
+        )
+        return payload
 
     @app.get("/v1/sessions/{session_id}/explorer/frame/{camera_id}")
     @app.get("/v1/sessions/{session_id}/explorer-frame")
@@ -322,9 +582,24 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         try:
             payload = backend.explorer_frame_bytes(session_id, camera_id)
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+            detail = f"session not found: {session_id}"
+            raise _http_error(
+                route="explorer_frame",
+                status_code=404,
+                detail=detail,
+                exc=exc,
+                session_id=session_id,
+                camera_id=camera_id,
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _http_error(
+                route="explorer_frame",
+                status_code=400,
+                detail=str(exc),
+                exc=exc,
+                session_id=session_id,
+                camera_id=camera_id,
+            ) from exc
         return Response(content=payload, media_type="image/png")
 
     @app.websocket("/v1/sessions/{session_id}/stream")
@@ -340,6 +615,12 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         latency for chunk transitions instead of the 250ms state-poll period.
         """
         await websocket.accept()
+        log_event(
+            logger,
+            logging.INFO,
+            "runtime_service.websocket_connected",
+            session_id=session_id,
+        )
         try:
             for _ in range(10_000):
                 # 1. Emit current session state
@@ -353,8 +634,21 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
 
                 await asyncio.sleep(0.25)
         except FileNotFoundError:
+            log_event(
+                logger,
+                logging.WARNING,
+                "runtime_service.websocket_failed",
+                session_id=session_id,
+                reason="session_not_found",
+            )
             await websocket.send_json({"error": f"session not found: {session_id}"})
         except WebSocketDisconnect:
+            log_event(
+                logger,
+                logging.INFO,
+                "runtime_service.websocket_disconnected",
+                session_id=session_id,
+            )
             pass
         finally:
             try:

@@ -6,14 +6,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-from blueprint_pipeline.arena_fixture_smoke import build_arena_fixture_smoke
+from blueprint_pipeline.arena_fixture_smoke import build_arena_fixture_smoke, main
 
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_arena_fixture_smoke_proves_local_package_surface(tmp_path: Path) -> None:
+def test_arena_fixture_smoke_proves_local_package_surface(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD", "preexisting")
+
     result = build_arena_fixture_smoke(
         output_dir=tmp_path / "arena-smoke",
         scenario_count=20,
@@ -50,6 +52,7 @@ def test_arena_fixture_smoke_proves_local_package_surface(tmp_path: Path) -> Non
     assert result["proof_boundary"]["webapp_upstream_truth_proven"] is False
     assert (package_dir / "archives" / "post_training_data_package.tar.gz").is_file()
     assert (Path(str(result["output_dir"])) / "arena_fixture_smoke_manifest.json").is_file()
+    assert os.environ["BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD"] == "preexisting"
 
 
 def test_arena_fixture_smoke_module_cli(tmp_path: Path) -> None:
@@ -82,3 +85,27 @@ def test_arena_fixture_smoke_module_cli(tmp_path: Path) -> None:
     assert manifest["status"] == "passed"
     assert manifest["scenario_count"] == 10
     assert manifest["shard_count"] == 2
+
+
+def test_arena_fixture_smoke_main_reports_status(tmp_path: Path, capsys) -> None:
+    output_dir = tmp_path / "arena-smoke-main"
+
+    exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--scenario-count",
+            "8",
+            "--shard-size",
+            "4",
+            "--retry-budget",
+            "1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    manifest = _read_json(output_dir / "arena_fixture_smoke_manifest.json")
+    assert exit_code == 0
+    assert manifest["status"] == "passed"
+    assert "[arena-fixture-smoke] manifest=" in captured.out
+    assert "[arena-fixture-smoke] status=passed" in captured.out

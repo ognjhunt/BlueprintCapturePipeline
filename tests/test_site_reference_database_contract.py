@@ -7,7 +7,10 @@ import pytest
 
 from blueprint_pipeline.site_reference_database import (
     SITE_REFERENCE_DATABASE_SCHEMA_VERSION,
+    WEBAPP_PROJECTION_SCHEMA_VERSION,
     SiteReferenceContractError,
+    _path_to_gs_uri,
+    _read_optional_json,
     assert_summary_projection_safe,
     build_reference_record_lineage,
     build_site_reference_manifest_payload,
@@ -90,6 +93,33 @@ def test_site_reference_record_contract_requires_lineage_and_camera_fields() -> 
         validate_site_reference_record(invalid)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("authority_level", "raw_capture", "authority_level_invalid"),
+        ("storage_class", "blob", "storage_class_invalid"),
+        ("intrinsics", {}, "intrinsics_missing"),
+        ("privacy_lineage", "not-a-mapping", "privacy_lineage_invalid"),
+        ("T_world_camera", [], "T_world_camera_invalid"),
+        (
+            "T_world_camera",
+            [[1.0, 0.0, 0.0, 0.0], [0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+            "T_world_camera_invalid",
+        ),
+    ],
+)
+def test_site_reference_record_rejects_invalid_required_shapes(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    invalid = dict(_record())
+    invalid[field] = value
+
+    with pytest.raises(SiteReferenceContractError, match=message):
+        validate_site_reference_record(invalid)
+
+
 def test_site_reference_manifest_contract_is_canonical_v1() -> None:
     payload = build_site_reference_manifest_payload(
         site_id="site-1",
@@ -121,6 +151,43 @@ def test_site_reference_manifest_contract_is_canonical_v1() -> None:
 
     assert payload["schema_version"] == SITE_REFERENCE_DATABASE_SCHEMA_VERSION
     validate_site_reference_manifest(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("schema_version", "wrong", "schema_version_invalid"),
+        ("authority_level", "raw", "authority_level_invalid"),
+        ("storage_class", "firestore", "storage_class_invalid"),
+        ("artifact_uris", [], "artifact_uris_invalid"),
+        ("readiness", [], "readiness_invalid"),
+    ],
+)
+def test_site_reference_manifest_rejects_invalid_required_shapes(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    payload = build_site_reference_manifest_payload(
+        site_id="site-1",
+        total_reference_frames=1,
+        capture_count=1,
+        chunk_count=1,
+        captures=[],
+        coverage_summary={},
+        artifact_uris={"site_reference_index_uri": "gs://bucket/index.jsonl"},
+        readiness={"state": "ready", "blockers": []},
+        site_frame_established=True,
+    )
+    payload[field] = value
+
+    with pytest.raises(SiteReferenceContractError, match=message):
+        validate_site_reference_manifest(payload)
+
+    missing = dict(payload)
+    missing.pop("site_id")
+    with pytest.raises(SiteReferenceContractError, match="missing_fields:site_id"):
+        validate_site_reference_manifest(missing)
 
 
 def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_fields(tmp_path: Path) -> None:
@@ -177,6 +244,89 @@ def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_f
         assert_summary_projection_safe(projection)
 
 
+def test_webapp_summary_projection_rejects_wrong_schema_and_storage_class() -> None:
+    with pytest.raises(SiteReferenceContractError, match="schema_version_invalid"):
+        assert_summary_projection_safe({"schema_version": "wrong"})
+
+    with pytest.raises(SiteReferenceContractError, match="storage_class_invalid"):
+        assert_summary_projection_safe(
+            {
+                "schema_version": WEBAPP_PROJECTION_SCHEMA_VERSION,
+                "storage_class": "dense_record",
+            }
+        )
+
+
+def test_summary_projection_readiness_states_and_path_fallbacks(tmp_path: Path) -> None:
+    site_root = tmp_path / "bucket" / "sites" / "site-1" / "reference_memory"
+    site_root.mkdir(parents=True)
+    site_index_path = site_root / "site_reference_index.jsonl"
+    site_index_path.write_text("", encoding="utf-8")
+
+    ready = build_site_reference_summary_projection(
+        site_id="site-1",
+        site_root=site_root,
+        site_index_path=site_index_path,
+        storage_root=tmp_path,
+        manifest_payload={
+            "total_reference_frames": 5,
+            "capture_count": 1,
+            "chunk_count": 1,
+            "coverage_summary": {},
+            "site_frame_established": True,
+        },
+        validation_payload={"geometry_fingerprint_coverage": 1.0},
+    )
+    assert ready["readiness"]["state"] == "ready"
+    assert ready["artifact_uris"]["site_reference_manifest_uri"].startswith("gs://bucket/")
+
+    blocked = build_site_reference_summary_projection(
+        site_id="site-1",
+        site_root=site_root,
+        site_index_path=site_index_path,
+        storage_root=tmp_path / "bucket",
+        manifest_payload={
+            "total_reference_frames": 0,
+            "capture_count": 0,
+            "chunk_count": 0,
+            "coverage_summary": {},
+            "site_frame_established": False,
+        },
+        validation_payload={"geometry_fingerprint_coverage": "not-a-number"},
+    )
+    assert blocked["readiness"]["state"] == "blocked"
+    assert (
+        blocked["artifact_uris"]["site_reference_manifest_uri"]
+        == "gs://sites/site-1/reference_memory/site_reference_manifest.json"
+    )
+    assert "no_reference_frames" in blocked["blockers"]
+    assert "no_captures_indexed" in blocked["blockers"]
+
+    degraded = build_site_reference_summary_projection(
+        site_id="site-1",
+        site_root=site_root,
+        site_index_path=site_index_path,
+        storage_root=tmp_path,
+        manifest_payload={
+            "total_reference_frames": 1,
+            "capture_count": 1,
+            "chunk_count": 1,
+            "coverage_summary": {},
+            "site_frame_established": True,
+        },
+        validation_payload={"geometry_fingerprint_coverage": 0.25},
+    )
+    assert degraded["readiness"]["state"] == "degraded"
+    assert degraded["blockers"] == ["low_geometry_fingerprint_coverage"]
+
+    assert _path_to_gs_uri(tmp_path / "outside.json", storage_root=site_root) == str(
+        tmp_path / "outside.json"
+    )
+    assert _path_to_gs_uri(tmp_path / "bucket", storage_root=tmp_path) is None
+    (site_root / "site_reference_manifest.json").write_text("{bad-json", encoding="utf-8")
+    assert _read_optional_json(site_root / "site_reference_manifest.json") == {}
+
+
 def test_lineage_preserves_unknown_rights_without_inventing_clearance() -> None:
     lineage = build_reference_record_lineage(
         capture_prefix_uri="gs://bucket/scenes/scene-1/captures/capture-1",
@@ -189,3 +339,25 @@ def test_lineage_preserves_unknown_rights_without_inventing_clearance() -> None:
     assert lineage["rights_lineage"]["rights_status"] == "unknown"
     assert lineage["rights_lineage"]["derived_scene_generation_allowed"] is None
     assert lineage["rights_lineage"]["claim_policy"] == "do_not_infer_rights_clearance"
+
+
+@pytest.mark.parametrize(
+    ("rights_value", "expected"),
+    [("allowed", True), ("blocked", False)],
+)
+def test_lineage_normalizes_string_rights_flags(rights_value: str, expected: bool) -> None:
+    lineage = build_reference_record_lineage(
+        capture_prefix_uri=None,
+        descriptor_uri=None,
+        geometry_source="arkit",
+        privacy_source="raw/walkthrough.mov",
+        descriptor={
+            "capture_rights": {
+                "rights_status": "documented",
+                "derived_generation_allowed": rights_value,
+            },
+        },
+    )
+
+    assert lineage["rights_lineage"]["derived_scene_generation_allowed"] is expected
+    assert lineage["privacy_lineage"]["privacy_status"] == "raw_or_unknown_source"

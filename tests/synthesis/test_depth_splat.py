@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 
-import numpy as np
+import sys
+from types import ModuleType
 
+import numpy as np
+from PIL import Image
+
+from blueprint_pipeline.synthesis import depth_splat as depth_splat_module
 from blueprint_pipeline.synthesis.depth_splat import depth_splat, load_depth_png
 
 # Use constants from conftest
@@ -30,6 +35,19 @@ class TestLoadDepthPng:
         p.write_bytes(synthetic_depth_png_bytes)
         depth = load_depth_png(p, depth_scale=0.001)
         assert depth[0, 0] == 0.0
+
+    def test_uint8_and_float_depth_fallbacks(self, tmp_path):
+        uint8_path = tmp_path / "depth8.png"
+        Image.fromarray(np.array([[0, 255]], dtype=np.uint8)).save(uint8_path)
+        depth8 = load_depth_png(uint8_path)
+        assert depth8[0, 0] == 0.0
+        assert depth8[0, 1] == 10.0
+
+        float_path = tmp_path / "depth-float.tiff"
+        Image.fromarray(np.array([[1.25, 2.5]], dtype=np.float32), mode="F").save(float_path)
+        depth_float = load_depth_png(float_path)
+        assert depth_float.dtype == np.float32
+        assert depth_float[0, 0] == 1.25
 
 
 class TestDepthSplat:
@@ -131,3 +149,28 @@ class TestDepthSplat:
         # After hole filling, more pixels should be covered than raw splat
         # (or at least it should not crash)
         assert not np.any(np.isnan(warped.astype(float)))
+
+    def test_hole_filling_scipy_and_no_dependency_fallbacks(self, monkeypatch):
+        image = np.zeros((2, 2, 3), dtype=np.uint8)
+        image[0, 0] = [255, 0, 0]
+        mask = np.array([[True, False], [False, False]])
+
+        scipy_mod = ModuleType("scipy")
+        ndimage_mod = ModuleType("scipy.ndimage")
+        ndimage_mod.distance_transform_edt = lambda _mask, return_indices=True: (
+            None,
+            np.zeros((2, 2, 2), dtype=np.int64),
+        )
+        monkeypatch.setitem(sys.modules, "cv2", None)
+        monkeypatch.setitem(sys.modules, "scipy", scipy_mod)
+        monkeypatch.setitem(sys.modules, "scipy.ndimage", ndimage_mod)
+
+        filled, filled_mask = depth_splat_module._fill_holes(image, mask)
+
+        assert filled_mask.all()
+        assert np.array_equal(filled[1, 1], [255, 0, 0])
+
+        monkeypatch.setitem(sys.modules, "scipy.ndimage", None)
+        unfilled, unfilled_mask = depth_splat_module._fill_holes(image, mask)
+        assert np.array_equal(unfilled, image)
+        assert np.array_equal(unfilled_mask, mask)

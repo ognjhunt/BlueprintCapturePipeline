@@ -3,15 +3,34 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import types
 
 import numpy as np
+import pytest
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor  # noqa: E402
-from blueprint_pipeline.geometry_stage import assess_geometry_scale, build_geometry_stage_contract  # noqa: E402
+import blueprint_pipeline.geometry_stage as geometry_stage  # noqa: E402
+from blueprint_pipeline.common import PipelineError  # noqa: E402
+from blueprint_pipeline.geometry_stage import (  # noqa: E402
+    GeometryStageResult,
+    _build_canonical_geometry_artifacts,
+    _build_dynamic_mask_manifest,
+    _build_fallback_provider_result,
+    _confidence_summary,
+    _optional_json,
+    _probe_video,
+    _resolve_video_path,
+    _run_geometry_provider,
+    _summary_capture_source,
+    _track_length_m,
+    _write_ascii_pointcloud,
+    assess_geometry_scale,
+    build_geometry_stage_contract,
+)
 from blueprint_pipeline.materialization import materialize_capture_bundle  # noqa: E402
 
 
@@ -367,6 +386,22 @@ def test_assess_geometry_scale_respects_metric_policy() -> None:
     )
     assert assess_geometry_scale(descriptor)["status"] == "metric_trusted"
 
+    descriptor = types.SimpleNamespace(
+        capture_source="android",
+        capture_modality="android_arcore_depth",
+        evidence_tier="pre_screen_video",
+        scaffolding_validation={},
+    )
+    assert assess_geometry_scale(descriptor)["reason"] == "raw_tracking_without_validated_scale"
+
+    descriptor = types.SimpleNamespace(
+        capture_source="drone",
+        capture_modality="drone_video",
+        evidence_tier="pre_screen_video",
+        scaffolding_validation={},
+    )
+    assert assess_geometry_scale(descriptor)["status"] == "estimated_scale"
+
     descriptor = CaptureDescriptor.from_dict(
         {
             **base,
@@ -591,3 +626,183 @@ def test_materialization_promotes_android_scaffolding_to_metric_ready_video(tmp_
     assert descriptor["capture_modality"] == "android_plus_scaffolding"
     assert descriptor["evidence_tier"] == "video_with_validated_scaffolding"
     assert qa_report["status"] == "passed"
+
+
+def test_geometry_stage_helper_edges(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(tmp_path)
+    context = geometry_stage.resolve_local_capture_context(capture_root)
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "capture_source": "iphone",
+            "capture_tier": "tier1_iphone",
+            "raw_prefix_uri": "gs://bucket/raw",
+            "frames_index_uri": "gs://bucket/frames.jsonl",
+        }
+    )
+
+    result = GeometryStageResult(
+        capture_root=capture_root,
+        geometry_root=capture_root / "pipeline" / "geometry",
+        manifest_path=capture_root / "pipeline" / "geometry" / "geometry_manifest.json",
+        summary_path=capture_root / "pipeline" / "geometry" / "geometry_summary.json",
+        status_path=capture_root / "pipeline" / "geometry" / "geometry_status.json",
+        status="completed",
+    )
+    assert result.to_dict()["status"] == "completed"
+    assert _summary_capture_source(descriptor) == "iphone"
+    assert _optional_json(tmp_path / "missing.json") == {}
+    invalid_json = tmp_path / "invalid.json"
+    invalid_json.write_text("{bad-json", encoding="utf-8")
+    assert _optional_json(invalid_json) == {}
+
+    no_video_root = _build_staged_capture(tmp_path / "no-video")
+    (no_video_root / "raw" / "walkthrough.mov").unlink()
+    with pytest.raises(PipelineError, match="No walkthrough video"):
+        _resolve_video_path(geometry_stage.resolve_local_capture_context(no_video_root))
+
+    def _fake_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return types.SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "streams": [
+                        {"codec_type": "audio"},
+                        {
+                            "codec_type": "video",
+                            "codec_name": "h264",
+                            "width": 1920,
+                            "height": 1080,
+                            "pix_fmt": "yuv420p",
+                            "avg_frame_rate": "30/1",
+                        },
+                    ],
+                    "format": {"duration": "4.5", "bit_rate": "800000"},
+                }
+            )
+        )
+
+    monkeypatch.setattr(geometry_stage.subprocess, "run", _fake_run)
+    probe = _probe_video(capture_root / "raw" / "walkthrough.mov")
+    assert probe["probe_status"] == "ok"
+    assert probe["width"] == 1920
+    assert probe["duration_seconds"] == "4.5"
+
+    assert _track_length_m([{"world_from_camera": "bad"}]) == 0.0
+    assert _confidence_summary([]) == {"mean_pose_confidence": 0.0, "min_pose_confidence": 0.0}
+
+    pointcloud_path = tmp_path / "pointcloud.ply"
+    _write_ascii_pointcloud(
+        pointcloud_path,
+        [
+            {"world_from_camera": "bad"},
+            {"world_from_camera": [[1.0], [0.0], [0.0], [0.0]]},
+            {
+                "world_from_camera": [
+                    [1.0, 0.0, 0.0, "bad"],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            },
+        ],
+    )
+    assert "0.000000 0.000000 0.000000" in pointcloud_path.read_text(encoding="utf-8")
+
+    fallback = _build_fallback_provider_result(
+        video_path=capture_root / "raw" / "walkthrough.mov",
+        geometry_root=tmp_path / "fallback-geometry",
+        video_probe={"width": 320, "height": 240, "duration_seconds": 2.0},
+        provider_error=RuntimeError("offline"),
+    )
+    assert fallback["intrinsics"]["fx"] == 320.0
+
+    privacy_mask = capture_root / "privacy" / "masks" / "mask.png"
+    privacy_mask.parent.mkdir(parents=True)
+    privacy_mask.write_bytes(b"mask")
+    (privacy_mask.parent / "nested").mkdir()
+    context.pipeline_root.mkdir(parents=True, exist_ok=True)
+    (context.pipeline_root / "privacy_processing_manifest.json").write_text("{}", encoding="utf-8")
+    mask_manifest_path = _build_dynamic_mask_manifest(
+        context=context,
+        geometry_root=tmp_path / "geometry-masks",
+    )
+    mask_manifest = json.loads(mask_manifest_path.read_text(encoding="utf-8"))
+    assert mask_manifest["mask_source"] == "privacy_processing"
+    assert mask_manifest["artifacts"][0]["relative_path"] == "privacy/masks/mask.png"
+
+    source_pointcloud = tmp_path / "source.ply"
+    source_pointcloud.write_text("ply\ncopied\n", encoding="utf-8")
+    canonical = _build_canonical_geometry_artifacts(
+        context=context,
+        geometry_root=tmp_path / "canonical-geometry",
+        pose_records=[],
+        geometry_source="video_to_world",
+        fallback_used=False,
+        coordinate_frame_session_id="session-1",
+        canonical_pointcloud_source_path=str(source_pointcloud),
+    )
+    assert canonical["canonical_pointcloud_path"].read_text(encoding="utf-8") == "ply\ncopied\n"
+
+
+def test_geometry_stage_da3_and_empty_frame_edges(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(tmp_path)
+
+    def _fake_da3_fallback(**_kwargs):  # type: ignore[no-untyped-def]
+        return {
+            "provider_metrics": {"fallback_used": True},
+            "provider_warnings": ["existing"],
+        }
+
+    monkeypatch.setattr(geometry_stage, "run_da3_provider", _fake_da3_fallback)
+    da3_result = _run_geometry_provider(
+        video_path=capture_root / "raw" / "walkthrough.mov",
+        video_uri="gs://bucket/video.mov",
+        geometry_root=tmp_path / "da3",
+        dynamic_mask_manifest_path=tmp_path / "masks.json",
+        dynamic_mask_manifest_uri="gs://bucket/masks.json",
+        provider="da3",
+        model="depth-anything",
+        execution_mode="offline",
+        video_probe={},
+    )
+    assert da3_result["fallback_used"] is True
+    assert da3_result["fallback_kind"] == "local_da3_synthetic_depth"
+    assert "local_da3_synthetic_depth_used" in da3_result["provider_warnings"]
+
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
+
+    def _empty_provider(**_kwargs):  # type: ignore[no-untyped-def]
+        return {"frames": []}
+
+    monkeypatch.setattr(geometry_stage, "run_video_to_world_provider", _empty_provider)
+    with pytest.raises(PipelineError, match="produced no frame records"):
+        build_geometry_stage_contract(capture_root)
+
+    def _da3_provider_without_intrinsics(**kwargs):  # type: ignore[no-untyped-def]
+        geometry_root = Path(kwargs["geometry_root"])
+        return {
+            "frames": _write_frame_artifacts(geometry_root, frame_count=1),
+            "provider_metrics": {"backend": "da3"},
+            "provider_warnings": [],
+            "provider_errors": [],
+            "provider_native_result": True,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_match_rate": 0.8,
+            "p95_pose_delta_sec": 0.04,
+        }
+
+    monkeypatch.setattr(geometry_stage, "run_da3_provider", _da3_provider_without_intrinsics)
+    da3_capture_root = _build_staged_capture(tmp_path / "da3-build")
+    da3_build = build_geometry_stage_contract(
+        da3_capture_root,
+        provider="da3",
+        model="depth-anything",
+    )
+    summary = json.loads(da3_build.summary_path.read_text(encoding="utf-8"))
+    assert summary["geometry_source"] == "local_da3"
+    assert "local_da3_not_live_video_to_world" in summary["launch_blockers"]
+    assert "intrinsics_missing" in summary["launch_blockers"]

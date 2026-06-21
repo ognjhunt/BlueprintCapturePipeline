@@ -5,6 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
+import pytest
+
+from blueprint_pipeline import runpod_provider_adapter as adapter
 from blueprint_pipeline.runpod_provider_adapter import (
     RUNPOD_API_GATE_ENV,
     RUNPOD_API_KEY_ENV,
@@ -759,3 +762,245 @@ def test_runpod_adapter_requires_endpoint_for_serverless(
 
     assert result["status"] == "blocked"
     assert f"missing_env_{RUNPOD_ENDPOINT_ID_ENV}" in result["blockers"]
+
+
+def test_runpod_adapter_helper_edges_and_config_read_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert adapter._number(True) is None
+    assert adapter._number("12.5") == 12.5
+    assert adapter._number("not-a-number") is None
+    assert adapter._bool("yes") is True
+    assert adapter._bool("off") is False
+    assert adapter._bool("maybe") is None
+    assert adapter._string_list("one") == ["one"]
+    assert adapter._redact_runtime_value(
+        ("https://example.test/file?x-goog-signature=secret", {"MY_TOKEN": "secret"})
+    ) == [
+        "https://example.test/file?x-goog-redacted-signature-param=<redacted:signed-url-signature>",
+        {"MY_TOKEN": "<redacted:secret-env>"},
+    ]
+
+    monkeypatch.delenv(RUNPOD_API_KEY_ENV, raising=False)
+    monkeypatch.setenv(RUNPOD_API_KEY_FILE_ENV, str(tmp_path / "missing-key"))
+    key, meta = adapter._read_runpod_api_key()
+    assert key == ""
+    assert meta["api_key_file_read_error"] == "FileNotFoundError"
+
+    bad_config = tmp_path / "bad-runpod.toml"
+    bad_config.write_text("[default\n", encoding="utf-8")
+    monkeypatch.delenv(RUNPOD_API_KEY_FILE_ENV, raising=False)
+    monkeypatch.setenv(RUNPOD_CONFIG_FILE_ENV, str(bad_config))
+    key, meta = adapter._read_runpod_api_key()
+    assert key == ""
+    assert meta["api_key_config_file_read_error"] == "TOMLDecodeError"
+
+
+def test_runpod_adapter_pod_env_filters_plaintext_and_forwarded_secret_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["runtime_preflight"] = {"simulator": "isaac_sim"}  # type: ignore[index]
+    request["provider_request_shape"]["environment"] = {  # type: ignore[index]
+        "secret_env_var_names": ["SKIP_SECRET"],
+        "plaintext_env_var_names": ["ALLOWED", "EMPTY", "SIGNED", "SKIP_SECRET"],
+        "plaintext_env_values": {
+            "ALLOWED": "value",
+            "EMPTY": "",
+            "SIGNED": "https://example.test/file?x-goog-signature=secret",
+            "SKIP_SECRET": "secret",
+            "IGNORED": "not-allowed",
+        },
+        "secret_values_in_artifact": False,
+    }
+    monkeypatch.setenv(adapter.RUNPOD_FORWARD_SECRET_ENV_VARS_ENV, "NOTSENSITIVE,MY_TOKEN")
+    monkeypatch.setenv("NOTSENSITIVE", "visible")
+    monkeypatch.setenv("MY_TOKEN", "secret-token")
+
+    env = {item["key"]: item["value"] for item in adapter._pod_env(request)}
+
+    assert env["ALLOWED"] == "value"
+    assert env["MY_TOKEN"] == "secret-token"
+    assert env["BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"].endswith(":2026-06-12")
+    assert "EMPTY" not in env
+    assert "SIGNED" not in env
+    assert "SKIP_SECRET" not in env
+    assert "IGNORED" not in env
+    assert "NOTSENSITIVE" not in env
+
+
+def test_runpod_adapter_pod_payload_uses_entrypoint_with_command_start(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["docker_entrypoint"] = ["bash", "-lc"]  # type: ignore[index]
+    request["provider_request_shape"]["command"] = "python worker.py --once"  # type: ignore[index]
+
+    pod = adapter._pod_payload(request)["body"]
+
+    assert pod["dockerEntrypoint"] == ["bash", "-lc"]
+    assert pod["dockerStartCmd"] == ["python worker.py --once"]
+
+
+def test_runpod_adapter_request_blocker_variants() -> None:
+    bad_request = {
+        "schema_version": "bad",
+        "provider": "vast",
+        "status": "draft",
+        "provider_request_shape": {
+            "image": {"configured_image_ref": ""},
+            "inputs": {
+                "manifest_uri": "",
+                "manifest_uri_fetchable_by_provider": False,
+                "artifact_output_uri": "",
+                "artifact_output_uri_required": True,
+            },
+            "limits": {
+                "hard_timeout_seconds": 120,
+                "idle_timeout_seconds": 60,
+                "external_watchdog_ttl_seconds": 120,
+                "max_active_workers": 1,
+            },
+            "environment": {"secret_values_in_artifact": True},
+        },
+    }
+
+    blockers = adapter._request_blockers(
+        request=bad_request,
+        mode="on-demand-pod",
+        endpoint_id="",
+    )
+
+    assert blockers == [
+        "invalid_provider_launch_request_schema",
+        "provider_launch_request_not_runpod",
+        "provider_launch_request_not_ready",
+        "missing_provider_worker_image_ref",
+        "missing_provider_worker_manifest_uri",
+        "provider_worker_manifest_uri_not_fetchable",
+        "missing_provider_artifact_output_uri",
+        "provider_external_watchdog_ttl_must_exceed_hard_timeout",
+        "provider_launch_request_secret_values_in_artifact",
+    ]
+    unversioned = {
+        "schema_version": "robot_eval_gpu_provider_launch_request.v1",
+        "provider": "runpod",
+        "status": "request_manifest_ready",
+        "provider_request_shape": {
+            "image": {
+                "configured_image_ref": "registry/worker:latest",
+                "configured_image_ref_is_versioned": False,
+            },
+            "inputs": {
+                "manifest_uri": "r2://bucket/worker.json",
+                "manifest_uri_fetchable_by_provider": True,
+                "artifact_output_uri": "r2://bucket/artifacts",
+            },
+            "limits": {
+                "hard_timeout_seconds": 120,
+                "idle_timeout_seconds": 60,
+                "external_watchdog_ttl_seconds": 180,
+                "max_active_workers": 1,
+            },
+            "environment": {"secret_values_in_artifact": False},
+        },
+    }
+    assert adapter._request_blockers(
+        request=unversioned,
+        mode="on-demand-pod",
+        endpoint_id="",
+    ) == ["prebuilt_worker_image_ref_not_versioned"]
+
+
+def test_runpod_adapter_blocks_invalid_json_auto_mode_and_unsupported_mode(
+    tmp_path: Path,
+) -> None:
+    invalid_path = tmp_path / "invalid.json"
+    invalid_path.write_text("[]", encoding="utf-8")
+    invalid = run_runpod_provider_adapter(provider_launch_request_path=invalid_path)
+    assert invalid["status"] == "blocked"
+    assert invalid["blockers"] == ["invalid_provider_launch_request_json"]
+
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    auto = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "auto.json",
+        mode="auto",
+        endpoint_id="endpoint-123",
+    )
+    assert auto["mode"] == "serverless-run"
+    assert auto["reason"] == "runpod_api_gate_blocked"
+
+    unsupported = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "unsupported.json",
+        mode="unexpected",
+    )
+    assert unsupported["status"] == "blocked"
+    assert unsupported["blockers"] == ["unsupported_runpod_adapter_mode:unexpected"]
+
+
+def test_runpod_adapter_empty_http_response_is_submitted_with_empty_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    class FakeResponse:
+        status = 202
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return b""
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="on-demand-pod",
+        allow_runpod_api_call=True,
+    )
+
+    assert result["status"] == "submitted"
+    assert result["http_status_code"] == 202
+    assert result["runpod_response"] == {}
+
+
+def test_runpod_adapter_main_errors_and_env_request_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv(adapter.PROVIDER_LAUNCH_REQUEST_ENV, raising=False)
+    with pytest.raises(SystemExit) as excinfo:
+        runpod_adapter_main([])
+    assert excinfo.value.code == 2
+
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(adapter.PROVIDER_LAUNCH_REQUEST_ENV, str(request_path))
+
+    def fake_runpod_provider_adapter(**kwargs: object) -> dict[str, object]:
+        assert kwargs["provider_launch_request_path"] == request_path
+        return {
+            "output_path": str(tmp_path / "result.json"),
+            "status": "blocked",
+            "mode": kwargs["mode"],
+            "blockers": ["blocked-for-test"],
+        }
+
+    monkeypatch.setattr(adapter, "run_runpod_provider_adapter", fake_runpod_provider_adapter)
+    exit_code = runpod_adapter_main(["--mode", "dry-run"])
+
+    assert exit_code == 1
+    assert "blockers=blocked-for-test" in capsys.readouterr().out

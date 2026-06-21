@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import blueprint_pipeline.site_eval_director as sed
 from blueprint_pipeline.evaluation_prep_stage import site_eval_director_evaluation_prep_surface
 from blueprint_pipeline.site_eval_director import (
     AgentsSdkSiteEvalDirectorAdapter,
@@ -711,3 +712,302 @@ def test_site_eval_director_real_engines_fail_closed_even_with_fixture_success(
         item["status"] == "blocked" and item["execution_performed"] is False
         for item in run_manifest["real_engine_execution_requests"]
     )
+
+
+def test_site_eval_agents_sdk_operator_success_and_failures(monkeypatch) -> None:
+    context = {"capture_root": "/tmp/capture", "repo_root": "/tmp/repo"}
+
+    monkeypatch.setattr(
+        sed,
+        "run_agents_sdk_operator",
+        lambda config: {"command": "inspect", "status": "ok"},
+    )
+    success = AgentsSdkSiteEvalDirectorAdapter(
+        agents_sdk_available=True,
+        openai_api_key="key",
+        live_env_allowed=True,
+        allow_live_operator=True,
+    ).build_request_manifest(plan_context=context)
+    assert success["status"] == "operator_completed"
+    assert success["execution_performed"] is True
+
+    def raise_runtime(_config):
+        raise RuntimeError("operator refused")
+
+    monkeypatch.setattr(sed, "run_agents_sdk_operator", raise_runtime)
+    runtime_failure = AgentsSdkSiteEvalDirectorAdapter(
+        agents_sdk_available=True,
+        openai_api_key="key",
+        live_env_allowed=True,
+        allow_live_operator=True,
+    ).build_request_manifest(plan_context=context)
+    assert runtime_failure["status"] == "operator_failed"
+    assert runtime_failure["blockers"] == ["operator refused"]
+
+    def raise_value(_config):
+        raise ValueError("bad")
+
+    monkeypatch.setattr(sed, "run_agents_sdk_operator", raise_value)
+    generic_failure = AgentsSdkSiteEvalDirectorAdapter(
+        agents_sdk_available=True,
+        openai_api_key="key",
+        live_env_allowed=True,
+        allow_live_operator=True,
+    ).build_request_manifest(plan_context=context)
+    assert generic_failure["status"] == "operator_failed"
+    assert generic_failure["blockers"] == ["agents_sdk_operator_execution_failed:ValueError"]
+
+
+def test_site_eval_codex_operator_branches(monkeypatch) -> None:
+    context = {"capture_root": "/tmp/capture", "repo_root": "/tmp/repo"}
+    monkeypatch.setattr(sed, "resolve_codex_cli_path", lambda: None)
+    blocked = CodexSdkCodeMaintainerAdapter(
+        codex_sdk_available=False,
+        openai_api_key="",
+        codex_cli_path="",
+        codex_mcp_server_available=False,
+        live_env_allowed=True,
+        allow_live_operator=True,
+    ).build_request_manifest(plan_context=context)
+    assert "missing_codex_cli" in blocked["blockers"]
+
+    def raise_runtime(_config):
+        raise RuntimeError("codex refused")
+
+    monkeypatch.setattr(sed, "run_codex_sdk_operator", raise_runtime)
+    runtime_failure = CodexSdkCodeMaintainerAdapter(
+        codex_sdk_available=True,
+        openai_api_key="key",
+        live_env_allowed=True,
+        allow_live_operator=True,
+    ).build_request_manifest(plan_context=context)
+    assert runtime_failure["status"] == "operator_failed"
+    assert runtime_failure["blockers"] == ["codex refused"]
+
+    def raise_value(_config):
+        raise ValueError("bad")
+
+    monkeypatch.setattr(sed, "run_codex_sdk_operator", raise_value)
+    generic_failure = CodexSdkCodeMaintainerAdapter(
+        codex_sdk_available=True,
+        openai_api_key="key",
+        live_env_allowed=True,
+        allow_live_operator=True,
+        sandbox="unsafe",
+    ).build_request_manifest(plan_context=context)
+    assert generic_failure["status"] == "operator_failed"
+    assert generic_failure["blockers"] == ["codex_sdk_operator_execution_failed:ValueError"]
+    assert generic_failure["request"]["sandbox"] == "read-only"
+
+
+def test_site_eval_codex_mcp_probe_and_small_helpers(tmp_path: Path, monkeypatch) -> None:
+    assert sed._module_available(("json",)) is True
+    assert sed._codex_mcp_server_available(None) is False
+
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "codex mcp-server help"
+
+    monkeypatch.setattr(sed.subprocess, "run", lambda *_args, **_kwargs: Completed())
+    assert sed._codex_mcp_server_available("codex") is True
+
+    monkeypatch.setattr(
+        sed.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad command")),
+    )
+    assert sed._codex_mcp_server_available("codex") is False
+
+    optional = tmp_path / "optional.json"
+    optional.write_text("[]", encoding="utf-8")
+    assert sed._read_optional_mapping(optional) == {}
+    assert sed._string_list("one") == ["one"]
+    assert sed._string_list(7) == ["7"]
+    assert sed._cards({"cards": "not-list"}) == []
+    assert sed._eval_cards_by_scenario([{"eval_card_id": "missing-scenario"}]) == {}
+
+    context = type("Context", (), {"scene_id": "scene-1", "capture_id": "capture-1"})()
+    pipeline_dir = tmp_path / "pipeline"
+    _write_json(
+        pipeline_dir / "robot_eval_inputs" / "headless_fixture_attempts.json",
+        {
+            "attempts": [
+                {"scenario_id": "unknown", "success": False},
+                {
+                    "scenario_id": "scenario-1",
+                    "task_id": "task-1",
+                    "success": False,
+                    "metrics": {"contact_event_count": 1},
+                },
+            ]
+        },
+    )
+    normalized = sed.FixtureSimulatorRunner().run(
+        context=context,
+        pipeline_dir=pipeline_dir,
+        automation_dir=tmp_path / "automation",
+        scenario_plan={
+            "scenarios": [
+                {
+                    "scenario_id": "scenario-1",
+                    "task_id": "task-1",
+                    "agent_inferred_components": [],
+                }
+            ]
+        },
+        generated_at="2026-06-21T00:00:00Z",
+    )
+    assert normalized.attempt["attempts"][0]["failure_mode_ids"] == [
+        "failure_contact_collision"
+    ]
+    assert sed._simulator_execution_status(
+        framework="mujoco",
+        simulator_execution_manifest={
+            "simulator_results": [
+                {
+                    "framework": "mujoco",
+                    "status": "succeeded",
+                    "reason": "ok",
+                    "simulator_execution_proven": True,
+                }
+            ]
+        },
+    )["simulator_execution_proven"] is True
+
+
+def test_site_eval_failure_calibration_and_breakage_helpers() -> None:
+    assert sed._infer_failure_modes(
+        metrics={
+            "intervention_count": 1,
+            "safety_event_count": 1,
+            "contact_event_count": 1,
+        },
+        safety_events=[],
+        contact_trace=[],
+    ) == [
+        "failure_intervention_required",
+        "failure_safety_threshold_violation",
+        "failure_contact_collision",
+    ]
+    assert sed._infer_failure_modes(metrics={}, safety_events=[], contact_trace=[]) == [
+        "failure_task_not_attempted"
+    ]
+
+    context = type("Context", (), {"scene_id": "scene-1", "capture_id": "capture-1"})()
+    labels = sed._failure_labels(
+        context=context,
+        normalized_trace={
+            "attempts": [
+                "skip-me",
+                {"attempt_id": "success", "success": True},
+                {
+                    "attempt_id": "reviewed",
+                    "success": False,
+                    "label_review_status": "human_reviewed",
+                },
+                {"attempt_id": "missing", "success": False},
+            ]
+        },
+        generated_at="2026-06-21T00:00:00Z",
+    )
+    by_id = {item["attempt_id"]: item for item in labels["labels"]}
+    assert by_id["success"]["label_status"] == "success"
+    assert by_id["reviewed"]["label_status"] == "human_reviewed"
+    assert by_id["missing"]["failure_mode_ids"] == ["failure_evidence_missing"]
+
+    rows = sed._calibration_rows({"attempts": ["skip-me", {"attempt_id": "a", "success": True}]})
+    assert rows[0]["record_id"] == "site_eval_a"
+    assert sed._group_average(rows, "missing_metric") is None
+    assert sed._breakage_categories_from_attempt(
+        {
+            "failure_mode_ids": [
+                "failure_navigation_blocked",
+                "failure_localization_or_pose_drift",
+                "failure_manipulation_miss",
+                "failure_perception_occlusion",
+                "failure_safety_threshold_violation",
+                "failure_contact_collision",
+            ]
+        }
+    ) == [
+        "blocked_path",
+        "localization_drift",
+        "manipulation_miss",
+        "narrow_clearance",
+        "occlusion",
+        "safety_proximity",
+    ]
+
+
+def test_site_eval_matrix_review_and_real_evidence_edges(tmp_path: Path) -> None:
+    context = type(
+        "Context",
+        (),
+        {"scene_id": "scene-1", "capture_id": "capture-1", "capture_root": tmp_path},
+    )()
+    matrix = sed._scenario_simulator_matrix(
+        context=context,
+        scenario_plan={"scenarios": ["skip-me", {"scenario_id": "scenario-1", "task_id": "task-1"}]},
+        framework_statuses={},
+        simulator_execution_manifest={},
+        generated_at="2026-06-21T00:00:00Z",
+    )
+    assert matrix["matrix_count"] == len(sed.SIMULATOR_FRAMEWORKS)
+
+    queue = sed._agent_review_queue(
+        context=context,
+        scenario_plan={"scenarios": ["skip-me", {"scenario_id": "scenario-1", "task_id": "task-1"}]},
+        eval_cards=[],
+        proof_boundaries={"simulator_execution_proven": True},
+        agent_request_manifests={},
+        generated_at="2026-06-21T00:00:00Z",
+    )
+    assert queue["status"] == "empty"
+
+    pipeline_dir = tmp_path / "pipeline"
+    for relative_path in sed.REAL_EVIDENCE_INPUTS.values():
+        _write_json(pipeline_dir / relative_path, {"status": "present"})
+    assert sed._real_evidence_blocked_manifest(
+        context=context,
+        pipeline_dir=pipeline_dir,
+        generated_at="2026-06-21T00:00:00Z",
+    ) is None
+
+
+def test_site_eval_director_main_success_and_failure(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sed,
+        "build_site_eval_director",
+        lambda **_kwargs: {"manifest_path": str(tmp_path / "manifest.json"), "status": "built"},
+    )
+    success_code = sed.main(
+        [
+            "--capture-root",
+            str(tmp_path / "capture"),
+            "--agents-sdk-site-eval",
+            "--codex-sdk-code-maintainer",
+            "--allow-live-agents-sdk-operator",
+            "--allow-live-codex-sdk-operator",
+            "--codex-sandbox",
+            "read-only",
+            "--codex-cli-path",
+            "codex",
+            "--allow-simulator-execution",
+            "--allow-simulator",
+            "mujoco",
+            "--allow-training",
+        ]
+    )
+    stdout = capsys.readouterr().out
+    assert success_code == 0
+    assert "status=built" in stdout
+
+    def raise_value(**_kwargs):
+        raise ValueError("bad capture root")
+
+    monkeypatch.setattr(sed, "build_site_eval_director", raise_value)
+    failure_code = sed.main(["--capture-root", str(tmp_path / "missing-capture")])
+    failure_stdout = capsys.readouterr().out
+    assert failure_code == 1
+    assert "bad capture root" in failure_stdout

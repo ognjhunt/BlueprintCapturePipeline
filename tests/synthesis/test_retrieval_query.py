@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from blueprint_pipeline.synthesis import retrieval_query
 from blueprint_pipeline.synthesis.retrieval_query import query_site
 
 
@@ -174,3 +175,128 @@ class TestHybridQuery:
         assert 1 <= len(results) <= 3
         # Record 0 is both spatially nearest and embedding-nearest; should rank first
         assert results[0]["T_world_camera"][0][3] == pytest.approx(0.0)
+
+
+def test_retrieval_query_edge_paths(tmp_path, monkeypatch):
+    index_path = tmp_path / "idx.jsonl"
+    base_record = _make_record(0, 0.0)
+    _write_index(index_path, [base_record])
+
+    with pytest.raises(ValueError, match="query_embedding"):
+        query_site(
+            site_index_path=index_path,
+            target_T_world_camera=np.eye(4),
+            mode="hybrid",
+        )
+
+    with pytest.raises(ValueError, match="Unknown query mode"):
+        query_site(
+            site_index_path=index_path,
+            target_T_world_camera=np.eye(4),
+            mode="nearest",
+        )
+
+    no_pose = {"reference_id": "no-pose"}
+    wrong_pose = {"reference_id": "wrong-pose", "T_world_camera": [1.0, 2.0, 3.0]}
+    transformed = _make_record(1, 2.0)
+    site_frame_transform = np.eye(4)
+    site_frame_transform[0, 3] = 10.0
+    transformed["site_frame_transform"] = site_frame_transform.tolist()
+    direct_pose = {"T_site_camera": np.eye(4).tolist()}
+
+    spatial = retrieval_query._query_spatial(
+        records=[no_pose, wrong_pose, transformed],
+        t_target=np.array([12.0, 0.0, 0.0]),
+        k=2,
+        max_distance_m=None,
+    )
+    assert spatial == [transformed]
+
+    assert retrieval_query._effective_pose(no_pose) is None
+    assert retrieval_query._effective_pose(wrong_pose) is None
+    assert retrieval_query._effective_pose(direct_pose)[3, 3] == pytest.approx(1.0)
+    assert retrieval_query._effective_pose(transformed)[0, 3] == pytest.approx(12.0)
+
+    hybrid_empty = retrieval_query._query_hybrid(
+        records=[no_pose, transformed],
+        t_target=np.zeros(3),
+        query_embedding=np.ones(128, dtype=np.float32),
+        storage_root=None,
+        bucket=None,
+        k=3,
+        max_distance_m=0.1,
+    )
+    assert hybrid_empty == []
+
+    valid_vec = np.zeros(128, dtype=np.float32)
+    valid_vec[0] = 1.0
+    valid_embedding_path = tmp_path / "valid.bin"
+    valid_vec.tofile(valid_embedding_path)
+    embedded = _make_record(2, 3.0)
+    embedded["embedding_uri"] = str(valid_embedding_path)
+    embedding_results = retrieval_query._query_embedding(
+        records=[base_record, embedded],
+        query_embedding=valid_vec,
+        storage_root=None,
+        bucket=None,
+        k=2,
+    )
+    assert embedding_results == [embedded]
+
+    assert retrieval_query._load_embedding({}, storage_root=None, bucket=None) is None
+    assert retrieval_query._load_embedding(
+        {"embedding_uri": str(tmp_path / "missing.bin")},
+        storage_root=None,
+        bucket=None,
+    ) is None
+
+    short_path = tmp_path / "short.bin"
+    np.ones(3, dtype=np.float32).tofile(short_path)
+    assert retrieval_query._load_embedding(
+        {"embedding_uri": str(short_path)},
+        storage_root=None,
+        bucket=None,
+    ) is None
+
+    def _raise_fromfile(*_args, **_kwargs):
+        raise OSError("cannot read")
+
+    monkeypatch.setattr(retrieval_query.np, "fromfile", _raise_fromfile)
+    assert retrieval_query._load_embedding(
+        {"embedding_uri": str(valid_embedding_path)},
+        storage_root=None,
+        bucket=None,
+    ) is None
+
+    bad_index = tmp_path / "bad_index.jsonl"
+    bad_index.write_text("\nnot-json\n" + json.dumps(transformed) + "\n", encoding="utf-8")
+    assert retrieval_query._load_site_index(tmp_path / "missing.jsonl") == []
+    assert retrieval_query._load_site_index(bad_index) == [transformed]
+
+    storage_root = tmp_path / "storage"
+    bucket_file = storage_root / "bucket-a" / "nested" / "asset.bin"
+    bucket_file.parent.mkdir(parents=True)
+    bucket_file.write_bytes(b"asset")
+    flat_file = storage_root / "flat.bin"
+    flat_file.write_bytes(b"flat")
+
+    assert retrieval_query._uri_to_local(
+        "gs://bucket-a/nested/asset.bin",
+        storage_root=storage_root,
+        bucket="bucket-a",
+    ) == bucket_file
+    assert retrieval_query._uri_to_local(
+        "gs://different/flat.bin",
+        storage_root=storage_root,
+        bucket="bucket-a",
+    ) == flat_file
+    assert retrieval_query._uri_to_local(
+        "gs://bucket-a/missing.bin",
+        storage_root=storage_root,
+        bucket="bucket-a",
+    ) == storage_root / "bucket-a" / "missing.bin"
+    assert retrieval_query._uri_to_local(
+        "gs://bucket-a/nested/asset.bin",
+        storage_root=None,
+        bucket=None,
+    ) is None

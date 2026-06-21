@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
+from urllib import error as urllib_error
 
 import pytest
 
-from blueprint_pipeline.webapp_sync import WebappSyncError, sync_webapp_pipeline_attachment
+from blueprint_pipeline.webapp_sync import (
+    WebappSyncError,
+    _artifact_uri_checksums,
+    _bool_env,
+    _buyer_access_check_payload,
+    _int_env,
+    build_webapp_pipeline_attachment_payload,
+    derive_webapp_opportunity_state,
+    derive_webapp_qualification_state,
+    sync_webapp_pipeline_attachment,
+)
 
 
 def _minimal_payload() -> dict[str, object]:
@@ -204,6 +215,44 @@ def test_sync_payload_projects_robot_eval_status_without_provider_details(monkey
     )
 
 
+def test_projection_accepts_string_guardrails_and_null_projection(monkeypatch) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_REQUIRED", raising=False)
+
+    result = sync_webapp_pipeline_attachment(
+        **_minimal_payload(),
+        robot_eval_status_projection={
+            "job_id": "job-1",
+            "buyer_display_guardrails": {
+                "must_not_display_as": "robot_readiness",
+            },
+        },
+    )
+    assert result["attachment_payload"]["robot_eval_status_projection"][
+        "buyer_display_guardrails"
+    ]["must_not_display_as"] == ["robot_readiness"]
+
+    without_projection = sync_webapp_pipeline_attachment(
+        **_minimal_payload(),
+        robot_eval_status_projection="not-a-mapping",  # type: ignore[arg-type]
+    )
+    assert without_projection["attachment_payload"]["robot_eval_status_projection"] is None
+
+
+def test_env_and_checksum_helpers_cover_invalid_and_falsey_values(monkeypatch) -> None:
+    monkeypatch.setenv("PIPELINE_SYNC_MAX_ATTEMPTS", "not-an-int")
+    monkeypatch.delenv("PIPELINE_SYNC_FLAG", raising=False)
+    assert _int_env("PIPELINE_SYNC_MAX_ATTEMPTS", 7) == 7
+    assert _bool_env("PIPELINE_SYNC_FLAG", default=True) is True
+
+    monkeypatch.setenv("PIPELINE_SYNC_FLAG", "yes")
+    assert _bool_env("PIPELINE_SYNC_FLAG") is True
+    assert _artifact_uri_checksums({"kept": "gs://bucket/object", "empty": ""}) == {
+        "kept": _artifact_uri_checksums({"kept": "gs://bucket/object"})["kept"]
+    }
+
+
 def test_sync_webapp_pipeline_attachment_raises_when_required(monkeypatch) -> None:
     monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
     monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
@@ -322,6 +371,197 @@ def test_sync_webapp_pipeline_attachment_returns_buyer_access_and_checksums(monk
     assert result["artifact_uri_checksums"]["qualification_summary_uri"]
     assert result["buyer_access_check"]["buyer_access_checked"] is True
     assert result["buyer_access_check"]["buyer_accessible"] is True
+
+
+def test_successful_sync_extracts_nested_ids_and_skips_unconfigured_buyer_access(monkeypatch) -> None:
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://webapp.test/api/pipeline-sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "token")
+    monkeypatch.delenv("PIPELINE_BUYER_ACCESS_CHECK_URL", raising=False)
+
+    class _Response:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"attachment": {"attachment_id": "nested-att-1"}}).encode(
+                "utf-8"
+            )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: _Response(),
+    )
+
+    result = sync_webapp_pipeline_attachment(**_minimal_payload())
+
+    assert result["status"] == "succeeded"
+    assert result["webapp_response_ids"] == {"attachment_id": "nested-att-1"}
+    assert result["buyer_access_check"]["status"] == "skipped"
+    assert result["buyer_access_check"]["reason"] == "buyer_access_check_not_configured"
+
+
+def test_buyer_access_check_handles_callback_failure_and_invalid_json(monkeypatch) -> None:
+    monkeypatch.setenv("PIPELINE_BUYER_ACCESS_CHECK_URL", "https://webapp.test/api/buyer-access")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "token")
+    monkeypatch.setenv("PIPELINE_BUYER_ACCESS_TIMEOUT_SECONDS", "not-an-int")
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr("blueprint_pipeline.webapp_sync.urllib_request.urlopen", _raise)
+    failed = _buyer_access_check_payload({"id": "att-1"})
+    assert failed["status"] == "blocked"
+    assert failed["blocker"] == "buyer_access_check_failed"
+
+    class _InvalidResponse:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return b"{not-json"
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: _InvalidResponse(),
+    )
+    inaccessible = _buyer_access_check_payload({"id": "att-1"})
+    assert inaccessible["buyer_access_checked"] is True
+    assert inaccessible["buyer_accessible"] is False
+    assert inaccessible["response"] == {}
+
+
+def test_derive_webapp_states_cover_ready_risky_and_incomplete_paths() -> None:
+    assert (
+        derive_webapp_qualification_state(
+            readiness_state="ready",
+            completeness_status="sufficient",
+        )
+        == "qualified_ready"
+    )
+    assert (
+        derive_webapp_qualification_state(
+            readiness_state="risky",
+            completeness_status="sufficient",
+        )
+        == "qualified_risky"
+    )
+    assert (
+        derive_webapp_qualification_state(
+            readiness_state="ready",
+            completeness_status="missing",
+        )
+        == "needs_more_evidence"
+    )
+    assert (
+        derive_webapp_qualification_state(
+            readiness_state="blocked",
+            completeness_status="sufficient",
+        )
+        == "not_ready_yet"
+    )
+    assert derive_webapp_opportunity_state(qualification_state="qualified_ready") == "handoff_ready"
+    assert derive_webapp_opportunity_state(qualification_state="qualified_risky") == "handoff_ready"
+    assert derive_webapp_opportunity_state(qualification_state="not_ready_yet") == "not_applicable"
+
+
+def test_build_payload_requires_site_submission_or_request_id() -> None:
+    with pytest.raises(ValueError, match="site_submission_id or request_id is required"):
+        build_webapp_pipeline_attachment_payload(
+            site_submission_id="",
+            request_id="",
+            scene_id="scene-1",
+            capture_id="capture-1",
+            pipeline_prefix="pipeline",
+            qualification_state="qualified_ready",
+            opportunity_state="handoff_ready",
+            artifacts={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (
+            urllib_error.HTTPError(
+                "https://webapp.test/api/pipeline-sync",
+                503,
+                "unavailable",
+                {},
+                None,
+            ),
+            "http_error:503",
+        ),
+        (urllib_error.URLError("offline"), "url_error:offline"),
+    ],
+)
+def test_sync_failures_report_http_and_url_errors(monkeypatch, exc: Exception, expected: str) -> None:
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://webapp.test/api/pipeline-sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "token")
+    monkeypatch.setenv("PIPELINE_SYNC_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("PIPELINE_SYNC_RETRY_DELAY_MS", "0")
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise exc
+
+    monkeypatch.setattr("blueprint_pipeline.webapp_sync.urllib_request.urlopen", _raise)
+
+    result = sync_webapp_pipeline_attachment(**_minimal_payload())
+
+    assert result["status"] == "failed"
+    assert result["reason"] == expected
+    assert result["attempts"] == 1
+
+
+def test_sync_retries_then_raises_required_timeout(monkeypatch) -> None:
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://webapp.test/api/pipeline-sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "token")
+    monkeypatch.setenv("PIPELINE_SYNC_REQUIRED", "true")
+    monkeypatch.setenv("PIPELINE_SYNC_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("PIPELINE_SYNC_RETRY_DELAY_MS", "1")
+    calls: list[int] = []
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(1)
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr("blueprint_pipeline.webapp_sync.urllib_request.urlopen", _raise)
+
+    with pytest.raises(WebappSyncError, match="timeouterror"):
+        sync_webapp_pipeline_attachment(**_minimal_payload())
+
+    assert len(calls) == 2
+
+
+def test_sync_invalid_json_response_fails_closed(monkeypatch) -> None:
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://webapp.test/api/pipeline-sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "token")
+    monkeypatch.setenv("PIPELINE_SYNC_MAX_ATTEMPTS", "1")
+
+    class _InvalidResponse:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return b"{not-json"
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: _InvalidResponse(),
+    )
+
+    result = sync_webapp_pipeline_attachment(**_minimal_payload())
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "invalid_json"
 
 
 def test_production_sync_is_required_and_disables_placeholder_fallback(monkeypatch) -> None:

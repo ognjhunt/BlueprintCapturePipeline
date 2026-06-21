@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import first_gpu_sample_video_preflight as video_preflight
+from blueprint_pipeline import first_gpu_sample_video_stage as stage_module
 from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.first_gpu_sample_video_stage import (
     FIRST_GPU_SAMPLE_VIDEO_STAGE_SCHEMA_VERSION,
@@ -382,3 +385,280 @@ def test_stage_first_gpu_sample_video_cli_accepts_strict_source_preflight(
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["source_video_preflight_status"] == "ready"
     assert payload["source_video_ready_for_worldlabs_first_clip"] is True
+
+
+def test_first_gpu_sample_video_preflight_media_and_cli_edges(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    video = tmp_path / "sample.mp4"
+    video.write_bytes(b"fake-video")
+    duplicate = tmp_path / "nested" / "duplicate.MOV"
+    duplicate.parent.mkdir()
+    duplicate.write_bytes(b"fake-video")
+
+    assert video_preflight._float_or_none("bad") is None
+    assert video_preflight._float_or_none(-1) is None
+    assert video_preflight._int_or_none("bad") is None
+    assert video_preflight._int_or_none(-1) is None
+    assert video_preflight._discover_videos([tmp_path / "missing", video, tmp_path]) == [
+        video.resolve(),
+        duplicate.resolve(),
+    ]
+
+    monkeypatch.setattr(video_preflight.shutil, "which", lambda _name: None)
+    unavailable = video_preflight._ffprobe_media_metadata(video)
+    assert unavailable["status"] == "unavailable"
+    assert "ffprobe_not_found" in unavailable["blockers"]
+
+    monkeypatch.setattr(video_preflight.shutil, "which", lambda _name: "/usr/bin/ffprobe")
+    monkeypatch.setattr(
+        video_preflight.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=2, stderr="x" * 500, stdout=""),
+    )
+    failed = video_preflight._ffprobe_media_metadata(video)
+    assert failed["status"] == "failed"
+    assert failed["stderr_tail"] == "x" * 400
+
+    monkeypatch.setattr(
+        video_preflight.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stderr="", stdout="{not-json"),
+    )
+    assert video_preflight._ffprobe_media_metadata(video)["blockers"] == ["ffprobe_output_not_json"]
+
+    monkeypatch.setattr(
+        video_preflight.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stderr="",
+            stdout=json.dumps(
+                {
+                    "format": {"duration": "12.5", "format_name": "mov,mp4"},
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "width": "1920",
+                            "height": "1080",
+                            "codec_name": "h264",
+                        }
+                    ],
+                }
+            ),
+        ),
+    )
+    ready = video_preflight._ffprobe_media_metadata(video)
+    assert ready["status"] == "ready"
+    assert ready["duration_seconds"] == 12.5
+    assert ready["width"] == 1920
+    assert ready["height"] == 1080
+
+    missing = video_preflight._audit_video(
+        tmp_path / "missing.mp4",
+        max_duration_seconds=30,
+        max_size_bytes=100,
+        require_probe=False,
+    )
+    assert "source_video_missing" in missing["staging_blockers"]
+    unsupported = video_preflight._audit_video(
+        tmp_path / "sample.txt",
+        max_duration_seconds=30,
+        max_size_bytes=100,
+        require_probe=False,
+    )
+    assert "unsupported_video_suffix" in unsupported["staging_blockers"]
+    empty = tmp_path / "empty.mp4"
+    empty.write_bytes(b"")
+    monkeypatch.setattr(
+        video_preflight.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({})),
+    )
+    empty_audit = video_preflight._audit_video(
+        empty,
+        max_duration_seconds=30,
+        max_size_bytes=100,
+        require_probe=False,
+    )
+    assert "source_video_empty" in empty_audit["worldlabs_blockers"]
+    assert "source_video_duration_unknown" in empty_audit["worldlabs_blockers"]
+    monkeypatch.setattr(
+        video_preflight.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stderr="",
+            stdout=json.dumps({"format": {"duration": "12.5"}, "streams": [{"codec_type": "video"}]}),
+        ),
+    )
+    big = video_preflight._audit_video(
+        video,
+        max_duration_seconds=1,
+        max_size_bytes=1,
+        require_probe=True,
+    )
+    assert "source_video_exceeds_worldlabs_size_limit" in big["worldlabs_blockers"]
+    assert "source_video_exceeds_worldlabs_duration_limit" in big["worldlabs_blockers"]
+
+    no_sources = video_preflight.build_first_gpu_sample_video_preflight()
+    assert no_sources["blockers"] == ["no_source_videos_found"]
+    no_staging = video_preflight.build_first_gpu_sample_video_preflight(
+        source_videos=[tmp_path / "sample.txt"],
+    )
+    assert no_staging["blockers"] == ["no_source_videos_ready_for_capture_staging"]
+    monkeypatch.setattr(video_preflight.shutil, "which", lambda _name: None)
+    no_worldlabs = video_preflight.build_first_gpu_sample_video_preflight(
+        source_videos=[video],
+        require_probe=True,
+        output_path=tmp_path / "preflight.json",
+    )
+    assert no_worldlabs["blockers"] == ["no_source_videos_ready_for_worldlabs_first_clip"]
+    assert no_worldlabs["output_path"].endswith("preflight.json")
+
+    assert video_preflight.main(["--output", str(tmp_path / "empty-output.json")]) == 1
+    assert "blockers=no_source_videos_found" in capsys.readouterr().out
+
+    monkeypatch.setattr(
+        video_preflight,
+        "build_first_gpu_sample_video_preflight",
+        lambda **kwargs: {
+            "status": "ready",
+            "source_video_count": 1,
+            "ready_for_worldlabs_first_clip_count": 1,
+            "blockers": [],
+            "output_path": str(kwargs["output_path"]),
+        },
+    )
+    assert video_preflight.main(["--source-video", str(video), "--output", str(tmp_path / "ready.json")]) == 0
+    assert "ready_worldlabs=1" in capsys.readouterr().out
+
+
+def test_stage_first_gpu_sample_video_validation_replacement_and_cli_print_edges(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_video = tmp_path / "sample.mp4"
+    source_video.write_bytes(b"fake-video")
+
+    with pytest.raises(PipelineError, match="scene_id is required"):
+        stage_module._safe_id("", field="scene_id")
+    with pytest.raises(PipelineError, match="path-safe"):
+        stage_module._safe_id("../bad", field="scene_id")
+    with pytest.raises(PipelineError, match="Source video is missing"):
+        stage_first_gpu_sample_video(
+            source_video=tmp_path / "missing.mp4",
+            storage_root=tmp_path / "storage",
+            scene_id="scene",
+            capture_id="capture",
+        )
+    bad_suffix = tmp_path / "sample.txt"
+    bad_suffix.write_text("not-video", encoding="utf-8")
+    with pytest.raises(PipelineError, match="Source video must use"):
+        stage_first_gpu_sample_video(
+            source_video=bad_suffix,
+            storage_root=tmp_path / "storage",
+            scene_id="scene",
+            capture_id="capture",
+        )
+
+    link_target = tmp_path / "linked.mp4"
+    stage_module._copy_or_link_video(source=source_video, target=link_target, mode="link")
+    assert link_target.is_symlink()
+    with pytest.raises(PipelineError, match="Unsupported staging mode"):
+        stage_module._copy_or_link_video(source=source_video, target=tmp_path / "bad.mp4", mode="move")
+
+    file_root = tmp_path / "file-root"
+    file_root.write_text("stale", encoding="utf-8")
+    stage_module._remove_existing_capture_root(file_root)
+    assert not file_root.exists()
+    dir_root = tmp_path / "dir-root"
+    dir_root.mkdir()
+    stage_module._remove_existing_capture_root(dir_root)
+    assert not dir_root.exists()
+
+    result = stage_first_gpu_sample_video(
+        source_video=source_video,
+        storage_root=tmp_path / "storage-existing",
+        scene_id="scene",
+        capture_id="capture",
+    )
+    capture_root = Path(result["capture_root"])
+    with pytest.raises(PipelineError, match="already exists"):
+        stage_first_gpu_sample_video(
+            source_video=source_video,
+            storage_root=tmp_path / "storage-existing",
+            scene_id="scene",
+            capture_id="capture",
+        )
+    replaced = stage_first_gpu_sample_video(
+        source_video=source_video,
+        storage_root=tmp_path / "storage-existing",
+        scene_id="scene",
+        capture_id="capture",
+        force=True,
+    )
+    assert Path(replaced["capture_root"]) == capture_root
+
+    assert main(
+        [
+            "--source-video",
+            str(tmp_path / "missing.mp4"),
+            "--storage-root",
+            str(tmp_path / "storage"),
+            "--scene-id",
+            "scene",
+            "--capture-id",
+            "capture",
+        ]
+    ) == 1
+    assert "[first-gpu-sample-stage] FAILED:" in capsys.readouterr().out
+
+    local_output = tmp_path / "local-stage.json"
+    assert main(
+        [
+            "--source-video",
+            str(source_video),
+            "--storage-root",
+            str(tmp_path / "storage-local-cli"),
+            "--scene-id",
+            "scene",
+            "--capture-id",
+            "capture",
+            "--site-submission-id",
+            "site-1",
+            "--request-id",
+            "request-1",
+            "--buyer-request-id",
+            "buyer-1",
+            "--capture-job-id",
+            "capture-job-1",
+            "--stage-local-webapp-rehearsal-request",
+            "--output",
+            str(local_output),
+        ]
+    ) == 0
+    assert "local_webapp_rehearsal_staged_inputs=" in capsys.readouterr().out
+
+    sim_output = tmp_path / "sim-stage.json"
+    assert main(
+        [
+            "--source-video",
+            str(source_video),
+            "--storage-root",
+            str(tmp_path / "storage-sim-cli"),
+            "--scene-id",
+            "scene",
+            "--capture-id",
+            "capture",
+            "--run-simulation-automation",
+            "--output",
+            str(sim_output),
+        ]
+    ) == 0
+    sim_stdout = capsys.readouterr().out
+    assert "simulation_automation_status=blocked" in sim_stdout
+    assert "gpu_handoff_blockers=owner_gpu_simulator_execution_not_run" in sim_stdout
+    assert "gpu_handoff_hard_preflight_blockers=" in sim_stdout

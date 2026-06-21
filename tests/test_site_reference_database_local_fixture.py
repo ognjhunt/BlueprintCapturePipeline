@@ -54,7 +54,7 @@ def test_site_reference_v1_fixture_projects_staged_capture_without_dense_leakage
     tmp_path: Path,
 ) -> None:
     first = build_site_reference_database_v1_fixture(tmp_path / "first")
-    second = build_site_reference_database_v1_fixture(tmp_path / "second")
+    second = build_site_reference_database_v1_fixture(tmp_path / "first")
 
     projection_path = Path(first["summary_projection_path"])
     site_index_path = Path(first["site_reference_index_path"])

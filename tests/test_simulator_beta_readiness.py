@@ -7,6 +7,14 @@ from PIL import Image
 
 from blueprint_pipeline.simulator_beta_readiness import (
     SIMULATOR_BETA_READINESS_SCHEMA_VERSION,
+    _frame_evidence,
+    _handoff_gate,
+    _image_nonblank,
+    _mujoco_gate,
+    _official_policy_gate,
+    _runpod_gate,
+    _select_runpod_live_execution_proof,
+    _webapp_gate,
     build_simulator_beta_readiness,
     main,
 )
@@ -331,3 +339,172 @@ def test_simulator_beta_readiness_cli(tmp_path: Path) -> None:
         / "simulator_beta_readiness_manifest.json"
     )
     assert manifest["status"] == "ready_for_simulator_beta"
+
+
+def test_simulator_beta_readiness_frame_and_selector_edges(tmp_path: Path) -> None:
+    assert _image_nonblank(tmp_path / "missing.png") is False
+
+    blank = tmp_path / "blank.png"
+    blank.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), color=(0, 0, 0)).save(blank)
+    evidence, blockers = _frame_evidence(["", tmp_path / "missing-frame.png", blank])
+
+    assert evidence == [str(blank)]
+    assert f"missing_sim_frame:{tmp_path / 'missing-frame.png'}" in blockers
+    assert f"blank_or_unreadable_sim_frame:{blank}" in blockers
+
+    capture_root = tmp_path / "capture"
+    older = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "job-1"
+        / "runpod_live_execution_proof.json"
+    )
+    newer = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "job-1"
+        / "runpod_live_execution_proof.ready.json"
+    )
+    _write_json(
+        older,
+        {
+            "production_runpod_worker_execution_proven": False,
+            "simulator_execution_proven": True,
+            "shutdown_or_termination_proof": True,
+            "blockers": ["older"],
+        },
+    )
+    _write_json(
+        newer,
+        {
+            "production_runpod_worker_execution_proven": True,
+            "simulator_execution_proven": True,
+            "shutdown_or_termination_proof": True,
+            "blockers": [],
+        },
+    )
+
+    selected_path, selected_payload = _select_runpod_live_execution_proof(capture_root)
+
+    assert selected_path == newer
+    assert selected_payload is not None
+    assert selected_payload["production_runpod_worker_execution_proven"] is True
+
+
+def test_simulator_beta_readiness_negative_gate_branches(tmp_path: Path) -> None:
+    bad_mujoco = _mujoco_gate(
+        tmp_path / "mujoco.json",
+        {
+            "status": "failed",
+            "scene_loaded": False,
+            "unitree_g1_asset_spawned": False,
+            "mujoco_g1_asset_execution_proven": False,
+            "default_sim_policy_execution_proven": False,
+            "sim_robot_pov_evidence_proven": False,
+            "attempts": [{"success": False, "metrics": {}}],
+            "artifact_paths": {},
+        },
+    )
+    assert "mujoco_status:failed" in bad_mujoco["blockers"]
+    assert "scene_loaded_not_true" in bad_mujoco["blockers"]
+    assert "mujoco_attempt_not_successful" in bad_mujoco["blockers"]
+    assert "mujoco_simulated_step_count_missing" in bad_mujoco["blockers"]
+
+    missing_trace_policy = _official_policy_gate(
+        tmp_path / "policy.json",
+        {
+            "status": "failed",
+            "proof_boundary": {},
+            "execution": {"trace_path": str(tmp_path / "missing-trace.jsonl")},
+            "metrics": {
+                "finite_state": False,
+                "finite_actions": False,
+                "final_base_position_xyz": ["bad"],
+                "command_xyz": [],
+            },
+        },
+    )
+    assert "official_policy_status:failed" in missing_trace_policy["blockers"]
+    assert "non_default_policy_execution_trace_not_proven" in missing_trace_policy["blockers"]
+    assert "policy_metrics_not_tied_to_scenario" in missing_trace_policy["blockers"]
+    assert "official_policy_finite_state_not_true" in missing_trace_policy["blockers"]
+    assert "official_policy_finite_actions_not_true" in missing_trace_policy["blockers"]
+    assert "official_policy_base_displacement_missing_or_too_small" in missing_trace_policy["blockers"]
+    assert "official_policy_command_profile_missing" in missing_trace_policy["blockers"]
+    assert any(str(blocker).startswith("missing_policy_trace:") for blocker in missing_trace_policy["blockers"])
+
+    empty_trace = tmp_path / "empty-trace.jsonl"
+    empty_trace.write_text("", encoding="utf-8")
+    empty_trace_policy = _official_policy_gate(
+        tmp_path / "policy.json",
+        {
+            "status": "completed",
+            "proof_boundary": {
+                "non_default_policy_execution_trace_proven": True,
+                "policy_metrics_tied_to_scenario_variation": True,
+            },
+            "execution": {"trace_path": str(empty_trace)},
+            "metrics": {
+                "finite_state": True,
+                "finite_actions": True,
+                "final_base_position_xyz": [1.0, 0.0, 0.7],
+                "command_xyz": [0.4, 0.0, 0.0],
+            },
+        },
+    )
+    assert "empty_policy_execution_trace" in empty_trace_policy["blockers"]
+
+    handoff = _handoff_gate(
+        tmp_path / "handoff.json",
+        {
+            "status": "blocked",
+            "robot_team_handoff_dataset_status": "blocked",
+            "simulated_robot_pov_status": "blocked",
+            "high_quality_video_status": "blocked",
+            "training_grade_policy_rollout_proven": False,
+            "steps": 0,
+            "control_updates": 0,
+            "blockers": ["manual_blocker"],
+            "artifacts": {},
+        },
+    )
+    assert "handoff_status:blocked" in handoff["blockers"]
+    assert "robot_team_handoff_dataset_not_complete" in handoff["blockers"]
+    assert "simulated_robot_pov_not_complete" in handoff["blockers"]
+    assert "high_quality_video_not_complete" in handoff["blockers"]
+    assert "training_grade_policy_rollout_not_proven_by_handoff_gate" in handoff["blockers"]
+    assert "handoff_steps_missing" in handoff["blockers"]
+    assert "handoff_control_updates_missing" in handoff["blockers"]
+
+    runpod = _runpod_gate(
+        tmp_path / "runpod.json",
+        {
+            "production_runpod_worker_execution_proven": False,
+            "simulator_execution_proven": False,
+            "shutdown_or_termination_proof": False,
+            "blockers": ["provider_blocked"],
+        },
+    )
+    assert "production_runpod_worker_execution_not_proven" in runpod["blockers"]
+    assert "runpod_simulator_execution_not_proven" in runpod["blockers"]
+    assert "runpod_shutdown_proof_missing" in runpod["blockers"]
+
+    webapp = _webapp_gate(
+        tmp_path / "webapp.json",
+        {
+            "status": "failed",
+            "proof_boundary": {},
+            "webapp_route": {},
+            "pipeline_forward": {},
+            "pipeline_intake": {"input_blockers": ["intake_blocker"]},
+        },
+    )
+    assert "webapp_route_status:failed" in webapp["blockers"]
+    assert "production_live_webapp_forwarding_not_proven" in webapp["blockers"]
+    assert "production_webapp_deployment_not_proven" in webapp["blockers"]
+    assert "pipeline_forward_not_accepted" in webapp["blockers"]
+    assert "pipeline_intake_not_accepted" in webapp["blockers"]
+    assert "intake_blocker" in webapp["blockers"]

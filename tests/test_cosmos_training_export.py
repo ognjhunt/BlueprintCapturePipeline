@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from blueprint_pipeline.synthesis import cosmos_training_export as export_module
 from blueprint_pipeline.synthesis.cosmos_training_export import export_cosmos_training_substrate
 
 
@@ -334,3 +335,103 @@ def test_export_cosmos_training_substrate_surfaces_sparse_view_interpolation_whe
     assert future_anchor_manifest["re_grounded_target_count"] >= 1
     assert target_row["future_anchor_status"] == "re_grounded"
     assert target_row["future_anchor_count"] >= 1
+
+
+def test_cosmos_training_export_missing_and_selection_edge_branches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    jsonl_path = tmp_path / "rows.jsonl"
+    jsonl_path.write_text('\n{"a":1}\n', encoding="utf-8")
+    assert export_module._read_jsonl(jsonl_path) == [{"a": 1}]
+
+    missing_root = tmp_path / "bucket" / "scenes" / "scene-missing" / "captures" / "capture-missing"
+    missing_manifest = export_cosmos_training_substrate(capture_root=missing_root)
+    assert missing_manifest["status"] == "missing"
+    assert missing_manifest["reason"] == "insufficient_dense_index_records"
+
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    (capture_root / "world_model_export").mkdir(parents=True)
+    dense_rows = [
+        {
+            "frame_id": "flat",
+            "frame_uri": "gs://bucket/flat.jpg",
+            "embedding_uri": "gs://bucket/flat.bin",
+            "included_in_index": True,
+            "T_world_camera": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            "intrinsics": {"width": 16, "height": 16},
+        },
+        {
+            "frame_id": "bad-shape",
+            "frame_uri": "gs://bucket/bad.jpg",
+            "embedding_uri": "gs://bucket/bad.bin",
+            "included_in_index": True,
+            "T_world_camera": [[1, 2], [3, 4]],
+            "intrinsics": {"width": 16, "height": 16},
+        },
+    ]
+    (capture_root / "world_model_export" / "dense_index.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in dense_rows),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        export_module,
+        "build_reference_selection_manifest",
+        lambda **_kwargs: {
+            "entries": [
+                {"target_index": 99, "selected_references": []},
+                {"target_index": 0, "selected_references": []},
+                {
+                    "target_index": 0,
+                    "target_frame_id": "flat",
+                    "selected_references": [{"candidate_index": 1, "score": 0.9}],
+                    "selected_reference_ids": ["bad-shape"],
+                    "selected_reference_frame_ids": ["bad-shape"],
+                },
+                {
+                    "target_index": 1,
+                    "target_frame_id": "bad-shape",
+                    "selected_references": [{"candidate_index": 0, "score": 0.8}],
+                    "selected_reference_ids": ["flat"],
+                    "selected_reference_frame_ids": ["flat"],
+                },
+            ],
+            "target_reference_decoupling_mode": "unit_test",
+        },
+    )
+    monkeypatch.setattr(
+        export_module,
+        "build_legacy_reference_selection_manifest",
+        lambda **_kwargs: {"entries": []},
+    )
+    monkeypatch.setattr(
+        export_module,
+        "build_reference_selection_comparison",
+        lambda **_kwargs: {"entries": []},
+    )
+    monkeypatch.setattr(
+        export_module,
+        "build_synthetic_trajectory_manifest",
+        lambda **_kwargs: {"entries": []},
+    )
+    monkeypatch.setattr(
+        export_module,
+        "build_sparse_view_interpolation_manifest",
+        lambda **_kwargs: {"entries": []},
+    )
+    monkeypatch.setattr(
+        export_module,
+        "build_future_anchor_regrounding_manifest",
+        lambda **_kwargs: {"entries": []},
+    )
+
+    manifest = export_cosmos_training_substrate(capture_root=capture_root)
+    paired_rows = [
+        json.loads(line)
+        for line in Path(manifest["paired_reference_target_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert manifest["status"] == "ready"
+    assert [row["frame_id"] for row in paired_rows] == ["flat", "bad-shape"]

@@ -109,12 +109,6 @@ def _read_optional_mapping(path: Path) -> Dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
-def _runtime_readiness_state(*, launchable: bool, blockers: Sequence[str]) -> str:
-    if launchable:
-        return "launchable"
-    return "blocked" if blockers else "incomplete"
-
-
 def _cosmos_runtime_backend_variants(
     *,
     context,
@@ -1587,14 +1581,6 @@ def _primary_runtime_render_descriptor(
             "runtime_render_source": "geometry_conditioned_capture",
             "fallback_mode": "geometry_lane_conditioning",
         }
-    if raw_video_ref and poses_ref and intrinsics_ref and depth_ref:
-        return {
-            "world_model_backend": "site_world_runtime",
-            "scene_representation": "site_world_runtime_video_world_model_v1",
-            "runtime_render_source": "site_world_runtime_full_capture",
-            "fallback_mode": "arkit_rgbd_last_resort",
-        }
-
     return {
         "world_model_backend": str(canonical_world_model.get("world_model_backend") or "site_world_runtime"),
         "scene_representation": str(canonical_world_model.get("scene_representation") or "unavailable"),

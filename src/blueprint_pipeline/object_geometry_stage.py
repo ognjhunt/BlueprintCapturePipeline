@@ -91,23 +91,44 @@ def _write_simple_png(
 ) -> None:
     width = max(1, int(width))
     height = max(1, int(height))
+    clamped_box: Optional[tuple[int, int, int, int]] = None
+    if box is not None:
+        x1 = max(0, min(width, int(box[0])))
+        y1 = max(0, min(height, int(box[1])))
+        x2 = max(0, min(width, int(box[2])))
+        y2 = max(0, min(height, int(box[3])))
+        if x2 > x1 and y2 > y1:
+            clamped_box = (x1, y1, x2, y2)
     rows: List[bytes] = []
     if grayscale is not None:
         value = max(0, min(255, int(grayscale)))
+        filled = bytes([value]) * width
+        empty = b"\x00" * width
         for y in range(height):
-            row = bytearray()
-            for x in range(width):
-                inside = box is None or (box[0] <= x < box[2] and box[1] <= y < box[3])
-                row.append(value if inside else 0)
-            rows.append(b"\x00" + bytes(row))
+            if box is None:
+                row = filled
+            elif clamped_box is not None and clamped_box[1] <= y < clamped_box[3]:
+                x1, _, x2, _ = clamped_box
+                row = empty[:x1] + (bytes([value]) * (x2 - x1)) + empty[x2:]
+            else:
+                row = empty
+            rows.append(b"\x00" + row)
         ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
     else:
+        background_pixel = bytes((background[0], background[1], background[2]))
+        fill_pixel = bytes((box_fill[0], box_fill[1], box_fill[2]))
+        background_row = background_pixel * width
         for y in range(height):
-            row = bytearray()
-            for x in range(width):
-                pixel = box_fill if box is not None and box[0] <= x < box[2] and box[1] <= y < box[3] else background
-                row.extend(bytes((pixel[0], pixel[1], pixel[2])))
-            rows.append(b"\x00" + bytes(row))
+            if clamped_box is not None and clamped_box[1] <= y < clamped_box[3]:
+                x1, _, x2, _ = clamped_box
+                row = (
+                    background_row[: x1 * 3]
+                    + (fill_pixel * (x2 - x1))
+                    + background_row[x2 * 3 :]
+                )
+            else:
+                row = background_row
+            rows.append(b"\x00" + row)
         ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     payload = (
         b"\x89PNG\r\n\x1a\n"

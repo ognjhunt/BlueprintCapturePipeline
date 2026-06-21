@@ -221,6 +221,8 @@ def _trace_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _git_commit(path: Path) -> str | None:
+    if not (path / ".git").exists():
+        return None
     result = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "HEAD"],
         check=False,
@@ -2502,7 +2504,9 @@ def build_official_g1_policy_handoff(
         "source_repository": {
             **_mapping(policy_manifest.get("source_repository")),
             "resolved_local_root": str(policy_root),
-            "resolved_git_commit": _git_commit(policy_root),
+            "resolved_git_commit": _git_commit(policy_root)
+            or _string(_mapping(policy_manifest.get("source_repository")).get("pinned_commit"))
+            or None,
         },
         "official_artifact_hashes": {
             "config_sha256": _sha256(paths["config"]),

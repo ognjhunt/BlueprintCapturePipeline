@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import runpy
+import sys
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 from blueprint_pipeline.marble_sim_assets import build_marble_sim_assets
+from blueprint_pipeline import worldlabs_asset_materialization as w
 from blueprint_pipeline.worldlabs_asset_materialization import materialize_worldlabs_assets
 
 
@@ -143,3 +147,209 @@ def test_materialize_worldlabs_assets_downloads_collider_and_writes_export_manif
     assert marble_asset["assets"]["mesh"]["remote_collider_mesh_glb_url"].endswith(
         "/collider.glb"
     )
+
+
+def test_worldlabs_asset_materialization_helpers_and_download_edges(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    assert w._mapping({"a": 1}) == {"a": 1}
+    assert w._mapping([]) == {}
+    assert w._string(None) == ""
+    assert w._read_optional_mapping(tmp_path / "missing.json") == {}
+    list_payload = tmp_path / "list.json"
+    list_payload.write_text("[]", encoding="utf-8")
+    assert w._read_optional_mapping(list_payload) == {}
+    nested = tmp_path / "a" / "b.txt"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("bytes", encoding="utf-8")
+    assert w._relative_to(tmp_path, nested) == "a/b.txt"
+    assert w._sha_file(nested) == sha256(b"bytes").hexdigest()
+    assert w._safe_token(" .. bad token !! ") == "bad_token"
+    assert w._safe_token("!!!") == "asset"
+    assert w._suffix_from_url("https://x/model.glb?sig=1#frag", ".bin") == ".glb"
+    assert w._suffix_from_url("https://x/model", ".bin") == ".bin"
+    assert w._world_id({"id": "world-id"}) == "world-id"
+    assert w._world_id({}) is None
+
+    assert w._collect_url_map("https://x/a.glb", default_key="asset") == {"asset": "https://x/a.glb"}
+    assert w._collect_url_map(
+        {"High Quality": {"asset_url": "https://x/hq.glb"}, "empty": "", "bad": 3},
+        default_key="asset",
+    ) == {"High_Quality": "https://x/hq.glb"}
+    assert w._collect_url_map(
+        [{"name": "full splat", "url": "https://x/full.spz"}, "https://x/fallback.spz", 3],
+        default_key="spz",
+    ) == {"full_splat": "https://x/full.spz", "spz_1": "https://x/fallback.spz"}
+    assert w._collect_url_map(3, default_key="asset") == {}
+
+    candidates, skipped = w._candidate_assets(
+        {
+            "assets": {
+                "mesh": {
+                    "collider_mesh_glb_url": "https://x/collider",
+                    "high_quality_mesh_glb_urls": {"display": "https://x/display.glb"},
+                },
+                "splats": {
+                    "spz_urls": [{"name": "full", "url": "https://x/full.spz"}],
+                    "ply_url": "https://x/full.ply",
+                    "usd_url": "https://x/full.usd",
+                },
+            }
+        },
+        include_visual_assets=False,
+    )
+    assert [candidate["kind"] for candidate in candidates] == ["collider_mesh_glb"]
+    assert {candidate["kind"] for candidate in skipped} == {
+        "high_quality_mesh_glb",
+        "splat_spz",
+        "splat_ply",
+        "scene_usd",
+    }
+    candidates, skipped = w._candidate_assets(
+        {
+            "assets": {
+                "collider_mesh_url": "https://x/collider.glb",
+                "spz_urls": "https://x/full.spz",
+                "ply_urls": {"raw": "https://x/raw.ply"},
+                "mesh": {"hq_mesh_url": "https://x/hq.glb"},
+                "splats": {"usd_urls": {"scene": {"uri": "https://x/scene.usd"}}},
+            }
+        },
+        include_visual_assets=True,
+    )
+    assert len(candidates) == 5
+    assert skipped == []
+
+    class FakeResponse:
+        def __init__(self, chunks: list[bytes], headers: dict[str, str] | None = None) -> None:
+            self.chunks = chunks
+            self.headers = headers or {}
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _size: int) -> bytes:
+            return self.chunks.pop(0) if self.chunks else b""
+
+    monkeypatch.setattr(
+        w._urllib_request,
+        "urlopen",
+        lambda *_args, **_kwargs: FakeResponse([b"ab", b"cd"], {"Content-Length": "4"}),
+    )
+    proof = w._download_remote_asset("https://x/a.glb", tmp_path / "downloads" / "a.glb", max_bytes=10)
+    assert proof["size_bytes"] == 4
+    assert proof["sha256"] == sha256(b"abcd").hexdigest()
+    monkeypatch.setattr(
+        w._urllib_request,
+        "urlopen",
+        lambda *_args, **_kwargs: FakeResponse([b"ok"], {"Content-Length": "not-a-number"}),
+    )
+    assert w._download_remote_asset("https://x/invalid-length.glb", tmp_path / "downloads" / "invalid.glb", max_bytes=10)[
+        "size_bytes"
+    ] == 2
+
+    monkeypatch.setattr(
+        w._urllib_request,
+        "urlopen",
+        lambda *_args, **_kwargs: FakeResponse([b"too-large"], {"Content-Length": "99"}),
+    )
+    too_large = tmp_path / "downloads" / "too-large.glb"
+    try:
+        w._download_remote_asset("https://x/b.glb", too_large, max_bytes=1)
+    except RuntimeError as exc:
+        assert str(exc) == "remote_asset_exceeds_max_bytes"
+    assert not too_large.exists()
+    monkeypatch.setattr(
+        w._urllib_request,
+        "urlopen",
+        lambda *_args, **_kwargs: FakeResponse([b"stream-too-large"], {}),
+    )
+    stream_too_large = tmp_path / "downloads" / "stream-too-large.glb"
+    try:
+        w._download_remote_asset("https://x/stream.glb", stream_too_large, max_bytes=1)
+    except RuntimeError as exc:
+        assert str(exc) == "remote_asset_exceeds_max_bytes"
+    assert not stream_too_large.exists()
+    monkeypatch.setattr(
+        w._urllib_request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("network down")),
+    )
+    try:
+        w._download_remote_asset("https://x/c.glb", tmp_path / "downloads" / "fail.glb", max_bytes=None)
+    except OSError as exc:
+        assert "network down" in str(exc)
+
+
+def test_worldlabs_asset_materialization_statuses_and_cli(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    try:
+        materialize_worldlabs_assets(capture_root=capture_root)
+    except Exception as exc:
+        assert "World Labs world manifest" in str(exc)
+
+    _write_json(capture_root / "pipeline" / "worldlabs_world_manifest.json", {"world_id": "world-empty"})
+    no_assets = materialize_worldlabs_assets(capture_root=capture_root)
+    assert no_assets["status"] == "blocked_no_materializable_assets"
+
+    _write_json(
+        capture_root / "pipeline" / "worldlabs_world_manifest.json",
+        {
+            "id": "world-partial",
+            "assets": {
+                "mesh": {
+                    "collider_mesh_url": "file:///local.glb",
+                    "high_quality_mesh_url": "https://x/hq.glb",
+                }
+            },
+        },
+    )
+
+    def fake_download(url: str, output_path: Path, *, max_bytes: int | None) -> dict[str, object]:
+        del max_bytes
+        if url.endswith("fail.glb"):
+            raise RuntimeError("download_failed")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(url.encode("utf-8"))
+        return {"size_bytes": output_path.stat().st_size, "sha256": w._sha_file(output_path), "content_type": None}
+
+    monkeypatch.setattr(w, "_download_remote_asset", fake_download)
+    partial = materialize_worldlabs_assets(capture_root=capture_root, include_visual_assets=True)
+    assert partial["status"] == "complete_with_download_failures"
+    manifest = json.loads(
+        (capture_root / "pipeline" / "worldlabs_assets" / "materialized_assets_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["failures"][0]["reason"] == "unsupported_or_missing_remote_url"
+    assert manifest["world_id"] == "world-partial"
+
+    _write_json(
+        capture_root / "pipeline" / "worldlabs_world_manifest.json",
+        {"world_id": "world-fail", "assets": {"mesh": {"collider_mesh_url": "https://x/fail.glb"}}},
+    )
+    blocked = materialize_worldlabs_assets(capture_root=capture_root)
+    assert blocked["status"] == "blocked"
+
+    _write_json(
+        capture_root / "pipeline" / "worldlabs_world_manifest.json",
+        {"world_id": "world-cli", "assets": {"mesh": {"collider_mesh_url": "https://x/cli.glb"}}},
+    )
+    assert w.main(["--capture-root", str(capture_root), "--include-visual-assets", "--max-asset-bytes", "0"]) == 0
+    assert "status=complete" in capsys.readouterr().out
+    assert w.main(["--capture-root", str(tmp_path / "missing-capture")]) == 1
+    assert "FAILED" in capsys.readouterr().out
+
+    monkeypatch.setattr(sys, "argv", ["worldlabs_asset_materialization", "--capture-root", str(capture_root)])
+    try:
+        runpy.run_module("blueprint_pipeline.worldlabs_asset_materialization", run_name="__main__")
+    except SystemExit as exc:
+        assert exc.code == 0

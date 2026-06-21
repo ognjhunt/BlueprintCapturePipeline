@@ -1,9 +1,25 @@
 from __future__ import annotations
 
 import json
+import runpy
+import sys
 from pathlib import Path
 
-from blueprint_pipeline.simready_assets import build_simready_assets
+import pytest
+
+from blueprint_pipeline.simready_assets import (
+    _box_from_object,
+    _float_list,
+    _normalize_objects,
+    _resolve_site_id,
+    _scene_bounds,
+    _stable_slug,
+    _string_list,
+    _task_list,
+    _validation_payload,
+    build_simready_assets,
+    main,
+)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -186,3 +202,112 @@ def test_simready_assets_keep_fallback_geometry_review_only(tmp_path: Path) -> N
     assert "fallback_geometry_review_only" in validation["warnings"]
     assert validation["claim_boundary"]["simulator_execution_proven"] is False
     assert validation["claim_boundary"]["robot_readiness_proven"] is False
+
+
+def test_simready_normalizers_cover_defaults_and_bad_shapes() -> None:
+    assert _stable_slug("", fallback="fallback") == "fallback"
+    assert _stable_slug("123 bad/name", fallback="fallback") == "n_123_bad_name"
+    assert _float_list(["bad"], fallback=(1.0, 2.0, 3.0)) == [0.0, 2.0, 3.0]
+    assert _box_from_object({}) == {"center": [0.0, 0.0, 0.25], "extents": [0.25, 0.25, 0.25]}
+    assert _normalize_objects({"objects": "not-a-list"}) == []
+    assert _normalize_objects({"objects": ["skip", {"object_id": "   ", "bbox": {"center": [1]}}]})[
+        0
+    ]["object_id"] == "object_1"
+    assert _task_list({"tasks": "not-a-list"}) == []
+    assert _task_list({"tasks": ["skip", {"id": "task-id"}]})[0]["task_id"] == "task-id"
+    assert _string_list("one") == ["one"]
+    assert _string_list(7) == ["7"]
+    assert _resolve_site_id(descriptor={}, raw_manifest={}) == ""
+    assert _scene_bounds([]) == {"center": [0.0, 0.0, 0.0], "extents": [2.0, 2.0, 0.05]}
+
+
+def test_simready_reports_missing_site_id_and_missing_site_reference_artifacts(
+    tmp_path: Path,
+) -> None:
+    no_site_capture = _build_capture_root(tmp_path / "no-site", site_id="")
+
+    no_site = build_simready_assets(
+        capture_root=no_site_capture,
+        object_geometry_manifest=_object_geometry_manifest(),
+        task_anchor_manifest=_task_anchor_manifest(),
+        hosted_session_runtime_manifest={"robot_profiles": [{"id": "hosted-robot"}]},
+    )
+
+    no_site_summary = json.loads(
+        (
+            no_site_capture / "pipeline" / "simready" / "site_reference_summary.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert no_site["status"] == "degraded"
+    assert no_site_summary["status"] == "blocked"
+    assert no_site_summary["blockers"] == ["missing_site_id"]
+
+    missing_reference_capture = _build_capture_root(tmp_path / "missing-reference")
+    site_root = (
+        tmp_path
+        / "missing-reference"
+        / "local-blueprint"
+        / "sites"
+        / "site-1"
+        / "reference_memory"
+    )
+    (site_root / "site_reference_manifest.json").unlink()
+    (site_root / "site_reference_index.jsonl").unlink()
+
+    build_simready_assets(
+        capture_root=missing_reference_capture,
+        object_geometry_manifest=_object_geometry_manifest(),
+        task_anchor_manifest=_task_anchor_manifest(),
+        site_world_spec=_site_world_spec(),
+    )
+
+    missing_summary = json.loads(
+        (
+            missing_reference_capture / "pipeline" / "simready" / "site_reference_summary.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert missing_summary["status"] == "blocked"
+    assert missing_summary["blockers"] == [
+        "missing_site_reference_manifest",
+        "missing_site_reference_index",
+    ]
+
+
+def test_simready_validation_payload_blocks_missing_inputs_and_artifacts(tmp_path: Path) -> None:
+    validation = _validation_payload(
+        objects=[],
+        tasks=[],
+        robot_profiles=[],
+        site_reference_summary={"status": "blocked", "blockers": ["missing_site_id"]},
+        geometry_truth={"geometry_live_ready": False},
+        framework_artifacts={"mujoco": {"format": "MJCF_XML", "path": str(tmp_path / "missing.xml")}},
+    )
+
+    assert validation["overall_status"] == "blocked"
+    assert validation["blockers"] == [
+        "missing_object_geometry_manifest",
+        "missing_task_anchor_manifest",
+        "missing_robot_profiles",
+        "missing_mujoco_artifact",
+    ]
+    assert "missing_site_id" in validation["warnings"]
+    assert "geometry_not_live_sim_or_video_to_world_proof" in validation["warnings"]
+
+
+def test_simready_main_reports_success_failure_and_module_entrypoint(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    assert main(["--capture-root", str(tmp_path / "not-a-capture")]) == 1
+    assert "[simready] FAILED:" in capsys.readouterr().out
+
+    capture_root = _build_capture_root(tmp_path / "cli")
+    assert main(["--capture-root", str(capture_root)]) == 0
+    assert "[simready] status=" in capsys.readouterr().out
+
+    monkeypatch.setattr(sys, "argv", ["simready_assets.py", "--capture-root", str(capture_root)])
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("blueprint_pipeline.simready_assets", run_name="__main__")
+    assert exc_info.value.code == 0
+    assert "[simready] manifest=" in capsys.readouterr().out

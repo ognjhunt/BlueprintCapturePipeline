@@ -250,11 +250,7 @@ def _proven_simulator_engines(*eval_results: Mapping[str, Any]) -> list[str]:
         if not _eval_has_simulator_execution(eval_result):
             continue
         attempts = eval_result.get("attempts")
-        if not isinstance(attempts, list):
-            continue
         for attempt in attempts:
-            if not isinstance(attempt, Mapping):
-                continue
             engine = _string(attempt.get("simulator_engine") or attempt.get("simulatorEngine"))
             if engine:
                 engines.add(engine)
