@@ -98,6 +98,7 @@ from __future__ import annotations
 
 import json
 import os
+import textwrap
 import shutil
 import subprocess
 import sys
@@ -231,11 +232,183 @@ def _clone_source(work_dir: Path) -> tuple[Path | None, dict[str, Any]]:
     }
 
 
-def _framework_probe(python: str) -> dict[str, Any]:
+def _python_env_for_source(source_root: Path | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+    if source_root is not None:
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            str(source_root)
+            if not existing_pythonpath
+            else str(source_root) + os.pathsep + existing_pythonpath
+        )
+    return env
+
+
+def _write_text_if_changed(path: Path, text: str) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.read_text(encoding="utf-8") == text:
+        return False
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
+def _apply_oscar_source_compatibility(source_root: Path) -> dict[str, Any]:
+    strategy = os.environ.get(
+        "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY",
+        "torch_sdpa_compat_shim",
+    ).strip() or "torch_sdpa_compat_shim"
+    if strategy in {"require_real_transformer_engine", "none", "disabled"}:
+        return {
+            "status": "skipped",
+            "strategy": strategy,
+            "files_written": [],
+            "raw_secret_values_recorded": False,
+    }
+    shim_root = source_root / "transformer_engine"
+    files = {
+        shim_root / "__init__.py": """
+# Blueprint-local TransformerEngine compatibility shim for OSCAR inference.
+# This is only written when the real transformer_engine package is not required.
+from . import pytorch
+
+BLUEPRINT_COMPAT_SHIM = True
+""",
+        shim_root / "pytorch" / "__init__.py": """
+# PyTorch SDPA fallback surface for OSCAR's optional TransformerEngine imports.
+import torch
+
+from .attention import DotProductAttention, apply_rotary_pos_emb
+
+BLUEPRINT_COMPAT_SHIM = True
+RMSNorm = torch.nn.RMSNorm
+""",
+        shim_root / "pytorch" / "attention" / "__init__.py": """
+# Minimal TransformerEngine attention shim backed by torch SDPA.
+from __future__ import annotations
+
+from typing import Any
+
+import torch
+from torch import nn
+
+BLUEPRINT_COMPAT_SHIM = True
+
+
+def _flatten_bshd(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.reshape(tensor.shape[0], tensor.shape[1], tensor.shape[2] * tensor.shape[3])
+
+
+class DotProductAttention(nn.Module):
+    def __init__(
+        self,
+        num_attention_heads: int | None = None,
+        kv_channels: int | None = None,
+        *,
+        attention_dropout: float = 0.0,
+        qkv_format: str = "bshd",
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.num_attention_heads = num_attention_heads
+        self.kv_channels = kv_channels
+        self.attention_dropout = float(attention_dropout or 0.0)
+        self.qkv_format = qkv_format
+
+    def set_context_parallel_group(self, *_: Any, **__: Any) -> None:
+        return None
+
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+        del args, kwargs
+        if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
+            raise ValueError("DotProductAttention shim expects q/k/v rank-4 tensors")
+        if self.qkv_format == "sbhd":
+            q_bhsd = query.permute(1, 2, 0, 3)
+            k_bhsd = key.permute(1, 2, 0, 3)
+            v_bhsd = value.permute(1, 2, 0, 3)
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q_bhsd,
+                k_bhsd,
+                v_bhsd,
+                dropout_p=self.attention_dropout if self.training else 0.0,
+                is_causal=False,
+            )
+            return out.permute(2, 0, 1, 3).reshape(query.shape[0], query.shape[1], -1)
+        q_bhsd = query.permute(0, 2, 1, 3)
+        k_bhsd = key.permute(0, 2, 1, 3)
+        v_bhsd = value.permute(0, 2, 1, 3)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q_bhsd,
+            k_bhsd,
+            v_bhsd,
+            dropout_p=self.attention_dropout if self.training else 0.0,
+            is_causal=False,
+        )
+        return _flatten_bshd(out.permute(0, 2, 1, 3).contiguous())
+
+
+def apply_rotary_pos_emb(
+    tensor: torch.Tensor,
+    freqs: torch.Tensor,
+    *,
+    tensor_format: str = "bshd",
+    fused: bool = True,
+) -> torch.Tensor:
+    del fused
+    if tensor.dim() != 4:
+        raise ValueError("apply_rotary_pos_emb shim expects a rank-4 tensor")
+    half = tensor.shape[-1] // 2
+    freqs = freqs.to(device=tensor.device, dtype=torch.float32)
+    if freqs.shape[-1] >= tensor.shape[-1]:
+        freqs = freqs[..., :half]
+    if freqs.shape[-1] != half:
+        raise ValueError(f"rotary freqs last dim {freqs.shape[-1]} does not match half head dim {half}")
+    while freqs.dim() > 2 and freqs.shape[1] == 1:
+        freqs = freqs.squeeze(1)
+    while freqs.dim() > 2 and freqs.shape[-2] == 1:
+        freqs = freqs.squeeze(-2)
+    if freqs.dim() != 2:
+        freqs = freqs.reshape(freqs.shape[0], half)
+    cos = torch.cos(freqs)
+    sin = torch.sin(freqs)
+    if tensor_format == "sbhd":
+        cos = cos[:, None, None, :]
+        sin = sin[:, None, None, :]
+    else:
+        cos = cos[None, :, None, :]
+        sin = sin[None, :, None, :]
+    even = tensor[..., 0::2].to(torch.float32)
+    odd = tensor[..., 1::2].to(torch.float32)
+    rotated_even = even * cos - odd * sin
+    rotated_odd = even * sin + odd * cos
+    return torch.stack((rotated_even, rotated_odd), dim=-1).flatten(-2).to(tensor.dtype)
+""",
+        shim_root / "pytorch" / "attention" / "rope.py": """
+from . import apply_rotary_pos_emb
+
+BLUEPRINT_COMPAT_SHIM = True
+""",
+    }
+    written: list[str] = []
+    for path, content in files.items():
+        changed = _write_text_if_changed(path, textwrap.dedent(content).lstrip())
+        written.append(str(path.relative_to(source_root)))
+        if changed:
+            path.chmod(0o644)
+    return {
+        "status": "completed",
+        "strategy": strategy,
+        "compatibility_basis": "OSCAR README states inference can fall back to PyTorch SDPA without TransformerEngine",
+        "files_written": written,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _framework_probe(python: str, source_root: Path | None = None) -> dict[str, Any]:
     code = (
         "import importlib.util, json\n"
         "payload={'torch_importable': False, 'torch_cuda_available': False, "
-        "'cuda_device_count': 0, 'transformer_engine_importable': False}\n"
+        "'cuda_device_count': 0, 'transformer_engine_importable': False, "
+        "'transformer_engine_blueprint_compat_shim': False}\n"
         "try:\n"
         " import torch\n"
         " payload['torch_importable']=True\n"
@@ -244,10 +417,17 @@ def _framework_probe(python: str) -> dict[str, Any]:
         " payload['cuda_device_count']=torch.cuda.device_count()\n"
         "except Exception as exc:\n"
         " payload['torch_error_type']=type(exc).__name__\n"
-        "payload['transformer_engine_importable'] = importlib.util.find_spec('transformer_engine') is not None\n"
+        "spec = importlib.util.find_spec('transformer_engine')\n"
+        "payload['transformer_engine_importable'] = spec is not None\n"
+        "payload['transformer_engine_origin'] = getattr(spec, 'origin', None) if spec is not None else None\n"
+        "try:\n"
+        " import transformer_engine as te\n"
+        " payload['transformer_engine_blueprint_compat_shim']=bool(getattr(te, 'BLUEPRINT_COMPAT_SHIM', False))\n"
+        "except Exception as exc:\n"
+        " payload['transformer_engine_error_type']=type(exc).__name__\n"
         "print(json.dumps(payload))\n"
     )
-    detail = _run([python, "-c", code], timeout=120)
+    detail = _run([python, "-c", code], timeout=120, env=_python_env_for_source(source_root))
     payload: dict[str, Any] = {}
     try:
         payload = json.loads(detail.get("stdout_tail_redacted") or "{}")
@@ -258,11 +438,12 @@ def _framework_probe(python: str) -> dict[str, Any]:
 
 def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
     commands: list[dict[str, Any]] = []
-    framework_before = _framework_probe(python)
+    framework_before = _framework_probe(python, source_root)
     framework_before_payload = _mapping(framework_before.get("payload"))
-    system_torch_and_te_available = (
-        framework_before_payload.get("torch_cuda_available") is True
-        and framework_before_payload.get("transformer_engine_importable") is True
+    system_torch_available = framework_before_payload.get("torch_cuda_available") is True
+    transformer_engine_available = framework_before_payload.get("transformer_engine_importable") is True
+    transformer_engine_is_compat_shim = (
+        framework_before_payload.get("transformer_engine_blueprint_compat_shim") is True
     )
     base_packages = [
         "huggingface_hub",
@@ -293,7 +474,7 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
             "\n".join(torch_lines or ["torch", "torchvision"]) + "\n",
             encoding="utf-8",
         )
-        if system_torch_and_te_available:
+        if system_torch_available:
             commands.append(
                 {
                     "argv_redacted": [python, "-m", "pip", "install", "<torch_requirements_skipped>"],
@@ -301,7 +482,7 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
                     "duration_seconds": 0.0,
                     "stdout_size_bytes": 0,
                     "stderr_size_bytes": 0,
-                    "stdout_tail_redacted": "skipped because CUDA torch and transformer_engine are already importable",
+                    "stdout_tail_redacted": "skipped because CUDA torch is already importable",
                     "stderr_tail_redacted": "",
                     "raw_secret_values_recorded": False,
                 }
@@ -327,9 +508,19 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         commands.append(
             _run([python, "-m", "pip", "install", "-r", str(filtered_req)], cwd=source_root, timeout=2400)
         )
-    framework_after_requirements = _framework_probe(python)
+    framework_after_requirements = _framework_probe(python, source_root)
     framework_after_requirements_payload = _mapping(framework_after_requirements.get("payload"))
-    if framework_after_requirements_payload.get("transformer_engine_importable") is not True:
+    should_attempt_real_te_install = os.environ.get(
+        "BLUEPRINT_OSCAR_WAM_ATTEMPT_TRANSFORMER_ENGINE_INSTALL",
+        "",
+    ).strip().lower() in {"1", "true", "yes"}
+    if (
+        framework_after_requirements_payload.get("transformer_engine_importable") is not True
+        or (
+            framework_after_requirements_payload.get("transformer_engine_blueprint_compat_shim") is True
+            and should_attempt_real_te_install
+        )
+    ):
         te_env = os.environ.copy()
         te_env["NVTE_FRAMEWORK"] = "pytorch"
         commands.append(
@@ -347,15 +538,21 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
                 env=te_env,
             )
         )
-    framework_after_transformer_engine = _framework_probe(python)
+    framework_after_transformer_engine = _framework_probe(python, source_root)
     blockers = [f"dependency_command_failed:{index}" for index, row in enumerate(commands) if row.get("returncode") != 0]
+    framework_after_transformer_engine_payload = _mapping(framework_after_transformer_engine.get("payload"))
+    if framework_after_transformer_engine_payload.get("transformer_engine_importable") is not True:
+        blockers.append("transformer_engine_or_compat_shim_not_importable_after_dependencies")
     return {
         "status": "completed" if not blockers else "blocked",
         "source_requirements_file": str(req) if req.is_file() else None,
         "framework_probe_before_install": framework_before,
         "framework_probe_after_requirements": framework_after_requirements,
         "framework_probe_after_transformer_engine": framework_after_transformer_engine,
-        "system_torch_and_transformer_engine_reused": system_torch_and_te_available,
+        "system_torch_reused": system_torch_available,
+        "transformer_engine_available_before_install": transformer_engine_available,
+        "transformer_engine_compat_shim_available_before_install": transformer_engine_is_compat_shim,
+        "attempted_real_transformer_engine_install": should_attempt_real_te_install,
         "commands": commands,
         "blockers": blockers,
     }
@@ -462,6 +659,14 @@ def main() -> int:
     source_root, source_detail = _clone_source(work_dir)
     if source_root is None:
         blockers.extend(source_detail.get("blockers") or ["oscar_source_unavailable"])
+    source_compatibility_detail: dict[str, Any] = {"status": "not_run"}
+    if source_root is not None and not blockers:
+        source_compatibility_detail = _apply_oscar_source_compatibility(source_root)
+        if source_compatibility_detail.get("status") == "blocked":
+            blockers.extend(
+                source_compatibility_detail.get("blockers")
+                or ["oscar_source_compatibility_patch_failed"]
+            )
     dependency_detail: dict[str, Any] = {"status": "not_run"}
     checkpoint_path: Path | None = None
     checkpoint_detail: dict[str, Any] = {"status": "not_run"}
@@ -595,6 +800,7 @@ def main() -> int:
         "rollout_input_manifest_path": str(rollout_input_path),
         "rollout_input_loaded": bool(rollout_input),
         "source_detail": source_detail,
+        "source_compatibility_detail": source_compatibility_detail,
         "python_bootstrap": python_bootstrap,
         "dependency_detail": dependency_detail,
         "checkpoint_detail": checkpoint_detail,

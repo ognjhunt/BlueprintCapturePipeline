@@ -58,6 +58,12 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         )
     assert 'checkpoint_path / "model"' in runner_text
     assert "inference_checkpoint_path" in runner_text
+    assert "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY" in runner_text
+    assert "BLUEPRINT_COMPAT_SHIM = True" in runner_text
+    assert "DotProductAttention" in runner_text
+    assert "scaled_dot_product_attention" in runner_text
+    assert "source_compatibility_detail" in runner_text
+    assert "transformer_engine_blueprint_compat_shim" in runner_text
 
 
 def test_build_oscar_wam_provider_bundle_blocks_missing_rollout_input(tmp_path: Path) -> None:
