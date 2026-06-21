@@ -1155,16 +1155,19 @@ blueprint-build-policy-improvement-run \
   --improvement-target task_head
 ```
 
-The builder writes `policy_improvement_run_offer.json` and
-`policy_improvement_run_offer.md` under `policy_improvement_run/`. The manifest
-binds together the scenario matrix, normalized baseline attempts, failure
-labels, Post-Training Data Package export, policy-autoresearch candidate
-package, heldout result, and proof boundary. It can say the run is ready for
-baseline evaluation, failure diagnosis, post-training package build,
-policy-autoresearch, or customer review. It cannot turn sim heldout success into
-deployment approval: sealed audit scenarios must remain outside training, and
-robot readiness, physical safety validation, real-world outcome, and public
-claim upgrades remain false until separately proven by accepted live evidence.
+The builder writes `policy_improvement_run_offer.json`,
+`policy_improvement_run_offer.md`, and
+`policy_improvement_run_webapp_summary.json` under `policy_improvement_run/`.
+The manifest binds together the scenario matrix, normalized baseline attempts,
+standard evaluation scorecard projection, failure labels, Post-Training Data
+Package export, policy-autoresearch candidate package, heldout result, staged
+readiness ladder, WebApp-safe summary projection, and proof boundary. It can say
+the run is ready for baseline evaluation, failure diagnosis, post-training
+package build, policy-autoresearch, candidate promotion, or customer review. It
+cannot turn sim heldout success into deployment approval: sealed audit scenarios
+must remain outside training, and robot readiness, physical safety validation,
+real-world outcome, and public claim upgrades remain false until separately
+proven by accepted live evidence.
 
 When `--arena-results-dir` points at existing Isaac Lab-Arena rollout artifacts,
 the job ingests those local results into normalized traces, labels, clips,
