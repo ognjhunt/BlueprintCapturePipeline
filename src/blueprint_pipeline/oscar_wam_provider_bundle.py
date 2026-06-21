@@ -231,9 +231,47 @@ def _clone_source(work_dir: Path) -> tuple[Path | None, dict[str, Any]]:
     }
 
 
+def _framework_probe(python: str) -> dict[str, Any]:
+    code = (
+        "import importlib.util, json\n"
+        "payload={'torch_importable': False, 'torch_cuda_available': False, "
+        "'cuda_device_count': 0, 'transformer_engine_importable': False}\n"
+        "try:\n"
+        " import torch\n"
+        " payload['torch_importable']=True\n"
+        " payload['torch_version']=getattr(torch, '__version__', None)\n"
+        " payload['torch_cuda_available']=bool(torch.cuda.is_available())\n"
+        " payload['cuda_device_count']=torch.cuda.device_count()\n"
+        "except Exception as exc:\n"
+        " payload['torch_error_type']=type(exc).__name__\n"
+        "payload['transformer_engine_importable'] = importlib.util.find_spec('transformer_engine') is not None\n"
+        "print(json.dumps(payload))\n"
+    )
+    detail = _run([python, "-c", code], timeout=120)
+    payload: dict[str, Any] = {}
+    try:
+        payload = json.loads(detail.get("stdout_tail_redacted") or "{}")
+    except Exception:
+        payload = {}
+    return {"status": "completed", "payload": payload, "subprocess": detail}
+
+
 def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
     commands: list[dict[str, Any]] = []
-    base_packages = ["huggingface_hub", "opencv-python-headless", "imageio", "imageio-ffmpeg"]
+    framework_before = _framework_probe(python)
+    framework_before_payload = _mapping(framework_before.get("payload"))
+    system_torch_and_te_available = (
+        framework_before_payload.get("torch_cuda_available") is True
+        and framework_before_payload.get("transformer_engine_importable") is True
+    )
+    base_packages = [
+        "huggingface_hub",
+        "opencv-python-headless",
+        "imageio",
+        "imageio-ffmpeg",
+        "ffmpegcv",
+        "peft",
+    ]
     commands.append(_run([python, "-m", "pip", "install", "--upgrade", "pip"], timeout=600))
     commands.append(_run([python, "-m", "pip", "install", *base_packages], timeout=900))
     req = source_root / "requirements.txt"
@@ -255,6 +293,45 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
             "\n".join(torch_lines or ["torch", "torchvision"]) + "\n",
             encoding="utf-8",
         )
+        if system_torch_and_te_available:
+            commands.append(
+                {
+                    "argv_redacted": [python, "-m", "pip", "install", "<torch_requirements_skipped>"],
+                    "returncode": 0,
+                    "duration_seconds": 0.0,
+                    "stdout_size_bytes": 0,
+                    "stderr_size_bytes": 0,
+                    "stdout_tail_redacted": "skipped because CUDA torch and transformer_engine are already importable",
+                    "stderr_tail_redacted": "",
+                    "raw_secret_values_recorded": False,
+                }
+            )
+        else:
+            commands.append(
+                _run(
+                    [
+                        python,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--index-url",
+                        "https://download.pytorch.org/whl/cu128",
+                        "-r",
+                        str(torch_req),
+                    ],
+                    cwd=source_root,
+                    timeout=1800,
+                )
+            )
+        filtered_req.write_text("\n".join(filtered_lines) + "\n", encoding="utf-8")
+        commands.append(
+            _run([python, "-m", "pip", "install", "-r", str(filtered_req)], cwd=source_root, timeout=2400)
+        )
+    framework_after_requirements = _framework_probe(python)
+    framework_after_requirements_payload = _mapping(framework_after_requirements.get("payload"))
+    if framework_after_requirements_payload.get("transformer_engine_importable") is not True:
+        te_env = os.environ.copy()
+        te_env["NVTE_FRAMEWORK"] = "pytorch"
         commands.append(
             _run(
                 [
@@ -262,23 +339,23 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
                     "-m",
                     "pip",
                     "install",
-                    "--index-url",
-                    "https://download.pytorch.org/whl/cu128",
-                    "-r",
-                    str(torch_req),
+                    "--no-build-isolation",
+                    "transformer_engine[pytorch]",
                 ],
                 cwd=source_root,
-                timeout=1800,
+                timeout=3600,
+                env=te_env,
             )
         )
-        filtered_req.write_text("\n".join(filtered_lines) + "\n", encoding="utf-8")
-        commands.append(
-            _run([python, "-m", "pip", "install", "-r", str(filtered_req)], cwd=source_root, timeout=2400)
-        )
+    framework_after_transformer_engine = _framework_probe(python)
     blockers = [f"dependency_command_failed:{index}" for index, row in enumerate(commands) if row.get("returncode") != 0]
     return {
         "status": "completed" if not blockers else "blocked",
         "source_requirements_file": str(req) if req.is_file() else None,
+        "framework_probe_before_install": framework_before,
+        "framework_probe_after_requirements": framework_after_requirements,
+        "framework_probe_after_transformer_engine": framework_after_transformer_engine,
+        "system_torch_and_transformer_engine_reused": system_torch_and_te_available,
         "commands": commands,
         "blockers": blockers,
     }
