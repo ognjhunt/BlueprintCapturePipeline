@@ -17,6 +17,14 @@ from fastapi import FastAPI, Header, HTTPException, Request
 
 COMMAND_ENV = "BLUEPRINT_WAM_VLA_POLICY_COMMAND"
 AUTH_TOKEN_FILE_ENV = "BLUEPRINT_WAM_VLA_POLICY_AUTH_TOKEN_FILE"
+BUILTIN_REFERENCE_ADAPTER_COMMAND = "builtin:g1_endpoint_reference_adapter"
+BUILTIN_REFERENCE_ADAPTER_ALIASES = frozenset(
+    {
+        BUILTIN_REFERENCE_ADAPTER_COMMAND,
+        "builtin:blueprint_g1_endpoint_reference_adapter",
+        "builtin:reference_g1_policy",
+    }
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -60,15 +68,45 @@ def _check_auth(*, authorization: str | None, token_file: str | None) -> None:
         raise HTTPException(status_code=403, detail="invalid_bearer_token")
 
 
+def _policy_adapter_invocation_mode(command: str) -> str:
+    if command.strip() in BUILTIN_REFERENCE_ADAPTER_ALIASES:
+        return "in_process_builtin"
+    if command.strip():
+        return "subprocess"
+    return "missing"
+
+
+def _run_builtin_reference_adapter(
+    *, command: str, payload: Mapping[str, Any], started: float
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    from .g1_endpoint_reference_adapter import build_response
+
+    response = build_response(payload)
+    encoded = json.dumps(response, sort_keys=True)
+    return response, {
+        "command_exit_code": 0,
+        "duration_seconds": round(time.monotonic() - started, 6),
+        "stderr_size_bytes": 0,
+        "stderr_omitted_to_avoid_secret_leakage": False,
+        "stdout_size_bytes": len(encoded),
+        "policy_adapter_invocation_mode": "in_process_builtin",
+        "subprocess_spawned": False,
+        "policy_command_alias": command.strip(),
+    }
+
+
 def run_policy_command(
     *,
     command: str,
     payload: Mapping[str, Any],
     timeout_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not command.strip():
+    command = command.strip()
+    if not command:
         raise RuntimeError("missing_policy_command")
     started = time.monotonic()
+    if _policy_adapter_invocation_mode(command) == "in_process_builtin":
+        return _run_builtin_reference_adapter(command=command, payload=payload, started=started)
     result = subprocess.run(
         shlex.split(command),
         input=json.dumps(dict(payload)),
@@ -83,6 +121,8 @@ def run_policy_command(
         "stderr_size_bytes": len(result.stderr or ""),
         "stderr_omitted_to_avoid_secret_leakage": bool(result.stderr),
         "stdout_size_bytes": len(result.stdout or ""),
+        "policy_adapter_invocation_mode": "subprocess",
+        "subprocess_spawned": True,
     }
     if result.returncode != 0:
         raise RuntimeError(f"policy_command_failed:{json.dumps(meta, sort_keys=True)}")
@@ -109,9 +149,12 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
+        invocation_mode = _policy_adapter_invocation_mode(command)
         return {
             "status": "ready" if command else "blocked_missing_policy_command",
             "policy_command_configured": bool(command),
+            "policy_adapter_invocation_mode": invocation_mode,
+            "subprocess_spawned_per_request": invocation_mode == "subprocess",
             "auth_token_file_configured": bool(token_file),
             "raw_token_values_returned": False,
         }

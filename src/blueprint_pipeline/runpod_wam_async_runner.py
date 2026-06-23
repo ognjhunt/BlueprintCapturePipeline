@@ -1,4 +1,4 @@
-"""Short-lived RunPod WAM runner for OSCAR/Cosmos provider bundles."""
+"""Short-lived RunPod runner for WAM and Unitree policy provider bundles."""
 
 from __future__ import annotations
 
@@ -40,11 +40,59 @@ RUNPOD_WAM_CREATE_SCHEMA_VERSION = "runpod_wam_async_create_manifest.v1"
 RUNPOD_WAM_POLL_SCHEMA_VERSION = "runpod_wam_async_poll_manifest.v1"
 RUNPOD_WAM_DELETE_SCHEMA_VERSION = "runpod_wam_async_delete_manifest.v1"
 RUNPOD_POD_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH"
+RUNPOD_PROVIDER_BUNDLE_KINDS = ("wam", "unitree_unifolm")
 DEFAULT_GPU_TYPE_IDS = (
     "NVIDIA GeForce RTX 4090",
     "NVIDIA GeForce RTX 3090",
     "NVIDIA RTX A5000",
 )
+DEFAULT_HF_TOKEN_FILES = (
+    "~/.blueprint-secrets/hf_token",
+    "~/.blueprint-secrets/hf_token.txt",
+    "~/.blueprint-secrets/huggingface_token",
+    "~/.blueprint-secrets/huggingface_token.txt",
+)
+PROVIDER_RUNTIME_CONFIG_ENV_KEYS = (
+    "BLUEPRINT_OSCAR_WAM_ATTEMPT_TRANSFORMER_ENGINE_INSTALL",
+    "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL",
+    "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY",
+    "BLUEPRINT_WAM_PROVIDER_ALLOW_BREAK_SYSTEM_PACKAGES",
+    "BLUEPRINT_WAM_PROVIDER_DISABLE_VENV",
+)
+UNITREE_UNIFOLM_RUNTIME_CONFIG_ENV_KEYS = (
+    "BLUEPRINT_UNITREE_UNIFOLM_MODE",
+    "BLUEPRINT_UNITREE_UNIFOLM_COMMAND",
+    "BLUEPRINT_UNITREE_UNIFOLM_CHECKPOINT",
+    "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT",
+    "BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT",
+    "BLUEPRINT_UNITREE_UNIFOLM_TIMEOUT_SECONDS",
+    "BLUEPRINT_UNITREE_UNIFOLM_VLA_ATTENTION_IMPLEMENTATION",
+    "BLUEPRINT_UNITREE_UNIFOLM_ALLOW_HF_DOWNLOAD",
+    "BLUEPRINT_UNITREE_UNIFOLM_MODEL_CACHE_ROOT",
+    "BLUEPRINT_UNITREE_UNIFOLM_VLA_REPO",
+    "BLUEPRINT_UNITREE_UNIFOLM_VLM_REPO",
+    "BLUEPRINT_UNITREE_UNIFOLM_VLA_SERVER_STARTUP_TIMEOUT_SECONDS",
+)
+UNITREE_UNIFOLM_RUNTIME_CONFIG_ALIASES = {
+    "BLUEPRINT_UNITREE_UNIFOLM_COMMAND": ("BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",),
+    "BLUEPRINT_UNITREE_UNIFOLM_CHECKPOINT": (
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT",
+        "BLUEPRINT_UNITREE_UNIFOLM_POLICY_CHECKPOINT",
+    ),
+    "BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT": (
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_SOURCE_ROOT",
+    ),
+}
+UNITREE_UNIFOLM_RUNTIME_CONFIG_DEFAULTS = {
+    "BLUEPRINT_UNITREE_UNIFOLM_MODE": "vla",
+    "BLUEPRINT_UNITREE_UNIFOLM_COMMAND": "/usr/local/bin/run_unitree_unifolm_vla_policy_once",
+    "BLUEPRINT_UNITREE_UNIFOLM_CHECKPOINT": "unitreerobotics/UnifoLM-VLA-Base",
+    "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT": "unitreerobotics/UnifoLM-VLM-Base",
+    "BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT": "/opt/unifolm-vla",
+    "BLUEPRINT_UNITREE_UNIFOLM_TIMEOUT_SECONDS": "1800",
+    "BLUEPRINT_UNITREE_UNIFOLM_VLA_ATTENTION_IMPLEMENTATION": "sdpa",
+    "BLUEPRINT_UNITREE_UNIFOLM_ALLOW_HF_DOWNLOAD": "true",
+}
 
 
 def _string(value: Any) -> str:
@@ -144,6 +192,139 @@ def _read_sensitive_url_file(path_value: str, *, label: str) -> tuple[str, dict[
     }
 
 
+def _secret_file_meta(path: Path, *, label: str, source: str) -> dict[str, Any]:
+    mode = oct(path.stat().st_mode & 0o777) if path.exists() else None
+    value_present = False
+    read_error = None
+    if path.is_file():
+        try:
+            value_present = bool(path.read_text(encoding="utf-8").strip())
+        except OSError as exc:
+            read_error = type(exc).__name__
+    return {
+        "label": label,
+        "source": source,
+        "path": str(path),
+        "present": path.is_file(),
+        "mode": mode,
+        "mode_is_0600": mode == "0o600",
+        "value_present": value_present,
+        "read_error": read_error,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _read_model_secret_env() -> tuple[dict[str, str], dict[str, Any]]:
+    env_values: dict[str, str] = {}
+    candidates: list[dict[str, Any]] = []
+    explicit_files = [
+        ("HF_TOKEN_FILE", _string(os.getenv("HF_TOKEN_FILE"))),
+        ("HUGGING_FACE_HUB_TOKEN_FILE", _string(os.getenv("HUGGING_FACE_HUB_TOKEN_FILE"))),
+        ("BLUEPRINT_HF_TOKEN_FILE", _string(os.getenv("BLUEPRINT_HF_TOKEN_FILE"))),
+    ]
+    file_candidates: list[tuple[str, Path]] = [
+        (label, Path(value).expanduser())
+        for label, value in explicit_files
+        if value
+    ]
+    file_candidates.extend(
+        ("default_secret_file", Path(item).expanduser()) for item in DEFAULT_HF_TOKEN_FILES
+    )
+    selected: dict[str, Any] | None = None
+    for source, path in file_candidates:
+        meta = _secret_file_meta(path, label="hf_token", source=source)
+        candidates.append(meta)
+        if selected is None and meta.get("present") and meta.get("value_present"):
+            selected = meta
+    configured_selected_file = selected
+    configured_env = _string(os.getenv("HF_TOKEN"))
+    if configured_env:
+        env_values["HF_TOKEN"] = configured_env
+        env_values["HUGGING_FACE_HUB_TOKEN"] = configured_env
+        return env_values, {
+            "schema_version": "runpod_wam_model_secret_env.v1",
+            "status": "configured",
+            "env_keys_forwarded": sorted(env_values),
+            "source": configured_selected_file.get("source")
+            if configured_selected_file
+            else "HF_TOKEN",
+            "selected_file": configured_selected_file,
+            "candidate_files": candidates,
+            "raw_secret_values_recorded": False,
+            "secret_hashes_recorded": False,
+        }
+    selected = None
+    for source, path in file_candidates:
+        meta = next(
+            (
+                row
+                for row in candidates
+                if row.get("source") == source and row.get("path") == str(path)
+            ),
+            _secret_file_meta(path, label="hf_token", source=source),
+        )
+        if meta.get("present") and meta.get("value_present"):
+            try:
+                token = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            env_values["HF_TOKEN"] = token
+            env_values["HUGGING_FACE_HUB_TOKEN"] = token
+            selected = meta
+            break
+    return env_values, {
+        "schema_version": "runpod_wam_model_secret_env.v1",
+        "status": "configured" if env_values else "not_configured",
+        "env_keys_forwarded": sorted(env_values),
+        "source": selected.get("source") if selected else None,
+        "selected_file": selected,
+        "candidate_files": candidates,
+        "raw_secret_values_recorded": False,
+        "secret_hashes_recorded": False,
+    }
+
+
+def _provider_runtime_config_keys(provider_bundle_kind: str) -> tuple[str, ...]:
+    if provider_bundle_kind == "unitree_unifolm":
+        return UNITREE_UNIFOLM_RUNTIME_CONFIG_ENV_KEYS
+    return PROVIDER_RUNTIME_CONFIG_ENV_KEYS
+
+
+def _read_provider_runtime_config_env(
+    provider_bundle_kind: str = "wam",
+) -> tuple[dict[str, str], dict[str, Any]]:
+    if provider_bundle_kind not in RUNPOD_PROVIDER_BUNDLE_KINDS:
+        raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
+    env_values: dict[str, str] = {}
+    value_sources: dict[str, str] = {}
+    for key in _provider_runtime_config_keys(provider_bundle_kind):
+        value = _string(os.getenv(key))
+        if not value:
+            for alias in UNITREE_UNIFOLM_RUNTIME_CONFIG_ALIASES.get(key, ()):
+                alias_value = _string(os.getenv(alias))
+                if alias_value:
+                    value = alias_value
+                    value_sources[key] = alias
+                    break
+        if not value and provider_bundle_kind == "unitree_unifolm":
+            value = UNITREE_UNIFOLM_RUNTIME_CONFIG_DEFAULTS.get(key, "")
+            if value:
+                value_sources[key] = "image_default"
+        if value:
+            env_values[key] = value
+            value_sources.setdefault(key, key)
+    return env_values, {
+        "schema_version": "runpod_wam_provider_runtime_config_env.v1",
+        "provider_bundle_kind": provider_bundle_kind,
+        "status": "configured" if env_values else "not_configured",
+        "env_keys_forwarded": sorted(env_values),
+        "values": dict(sorted(env_values.items())),
+        "value_sources": dict(sorted(value_sources.items())),
+        "raw_secret_values_recorded": False,
+        "secret_hashes_recorded": False,
+    }
+
+
 def _runpod_request(
     *,
     method: str,
@@ -192,7 +373,79 @@ def _redacted_payload_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _provider_shell_script() -> str:
+def _provider_shell_script(provider_bundle_kind: str = "wam") -> str:
+    if provider_bundle_kind == "unitree_unifolm":
+        return r"""
+set -euo pipefail
+echo BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_PROVIDER_STARTED
+WORK_DIR="${BLUEPRINT_RUNPOD_PROVIDER_WORK_DIR:-/workspace/blueprint_unitree_unifolm_provider}"
+BUNDLE_URL="${BLUEPRINT_EVAL_MANIFEST_URI:-}"
+OUTPUT_PUT_URL="${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-}"
+export WORK_DIR BUNDLE_URL OUTPUT_PUT_URL
+if [ -z "$BUNDLE_URL" ]; then echo BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_BLOCKED:bundle_url_missing; exit 20; fi
+if [ -z "$OUTPUT_PUT_URL" ]; then echo BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_BLOCKED:output_put_url_missing; exit 21; fi
+mkdir -p "$WORK_DIR"
+if command -v apt-get >/dev/null 2>&1; then
+  if ! command -v git >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1; then
+    apt-get update >/tmp/blueprint_runpod_apt_update.log 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y git ffmpeg ca-certificates >/tmp/blueprint_runpod_apt_install.log 2>&1 || true
+  fi
+fi
+python - <<'PY'
+import os
+import urllib.request
+from pathlib import Path
+target = Path(os.environ["WORK_DIR"]) / "unitree_unifolm_policy_provider_runtime_bundle.zip"
+with urllib.request.urlopen(os.environ["BUNDLE_URL"], timeout=300) as response:
+    target.write_bytes(response.read())
+print("BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_BUNDLE_DOWNLOADED:%d" % target.stat().st_size)
+PY
+rm -rf "$WORK_DIR/unitree_unifolm_provider_bundle" "$WORK_DIR/runtime_output" "$WORK_DIR/unitree_unifolm_policy_provider_runtime_output.zip"
+python -m zipfile -e "$WORK_DIR/unitree_unifolm_policy_provider_runtime_bundle.zip" "$WORK_DIR/unitree_unifolm_provider_bundle"
+echo BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_ENTRYPOINT_STARTED
+export PYTHONPATH="$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime:${PYTHONPATH:-}"
+export BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT_DIR="$WORK_DIR/runtime_output"
+export BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT="$WORK_DIR/runtime_output/unitree_unifolm_policy_provider_output.json"
+export BLUEPRINT_UNITREE_UNIFOLM_POLICY_INPUT="$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime/policy_input.json"
+bash "$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime/run_unitree_unifolm_provider_runtime.sh" || true
+python - <<'PY'
+import json
+import os
+import zipfile
+from pathlib import Path
+output_dir = Path(os.environ["BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT_DIR"])
+zip_path = Path(os.environ["WORK_DIR"]) / "unitree_unifolm_policy_provider_runtime_output.zip"
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    if output_dir.is_dir():
+        for path in sorted(output_dir.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(output_dir).as_posix())
+    else:
+        archive.writestr(
+            "unitree_unifolm_policy_provider_output.json",
+            json.dumps({"status": "blocked", "blockers": ["runtime_output_directory_missing"]}, indent=2),
+        )
+print("BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_OUTPUT_ZIP_WRITTEN:%d" % zip_path.stat().st_size)
+PY
+python - <<'PY'
+import os
+import urllib.request
+from pathlib import Path
+zip_path = Path(os.environ["WORK_DIR"]) / "unitree_unifolm_policy_provider_runtime_output.zip"
+request = urllib.request.Request(
+    os.environ["OUTPUT_PUT_URL"],
+    data=zip_path.read_bytes(),
+    method="PUT",
+    headers={"Content-Type": "application/zip"},
+)
+with urllib.request.urlopen(request, timeout=300) as response:
+    response.read()
+print("BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_OUTPUT_UPLOAD_OK")
+PY
+echo BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_PROVIDER_COMPLETED_OR_BLOCKED
+"""
+    if provider_bundle_kind != "wam":
+        raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     return r"""
 set -euo pipefail
 echo BLUEPRINT_RUNPOD_WAM_PROVIDER_STARTED
@@ -270,31 +523,45 @@ def _pod_payload(
     gpu_type_ids: Sequence[str],
     provider_bundle_url: str,
     provider_output_put_url: str,
+    provider_bundle_kind: str,
+    model_secret_env: Mapping[str, str],
+    provider_runtime_config_env: Mapping[str, str],
     container_disk_gb: int,
     volume_gb: int,
+    cloud_type: str = "SECURE",
+    allowed_cuda_versions: Sequence[str] = (),
+    min_vcpu_per_gpu: int = 2,
+    min_ram_per_gpu: int = 8,
 ) -> dict[str, Any]:
+    env = {
+        "BLUEPRINT_EVAL_MANIFEST_URI": provider_bundle_url,
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL": provider_output_put_url,
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "BLUEPRINT_RUNPOD_PROVIDER_BUNDLE_KIND": provider_bundle_kind,
+        "WORK_DIR": "/workspace/blueprint_wam_provider",
+    }
+    if provider_bundle_kind == "unitree_unifolm":
+        env["WORK_DIR"] = "/workspace/blueprint_unitree_unifolm_provider"
+    env.update({key: value for key, value in provider_runtime_config_env.items() if _string(value)})
+    env.update({key: value for key, value in model_secret_env.items() if _string(value)})
     return {
-        "cloudType": "SECURE",
+        "cloudType": cloud_type,
         "computeType": "GPU",
         "gpuCount": 1,
         "gpuTypeIds": list(gpu_type_ids),
         "gpuTypePriority": "availability",
         "volumeInGb": volume_gb,
         "containerDiskInGb": container_disk_gb,
-        "minVCPUPerGPU": 4,
-        "minRAMPerGPU": 16,
+        "minVCPUPerGPU": min_vcpu_per_gpu,
+        "minRAMPerGPU": min_ram_per_gpu,
         "name": job_name,
         "imageName": image_name,
         "dockerEntrypoint": ["bash", "-lc"],
-        "dockerStartCmd": [_provider_shell_script()],
+        "dockerStartCmd": [_provider_shell_script(provider_bundle_kind)],
         "ports": [],
         "volumeMountPath": "/workspace",
-        "env": {
-            "BLUEPRINT_EVAL_MANIFEST_URI": provider_bundle_url,
-            "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL": provider_output_put_url,
-            "NVIDIA_DRIVER_CAPABILITIES": "all",
-            "WORK_DIR": "/workspace/blueprint_wam_provider",
-        },
+        "env": env,
+        **({"allowedCudaVersions": list(allowed_cuda_versions)} if allowed_cuda_versions else {}),
     }
 
 
@@ -339,8 +606,10 @@ def create_runpod_wam_async_run(
     public_base_url: str = "",
     provider_bundle_url: str = "",
     provider_output_put_url: str = "",
+    provider_output_get_url: str = "",
     provider_bundle_url_file: str | Path | None = None,
     provider_output_put_url_file: str | Path | None = None,
+    provider_output_get_url_file: str | Path | None = None,
     token_file: str | Path | None = None,
     secret_env_file: str | Path | None = None,
     output_path: str | Path | None = None,
@@ -349,11 +618,18 @@ def create_runpod_wam_async_run(
     verify_output_put_url: bool = False,
     gpu_type_ids: Sequence[str] = DEFAULT_GPU_TYPE_IDS,
     image_name: str = DEFAULT_WAM_PUBLIC_IMAGE,
+    provider_bundle_kind: str = "wam",
     container_disk_gb: int = 80,
     volume_gb: int = 20,
+    cloud_type: str = "SECURE",
+    allowed_cuda_versions: Sequence[str] = (),
+    min_vcpu_per_gpu: int = 2,
+    min_ram_per_gpu: int = 8,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
+    if provider_bundle_kind not in RUNPOD_PROVIDER_BUNDLE_KINDS:
+        raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     resolved_bundle = Path(bundle_path).expanduser().resolve()
     resolved_output = (
@@ -380,10 +656,16 @@ def create_runpod_wam_async_run(
         str(provider_output_put_url_file or ""),
         label="provider_output_put_url_file",
     )
+    output_get_url_from_file, output_get_url_file_meta = _read_sensitive_url_file(
+        str(provider_output_get_url_file or ""),
+        label="provider_output_get_url_file",
+    )
     if not _string(provider_bundle_url) and bundle_url_from_file:
         provider_bundle_url = bundle_url_from_file
     if not _string(provider_output_put_url) and output_url_from_file:
         provider_output_put_url = output_url_from_file
+    if not _string(provider_output_get_url) and output_get_url_from_file:
+        provider_output_get_url = output_get_url_from_file
     direct_provider_urls = bool(provider_bundle_url and provider_output_put_url)
     token_status: dict[str, Any] = {
         "present": False,
@@ -405,8 +687,10 @@ def create_runpod_wam_async_run(
             "output_path": str(resolved_output),
             "provider_bundle_url_redacted": _redact_provider_url(provider_bundle_url),
             "provider_output_put_url_redacted": _redact_provider_url(provider_output_put_url),
+            "provider_output_get_url_redacted": _redact_provider_url(provider_output_get_url),
             "provider_bundle_url_file": bundle_url_file_meta,
             "provider_output_put_url_file": output_url_file_meta,
+            "provider_output_get_url_file": output_get_url_file_meta,
             "explicit_provider_urls_used": True,
             "raw_secret_values_recorded": False,
         }
@@ -449,6 +733,7 @@ def create_runpod_wam_async_run(
             "reason": "skip_public_staging_verification_requested",
             "provider_bundle_url_redacted": _redact_provider_url(provider_bundle_url),
             "provider_output_put_url_redacted": _redact_provider_url(provider_output_put_url),
+            "provider_output_get_url_redacted": _redact_provider_url(provider_output_get_url),
             "raw_secret_values_recorded": False,
         }
         write_json(resolved_job_dir / "vast_public_staging_verification.json", public_verification)
@@ -468,6 +753,10 @@ def create_runpod_wam_async_run(
             generated_at=generated,
         )
     api_key, api_key_meta = _read_runpod_api_key()
+    model_secret_env, model_secret_env_status = _read_model_secret_env()
+    provider_runtime_config_env, provider_runtime_config_env_status = (
+        _read_provider_runtime_config_env(provider_bundle_kind)
+    )
     blockers: list[str] = []
     if staging_manifest.get("status") != "ready":
         blockers.extend(staging_manifest.get("blockers") or ["runpod_wam_staging_not_ready"])
@@ -502,6 +791,7 @@ def create_runpod_wam_async_run(
             "generated_at": generated,
             "status": "blocked",
             "job_dir": str(resolved_job_dir),
+            "provider_bundle_kind": provider_bundle_kind,
             "blockers": sorted(set(blockers)),
             "staging_manifest_status": staging_manifest.get("status"),
             "self_test_status": self_test.get("status"),
@@ -509,8 +799,12 @@ def create_runpod_wam_async_run(
             "explicit_provider_urls_used": direct_provider_urls,
             "provider_bundle_url_redacted": _redact_provider_url(provider_bundle_url),
             "provider_output_put_url_redacted": _redact_provider_url(provider_output_put_url),
+            "provider_output_get_url_redacted": _redact_provider_url(provider_output_get_url),
             "provider_bundle_url_file": bundle_url_file_meta,
             "provider_output_put_url_file": output_url_file_meta,
+            "provider_output_get_url_file": output_get_url_file_meta,
+            "model_secret_env_status": model_secret_env_status,
+            "provider_runtime_config_env_status": provider_runtime_config_env_status,
             "api_key_status": api_key_meta,
             "raw_secret_values_recorded": False,
         }
@@ -518,13 +812,20 @@ def create_runpod_wam_async_run(
         return manifest
 
     payload = _pod_payload(
-        job_name=f"blueprint-wam-{int(time.time())}",
+        job_name=f"blueprint-{provider_bundle_kind.replace('_', '-')}-{int(time.time())}",
         image_name=image_name,
         gpu_type_ids=gpu_type_ids,
         provider_bundle_url=provider_bundle_url,
         provider_output_put_url=provider_output_put_url,
+        provider_bundle_kind=provider_bundle_kind,
+        model_secret_env=model_secret_env,
+        provider_runtime_config_env=provider_runtime_config_env,
         container_disk_gb=container_disk_gb,
         volume_gb=volume_gb,
+        cloud_type=cloud_type,
+        allowed_cuda_versions=allowed_cuda_versions,
+        min_vcpu_per_gpu=min_vcpu_per_gpu,
+        min_ram_per_gpu=min_ram_per_gpu,
     )
     try:
         status_code, response = _runpod_request(
@@ -542,9 +843,12 @@ def create_runpod_wam_async_run(
             "generated_at": generated,
             "status": "blocked",
             "job_dir": str(resolved_job_dir),
+            "provider_bundle_kind": provider_bundle_kind,
             "blockers": ["runpod_create_pod_http_error"],
             "http_status_code": exc.code,
             "runpod_error_preview": "REDACTED_SECRET" if api_key in error_body else error_body,
+            "model_secret_env_status": model_secret_env_status,
+            "provider_runtime_config_env_status": provider_runtime_config_env_status,
             "raw_secret_values_recorded": False,
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
@@ -555,9 +859,12 @@ def create_runpod_wam_async_run(
             "generated_at": generated,
             "status": "blocked",
             "job_dir": str(resolved_job_dir),
+            "provider_bundle_kind": provider_bundle_kind,
             "blockers": ["runpod_create_response_missing_pod_id"],
             "http_status_code": status_code,
             "runpod_response_keys": sorted(response.keys()),
+            "model_secret_env_status": model_secret_env_status,
+            "provider_runtime_config_env_status": provider_runtime_config_env_status,
             "raw_secret_values_recorded": False,
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
@@ -567,21 +874,30 @@ def create_runpod_wam_async_run(
         "generated_at": generated,
         "status": "pod_created",
         "job_dir": str(resolved_job_dir),
+        "provider_bundle_kind": provider_bundle_kind,
         "pod_id": pod_id,
         "output_path": str(resolved_output),
         "public_base_url_present": bool(public_base_url),
         "explicit_provider_urls_used": direct_provider_urls,
         "provider_bundle_url_redacted": _redact_provider_url(provider_bundle_url),
         "provider_output_put_url_redacted": _redact_provider_url(provider_output_put_url),
+        "provider_output_get_url_redacted": _redact_provider_url(provider_output_get_url),
         "provider_bundle_url_file": bundle_url_file_meta,
         "provider_output_put_url_file": output_url_file_meta,
+        "provider_output_get_url_file": output_get_url_file_meta,
         "bundle_path": str(resolved_bundle),
         "token_file": str(resolved_token_file),
         "secret_env_file": str(resolved_secret_env_file),
         "image_name": image_name,
         "gpu_type_ids": list(gpu_type_ids),
+        "cloud_type": cloud_type,
+        "allowed_cuda_versions": list(allowed_cuda_versions),
+        "min_vcpu_per_gpu": min_vcpu_per_gpu,
+        "min_ram_per_gpu": min_ram_per_gpu,
         "container_disk_gb": container_disk_gb,
         "volume_gb": volume_gb,
+        "model_secret_env_status": model_secret_env_status,
+        "provider_runtime_config_env_status": provider_runtime_config_env_status,
         "created_at_epoch": time.time(),
         "raw_secret_values_recorded": False,
     }
@@ -591,6 +907,7 @@ def create_runpod_wam_async_run(
         "generated_at": generated,
         "status": "pod_created",
         "job_dir": str(resolved_job_dir),
+        "provider_bundle_kind": provider_bundle_kind,
         "pod_id": pod_id,
         "http_status_code": status_code,
         "output_path": str(resolved_output),
@@ -598,8 +915,12 @@ def create_runpod_wam_async_run(
         "explicit_provider_urls_used": direct_provider_urls,
         "provider_bundle_url_redacted": _redact_provider_url(provider_bundle_url),
         "provider_output_put_url_redacted": _redact_provider_url(provider_output_put_url),
+        "provider_output_get_url_redacted": _redact_provider_url(provider_output_get_url),
         "provider_bundle_url_file": bundle_url_file_meta,
         "provider_output_put_url_file": output_url_file_meta,
+        "provider_output_get_url_file": output_get_url_file_meta,
+        "model_secret_env_status": model_secret_env_status,
+        "provider_runtime_config_env_status": provider_runtime_config_env_status,
         "runpod_response_keys": sorted(response.keys()),
         "poll_command": f"python -m blueprint_pipeline.runpod_wam_async_runner poll --job-dir {resolved_job_dir}",
         "teardown_command": f"python -m blueprint_pipeline.runpod_wam_async_runner poll --job-dir {resolved_job_dir} --teardown",
@@ -646,6 +967,62 @@ def _delete_pod(
     return manifest
 
 
+def _download_provider_output_zip(
+    *,
+    job_dir: Path,
+    provider_output_get_url: str,
+    output_path: Path,
+    generated_at: str,
+) -> dict[str, Any]:
+    manifest: dict[str, Any] = {
+        "schema_version": "runpod_wam_output_download.v1",
+        "generated_at": generated_at,
+        "status": "not_requested",
+        "output_path": str(output_path),
+        "provider_output_get_url_redacted": _redact_provider_url(provider_output_get_url),
+        "raw_secret_values_recorded": False,
+    }
+    if not _string(provider_output_get_url):
+        manifest.update({"status": "skipped", "reason": "provider_output_get_url_missing"})
+        write_json(job_dir / "runpod_wam_output_download_manifest.json", manifest)
+        return manifest
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request(
+            provider_output_get_url,
+            headers={"User-Agent": "BlueprintRunPodWamPoll/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read()
+        output_path.write_bytes(data)
+        manifest.update(
+            {
+                "status": "completed",
+                "downloaded_size_bytes": len(data),
+                "output_present": output_path.is_file(),
+            }
+        )
+    except urllib.error.HTTPError as exc:
+        manifest.update(
+            {
+                "status": "not_available",
+                "http_status_code": exc.code,
+                "error_type": "HTTPError",
+                "output_present": output_path.is_file(),
+            }
+        )
+    except Exception as exc:  # pragma: no cover - defensive runtime diagnostics.
+        manifest.update(
+            {
+                "status": "blocked",
+                "error_type": type(exc).__name__,
+                "output_present": output_path.is_file(),
+            }
+        )
+    write_json(job_dir / "runpod_wam_output_download_manifest.json", manifest)
+    return manifest
+
+
 def poll_runpod_wam_async_run(
     *,
     job_dir: str | Path,
@@ -659,8 +1036,20 @@ def poll_runpod_wam_async_run(
     state = _read_json(_state_path(resolved_job_dir))
     pod_id = _string(state.get("pod_id"))
     output_path = Path(_string(state.get("output_path"))).expanduser()
+    provider_bundle_kind = _string(state.get("provider_bundle_kind")) or "wam"
+    if provider_bundle_kind not in RUNPOD_PROVIDER_BUNDLE_KINDS:
+        blockers = [f"unsupported_provider_bundle_kind:{provider_bundle_kind}"]
+    else:
+        blockers = []
+    output_get_url = ""
+    output_get_meta = _mapping(state.get("provider_output_get_url_file"))
+    output_get_path = _string(output_get_meta.get("path"))
+    if output_get_path:
+        output_get_url, _output_get_meta = _read_sensitive_url_file(
+            output_get_path,
+            label="provider_output_get_url_file",
+        )
     api_key, api_key_meta = _read_runpod_api_key()
-    blockers: list[str] = []
     if not pod_id:
         blockers.append("runpod_wam_state_missing_pod_id")
     if not api_key:
@@ -672,6 +1061,16 @@ def poll_runpod_wam_async_run(
     output_present = output_path.is_file()
     while not blockers and time.monotonic() <= deadline:
         output_present = output_path.is_file()
+        if not output_present and output_get_url:
+            download_manifest = _download_provider_output_zip(
+                job_dir=resolved_job_dir,
+                provider_output_get_url=output_get_url,
+                output_path=output_path,
+                generated_at=generated,
+            )
+            output_present = output_path.is_file()
+            if download_manifest.get("status") == "completed":
+                break
         try:
             status_code, pod_payload = _runpod_request(
                 method="GET",
@@ -694,7 +1093,7 @@ def poll_runpod_wam_async_run(
     output_inspection = _inspect_provider_runtime_output_zip(
         output_path,
         video_extract_dir=resolved_job_dir / "runpod_wam_output_videos",
-        expected_video_count=1,
+        expected_video_count=0 if provider_bundle_kind == "unitree_unifolm" else 1,
     )
     output_present = output_inspection.get("zip_present") is True
     should_teardown = teardown or output_present or pod_status in {"not_found", "EXITED", "TERMINATED"}
@@ -723,6 +1122,7 @@ def poll_runpod_wam_async_run(
         "generated_at": generated,
         "status": "completed" if output_present and not continuing_spend else ("running" if continuing_spend else "blocked"),
         "job_dir": str(resolved_job_dir),
+        "provider_bundle_kind": provider_bundle_kind,
         "pod_id": pod_id,
         "pod_status": pod_status,
         "pod_status_http_status_code": status_code,
@@ -762,8 +1162,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--public-base-url", default="")
     create.add_argument("--provider-bundle-url", default="")
     create.add_argument("--provider-output-put-url", default="")
+    create.add_argument("--provider-output-get-url", default="")
     create.add_argument("--provider-bundle-url-file")
     create.add_argument("--provider-output-put-url-file")
+    create.add_argument("--provider-output-get-url-file")
     create.add_argument("--token-file")
     create.add_argument("--secret-env-file")
     create.add_argument("--output-path")
@@ -772,8 +1174,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--verify-output-put-url", action="store_true")
     create.add_argument("--gpu-type-id", action="append", default=[])
     create.add_argument("--image-name", default=DEFAULT_WAM_PUBLIC_IMAGE)
+    create.add_argument("--provider-bundle-kind", choices=RUNPOD_PROVIDER_BUNDLE_KINDS, default="wam")
     create.add_argument("--container-disk-gb", type=int, default=80)
     create.add_argument("--volume-gb", type=int, default=20)
+    create.add_argument("--cloud-type", choices=("SECURE", "COMMUNITY"), default="SECURE")
+    create.add_argument("--allowed-cuda-version", action="append", default=[])
+    create.add_argument("--min-vcpu-per-gpu", type=int, default=2)
+    create.add_argument("--min-ram-per-gpu", type=int, default=8)
     poll = subparsers.add_parser("poll")
     poll.add_argument("--job-dir", required=True)
     poll.add_argument("--max-wait-seconds", type=int, default=60)
@@ -787,8 +1194,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             public_base_url=args.public_base_url,
             provider_bundle_url=args.provider_bundle_url,
             provider_output_put_url=args.provider_output_put_url,
+            provider_output_get_url=args.provider_output_get_url,
             provider_bundle_url_file=args.provider_bundle_url_file,
             provider_output_put_url_file=args.provider_output_put_url_file,
+            provider_output_get_url_file=args.provider_output_get_url_file,
             token_file=args.token_file,
             secret_env_file=args.secret_env_file,
             output_path=args.output_path,
@@ -797,8 +1206,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             verify_output_put_url=args.verify_output_put_url,
             gpu_type_ids=args.gpu_type_id or DEFAULT_GPU_TYPE_IDS,
             image_name=args.image_name,
+            provider_bundle_kind=args.provider_bundle_kind,
             container_disk_gb=args.container_disk_gb,
             volume_gb=args.volume_gb,
+            cloud_type=args.cloud_type,
+            allowed_cuda_versions=args.allowed_cuda_version,
+            min_vcpu_per_gpu=args.min_vcpu_per_gpu,
+            min_ram_per_gpu=args.min_ram_per_gpu,
         )
     else:
         manifest = poll_runpod_wam_async_run(

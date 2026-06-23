@@ -37,7 +37,7 @@ from .vast_authorized_probe_runner import (
 
 VAST_WAM_AUTHORIZED_RUNNER_SCHEMA_VERSION = "vast_wam_authorized_runner.v1"
 DEFAULT_WAM_PUBLIC_IMAGE = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"
-DEFAULT_WAM_VAST_LAUNCH_MODE = "args"
+DEFAULT_WAM_VAST_LAUNCH_MODE = "auto"
 
 
 def _string(value: Any) -> str:

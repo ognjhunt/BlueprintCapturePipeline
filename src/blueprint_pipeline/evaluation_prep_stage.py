@@ -1195,6 +1195,7 @@ def robot_eval_job_evaluation_prep_surface(
         "job_validation": "job_validation.json",
         "scheduler_decision": "scheduler_decision.json",
         "worker_launch_plan": "worker_launch_plan.json",
+        "gpu_startup_pipeline_plan": "gpu_startup_pipeline_plan.json",
         "worker_manifest": "worker_manifest.json",
         "gpu_provisioning_request": "gpu_provisioning_request.json",
         "gpu_provider_launch_request": "gpu_provider_launch_request.json",
@@ -1327,6 +1328,9 @@ def robot_eval_job_evaluation_prep_surface(
             "proof_boundary_uri": "robot_eval_job_proof_boundary_uri",
             "blocked_manifest_uri": "robot_eval_job_blocked_manifest_uri",
             "worker_manifest_uri": "robot_eval_job_worker_manifest_uri",
+            "gpu_startup_pipeline_plan_uri": (
+                "robot_eval_job_gpu_startup_pipeline_plan_uri"
+            ),
             "gpu_provider_launcher_result_uri": (
                 "robot_eval_job_gpu_provider_launcher_result_uri"
             ),
@@ -1387,6 +1391,7 @@ def robot_eval_job_evaluation_prep_surface(
         startup_alias_map = {
             "scheduler_decision_uri": "robot_eval_scheduler_decision_uri",
             "worker_launch_plan_uri": "robot_eval_worker_launch_plan_uri",
+            "gpu_startup_pipeline_plan_uri": "robot_eval_gpu_startup_pipeline_plan_uri",
             "worker_manifest_uri": "robot_eval_worker_manifest_uri",
             "gpu_provider_launch_request_uri": "robot_eval_gpu_provider_launch_request_uri",
             "gpu_provider_launcher_result_uri": "robot_eval_gpu_provider_launcher_result_uri",
@@ -1559,7 +1564,6 @@ def _primary_runtime_render_descriptor(
     geometry = dict(conditioning_bundle.get("geometry") or {}) if isinstance(conditioning_bundle.get("geometry"), Mapping) else {}
     poses_ref = str(arkit.get("poses_uri") or local_paths.get("arkit_poses_path") or "").strip()
     intrinsics_ref = str(arkit.get("intrinsics_uri") or local_paths.get("arkit_intrinsics_path") or "").strip()
-    depth_ref = str(arkit.get("depth_prefix_uri") or local_paths.get("arkit_depth_path") or "").strip()
     if raw_video_ref and poses_ref and intrinsics_ref:
         return {
             "world_model_backend": "site_world_runtime",

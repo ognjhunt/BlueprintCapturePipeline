@@ -443,7 +443,25 @@ def test_create_success_writes_async_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _install_common_create_harness(monkeypatch, create_response={"new_contract": 5150})
+    selected_offer = {
+        "ask_contract_id": 707,
+        "hourly_rate_usd": 0.2,
+        "gpu_name": "RTX 6000 Ada",
+        "gpu_ram_mb": 49152,
+    }
+    _install_common_create_harness(
+        monkeypatch,
+        offers=[selected_offer],
+        selected_offer=selected_offer,
+        create_response={"new_contract": 5150},
+    )
+    selected_offer_kwargs: dict[str, Any] = {}
+
+    def fake_select_offer(_offers: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+        selected_offer_kwargs.update(kwargs)
+        return selected_offer
+
+    monkeypatch.setattr(runner, "_select_offer", fake_select_offer)
     manifest = runner.create_async_vast_wam_run(
         job_dir=tmp_path / "created",
         bundle_path=_write_bundle(tmp_path / "bundle.zip"),
@@ -454,14 +472,24 @@ def test_create_success_writes_async_state(
         session_budget_ledger=tmp_path / "budget.json",
         allow_paid_vast_launch=True,
         max_live_minutes=3,
+        min_gpu_ram_mb=48000,
         generated_at="now",
     )
 
     assert manifest["status"] == "instance_created"
     assert manifest["instance_id"] == 5150
+    assert manifest["min_gpu_ram_mb"] == 48000
+    assert selected_offer_kwargs["min_gpu_ram_mb"] == 48000
     state = json.loads(Path(manifest["state_path"]).read_text())
     assert state["status"] == "instance_created"
+    assert state["min_gpu_ram_mb"] == 48000
     assert state["create_request_summary"] == {"summary": True}
+    offer_manifest = json.loads(
+        (tmp_path / "created" / "vast_offer_selection_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert offer_manifest["min_gpu_ram_mb"] == 48000
 
 
 def test_poll_blocks_for_missing_state_and_secret(
@@ -668,6 +696,125 @@ def test_poll_deferred_running_and_teardown_success(
     assert state["status"] == "teardown_completed"
 
 
+def test_poll_extends_missing_container_retry_count_with_wait_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = tmp_path / "missing-container-retry-window"
+    _write_state(job, max_live_deadline_epoch=1_000.0)
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(runner, "_read_secret_file", lambda *_args, **_kwargs: ("secret-vast-key", {}))
+    monkeypatch.setattr(runner, "_forwarded_secret_values", lambda: [])
+    monkeypatch.setattr(runner, "_append_phase", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_fill_missing_phase_rows", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_instance_status", lambda _payload: "running")
+    monkeypatch.setattr(runner, "_redact_runtime_value", lambda value, _secrets: value)
+    monkeypatch.setattr(runner, "_budget_ledger", lambda **_kwargs: {"estimated_cost_usd": 0.01})
+    monkeypatch.setattr(runner, "_append_session_budget_attempt", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "_final_validation", lambda **_kwargs: {"status": "completed"})
+    monkeypatch.setattr(runner.time, "time", lambda: 100.0)
+    monkeypatch.setattr(
+        runner,
+        "_inspect_provider_runtime_output_zip",
+        lambda *_args, **_kwargs: {
+            "zip_present": False,
+            "runtime_result_present": False,
+            "runtime_result": {},
+            "mp4_validation": {},
+            "video_smoke_proven": False,
+        },
+    )
+
+    def fake_logs(**kwargs: Any) -> dict[str, Any]:
+        observed.update(kwargs)
+        Path(kwargs["output_log_path"]).write_text(
+            "Error response from daemon: No such container: C.123",
+            encoding="utf-8",
+        )
+        return {"output_log_path": str(kwargs["output_log_path"]), "status": "blocked"}
+
+    monkeypatch.setattr(runner, "_request_logs_and_fetch", fake_logs)
+    monkeypatch.setattr(
+        runner,
+        "_api_json",
+        lambda **kwargs: (200, {"success": True})
+        if kwargs["method"] == "DELETE"
+        else (200, {"instances": {"actual_status": "running"}}),
+    )
+
+    result = runner.poll_async_vast_wam_run(
+        job_dir=job,
+        max_wait_seconds=900,
+        retry_interval_seconds=15,
+        teardown=True,
+        generated_at="now",
+    )
+
+    assert result["status"] == "blocked"
+    assert observed["container_missing_retry_attempts"] == 60
+
+
+def test_poll_caps_log_wait_to_remaining_live_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = tmp_path / "deadline-capped-log-wait"
+    _write_state(job, max_live_deadline_epoch=130.0)
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(runner, "_read_secret_file", lambda *_args, **_kwargs: ("secret-vast-key", {}))
+    monkeypatch.setattr(runner, "_forwarded_secret_values", lambda: [])
+    monkeypatch.setattr(runner, "_append_phase", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_fill_missing_phase_rows", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_instance_status", lambda _payload: "running")
+    monkeypatch.setattr(runner, "_redact_runtime_value", lambda value, _secrets: value)
+    monkeypatch.setattr(runner, "_budget_ledger", lambda **_kwargs: {"estimated_cost_usd": 0.01})
+    monkeypatch.setattr(runner, "_append_session_budget_attempt", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "_final_validation", lambda **_kwargs: {"status": "completed"})
+    monkeypatch.setattr(runner.time, "time", lambda: 100.0)
+    monkeypatch.setattr(
+        runner,
+        "_inspect_provider_runtime_output_zip",
+        lambda *_args, **_kwargs: {
+            "zip_present": False,
+            "runtime_result_present": False,
+            "runtime_result": {},
+            "mp4_validation": {},
+            "video_smoke_proven": False,
+        },
+    )
+
+    def fake_logs(**kwargs: Any) -> dict[str, Any]:
+        observed.update(kwargs)
+        Path(kwargs["output_log_path"]).write_text(
+            "BLUEPRINT_VAST_HEARTBEAT_OK",
+            encoding="utf-8",
+        )
+        return {"output_log_path": str(kwargs["output_log_path"]), "status": "completed"}
+
+    monkeypatch.setattr(runner, "_request_logs_and_fetch", fake_logs)
+    monkeypatch.setattr(
+        runner,
+        "_api_json",
+        lambda **kwargs: (200, {"success": True})
+        if kwargs["method"] == "DELETE"
+        else (200, {"instances": {"actual_status": "running"}}),
+    )
+
+    result = runner.poll_async_vast_wam_run(
+        job_dir=job,
+        max_wait_seconds=900,
+        retry_interval_seconds=15,
+        teardown=True,
+        generated_at="now",
+    )
+
+    assert result["status"] == "blocked"
+    assert observed["max_wait_seconds"] == 30
+    assert observed["container_missing_retry_attempts"] == 2
+    assert result["effective_log_fetch_max_wait_seconds"] == 30
+    assert result["log_wait_deadline_cap_applied"] is True
+
+
 def test_poll_downloads_direct_provider_output_get_url_without_leaking_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -829,6 +976,39 @@ def test_poll_teardown_http_and_generic_failures(
     assert teardown["teardown_actions_performed"][0]["error_type"] == "RuntimeError"
 
 
+def test_direct_destroy_async_vast_wam_run_skips_log_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = tmp_path / "destroy-direct"
+    _write_state(job)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setenv(runner.VAST_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.VAST_INSTANCE_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setattr(runner, "_read_secret_file", lambda *_args, **_kwargs: ("secret-vast-key", {}))
+    monkeypatch.setattr(runner, "_append_phase", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_redact_runtime_value", lambda value, _secrets: value)
+    monkeypatch.setattr(runner.time, "time", lambda: 100.0)
+
+    def fake_api_json(**kwargs: Any) -> tuple[int, dict[str, Any]]:
+        calls.append((kwargs["method"], kwargs["path"]))
+        if kwargs["method"] == "DELETE":
+            return 200, {"success": True}
+        raise AssertionError(kwargs)
+
+    monkeypatch.setattr(runner, "_api_json", fake_api_json)
+
+    manifest = runner.destroy_async_vast_wam_run(job_dir=job, generated_at="now")
+
+    assert calls == [("DELETE", "/instances/123/")]
+    assert manifest["status"] == "completed"
+    assert manifest["continuing_spend_from_this_run"] is False
+    teardown = json.loads((job / "vast_teardown_manifest.json").read_text())
+    assert teardown["runner_gpu_teardown_completed"] is True
+    state = json.loads(runner._state_path(job).read_text())
+    assert state["status"] == "teardown_completed"
+
+
 def test_async_runner_main_dispatches_create_and_poll(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -922,3 +1102,13 @@ def test_async_runner_main_dispatches_create_and_poll(
 
     assert poll_code == 1
     assert json.loads(capsys.readouterr().out)["teardown"] is True
+
+    monkeypatch.setattr(
+        runner,
+        "destroy_async_vast_wam_run",
+        lambda **kwargs: {"status": "completed", "job_dir": str(kwargs["job_dir"])},
+    )
+    destroy_code = runner.main(["destroy", "--job-dir", str(tmp_path / "job")])
+
+    assert destroy_code == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "completed"

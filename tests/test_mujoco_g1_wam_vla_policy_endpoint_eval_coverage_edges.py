@@ -11,11 +11,34 @@ import pytest
 from blueprint_pipeline import mujoco_g1_wam_vla_policy_endpoint_eval as lane
 
 
+@pytest.fixture(autouse=True)
+def _bound_lerobot_smoke_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_UNITREE_LEROBOT_SMOKE_TIMEOUT_SECONDS", "0.5")
+
+
 def _write_required_unitree_root(root: Path) -> Path:
     for path in lane._unitree_rl_gym_required_files(root).values():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("fixture", encoding="utf-8")
     return root
+
+
+def _clear_external_unitree_policy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_LEROBOT_ROOT",
+        "BLUEPRINT_UNITREE_LEROBOT_PYTHON",
+        "BLUEPRINT_UNITREE_LEROBOT_POLICY_PATH",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+        "BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIM2SIM_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _fake_torch_module(num_actions: int) -> ModuleType:
@@ -224,6 +247,7 @@ def test_unitree_root_discovery_and_navigation_policy_blockers(
         "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
         "UNITREE_G1_POLICY_COMMAND",
         "BLUEPRINT_UNITREE_G1_POLICY_ROOT",
+        "BLUEPRINT_UNITREE_G1_POLICY_SOURCE_ROOT",
         "BLUEPRINT_UNITREE_RL_GYM_ROOT",
         "UNITREE_G1_POLICY_ROOT",
     ):
@@ -444,12 +468,51 @@ def test_same_scene_controller_creation_failures_and_successful_update(
     )
     assert controller is not None
     assert ready_manifest["status"] == "ready"
+    assert ready_manifest["position_target_action_clip_abs"] == 0.5
+    assert ready_manifest["position_target_action_clip_env"] == (
+        "BLUEPRINT_UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ABS"
+    )
+    assert ready_manifest["position_target_action_clip_default_abs"] == 0.5
 
     controller.reset(data)
     update = controller.step(data=data, step=0, command_xyz=[0.2, -0.1, 0.05])
     assert update is not None
     assert update["command_xyz"] == [0.2, -0.1, 0.05]
+    assert update["policy_action_clipped"] is False
+    assert update["raw_policy_action"] == update["action"]
     assert controller.step(data=data, step=1, command_xyz=[0.0, 0.0, 0.0]) is None
+
+    class SpikeTensor:
+        def detach(self) -> "SpikeTensor":
+            return self
+
+        def cpu(self) -> "SpikeTensor":
+            return self
+
+        def numpy(self) -> Any:
+            import numpy as np
+
+            return np.full(num_actions, 8.0, dtype=np.float32)
+
+    class SpikePolicy:
+        def __call__(self, _obs: Any) -> SpikeTensor:
+            return SpikeTensor()
+
+    controller.policy = SpikePolicy()
+    clipped_update = controller.step(data=data, step=2, command_xyz=[0.0, 0.0, 0.0])
+    assert clipped_update is not None
+    assert clipped_update["policy_action_clipped"] is True
+    assert clipped_update["policy_action_clip_abs"] == 0.5
+    assert set(clipped_update["raw_policy_action"]) == {8.0}
+    assert set(clipped_update["action"]) == {0.5}
+    assert controller.policy_action_clipped_count == 1
+    assert controller.max_raw_policy_action_abs == pytest.approx(8.0)
+    assert controller.max_applied_policy_action_abs == pytest.approx(0.5)
+    monkeypatch.setenv("BLUEPRINT_UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ABS", "0.25")
+    env_clipped_update = controller.step(data=data, step=4, command_xyz=[0.0, 0.0, 0.0])
+    assert env_clipped_update is not None
+    assert env_clipped_update["policy_action_clip_abs"] == 0.25
+    assert set(env_clipped_update["action"]) == {0.25}
     controller.model.actuator_ctrlrange = object()
     controller.apply(data=data)
 
@@ -538,8 +601,10 @@ def test_contact_metadata_exception_fallbacks_and_auto_controller_default(
     )
     assert fallback["body_id"] == -1
 
+    _clear_external_unitree_policy_env(monkeypatch)
     _install_fake_mujoco_for_run(monkeypatch, tmp_path)
     monkeypatch.setattr(lane, "_select_unitree_rl_gym_root", lambda **_kwargs: None)
+    monkeypatch.setenv("BLUEPRINT_UNITREE_LEROBOT_SMOKE_TIMEOUT_SECONDS", "0.5")
     summary = lane.run_mujoco_g1_wam_vla_policy_endpoint_eval(
         job_dir=tmp_path / "auto-freejoint",
         max_tasks=1,
@@ -590,6 +655,7 @@ def test_unitree_backend_run_records_controller_updates_and_full_episode_media(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_external_unitree_policy_env(monkeypatch)
     fake_mujoco = _install_fake_mujoco_for_run(monkeypatch, tmp_path)
 
     class FakeSameSceneController:
@@ -675,7 +741,8 @@ def test_unitree_backend_run_records_controller_updates_and_full_episode_media(
         )
     )
     assert same_scene_manifest["controller_update_count"] == 1
-    assert same_scene_manifest["same_scene_controller_clamped_update_count"] == 0
+    assert same_scene_manifest["same_scene_controller_clamped_update_count"] == 1
+    assert summary["same_scene_controller_clamped_update_count"] == 1
     video_status = json.loads(
         (tmp_path / "ready-unitree-backend" / "video_generation_status.json").read_text(
             encoding="utf-8"

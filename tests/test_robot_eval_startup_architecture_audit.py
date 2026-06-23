@@ -1040,7 +1040,7 @@ def test_robot_eval_startup_architecture_audit_main_paths(
     tmp_path: Path,
     capsys,
 ) -> None:
-    job_dir = _startup_job_dir(tmp_path)
+    _startup_job_dir(tmp_path)
     capture_root = tmp_path
 
     assert startup_audit_main(["--capture-root", str(capture_root), "--job-id", "startup-job-1"]) == 0

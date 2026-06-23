@@ -547,6 +547,42 @@ def test_verify_public_staging_urls_missing_urls_and_deadline_blockers(
     assert "provider_output_put_url_not_checked" in deadline["blockers"]
 
 
+def test_verify_public_staging_urls_blocks_relative_urls_without_exception(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"zip bundle")
+
+    relative_bundle = staging.verify_public_staging_urls(
+        job_dir=tmp_path / "relative-bundle",
+        provider_bundle_url="/bundle.zip?token=local-token",
+        provider_output_put_url="https://example.test/output.zip",
+        bundle_path=bundle,
+        output_path=tmp_path / "output.zip",
+        max_wait_seconds=0,
+        retry_interval_seconds=0,
+        timeout_seconds=1,
+    )
+    assert relative_bundle["status"] == "blocked"
+    assert "provider_bundle_fetch_url_unreachable" in relative_bundle["blockers"]
+    bundle_probe = relative_bundle["attempts"][0]["bundle_probe"]  # type: ignore[index]
+    assert bundle_probe["error_type"] == "ValueError"  # type: ignore[index]
+
+    relative_output = staging.verify_public_staging_urls(
+        job_dir=tmp_path / "relative-output",
+        provider_bundle_url="/bundle.zip?token=local-token",
+        provider_output_put_url="/output.zip?token=local-token",
+        bundle_path=bundle,
+        output_path=tmp_path / "output.zip",
+        max_wait_seconds=0,
+        retry_interval_seconds=0,
+        timeout_seconds=1,
+        require_bundle_fetch_probe=False,
+    )
+    assert relative_output["status"] == "blocked"
+    assert "provider_output_put_url_unwritable" in relative_output["blockers"]
+    output_probe = relative_output["attempts"][0]["output_put_probe"]  # type: ignore[index]
+    assert output_probe["error_type"] == "ValueError"  # type: ignore[index]
+
+
 def test_verify_public_staging_urls_cleanup_block_and_skipped_put_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

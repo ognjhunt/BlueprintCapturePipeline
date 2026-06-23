@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -22,6 +23,11 @@ SUPPORTED_ACTION_TYPES = (
     "inspect_look",
     "manipulation_contact",
 )
+SAFE_APPROACH_SPEED_MPS = 0.12
+SAFE_CONTACT_APPROACH_SPEED_MPS = 0.10
+SAFE_WAYPOINT_SPEED_MPS = 0.10
+SAFE_STOP_APPROACH_SPEED_MPS = 0.08
+SAFE_APPROACH_YAW_RATE_RAD_S = 0.25
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -64,6 +70,53 @@ def _object_waypoint(observation: Mapping[str, Any]) -> list[float]:
     return [0.54, -0.65, 0.79]
 
 
+def _base_pose(observation: Mapping[str, Any]) -> tuple[list[float], float]:
+    base_pose = _mapping(observation.get("base_pose"))
+    position = base_pose.get("position") or [-0.22, 0.0, 0.79]
+    if isinstance(position, Sequence) and not isinstance(position, (str, bytes)) and len(position) >= 2:
+        base_position = [
+            _number(position[0], -0.22),
+            _number(position[1], 0.0),
+            _number(position[2], 0.79) if len(position) > 2 else 0.79,
+        ]
+    else:
+        base_position = [-0.22, 0.0, 0.79]
+    return base_position, _number(base_pose.get("yaw_rad"), 0.0)
+
+
+def _target_directed_base_velocity(
+    observation: Mapping[str, Any],
+    *,
+    target: Sequence[float],
+    speed_mps: float,
+) -> dict[str, Any]:
+    base_position, yaw = _base_pose(observation)
+    dx = float(target[0]) - float(base_position[0])
+    dy = float(target[1]) - float(base_position[1])
+    distance = max(1e-6, math.hypot(dx, dy))
+    heading = math.atan2(dy, dx)
+    heading_error = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
+    if abs(heading_error) > math.pi * 0.65:
+        speed = 0.0
+    else:
+        alignment_scale = max(0.2, math.cos(min(abs(heading_error), math.pi / 2)))
+        speed = min(float(speed_mps), max(0.0, distance * 0.5)) * alignment_scale
+        if distance <= 0.5:
+            speed = min(speed, 0.045)
+    yaw_rate = max(
+        -SAFE_APPROACH_YAW_RATE_RAD_S,
+        min(SAFE_APPROACH_YAW_RATE_RAD_S, heading_error * 0.8),
+    )
+    return {
+        "action_type": "base_velocity",
+        "velocity_frame": "robot_base",
+        "linear_velocity_mps": speed,
+        "lateral_velocity_mps": 0.0,
+        "yaw_rate_rad_s": yaw_rate,
+        "target_hint": list(target),
+    }
+
+
 def choose_action(observation: Mapping[str, Any]) -> dict[str, Any]:
     """Choose a supported Blueprint action for a single observation packet."""
 
@@ -80,14 +133,13 @@ def choose_action(observation: Mapping[str, Any]) -> dict[str, Any]:
     if task_id == "approach_target":
         if target_error <= 0.35:
             return {"action_type": "stop", "report": "within_goal_tolerance"}
-        if step < 80:
-            return {
-                "action_type": "base_velocity",
-                "linear_velocity_mps": 0.28,
-                "lateral_velocity_mps": 0.0,
-                "yaw_rate_rad_s": 0.0,
-            }
-        return {"action_type": "waypoint", "waypoint": target}
+        if step >= 2800:
+            return {"action_type": "stop", "report": "approach_timeout_stabilize"}
+        return _target_directed_base_velocity(
+            observation,
+            target=target,
+            speed_mps=SAFE_APPROACH_SPEED_MPS,
+        )
 
     if task_id == "route_around_obstruction":
         route = _mapping(observation.get("route_task_state"))
@@ -102,21 +154,34 @@ def choose_action(observation: Mapping[str, Any]) -> dict[str, Any]:
                     _number(candidate[1], target[1]),
                     _number(candidate[2], 0.79) if len(candidate) > 2 else 0.79,
                 ]
-        return {"action_type": "waypoint", "waypoint": waypoint}
+        return {
+            "action_type": "waypoint",
+            "waypoint": waypoint,
+            "max_speed_mps": SAFE_WAYPOINT_SPEED_MPS,
+        }
 
     if task_id == "contact_or_push_light_object":
         return {
             "action_type": "manipulation_contact",
             "target_object_id": "blueprint_light_object",
             "waypoint": _object_waypoint(observation),
+            "approach_speed_mps": SAFE_CONTACT_APPROACH_SPEED_MPS,
         }
 
     if task_id == "stop_at_goal_and_report":
         if target_error <= 0.38 or step >= 160:
             return {"action_type": "stop", "report": "stopped_for_review"}
-        return {"action_type": "waypoint", "waypoint": target}
+        return {
+            "action_type": "waypoint",
+            "waypoint": target,
+            "max_speed_mps": SAFE_STOP_APPROACH_SPEED_MPS,
+        }
 
-    return {"action_type": "waypoint", "waypoint": target}
+    return {
+        "action_type": "waypoint",
+        "waypoint": target,
+        "max_speed_mps": SAFE_WAYPOINT_SPEED_MPS,
+    }
 
 
 def adapter_manifest() -> dict[str, Any]:

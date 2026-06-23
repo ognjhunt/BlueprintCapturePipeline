@@ -136,6 +136,7 @@ def _read_job_artifacts(job_path: Path) -> dict[str, dict[str, Any]]:
         "scheduler_decision": "scheduler_decision.json",
         "worker_launch_plan": "worker_launch_plan.json",
         "worker_manifest": "worker_manifest.json",
+        "gpu_startup_pipeline_plan": "gpu_startup_pipeline_plan.json",
         "gpu_provider_launch_request": "gpu_provider_launch_request.json",
         "gpu_cost_control_ledger": "gpu_cost_control_ledger.json",
         "gpu_provisioning_result": "gpu_provisioning_result.json",
@@ -533,13 +534,22 @@ def build_sim_only_provider_execution_layer(
     artifacts = _read_job_artifacts(path)
     request = _mapping(artifacts.get("job_request"))
     worker_plan = _mapping(artifacts.get("worker_launch_plan"))
+    startup_plan = _mapping(artifacts.get("gpu_startup_pipeline_plan"))
     provider_request = _mapping(artifacts.get("gpu_provider_launch_request"))
     provider_shape = _mapping(provider_request.get("provider_request_shape"))
+    startup_provider_policy = _mapping(startup_plan.get("managed_provider_policy"))
+    marketplace_policy = _mapping(startup_plan.get("marketplace_policy"))
+    preflight_canary_policy = _mapping(startup_plan.get("preflight_canary_policy"))
+    same_sku_burst_policy = _mapping(startup_plan.get("same_sku_burst_policy"))
     scheduler = _mapping(artifacts.get("scheduler_decision"))
     simulator = _string(worker_plan.get("simulator")) or _string(scheduler.get("simulator"))
     if not simulator:
         simulator = _string(provider_shape.get("runtime_preflight", {}).get("simulator")) or "mujoco"
     provider = _string(provider_request.get("provider")) or _string(worker_plan.get("provider")) or "runpod"
+    provider_priority = _string_list(
+        startup_provider_policy.get("provider_api_priority")
+        or startup_plan.get("provider_priority")
+    ) or ["runpod", "gcp", "vast"]
     provider_gpu_priority = _provider_gpu_priority(simulator, provider_shape)
     warm_policy = _warm_pool_policy(
         request=request,
@@ -574,6 +584,7 @@ def build_sim_only_provider_execution_layer(
             "job_request": request,
             "scheduler_decision": scheduler,
             "worker_launch_plan": worker_plan,
+            "gpu_startup_pipeline_plan": startup_plan,
             "gpu_provider_launch_request": provider_request,
             "preflight": preflight,
             "warm_pool_policy": warm_policy,
@@ -605,8 +616,15 @@ def build_sim_only_provider_execution_layer(
         "job_id": resolved_job_id,
         "status": "ready_for_provider_launch" if preflight["status"] == "passed" else "blocked_before_spend",
         "provider": provider,
-        "provider_priority": ["runpod", "vast", "gcp"],
+        "provider_priority": provider_priority,
         "selected_provider": provider,
+        "gpu_startup_pipeline_plan_path": "gpu_startup_pipeline_plan.json"
+        if startup_plan
+        else None,
+        "managed_provider_policy": startup_provider_policy,
+        "marketplace_policy": marketplace_policy,
+        "preflight_canary_policy": preflight_canary_policy,
+        "same_sku_burst_policy": same_sku_burst_policy,
         "simulator_scope": {
             "scope": "simulator_only_beta",
             "robot": "unitree_g1",
@@ -664,6 +682,7 @@ def build_sim_only_provider_execution_layer(
             "sim_only_provider_preflight": "sim_only_provider_preflight.json",
             "sim_only_provider_runtime_manifest": "sim_only_provider_runtime_manifest.json",
             "sim_only_provider_cost_ledger": "sim_only_provider_cost_ledger.json",
+            "gpu_startup_pipeline_plan": "gpu_startup_pipeline_plan.json",
             "gpu_provider_launch_request": "gpu_provider_launch_request.json",
             "gpu_cost_control_ledger": "gpu_cost_control_ledger.json",
             "worker_manifest": "worker_manifest.json",

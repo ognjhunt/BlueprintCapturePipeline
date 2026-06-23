@@ -94,6 +94,14 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     assert manifest["status"] == "completed"
     assert manifest["provider_bundle_url_file"]["mode_is_0600"] is True
     assert manifest["provider_output_put_url_file"]["mode_is_0600"] is True
+    uploaded_keys = [row[2] for row in fake_client.uploads]
+    assert uploaded_keys == [
+        f"blueprint/wam-test/{object_store._job_key_component((tmp_path / 'job').resolve())}/provider_bundle.zip"
+    ]
+    assert manifest["output_key"] == (
+        f"blueprint/wam-test/{object_store._job_key_component((tmp_path / 'job').resolve())}"
+        "/runpod_provider_runtime_output.zip"
+    )
     assert manifest["provider_bundle_url_redacted"].endswith("?REDACTED_QUERY")
     persisted = (tmp_path / "job" / "wam_provider_object_store_staging_manifest.json").read_text(
         encoding="utf-8"
@@ -150,6 +158,7 @@ def test_wam_provider_object_store_bucket_cli_and_main_edges(
 
     assert manifest["status"] == "completed"
     assert manifest["object_store"]["bucket"]["source"] == "cli_argument"
+    assert "--provider-output-get-url-file" in manifest["runpod_create_command_template"]
     assert "--provider-bundle-url-file" in manifest["vast_create_command_template"]
     assert "--provider-output-put-url-file" in manifest["vast_create_command_template"]
     assert "--provider-output-get-url-file" in manifest["vast_create_command_template"]

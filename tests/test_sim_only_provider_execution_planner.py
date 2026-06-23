@@ -183,6 +183,45 @@ def _seed_ready_job(capture_root: Path, *, job_id: str = "job-mujoco-runpod") ->
         },
     )
     _write_json(
+        job_dir / "gpu_startup_pipeline_plan.json",
+        {
+            "schema_version": "robot_eval_gpu_startup_pipeline_plan.v1",
+            "job_id": job_id,
+            "status": "startup_pipeline_ready",
+            "provider_selection_owner": "BlueprintCapturePipeline",
+            "selected_provider": "runpod",
+            "selected_provider_tier": "managed_secure_cloud_preferred",
+            "selected_provider_is_marketplace": False,
+            "managed_provider_policy": {
+                "managed_provider_priority": [
+                    "runpod_secure_cloud",
+                    "lambda_cloud",
+                    "aws_g6",
+                    "coreweave",
+                ],
+                "provider_api_priority": ["runpod", "gcp", "vast"],
+            },
+            "marketplace_policy": {
+                "customer_job_marketplace_default": (
+                    "avoid_unless_explicit_strict_preflight_canary"
+                ),
+                "selected_provider_is_marketplace": False,
+                "marketplace_quarantine_required": False,
+            },
+            "preflight_canary_policy": {
+                "required_before_customer_eval": True,
+                "customer_eval_waits_for_canary": True,
+                "block_scene_load_until_preflight_passes": True,
+            },
+            "same_sku_burst_policy": {
+                "burst_workers_must_use_same_image_ref": True,
+                "burst_workers_must_use_same_gpu_family": True,
+                "provider_worker_selection_disallows_random_hosts": True,
+            },
+            "blockers": [],
+        },
+    )
+    _write_json(
         job_dir / "gpu_provider_launch_request.json",
         {
             "schema_version": "robot_eval_gpu_provider_launch_request.v1",
@@ -209,6 +248,13 @@ def _seed_ready_job(capture_root: Path, *, job_id: str = "job-mujoco-runpod") ->
                     ),
                 },
                 "gpu": {"preferred_gpu_class": "cpu_or_low_cost_gpu_when_rendering"},
+                "startup_pipeline": {
+                    "plan_path": "gpu_startup_pipeline_plan.json",
+                    "status": "startup_pipeline_ready",
+                    "selected_provider_tier": "managed_secure_cloud_preferred",
+                    "selected_provider_is_marketplace": False,
+                    "blockers": [],
+                },
                 "limits": {
                     "max_active_workers": 1,
                     "hard_timeout_seconds": 120,
@@ -238,6 +284,20 @@ def test_mujoco_runpod_plan_uses_low_cost_scale_to_zero_path(tmp_path: Path) -> 
     plan = build_sim_only_provider_execution_layer(capture_root=capture_root, job_dir=job_dir)
 
     assert plan["status"] == "ready_for_provider_launch"
+    assert plan["provider_priority"] == ["runpod", "gcp", "vast"]
+    assert plan["gpu_startup_pipeline_plan_path"] == "gpu_startup_pipeline_plan.json"
+    assert plan["managed_provider_policy"]["managed_provider_priority"] == [  # type: ignore[index]
+        "runpod_secure_cloud",
+        "lambda_cloud",
+        "aws_g6",
+        "coreweave",
+    ]
+    assert plan["marketplace_policy"][  # type: ignore[index]
+        "customer_job_marketplace_default"
+    ] == "avoid_unless_explicit_strict_preflight_canary"
+    assert plan["preflight_canary_policy"][  # type: ignore[index]
+        "customer_eval_waits_for_canary"
+    ] is True
     assert plan["preflight"]["status"] == "passed"  # type: ignore[index]
     assert plan["provider_gpu_priority_fallback_list"][0] == "NVIDIA L4"
     assert plan["warm_pool_policy"]["decision"] == "scale_to_zero_on_demand"  # type: ignore[index]

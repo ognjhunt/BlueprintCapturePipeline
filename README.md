@@ -180,6 +180,12 @@ Artifact families and advisory downstream outputs:
   evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_vision_success_review_queue.json` when
   WAM/substrate evaluation is requested
+- `robot_eval_jobs/<job_id>/wam_episode_consistency_request.json` when generated
+  WAM rollouts are ready for an external forward/inverse consistency scorer
+- `robot_eval_jobs/<job_id>/wam_episode_consistency.command.json` when a separate
+  episode-consistency scorer command runs
+- `robot_eval_jobs/<job_id>/wam_consistency_checks.json` when WAM/substrate
+  evaluation is requested
 - `robot_eval_jobs/<job_id>/policy_ranking_scorecard.json` when WAM/substrate
   evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_eval_claim_boundary.json` when WAM/substrate
@@ -203,6 +209,28 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/policy_execution_manifest.json`
 - `robot_eval_jobs/<job_id>/policy_execution_trace.json`
 - `robot_eval_jobs/<job_id>/policy_execution_trace.jsonl`
+- `robot_eval_jobs/<job_id>/unitree_policy_stack_installation_audit.json` when
+  Unitree policy/provider configuration is probed; this is the aggregate gate
+  for whether locomotion, manipulation runtime, and Unitree action-command
+  components are all configured
+- `robot_eval_jobs/<job_id>/unitree_groot_n17_sonic_installation_audit.json`
+  when GR00T N1.7 + UNITREE_G1_SONIC runtime configuration is probed
+- `robot_eval_jobs/<job_id>/unitree_groot_n17_sonic_policy_runtime_summary.json`
+  and `unitree_groot_n17_sonic_policy_runtime_truth_boundary.json` when the
+  GR00T/SONIC policy lane is audited; these are not fresh model execution by
+  themselves
+- `robot_eval_jobs/<job_id>/unitree_groot_n17_sonic_policy_server_preflight.json`
+  when the GR00T/SONIC PolicyServer lane is checked for source, Python
+  environment, `UNITREE_G1_SONIC` modality schema, local disk, CUDA, and Sim2Sim
+  readiness without downloading weights or launching hardware
+- `robot_eval_jobs/<job_id>/policy_action_model_command_output.json` records
+  whether the concrete GR00T/SONIC PolicyServer wrapper actually returned an
+  action chunk; `gr00t_policy_server_timeout:ping` means the wrapper ran but no
+  PolicyServer responded at the configured endpoint
+- `robot_eval_jobs/<job_id>/unitree_groot_n17_sonic_sim2sim_execution.json`
+  records whether a GR00T/SONIC action chunk was consumed by the simulator-only
+  MuJoCo bridge; this is not official GR00T-WholeBodyControl deployment proof
+  and not task-success proof by itself
 - `robot_eval_jobs/<job_id>/policy_autoresearch/policy_autoresearch_report.json`
 - `robot_eval_jobs/<job_id>/policy_autoresearch/agent_idea_tree.json`
 - `robot_eval_jobs/<job_id>/policy_autoresearch/policy_candidate_package.json`
@@ -847,6 +875,96 @@ validation follow-up artifacts. It performs no live provider calls and does not
 prove physical robot readiness, deployment approval, safety approval, public
 readiness, or customer-specific SRCC.
 
+Forward/inverse episode consistency is a separate scorer layer, not a property
+claimed by WAM execution or by the evaluator itself. The OSCAR/Cosmos WAM
+evaluator writes `wam_episode_consistency_request.json`; a separate VLM or human
+review command writes `wam_episode_consistency.command.json`; the evaluator then
+normalizes that result into `wam_consistency_checks.json`. See
+[`docs/WAM_EPISODE_CONSISTENCY_SCORER.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/WAM_EPISODE_CONSISTENCY_SCORER.md).
+
+For Unitree G1, the robot-policy lane is Unitree-native. Use `unitree_g1_policy`
+for locomotion/control, `unitree_groot_n17_sonic_policy` as the current top
+GR00T N1.7 + UNITREE_G1_SONIC manipulation/action-command candidate,
+`unitree_lerobot_policy` for G1 Dex1/Dex3/gripper manipulation, and
+`unitree_unifolm_vla_policy` or `unitree_unifolm_wma_policy` only when a
+Unitree command/checkpoint is available. UnifoLM VLA readiness requires a VLA
+checkpoint via `BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT` or the provider-facing
+alias `BLUEPRINT_UNITREE_UNIFOLM_POLICY_CHECKPOINT`, plus the VLM backbone at
+`BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT`.
+
+GR00T/SONIC readiness requires `BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT`,
+`BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT`,
+`BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT`,
+`BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT`, and a runnable
+`BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND`, usually
+`blueprint-unitree-groot-n17-sonic-policy-server-command`. Manipulation proof
+also requires a reachable GR00T PolicyServer and a configured SONIC Sim2Sim
+command. Use `blueprint-run-unitree-groot-n17-sonic-policy-server-preflight` to
+record whether the source checkout, server venv, `UNITREE_G1_SONIC` schema,
+disk, CUDA, and Sim2Sim prerequisites are ready. A preflight pass is still not
+model execution; do not replace the proven Unitree RL Gym locomotion path with
+GR00T/SONIC until a separate simulator proof actually runs the GR00T/SONIC
+command and emits action chunks. The current third-party GR00T/SONIC proof can
+emit 3120-value action chunks, consume them through a simulator-only MuJoCo
+bridge, and re-query the policy through a WAM loop; it still does not prove an
+official/trusted checkpoint, physical readiness, deployment approval, safety
+validation, or correctly placed-object task success.
+
+Do not use OpenVLA, OSCAR, Cosmos, fixture WAM, or generated WAM rollouts as the
+G1 robot policy. OpenVLA can remain a generic comparison candidate for
+non-Unitree work, and WAM outputs remain evaluator/support artifacts unless a
+separate Unitree-specific policy endpoint consumes the observation and emits
+normalized G1 actions. For this machine, source `.env.unitree.local` to bind the
+verified local Unitree RL Gym root and checkpoint before running G1 MuJoCo policy
+proofs. See
+[`docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md).
+
+Use the explicit provider-registry fields instead of the legacy
+`selected_provider` field when answering what controls the G1:
+`selected_locomotion_provider`, `selected_unitree_manipulation_runtime`,
+`selected_unitree_action_command`, `selected_unitree_hand_policy`,
+`unitree_hand_manipulation_policy_in_place`, `openvla_selected_for_g1_policy`,
+`wam_selected_for_g1_policy`, and `g1_robot_policy_family_decision`.
+
+Current Unitree manipulation status: the repo has Unitree-specific adapter,
+provider-bundle, SDPA fallback image plumbing, and a live Unitree UnifoLM
+`/act` server bridge path. A RunPod `provider_bundle_kind=unitree_unifolm`
+smoke completed and returned a Unitree UnifoLM `manipulation_contact` action
+with a 25-step, 23-value action chunk at
+`robot_eval_jobs/unitree_unifolm_provider_import_20260622T173653Z_framefix_default_retry/`.
+That proves one Unitree model-backed action-command execution.
+
+The latest strict endpoint/WAM requery artifacts keep fresh inference separate
+from provider replay. The MuJoCo smoke under
+`robot_eval_jobs/mujoco_g1_unitree_unifolm_live_endpoint_1ep_every_step_20260622T210403Z/`
+uses the authenticated endpoint path with `endpoint_policy_used=true`,
+`fixture_policy_used=false`, `endpoint_invocation_count=4`, and zero rejected
+actions. Its manipulation report records
+`unitree_endpoint_hand_policy_output_observed=true`,
+`unitree_endpoint_hand_policy_used=false`,
+`unitree_endpoint_fresh_policy_action_command_ran=false`, and
+`unitree_endpoint_provider_output_replay_used=true`.
+
+That means Unitree-family action output and action chunks are flowing through
+the endpoint, but a fresh per-observation Unitree hand/manipulation policy is
+not yet proven in that run. `unitree_endpoint_hand_policy_used=true` is reserved
+for a live Unitree-specific command, server, or provider call that runs for the
+current observation, not for an imported provider result. The WAM requery proof
+under
+`robot_eval_jobs/oscar_wam_unitree_unifolm_every_step_requery_strict_20260622T211219Z/`
+therefore remains blocked with
+`blocked_policy_requery_provider_replay_not_fresh_unitree_hand_policy` even
+though an endpoint action was returned for the WAM-generated first frame.
+
+The intended fresh endpoint path is still Unitree-native: launch a long-lived
+UnifoLM `/act` server with `blueprint-launch-unitree-unifolm-runpod-server
+launch`, then call it from the local endpoint through
+`blueprint-unitree-unifolm-vla-server-bridge --server-url
+https://<pod_id>-8777.proxy.runpod.net/act`, or use an equivalent Unitree
+LeRobot/GR00T-SONIC command endpoint. OpenVLA remains only a comparison
+candidate, and OSCAR/Cosmos/WAM outputs remain evaluator artifacts, not the G1
+robot policy.
+
 The fixture WAM evaluator can also be run directly against an existing job
 directory:
 
@@ -969,6 +1087,16 @@ or `BLUEPRINT_MUJOCO_EVAL_WORKER_IMAGE_REF=...`; the generic fallback is
 `BLUEPRINT_ARTIFACT_OUTPUT_URI` for the finalizer destination. A Dockerfile path
 alone is build scaffolding, and a local `worker_manifest.json` path alone is not
 a provider-launchable input.
+Each job also writes `gpu_startup_pipeline_plan.json`. This is the managed-GPU
+startup policy for website-origin jobs: the WebApp queues and forwards only,
+BlueprintCapturePipeline owns provider selection and spend gates, and customer
+scene load waits for runtime preflight/canary evidence. The default provider
+posture is managed capacity first: RunPod Secure Cloud or a pinned dedicated
+RunPod endpoint for near-term bursts, Lambda Cloud as a second managed lane,
+AWS G6/G5-class instances when hyperscaler controls matter, and CoreWeave for
+reserved/scale AI infrastructure. Vast and community marketplace capacity are
+not the default customer path; they remain experiment or overflow lanes and
+must fail closed unless an explicit strict-preflight/canary override is present.
 Each job writes `gpu_provider_launch_request.json` as a dry-run provider envelope
 with worker image, command, env-var names, GPU constraints, timeout, max-worker,
 idle-shutdown, and artifact-finalizer requirements. It never stores provider
@@ -1024,10 +1152,10 @@ Run `blueprint-audit-robot-eval-startup-architecture --job-dir
 <capture-root>/pipeline/robot_eval_jobs/<job_id>` after a job pass to verify the
 startup contract in one place. The read-only audit checks the async WebApp queue
 boundary, Pipeline scheduler ownership, CPU-preflight gate, worker image/cache
-contract, runtime preflight before scene load, provider dry-run envelope,
-no-secret policy, timeout/idle-shutdown limits, cost-control ledger, and proof
-ceilings without running providers or simulators. `blueprint-run-robot-eval-job`
-now writes the same
+contract, managed GPU startup policy, marketplace fail-closed posture, runtime
+preflight before scene load, provider dry-run envelope, no-secret policy,
+timeout/idle-shutdown limits, cost-control ledger, and proof ceilings without
+running providers or simulators. `blueprint-run-robot-eval-job` now writes the same
 `startup_architecture_audit.json` into every job directory and surfaces its
 status/path in `job_run_manifest.json`; the standalone command remains useful
 for re-auditing edited or externally produced job artifacts. When
@@ -1140,6 +1268,17 @@ The contract stays model-agnostic and customer-supplied-policy friendly:
 accepts adapter or task-head access, and `source_training` is the only mode that
 requires source/training access.
 
+Private hardware integration is also explicit. For closed robots, the preferred
+default is `customer_hosted_sealed_eval_capsule`: the robot team keeps its
+URDF/MJCF/USD, controller, simulator, and hardware bridge private while
+Blueprint sends a least-privilege task/scenario/eval packet and receives
+normalized owner proof. Blueprint does not export raw capture bundles, full
+scene assets, full scoring harnesses, or sealed audit seeds by default. If the
+customer shares a private Robot Embodiment Pack under NDA, use
+`private_asset_hosted_by_blueprint`; if the customer runs a physical robot, use
+`physical_robot_evidence_bridge` and require camera/action/outcome evidence
+joined to exact `scenario_eval_run_id` values.
+
 ```bash
 blueprint-build-policy-improvement-run \
   --capture-root /path/to/<capture-root> \
@@ -1148,6 +1287,9 @@ blueprint-build-policy-improvement-run \
   --customer-policy-ref customer-tote-policy-v3 \
   --embodiment g1-humanoid \
   --action-interface joint_position_delta_20hz \
+  --hardware-integration-mode customer_hosted_sealed_eval_capsule \
+  --site-ip-protection-level sealed_eval_capsule \
+  --customer-hosted-connector-ref gs://robot-team/blueprint/connector-contract.json \
   --target-task tote-transfer \
   --success-threshold 0.95 \
   --cycle-time-threshold-seconds 90 \
@@ -1156,7 +1298,7 @@ blueprint-build-policy-improvement-run \
 ```
 
 The builder writes `policy_improvement_run_offer.json`,
-`policy_improvement_run_offer.md`, and
+`private_hardware_integration_plan.json`, `policy_improvement_run_offer.md`, and
 `policy_improvement_run_webapp_summary.json` under `policy_improvement_run/`.
 The manifest binds together the scenario matrix, normalized baseline attempts,
 standard evaluation scorecard projection, failure labels, Post-Training Data

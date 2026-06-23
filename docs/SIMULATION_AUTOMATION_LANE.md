@@ -268,6 +268,13 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
   timeout and idle-shutdown controls, upload-before-shutdown rules, and provider
   credential env names with a no-secret-artifact policy. It remains local proof
   until explicit provider and simulator gates are supplied.
+- Per-job `gpu_startup_pipeline_plan.json` converts website-origin work into a
+  managed-GPU startup policy before any provider request is considered ready.
+  The WebApp queues and forwards only; Pipeline owns provider selection, spend
+  gates, strict preflight/canary requirements, and same-image/same-SKU burst
+  policy. Managed capacity is preferred for customer jobs. Vast/community
+  marketplace capacity is fail-closed unless an explicit strict-preflight/canary
+  override is present.
 - Per-job `gpu_provider_launch_request.json` converts the generic provisioning
   request and worker launch plan into a dry-run provider envelope: provider
   operation, worker image/entrypoint, required runtime env names, secret env
@@ -284,11 +291,12 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
 - `blueprint-audit-robot-eval-startup-architecture --job-dir
   <capture-root>/pipeline/robot_eval_jobs/<job_id>` is the read-only verifier
   for the startup architecture. It checks the async queue boundary, Pipeline
-  scheduler ownership, CPU-preflight gate, prepared worker contract, provider
-  dry-run request, RunPod adapter cost-control policy, no-secret policy,
-  timeout/idle-shutdown controls, cost ledger, and proof ceilings. It can pass a
-  locally blocked rehearsal when the startup controls are correct, but it never
-  performs provider calls, simulator runs, or proof upgrades.
+  scheduler ownership, CPU-preflight gate, prepared worker contract, managed
+  GPU startup policy, marketplace fail-closed posture, provider dry-run request,
+  RunPod adapter cost-control policy, no-secret policy, timeout/idle-shutdown
+  controls, cost ledger, and proof ceilings. It can pass a locally blocked
+  rehearsal when the startup controls are correct, but it never performs
+  provider calls, simulator runs, or proof upgrades.
   The repo-local prepared image scaffolds are
   `deploy/docker/robot_eval_worker/isaac/Dockerfile` and
   `deploy/docker/robot_eval_worker/mujoco/Dockerfile`, both using

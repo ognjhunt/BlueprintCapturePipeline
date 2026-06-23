@@ -198,6 +198,21 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
     assert result["access_model"]["source_code_required"] is False
     assert result["customer_inputs"]["base_policy_or_model"]["value"] == "customer-tote-policy"
     assert result["customer_inputs"]["success_threshold"]["value"] == 0.95
+    assert result["private_hardware_integration"]["integration_mode"] == (
+        "customer_hosted_sealed_eval_capsule"
+    )
+    assert result["private_hardware_integration"]["site_ip_protection_level"] == (
+        "sealed_eval_capsule"
+    )
+    assert result["private_hardware_integration"]["blueprint_ip_controls"][
+        "raw_capture_bundle_shared_with_customer"
+    ] is False
+    assert result["private_hardware_integration"]["blueprint_ip_controls"][
+        "full_scoring_harness_shared_by_default"
+    ] is False
+    assert result["private_hardware_integration"]["claim_boundary"][
+        "customer_hosted_connector_does_not_export_blueprint_raw_scene_ip"
+    ] is True
     assert result["scenario_split_policy"]["split_counts"]["heldout"] == 1
     assert result["failure_mode_summary"]["dominant_failure_modes"][0] == {
         "failure_mode": "grasp_alignment_miss",
@@ -216,9 +231,20 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
     )
     assert result["webapp_summary_projection"]["safe_for_firestore"] is True
     assert result["webapp_summary_projection"]["dense_or_secret_payloads_included"] is False
+    assert result["webapp_summary_projection"]["private_hardware_integration"] == {
+        "integration_mode": "customer_hosted_sealed_eval_capsule",
+        "site_ip_protection_level": "sealed_eval_capsule",
+        "execution_status": "blocked_missing_private_hardware_inputs",
+        "execution_blockers": ["missing_customer_hosted_connector_ref"],
+        "blueprint_raw_capture_shared": False,
+        "full_scoring_harness_shared": False,
+    }
     assert result["claim_boundary"]["simulator_execution_proven"] is True
     assert result["claim_boundary"]["robot_readiness_proven"] is False
     assert result["claim_boundary"]["public_claim_upgrade_allowed"] is False
+    assert result["claim_boundary"][
+        "blueprint_full_scoring_harness_exported_to_customer_by_default"
+    ] is False
     assert "policy_candidate_package" in result["included_artifacts"]
     assert "evaluation_result" in result["included_artifacts"]
 
@@ -228,7 +254,44 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
     )
     assert persisted["status"] == result["status"]
     assert "Policy Improvement Run" in brief
+    assert "Private Hardware / IP Controls" in brief
     assert "deployment approval" in brief
+    assert _read_json(job_dir / "policy_improvement_run" / "private_hardware_integration_plan.json")[
+        "integration_mode"
+    ] == "customer_hosted_sealed_eval_capsule"
+
+
+def test_policy_improvement_run_offer_accepts_private_asset_hosted_by_blueprint(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    job_dir = _complete_job_dir(capture_root)
+
+    result = build_policy_improvement_run_offer(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        access_level="black_box",
+        hardware_integration_mode="private_asset_hosted_by_blueprint",
+        site_ip_protection_level="blueprint_hosted",
+        robot_embodiment_pack_ref="s3://robot-team/private/figure-embodiment-pack.json",
+        customer_hosted_connector_ref="",
+        generated_at="2026-06-21T00:00:00+00:00",
+    )
+
+    integration = result["private_hardware_integration"]
+    assert integration["integration_mode"] == "private_asset_hosted_by_blueprint"
+    assert integration["site_ip_protection_level"] == "blueprint_hosted"
+    assert integration["robot_embodiment_pack_ref"] == (
+        "s3://robot-team/private/figure-embodiment-pack.json"
+    )
+    assert integration["customer_hardware_controls"][
+        "customer_private_robot_assets_required_by_blueprint"
+    ] is True
+    assert integration["customer_hardware_controls"]["blueprint_hosts_customer_robot_asset"] is True
+    assert integration["blueprint_ip_controls"][
+        "full_resolution_scene_mesh_shared_by_default"
+    ] is False
+    assert integration["execution_status"] == "ready_for_contract_review"
 
 
 def test_policy_improvement_run_offer_accepts_promoted_wam_candidate(
@@ -495,6 +558,12 @@ def test_policy_improvement_run_main_returns_success_and_blocked_status(
                 "0.9",
                 "--cycle-time-threshold-seconds",
                 "80",
+                "--hardware-integration-mode",
+                "customer_hosted_sealed_eval_capsule",
+                "--site-ip-protection-level",
+                "sealed_eval_capsule",
+                "--customer-hosted-connector-ref",
+                "gs://robot-team/blueprint/connector-contract.json",
                 "--improvement-target",
                 "complete_policy",
             ]
@@ -502,6 +571,9 @@ def test_policy_improvement_run_main_returns_success_and_blocked_status(
         == 0
     )
     assert "status=improvement_candidate_ready_for_customer_review" in capsys.readouterr().out
+    assert _read_json(output_dir / "private_hardware_integration_plan.json")[
+        "customer_hosted_connector_ref"
+    ] == "gs://robot-team/blueprint/connector-contract.json"
 
     blocked_job = capture_root / "pipeline" / "robot_eval_jobs" / "blocked"
     assert main(["--capture-root", str(capture_root), "--job-dir", str(blocked_job)]) == 1

@@ -75,7 +75,52 @@ The stack supports three policy tiers:
 
 - `default_phase_policy`: Blueprint reference baseline for phase/action trace and evaluator plumbing.
 - `lucky_g1_reference_adapter`: public Lucky Robots G1 manipulation challenge adapter. It can fetch or use a local checkout, load `scene.xml`, `g1.xml`, mesh assets, `walker.onnx`, and `right_reacher.onnx`, then run a headless walk/reach/grip/release loop through MuJoCo and ONNX Runtime.
-- `policy_api_endpoint`: robot-team VLA endpoint mode. Teams must return normalized attempts, phase traces, action traces, metrics, and artifact paths.
+- `policy_api_endpoint`: robot-team endpoint mode. Teams must return normalized attempts, phase traces, action traces, metrics, and artifact paths.
+
+For Unitree G1 hand or gripper claims, use a Unitree-specific policy endpoint,
+not a generic VLA endpoint. The currently modeled G1 candidates are
+`unitree_groot_n17_sonic_policy`, `unitree_lerobot_policy`,
+`unitree_unifolm_vla_policy`, and `unitree_unifolm_wma_policy`.
+
+`unitree_groot_n17_sonic_policy` is the preferred next investigation lane for
+real G1 manipulation/action chunks: Isaac-GR00T N1.7 provides the VLA policy
+candidate, and GR00T-WholeBodyControl / SONIC provides the G1 whole-body action
+space and Sim2Sim bridge. It is still blocked until the configured command
+returns real Unitree G1/SONIC arm/hand/gripper or 78D SONIC action chunks.
+
+`openvla_policy` is a generic comparison candidate only. It is not a G1
+dexterous-hand policy and should not be selected as the default policy path for
+Unitree G1 runs. OSCAR/Cosmos/fixture WAM rollouts are evaluator support
+evidence unless a Unitree-specific policy endpoint re-observes them and emits
+normalized G1 actions.
+
+For generated job/probe artifacts, use
+`unitree_hand_manipulation_policy_in_place`,
+`selected_unitree_manipulation_runtime`, `selected_unitree_action_command`, and
+`selected_unitree_hand_policy` to answer whether a Unitree hand/manipulation
+policy is installed. RL Gym locomotion, OpenVLA comparison endpoints, and WAM
+rollouts must leave `unitree_hand_manipulation_policy_in_place=false`.
+
+For endpoint-eval artifacts, distinguish installed policy plumbing, replayed
+Unitree-family output, fresh Unitree inference, and task success. The current
+strict MuJoCo smoke under
+`robot_eval_jobs/mujoco_g1_unitree_unifolm_live_endpoint_1ep_every_step_20260622T210403Z/`
+uses the endpoint path and observes a Unitree UnifoLM action chunk, but its
+manipulation report records `unitree_endpoint_hand_policy_used=false`,
+`unitree_endpoint_fresh_policy_action_command_ran=false`, and
+`unitree_endpoint_provider_output_replay_used=true`. That is not enough to say a
+Unitree-native hand/manipulation policy is freshly in the G1 loop.
+
+When the WAM evaluator consumes this endpoint job, its
+`wam_manipulation_loop_readiness_manifest.json` should inherit
+`source_unitree_endpoint_hand_policy_used=false`,
+`source_unitree_endpoint_fresh_policy_action_command_ran=false`, and
+`source_unitree_endpoint_provider_output_replay_used=true` from the source
+MuJoCo endpoint artifacts. A WAM requery can observe Unitree-family output from
+replay, but `policy_observes_wam_generated_next_observation=true` requires a
+fresh Unitree-specific endpoint invocation on the generated observation. That
+still does not remove WAM visual-quality, object displacement, or dexterous
+manipulation blockers.
 
 The existing robot-eval policy execution path also accepts:
 

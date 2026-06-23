@@ -34,7 +34,7 @@ BOOTSTRAP_CANDIDATES = {
         "checkpoint_allow_patterns": ["model/**", "case_map.json", "README.md"],
         "minimum_vram_gb": 24,
         "expected_checkpoint_bytes": 4_245_460_687,
-        "runtime_kind": "action_conditioned_world_model_evaluator",
+        "runtime_kind": "action_conditioned_world_model_rollout_generator",
         "claim_boundary": "OSCAR requires its actual inference code plus checkpoint shards; a checkpoint download alone is not WAM execution proof.",
     },
     "cosmos_wam": {
@@ -85,6 +85,9 @@ CHECKPOINT_FILE_SUFFIXES = (
     ".gguf",
     ".distcp",
 )
+CHECKPOINT_MINIMUM_READY_BYTES_RATIO = 0.01
+CHECKPOINT_MINIMUM_READY_BYTES_FLOOR = 1024
+CHECKPOINT_MINIMUM_READY_BYTES_CAP = 256 * 1024 * 1024
 
 
 def _repo_root() -> Path:
@@ -141,15 +144,62 @@ def _candidate_source_ready(candidate_id: str, path: Path) -> bool:
     return path.exists()
 
 
-def _candidate_checkpoint_ready(path: Path) -> bool:
+def _checkpoint_minimum_ready_bytes(expected_bytes: int) -> int:
+    if expected_bytes <= 0:
+        return CHECKPOINT_MINIMUM_READY_BYTES_FLOOR
+    return max(
+        CHECKPOINT_MINIMUM_READY_BYTES_FLOOR,
+        min(
+            int(expected_bytes * CHECKPOINT_MINIMUM_READY_BYTES_RATIO),
+            CHECKPOINT_MINIMUM_READY_BYTES_CAP,
+        ),
+    )
+
+
+def _checkpoint_inventory(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "file_count": 0,
+            "checkpoint_file_count": 0,
+            "total_bytes": 0,
+            "checkpoint_total_bytes": 0,
+            "largest_checkpoint_files": [],
+        }
+    files = [path] if path.is_file() else [item for item in path.rglob("*") if item.is_file()]
+    checkpoint_files = [
+        item for item in files if item.suffix.lower() in CHECKPOINT_FILE_SUFFIXES
+    ]
+    largest = sorted(
+        (
+            {
+                "relative_path": str(item.relative_to(path.parent if path.is_file() else path)),
+                "size": item.stat().st_size,
+            }
+            for item in checkpoint_files
+        ),
+        key=lambda row: int(row["size"]),
+        reverse=True,
+    )[:12]
+    return {
+        "file_count": len(files),
+        "checkpoint_file_count": len(checkpoint_files),
+        "total_bytes": sum(item.stat().st_size for item in files),
+        "checkpoint_total_bytes": sum(item.stat().st_size for item in checkpoint_files),
+        "largest_checkpoint_files": largest,
+    }
+
+
+def _candidate_checkpoint_ready(path: Path, *, minimum_bytes: int | None = None) -> bool:
     if path.is_file():
-        return path.suffix.lower() in CHECKPOINT_FILE_SUFFIXES
+        if path.suffix.lower() not in CHECKPOINT_FILE_SUFFIXES:
+            return False
+        return minimum_bytes is None or path.stat().st_size >= minimum_bytes
     if not path.is_dir():
         return False
-    for child in path.rglob("*"):
-        if child.is_file() and child.suffix.lower() in CHECKPOINT_FILE_SUFFIXES:
-            return True
-    return False
+    inventory = _checkpoint_inventory(path)
+    if not inventory["checkpoint_file_count"]:
+        return False
+    return minimum_bytes is None or int(inventory["checkpoint_total_bytes"]) >= minimum_bytes
 
 
 def _newest_ready_path(paths: Sequence[Path], *, ready: Callable[[Path], bool]) -> Path | None:
@@ -432,6 +482,10 @@ def _provider_image_plan(*, candidate_id: str, output_dir: Path) -> dict[str, An
 
 
 def _provider_dockerfile(candidate_id: str) -> str:
+    if candidate_id == "oscar_wam":
+        from .oscar_wam_gpu_image import dockerfile_text
+
+        return dockerfile_text()
     return f"""# Blueprint reusable WAM provider image for {candidate_id}.
 # This image contains the Blueprint adapter boundary. Mount or bake real model
 # source/checkpoints separately according to wam_model_runtime_env.sh.
@@ -510,7 +564,9 @@ def build_bootstrap_package(
         raise ValueError(f"candidate_id must be one of {', '.join(sorted(BOOTSTRAP_CANDIDATES))}")
     generated = generated_at or utc_now_iso()
     root = Path(job_root or (_repo_root() / "robot_eval_jobs"))
-    output = Path(output_dir or (root / f"wam_model_runtime_bootstrap_{_timestamp()}")).resolve()
+    output = Path(
+        output_dir or (root / f"wam_model_runtime_bootstrap_{candidate_id}_{_timestamp()}")
+    ).resolve()
     ensure_dir(output)
     candidate = dict(BOOTSTRAP_CANDIDATES[candidate_id])
     default_source = output / "runtime_sources" / candidate_id / "source"
@@ -536,6 +592,7 @@ def build_bootstrap_package(
     default_adapter_commands = {
         "oscar_wam": "/usr/bin/env python -m blueprint_pipeline.oscar_wam_command_adapter",
         "cosmos_wam": "/usr/bin/env python -m blueprint_pipeline.oscar_cosmos_wam_command_adapter",
+        "openvla_policy": "/usr/bin/env python -m blueprint_pipeline.openvla_policy_command_adapter",
     }
     adapter = adapter_command or default_adapter_commands.get(
         candidate_id,
@@ -561,15 +618,46 @@ def build_bootstrap_package(
     disk = _disk_status(output.parent, required_bytes=int(candidate["expected_checkpoint_bytes"]))
     checkpoint_status = _path_status(checkpoint)
     source_status = _path_status(source)
+    checkpoint_inventory = _checkpoint_inventory(checkpoint)
+    minimum_checkpoint_bytes = _checkpoint_minimum_ready_bytes(
+        int(candidate["expected_checkpoint_bytes"])
+    )
+    checkpoint_contains_weight_file = bool(checkpoint_inventory["checkpoint_file_count"])
+    checkpoint_bytes_ready = (
+        int(checkpoint_inventory["checkpoint_total_bytes"]) >= minimum_checkpoint_bytes
+    )
+    checkpoint_ready = bool(
+        checkpoint_status["exists"]
+        and checkpoint_contains_weight_file
+        and checkpoint_bytes_ready
+    )
+    checkpoint_status.update(
+        {
+            "ready": checkpoint_ready,
+            "contains_checkpoint_weight_file": checkpoint_contains_weight_file,
+            "checkpoint_file_count": checkpoint_inventory["checkpoint_file_count"],
+            "file_count": checkpoint_inventory["file_count"],
+            "total_bytes": checkpoint_inventory["total_bytes"],
+            "checkpoint_total_bytes": checkpoint_inventory["checkpoint_total_bytes"],
+            "largest_checkpoint_files": checkpoint_inventory["largest_checkpoint_files"],
+            "expected_checkpoint_bytes": candidate["expected_checkpoint_bytes"],
+            "minimum_ready_checkpoint_bytes": minimum_checkpoint_bytes,
+            "checkpoint_bytes_ready": checkpoint_bytes_ready,
+        }
+    )
     command_ready = _command_available(adapter)
     blockers: list[str] = []
     if not source_status["exists"]:
         blockers.append("blocked_missing_model_source_runtime")
     if not checkpoint_status["exists"]:
         blockers.append("blocked_missing_model_checkpoint")
+    elif not checkpoint_contains_weight_file:
+        blockers.append("blocked_incomplete_or_unusable_model_checkpoint")
+    elif not checkpoint_bytes_ready:
+        blockers.append("blocked_checkpoint_bytes_below_minimum_ready_threshold")
     if not command_ready:
         blockers.append("blocked_missing_runnable_adapter_command")
-    if not checkpoint_status["exists"] and not disk["has_required_space"]:
+    if not checkpoint_ready and not disk["has_required_space"]:
         blockers.append("blocked_insufficient_disk_for_checkpoint_download")
     status = "ready_for_wam_evaluator_configuration" if not blockers else "blocked"
     download_plan = {
@@ -582,6 +670,7 @@ def build_bootstrap_package(
         "allow_patterns": list(candidate["checkpoint_allow_patterns"]),
         "expected_checkpoint_bytes": candidate["expected_checkpoint_bytes"],
         "disk_status": disk,
+        "checkpoint_status": checkpoint_status,
         "download_not_started_by_this_artifact": True,
         "download_command": (
             "python - <<'PY'\n"

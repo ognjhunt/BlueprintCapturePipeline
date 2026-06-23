@@ -63,6 +63,16 @@ def _redact_url(value: str) -> str:
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, fragment))
 
 
+def _safe_key_component(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value)
+    return "_".join(part for part in cleaned.split("_") if part) or "wam_provider_run"
+
+
+def _job_key_component(path: Path) -> str:
+    parts = [part for part in path.parts[-3:] if part and part != "/"]
+    return _safe_key_component("__".join(parts))
+
+
 def _file_status(path: Path, *, label: str, value_present: bool = False) -> dict[str, Any]:
     exists = path.exists()
     is_file = path.is_file()
@@ -249,8 +259,9 @@ def stage_wam_provider_bundle_object_store(
         assert boto3 is not None
         assert Config is not None
         safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
-        bundle_key = f"{safe_prefix}/{resolved_job_dir.name}/{resolved_bundle.name}"
-        output_key = f"{safe_prefix}/{resolved_job_dir.name}/runpod_provider_runtime_output.zip"
+        job_key = _job_key_component(resolved_job_dir)
+        bundle_key = f"{safe_prefix}/{job_key}/{resolved_bundle.name}"
+        output_key = f"{safe_prefix}/{job_key}/runpod_provider_runtime_output.zip"
         client_kwargs: dict[str, Any] = {
             "aws_access_key_id": access_key,
             "aws_secret_access_key": secret_key,
@@ -350,6 +361,7 @@ def stage_wam_provider_bundle_object_store(
             f"--job-dir {resolved_job_dir} --bundle-path {resolved_bundle} "
             f"--provider-bundle-url-file {bundle_url_file} "
             f"--provider-output-put-url-file {output_put_url_file} "
+            f"--provider-output-get-url-file {output_get_url_file} "
             "--allow-paid-runpod-launch"
         ),
         "vast_create_command_template": (

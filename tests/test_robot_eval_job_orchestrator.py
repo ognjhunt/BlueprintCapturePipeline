@@ -7229,6 +7229,7 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-webapp-execution-request"
     scheduler = _read_json(job_dir / "scheduler_decision.json")
     worker_plan = _read_json(job_dir / "worker_launch_plan.json")
+    startup_plan = _read_json(job_dir / "gpu_startup_pipeline_plan.json")
     worker_manifest = _read_json(job_dir / "worker_manifest.json")
     provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
     cost_ledger = _read_json(job_dir / "gpu_cost_control_ledger.json")
@@ -7261,6 +7262,32 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert "scheduler_cpu_preflight_not_ready_for_gpu" in scheduler["blockers"]
     assert worker_plan["schema_version"] == "robot_eval_worker_launch_plan.v1"
     assert worker_plan["status"] == "blocked_by_scheduler"
+    assert startup_plan["schema_version"] == "robot_eval_gpu_startup_pipeline_plan.v1"
+    assert startup_plan["status"] == "startup_pipeline_ready"
+    assert startup_plan["provider_selection_owner"] == "BlueprintCapturePipeline"
+    assert startup_plan["selected_provider"] == "runpod"
+    assert startup_plan["selected_provider_tier"] == "managed_secure_cloud_preferred"
+    assert startup_plan["selected_provider_is_marketplace"] is False
+    assert startup_plan["managed_provider_policy"]["provider_api_priority"] == [  # type: ignore[index]
+        "runpod",
+        "gcp",
+        "vast",
+    ]
+    assert "lambda_cloud" in startup_plan["managed_provider_policy"][  # type: ignore[index]
+        "managed_provider_priority"
+    ]
+    assert startup_plan["marketplace_policy"][  # type: ignore[index]
+        "customer_job_marketplace_default"
+    ] == "avoid_unless_explicit_strict_preflight_canary"
+    assert startup_plan["preflight_canary_policy"][  # type: ignore[index]
+        "required_before_customer_eval"
+    ] is True
+    assert startup_plan["preflight_canary_policy"][  # type: ignore[index]
+        "customer_eval_waits_for_canary"
+    ] is True
+    assert startup_plan["same_sku_burst_policy"][  # type: ignore[index]
+        "burst_workers_must_use_same_image_ref"
+    ] is True
     assert worker_plan["worker_image"]["image_family"] == "isaac-eval-worker"  # type: ignore[index]
     assert worker_plan["worker_image"]["dockerfile_path"] == (  # type: ignore[index]
         "deploy/docker/robot_eval_worker/isaac/Dockerfile"
@@ -7366,6 +7393,21 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert provider_launch["worker_launch_plan_status"] == "blocked_by_scheduler"
     assert provider_launch["worker_manifest_path"] == "worker_manifest.json"
     assert provider_launch["worker_manifest_status"] == "ready_for_worker_upload"
+    assert provider_launch["gpu_startup_pipeline_plan_path"] == (
+        "gpu_startup_pipeline_plan.json"
+    )
+    assert provider_launch["gpu_startup_pipeline_plan_status"] == (
+        "startup_pipeline_ready"
+    )
+    assert provider_launch["provider_request_shape"]["startup_pipeline"][  # type: ignore[index]
+        "selected_provider_tier"
+    ] == "managed_secure_cloud_preferred"
+    assert provider_launch["provider_request_shape"]["startup_pipeline"][  # type: ignore[index]
+        "selected_provider_is_marketplace"
+    ] is False
+    assert provider_launch["provider_request_shape"]["startup_pipeline"][  # type: ignore[index]
+        "launcher_must_fail_closed_on_startup_blockers"
+    ] is True
     assert provider_launch["provider_request_shape"]["image"]["image_family"] == (  # type: ignore[index]
         "isaac-eval-worker"
     )
@@ -7905,6 +7947,7 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
         "job-live-provider-versioned-image-ref"
     )
     worker_plan = _read_json(job_dir / "worker_launch_plan.json")
+    startup_plan = _read_json(job_dir / "gpu_startup_pipeline_plan.json")
     worker_manifest = _read_json(job_dir / "worker_manifest.json")
     provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
     provisioning = _read_json(job_dir / "gpu_provisioning_result.json")
@@ -7926,6 +7969,17 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert worker_plan["worker_image"]["configured_image_ref_fetchable_by_provider"] is True  # type: ignore[index]
     assert worker_plan["runtime_preflight_contract"]["required_before_scene_load"] is True  # type: ignore[index]
     assert worker_plan["runtime_preflight_contract"]["vulkan_required"] is True  # type: ignore[index]
+    assert startup_plan["status"] == "startup_pipeline_ready"
+    assert startup_plan["selected_provider"] == "runpod"
+    assert startup_plan["selected_provider_tier"] == "managed_secure_cloud_preferred"
+    assert startup_plan["selected_provider_is_marketplace"] is False
+    assert startup_plan["provider_selection_owner"] == "BlueprintCapturePipeline"
+    assert startup_plan["preflight_canary_policy"][  # type: ignore[index]
+        "block_scene_load_until_preflight_passes"
+    ] is True
+    assert startup_plan["same_sku_burst_policy"][  # type: ignore[index]
+        "worker_image_ref"
+    ] == "registry.example/blueprint/isaac-eval-worker:2026-06-12"
     assert worker_manifest["status"] == "ready_for_worker_upload"
     assert worker_manifest["worker_manifest_uri"] == (
         "r2://blueprint-artifacts/jobs/job-live-provider-versioned-image-ref/worker_manifest.json"
@@ -7941,6 +7995,13 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     )
     assert provider_launch["status"] == "request_manifest_ready"
     assert provider_launch["reason"] == "provider_launch_request_ready_for_explicit_launcher"
+    assert provider_launch["gpu_startup_pipeline_plan_status"] == "startup_pipeline_ready"
+    assert provider_launch["provider_request_shape"]["startup_pipeline"][  # type: ignore[index]
+        "selected_provider_tier"
+    ] == "managed_secure_cloud_preferred"
+    assert provider_launch["provider_request_shape"]["startup_pipeline"][  # type: ignore[index]
+        "blockers"
+    ] == []
     provider_command = provider_launch["provider_request_shape"]["command"]  # type: ignore[index]
     assert provider_command.startswith("blueprint-run-robot-eval-worker ")
     assert "--allow-gpu-provisioning" in provider_command
@@ -7987,6 +8048,77 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert remote_closure["checks"]["capture_root_bundle_uri_fetchable"] is True
     assert remote_closure["checks"]["artifact_output_uri_configured"] is True
     assert remote_closure["runtime_blockers"] == ["remote_provider_runtime_not_executed"]
+
+
+def test_marketplace_provider_requires_explicit_strict_preflight_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_cpu_preflight_ready_scene_asset(capture_root)
+    request = _full_job_request(capture_root)
+    request["execution_request"] = _webapp_execution_request()
+    request["budget"] = {"budget_usd": 10, "timeout_seconds": 120}
+    request_path = tmp_path / "webapp-job-request.json"
+    _write_json(request_path, request)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_ARTIFACT_OUTPUT_URI",
+        "r2://blueprint-artifacts/jobs/job-vast-marketplace-blocked",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "r2://blueprint-artifacts/jobs/job-vast-marketplace-blocked/worker_manifest.json",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI",
+        "r2://blueprint-artifacts/jobs/job-vast-marketplace-blocked/capture-root.zip",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_MUJOCO_EVAL_WORKER_IMAGE_REF",
+        "registry.example/blueprint/mujoco-eval-worker:2026-06-12",
+    )
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-vast-marketplace-blocked",
+        provisioner="vast",
+        simulator="mujoco",
+        allow_gpu_provisioning=True,
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / (
+        "job-vast-marketplace-blocked"
+    )
+    startup_plan = _read_json(job_dir / "gpu_startup_pipeline_plan.json")
+    provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+    provisioning = _read_json(job_dir / "gpu_provisioning_result.json")
+
+    assert startup_plan["status"] == "blocked_before_customer_gpu_allocation"
+    assert startup_plan["selected_provider"] == "vast"
+    assert startup_plan["selected_provider_tier"] == "marketplace_quarantined"
+    assert startup_plan["selected_provider_is_marketplace"] is True
+    assert "marketplace_provider_requires_explicit_customer_job_override" in startup_plan[
+        "blockers"
+    ]
+    assert startup_plan["marketplace_policy"][  # type: ignore[index]
+        "marketplace_quarantine_required"
+    ] is True
+    assert provider_launch["status"] == "blocked_by_startup_pipeline"
+    assert provider_launch["reason"] == "startup_pipeline_blocked"
+    assert provider_launch["gpu_startup_pipeline_plan_status"] == (
+        "blocked_before_customer_gpu_allocation"
+    )
+    assert "marketplace_provider_requires_explicit_customer_job_override" in (
+        provider_launch["blockers"]
+    )
+    assert provider_launch["provider_request_shape"]["startup_pipeline"][  # type: ignore[index]
+        "selected_provider_is_marketplace"
+    ] is True
+    assert provisioning["status"] == "blocked"
+    assert provisioning["reason"] == "provider_launch_request_blocked"
 
 
 def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
@@ -9687,6 +9819,7 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
     webapp_startup_aliases = {
         "robot_eval_scheduler_decision_uri": "scheduler_decision.json",
         "robot_eval_worker_launch_plan_uri": "worker_launch_plan.json",
+        "robot_eval_gpu_startup_pipeline_plan_uri": "gpu_startup_pipeline_plan.json",
         "robot_eval_worker_manifest_uri": "worker_manifest.json",
         "robot_eval_gpu_provider_launch_request_uri": "gpu_provider_launch_request.json",
         "robot_eval_gpu_provider_launcher_result_uri": "gpu_provider_launcher_result.json",

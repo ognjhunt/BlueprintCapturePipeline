@@ -41,6 +41,7 @@ from .episode_spec import build_episode_specs
 from .local_capture import resolve_local_capture_context
 from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from .post_training_data_package import build_post_training_data_package_export
+from .robot_eval_gpu_startup_pipeline import build_gpu_startup_pipeline_plan
 from .robot_eval_execution import (
     build_scenario_eval_matrix,
     build_deployment_validation_bundle,
@@ -130,6 +131,7 @@ DEFAULT_ARENA_ESCALATION_REASONS = [
 DEFAULT_STARTUP_EXPECTED_OUTPUTS = [
     "scheduler_decision",
     "worker_launch_plan",
+    "gpu_startup_pipeline_plan",
     "worker_manifest",
     "gpu_provider_launch_request",
     "gpu_provider_launcher_result",
@@ -2634,6 +2636,7 @@ def _build_gpu_provider_launch_request(
     wam_provider_max_retries: int,
     wam_provider_timeout_seconds: int | None,
     generated_at: str,
+    gpu_startup_pipeline_plan: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     provider = _string(request_manifest.get("provider")) or "fixture_local"
     job_id = _string(request_manifest.get("job_id"))
@@ -2653,6 +2656,8 @@ def _build_gpu_provider_launch_request(
     scheduler_blockers = _string_list(scheduler_decision.get("blockers"))
     worker_blockers = _string_list(worker_launch_plan.get("blockers"))
     worker_manifest_blockers = _string_list(worker_manifest.get("blockers"))
+    startup_pipeline = _mapping(gpu_startup_pipeline_plan)
+    startup_blockers = _string_list(startup_pipeline.get("blockers"))
     external_provider = provider != "fixture_local"
     env_allowed = _env_truthy("BLUEPRINT_ALLOW_GPU_PROVISIONING")
     provider_worker_command = _build_worker_provider_command(
@@ -2678,6 +2683,7 @@ def _build_gpu_provider_launch_request(
             *scheduler_blockers,
             *worker_blockers,
             *worker_manifest_blockers,
+            *startup_blockers,
             *approval_blockers,
         ]
     )
@@ -2690,6 +2696,8 @@ def _build_gpu_provider_launch_request(
         if worker_blockers
         else "blocked_by_worker_manifest"
         if worker_manifest_blockers
+        else "blocked_by_startup_pipeline"
+        if startup_blockers
         else "blocked_by_explicit_provider_gate"
         if approval_blockers
         else "request_manifest_ready"
@@ -2726,6 +2734,8 @@ def _build_gpu_provider_launch_request(
             if worker_blockers
             else "worker_manifest_blocked"
             if worker_manifest_blockers
+            else "startup_pipeline_blocked"
+            if startup_blockers
             else "explicit_provider_gate_required"
             if approval_blockers
             else "provider_launch_request_ready_for_explicit_launcher"
@@ -2739,6 +2749,8 @@ def _build_gpu_provider_launch_request(
         "worker_launch_plan_status": worker_launch_plan.get("status"),
         "worker_manifest_path": "worker_manifest.json",
         "worker_manifest_status": worker_manifest.get("status"),
+        "gpu_startup_pipeline_plan_path": "gpu_startup_pipeline_plan.json",
+        "gpu_startup_pipeline_plan_status": startup_pipeline.get("status"),
         "gpu_provisioning_request_path": "gpu_provisioning_request.json",
         "provider_request_shape": {
             "provider_api": provider,
@@ -2876,6 +2888,40 @@ def _build_gpu_provider_launch_request(
                         "runtime_preflight_is_not_simulator_proof"
                     )
                 ),
+            },
+            "startup_pipeline": {
+                "plan_path": "gpu_startup_pipeline_plan.json",
+                "status": startup_pipeline.get("status"),
+                "strategy": startup_pipeline.get("strategy"),
+                "provider_selection_owner": startup_pipeline.get(
+                    "provider_selection_owner"
+                ),
+                "selected_provider": startup_pipeline.get("selected_provider"),
+                "selected_provider_tier": startup_pipeline.get(
+                    "selected_provider_tier"
+                ),
+                "selected_provider_is_marketplace": bool(
+                    startup_pipeline.get("selected_provider_is_marketplace")
+                ),
+                "managed_provider_policy": _mapping(
+                    startup_pipeline.get("managed_provider_policy")
+                ),
+                "marketplace_policy": _mapping(
+                    startup_pipeline.get("marketplace_policy")
+                ),
+                "preflight_canary_policy": _mapping(
+                    startup_pipeline.get("preflight_canary_policy")
+                ),
+                "same_sku_burst_policy": _mapping(
+                    startup_pipeline.get("same_sku_burst_policy")
+                ),
+                "webapp_boundary": _mapping(startup_pipeline.get("webapp_boundary")),
+                "launcher_must_fail_closed_on_startup_blockers": bool(
+                    _mapping(startup_pipeline.get("launcher_contract")).get(
+                        "launcher_must_fail_closed_on_startup_blockers"
+                    )
+                ),
+                "blockers": startup_blockers,
             },
             "gpu": {
                 "preferred_gpu_class": gpu_selection.get("preferred_gpu_class"),
@@ -3038,6 +3084,23 @@ def _gpu_provisioning_result(
             "status": "blocked",
             "reason": "worker_launch_plan_blocked",
             "blockers": blockers,
+            "scheduler_decision_path": "scheduler_decision.json",
+            "worker_launch_plan_path": "worker_launch_plan.json",
+            "worker_launch_plan_status": worker_launch_plan.get("status"),
+            "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+            "gpu_provider_launch_request_status": provider_launch_request.get("status"),
+            "execution_performed": False,
+            "live_provider_calls_performed": False,
+            "claim_boundary": dict(CLAIM_BOUNDARY),
+        }
+    if provider_launch_request.get("status") == "blocked_by_startup_pipeline":
+        return {
+            "schema_version": GPU_PROVISIONING_RESULT_SCHEMA_VERSION,
+            "generated_at": generated_at,
+            "provider": provider,
+            "status": "blocked",
+            "reason": "provider_launch_request_blocked",
+            "blockers": _string_list(provider_launch_request.get("blockers")),
             "scheduler_decision_path": "scheduler_decision.json",
             "worker_launch_plan_path": "worker_launch_plan.json",
             "worker_launch_plan_status": worker_launch_plan.get("status"),
@@ -5161,6 +5224,7 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "agent_orchestration_plan.json",
         "scheduler_decision.json",
         "worker_launch_plan.json",
+        "gpu_startup_pipeline_plan.json",
         "gpu_provisioning_request.json",
         "gpu_provider_launch_request.json",
         "gpu_provider_launcher_result.json",
@@ -5653,6 +5717,7 @@ def _webapp_robot_eval_status_projection(
                 "evaluation_result",
                 "proof_boundary",
                 "job_run_manifest",
+                "gpu_startup_pipeline_plan",
                 "post_training_data_package_export_manifest",
                 "webapp_robot_eval_status_projection",
                 "remote_cloud_execution_closure_manifest",
@@ -6549,6 +6614,16 @@ def build_robot_eval_job(
         generated_at=generated_at,
     )
     _write_job_json(job_dir, "worker_launch_plan.json", worker_launch_plan)
+    gpu_startup_pipeline_plan = build_gpu_startup_pipeline_plan(
+        request=request,
+        job_id=job_id,
+        provisioner=provisioner,
+        simulator=simulator,
+        scheduler_decision=scheduler_decision,
+        worker_launch_plan=worker_launch_plan,
+        generated_at=generated_at,
+    )
+    _write_job_json(job_dir, "gpu_startup_pipeline_plan.json", gpu_startup_pipeline_plan)
     worker_manifest = _build_worker_manifest(
         request=request,
         job_id=job_id,
@@ -6585,6 +6660,7 @@ def build_robot_eval_job(
         wam_provider_max_retries=wam_provider_max_retries,
         wam_provider_timeout_seconds=wam_provider_timeout_seconds,
         generated_at=generated_at,
+        gpu_startup_pipeline_plan=gpu_startup_pipeline_plan,
     )
     _write_job_json(job_dir, "gpu_provider_launch_request.json", provider_launch_request)
     gpu_result = _gpu_provisioning_result(
@@ -7154,6 +7230,8 @@ def build_robot_eval_job(
         "scheduler_decision_path": "scheduler_decision.json",
         "worker_launch_plan_status": worker_launch_plan.get("status"),
         "worker_launch_plan_path": "worker_launch_plan.json",
+        "gpu_startup_pipeline_plan_status": gpu_startup_pipeline_plan.get("status"),
+        "gpu_startup_pipeline_plan_path": "gpu_startup_pipeline_plan.json",
         "gpu_provider_launch_request_status": provider_launch_request.get("status"),
         "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
         "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),

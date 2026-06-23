@@ -34,6 +34,7 @@ from .vast_provider_adapter import (
     DEFAULT_HARD_CAP_USD,
     DEFAULT_MAX_HOURLY_RATE,
     DEFAULT_TARGET_SPEND_USD,
+    DEFAULT_VAST_API_KEY_FILE,
     DEFAULT_WAM_ROLLOUT_VIDEO_COUNT,
     VAST_API_GATE_ENV,
     VAST_API_KEY_FILE_ENV,
@@ -153,6 +154,21 @@ def _read_sensitive_url_file(path_value: str, *, label: str) -> tuple[str, dict[
         "value_present": bool(value),
         "raw_secret_values_recorded": False,
     }
+
+
+def _deadline_capped_log_wait_seconds(
+    *,
+    state: Mapping[str, Any],
+    requested_max_wait_seconds: int,
+    now_epoch: float,
+) -> tuple[int, float | None, bool]:
+    requested = max(0, int(requested_max_wait_seconds))
+    deadline_epoch = float(_number(state.get("max_live_deadline_epoch")) or 0.0)
+    if deadline_epoch <= 0.0:
+        return requested, None, False
+    seconds_until_deadline = deadline_epoch - now_epoch
+    capped = min(requested, max(0, int(seconds_until_deadline)))
+    return capped, seconds_until_deadline, capped < requested
 
 
 def _url_file_path_from_meta(meta: Any) -> str:
@@ -339,6 +355,129 @@ def _write_blocked_result(
     return result
 
 
+def destroy_async_vast_wam_run(
+    *,
+    job_dir: str | Path,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    generated = generated_at or utc_now_iso()
+    resolved_job_dir = Path(job_dir).expanduser().resolve()
+    ensure_dir(resolved_job_dir)
+    state = _read_async_state(resolved_job_dir)
+    instance_id = int(_number(state.get("instance_id")) or 0)
+    api_key, vast_secret_status = _read_secret_file(
+        VAST_API_KEY_FILE_ENV,
+        DEFAULT_VAST_API_KEY_FILE,
+    )
+    blockers = _api_gate_blockers(
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        api_key=api_key,
+    )
+    if instance_id <= 0:
+        blockers.append("missing_async_vast_instance_id")
+    teardown_actions: list[dict[str, Any]] = []
+    continuing_spend = bool(instance_id)
+    if not blockers:
+        _append_phase(
+            resolved_job_dir,
+            "vast_instance_teardown_started",
+            "running",
+            instance_ids=[instance_id],
+        )
+        try:
+            delete_status, delete_response = _api_json(
+                method="DELETE",
+                path=f"/instances/{instance_id}/",
+                api_key=api_key,
+                timeout_seconds=30,
+            )
+            teardown_actions.append(
+                {
+                    "instance_id": instance_id,
+                    "action": "destroy_instance",
+                    "http_status_code": delete_status,
+                    "response": _redact_runtime_value(delete_response, [api_key]),
+                    "status": "completed",
+                }
+            )
+            continuing_spend = False
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                teardown_actions.append(
+                    {
+                        "instance_id": instance_id,
+                        "action": "destroy_instance",
+                        "http_status_code": exc.code,
+                        "status": "completed",
+                        "reason": "instance_already_absent",
+                    }
+                )
+                continuing_spend = False
+            else:
+                teardown_actions.append(
+                    {
+                        "instance_id": instance_id,
+                        "action": "destroy_instance",
+                        "http_status_code": exc.code,
+                        "status": "failed",
+                    }
+                )
+                continuing_spend = True
+        except Exception as exc:
+            teardown_actions.append(
+                {
+                    "instance_id": instance_id,
+                    "action": "destroy_instance",
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                }
+            )
+            continuing_spend = True
+        _append_phase(
+            resolved_job_dir,
+            "vast_instance_teardown_completed",
+            "completed" if not continuing_spend else "blocked",
+            blockers=[] if not continuing_spend else ["vast_instance_destroy_failed"],
+            instance_ids=[instance_id],
+        )
+    now_epoch = time.time()
+    elapsed_seconds = max(
+        0.0,
+        now_epoch - float(_number(state.get("created_at_epoch")) or now_epoch),
+    )
+    hourly_rate = float(
+        _number(state.get("selected_hourly_rate_usd"))
+        or _number(_mapping(state.get("selected_offer")).get("hourly_rate_usd"))
+        or 0.0
+    )
+    estimated_cost_usd = round(hourly_rate * elapsed_seconds / 3600.0, 6)
+    status = "completed" if not blockers and not continuing_spend else "blocked"
+    manifest = {
+        "schema_version": VAST_TEARDOWN_SCHEMA_VERSION,
+        "generated_at": generated,
+        "status": status,
+        "vast_instance_ids": [instance_id] if instance_id else [],
+        "teardown_actions_performed": teardown_actions,
+        "runner_gpu_teardown_completed": not continuing_spend,
+        "continuing_spend_from_this_run": continuing_spend,
+        "estimated_cost_usd": estimated_cost_usd,
+        "vast_secret_status": vast_secret_status,
+        "blockers": blockers if blockers else ([] if not continuing_spend else ["vast_instance_destroy_failed"]),
+        "zero_continuing_spend_scope": "direct async destroy deleted instance or it was already absent"
+        if not continuing_spend
+        else "teardown failure requires manual Vast console/API verification",
+        "raw_secret_values_recorded": False,
+    }
+    write_json(resolved_job_dir / "vast_teardown_manifest.json", manifest)
+    if not continuing_spend:
+        state["status"] = "teardown_completed"
+        state["destroyed_at_epoch"] = now_epoch
+        state["continuing_spend_from_this_run"] = False
+        write_json(_state_path(resolved_job_dir), state)
+    return manifest
+
+
 def _provider_urls(public_base_url: str, token_file: Path) -> tuple[str, str, dict[str, Any]]:
     token, token_status = _read_or_create_token(token_file)
     return (
@@ -370,6 +509,7 @@ def create_async_vast_wam_run(
     allow_target_spend_overrun: bool = False,
     max_live_minutes: int = 30,
     session_max_live_minutes: int | None = 45,
+    min_gpu_ram_mb: int = 0,
     excluded_machine_ids: Sequence[int] = (),
     startup_poll_seconds: int = 90,
     public_staging_verify_max_wait_seconds: int = 120,
@@ -767,10 +907,15 @@ def create_async_vast_wam_run(
         selected_offer = _select_offer(
             offers,
             max_hourly_rate=max_hourly_rate,
+            min_gpu_ram_mb=min_gpu_ram_mb,
             excluded_machine_ids=excluded_machine_ids,
             require_known_supported_isaac_driver=False,
         )
-        offer_blockers: list[str] = [] if selected_offer else ["no_vast_offer_at_or_below_max_hourly_rate"]
+        offer_blockers: list[str] = (
+            []
+            if selected_offer
+            else ["no_vast_offer_matching_rate_and_gpu_memory_constraints"]
+        )
         offer_manifest = {
             "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
             "generated_at": generated,
@@ -779,6 +924,7 @@ def create_async_vast_wam_run(
             "http_status_code": search_status,
             "offer_count": len(offers),
             "max_hourly_rate_usd": max_hourly_rate,
+            "min_gpu_ram_mb": int(min_gpu_ram_mb),
             "excluded_machine_ids": list(excluded_machine_ids),
             "selected_offer": _offer_artifact_summary(selected_offer),
             "considered_offers": [
@@ -1002,6 +1148,7 @@ def create_async_vast_wam_run(
             "target_spend_usd": target_spend_usd,
             "hard_cap_usd": hard_cap_usd,
             "max_hourly_rate_usd": max_hourly_rate,
+            "min_gpu_ram_mb": int(min_gpu_ram_mb),
             "last_instance_status": status,
             "instance_observations": observations,
             "last_instance_payload_redacted": _redact_runtime_value(
@@ -1042,6 +1189,7 @@ def create_async_vast_wam_run(
             "last_instance_status": status,
             "output_path": str(resolved_output),
             "selected_offer": _offer_artifact_summary(selected_offer),
+            "min_gpu_ram_mb": int(min_gpu_ram_mb),
             "explicit_provider_urls_used": direct_provider_urls,
             "provider_bundle_url_redacted": _redact_provider_url(provider_bundle_url),
             "provider_output_put_url_redacted": _redact_provider_url(provider_output_put_url),
@@ -1309,6 +1457,16 @@ def poll_async_vast_wam_run(
         *_url_secret_values(provider_bundle_url, provider_output_put_url, provider_output_get_url),
     ]
     _append_phase(resolved_job_dir, "vast_heartbeat_started", "running", instance_id=instance_id)
+    poll_started_epoch = time.time()
+    (
+        effective_max_wait_seconds,
+        seconds_until_max_live_deadline,
+        log_wait_deadline_cap_applied,
+    ) = _deadline_capped_log_wait_seconds(
+        state=state,
+        requested_max_wait_seconds=max_wait_seconds,
+        now_epoch=poll_started_epoch,
+    )
     onstart_logs = _request_logs_and_fetch(
         instance_id=instance_id,
         api_key=api_key,
@@ -1316,14 +1474,18 @@ def poll_async_vast_wam_run(
         secret_values=secret_values,
         wait_seconds=0,
         tail_lines=2000,
-        max_wait_seconds=max_wait_seconds,
-        retry_interval_seconds=retry_interval_seconds,
         success_markers=[
             "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED",
             "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK",
             "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED",
             "BLUEPRINT_VAST_ONSTART_DONE",
         ],
+        max_wait_seconds=effective_max_wait_seconds,
+        retry_interval_seconds=retry_interval_seconds,
+        container_missing_retry_attempts=max(
+            1,
+            int(effective_max_wait_seconds / max(1, retry_interval_seconds)),
+        ),
     )
     heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
     output_path = Path(_string(state.get("output_path"))).expanduser().resolve()
@@ -1524,6 +1686,10 @@ def poll_async_vast_wam_run(
         "provider_command_status": provider_command.get("status"),
         "provider_command_blockers": provider_command.get("blockers"),
         "continuing_spend_from_this_run": continuing_spend,
+        "requested_log_fetch_max_wait_seconds": max_wait_seconds,
+        "effective_log_fetch_max_wait_seconds": effective_max_wait_seconds,
+        "seconds_until_max_live_deadline_at_poll_start": seconds_until_max_live_deadline,
+        "log_wait_deadline_cap_applied": log_wait_deadline_cap_applied,
         "final_validation_status": validation.get("status"),
         "raw_secret_values_recorded": False,
     }
@@ -1556,6 +1722,10 @@ def poll_async_vast_wam_run(
         "teardown_requested": teardown,
         "teardown_performed": should_teardown,
         "continuing_spend_from_this_run": continuing_spend,
+        "requested_log_fetch_max_wait_seconds": max_wait_seconds,
+        "effective_log_fetch_max_wait_seconds": effective_max_wait_seconds,
+        "seconds_until_max_live_deadline_at_poll_start": seconds_until_max_live_deadline,
+        "log_wait_deadline_cap_applied": log_wait_deadline_cap_applied,
         "estimated_cost_usd": ledger.get("estimated_cost_usd"),
         "final_validation_status": validation.get("status"),
         "raw_secret_values_recorded": False,
@@ -1589,6 +1759,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--max-live-minutes", type=int, default=30)
     create.add_argument("--session-max-live-minutes", type=int, default=45)
     create.add_argument(
+        "--min-gpu-ram-mb",
+        type=int,
+        default=0,
+        help="Minimum GPU memory in MiB required when selecting a Vast offer.",
+    )
+    create.add_argument(
         "--excluded-machine-id",
         action="append",
         type=int,
@@ -1610,6 +1786,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     poll.add_argument("--max-wait-seconds", type=int, default=45)
     poll.add_argument("--retry-interval-seconds", type=int, default=10)
     poll.add_argument("--teardown", action="store_true")
+    destroy = subparsers.add_parser("destroy")
+    destroy.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     if args.command == "create":
         manifest = create_async_vast_wam_run(
@@ -1633,6 +1811,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allow_target_spend_overrun=args.allow_target_spend_overrun,
             max_live_minutes=args.max_live_minutes,
             session_max_live_minutes=args.session_max_live_minutes,
+            min_gpu_ram_mb=args.min_gpu_ram_mb,
             excluded_machine_ids=args.excluded_machine_id,
             startup_poll_seconds=args.startup_poll_seconds,
             public_staging_verify_max_wait_seconds=args.public_staging_verify_max_wait_seconds,
@@ -1645,13 +1824,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             disk_gb=args.disk_gb,
             heartbeat_url=args.heartbeat_url,
         )
-    else:
+    elif args.command == "poll":
         manifest = poll_async_vast_wam_run(
             job_dir=args.job_dir,
             max_wait_seconds=args.max_wait_seconds,
             retry_interval_seconds=args.retry_interval_seconds,
             teardown=args.teardown,
         )
+    else:
+        manifest = destroy_async_vast_wam_run(job_dir=args.job_dir)
     print(json.dumps(manifest, sort_keys=True))
     return 0 if manifest.get("status") in {"instance_created", "running", "completed"} else 1
 

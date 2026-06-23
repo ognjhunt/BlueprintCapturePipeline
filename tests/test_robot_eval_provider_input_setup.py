@@ -92,6 +92,7 @@ def test_upload_helpers_cover_supported_schemes_and_error_classification(
         stdout = "abc123def456\n"
 
     monkeypatch.setattr(setup.subprocess, "run", lambda *args, **kwargs: RunResult())
+    monkeypatch.setattr(setup, "utc_now_iso", lambda: "2026-06-21T00:00:00+00:00")
     assert setup.default_image_ref(simulator="mujoco", repo_root=tmp_path).endswith(
         ":20260621-abc123def456"
     )

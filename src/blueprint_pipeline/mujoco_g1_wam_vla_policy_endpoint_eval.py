@@ -9,6 +9,7 @@ visuals, cloud GPUs, or physical robot controls.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import os
@@ -16,9 +17,11 @@ import platform
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -29,9 +32,56 @@ from .mujoco_g1_simulator_command import (
     DEFAULT_MENAGERIE_REF,
     _asset_source_manifest,
     _resolve_g1_model_root,
-    _sha256,
     _write_g1_xml_with_absolute_meshes,
 )
+from .unitree_lerobot_policy_runtime import (
+    UnitreeLeRobotPolicyRuntimeConfig,
+    build_policy_provider_registry_probe,
+    build_unitree_policy_stack_installation_audit,
+    run_unitree_lerobot_g1_policy_eval,
+)
+from .unitree_groot_n17_sonic_policy_runtime import (
+    DEFAULT_EXPERIMENTAL_UNITREE_G1_SONIC_POLICY_CHECKPOINT,
+    GROOT_ROOT_ENV,
+    N17_CHECKPOINT_ENV,
+    POLICY_COMMAND_ENV as GROOT_POLICY_COMMAND_ENV,
+    POLICY_ID as GROOT_POLICY_ID,
+    POLICY_SERVER_URL_ENV,
+    SIM2SIM_COMMAND_ENV,
+    SONIC_CHECKPOINT_ENV,
+    WBC_ROOT_ENV,
+    build_unitree_groot_n17_sonic_runtime_truth_boundary,
+    probe_unitree_groot_n17_sonic_runtime,
+    is_known_base_n17_without_unitree_g1_sonic_support,
+    run_unitree_groot_n17_sonic_policy_runtime,
+    select_unitree_g1_sonic_policy_checkpoint,
+    unitree_g1_sonic_checkpoint_provenance,
+)
+from .unitree_groot_n17_sonic_sim2sim_command import (
+    run_unitree_groot_n17_sonic_sim2sim,
+)
+from .wam_generated_video_review import (
+    validate_generated_mp4_for_review,
+    visual_smoke_generated_rollouts_for_review,
+)
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+    except ValueError:
+        return float(default)
+    return value if math.isfinite(value) and value > 0.0 else float(default)
+
+
+def _unitree_rl_gym_position_target_action_clip_abs() -> float:
+    return _float_env(
+        UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ENV,
+        DEFAULT_UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ABS,
+    )
 
 
 LANE_SCHEMA_VERSION = "mujoco_g1_wam_vla_policy_endpoint_eval.v1"
@@ -41,23 +91,83 @@ ACTION_SCHEMA_ID = "blueprint.mujoco_g1_wam_vla.action.v1"
 REFERENCE_FIXTURE_POLICY_ID = "reference_fixture_policy"
 ROBOT_PROFILE_ID = "unitree_g1_mujoco_menagerie"
 DEFAULT_STEPS_PER_EPISODE = 3000
+DEFAULT_WAM_LOOP_STEP_COUNT = 12
 DEFAULT_VIDEO_FRAME_STRIDE_STEPS = 8
 DEFAULT_REVIEW_VIDEO_FPS = 60
 DEFAULT_EXTEND_TERMINAL_FRAME_FOR_REVIEW = False
 DEFAULT_RENDERED_VIDEO_EPISODE_LIMIT = 8
 DEFAULT_MAX_CONTACT_TRACE_ROWS = 50000
 DEFAULT_CONTACT_OBSERVATION_RECORD_LIMIT = 24
-AVAILABLE_VIDEO_CAMERAS = ("third_person", "overhead", "robot_follow")
-DEFAULT_VIDEO_CAMERAS = ("third_person",)
+EGOCENTRIC_VIDEO_CAMERAS = ("head_pov", "torso_pov", "robot_pov")
+FIXED_G1_CAMERA_NAMES = {
+    "head_pov": "blueprint_g1_head_pov",
+    "torso_pov": "blueprint_g1_torso_pov",
+    "robot_pov": "blueprint_g1_head_pov",
+}
+G1_PROJECTED_SKELETON_SCHEMA_ID = "blueprint.mujoco_g1.projected_upper_body_skeleton.v1"
+G1_UPPER_BODY_LANDMARK_SPECS = (
+    {"landmark_id": "left_shoulder", "body_name": "left_shoulder_pitch_link"},
+    {"landmark_id": "left_elbow", "body_name": "left_elbow_link"},
+    {"landmark_id": "left_wrist", "body_name": "left_wrist_yaw_link"},
+    {
+        "landmark_id": "left_hand",
+        "body_name": "left_hand_palm_link",
+        "fallback_body_name": "left_wrist_yaw_link",
+        "fallback_local_offset_m": [0.082, 0.003, 0.0],
+    },
+    {"landmark_id": "right_shoulder", "body_name": "right_shoulder_pitch_link"},
+    {"landmark_id": "right_elbow", "body_name": "right_elbow_link"},
+    {"landmark_id": "right_wrist", "body_name": "right_wrist_yaw_link"},
+    {
+        "landmark_id": "right_hand",
+        "body_name": "right_hand_palm_link",
+        "fallback_body_name": "right_wrist_yaw_link",
+        "fallback_local_offset_m": [0.082, -0.003, 0.0],
+    },
+)
+G1_UPPER_BODY_SKELETON_SEGMENTS = (
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("left_wrist", "left_hand"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("right_wrist", "right_hand"),
+)
+AVAILABLE_VIDEO_CAMERAS = (
+    "head_pov",
+    "torso_pov",
+    "robot_pov",
+    "third_person",
+    "overhead",
+    "robot_follow",
+)
+DEFAULT_VIDEO_CAMERAS = ("head_pov", "torso_pov")
+DIAGNOSTIC_VIDEO_CAMERAS = ("third_person", "robot_follow", "overhead")
+PREFERRED_G1_POLICY_OBSERVATION_MJCF = "g1_with_hands.xml"
+FALLBACK_G1_POLICY_OBSERVATION_MJCF = "g1.xml"
+EGOCENTRIC_UPPER_BODY_OBSERVATION_POSE = {
+    "left_shoulder_pitch_joint": -0.9,
+    "right_shoulder_pitch_joint": -0.9,
+    "left_shoulder_roll_joint": 0.25,
+    "right_shoulder_roll_joint": -0.25,
+    "left_elbow_joint": 0.9,
+    "right_elbow_joint": 0.9,
+}
 CONTROLLER_BACKENDS = ("auto", "freejoint_proxy", "unitree_rl_gym")
 DEFAULT_CONTROLLER_BACKEND = "auto"
+POLICY_ACTION_MODEL_COMMAND_GATE_ENV = "BLUEPRINT_ALLOW_POLICY_ACTION_MODEL_COMMAND"
 UNITREE_RL_GYM_SAME_SCENE_BACKEND_ID = "unitree_rl_gym_same_scene_lower_body_policy"
 UNITREE_RL_GYM_CONTROLLER_COMMAND_LIMITS = {
-    "max_forward_velocity_mps": 0.35,
-    "max_reverse_velocity_mps": 0.10,
-    "max_lateral_velocity_mps": 0.12,
-    "max_yaw_rate_rad_s": 0.45,
+    "max_forward_velocity_mps": 0.18,
+    "max_reverse_velocity_mps": 0.06,
+    "max_lateral_velocity_mps": 0.04,
+    "max_yaw_rate_rad_s": 0.20,
 }
+UNITREE_RL_GYM_RESET_TO_POLICY_DEFAULT_LEG_POSE = True
+UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ENV = (
+    "BLUEPRINT_UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ABS"
+)
+DEFAULT_UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ABS = 0.5
 UNITREE_RL_GYM_LEG_JOINT_NAMES = (
     "left_hip_pitch_joint",
     "left_hip_roll_joint",
@@ -72,6 +182,51 @@ UNITREE_RL_GYM_LEG_JOINT_NAMES = (
     "right_ankle_pitch_joint",
     "right_ankle_roll_joint",
 )
+UNITREE_G1_SONIC_STATE_JOINT_GROUPS = {
+    "left_leg": UNITREE_RL_GYM_LEG_JOINT_NAMES[:6],
+    "right_leg": UNITREE_RL_GYM_LEG_JOINT_NAMES[6:],
+    "waist": (
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+    ),
+    "left_arm": (
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+    ),
+    "right_arm": (
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+    ),
+    "left_hand": (
+        "left_hand_thumb_0_joint",
+        "left_hand_thumb_1_joint",
+        "left_hand_thumb_2_joint",
+        "left_hand_middle_0_joint",
+        "left_hand_middle_1_joint",
+        "left_hand_index_0_joint",
+        "left_hand_index_1_joint",
+    ),
+    "right_hand": (
+        "right_hand_thumb_0_joint",
+        "right_hand_thumb_1_joint",
+        "right_hand_thumb_2_joint",
+        "right_hand_middle_0_joint",
+        "right_hand_middle_1_joint",
+        "right_hand_index_0_joint",
+        "right_hand_index_1_joint",
+    ),
+}
 EXTRA_G1_POLICY_ONLINE_CANDIDATES = (
     {
         "name": "unitree_lerobot",
@@ -87,6 +242,69 @@ EXTRA_G1_POLICY_ONLINE_CANDIDATES = (
         "name": "unitree_rl_mjlab",
         "url": "https://github.com/unitreerobotics/unitree_rl_mjlab",
         "candidate_use": "MuJoCo-backed Unitree G1 RL policy research candidate.",
+    },
+    {
+        "name": "isaac_groot_n17",
+        "url": "https://github.com/NVIDIA/Isaac-GR00T",
+        "candidate_use": (
+            "GR00T N1.7 VLA policy candidate for Unitree G1/SONIC action chunks."
+        ),
+    },
+    {
+        "name": "groot_wholebodycontrol_sonic",
+        "url": "https://github.com/NVlabs/GR00T-WholeBodyControl",
+        "candidate_use": "SONIC whole-body control and MuJoCo Sim2Sim bridge for Unitree G1.",
+    },
+)
+UNITREE_G1_MANIPULATION_POLICY_CANDIDATES = (
+    {
+        "id": GROOT_POLICY_ID,
+        "name": "isaac_groot_n17_unitree_g1_sonic",
+        "url": "https://github.com/NVIDIA/Isaac-GR00T",
+        "runtime_role": "unitree_g1_sonic_groot_n17_vla_manipulation_policy",
+        "expected_local_paths": ("Isaac-GR00T", "GR00T-WholeBodyControl"),
+        "command_env": GROOT_POLICY_COMMAND_ENV,
+        "checkpoint_env": N17_CHECKPOINT_ENV,
+        "root_env": GROOT_ROOT_ENV,
+        "extra_required_checkpoint_envs": (SONIC_CHECKPOINT_ENV,),
+        "extra_required_root_envs": (WBC_ROOT_ENV,),
+        "claim_boundary": (
+            "requires Isaac-GR00T N1.7 checkpoint, SONIC checkpoint, PolicyServer/action "
+            "wrapper, and simulator-only G1/SONIC execution"
+        ),
+    },
+    {
+        "id": "unitree_lerobot_g1_dex",
+        "name": "unitree_lerobot",
+        "url": "https://github.com/unitreerobotics/unitree_lerobot",
+        "runtime_role": "g1_dexterous_or_gripper_imitation_policy",
+        "expected_local_paths": ("unitree_lerobot",),
+        "command_env": "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "checkpoint_env": "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT",
+        "root_env": "BLUEPRINT_UNITREE_LEROBOT_ROOT",
+        "claim_boundary": "requires task-specific trained policy plus hand/gripper action adapter",
+    },
+    {
+        "id": "unitree_sim_isaaclab_g1_manipulation",
+        "name": "unitree_sim_isaaclab",
+        "url": "https://github.com/unitreerobotics/unitree_sim_isaaclab",
+        "runtime_role": "isaaclab_g1_manipulation_policy_or_demo_weight",
+        "expected_local_paths": ("unitree_sim_isaaclab",),
+        "command_env": "BLUEPRINT_UNITREE_ISAACLAB_MANIPULATION_COMMAND",
+        "checkpoint_env": "BLUEPRINT_UNITREE_ISAACLAB_MANIPULATION_CHECKPOINT",
+        "root_env": "BLUEPRINT_UNITREE_ISAACLAB_ROOT",
+        "claim_boundary": "requires IsaacLab runtime and task-specific manipulation policy execution",
+    },
+    {
+        "id": "openvla_g1_manipulation",
+        "name": "openvla_policy",
+        "url": "https://github.com/openvla/openvla",
+        "runtime_role": "vision_language_action_manipulation_policy",
+        "expected_local_paths": ("openvla",),
+        "command_env": "BLUEPRINT_OPENVLA_POLICY_COMMAND",
+        "checkpoint_env": "BLUEPRINT_OPENVLA_POLICY_CHECKPOINT",
+        "root_env": "BLUEPRINT_OPENVLA_POLICY_ROOT",
+        "claim_boundary": "requires model endpoint response and Blueprint hand/action decoder",
     },
 )
 
@@ -215,6 +433,140 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _string(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+UNITREE_ENDPOINT_HAND_POLICY_IDS = frozenset(
+    {
+        "unitree_lerobot_g1_policy",
+        "unitree_unifolm_vla_policy",
+        "unitree_unifolm_wma_policy",
+        "unitree_groot_n17_sonic_policy",
+    }
+)
+
+UNITREE_ENDPOINT_HAND_POLICY_REPLAY_IDS = frozenset(
+    {
+        "unitree_lerobot_g1_policy_provider_replay",
+        "unitree_unifolm_vla_policy_provider_replay",
+        "unitree_unifolm_wma_policy_provider_replay",
+        "unitree_groot_n17_sonic_policy_provider_replay",
+    }
+)
+
+
+def _unitree_endpoint_policy_response_summary(
+    endpoint_policy_inner_responses: Sequence[Mapping[str, Any]],
+) -> dict[str, bool]:
+    """Classify Unitree endpoint responses without treating replay as fresh policy use."""
+
+    rows = [_mapping(row) for row in endpoint_policy_inner_responses]
+    unitree_endpoint_hand_policy_output_observed = any(
+        _string(row.get("policy_id"))
+        in UNITREE_ENDPOINT_HAND_POLICY_IDS | UNITREE_ENDPOINT_HAND_POLICY_REPLAY_IDS
+        or bool(
+            _mapping(row.get("claim_boundary")).get("unitree_hand_manipulation_policy_used")
+        )
+        for row in rows
+    )
+    unitree_endpoint_provider_output_replay_used = any(
+        bool(_mapping(row.get("claim_boundary")).get("provider_output_replay_used"))
+        or _string(row.get("policy_id")).endswith("_provider_replay")
+        for row in rows
+    )
+    unitree_endpoint_action_chunk_used = any(
+        bool(_mapping(row.get("action")).get("unitree_unifolm_action_chunk_present"))
+        or bool(_mapping(row.get("action")).get("unitree_unifolm_action_chunk"))
+        or bool(
+            _mapping(row.get("action")).get(
+                "unitree_groot_n17_sonic_action_chunk_present"
+            )
+        )
+        or bool(
+            _mapping(row.get("action")).get(
+                "unitree_groot_n17_sonic_action_payload_present"
+            )
+        )
+        or bool(_mapping(row.get("action")).get("sonic_latent_action"))
+        or bool(_mapping(row.get("action")).get("action_chunk"))
+        for row in rows
+    )
+    unitree_endpoint_fresh_policy_action_command_ran = any(
+        _string(row.get("policy_id")) in UNITREE_ENDPOINT_HAND_POLICY_IDS
+        and not (
+            bool(_mapping(row.get("claim_boundary")).get("provider_output_replay_used"))
+            or _string(row.get("policy_id")).endswith("_provider_replay")
+        )
+        and (
+            bool(row.get("unitree_policy_action_command_ran"))
+            or bool(row.get("unitree_lerobot_policy_action_command_ran"))
+            or bool(row.get("unitree_unifolm_policy_action_command_ran"))
+            or bool(row.get("unitree_groot_n17_sonic_policy_action_command_ran"))
+            or bool(
+                _mapping(row.get("claim_boundary")).get(
+                    "unitree_hand_manipulation_policy_used"
+                )
+            )
+        )
+        for row in rows
+    )
+    return {
+        "unitree_endpoint_hand_policy_output_observed": (
+            unitree_endpoint_hand_policy_output_observed
+        ),
+        "unitree_endpoint_provider_output_replay_used": (
+            unitree_endpoint_provider_output_replay_used
+        ),
+        "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+        "unitree_endpoint_fresh_policy_action_command_ran": (
+            unitree_endpoint_fresh_policy_action_command_ran
+        ),
+        "unitree_endpoint_hand_policy_used": (
+            unitree_endpoint_fresh_policy_action_command_ran
+        ),
+        "g1_robot_policy_selection_contract": "unitree_native_policy_required_for_g1_claims",
+        "g1_robot_policy_selected_family": (
+            "unitree_native_hand_policy_endpoint"
+            if unitree_endpoint_fresh_policy_action_command_ran
+            else None
+        ),
+        "unitree_hand_manipulation_policy_scope": (
+            "endpoint_action_command" if unitree_endpoint_fresh_policy_action_command_ran else None
+        ),
+        "openvla_selected_as_g1_robot_policy": False,
+        "wam_rollout_selected_as_g1_robot_policy": False,
+    }
+
+
+def _policy_action_provider_output_replay_used(
+    *,
+    policy_action_model_command_execution: Mapping[str, Any],
+    robot_policy_wam_closed_loop_attempt: Mapping[str, Any],
+) -> bool:
+    return bool(
+        policy_action_model_command_execution.get("provider_output_replay_used")
+        or robot_policy_wam_closed_loop_attempt.get("provider_output_replay_used")
+    )
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        text = _string(value)
+        return [text] if text else []
+    if isinstance(value, Sequence):
+        rows: list[str] = []
+        for item in value:
+            text = _string(item)
+            if text:
+                rows.append(text)
+        return rows
+    text = _string(value)
+    return [text] if text else []
+
+
 def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     ensure_dir(path.parent)
     path.write_text(
@@ -265,6 +617,7 @@ def _runtime_endpoint_rows() -> list[dict[str, Any]]:
         endpoint = os.getenv(spec["endpoint_env"], "").strip()
         token_file_raw = os.getenv(spec["auth_file_env"], "").strip()
         token_file = Path(token_file_raw).expanduser() if token_file_raw else None
+        provenance = _endpoint_model_provenance(str(spec["runtime"]))
         rows.append(
             {
                 "runtime": spec["runtime"],
@@ -280,12 +633,90 @@ def _runtime_endpoint_rows() -> list[dict[str, Any]]:
                 else None,
                 "ready_for_endpoint_call": bool(endpoint and token_file and token_file.is_file()),
                 "token_value_written_to_artifacts": False,
+                **provenance,
             }
         )
     return rows
 
 
-def discover_policy_runtime(*, generated_at: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+def _existing_env_path(env_name: str) -> Path | None:
+    value = os.getenv(env_name, "").strip()
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    return path if path.exists() else None
+
+
+def _endpoint_model_provenance(runtime: str) -> dict[str, Any]:
+    command_env_by_runtime = {
+        "wam": ("BLUEPRINT_OSCAR_WAM_COMMAND", "BLUEPRINT_COSMOS_WAM_COMMAND"),
+        "vla": ("BLUEPRINT_OPENVLA_POLICY_COMMAND",),
+        "team": ("BLUEPRINT_WAM_VLA_POLICY_COMMAND",),
+    }
+    checkpoint_env_by_runtime = {
+        "wam": ("BLUEPRINT_OSCAR_WAM_CHECKPOINT", "BLUEPRINT_COSMOS_WAM_CHECKPOINT"),
+        "vla": ("BLUEPRINT_OPENVLA_POLICY_CHECKPOINT",),
+        "team": ("BLUEPRINT_POLICY_MODEL_CHECKPOINT",),
+    }
+    provider_output_env_by_runtime = {
+        "wam": ("BLUEPRINT_OSCAR_WAM_PROVIDER_OUTPUT", "BLUEPRINT_COSMOS_WAM_PROVIDER_OUTPUT"),
+        "vla": ("BLUEPRINT_OPENVLA_PROVIDER_OUTPUT",),
+        "team": ("BLUEPRINT_POLICY_MODEL_PROVIDER_OUTPUT",),
+    }
+    configured_command_env = next(
+        (
+            env_name
+            for env_name in command_env_by_runtime.get(runtime, ())
+            if os.getenv(env_name, "").strip()
+        ),
+        None,
+    )
+    checkpoint_path = next(
+        (
+            path
+            for env_name in checkpoint_env_by_runtime.get(runtime, ())
+            for path in [_existing_env_path(env_name)]
+            if path is not None
+        ),
+        None,
+    )
+    provider_output_path = next(
+        (
+            path
+            for env_name in provider_output_env_by_runtime.get(runtime, ())
+            for path in [_existing_env_path(env_name)]
+            if path is not None
+        ),
+        None,
+    )
+    provenance_recorded = bool(configured_command_env and (checkpoint_path or provider_output_path))
+    return {
+        "model_command_env": configured_command_env,
+        "model_command_configured": bool(configured_command_env),
+        "model_checkpoint_path": str(checkpoint_path) if checkpoint_path else None,
+        "model_provider_output_path": str(provider_output_path) if provider_output_path else None,
+        "model_provenance_recorded": provenance_recorded,
+        "model_provenance_kind": (
+            "provider_output_replay"
+            if provider_output_path
+            else "checkpoint"
+            if checkpoint_path
+            else None
+        ),
+        "model_provenance_claim_boundary": {
+            "provider_output_replay_is_not_fresh_per_request_model_inference": bool(
+                provider_output_path
+            ),
+            "model_provenance_is_not_task_success_proof": True,
+            "raw_credentials_written_to_artifacts": False,
+            "secret_hashes_written_to_artifacts": False,
+        },
+    }
+
+
+def discover_policy_runtime(
+    *, generated_at: str
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     endpoint_rows = _runtime_endpoint_rows()
     ready_rows = [row for row in endpoint_rows if row["ready_for_endpoint_call"]]
     missing_reasons: list[str] = []
@@ -301,6 +732,9 @@ def discover_policy_runtime(*, generated_at: str) -> tuple[dict[str, Any], dict[
         "BLUEPRINT_OSCAR_WAM_COMMAND",
         "BLUEPRINT_OPENVLA_POLICY_COMMAND",
         "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_ROOT",
+        "BLUEPRINT_UNITREE_LEROBOT_POLICY_PATH",
+        "BLUEPRINT_UNITREE_POLICY_FAMILY",
     ]
     local_runners = [
         {
@@ -322,6 +756,18 @@ def discover_policy_runtime(*, generated_at: str) -> tuple[dict[str, Any], dict[
             "command": "blueprint-g1-endpoint-reference-adapter",
             "available_on_path": bool(shutil.which("blueprint-g1-endpoint-reference-adapter")),
             "runtime_kind": "command_policy_reference_heuristic",
+        },
+        {
+            "runner_id": "blueprint_openvla_policy_command_adapter",
+            "command": "blueprint-openvla-policy-command-adapter",
+            "available_on_path": bool(shutil.which("blueprint-openvla-policy-command-adapter")),
+            "runtime_kind": "openvla_policy_command_adapter_requires_checkpoint",
+        },
+        {
+            "runner_id": "blueprint_run_unitree_lerobot_g1_policy_eval",
+            "command": "blueprint-run-unitree-lerobot-g1-policy-eval",
+            "available_on_path": bool(shutil.which("blueprint-run-unitree-lerobot-g1-policy-eval")),
+            "runtime_kind": "unitree_lerobot_g1_sim_manipulation_policy_runtime",
         },
         {
             "runner_id": "blueprint_run_oscar_cosmos_wam_evaluator",
@@ -351,11 +797,16 @@ def discover_policy_runtime(*, generated_at: str) -> tuple[dict[str, Any], dict[
         "raw_token_values_persisted": False,
         "raw_token_hashes_persisted": False,
     }
+    provider_registry = build_policy_provider_registry_probe(
+        job_dir=_repo_root() / "robot_eval_jobs" / "unitree_lerobot_g1_policy_probe",
+        generated_at=generated_at,
+    )
     runtime_discovery = {
         "schema_version": "wam_vla_runtime_discovery.v1",
         "generated_at": generated_at,
         "status": "endpoint_ready" if ready_rows else "fixture_fallback_ready",
         "endpoint_runtimes": endpoint_rows,
+        "policy_lane_provider_registry": provider_registry,
         "local_model_package_runners": local_runners,
         "provider_command_contracts": [
             {
@@ -461,6 +912,10 @@ def build_policy_model_candidate_matrix(*, generated_at: str) -> dict[str, Any]:
             "cosmos_wam",
             "openvla_policy",
             "unitree_g1_policy",
+            "unitree_lerobot_g1",
+            "unifolm_vla",
+            "unifolm_wma",
+            GROOT_POLICY_ID,
             "command_policy",
         ],
         "candidates": [
@@ -484,16 +939,109 @@ def build_policy_model_candidate_matrix(*, generated_at: str) -> dict[str, Any]:
                 "claim_boundary": "requires_controller_grade_runner_execution",
             },
             {
+                "id": "unitree_lerobot_g1",
+                "runtime_role": "unitree_g1_lerobot_sim_manipulation_or_loco_manip_policy",
+                "root_env": "BLUEPRINT_UNITREE_LEROBOT_ROOT",
+                "policy_path_env": "BLUEPRINT_UNITREE_LEROBOT_POLICY_PATH",
+                "dataset_repo_env": "BLUEPRINT_UNITREE_LEROBOT_DATASET_REPO_ID",
+                "default_runtime_mode": "probe",
+                "configured": bool(
+                    os.getenv("BLUEPRINT_UNITREE_LEROBOT_ROOT")
+                    and os.getenv("BLUEPRINT_UNITREE_LEROBOT_POLICY_PATH")
+                ),
+                "claim_boundary": (
+                    "separate LeRobot sim-eval provider; not official RL Gym locomotion "
+                    "and not physical robot readiness"
+                ),
+            },
+            {
                 "id": "openvla_policy",
                 "runtime_role": "vla_or_imitation_policy_endpoint_candidate",
                 "command_env": "BLUEPRINT_OPENVLA_POLICY_COMMAND",
                 "checkpoint_env": "BLUEPRINT_OPENVLA_POLICY_CHECKPOINT",
+                "default_adapter_command": "blueprint-openvla-policy-command-adapter",
+                "default_adapter_available_on_path": bool(
+                    shutil.which("blueprint-openvla-policy-command-adapter")
+                ),
                 "configured": bool(os.getenv("BLUEPRINT_OPENVLA_POLICY_COMMAND")),
                 "claim_boundary": "requires_model_endpoint_response_and_action_decoder",
             },
             {
+                "id": "openvla_endpoint",
+                "runtime_role": "generic_vla_endpoint_comparison_only",
+                "endpoint_env": "BLUEPRINT_UNITREE_OPENVLA_ENDPOINT_URL",
+                "configured": bool(os.getenv("BLUEPRINT_UNITREE_OPENVLA_ENDPOINT_URL")),
+                "g1_action_adapter_required": True,
+                "claim_boundary": (
+                    "generic_openvla_action_output_is_not_unitree_g1_control_without "
+                    "an explicit G1 action adapter"
+                ),
+            },
+            {
+                "id": "unifolm_vla",
+                "runtime_role": "unitree_native_vla_policy_candidate",
+                "command_env": "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+                "checkpoint_env": "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT",
+                "configured": bool(
+                    os.getenv("BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND")
+                    and os.getenv("BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT")
+                    and os.getenv("BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT")
+                ),
+                "claim_boundary": "requires actual UnifoLM VLA command/checkpoint execution",
+            },
+            {
+                "id": "unifolm_wma",
+                "runtime_role": "unitree_native_world_model_action_candidate",
+                "command_env": "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+                "checkpoint_env": "BLUEPRINT_UNITREE_UNIFOLM_WMA_CHECKPOINT",
+                "configured": bool(
+                    os.getenv("BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND")
+                    and os.getenv("BLUEPRINT_UNITREE_UNIFOLM_WMA_CHECKPOINT")
+                ),
+                "claim_boundary": "wam_world_model_used remains false until WMA runtime is invoked",
+            },
+            {
+                "id": GROOT_POLICY_ID,
+                "runtime_role": "unitree_native_groot_n17_sonic_vla_policy_candidate",
+                "command_env": GROOT_POLICY_COMMAND_ENV,
+                "checkpoint_env": N17_CHECKPOINT_ENV,
+                "sonic_checkpoint_env": SONIC_CHECKPOINT_ENV,
+                "source_root_env": GROOT_ROOT_ENV,
+                "wbc_root_env": WBC_ROOT_ENV,
+                "policy_server_url_env": POLICY_SERVER_URL_ENV,
+                "sim2sim_command_env": SIM2SIM_COMMAND_ENV,
+                "default_adapter_command": (
+                    "blueprint-unitree-groot-n17-sonic-policy-command-adapter"
+                ),
+                "configured": bool(
+                    os.getenv(GROOT_POLICY_COMMAND_ENV)
+                    and os.getenv(N17_CHECKPOINT_ENV)
+                    and os.getenv(SONIC_CHECKPOINT_ENV)
+                ),
+                "known_public_checkpoint_files": [
+                    "nvidia/GR00T-N1.7-3B:<model repository root>",
+                    (
+                        DEFAULT_EXPERIMENTAL_UNITREE_G1_SONIC_POLICY_CHECKPOINT
+                        + ":<experimental UNITREE_G1_SONIC GR00T N1.7 checkpoint>"
+                    ),
+                    "nvidia/GEAR-SONIC:gear_sonic_deploy/policy/model_encoder.onnx",
+                    "nvidia/GEAR-SONIC:gear_sonic_deploy/policy/model_decoder.onnx",
+                    "nvidia/GEAR-SONIC:sonic_release/last.pt",
+                ],
+                "embodiment_tag": "UNITREE_G1_SONIC",
+                "expected_action_dimension": 78,
+                "claim_boundary": {
+                    "checkpoint_presence_is_not_endpoint_execution": True,
+                    "groot_n17_does_not_replace_unitree_rl_gym_locomotion_proof": True,
+                    "requires_policy_server_action_wrapper_and_sim2sim_execution": True,
+                    "physical_robot_readiness_proven": False,
+                    "deployment_readiness_proven": False,
+                    "safety_validation_proven": False,
+                },
+            },
+            {
                 "id": "oscar_wam",
-                "runtime_role": "action_conditioned_world_model_evaluator",
+                "runtime_role": "action_conditioned_world_model_rollout_generator",
                 "command_env": "BLUEPRINT_OSCAR_WAM_COMMAND",
                 "checkpoint_env": "BLUEPRINT_OSCAR_WAM_CHECKPOINT",
                 "configured": bool(
@@ -549,11 +1097,7 @@ def _unitree_rl_gym_required_files(root: Path) -> dict[str, Path]:
 
 def _unitree_rl_gym_root_row(*, label: str, root: Path | None) -> dict[str, Any]:
     required = _unitree_rl_gym_required_files(root) if root is not None else {}
-    missing = [
-        name
-        for name, path in required.items()
-        if not path.expanduser().resolve().is_file()
-    ]
+    missing = [name for name, path in required.items() if not path.expanduser().resolve().is_file()]
     return {
         "label": label,
         "path": str(root.expanduser().resolve()) if root is not None else None,
@@ -604,6 +1148,7 @@ def discover_realistic_navigation_policy(*, generated_at: str) -> dict[str, Any]
     ]
     root_envs = [
         "BLUEPRINT_UNITREE_G1_POLICY_ROOT",
+        "BLUEPRINT_UNITREE_G1_POLICY_SOURCE_ROOT",
         "BLUEPRINT_UNITREE_RL_GYM_ROOT",
         "UNITREE_G1_POLICY_ROOT",
     ]
@@ -618,7 +1163,9 @@ def discover_realistic_navigation_policy(*, generated_at: str) -> dict[str, Any]
             except ValueError:
                 parts = []
             executable = parts[0] if parts else ""
-            available = bool(executable and (Path(executable).expanduser().is_file() or shutil.which(executable)))
+            available = bool(
+                executable and (Path(executable).expanduser().is_file() or shutil.which(executable))
+            )
         command_rows.append(
             {
                 "env": env_name,
@@ -669,7 +1216,9 @@ def discover_realistic_navigation_policy(*, generated_at: str) -> dict[str, Any]
     if not available and not root_available:
         blockers.append("blocked_missing_realistic_g1_navigation_policy")
     elif available and not root_available:
-        blockers.append("blocked_controller_command_not_integrated_into_same_scene_endpoint_rollouts")
+        blockers.append(
+            "blocked_controller_command_not_integrated_into_same_scene_endpoint_rollouts"
+        )
     return {
         "schema_version": "realistic_navigation_policy_discovery.v1",
         "generated_at": generated_at,
@@ -707,6 +1256,2323 @@ def discover_realistic_navigation_policy(*, generated_at: str) -> dict[str, Any]
             "official_unitree_controller_proof_requires_controller_grade_stack": True,
             "unitree_rl_gym_root_discovery_is_not_endpoint_task_control": True,
             "online_source_discovery_is_not_controller_execution_proof": True,
+            "physical_robot_readiness_proven": False,
+        },
+    }
+
+
+def _command_available(command_value: str) -> bool:
+    if not command_value:
+        return False
+    try:
+        parts = shlex.split(command_value)
+    except ValueError:
+        return False
+    executable = parts[0] if parts else ""
+    return bool(
+        executable and (Path(executable).expanduser().is_file() or shutil.which(executable))
+    )
+
+
+POLICY_ACTION_MODEL_COMMAND_CANDIDATES = (
+    {
+        "candidate_id": GROOT_POLICY_ID,
+        "command_envs": (GROOT_POLICY_COMMAND_ENV,),
+        "default_command_value": (
+            f"{shlex.quote(sys.executable)} -m "
+            "blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+        ),
+        "checkpoint_envs": (N17_CHECKPOINT_ENV,),
+        "extra_required_checkpoint_envs": (SONIC_CHECKPOINT_ENV,),
+        "source_root_env": GROOT_ROOT_ENV,
+        "extra_required_root_envs": (WBC_ROOT_ENV,),
+        "runtime_role": "unitree_groot_n17_sonic_policy_action_model",
+    },
+    {
+        "candidate_id": "unitree_g1_policy",
+        "command_envs": (
+            "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+            "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        ),
+        "checkpoint_envs": ("BLUEPRINT_UNITREE_G1_POLICY_CHECKPOINT",),
+        "runtime_role": "unitree_g1_policy_action_model",
+    },
+    {
+        "candidate_id": "unitree_lerobot_policy",
+        "command_envs": ("BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",),
+        "checkpoint_envs": ("BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT",),
+        "runtime_role": "unitree_g1_manipulation_policy_action_model",
+    },
+    {
+        "candidate_id": "unitree_unifolm_vla_policy",
+        "command_envs": ("BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",),
+        "checkpoint_envs": ("BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT",),
+        "extra_required_checkpoint_envs": ("BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT",),
+        "runtime_role": "unitree_native_vla_policy_action_model",
+    },
+    {
+        "candidate_id": "unitree_unifolm_wma_policy",
+        "command_envs": ("BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",),
+        "checkpoint_envs": ("BLUEPRINT_UNITREE_UNIFOLM_WMA_CHECKPOINT",),
+        "runtime_role": "unitree_native_wma_policy_action_model",
+    },
+)
+
+UNITREE_POLICY_ACTION_MODEL_CANDIDATE_IDS = {
+    "unitree_g1_policy",
+    "unitree_lerobot_policy",
+    "unitree_unifolm_vla_policy",
+    "unitree_unifolm_wma_policy",
+    GROOT_POLICY_ID,
+}
+UNITREE_MANIPULATION_POLICY_ACTION_MODEL_CANDIDATE_IDS = {
+    "unitree_lerobot_policy",
+    "unitree_unifolm_vla_policy",
+    "unitree_unifolm_wma_policy",
+    GROOT_POLICY_ID,
+}
+
+GENERIC_POLICY_ACTION_MODEL_COMPARISON_CANDIDATES = (
+    {
+        "candidate_id": "openvla_policy",
+        "command_envs": ("BLUEPRINT_OPENVLA_POLICY_COMMAND",),
+        "checkpoint_envs": ("BLUEPRINT_OPENVLA_POLICY_CHECKPOINT",),
+        "runtime_role": "generic_vla_policy_comparison_only",
+        "not_selected_reason": "generic_openvla_is_not_the_default_unitree_g1_policy_path",
+    },
+)
+
+
+def _is_repo_id_reference(value: str) -> bool:
+    text = value.strip()
+    if not text or text.startswith(("/", "./", "../", "~")):
+        return False
+    parts = text.split("/")
+    return (
+        len(parts) >= 2
+        and all(part.strip() for part in parts[:2])
+        and not any(part in {".", ".."} for part in parts[:2])
+        and " " not in text
+    )
+
+
+def _configured_checkpoint_reference(value: str) -> tuple[bool, str | None, bool, str | None]:
+    text = value.strip()
+    if not text:
+        return False, None, False, None
+    path = Path(text).expanduser()
+    if path.exists():
+        return True, str(path), True, "local_path"
+    if _is_repo_id_reference(text):
+        return True, text, False, "repo_id"
+    return False, str(path), False, "missing_path"
+
+
+def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    comparison_candidates: list[dict[str, Any]] = []
+
+    def _candidate_row(spec: Mapping[str, Any], *, selectable: bool) -> dict[str, Any]:
+        command_env = ""
+        command_value = ""
+        for env_name in spec["command_envs"]:
+            value = os.getenv(str(env_name), "").strip()
+            if value:
+                command_env = str(env_name)
+                command_value = value
+                break
+        command_default_applied = False
+        default_command_value = _string(spec.get("default_command_value"))
+        if not command_value and default_command_value:
+            command_env = str(list(spec["command_envs"])[0])
+            command_value = default_command_value
+            command_default_applied = True
+        checkpoint_env = ""
+        checkpoint_value = ""
+        for env_name in spec["checkpoint_envs"]:
+            value = os.getenv(str(env_name), "").strip()
+            if value:
+                checkpoint_env = str(env_name)
+                checkpoint_value = value
+                break
+        checkpoint_original_value = checkpoint_value
+        checkpoint_default_applied = False
+        checkpoint_selection_source = "configured_checkpoint"
+        if spec["candidate_id"] == GROOT_POLICY_ID:
+            (
+                checkpoint_value,
+                checkpoint_selection_source,
+                checkpoint_default_applied,
+            ) = select_unitree_g1_sonic_policy_checkpoint(checkpoint_original_value)
+        (
+            checkpoint_configured,
+            checkpoint_reference,
+            checkpoint_exists,
+            checkpoint_reference_kind,
+        ) = _configured_checkpoint_reference(checkpoint_value)
+        command_available = _command_available(command_value)
+        blockers: list[str] = []
+        if not command_value:
+            blockers.append("blocked_missing_policy_action_model_command")
+        elif not command_available:
+            blockers.append("blocked_policy_action_model_command_unavailable")
+        if not checkpoint_value:
+            blockers.append("blocked_missing_policy_action_model_checkpoint")
+        elif not checkpoint_configured:
+            blockers.append("blocked_policy_action_model_checkpoint_missing")
+        elif spec["candidate_id"] == GROOT_POLICY_ID and is_known_base_n17_without_unitree_g1_sonic_support(
+            checkpoint_original_value
+        ):
+            # The base checkpoint is incompatible with UNITREE_G1_SONIC, but
+            # this candidate can fall back to the experimental SONIC fine-tune.
+            # Keep the fact visible without blocking admission.
+            pass
+        extra_checkpoint_rows = []
+        for env_name in spec.get("extra_required_checkpoint_envs", ()):
+            value = os.getenv(str(env_name), "").strip()
+            configured, path_text, exists, reference_kind = _configured_checkpoint_reference(value)
+            extra_checkpoint_rows.append(
+                {
+                    "checkpoint_env": str(env_name),
+                    "checkpoint_configured": configured,
+                    "checkpoint_exists": exists,
+                    "checkpoint_path": path_text,
+                    "checkpoint_reference_kind": reference_kind,
+                }
+            )
+            if not value:
+                blockers.append(f"blocked_missing_{env_name}")
+            elif not configured:
+                blockers.append(f"blocked_missing_path_for_{env_name}")
+        source_root_env = _string(spec.get("source_root_env"))
+        source_root_value = os.getenv(source_root_env, "").strip() if source_root_env else ""
+        source_root_path = Path(source_root_value).expanduser() if source_root_value else None
+        source_root_exists = bool(source_root_path and source_root_path.exists())
+        if source_root_value and not source_root_exists:
+            blockers.append(f"blocked_missing_path_for_{source_root_env}")
+        extra_root_rows = []
+        for env_name in spec.get("extra_required_root_envs", ()):
+            value = os.getenv(str(env_name), "").strip()
+            path = Path(value).expanduser() if value else None
+            exists = bool(path and path.exists())
+            extra_root_rows.append(
+                {
+                    "root_env": str(env_name),
+                    "root_configured": bool(value),
+                    "root_path": str(path) if path else None,
+                    "root_exists": exists,
+                }
+            )
+            if value and not exists:
+                blockers.append(f"blocked_missing_path_for_{env_name}")
+        ready = bool(
+            command_value
+            and command_available
+            and checkpoint_configured
+            and not blockers
+            and selectable
+        )
+        row = {
+            "candidate_id": spec["candidate_id"],
+            "runtime_role": spec["runtime_role"],
+            "unitree_specific_policy_candidate": selectable,
+            "command_env": command_env or list(spec["command_envs"])[0],
+            "command_configured": bool(command_value),
+            "command_from_default": command_default_applied,
+            "command_available": command_available,
+            "command_value_redacted": "<configured>" if command_value else None,
+            "command_value_for_execution": command_value
+            if command_default_applied
+            else None,
+            "checkpoint_env": checkpoint_env or list(spec["checkpoint_envs"])[0],
+            "checkpoint_configured": checkpoint_configured,
+            "checkpoint_exists": checkpoint_exists,
+            "checkpoint_path": checkpoint_reference,
+            "checkpoint_reference_kind": checkpoint_reference_kind,
+            "checkpoint_original_env_reference": checkpoint_original_value or None,
+            "checkpoint_selection_source": checkpoint_selection_source,
+            "checkpoint_default_applied": checkpoint_default_applied,
+            "checkpoint_known_base_model_without_unitree_g1_sonic_support": bool(
+                spec["candidate_id"] == GROOT_POLICY_ID
+                and is_known_base_n17_without_unitree_g1_sonic_support(
+                    checkpoint_original_value
+                )
+            ),
+            "checkpoint_provenance": unitree_g1_sonic_checkpoint_provenance(
+                checkpoint_value
+            )
+            if spec["candidate_id"] == GROOT_POLICY_ID
+            else None,
+            "trusted_for_production": False,
+            "task_specific_finetuning_required_for_admission": False,
+            "unitree_g1_sonic_requires_finetuned_gr00t_checkpoint": bool(
+                spec["candidate_id"] == GROOT_POLICY_ID
+            ),
+            "extra_required_checkpoints": extra_checkpoint_rows,
+            "source_root_env": source_root_env or None,
+            "source_root_configured": bool(source_root_value),
+            "source_root_path": str(source_root_path) if source_root_path else None,
+            "source_root_exists": source_root_exists,
+            "extra_required_roots": extra_root_rows,
+            "ready_for_policy_action_command": ready,
+            "blockers": blockers,
+        }
+        if not selectable:
+            row["ready_for_policy_action_command"] = False
+            row["not_selected_reason"] = spec.get(
+                "not_selected_reason",
+                "generic_policy_comparison_candidate_not_selected_for_unitree_g1",
+            )
+            if command_value:
+                row["blockers"] = sorted(
+                    set(blockers + ["blocked_generic_policy_not_unitree_specific"])
+                )
+        return row
+
+    for spec in POLICY_ACTION_MODEL_COMMAND_CANDIDATES:
+        candidates.append(_candidate_row(spec, selectable=True))
+    for spec in GENERIC_POLICY_ACTION_MODEL_COMPARISON_CANDIDATES:
+        comparison_candidates.append(_candidate_row(spec, selectable=False))
+
+    ready = sorted(
+        [row for row in candidates if row["ready_for_policy_action_command"]],
+        key=lambda row: bool(row.get("command_from_default")),
+    )
+    configured_manipulation_candidate = next(
+        (
+            row
+            for row in candidates
+            if row["candidate_id"] in UNITREE_MANIPULATION_POLICY_ACTION_MODEL_CANDIDATE_IDS
+            and (
+                (row.get("command_configured") and not row.get("command_from_default"))
+                or (
+                    row.get("checkpoint_configured")
+                    and (
+                        not row.get("checkpoint_default_applied")
+                        or row.get("checkpoint_original_env_reference")
+                    )
+                )
+                or row.get("source_root_configured")
+                or any(
+                    item.get("checkpoint_configured")
+                    for item in row.get("extra_required_checkpoints", [])
+                )
+                or any(item.get("root_configured") for item in row.get("extra_required_roots", []))
+            )
+        ),
+        None,
+    )
+    selected_candidate_id = (
+        ready[0]["candidate_id"]
+        if ready
+        else (
+            configured_manipulation_candidate["candidate_id"]
+            if configured_manipulation_candidate
+            else None
+        )
+    )
+    selected_candidate_blockers = (
+        list(configured_manipulation_candidate.get("blockers", []))
+        if configured_manipulation_candidate and not ready
+        else []
+    )
+    return {
+        "schema_version": "policy_action_model_command_discovery.v1",
+        "generated_at": generated_at,
+        "status": "ready" if ready else "blocked_missing_unitree_policy_action_model_command",
+        "selection_policy": "unitree_specific_policy_candidates_only",
+        "selected_candidate_id": selected_candidate_id,
+        "selected_candidate_ready_for_policy_action_command": bool(ready),
+        "candidates": candidates,
+        "generic_policy_comparison_candidates": comparison_candidates,
+        "ready_candidate_count": len(ready),
+        "blockers": []
+        if ready
+        else sorted(
+            set(
+                ["blocked_missing_unitree_specific_policy_action_model_command"]
+                + selected_candidate_blockers
+            )
+        ),
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+
+
+def _policy_action_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    action = payload.get("normalized_action") or payload.get("action")
+    if isinstance(action, Mapping):
+        return dict(action)
+    for key in ("action_chunk", "actions", "action_vector", "joint_targets", "joint_positions"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            return {
+                "action_type": "manipulation_contact",
+                "unitree_action_chunk_present": True,
+                "unitree_raw_action_key": key,
+                key: dict(value),
+            }
+        if isinstance(value, (list, tuple)):
+            return {
+                "action_type": "manipulation_contact",
+                "unitree_action_chunk_present": True,
+                "unitree_raw_action_key": key,
+                key: list(value),
+            }
+    return None
+
+
+def _policy_action_command_blockers(
+    command_result: Mapping[str, Any],
+    response_payload: Mapping[str, Any],
+) -> list[str]:
+    blockers = [str(item) for item in command_result.get("blockers", []) if str(item)]
+    response_blockers = response_payload.get("blockers")
+    if isinstance(response_blockers, Sequence) and not isinstance(
+        response_blockers, (str, bytes, bytearray)
+    ):
+        blockers.extend(str(item) for item in response_blockers if str(item))
+    elif response_blockers:
+        blockers.append(str(response_blockers))
+    status = _string(response_payload.get("status"))
+    if status in {"blocked", "failed"} and not response_blockers:
+        blockers.append(f"policy_action_model_command_output_{status}")
+    return sorted(set(blockers))
+
+
+def _unitree_policy_action_execution_flags(
+    *,
+    ran: bool,
+    selected_candidate_id: str | None,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    selected = selected_candidate_id or ""
+    unitree_selected = selected in UNITREE_POLICY_ACTION_MODEL_CANDIDATE_IDS
+    manipulation_selected = selected in UNITREE_MANIPULATION_POLICY_ACTION_MODEL_CANDIDATE_IDS
+    provider_output_replay_used = bool(
+        payload.get("provider_output_replay_used")
+        or _mapping(payload.get("claim_boundary")).get("provider_output_replay_used")
+    )
+    unitree_g1_policy_ran = bool(
+        ran and selected == "unitree_g1_policy" and not provider_output_replay_used
+    )
+    unitree_lerobot_policy_ran = bool(
+        ran
+        and selected == "unitree_lerobot_policy"
+        and not provider_output_replay_used
+        and payload.get("unitree_lerobot_policy_action_command_ran", True)
+    )
+    unitree_unifolm_policy_ran = bool(
+        ran
+        and selected in {"unitree_unifolm_vla_policy", "unitree_unifolm_wma_policy"}
+        and not provider_output_replay_used
+        and payload.get("unitree_unifolm_policy_action_command_ran", True)
+    )
+    unitree_groot_policy_ran = bool(
+        ran
+        and selected == GROOT_POLICY_ID
+        and not provider_output_replay_used
+        and payload.get("unitree_groot_n17_sonic_policy_action_command_ran", True)
+    )
+    unitree_policy_ran = bool(
+        unitree_g1_policy_ran
+        or unitree_lerobot_policy_ran
+        or unitree_unifolm_policy_ran
+        or unitree_groot_policy_ran
+    )
+    unitree_manipulation_policy_ran = bool(
+        unitree_lerobot_policy_ran or unitree_unifolm_policy_ran or unitree_groot_policy_ran
+    )
+    return {
+        "unitree_policy_action_command_ran": unitree_policy_ran,
+        "unitree_lerobot_policy_action_command_ran": unitree_lerobot_policy_ran,
+        "unitree_unifolm_policy_action_command_ran": unitree_unifolm_policy_ran,
+        "unitree_groot_n17_sonic_policy_action_command_ran": unitree_groot_policy_ran,
+        "unitree_manipulation_policy_action_command_ran": bool(
+            manipulation_selected and unitree_manipulation_policy_ran
+        ),
+        "unitree_specific_policy_candidate_ran": bool(
+            unitree_selected and unitree_policy_ran
+        ),
+        "unitree_specific_manipulation_candidate_ran": bool(
+            manipulation_selected and unitree_manipulation_policy_ran
+        ),
+    }
+
+
+def _policy_action_model_frame_candidates(job_dir: Path) -> list[Path]:
+    frame_root = job_dir / "policy_observation_frames"
+    if not frame_root.is_dir():
+        return []
+    camera_rank = {
+        "head_pov": 0,
+        "blueprint_g1_head_pov": 0,
+        "torso_pov": 1,
+        "blueprint_g1_torso_pov": 1,
+        "robot_pov": 2,
+    }
+    candidates = [
+        path
+        for path in frame_root.rglob("*.jpg")
+        if path.is_file() and _policy_action_model_frame_camera_id(path) in camera_rank
+    ]
+
+    def rank(path: Path) -> tuple[int, str]:
+        camera_id = _policy_action_model_frame_camera_id(path)
+        return camera_rank.get(camera_id or "", 99), path.as_posix()
+
+    return sorted(candidates, key=rank)
+
+
+def _policy_action_model_frame_camera_id(path: Path | str | None) -> str | None:
+    if path is None:
+        return None
+    text = Path(path).as_posix()
+    for camera in (
+        "blueprint_g1_head_pov",
+        "blueprint_g1_torso_pov",
+        "head_pov",
+        "torso_pov",
+        "robot_pov",
+    ):
+        if camera in text:
+            return (
+                "head_pov"
+                if camera == "blueprint_g1_head_pov"
+                else ("torso_pov" if camera == "blueprint_g1_torso_pov" else camera)
+            )
+    return None
+
+
+def _unitree_g1_sonic_contract_probe_state() -> dict[str, list[float]]:
+    return {
+        "left_leg": [0.0] * 6,
+        "right_leg": [0.0] * 6,
+        "waist": [0.0] * 3,
+        "left_arm": [0.0] * 7,
+        "right_arm": [0.0] * 7,
+        "left_hand": [0.0] * 7,
+        "right_hand": [0.0] * 7,
+        "projected_gravity": [0.0, 0.0, -1.0],
+    }
+
+
+def _first_unitree_g1_sonic_state_from_visual_trace(
+    job_dir: Path | None,
+) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
+    if job_dir is None:
+        return None, None, {}
+    trace_path = job_dir / "policy_visual_observation_trace.jsonl"
+    if not trace_path.is_file():
+        return None, None, {}
+    try:
+        with trace_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, Mapping) or not row.get("available"):
+                    continue
+                state = row.get("unitree_g1_sonic_state")
+                if not isinstance(state, Mapping):
+                    continue
+                return (
+                    dict(state),
+                    _string(row.get("unitree_g1_sonic_state_source"))
+                    or "simulated_mujoco_joint_groups",
+                    {
+                        "episode_id": row.get("episode_id"),
+                        "scenario_eval_run_id": row.get("scenario_eval_run_id"),
+                        "step": row.get("step"),
+                        "camera_frame_path": row.get("camera_frame_path"),
+                        "metadata": row.get("unitree_g1_sonic_state_metadata"),
+                    },
+                )
+    except Exception:
+        return None, None, {}
+    return None, None, {}
+
+
+def _sample_policy_action_model_input(
+    *,
+    generated_at: str,
+    job_dir: Path | None = None,
+) -> dict[str, Any]:
+    frame_path = None
+    if job_dir is not None:
+        frame_candidates = _policy_action_model_frame_candidates(job_dir)
+        if frame_candidates:
+            frame_path = str(frame_candidates[0].resolve())
+    visual_observation = {
+        "available": bool(frame_path),
+        "camera_frame_path": frame_path,
+        "camera_id": _policy_action_model_frame_camera_id(frame_path),
+        "first_person_policy_observation_candidate": bool(frame_path),
+        "simulated_camera_view": bool(frame_path),
+        "physical_robot_sensor_proof": False,
+        "blockers": [] if frame_path else ["policy_observation_frame_not_captured"],
+        "claim_boundary": {
+            "simulated_camera_view": bool(frame_path),
+            "physical_robot_sensor_proof": False,
+            "visual_observation_path_can_feed_vla_policy_endpoint": bool(frame_path),
+        },
+    }
+    (
+        captured_sonic_state,
+        captured_sonic_state_source,
+        captured_sonic_state_metadata,
+    ) = _first_unitree_g1_sonic_state_from_visual_trace(job_dir)
+    unitree_g1_sonic_state = captured_sonic_state or _unitree_g1_sonic_contract_probe_state()
+    unitree_g1_sonic_state_source = (
+        captured_sonic_state_source or "simulated_mujoco_contract_probe_zero_state"
+    )
+    unitree_g1_sonic_state_is_contract_probe = captured_sonic_state is None
+    return {
+        "schema_version": "policy_action_model_command_input.v1",
+        "generated_at": generated_at,
+        "robot_profile_id": ROBOT_PROFILE_ID,
+        "observation_schema_id": OBSERVATION_SCHEMA_ID,
+        "action_schema_id": ACTION_SCHEMA_ID,
+        "task_prompt": "Return one safe Unitree G1 action for a MuJoCo waypoint/manipulation evaluation packet.",
+        "observation": {
+            "camera_frame_path": frame_path,
+            "visual_observation": visual_observation,
+            "state": {
+                "root_position": [0.0, 0.0, 0.79],
+                "root_yaw_rad": 0.0,
+                "target_waypoint": [1.0, 0.0],
+                "nearest_object": "blueprint_light_object",
+            },
+            "unitree_g1_sonic_state": unitree_g1_sonic_state,
+            "unitree_g1_sonic_state_source": unitree_g1_sonic_state_source,
+            "unitree_g1_sonic_state_metadata": captured_sonic_state_metadata,
+        },
+        "allowed_action_types": [
+            "waypoint",
+            "base_velocity",
+            "stop",
+            "inspect_look",
+            "manipulation_contact",
+        ],
+        "claim_boundary": {
+            "sample_input_is_contract_probe_not_task_success_evidence": True,
+            "visual_frame_is_simulated_mujoco_policy_observation": bool(frame_path),
+            "unitree_g1_sonic_state_is_simulated_observation": True,
+            "unitree_g1_sonic_state_is_contract_probe": unitree_g1_sonic_state_is_contract_probe,
+            "unitree_g1_sonic_state_derived_from_mujoco_qpos": not unitree_g1_sonic_state_is_contract_probe,
+            "policy_action_command_does_not_prove_physical_robot_readiness": True,
+        },
+    }
+
+
+def _openvla_policy_execution_proof(payload: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    schema_version = _string(payload.get("schema_version"))
+    allowed_schemas = {
+        "openvla_policy_command_adapter.v1",
+        "openvla_policy_provider_output.v1",
+        "openvla_policy_provider_smoke.v1",
+    }
+    model_executed = bool(
+        payload.get("openvla_model_executed")
+        or payload.get("model_ran")
+        or payload.get("provider_openvla_model_executed")
+    )
+    predict_action_invoked = bool(
+        payload.get("openvla_predict_action_invoked")
+        or payload.get("provider_openvla_policy_action_command_ran")
+        or payload.get("openvla_policy_action_command_ran")
+    )
+    proof = {
+        "schema_version": schema_version or None,
+        "schema_version_allowed": schema_version in allowed_schemas,
+        "openvla_model_executed": model_executed,
+        "openvla_predict_action_invoked": predict_action_invoked,
+        "provider_output_replay_used": bool(payload.get("provider_output_replay_used")),
+    }
+    blockers: list[str] = []
+    if schema_version not in allowed_schemas:
+        blockers.append("openvla_policy_command_output_schema_not_proven")
+    if not model_executed:
+        blockers.append("openvla_policy_command_missing_model_execution_proof")
+    if not predict_action_invoked:
+        blockers.append("openvla_policy_command_missing_predict_action_invocation_proof")
+    return proof, blockers
+
+
+def run_policy_action_model_command_contract(
+    *,
+    job_dir: Path,
+    generated_at: str,
+    allow_policy_action_model_command_run: bool,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    discovery = discover_policy_action_model_commands(generated_at=generated_at)
+    write_json(job_dir / "policy_action_model_command_discovery.json", discovery)
+    input_path = job_dir / "policy_action_model_command_input.json"
+    output_path = job_dir / "policy_action_model_command_output.json"
+    write_json(
+        input_path,
+        _sample_policy_action_model_input(generated_at=generated_at, job_dir=job_dir),
+    )
+    ready_candidates = sorted(
+        [
+        row for row in discovery["candidates"] if row.get("ready_for_policy_action_command")
+        ],
+        key=lambda row: (
+            row.get("candidate_id") != discovery.get("selected_candidate_id"),
+            bool(row.get("command_from_default")),
+        ),
+    )
+    blockers: list[str] = []
+    if not allow_policy_action_model_command_run:
+        blockers.append("missing_cli_allow_policy_action_model_command_run")
+    if os.getenv(POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }:
+        blockers.append(f"missing_env_{POLICY_ACTION_MODEL_COMMAND_GATE_ENV}")
+    if not ready_candidates:
+        blockers.extend(discovery.get("blockers", []))
+    if blockers:
+        blocked_output = {
+            "schema_version": "policy_action_model_command_output.v1",
+            "generated_at": generated_at,
+            "status": "blocked",
+            "selected_candidate_id": discovery.get("selected_candidate_id"),
+            "policy_action_model_command_ran": False,
+            "action_payload_present": False,
+            "unitree_policy_action_command_ran": False,
+            "unitree_lerobot_policy_action_command_ran": False,
+            "unitree_unifolm_policy_action_command_ran": False,
+            "unitree_groot_n17_sonic_policy_action_command_ran": False,
+            "unitree_specific_manipulation_candidate_ran": False,
+            "openvla_policy_action_command_ran": False,
+            "blockers": sorted(set(blockers)),
+            "claim_boundary": {
+                "blocked_output_is_not_model_proof": True,
+                "policy_action_command_is_model_contract_probe_not_wam_rollout": True,
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+                "safety_validation_proven": False,
+            },
+            "raw_credentials_written_to_artifacts": False,
+            "secret_hashes_written_to_artifacts": False,
+        }
+        write_json(output_path, blocked_output)
+        result = {
+            "schema_version": "policy_action_model_command_execution.v1",
+            "generated_at": generated_at,
+            "status": "blocked",
+            "policy_action_model_command_ran": False,
+            "openvla_policy_action_command_ran": False,
+            "openvla_model_executed": False,
+            "openvla_predict_action_invoked": False,
+            "unitree_policy_action_command_ran": False,
+            "unitree_lerobot_policy_action_command_ran": False,
+            "unitree_unifolm_policy_action_command_ran": False,
+            "unitree_groot_n17_sonic_policy_action_command_ran": False,
+            "unitree_manipulation_policy_action_command_ran": False,
+            "unitree_specific_policy_candidate_ran": False,
+            "unitree_specific_manipulation_candidate_ran": False,
+            "provider_output_replay_used": False,
+            "fresh_policy_action_model_executed_this_invocation": False,
+            "selected_candidate_id": discovery.get("selected_candidate_id"),
+            "discovery": discovery,
+            "input_path": str(input_path),
+            "output_path": str(output_path),
+            "blockers": sorted(set(blockers)),
+            "claim_boundary": {
+                "policy_action_command_is_model_contract_probe_not_wam_rollout": True,
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+                "safety_validation_proven": False,
+            },
+        }
+        write_json(job_dir / "policy_action_model_command_execution.json", result)
+        return result
+    selected = ready_candidates[0]
+    command = _string(selected.get("command_value_for_execution")) or os.getenv(
+        str(selected["command_env"]), ""
+    ).strip()
+    started = time.monotonic()
+    env = {
+        **os.environ,
+        "BLUEPRINT_POLICY_ACTION_INPUT": str(input_path),
+        "BLUEPRINT_POLICY_ACTION_OUTPUT": str(output_path),
+        "BLUEPRINT_POLICY_MODEL_CANDIDATE": str(selected["candidate_id"]),
+        "BLUEPRINT_POLICY_MODEL_CHECKPOINT": str(selected.get("checkpoint_path") or ""),
+    }
+    if (
+        selected["candidate_id"] == GROOT_POLICY_ID
+        and selected.get("command_from_default")
+        and not env.get(POLICY_SERVER_URL_ENV)
+    ):
+        env[POLICY_SERVER_URL_ENV] = "tcp://127.0.0.1:5550"
+    command_result: dict[str, Any]
+    payload: dict[str, Any] = {}
+    try:
+        completed = subprocess.run(
+            shlex.split(command),
+            cwd=str(job_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+        command_result = {
+            "status": "completed" if completed.returncode == 0 else "blocked",
+            "returncode": completed.returncode,
+            "duration_seconds": round(time.monotonic() - started, 6),
+            "stdout_size_bytes": len(completed.stdout or ""),
+            "stderr_size_bytes": len(completed.stderr or ""),
+            "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
+            "blockers": []
+            if completed.returncode == 0
+            else ["policy_action_model_command_nonzero_exit"],
+        }
+        if output_path.is_file():
+            value = json.loads(output_path.read_text(encoding="utf-8"))
+            payload = dict(value) if isinstance(value, Mapping) else {}
+        elif completed.stdout.strip():
+            value = json.loads(completed.stdout)
+            payload = dict(value) if isinstance(value, Mapping) else {}
+        if _string(payload.get("status")) in {"blocked", "failed"}:
+            command_result["status"] = "blocked"
+            command_result["blockers"] = _policy_action_command_blockers(
+                command_result,
+                payload,
+            )
+    except Exception as exc:
+        command_result = {
+            "status": "blocked",
+            "duration_seconds": round(time.monotonic() - started, 6),
+            "blockers": [f"policy_action_model_command_failed:{type(exc).__name__}"],
+        }
+    action_payload = _policy_action_payload(payload)
+    action_present = isinstance(action_payload, Mapping)
+    if command_result.get("status") == "completed" and not action_present:
+        command_result["status"] = "blocked"
+        command_result["blockers"] = ["policy_action_model_command_missing_action_payload"]
+    openvla_execution_proof: dict[str, Any] = {}
+    if command_result.get("status") == "completed" and selected["candidate_id"] == "openvla_policy":
+        openvla_execution_proof, openvla_blockers = _openvla_policy_execution_proof(payload)
+        if openvla_blockers:
+            command_result["status"] = "blocked"
+            command_result["blockers"] = openvla_blockers
+    ran = command_result.get("status") == "completed"
+    selected_candidate_id = str(selected["candidate_id"])
+    unitree_execution_flags = _unitree_policy_action_execution_flags(
+        ran=ran,
+        selected_candidate_id=selected_candidate_id,
+        payload=payload,
+    )
+    provider_output_replay_used = bool(
+        payload.get("provider_output_replay_used")
+        or _mapping(payload.get("claim_boundary")).get("provider_output_replay_used")
+    )
+    fresh_policy_action_model_executed_this_invocation = bool(
+        ran
+        and not provider_output_replay_used
+        and (
+            payload.get("model_ran")
+            or payload.get("fresh_unitree_groot_n17_sonic_model_executed_this_invocation")
+            or unitree_execution_flags.get("unitree_policy_action_command_ran")
+            or (
+                selected["candidate_id"] == "openvla_policy"
+                and openvla_execution_proof.get("openvla_model_executed")
+            )
+        )
+    )
+    result = {
+        "schema_version": "policy_action_model_command_execution.v1",
+        "generated_at": generated_at,
+        "status": "completed" if ran else "blocked",
+        "policy_action_model_command_ran": ran,
+        "openvla_policy_action_command_ran": bool(
+            ran and selected["candidate_id"] == "openvla_policy"
+        ),
+        "openvla_model_executed": bool(
+            ran
+            and selected["candidate_id"] == "openvla_policy"
+            and openvla_execution_proof.get("openvla_model_executed")
+        ),
+        "openvla_predict_action_invoked": bool(
+            ran
+            and selected["candidate_id"] == "openvla_policy"
+            and openvla_execution_proof.get("openvla_predict_action_invoked")
+        ),
+        **unitree_execution_flags,
+        "provider_output_replay_used": provider_output_replay_used,
+        "fresh_policy_action_model_executed_this_invocation": (
+            fresh_policy_action_model_executed_this_invocation
+        ),
+        "selected_candidate_id": selected_candidate_id,
+        "selected_command_env": selected["command_env"],
+        "input_path": str(input_path),
+        "output_path": str(output_path),
+        "action_payload_present": action_present,
+        "action_payload_redacted": dict(action_payload)
+        if isinstance(action_payload, Mapping)
+        else None,
+        "openvla_execution_proof": openvla_execution_proof
+        if selected["candidate_id"] == "openvla_policy"
+        else None,
+        "command_result": command_result,
+        "blockers": [] if ran else command_result.get("blockers", []),
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+        "claim_boundary": {
+            "policy_action_command_is_model_contract_probe_not_wam_rollout": True,
+            "policy_action_command_does_not_prove_task_success": True,
+            "provider_output_replay_is_not_fresh_per_request_model_inference": (
+                provider_output_replay_used
+            ),
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+        },
+    }
+    write_json(job_dir / "policy_action_model_command_execution.json", result)
+    return result
+
+
+def _execute_policy_action_model_candidate(
+    *,
+    job_dir: Path,
+    candidate: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    input_path: Path,
+    output_path: Path,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    write_json(input_path, dict(payload))
+    if output_path.exists():
+        output_path.unlink()
+    command = os.getenv(str(candidate.get("command_env") or ""), "").strip()
+    selected_candidate_id = str(candidate.get("candidate_id") or "")
+    started = time.monotonic()
+    env = {
+        **os.environ,
+        "BLUEPRINT_POLICY_ACTION_INPUT": str(input_path),
+        "BLUEPRINT_POLICY_ACTION_OUTPUT": str(output_path),
+        "BLUEPRINT_POLICY_MODEL_CANDIDATE": selected_candidate_id,
+        "BLUEPRINT_POLICY_MODEL_CHECKPOINT": str(candidate.get("checkpoint_path") or ""),
+    }
+    command_result: dict[str, Any]
+    response_payload: dict[str, Any] = {}
+    try:
+        completed = subprocess.run(
+            shlex.split(command),
+            cwd=str(job_dir),
+            env=env,
+            input=json.dumps(dict(payload)),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+        command_result = {
+            "status": "completed" if completed.returncode == 0 else "blocked",
+            "returncode": completed.returncode,
+            "duration_seconds": round(time.monotonic() - started, 6),
+            "stdout_size_bytes": len(completed.stdout or ""),
+            "stderr_size_bytes": len(completed.stderr or ""),
+            "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
+            "blockers": []
+            if completed.returncode == 0
+            else ["policy_action_model_command_nonzero_exit"],
+        }
+        if output_path.is_file():
+            value = json.loads(output_path.read_text(encoding="utf-8"))
+            response_payload = dict(value) if isinstance(value, Mapping) else {}
+        elif completed.stdout.strip():
+            value = json.loads(completed.stdout)
+            response_payload = dict(value) if isinstance(value, Mapping) else {}
+        if _string(response_payload.get("status")) in {"blocked", "failed"}:
+            command_result["status"] = "blocked"
+            command_result["blockers"] = _policy_action_command_blockers(
+                command_result,
+                response_payload,
+            )
+    except Exception as exc:
+        command_result = {
+            "status": "blocked",
+            "duration_seconds": round(time.monotonic() - started, 6),
+            "blockers": [f"policy_action_model_command_failed:{type(exc).__name__}"],
+        }
+    action_payload = _policy_action_payload(response_payload)
+    action_present = isinstance(action_payload, Mapping)
+    ran = bool(command_result.get("status") == "completed" and action_present)
+    if command_result.get("status") == "completed" and not action_present:
+        command_result["status"] = "blocked"
+        command_result["blockers"] = ["policy_action_model_command_missing_action_payload"]
+    unitree_execution_flags = _unitree_policy_action_execution_flags(
+        ran=ran,
+        selected_candidate_id=selected_candidate_id,
+        payload=response_payload,
+    )
+    provider_output_replay_used = bool(
+        response_payload.get("provider_output_replay_used")
+        or _mapping(response_payload.get("claim_boundary")).get("provider_output_replay_used")
+    )
+    return {
+        "status": "completed" if ran else "blocked",
+        "selected_candidate_id": selected_candidate_id,
+        "input_path": str(input_path),
+        "output_path": str(output_path),
+        "policy_action_model_command_ran": ran,
+        "action_payload_present": action_present,
+        "action_payload_redacted": dict(action_payload) if action_payload else None,
+        "response_redacted": _redact(response_payload) if response_payload else None,
+        "command_result": command_result,
+        "blockers": [] if ran else list(command_result.get("blockers", [])),
+        **unitree_execution_flags,
+        "provider_output_replay_used": provider_output_replay_used,
+        "fresh_policy_action_model_executed_this_invocation": bool(
+            ran
+            and not provider_output_replay_used
+            and (
+                response_payload.get("model_ran")
+                or response_payload.get(
+                    "fresh_unitree_groot_n17_sonic_model_executed_this_invocation"
+                )
+                or unitree_execution_flags.get("unitree_policy_action_command_ran")
+            )
+        ),
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+
+
+def _initial_policy_action_loop_observation(
+    *,
+    generated_at: str,
+    job_dir: Path,
+) -> dict[str, Any]:
+    sample = _sample_policy_action_model_input(generated_at=generated_at, job_dir=job_dir)
+    observation = _mapping(sample.get("observation"))
+    observation.setdefault("schema_version", "blueprint_policy_observation.v1")
+    observation.setdefault("task_id", "contact_or_push_light_object")
+    observation.setdefault(
+        "task_prompt",
+        "move the Unitree G1 hand toward the light object and make controlled contact",
+    )
+    return {
+        "schema_version": "policy_action_model_command_input.v1",
+        "generated_at": generated_at,
+        "robot_profile_id": ROBOT_PROFILE_ID,
+        "observation_schema_id": OBSERVATION_SCHEMA_ID,
+        "action_schema_id": ACTION_SCHEMA_ID,
+        "observation": observation,
+        "allowed_action_types": list(sample.get("allowed_action_types") or []),
+        "claim_boundary": {
+            "policy_wam_loop_probe": True,
+            "simulator_only": True,
+            "physical_robot_sensor_proof": False,
+        },
+    }
+
+
+WAM_GENERATION_COMMAND_GATE_ENV = "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER"
+WAM_GENERATION_COMMAND_CANDIDATES = (
+    {
+        "backend_id": "oscar_wam",
+        "command_envs": ("BLUEPRINT_OSCAR_WAM_COMMAND", "BLUEPRINT_OSCAR_WAM_PROVIDER_COMMAND"),
+        "checkpoint_envs": ("BLUEPRINT_OSCAR_WAM_CHECKPOINT",),
+    },
+    {
+        "backend_id": "cosmos_wam",
+        "command_envs": (
+            "BLUEPRINT_COSMOS_WAM_COMMAND",
+            "BLUEPRINT_COSMOS_WAM_PROVIDER_COMMAND",
+            "BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND",
+        ),
+        "checkpoint_envs": ("BLUEPRINT_COSMOS_WAM_CHECKPOINT", "BLUEPRINT_COSMOS3_WAM_CHECKPOINT"),
+    },
+)
+
+
+def discover_wam_generation_command(*, generated_at: str) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    gate_enabled = _env_truthy(WAM_GENERATION_COMMAND_GATE_ENV)
+    for spec in WAM_GENERATION_COMMAND_CANDIDATES:
+        command_env = ""
+        command_value = ""
+        for env_name in spec["command_envs"]:
+            value = os.getenv(str(env_name), "").strip()
+            if value:
+                command_env = str(env_name)
+                command_value = value
+                break
+        checkpoint_env = ""
+        checkpoint_value = ""
+        checkpoint_configured = False
+        checkpoint_exists = False
+        checkpoint_reference = None
+        checkpoint_reference_kind = None
+        for env_name in spec["checkpoint_envs"]:
+            value = os.getenv(str(env_name), "").strip()
+            if value:
+                checkpoint_env = str(env_name)
+                checkpoint_value = value
+                (
+                    checkpoint_configured,
+                    checkpoint_reference,
+                    checkpoint_exists,
+                    checkpoint_reference_kind,
+                ) = _configured_checkpoint_reference(checkpoint_value)
+                break
+        command_available = _command_available(command_value)
+        blockers: list[str] = []
+        if not command_value:
+            blockers.append("blocked_missing_wam_generation_command")
+        elif not command_available:
+            blockers.append("blocked_wam_generation_command_unavailable")
+        if not checkpoint_value:
+            blockers.append("blocked_missing_wam_model_checkpoint")
+        elif not checkpoint_configured:
+            blockers.append("blocked_wam_model_checkpoint_missing")
+        if not gate_enabled:
+            blockers.append(f"missing_env_{WAM_GENERATION_COMMAND_GATE_ENV}")
+        ready = bool(command_value and command_available and gate_enabled)
+        candidates.append(
+            {
+                "backend_id": spec["backend_id"],
+                "command_env": command_env or list(spec["command_envs"])[0],
+                "command_configured": bool(command_value),
+                "command_available": command_available,
+                "command_value_redacted": "<configured>" if command_value else None,
+                "checkpoint_env": checkpoint_env or list(spec["checkpoint_envs"])[0],
+                "checkpoint_configured": checkpoint_configured,
+                "checkpoint_exists": checkpoint_exists,
+                "checkpoint_reference": checkpoint_reference,
+                "checkpoint_reference_kind": checkpoint_reference_kind,
+                "ready_for_live_wam_generation": ready,
+                "blockers": blockers,
+            }
+        )
+    ready_candidates = [row for row in candidates if row["ready_for_live_wam_generation"]]
+    selected = ready_candidates[0] if ready_candidates else None
+    selected_candidate = selected or next(
+        (row for row in candidates if row["command_configured"] or row["checkpoint_configured"]),
+        None,
+    )
+    blockers = []
+    if not ready_candidates:
+        blockers.append("blocked_missing_live_wam_generation_command")
+        for row in candidates:
+            blockers.extend(str(item) for item in row.get("blockers", []) if str(item))
+    return {
+        "schema_version": "wam_generation_command_discovery.v1",
+        "generated_at": generated_at,
+        "status": "ready" if ready_candidates else "blocked",
+        "selection_policy": "prefer_configured_live_oscar_or_cosmos_wam_command",
+        "gate_env": WAM_GENERATION_COMMAND_GATE_ENV,
+        "gate_enabled": gate_enabled,
+        "selected_backend_id": selected_candidate.get("backend_id") if selected_candidate else None,
+        "selected_command_env": selected_candidate.get("command_env") if selected_candidate else None,
+        "selected_backend_ready_for_live_wam_generation": bool(
+            selected and selected.get("ready_for_live_wam_generation")
+        ),
+        "ready_candidate_count": len(ready_candidates),
+        "candidates": candidates,
+        "ready_for_live_wam_generation": bool(ready_candidates),
+        "blockers": sorted(set(blockers)),
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+        "claim_boundary": {
+            "wam_generation_command_is_world_model_or_evaluator_not_robot_policy": True,
+            "provider_credentials_not_written_to_artifacts": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+        },
+    }
+
+
+def _candidate_path_from_payload(
+    payload: Mapping[str, Any],
+    *,
+    output_path: Path,
+    keys: Sequence[str],
+) -> Path | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                path = output_path.parent / path
+            return path
+    return None
+
+
+def _extract_generated_frame_from_video(video_path: Path, target_frame: Path) -> tuple[bool, str | None]:
+    try:
+        import cv2  # type: ignore[import-untyped]
+    except Exception as exc:  # pragma: no cover - environment dependent
+        return False, f"opencv_import_failed:{type(exc).__name__}"
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return False, "generated_video_unreadable_for_next_observation"
+    ok, frame = capture.read()
+    capture.release()
+    if not ok:
+        return False, "generated_video_first_frame_unreadable_for_next_observation"
+    ensure_dir(target_frame.parent)
+    written = cv2.imwrite(str(target_frame), frame)
+    return bool(written), None if written else "generated_video_first_frame_write_failed"
+
+
+def _materialize_wam_generated_frame(
+    *,
+    payload: Mapping[str, Any],
+    output_path: Path,
+    target_frame: Path,
+) -> tuple[Path | None, dict[str, Any]]:
+    visual = _mapping(payload.get("visual_observation"))
+    direct_frame = _candidate_path_from_payload(
+        {
+            **dict(payload),
+            "visual_observation_camera_frame_path": visual.get("camera_frame_path"),
+        },
+        output_path=output_path,
+        keys=(
+            "generated_next_observation_frame_path",
+            "camera_frame_path",
+            "frame_path",
+            "image_path",
+            "visual_observation_camera_frame_path",
+        ),
+    )
+    if direct_frame and direct_frame.is_file():
+        ensure_dir(target_frame.parent)
+        if direct_frame.resolve() != target_frame.resolve():
+            shutil.copy2(direct_frame, target_frame)
+        return target_frame, {
+            "source_kind": "image_frame",
+            "source_path": str(direct_frame),
+            "materialized_frame_path": str(target_frame),
+        }
+
+    for item in payload.get("generated_frames") or []:
+        if isinstance(item, str):
+            frame = Path(item).expanduser()
+        elif isinstance(item, Mapping):
+            frame = _candidate_path_from_payload(
+                item,
+                output_path=output_path,
+                keys=("path", "frame_path", "image_path", "camera_frame_path"),
+            ) or Path()
+        else:
+            continue
+        if frame.is_file():
+            ensure_dir(target_frame.parent)
+            shutil.copy2(frame, target_frame)
+            return target_frame, {
+                "source_kind": "generated_frame_list",
+                "source_path": str(frame),
+                "materialized_frame_path": str(target_frame),
+            }
+
+    rollout = next(
+        (dict(item) for item in payload.get("rollouts") or [] if isinstance(item, Mapping)),
+        {},
+    )
+    video_path = _candidate_path_from_payload(
+        {**dict(payload), **rollout},
+        output_path=output_path,
+        keys=("generated_video_path", "video_path", "output_video_path"),
+    )
+    if video_path and video_path.is_file():
+        ok, blocker = _extract_generated_frame_from_video(video_path, target_frame)
+        return (
+            target_frame if ok else None,
+            {
+                "source_kind": "generated_video_first_frame",
+                "source_path": str(video_path),
+                "materialized_frame_path": str(target_frame) if ok else None,
+                "blocker": blocker,
+            },
+        )
+    return None, {
+        "source_kind": "missing_generated_frame_or_video",
+        "blocker": "wam_command_output_missing_generated_next_observation_frame_or_video",
+    }
+
+
+def _execute_live_wam_generation_step(
+    *,
+    loop_dir: Path,
+    generated_at: str,
+    discovery: Mapping[str, Any],
+    step_index: int,
+    source_frame: Path,
+    target_frame: Path,
+    current_action: Mapping[str, Any],
+    current_observation: Mapping[str, Any],
+    timeout_seconds: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, Any]]:
+    selected_backend_id = _string(discovery.get("selected_backend_id"))
+    selected_command_env = _string(discovery.get("selected_command_env"))
+    command = os.getenv(selected_command_env, "").strip()
+    input_dir = loop_dir / "wam_generation_inputs"
+    output_dir = loop_dir / "wam_generation_outputs"
+    input_path = input_dir / f"wam_generation_step_{step_index:04d}_input.json"
+    output_path = output_dir / f"wam_generation_step_{step_index:04d}_output.json"
+    ensure_dir(output_path.parent)
+    input_payload = {
+        "schema_version": "wam_generation_step_input.v1",
+        "generated_at": generated_at,
+        "step_index": step_index,
+        "wam_evaluator_backend": selected_backend_id,
+        "source_policy_observation_frame_path": str(source_frame),
+        "source_policy_action": dict(current_action),
+        "current_policy_observation": dict(current_observation),
+        "requested_output": {
+            "next_observation_frame_path": str(target_frame),
+            "action_conditioned_generation_required": True,
+        },
+        "claim_boundary": {
+            "wam_generation_is_not_robot_policy": True,
+            "generated_next_observation_is_not_raw_capture": True,
+            "physical_robot_sensor_proof": False,
+        },
+    }
+    write_json(input_path, input_payload)
+    if output_path.exists():
+        output_path.unlink()
+    started = time.monotonic()
+    env = {
+        **os.environ,
+        "BLUEPRINT_WAM_ROLLOUT_INPUT": str(input_path),
+        "BLUEPRINT_WAM_ROLLOUT_OUTPUT": str(output_path),
+        "BLUEPRINT_WAM_PROVIDER_INPUT": str(input_path),
+        "BLUEPRINT_WAM_PROVIDER_OUTPUT": str(output_path),
+        "BLUEPRINT_WAM_PROVIDER_SUBSTRATE": selected_backend_id,
+        "BLUEPRINT_WAM_GENERATION_STEP_INDEX": str(step_index),
+    }
+    execution = {
+        "schema_version": "wam_generation_command_step_execution.v1",
+        "generated_at": generated_at,
+        "step_index": step_index,
+        "wam_evaluator_backend": selected_backend_id,
+        "selected_command_env": selected_command_env,
+        "input_path": str(input_path),
+        "output_path": str(output_path),
+        "command_ran": False,
+        "status": "blocked",
+        "blockers": [],
+    }
+    payload: dict[str, Any] = {}
+    try:
+        completed = subprocess.run(
+            shlex.split(command),
+            cwd=str(loop_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+        execution.update(
+            {
+                "command_ran": True,
+                "returncode": completed.returncode,
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "stdout_size_bytes": len(completed.stdout or ""),
+                "stderr_size_bytes": len(completed.stderr or ""),
+                "stdout_omitted_to_avoid_secret_leakage": bool(completed.stdout),
+                "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
+                "status": "completed" if completed.returncode == 0 else "blocked",
+                "blockers": []
+                if completed.returncode == 0
+                else ["wam_generation_command_nonzero_exit"],
+            }
+        )
+        if output_path.is_file():
+            value = json.loads(output_path.read_text(encoding="utf-8"))
+            payload = dict(value) if isinstance(value, Mapping) else {}
+        elif completed.stdout.strip():
+            value = json.loads(completed.stdout)
+            payload = dict(value) if isinstance(value, Mapping) else {}
+    except Exception as exc:
+        execution.update(
+            {
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "blockers": [f"wam_generation_command_failed:{type(exc).__name__}"],
+            }
+        )
+
+    response_blockers = payload.get("blockers")
+    if isinstance(response_blockers, Sequence) and not isinstance(
+        response_blockers, (str, bytes, bytearray)
+    ):
+        execution["blockers"] = sorted(
+            set(list(execution.get("blockers", [])) + [str(item) for item in response_blockers])
+        )
+    elif response_blockers:
+        execution["blockers"] = sorted(
+            set(list(execution.get("blockers", [])) + [str(response_blockers)])
+        )
+    if _string(payload.get("status")) in {"blocked", "failed"}:
+        execution["status"] = "blocked"
+        if not execution.get("blockers"):
+            execution["blockers"] = ["wam_generation_command_output_blocked"]
+
+    materialized_frame, materialization = _materialize_wam_generated_frame(
+        payload=payload,
+        output_path=output_path,
+        target_frame=target_frame,
+    )
+    if execution.get("status") == "completed" and materialized_frame is None:
+        execution["status"] = "blocked"
+        execution["blockers"] = sorted(
+            set(
+                list(execution.get("blockers", []))
+                + [str(materialization.get("blocker") or "wam_generated_frame_missing")]
+            )
+        )
+    output_summary = {
+        "schema_version": "wam_generation_command_step_output.v1",
+        "generated_at": generated_at,
+        "step_index": step_index,
+        "status": execution["status"],
+        "wam_evaluator_backend": selected_backend_id,
+        "output_path": str(output_path),
+        "payload_redacted": _redact(payload) if payload else {},
+        "materialization": materialization,
+        "wam_model_checkpoint_used": any(
+            bool(row.get("checkpoint_configured"))
+            for row in discovery.get("candidates", [])
+            if row.get("backend_id") == selected_backend_id
+        ),
+        "action_conditioned_generation_ran": bool(execution["status"] == "completed"),
+        "blockers": execution.get("blockers", []),
+    }
+    if execution["status"] != "completed" or materialized_frame is None:
+        return None, execution, output_summary
+    generated_observation = {
+        "schema_version": "wam_generated_next_observation.v1",
+        "generated_at": generated_at,
+        "generated_observation_index": step_index,
+        "observation_source": "live_wam_generation_command_next_observation",
+        "wam_evaluator_backend": selected_backend_id,
+        "wam_model_checkpoint_used": output_summary["wam_model_checkpoint_used"],
+        "action_conditioned_generation_ran": True,
+        "generated_next_observation_frame_path": str(materialized_frame),
+        "source_policy_action": dict(current_action),
+        "visual_observation": {
+            "available": True,
+            "camera_frame_path": str(materialized_frame),
+            "camera_id": "wam_generated_next_observation",
+            "wam_generated_observation": True,
+            "simulated_camera_view": True,
+            "physical_robot_sensor_proof": False,
+        },
+        "state": {
+            "generated_step_index": step_index,
+            "previous_action_type": current_action.get("action_type"),
+        },
+        "claim_boundary": {
+            "generated_observation_is_evaluator_output_not_raw_capture": True,
+            "generated_observation_from_live_wam_command": True,
+            "frame_copy_placeholder_until_live_wam_model_configured": False,
+            "physical_robot_sensor_proof": False,
+        },
+    }
+    return generated_observation, execution, output_summary
+
+
+def _write_wam_generation_command_artifacts(
+    *,
+    loop_dir: Path,
+    generated_at: str,
+    discovery: Mapping[str, Any],
+    execution_steps: Sequence[Mapping[str, Any]],
+    output_steps: Sequence[Mapping[str, Any]],
+    structural_generation_count: int,
+    blockers: Sequence[str],
+) -> None:
+    live_success_count = sum(
+        1 for row in output_steps if row.get("action_conditioned_generation_ran")
+    )
+    command_ran_count = sum(1 for row in execution_steps if row.get("command_ran"))
+    write_json(
+        loop_dir / "wam_generation_command_execution.json",
+        {
+            "schema_version": "wam_generation_command_execution.v1",
+            "generated_at": generated_at,
+            "status": "completed" if live_success_count else "blocked",
+            "selected_backend_id": discovery.get("selected_backend_id"),
+            "selected_command_env": discovery.get("selected_command_env"),
+            "command_step_count": len(execution_steps),
+            "command_ran_count": command_ran_count,
+            "live_wam_generation_success_count": live_success_count,
+            "structural_fallback_generation_count": structural_generation_count,
+            "steps": [dict(row) for row in execution_steps],
+            "blockers": sorted(set(str(item) for item in blockers if str(item))),
+            "raw_credentials_written_to_artifacts": False,
+            "secret_hashes_written_to_artifacts": False,
+            "claim_boundary": {
+                "wam_generation_command_is_not_robot_policy": True,
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+                "safety_validation_proven": False,
+            },
+        },
+    )
+    write_json(
+        loop_dir / "wam_generation_command_output.json",
+        {
+            "schema_version": "wam_generation_command_output.v1",
+            "generated_at": generated_at,
+            "status": "completed" if live_success_count else "blocked",
+            "wam_evaluator_backend": discovery.get("selected_backend_id"),
+            "wam_model_checkpoint_used": any(
+                bool(row.get("wam_model_checkpoint_used")) for row in output_steps
+            ),
+            "action_conditioned_generation_ran": bool(live_success_count),
+            "live_generated_next_observation_count": live_success_count,
+            "structural_fallback_generation_count": structural_generation_count,
+            "outputs": [dict(row) for row in output_steps],
+            "blockers": sorted(set(str(item) for item in blockers if str(item))),
+            "claim_boundary": {
+                "generated_outputs_are_not_raw_capture_evidence": True,
+                "wam_generation_output_is_not_robot_policy": True,
+                "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": (
+                    structural_generation_count > 0
+                ),
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+                "safety_validation_proven": False,
+            },
+        },
+    )
+
+
+def _policy_action_trace_summary(action: Mapping[str, Any] | None) -> dict[str, Any]:
+    payload = _mapping(action)
+    chunk = None
+    for key in (
+        "action_chunk",
+        "action",
+        "joint_targets",
+        "actions",
+        "action_vector",
+        "joint_positions",
+    ):
+        chunk = payload.get(key)
+        if chunk is not None:
+            break
+    if isinstance(chunk, Mapping) and chunk.get("action_chunk") is not None:
+        chunk = chunk.get("action_chunk")
+    if isinstance(chunk, Mapping):
+        chunk_length = len(chunk)
+        chunk_sample = dict(list(chunk.items())[:6])
+    elif isinstance(chunk, (list, tuple)):
+        chunk_length = len(chunk)
+        chunk_sample = list(chunk[:6])
+    else:
+        chunk_length = None
+        chunk_sample = None
+    return {
+        "action_type": payload.get("action_type"),
+        "action_keys": sorted(str(key) for key in payload.keys()),
+        "action_chunk_length": chunk_length,
+        "action_chunk_sample": chunk_sample,
+        "arm_targets_present": "arm_targets" in payload,
+        "hand_targets_present": "hand_targets" in payload,
+        "gripper_targets_present": "gripper_targets" in payload,
+        "joint_targets_present": "joint_targets" in payload,
+    }
+
+
+def _trace_html_image_src(frame_path: Any, *, relative_to: Path) -> str | None:
+    if not isinstance(frame_path, str) or not frame_path:
+        return None
+    try:
+        return os.path.relpath(Path(frame_path), relative_to)
+    except ValueError:
+        return frame_path
+
+
+def _write_robot_policy_wam_side_by_side_trace_html(
+    *,
+    html_path: Path,
+    rows: Sequence[Mapping[str, Any]],
+    selected_candidate_id: str,
+) -> None:
+    html_dir = html_path.parent
+    cards: list[str] = []
+    for row in rows:
+        policy_src = _trace_html_image_src(row.get("policy_pov_frame_path"), relative_to=html_dir)
+        wam_src = _trace_html_image_src(
+            row.get("wam_generated_next_observation_frame_path"), relative_to=html_dir
+        )
+        action_summary = html.escape(
+            json.dumps(row.get("policy_action_summary") or {}, indent=2, sort_keys=True)
+        )
+        next_action_summary = html.escape(
+            json.dumps(row.get("next_policy_action_summary") or {}, indent=2, sort_keys=True)
+        )
+        policy_img = (
+            f'<img src="{html.escape(policy_src)}" alt="Policy POV frame">'
+            if policy_src
+            else '<div class="missing">missing policy POV frame</div>'
+        )
+        wam_img = (
+            f'<img src="{html.escape(wam_src)}" alt="WAM generated next observation">'
+            if wam_src
+            else '<div class="missing">missing WAM generated next observation</div>'
+        )
+        cards.append(
+            "\n".join(
+                [
+                    '<section class="transition">',
+                    f'<h2>Transition {html.escape(str(row.get("transition_index")))}</h2>',
+                    '<div class="grid">',
+                    '<div><h3>Policy POV Input</h3>',
+                    policy_img,
+                    f'<p>source: {html.escape(str(row.get("policy_observation_source")))}</p></div>',
+                    '<div><h3>GR00T/SONIC Action Summary</h3>',
+                    f"<pre>{action_summary}</pre></div>",
+                    '<div><h3>WAM Generated Next Observation</h3>',
+                    wam_img,
+                    (
+                        "<p>backend: "
+                        f'{html.escape(str(row.get("wam_evaluator_backend")))}</p></div>'
+                    ),
+                    '<div><h3>Next Policy Call</h3>',
+                    (
+                        f'<p>status: {html.escape(str(row.get("next_policy_call_status")))}</p>'
+                        f'<p>provider replay: '
+                        f'{html.escape(str(row.get("next_policy_call_provider_output_replay_used")))}</p>'
+                    ),
+                    f"<pre>{next_action_summary}</pre></div>",
+                    "</div>",
+                    "</section>",
+                ]
+            )
+        )
+    page = "\n".join(
+        [
+            "<!doctype html>",
+            '<html lang="en">',
+            "<head>",
+            '<meta charset="utf-8">',
+            "<title>Robot Policy WAM Side By Side Trace</title>",
+            "<style>",
+            "body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:24px;background:#f6f7f9;color:#16181d}",
+            "h1{font-size:24px;margin:0 0 8px} h2{font-size:18px;margin:0 0 12px} h3{font-size:13px;margin:0 0 8px;color:#3b4250}",
+            ".meta{margin:0 0 20px;color:#4b5563}.transition{background:white;border:1px solid #d9dee7;border-radius:8px;margin:0 0 18px;padding:16px}",
+            ".grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}img{width:100%;height:auto;border:1px solid #d9dee7;border-radius:6px;background:#111}",
+            "pre{white-space:pre-wrap;word-break:break-word;background:#111827;color:#f9fafb;border-radius:6px;padding:12px;font-size:12px;line-height:1.4;margin:0}",
+            "p{font-size:12px;color:#4b5563;margin:8px 0 0}.missing{border:1px dashed #9ca3af;border-radius:6px;padding:32px;text-align:center;color:#6b7280}",
+            "@media (max-width:900px){.grid{grid-template-columns:1fr}}",
+            "</style>",
+            "</head>",
+            "<body>",
+            "<h1>Robot Policy WAM Side By Side Trace</h1>",
+            (
+                f'<p class="meta">candidate: {html.escape(selected_candidate_id)} | '
+                f"transitions: {len(rows)} | simulator structural debug artifact only</p>"
+            ),
+            *cards,
+            "</body>",
+            "</html>",
+        ]
+    )
+    html_path.write_text(page, encoding="utf-8")
+
+
+def _write_robot_policy_wam_side_by_side_trace(
+    *,
+    loop_dir: Path,
+    generated_at: str,
+    selected_candidate_id: str,
+    policy_calls: Sequence[Mapping[str, Any]],
+    generated_observations: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    trace_path = loop_dir / "robot_policy_wam_side_by_side_trace.jsonl"
+    manifest_path = loop_dir / "robot_policy_wam_side_by_side_trace_manifest.json"
+    html_path = loop_dir / "robot_policy_wam_side_by_side_trace.html"
+    rows: list[dict[str, Any]] = []
+    for index, generated_observation in enumerate(generated_observations, start=1):
+        policy_call = _mapping(policy_calls[index - 1]) if index - 1 < len(policy_calls) else {}
+        next_policy_call = _mapping(policy_calls[index]) if index < len(policy_calls) else {}
+        generated_visual = _mapping(generated_observation.get("visual_observation"))
+        rows.append(
+            {
+                "schema_version": "robot_policy_wam_side_by_side_trace_row.v1",
+                "generated_at": generated_at,
+                "transition_index": index,
+                "selected_candidate_id": selected_candidate_id,
+                "policy_observation_step_index": policy_call.get("step_index"),
+                "policy_observation_source": policy_call.get("observation_source"),
+                "policy_pov_frame_path": policy_call.get("policy_observation_frame_path"),
+                "policy_action_summary": _policy_action_trace_summary(
+                    _mapping(policy_call.get("action_payload_redacted"))
+                ),
+                "policy_action_output_path": policy_call.get("output_path"),
+                "wam_generated_next_observation_index": generated_observation.get(
+                    "generated_observation_index"
+                ),
+                "wam_generated_next_observation_source": generated_observation.get(
+                    "observation_source"
+                ),
+                "wam_generated_next_observation_frame_path": generated_visual.get(
+                    "camera_frame_path"
+                ),
+                "wam_evaluator_backend": generated_observation.get("wam_evaluator_backend"),
+                "next_policy_call_step_index": next_policy_call.get("step_index"),
+                "next_policy_call_input_path": next_policy_call.get("input_path"),
+                "next_policy_call_output_path": next_policy_call.get("output_path"),
+                "next_policy_call_status": next_policy_call.get("status"),
+                "next_policy_action_summary": _policy_action_trace_summary(
+                    _mapping(next_policy_call.get("action_payload_redacted"))
+                ),
+                "next_policy_call_unitree_policy_action_command_ran": bool(
+                    next_policy_call.get("unitree_policy_action_command_ran")
+                ),
+                "next_policy_call_provider_output_replay_used": bool(
+                    next_policy_call.get("provider_output_replay_used")
+                ),
+                "claim_boundary": {
+                    "side_by_side_trace_is_structural_debug_artifact": True,
+                    "wam_generated_observation_is_not_raw_capture": True,
+                    "physical_robot_sensor_proof": False,
+                    "physical_robot_readiness_proven": False,
+                },
+            }
+        )
+    _write_jsonl(trace_path, rows)
+    _write_robot_policy_wam_side_by_side_trace_html(
+        html_path=html_path,
+        rows=rows,
+        selected_candidate_id=selected_candidate_id,
+    )
+    manifest = {
+        "schema_version": "robot_policy_wam_side_by_side_trace_manifest.v1",
+        "generated_at": generated_at,
+        "status": "completed" if rows else "blocked",
+        "selected_candidate_id": selected_candidate_id,
+        "trace_path": str(trace_path),
+        "trace_html_path": str(html_path),
+        "transition_count": len(rows),
+        "policy_call_count": len(policy_calls),
+        "generated_next_observation_count": len(generated_observations),
+        "row_contract": (
+            "policy POV frame -> policy action chunk summary -> WAM/generated next "
+            "observation frame -> next policy call"
+        ),
+        "claim_boundary": {
+            "side_by_side_trace_is_not_task_success": True,
+            "simulator_only": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+        },
+    }
+    write_json(manifest_path, manifest)
+    return manifest
+
+
+def run_robot_policy_wam_closed_loop_attempt(
+    *,
+    job_dir: Path,
+    generated_at: str,
+    policy_action_model_command_execution: Mapping[str, Any],
+    loop_step_count: int = DEFAULT_WAM_LOOP_STEP_COUNT,
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    discovery = _mapping(policy_action_model_command_execution.get("discovery"))
+    if not discovery and (job_dir / "policy_action_model_command_discovery.json").is_file():
+        discovery = _mapping(
+            json.loads(
+                (job_dir / "policy_action_model_command_discovery.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        )
+    selected_candidate_id = _string(
+        policy_action_model_command_execution.get("selected_candidate_id")
+        or discovery.get("selected_candidate_id")
+    )
+    candidates = [
+        _mapping(row)
+        for row in discovery.get("candidates", []) or []
+        if isinstance(row, Mapping)
+    ]
+    selected = next(
+        (
+            row
+            for row in candidates
+            if row.get("candidate_id") == selected_candidate_id
+            and row.get("ready_for_policy_action_command")
+        ),
+        None,
+    )
+    loop_dir = job_dir / "robot_policy_wam_closed_loop"
+    generated_dir = loop_dir / "generated_next_observations"
+    policy_call_dir = loop_dir / "policy_calls"
+    ensure_dir(generated_dir)
+    ensure_dir(policy_call_dir)
+    trace_path = loop_dir / "robot_policy_wam_loop_trace.jsonl"
+    generated_observation_trace_path = loop_dir / "wam_generated_next_observations.jsonl"
+    wam_generation_discovery = discover_wam_generation_command(generated_at=generated_at)
+    write_json(loop_dir / "wam_generation_command_discovery.json", wam_generation_discovery)
+    blockers: list[str] = []
+    if selected is None:
+        blockers.extend(discovery.get("blockers", []) or ["blocked_missing_unitree_policy_action_model_command"])
+    if (
+        selected_candidate_id
+        and selected_candidate_id not in UNITREE_MANIPULATION_POLICY_ACTION_MODEL_CANDIDATE_IDS
+    ):
+        blockers.append("blocked_selected_policy_is_not_unitree_manipulation_action_command")
+    if not policy_action_model_command_execution.get("policy_action_model_command_ran"):
+        blockers.extend(
+            str(item)
+            for item in policy_action_model_command_execution.get("blockers", [])
+            or ["blocked_initial_unitree_policy_action_command_not_run"]
+        )
+    initial_action = _mapping(
+        policy_action_model_command_execution.get("action_payload_redacted")
+    )
+    if not initial_action:
+        blockers.append("blocked_initial_unitree_policy_action_missing")
+    if blockers:
+        _write_wam_generation_command_artifacts(
+            loop_dir=loop_dir,
+            generated_at=generated_at,
+            discovery=wam_generation_discovery,
+            execution_steps=[],
+            output_steps=[],
+            structural_generation_count=0,
+            blockers=list(wam_generation_discovery.get("blockers", []))
+            + ["blocked_policy_loop_did_not_reach_wam_generation"],
+        )
+        side_by_side_manifest = _write_robot_policy_wam_side_by_side_trace(
+            loop_dir=loop_dir,
+            generated_at=generated_at,
+            selected_candidate_id=selected_candidate_id or "",
+            policy_calls=[],
+            generated_observations=[],
+        )
+        manifest = {
+            "schema_version": "robot_policy_wam_closed_loop_attempt.v1",
+            "generated_at": generated_at,
+            "status": "blocked",
+            "selected_candidate_id": selected_candidate_id or None,
+            "wam_evaluator_in_control_loop": False,
+            "policy_observes_wam_generated_next_observation": False,
+            "unitree_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get("unitree_policy_action_command_ran")
+            ),
+            "unitree_lerobot_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_lerobot_policy_action_command_ran"
+                )
+            ),
+            "unitree_unifolm_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_unifolm_policy_action_command_ran"
+                )
+            ),
+            "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_groot_n17_sonic_policy_action_command_ran"
+                )
+            ),
+            "repeated_policy_calls_count": 1
+            if policy_action_model_command_execution.get("policy_action_model_command_ran")
+            else 0,
+            "generated_next_observation_count": 0,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "real_world_manipulation_success_proven": False,
+            "blockers": sorted(set(blockers)),
+            "trace_path": str(trace_path),
+            "generated_next_observation_trace": str(generated_observation_trace_path),
+            "wam_generation_command_discovery": str(
+                loop_dir / "wam_generation_command_discovery.json"
+            ),
+            "wam_generation_command_execution": str(
+                loop_dir / "wam_generation_command_execution.json"
+            ),
+            "wam_generation_command_output": str(loop_dir / "wam_generation_command_output.json"),
+            "live_wam_generation_command_ran": False,
+            "action_conditioned_generation_ran": False,
+            "live_wam_generation_success_count": 0,
+            "structural_wam_generation_count": 0,
+            "side_by_side_trace_manifest": str(
+                loop_dir / "robot_policy_wam_side_by_side_trace_manifest.json"
+            ),
+            "side_by_side_trace_path": str(
+                loop_dir / "robot_policy_wam_side_by_side_trace.jsonl"
+            ),
+            "side_by_side_trace_html_path": str(
+                loop_dir / "robot_policy_wam_side_by_side_trace.html"
+            ),
+            "side_by_side_transition_count": int(
+                side_by_side_manifest.get("transition_count") or 0
+            ),
+            "claim_boundary": {
+                "simulator_only": True,
+                "closed_loop_requires_repeated_unitree_manipulation_policy_calls": True,
+                "wam_generated_observations_are_model_or_evaluator_outputs_not_raw_capture": True,
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+            },
+        }
+        write_json(loop_dir / "robot_policy_wam_closed_loop_attempt.json", manifest)
+        return manifest
+
+    max_calls = max(2, int(loop_step_count))
+    policy_calls: list[dict[str, Any]] = [
+        {
+            "step_index": 0,
+            "observation_source": "initial_mujoco_policy_observation",
+            "status": "completed",
+            "selected_candidate_id": selected_candidate_id,
+            "action_payload_redacted": initial_action,
+            "policy_action_model_command_ran": bool(
+                policy_action_model_command_execution.get("policy_action_model_command_ran")
+            ),
+            "unitree_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get("unitree_policy_action_command_ran")
+            ),
+            "unitree_lerobot_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_lerobot_policy_action_command_ran"
+                )
+            ),
+            "unitree_unifolm_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_unifolm_policy_action_command_ran"
+                )
+            ),
+            "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_groot_n17_sonic_policy_action_command_ran"
+                )
+            ),
+            "unitree_manipulation_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_manipulation_policy_action_command_ran"
+                )
+            ),
+            "unitree_specific_policy_candidate_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_specific_policy_candidate_ran"
+                )
+            ),
+            "unitree_specific_manipulation_candidate_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_specific_manipulation_candidate_ran"
+                )
+            ),
+            "provider_output_replay_used": bool(
+                policy_action_model_command_execution.get("provider_output_replay_used")
+            ),
+            "fresh_policy_action_model_executed_this_invocation": bool(
+                policy_action_model_command_execution.get(
+                    "fresh_policy_action_model_executed_this_invocation"
+                )
+            ),
+        }
+    ]
+    generated_observations: list[dict[str, Any]] = []
+    current_action = initial_action
+    base_packet = _initial_policy_action_loop_observation(
+        generated_at=generated_at,
+        job_dir=job_dir,
+    )
+    current_observation = _mapping(base_packet.get("observation"))
+    source_frame_text = _mapping(current_observation.get("visual_observation")).get(
+        "camera_frame_path"
+    ) or current_observation.get("camera_frame_path")
+    source_frame = Path(str(source_frame_text)).expanduser() if source_frame_text else None
+    if source_frame is not None:
+        policy_calls[0]["policy_observation_frame_path"] = str(source_frame)
+    wam_execution_steps: list[dict[str, Any]] = []
+    wam_output_steps: list[dict[str, Any]] = []
+    structural_wam_generation_count = 0
+    live_wam_generation_success_count = 0
+    for step_index in range(1, max_calls):
+        if source_frame is None or not source_frame.is_file():
+            blockers.append("blocked_wam_loop_source_policy_frame_missing")
+            break
+        generated_frame = generated_dir / f"wam_generated_next_observation_step_{step_index:04d}.jpg"
+        if wam_generation_discovery.get("ready_for_live_wam_generation"):
+            generated_observation, execution_step, output_step = _execute_live_wam_generation_step(
+                loop_dir=loop_dir,
+                generated_at=generated_at,
+                discovery=wam_generation_discovery,
+                step_index=step_index,
+                source_frame=source_frame,
+                target_frame=generated_frame,
+                current_action=current_action,
+                current_observation=current_observation,
+                timeout_seconds=timeout_seconds,
+            )
+            wam_execution_steps.append(execution_step)
+            wam_output_steps.append(output_step)
+            if generated_observation is None:
+                blockers.extend(str(item) for item in execution_step.get("blockers", []))
+                if not execution_step.get("blockers"):
+                    blockers.append("blocked_live_wam_generation_command_failed")
+                break
+            live_wam_generation_success_count += 1
+        else:
+            shutil.copy2(source_frame, generated_frame)
+            structural_wam_generation_count += 1
+            generated_observation = {
+                "schema_version": "wam_generated_next_observation.v1",
+                "generated_at": generated_at,
+                "generated_observation_index": step_index,
+                "observation_source": "local_structural_wam_evaluator_next_observation",
+                "wam_evaluator_backend": "blueprint_local_structural_next_observation",
+                "wam_model_checkpoint_used": False,
+                "action_conditioned_generation_ran": False,
+                "generated_next_observation_frame_path": str(generated_frame),
+                "source_policy_action": current_action,
+                "visual_observation": {
+                    "available": True,
+                    "camera_frame_path": str(generated_frame),
+                    "camera_id": "wam_generated_next_observation",
+                    "wam_generated_observation": True,
+                    "simulated_camera_view": True,
+                    "physical_robot_sensor_proof": False,
+                },
+                "state": {
+                    "generated_step_index": step_index,
+                    "previous_action_type": current_action.get("action_type"),
+                },
+                "claim_boundary": {
+                    "generated_observation_is_evaluator_output_not_raw_capture": True,
+                    "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": True,
+                    "frame_copy_placeholder_until_live_wam_model_configured": True,
+                    "physical_robot_sensor_proof": False,
+                },
+            }
+        generated_observations.append(generated_observation)
+        packet = {
+            **base_packet,
+            "generated_at": generated_at,
+            "observation": {
+                **current_observation,
+                **generated_observation,
+                "camera_frame_path": str(generated_frame),
+            },
+        }
+        result = _execute_policy_action_model_candidate(
+            job_dir=job_dir,
+            candidate=selected,
+            payload=packet,
+            input_path=policy_call_dir / f"policy_call_{step_index:04d}_input.json",
+            output_path=policy_call_dir / f"policy_call_{step_index:04d}_output.json",
+            timeout_seconds=timeout_seconds,
+        )
+        policy_calls.append(
+            {
+                "step_index": step_index,
+                "observation_source": "wam_generated_next_observation",
+                "policy_observation_frame_path": str(generated_frame),
+                "wam_generated_next_observation_index": step_index,
+                **result,
+            }
+        )
+        if result.get("status") != "completed":
+            blockers.extend(str(item) for item in result.get("blockers", []))
+            break
+        current_action = _mapping(result.get("action_payload_redacted"))
+        current_observation = _mapping(packet.get("observation"))
+        source_frame = generated_frame
+    wam_artifact_blockers = list(blockers)
+    if live_wam_generation_success_count == 0:
+        wam_artifact_blockers.extend(str(item) for item in wam_generation_discovery.get("blockers", []))
+        wam_artifact_blockers.append("blocked_live_wam_generation_command_not_run")
+    _write_wam_generation_command_artifacts(
+        loop_dir=loop_dir,
+        generated_at=generated_at,
+        discovery=wam_generation_discovery,
+        execution_steps=wam_execution_steps,
+        output_steps=wam_output_steps,
+        structural_generation_count=structural_wam_generation_count,
+        blockers=wam_artifact_blockers,
+    )
+    _write_jsonl(trace_path, policy_calls)
+    _write_jsonl(generated_observation_trace_path, generated_observations)
+    structural_action_responses = sum(
+        1 for row in policy_calls if row.get("status") == "completed"
+    )
+    replay_action_responses = sum(
+        1
+        for row in policy_calls
+        if row.get("status") == "completed" and row.get("provider_output_replay_used")
+    )
+    repeated_policy_calls = sum(
+        1
+        for row in policy_calls
+        if row.get("status") == "completed"
+        and row.get("unitree_policy_action_command_ran")
+        and not row.get("provider_output_replay_used")
+    )
+    generated_count = len(generated_observations)
+    if structural_action_responses >= 2 and generated_count >= 1 and repeated_policy_calls < 2:
+        blockers.append("blocked_repeated_fresh_unitree_policy_calls_not_proven")
+    if generated_count >= 1 and live_wam_generation_success_count == 0:
+        blockers.append("blocked_live_wam_generation_command_not_run")
+    completed = bool(
+        repeated_policy_calls >= 2
+        and live_wam_generation_success_count >= 1
+        and generated_count >= 1
+        and not blockers
+    )
+    side_by_side_manifest = _write_robot_policy_wam_side_by_side_trace(
+        loop_dir=loop_dir,
+        generated_at=generated_at,
+        selected_candidate_id=selected_candidate_id,
+        policy_calls=policy_calls,
+        generated_observations=generated_observations,
+    )
+    manifest = {
+        "schema_version": "robot_policy_wam_closed_loop_attempt.v1",
+        "generated_at": generated_at,
+        "status": "completed" if completed else "blocked",
+        "selected_candidate_id": selected_candidate_id,
+        "requested_loop_step_count": int(loop_step_count),
+        "wam_evaluator_in_control_loop": completed,
+        "policy_observes_wam_generated_next_observation": completed,
+        "unitree_policy_action_command_ran": any(
+            row.get("unitree_policy_action_command_ran") for row in policy_calls
+        ),
+        "unitree_lerobot_policy_action_command_ran": any(
+            row.get("unitree_lerobot_policy_action_command_ran") for row in policy_calls
+        ),
+        "unitree_unifolm_policy_action_command_ran": any(
+            row.get("unitree_unifolm_policy_action_command_ran") for row in policy_calls
+        ),
+        "unitree_groot_n17_sonic_policy_action_command_ran": any(
+            row.get("unitree_groot_n17_sonic_policy_action_command_ran")
+            for row in policy_calls
+        ),
+        "repeated_policy_calls_count": repeated_policy_calls,
+        "fresh_policy_action_call_count": repeated_policy_calls,
+        "structural_policy_action_response_count": structural_action_responses,
+        "provider_output_replay_action_response_count": replay_action_responses,
+        "provider_output_replay_used": replay_action_responses > 0,
+        "generated_next_observation_count": generated_count,
+        "live_wam_generation_command_ran": any(
+            row.get("command_ran") for row in wam_execution_steps
+        ),
+        "action_conditioned_generation_ran": bool(live_wam_generation_success_count),
+        "live_wam_generation_success_count": live_wam_generation_success_count,
+        "structural_wam_generation_count": structural_wam_generation_count,
+        "physical_robot_readiness_proven": False,
+        "deployment_readiness_proven": False,
+        "safety_validation_proven": False,
+        "real_world_manipulation_success_proven": False,
+        "policy_call_trace_path": str(trace_path),
+        "generated_next_observation_trace": str(generated_observation_trace_path),
+        "wam_generation_command_discovery": str(
+            loop_dir / "wam_generation_command_discovery.json"
+        ),
+        "wam_generation_command_execution": str(
+            loop_dir / "wam_generation_command_execution.json"
+        ),
+        "wam_generation_command_output": str(loop_dir / "wam_generation_command_output.json"),
+        "policy_call_output_dir": str(policy_call_dir),
+        "generated_next_observation_dir": str(generated_dir),
+        "side_by_side_trace_manifest": str(
+            loop_dir / "robot_policy_wam_side_by_side_trace_manifest.json"
+        ),
+        "side_by_side_trace_path": str(loop_dir / "robot_policy_wam_side_by_side_trace.jsonl"),
+        "side_by_side_trace_html_path": str(
+            loop_dir / "robot_policy_wam_side_by_side_trace.html"
+        ),
+        "side_by_side_transition_count": int(
+            side_by_side_manifest.get("transition_count") or 0
+        ),
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "simulator_only": True,
+            "wam_is_next_observation_generator_not_robot_policy": True,
+            "unitree_policy_is_robot_policy": True,
+            "generated_observations_are_not_raw_capture": True,
+            "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": (
+                structural_wam_generation_count > 0
+            ),
+            "frame_copy_placeholder_until_live_wam_model_configured": (
+                structural_wam_generation_count > 0
+            ),
+            "provider_output_replay_is_not_fresh_per_observation_policy_execution": (
+                replay_action_responses > 0
+            ),
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+        },
+    }
+    write_json(loop_dir / "robot_policy_wam_closed_loop_attempt.json", manifest)
+    return manifest
+
+
+def discover_unitree_manipulation_policy(*, generated_at: str) -> dict[str, Any]:
+    """Discover configured G1 hand/gripper manipulation policy candidates.
+
+    This is intentionally discovery-only. The MuJoCo endpoint lane can prove
+    lower-body contact traces, but a dexterous/VLA manipulation claim requires
+    a separate command/checkpoint that controls hands or grippers.
+    """
+
+    workspace_root = _repo_root().parent
+    candidate_rows: list[dict[str, Any]] = []
+    ready_candidates: list[dict[str, Any]] = []
+    for candidate in UNITREE_G1_MANIPULATION_POLICY_CANDIDATES:
+        command_env = str(candidate["command_env"])
+        checkpoint_env = str(candidate["checkpoint_env"])
+        root_env = str(candidate["root_env"])
+        command_value = os.getenv(command_env, "").strip()
+        checkpoint_value = os.getenv(checkpoint_env, "").strip()
+        root_value = os.getenv(root_env, "").strip()
+        (
+            checkpoint_ready,
+            checkpoint_reference,
+            checkpoint_exists,
+            checkpoint_reference_kind,
+        ) = _configured_checkpoint_reference(checkpoint_value)
+        root_path = Path(root_value).expanduser() if root_value else None
+        local_checkout_rows = []
+        for relative_path in candidate.get("expected_local_paths", ()):
+            path = workspace_root / str(relative_path)
+            local_checkout_rows.append(
+                {
+                    "path": str(path),
+                    "exists": path.exists(),
+                }
+            )
+        command_ready = _command_available(command_value)
+        root_ready = bool(root_path and root_path.exists())
+        extra_checkpoint_rows = []
+        for env_name in candidate.get("extra_required_checkpoint_envs", ()):
+            value = os.getenv(str(env_name), "").strip()
+            configured, path_text, exists, reference_kind = _configured_checkpoint_reference(value)
+            extra_checkpoint_rows.append(
+                {
+                    "checkpoint_env": str(env_name),
+                    "checkpoint_configured": configured,
+                    "checkpoint_exists": exists,
+                    "checkpoint_path": path_text,
+                    "checkpoint_reference_kind": reference_kind,
+                }
+            )
+        extra_root_rows = []
+        for env_name in candidate.get("extra_required_root_envs", ()):
+            value = os.getenv(str(env_name), "").strip()
+            path = Path(value).expanduser() if value else None
+            extra_root_rows.append(
+                {
+                    "root_env": str(env_name),
+                    "root_configured": bool(value),
+                    "root_exists": bool(path and path.exists()),
+                    "root_path": str(path) if path else None,
+                }
+            )
+        extra_checkpoints_ready = all(
+            row.get("checkpoint_configured") for row in extra_checkpoint_rows
+        )
+        extra_roots_ready = all(row.get("root_configured") and row.get("root_exists") for row in extra_root_rows)
+        candidate_ready = bool(
+            command_ready
+            and checkpoint_ready
+            and (root_ready or not root_value)
+            and extra_checkpoints_ready
+            and extra_roots_ready
+        )
+        row = {
+            "id": candidate["id"],
+            "name": candidate["name"],
+            "url": candidate["url"],
+            "runtime_role": candidate["runtime_role"],
+            "command_env": command_env,
+            "command_configured": bool(command_value),
+            "command_available": command_ready,
+            "command_value_redacted": "<configured>" if command_value else None,
+            "checkpoint_env": checkpoint_env,
+            "checkpoint_configured": bool(checkpoint_value),
+            "checkpoint_exists": checkpoint_exists,
+            "checkpoint_path": checkpoint_reference,
+            "checkpoint_reference_kind": checkpoint_reference_kind,
+            "extra_required_checkpoints": extra_checkpoint_rows,
+            "root_env": root_env,
+            "root_configured": bool(root_value),
+            "root_exists": root_ready,
+            "root_path": str(root_path) if root_path else None,
+            "extra_required_roots": extra_root_rows,
+            "local_checkout_candidates": local_checkout_rows,
+            "ready_for_hand_or_gripper_policy_execution": candidate_ready,
+            "claim_boundary": candidate["claim_boundary"],
+            "missing_requirements": [
+                requirement
+                for requirement, missing in (
+                    ("runnable_manipulation_policy_command", not command_ready),
+                    ("local_or_mounted_policy_checkpoint", not checkpoint_ready),
+                    ("configured_runtime_root", bool(root_value) and not root_ready),
+                    (
+                        "extra_required_checkpoint",
+                        any(not row.get("checkpoint_configured") for row in extra_checkpoint_rows),
+                    ),
+                    (
+                        "extra_required_runtime_root",
+                        any(
+                            not (row.get("root_configured") and row.get("root_exists"))
+                            for row in extra_root_rows
+                        ),
+                    ),
+                )
+                if missing
+            ],
+        }
+        candidate_rows.append(row)
+        if candidate_ready:
+            ready_candidates.append(row)
+    blockers = []
+    if not ready_candidates:
+        blockers.extend(
+            [
+                "blocked_dexterous_hand_policy_not_integrated",
+                "blocked_missing_unitree_or_vla_manipulation_command_or_checkpoint",
+            ]
+        )
+    return {
+        "schema_version": "unitree_g1_manipulation_policy_discovery.v1",
+        "generated_at": generated_at,
+        "status": "candidate_ready" if ready_candidates else "blocked_missing_hand_policy_runtime",
+        "pre_execution_discovery_only": True,
+        "selected_candidate_id": ready_candidates[0]["id"] if ready_candidates else None,
+        "candidate_count": len(candidate_rows),
+        "ready_candidate_count": len(ready_candidates),
+        "candidates": candidate_rows,
+        "unitree_lerobot_or_isaaclab_manipulation_policy_used": False,
+        "unitree_hand_manipulation_policy_used": False,
+        "hand_end_effector_control_available_in_current_mujoco_lane": False,
+        "current_mujoco_manipulation_policy_kind": "contact_trace_proxy_only",
+        "can_claim_vla_or_dexterous_manipulation": False,
+        "blockers": blockers,
+        "what_would_make_this_true": [
+            "Configure a runnable manipulation policy command via the candidate command env.",
+            "Configure a local or mounted checkpoint via the candidate checkpoint env.",
+            "Add a Blueprint hand/gripper action decoder and execute it in the task scene.",
+            "Record generated action traces and task success/failure evidence from that execution.",
+        ],
+        "claim_boundary": {
+            "lower_body_locomotion_policy_does_not_prove_hand_manipulation": True,
+            "contact_trace_proxy_is_not_dexterous_vla_manipulation": True,
+            "isaaclab_or_lerobot_candidate_discovery_is_not_execution_proof": True,
             "physical_robot_readiness_proven": False,
         },
     }
@@ -840,6 +3706,15 @@ def _unitree_command_rows_from_endpoint_actions(
                 "source": row.get("source"),
                 "action_type": action.get("action_type"),
                 **safe_command,
+                "velocity_frame": action.get("velocity_frame"),
+                "world_velocity_xy_mps": [
+                    round(float(action.get("vx_mps") or 0.0), 6),
+                    round(float(action.get("vy_mps") or 0.0), 6),
+                ],
+                "controller_velocity_xy_mps": [
+                    round(float(action.get("controller_vx_mps", action.get("vx_mps")) or 0.0), 6),
+                    round(float(action.get("controller_vy_mps", action.get("vy_mps")) or 0.0), 6),
+                ],
                 "target_waypoint": action.get("target_waypoint"),
             }
         )
@@ -848,6 +3723,16 @@ def _unitree_command_rows_from_endpoint_actions(
 
 def _bounded_float(value: float, low: float, high: float) -> float:
     return min(max(float(value), float(low)), float(high))
+
+
+def _world_xy_velocity_to_body_frame(
+    vx_mps: float, vy_mps: float, yaw_rad: float
+) -> tuple[float, float]:
+    cos_yaw = math.cos(float(yaw_rad))
+    sin_yaw = math.sin(float(yaw_rad))
+    body_vx = cos_yaw * float(vx_mps) + sin_yaw * float(vy_mps)
+    body_vy = -sin_yaw * float(vx_mps) + cos_yaw * float(vy_mps)
+    return body_vx, body_vy
 
 
 def _unitree_controller_safe_command_from_values(
@@ -885,8 +3770,7 @@ def _unitree_controller_safe_command_from_values(
         "controller_command_xyz": rounded_command,
         "command_xyz": rounded_command,
         "controller_command_clamped": any(
-            abs(float(before) - float(after)) > 1e-9
-            for before, after in zip(raw, command)
+            abs(float(before) - float(after)) > 1e-9 for before, after in zip(raw, command)
         ),
         "controller_command_limits": dict(limits),
     }
@@ -894,13 +3778,15 @@ def _unitree_controller_safe_command_from_values(
 
 def _unitree_controller_safe_command(action: Mapping[str, Any]) -> dict[str, Any]:
     return _unitree_controller_safe_command_from_values(
-        action.get("vx_mps"),
-        action.get("vy_mps"),
+        action.get("controller_vx_mps", action.get("vx_mps")),
+        action.get("controller_vy_mps", action.get("vy_mps")),
         action.get("yaw_rate_rad_s"),
     )
 
 
-def _representative_unitree_command(command_rows: Sequence[Mapping[str, Any]]) -> list[float] | None:
+def _representative_unitree_command(
+    command_rows: Sequence[Mapping[str, Any]],
+) -> list[float] | None:
     for row in command_rows:
         command = row.get("command_xyz")
         if (
@@ -918,7 +3804,11 @@ def _representative_unitree_command(command_rows: Sequence[Mapping[str, Any]]) -
             and not isinstance(command, (str, bytes))
             and len(command) == 3
         ):
-            return [round(float(command[0]), 6), round(float(command[1]), 6), round(float(command[2]), 6)]
+            return [
+                round(float(command[0]), 6),
+                round(float(command[1]), 6),
+                round(float(command[2]), 6),
+            ]
     return None
 
 
@@ -1099,7 +3989,9 @@ def build_unitree_controller_bridge_manifest(
         "official_controller_sidecar_status": official_controller_sidecar.get("status"),
         "endpoint_action_controller_replay_status": endpoint_replay.get("status"),
         "same_scene_controller_backend_status": same_scene.get("status"),
-        "official_unitree_controller_used": replay_proven or sidecar_proven or same_scene_integrated,
+        "official_unitree_controller_used": replay_proven
+        or sidecar_proven
+        or same_scene_integrated,
         "balanced_walking_controller_proven": bool(
             endpoint_replay.get("balanced_walking_controller_proven")
             or official_controller_sidecar.get("balanced_walking_controller_proven")
@@ -1146,7 +4038,9 @@ def build_policy_endpoint_server_manifest(
             "auth_token_file_configured": bool(
                 _mapping(selected_runtime).get("auth_token_file_configured")
             ),
-            "auth_token_file_exists": bool(_mapping(selected_runtime).get("auth_token_file_exists")),
+            "auth_token_file_exists": bool(
+                _mapping(selected_runtime).get("auth_token_file_exists")
+            ),
             "raw_token_values_persisted": False,
             "raw_token_hashes_persisted": False,
         },
@@ -1169,6 +4063,21 @@ def build_policy_command_adapter_manifest(
             if row.get("source") == "endpoint_policy" and row.get("policy_id")
         }
     )
+    reference_policy_observed = any(
+        policy_id in {"reference_fixture_policy", "blueprint_g1_endpoint_reference_adapter"}
+        or policy_id.startswith("reference_")
+        for policy_id in policy_ids
+    )
+    unitree_policy_observed = any(policy_id.startswith("unitree_") for policy_id in policy_ids)
+    unitree_provider_replay_observed = any(
+        policy_id.startswith("unitree_") and policy_id.endswith("_provider_replay")
+        for policy_id in policy_ids
+    )
+    openvla_policy_observed = any(policy_id.startswith("openvla") for policy_id in policy_ids)
+    wam_policy_observed = any(
+        policy_id.startswith("oscar_") or policy_id.startswith("cosmos_")
+        for policy_id in policy_ids
+    )
     return {
         "schema_version": "policy_command_adapter_manifest.v1",
         "generated_at": generated_at,
@@ -1176,6 +4085,9 @@ def build_policy_command_adapter_manifest(
         "adapter_families": [
             "command_policy",
             "unitree_g1_policy",
+            GROOT_POLICY_ID,
+            "unitree_lerobot_policy",
+            "unitree_unifolm_policy",
             "openvla_policy",
             "oscar_wam",
             "cosmos_wam",
@@ -1184,7 +4096,38 @@ def build_policy_command_adapter_manifest(
         "default_reference_adapter_available_on_path": bool(
             shutil.which("blueprint-g1-endpoint-reference-adapter")
         ),
+        "openvla_policy_adapter_command": "blueprint-openvla-policy-command-adapter",
+        "openvla_policy_adapter_available_on_path": bool(
+            shutil.which("blueprint-openvla-policy-command-adapter")
+        ),
+        "unitree_groot_n17_sonic_policy_adapter_command": (
+            "blueprint-unitree-groot-n17-sonic-policy-command-adapter"
+        ),
+        "unitree_groot_n17_sonic_policy_adapter_available_on_path": bool(
+            shutil.which("blueprint-unitree-groot-n17-sonic-policy-command-adapter")
+        ),
         "observed_endpoint_policy_ids": policy_ids,
+        "observed_adapter_families": {
+            "reference_policy_observed": reference_policy_observed,
+            "unitree_policy_observed": unitree_policy_observed,
+            "unitree_provider_output_replay_observed": unitree_provider_replay_observed,
+            "openvla_policy_observed": openvla_policy_observed,
+            "wam_policy_observed": wam_policy_observed,
+        },
+        "observed_policy_truth_boundary": {
+            "unitree_provider_output_replay_is_not_fresh_per_observation_inference": (
+                unitree_provider_replay_observed
+            ),
+            "openvla_observed_policy_is_not_default_unitree_g1_policy": (
+                openvla_policy_observed
+            ),
+            "wam_observed_policy_is_evaluator_support_not_g1_robot_policy": (
+                wam_policy_observed
+            ),
+            "reference_policy_observed_is_endpoint_plumbing_only": (
+                reference_policy_observed
+            ),
+        },
         "supported_action_types": [
             "waypoint",
             "base_velocity",
@@ -1199,6 +4142,7 @@ def build_policy_command_adapter_manifest(
             "reference_adapter_is_heuristic_endpoint_plumbing": True,
             "reference_adapter_is_not_real_wam_vla": True,
             "model_backends_replaceable": True,
+            "observed_policy_ids_drive_adapter_family_fields": True,
         },
     }
 
@@ -1212,7 +4156,9 @@ def build_policy_endpoint_runtime_manifest(
     endpoint_invocation_count: int,
     endpoint_valid_action_count: int,
     rejected_policy_action_count: int,
+    unitree_endpoint_policy_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    unitree_summary = _mapping(unitree_endpoint_policy_summary)
     return {
         "schema_version": "policy_endpoint_runtime_manifest.v1",
         "generated_at": generated_at,
@@ -1225,10 +4171,46 @@ def build_policy_endpoint_runtime_manifest(
         "endpoint_invocation_count": int(endpoint_invocation_count),
         "endpoint_valid_action_count": int(endpoint_valid_action_count),
         "rejected_policy_action_count": int(rejected_policy_action_count),
+        "g1_robot_policy_selection_contract": unitree_summary.get(
+            "g1_robot_policy_selection_contract",
+            "unitree_native_policy_required_for_g1_claims",
+        ),
+        "g1_robot_policy_selected_family": unitree_summary.get(
+            "g1_robot_policy_selected_family"
+        ),
+        "unitree_hand_manipulation_policy_scope": unitree_summary.get(
+            "unitree_hand_manipulation_policy_scope"
+        ),
+        "openvla_selected_as_g1_robot_policy": bool(
+            unitree_summary.get("openvla_selected_as_g1_robot_policy", False)
+        ),
+        "wam_rollout_selected_as_g1_robot_policy": bool(
+            unitree_summary.get("wam_rollout_selected_as_g1_robot_policy", False)
+        ),
+        "unitree_endpoint_hand_policy_output_observed": bool(
+            unitree_summary.get("unitree_endpoint_hand_policy_output_observed", False)
+        ),
+        "unitree_endpoint_hand_policy_used": bool(
+            unitree_summary.get("unitree_endpoint_hand_policy_used", False)
+        ),
+        "unitree_endpoint_provider_output_replay_used": bool(
+            unitree_summary.get("unitree_endpoint_provider_output_replay_used", False)
+        ),
+        "unitree_endpoint_fresh_policy_action_command_ran": bool(
+            unitree_summary.get("unitree_endpoint_fresh_policy_action_command_ran", False)
+        ),
+        "unitree_endpoint_action_chunk_used": bool(
+            unitree_summary.get("unitree_endpoint_action_chunk_used", False)
+        ),
         "raw_tokens_written_to_artifacts": False,
         "raw_token_hashes_written_to_artifacts": False,
         "claim_boundary": {
             "endpoint_invocation_is_not_model_quality_proof": True,
+            "unitree_endpoint_provider_replay_is_not_fresh_hand_policy_inference": bool(
+                unitree_summary.get("unitree_endpoint_provider_output_replay_used", False)
+            ),
+            "openvla_is_not_selected_as_g1_robot_policy": True,
+            "wam_rollout_is_not_selected_as_g1_robot_policy": True,
             "mujoco_evidence_is_simulator_only": True,
             "physical_robot_readiness_proven": False,
             "deployment_readiness_proven": False,
@@ -1292,6 +4274,7 @@ def _action_schema() -> dict[str, Any]:
                     "linear_velocity_mps": {"type": "number"},
                     "lateral_velocity_mps": {"type": "number"},
                     "yaw_rate_rad_s": {"type": "number"},
+                    "velocity_frame": {"enum": ["robot_base", "world_xy"]},
                 },
             },
             {
@@ -1306,6 +4289,8 @@ def _action_schema() -> dict[str, Any]:
                 "properties": {
                     "action_type": {"const": "waypoint"},
                     "waypoint": {"type": "array", "minItems": 2},
+                    "max_speed_mps": {"type": "number"},
+                    "approach_speed_mps": {"type": "number"},
                 },
             },
             {"required": ["action_type"], "properties": {"action_type": {"const": "stop"}}},
@@ -1398,7 +4383,7 @@ def _write_scene_xml(*, g1_xml: Path, output_xml: Path) -> dict[str, Any]:
     <geom name="blueprint_route_obstruction" type="box" pos="0.28 0.52 0.34" size="0.10 0.28 0.34" material="blueprint_obstacle_mat" contype="1" conaffinity="1"/>
     <geom name="blueprint_task_wall_or_table" type="box" pos="0.70 -0.22 0.38" size="0.12 0.20 0.38" material="blueprint_table_mat" contype="1" conaffinity="1"/>
     <geom name="blueprint_occluder" type="box" pos="0.10 0.98 0.45" size="0.16 0.22 0.45" rgba="0.12 0.12 0.12 1" contype="1" conaffinity="1"/>
-    <body name="blueprint_light_object" pos="0.36 -0.65 0.27">
+    <body name="blueprint_light_object" pos="0.36 -0.65 0.24">
       <freejoint name="blueprint_light_object_freejoint"/>
       <geom name="blueprint_light_object_geom" type="box" size="0.08 0.08 0.24" material="blueprint_object_mat" mass="0.25" contype="1" conaffinity="1" friction="0.7 0.02 0.002"/>
     </body>
@@ -1422,6 +4407,121 @@ def _write_scene_xml(*, g1_xml: Path, output_xml: Path) -> dict[str, Any]:
             "blueprint_light_object",
         ],
         "manipulation_object_id": "blueprint_light_object",
+    }
+
+
+def _select_g1_policy_observation_mjcf(g1_root: Path) -> tuple[Path, dict[str, Any]]:
+    preferred = g1_root / PREFERRED_G1_POLICY_OBSERVATION_MJCF
+    fallback = g1_root / FALLBACK_G1_POLICY_OBSERVATION_MJCF
+    selected = preferred if preferred.is_file() else fallback
+    hand_mesh_names = (
+        "left_hand_palm_link.STL",
+        "right_hand_palm_link.STL",
+        "left_hand_index_0_link.STL",
+        "right_hand_index_0_link.STL",
+    )
+    hand_meshes_present = all((g1_root / "assets" / name).is_file() for name in hand_mesh_names)
+    return selected, {
+        "preferred_g1_mjcf": str(preferred),
+        "fallback_g1_mjcf": str(fallback),
+        "selected_g1_mjcf": str(selected),
+        "selected_g1_mjcf_name": selected.name,
+        "hands_capable_g1_mjcf_available": preferred.is_file(),
+        "hands_capable_g1_mjcf_selected": selected == preferred,
+        "hand_meshes_present": hand_meshes_present,
+        "hand_mesh_probe_names": list(hand_mesh_names),
+        "claim_boundary": {
+            "hands_capable_mjcf_improves_simulated_egocentric_visual_observation": (
+                selected == preferred
+            ),
+            "hands_capable_mjcf_does_not_prove_dexterous_hand_policy_execution": True,
+            "hands_capable_mjcf_is_not_physical_robot_sensor_proof": True,
+        },
+    }
+
+
+def _add_g1_fixed_egocentric_cameras(g1_xml: Path) -> dict[str, Any]:
+    camera_specs = [
+        {
+            "camera_id": "head_pov",
+            "name": FIXED_G1_CAMERA_NAMES["head_pov"],
+            "body": "torso_link",
+            "mount": "upper_torso_head_proxy",
+            "pos": "0.10 0 0.225",
+            "xyaxes": "0 -1 0 0.174 0 0.985",
+        },
+        {
+            "camera_id": "torso_pov",
+            "name": FIXED_G1_CAMERA_NAMES["torso_pov"],
+            "body": "torso_link",
+            "mount": "torso_forward_proxy",
+            "pos": "0.10 0 0.115",
+            "xyaxes": "0 -1 0 0.342 0 0.940",
+        },
+    ]
+    try:
+        tree = ET.parse(g1_xml)
+        root = tree.getroot()
+    except Exception as exc:
+        return {
+            "schema_version": "g1_fixed_egocentric_camera_injection.v1",
+            "status": "blocked",
+            "g1_xml": str(g1_xml),
+            "blockers": ["blocked_g1_xml_parse_failed"],
+            "error": str(exc),
+            "mounted_camera_count": 0,
+            "mounted_cameras": [],
+        }
+    mounted: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    existing_names = {
+        camera.get("name") for camera in root.findall(".//camera") if camera.get("name")
+    }
+    for spec in camera_specs:
+        if spec["name"] in existing_names:
+            mounted.append({**spec, "status": "already_present"})
+            continue
+        body = root.find(f".//body[@name='{spec['body']}']")
+        if body is None:
+            blockers.append(f"blocked_missing_camera_mount_body:{spec['body']}")
+            continue
+        ET.SubElement(
+            body,
+            "camera",
+            {
+                "name": spec["name"],
+                "mode": "fixed",
+                "pos": spec["pos"],
+                "xyaxes": spec["xyaxes"],
+                "fovy": "75",
+            },
+        )
+        mounted.append({**spec, "status": "mounted"})
+    try:
+        tree.write(g1_xml, encoding="unicode")
+    except Exception as exc:
+        return {
+            "schema_version": "g1_fixed_egocentric_camera_injection.v1",
+            "status": "blocked",
+            "g1_xml": str(g1_xml),
+            "blockers": ["blocked_g1_xml_camera_write_failed"],
+            "error": str(exc),
+            "mounted_camera_count": 0,
+            "mounted_cameras": mounted,
+        }
+    return {
+        "schema_version": "g1_fixed_egocentric_camera_injection.v1",
+        "status": "completed" if not blockers else "blocked",
+        "g1_xml": str(g1_xml),
+        "fixed_camera_names": dict(FIXED_G1_CAMERA_NAMES),
+        "mounted_camera_count": len(mounted),
+        "mounted_cameras": mounted,
+        "blockers": blockers,
+        "truth_boundary": {
+            "camera_mounted_in_mujoco_g1_mjcf": not blockers and bool(mounted),
+            "camera_is_simulated_sensor_view": True,
+            "camera_is_not_physical_robot_sensor_proof": True,
+        },
     }
 
 
@@ -1526,17 +4626,9 @@ def _contact_state(
         ]
         geom_names = [item.get("geom_name") for item in metadata]
         body_names = [item.get("body_name") for item in metadata]
-        names = {
-            name
-            for item in metadata
-            for name in set(item.get("names") or set())
-            if name
-        }
+        names = {name for item in metadata for name in set(item.get("names") or set()) if name}
         floor_contact = "blueprint_reference_floor" in names
-        object_contact = (
-            "blueprint_light_object" in names
-            or "blueprint_light_object_geom" in names
-        )
+        object_contact = "blueprint_light_object" in names or "blueprint_light_object_geom" in names
         obstacle_contact = bool(
             names
             & {
@@ -1626,6 +4718,415 @@ def _object_pose(data: Any, object_qpos: int | None) -> dict[str, Any]:
     }
 
 
+def _projected_gravity_from_quat(quat: Sequence[float]) -> list[float]:
+    qw, qx, qy, qz = [float(value) for value in quat[:4]]
+    return [
+        round(float(2 * (-qz * qx + qw * qy)), 8),
+        round(float(-2 * (qz * qy + qw * qx)), 8),
+        round(float(1 - 2 * (qw * qw + qz * qz)), 8),
+    ]
+
+
+def _joint_qpos_values(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    joint_names: Sequence[str],
+) -> tuple[list[float], list[str], list[int]]:
+    values: list[float] = []
+    missing: list[str] = []
+    qpos_addrs: list[int] = []
+    for joint_name in joint_names:
+        joint_id = _joint_id_by_name(mujoco_module, model, joint_name)
+        if joint_id < 0:
+            missing.append(joint_name)
+            continue
+        qpos_addr = int(model.jnt_qposadr[joint_id])
+        qpos_addrs.append(qpos_addr)
+        values.append(round(float(data.qpos[qpos_addr]), 8))
+    return values, missing, qpos_addrs
+
+
+def _build_unitree_g1_sonic_state_from_mujoco(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    root_qpos: int,
+) -> tuple[dict[str, list[float]], dict[str, Any]]:
+    state: dict[str, list[float]] = {}
+    missing: list[str] = []
+    qpos_addrs: dict[str, list[int]] = {}
+    for group_name, joint_names in UNITREE_G1_SONIC_STATE_JOINT_GROUPS.items():
+        values, group_missing, group_addrs = _joint_qpos_values(
+            mujoco_module=mujoco_module,
+            model=model,
+            data=data,
+            joint_names=joint_names,
+        )
+        state[group_name] = values
+        missing.extend(group_missing)
+        qpos_addrs[group_name] = group_addrs
+    root_quat = [float(value) for value in data.qpos[root_qpos + 3 : root_qpos + 7]]
+    state["projected_gravity"] = _projected_gravity_from_quat(root_quat)
+    metadata = {
+        "schema_version": "unitree_g1_sonic_state_metadata.v1",
+        "state_source": "simulated_mujoco_qpos_joint_groups",
+        "required_joint_groups": {
+            group_name: list(joint_names)
+            for group_name, joint_names in UNITREE_G1_SONIC_STATE_JOINT_GROUPS.items()
+        },
+        "qpos_addresses": qpos_addrs,
+        "missing_joint_names": sorted(set(missing)),
+        "complete": not missing,
+        "root_quaternion_wxyz": root_quat,
+        "claim_boundary": {
+            "simulated_mujoco_state": True,
+            "physical_robot_proprioception": False,
+            "state_extraction_is_not_policy_execution": True,
+        },
+    }
+    return state, metadata
+
+
+def _mujoco_object_id(mujoco_module: Any, model: Any, obj_kind: Any, name: str) -> int:
+    try:
+        return int(mujoco_module.mj_name2id(model, obj_kind, name))
+    except Exception:
+        return -1
+
+
+def _matrix3_rows(values: Sequence[Any]) -> list[list[float]]:
+    items = [float(value) for value in values[:9]]
+    if len(items) < 9:
+        items.extend([0.0] * (9 - len(items)))
+    return [items[0:3], items[3:6], items[6:9]]
+
+
+def _mat3_mul_vec(matrix: Sequence[Sequence[float]], vector: Sequence[float]) -> list[float]:
+    return [
+        float(matrix[row][0]) * float(vector[0])
+        + float(matrix[row][1]) * float(vector[1])
+        + float(matrix[row][2]) * float(vector[2])
+        for row in range(3)
+    ]
+
+
+def _g1_body_landmark_position(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    body_name: str,
+    local_offset_m: Sequence[float] | None = None,
+) -> dict[str, Any]:
+    body_id = _mujoco_object_id(
+        mujoco_module,
+        model,
+        mujoco_module.mjtObj.mjOBJ_BODY,
+        body_name,
+    )
+    if body_id < 0:
+        return {
+            "available": False,
+            "body_name": body_name,
+            "blockers": [f"missing_g1_body:{body_name}"],
+        }
+    origin = [float(value) for value in data.xpos[body_id][:3]]
+    offset = [float(value) for value in (local_offset_m or [0.0, 0.0, 0.0])[:3]]
+    if len(offset) < 3:
+        offset.extend([0.0] * (3 - len(offset)))
+    world = origin
+    if any(abs(value) > 1e-12 for value in offset):
+        body_xmat = _matrix3_rows(data.xmat[body_id])
+        world_offset = _mat3_mul_vec(body_xmat, offset)
+        world = [origin[index] + world_offset[index] for index in range(3)]
+    return {
+        "available": True,
+        "body_name": body_name,
+        "body_id": body_id,
+        "local_offset_m": [round(value, 6) for value in offset],
+        "world_xyz_m": [round(value, 6) for value in world],
+    }
+
+
+def _g1_body_landmark_position_from_spec(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    spec: Mapping[str, Any],
+) -> dict[str, Any]:
+    primary = _g1_body_landmark_position(
+        mujoco_module=mujoco_module,
+        model=model,
+        data=data,
+        body_name=str(spec["body_name"]),
+        local_offset_m=spec.get("local_offset_m"),
+    )
+    if primary.get("available"):
+        primary["landmark_source"] = "primary_g1_body"
+        return primary
+    fallback_body = _string(spec.get("fallback_body_name"))
+    if not fallback_body:
+        primary["landmark_source"] = "primary_g1_body_missing"
+        return primary
+    fallback = _g1_body_landmark_position(
+        mujoco_module=mujoco_module,
+        model=model,
+        data=data,
+        body_name=fallback_body,
+        local_offset_m=spec.get("fallback_local_offset_m"),
+    )
+    if fallback.get("available"):
+        fallback["landmark_source"] = "fallback_g1_body_with_local_offset"
+        fallback["preferred_body_name"] = str(spec["body_name"])
+        fallback["fallback_for_missing_preferred_body"] = True
+        return fallback
+    fallback["blockers"] = sorted(
+        set(_string_list(primary.get("blockers")) + _string_list(fallback.get("blockers")))
+    )
+    fallback["landmark_source"] = "preferred_and_fallback_g1_bodies_missing"
+    fallback["preferred_body_name"] = str(spec["body_name"])
+    return fallback
+
+
+def _fixed_camera_projection_context(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    camera_id: str,
+    image_width: int,
+    image_height: int,
+) -> dict[str, Any]:
+    fixed_camera_name = FIXED_G1_CAMERA_NAMES.get(camera_id)
+    if not fixed_camera_name:
+        return {
+            "available": False,
+            "camera_id": camera_id,
+            "blockers": [f"camera_not_fixed_g1_camera:{camera_id}"],
+        }
+    camera_obj_id = _mujoco_object_id(
+        mujoco_module,
+        model,
+        mujoco_module.mjtObj.mjOBJ_CAMERA,
+        fixed_camera_name,
+    )
+    if camera_obj_id < 0:
+        return {
+            "available": False,
+            "camera_id": camera_id,
+            "fixed_mujoco_camera_name": fixed_camera_name,
+            "blockers": [f"missing_fixed_g1_camera:{fixed_camera_name}"],
+        }
+    try:
+        fovy_deg = float(model.cam_fovy[camera_obj_id])
+        cam_xpos = [float(value) for value in data.cam_xpos[camera_obj_id][:3]]
+        cam_xmat = _matrix3_rows(data.cam_xmat[camera_obj_id])
+    except Exception as exc:
+        return {
+            "available": False,
+            "camera_id": camera_id,
+            "fixed_mujoco_camera_name": fixed_camera_name,
+            "camera_obj_id": camera_obj_id,
+            "blockers": ["fixed_g1_camera_projection_metadata_unavailable"],
+            "error": str(exc),
+        }
+    focal_px = 0.5 * float(image_height) / math.tan(math.radians(fovy_deg) / 2.0)
+    return {
+        "available": True,
+        "camera_id": camera_id,
+        "fixed_mujoco_camera_name": fixed_camera_name,
+        "camera_obj_id": camera_obj_id,
+        "image_width": int(image_width),
+        "image_height": int(image_height),
+        "fovy_deg": round(fovy_deg, 6),
+        "focal_length_px": round(focal_px, 6),
+        "camera_world_xyz_m": [round(value, 6) for value in cam_xpos],
+        "camera_xmat_row_major": [[round(value, 8) for value in row] for row in cam_xmat],
+        "projection_method": "mujoco_fixed_camera_pinhole_from_data_cam_xpos_xmat",
+    }
+
+
+def _project_world_xyz_to_camera_pixel(
+    *,
+    world_xyz_m: Sequence[float],
+    projection_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not projection_context.get("available"):
+        return {
+            "available": False,
+            "blockers": list(
+                projection_context.get("blockers") or ["projection_context_unavailable"]
+            ),
+        }
+    cam_pos = [float(value) for value in projection_context.get("camera_world_xyz_m", [])[:3]]
+    if len(cam_pos) < 3:
+        return {"available": False, "blockers": ["camera_world_position_unavailable"]}
+    cam_xmat = projection_context.get("camera_xmat_row_major")
+    if not (
+        isinstance(cam_xmat, Sequence)
+        and len(cam_xmat) >= 3
+        and all(isinstance(row, Sequence) and len(row) >= 3 for row in cam_xmat[:3])
+    ):
+        return {"available": False, "blockers": ["camera_orientation_unavailable"]}
+    world = [float(value) for value in world_xyz_m[:3]]
+    if len(world) < 3:
+        return {"available": False, "blockers": ["world_point_unavailable"]}
+    delta = [world[index] - cam_pos[index] for index in range(3)]
+    rows = [[float(value) for value in row[:3]] for row in cam_xmat[:3]]
+    columns = [[rows[0][index], rows[1][index], rows[2][index]] for index in range(3)]
+    camera_local = [
+        sum(delta[index] * columns[axis][index] for index in range(3)) for axis in range(3)
+    ]
+    depth = abs(float(camera_local[2]))
+    if depth <= 1e-9:
+        return {
+            "available": False,
+            "camera_local_xyz": [round(value, 6) for value in camera_local],
+            "blockers": ["camera_projection_depth_near_zero"],
+        }
+    width = int(projection_context.get("image_width") or 0)
+    height = int(projection_context.get("image_height") or 0)
+    focal_px = float(projection_context.get("focal_length_px") or 0.0)
+    if width <= 0 or height <= 0 or focal_px <= 0.0:
+        return {
+            "available": False,
+            "camera_local_xyz": [round(value, 6) for value in camera_local],
+            "blockers": ["camera_projection_intrinsics_unavailable"],
+        }
+    u = width * 0.5 + focal_px * float(camera_local[0]) / depth
+    v = height * 0.5 - focal_px * float(camera_local[1]) / depth
+    return {
+        "available": True,
+        "u_px": round(u, 3),
+        "v_px": round(v, 3),
+        "depth_m_abs": round(depth, 6),
+        "camera_local_xyz": [round(value, 6) for value in camera_local],
+        "inside_image": bool(0.0 <= u < width and 0.0 <= v < height),
+        "projection_depth_sign_abs_used": True,
+    }
+
+
+def _build_g1_projected_skeleton_trace_row(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    run: Mapping[str, Any],
+    step: int,
+    visual_observation: Mapping[str, Any],
+) -> dict[str, Any]:
+    camera_id = str(visual_observation.get("camera_id") or "head_pov")
+    image_width = int(visual_observation.get("image_width") or 0)
+    image_height = int(visual_observation.get("image_height") or 0)
+    projection_context = _fixed_camera_projection_context(
+        mujoco_module=mujoco_module,
+        model=model,
+        data=data,
+        camera_id=camera_id,
+        image_width=image_width,
+        image_height=image_height,
+    )
+    landmarks: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for spec in G1_UPPER_BODY_LANDMARK_SPECS:
+        landmark = {
+            "landmark_id": spec["landmark_id"],
+            **_g1_body_landmark_position_from_spec(
+                mujoco_module=mujoco_module,
+                model=model,
+                data=data,
+                spec=spec,
+            ),
+        }
+        if landmark.get("available"):
+            projection = _project_world_xyz_to_camera_pixel(
+                world_xyz_m=landmark.get("world_xyz_m", []),
+                projection_context=projection_context,
+            )
+            landmark["image_projection"] = projection
+        else:
+            blockers.extend(str(item) for item in landmark.get("blockers") or [])
+        landmarks.append(landmark)
+    projected_count = sum(
+        1 for landmark in landmarks if _mapping(landmark.get("image_projection")).get("available")
+    )
+    if not projection_context.get("available"):
+        blockers.extend(str(item) for item in projection_context.get("blockers") or [])
+    if projected_count <= 0:
+        blockers.append("no_g1_upper_body_landmarks_projected_into_camera")
+    return {
+        "schema_version": G1_PROJECTED_SKELETON_SCHEMA_ID,
+        "status": "completed" if not blockers else "warning_partial_projection",
+        "episode_id": run.get("episode_id"),
+        "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+        "task_id": run.get("task_id"),
+        "spawn_id": run.get("spawn_id"),
+        "step": int(step),
+        "sim_time_s": round(float(data.time), 9),
+        "camera_id": camera_id,
+        "camera_frame_path": visual_observation.get("camera_frame_path"),
+        "visual_observation_available": bool(visual_observation.get("available")),
+        "projection_context": projection_context,
+        "landmarks": landmarks,
+        "segments": [{"from": start, "to": end} for start, end in G1_UPPER_BODY_SKELETON_SEGMENTS],
+        "available_landmark_count": sum(1 for landmark in landmarks if landmark.get("available")),
+        "projected_landmark_count": projected_count,
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "uses_unitree_g1_mujoco_body_transforms": True,
+            "uses_simulated_fixed_head_or_torso_camera_projection": bool(
+                projection_context.get("available")
+            ),
+            "simulated_g1_kinematic_skeleton_available": projected_count > 0,
+            "not_hand_drawn_stick_figure": True,
+            "not_physical_robot_sensor_proof": True,
+            "not_dexterous_hand_policy_execution": True,
+            "projection_depth_sign_abs_used_for_robust_review_overlay": True,
+        },
+    }
+
+
+def _g1_projected_skeleton_manifest(
+    *,
+    generated_at: str,
+    rows: Sequence[Mapping[str, Any]],
+    output_path: Path,
+) -> dict[str, Any]:
+    completed_rows = [
+        row
+        for row in rows
+        if row.get("status") == "completed" or int(row.get("projected_landmark_count") or 0) > 0
+    ]
+    blockers: list[str] = []
+    if not rows:
+        blockers.append("blocked_no_policy_visual_observation_steps")
+    if rows and not completed_rows:
+        blockers.append("blocked_no_g1_projected_skeleton_rows")
+    return {
+        "schema_version": "g1_projected_skeleton_trace_manifest.v1",
+        "generated_at": generated_at,
+        "status": "completed" if completed_rows else "blocked",
+        "trace_jsonl": str(output_path),
+        "row_count": len(rows),
+        "projectable_row_count": len(completed_rows),
+        "landmark_ids": [str(spec["landmark_id"]) for spec in G1_UPPER_BODY_LANDMARK_SPECS],
+        "segments": [{"from": start, "to": end} for start, end in G1_UPPER_BODY_SKELETON_SEGMENTS],
+        "blockers": blockers,
+        "claim_boundary": {
+            "derived_from_unitree_g1_mujoco_body_transforms": True,
+            "derived_from_head_or_torso_sim_camera_metadata": True,
+            "simulated_g1_arm_hand_state_available_for_wam_conditioning": bool(completed_rows),
+            "not_physical_robot_sensor_proof": True,
+            "not_wam_generated_output": True,
+            "not_success_review_label": True,
+        },
+    }
+
+
 def _build_observation_packet(
     *,
     model: Any,
@@ -1637,6 +5138,7 @@ def _build_observation_packet(
     step: int,
     contacts: Sequence[Mapping[str, Any]],
     contact_summary: Mapping[str, Any] | None = None,
+    visual_observation: Mapping[str, Any] | None = None,
     mujoco_version: str,
 ) -> dict[str, Any]:
     qpos = [round(float(value), 8) for value in data.qpos[:]]
@@ -1647,6 +5149,18 @@ def _build_observation_packet(
     root_ang = [float(value) for value in data.qvel[root_dof + 3 : root_dof + 6]]
     target = list(run.get("target_pose") or [0.0, 0.0, 0.79])
     contact_state = dict(contact_summary or {})
+    visual = dict(visual_observation or {})
+    if not visual:
+        visual = {
+            "available": False,
+            "camera_frame_path": None,
+            "camera_id": None,
+            "blockers": ["policy_observation_frame_not_captured"],
+            "claim_boundary": {
+                "visual_observation_required_for_real_vla_policy": True,
+                "missing_visual_observation_blocks_openvla_or_cosmos_policy_proof": True,
+            },
+        }
     return {
         "schema_version": OBSERVATION_SCHEMA_ID,
         "episode_id": run.get("episode_id"),
@@ -1712,25 +5226,44 @@ def _build_observation_packet(
         },
         "route_task_state": {
             "target_pose": target,
-            "target_error_m": round(math.dist(root_pos[:2], [float(target[0]), float(target[1])]), 6),
+            "target_error_m": round(
+                math.dist(root_pos[:2], [float(target[0]), float(target[1])]), 6
+            ),
             "route_waypoints": run.get("route_waypoints") or [],
             "task_prompt": run.get("task_prompt"),
         },
         "object_state": _object_pose(data, object_qpos),
+        "visual_observation": visual,
+        "unitree_g1_sonic_state": visual.get("unitree_g1_sonic_state"),
+        "unitree_g1_sonic_state_source": visual.get("unitree_g1_sonic_state_source"),
+        "unitree_g1_sonic_state_metadata": visual.get("unitree_g1_sonic_state_metadata"),
         "sensor_surrogates": {
-            "camera_surrogates": ["third_person", "overhead", "robot_follow"],
+            "camera_surrogates": [
+                "third_person",
+                "overhead",
+                "robot_follow",
+                "robot_pov",
+                "torso_pov",
+            ],
             "visual_assets_required": False,
             "splat_ply_spz_required": False,
+            "camera_frame_path": visual.get("camera_frame_path"),
+            "first_person_policy_observation_candidate": bool(
+                visual.get("first_person_policy_observation_candidate")
+            ),
         },
         "task_prompt": run.get("task_prompt"),
-        "allowed_action_schema": {"schema_id": ACTION_SCHEMA_ID, "supported_action_types": [
-            "base_velocity",
-            "heading_yaw",
-            "waypoint",
-            "stop",
-            "inspect_look",
-            "manipulation_contact",
-        ]},
+        "allowed_action_schema": {
+            "schema_id": ACTION_SCHEMA_ID,
+            "supported_action_types": [
+                "base_velocity",
+                "heading_yaw",
+                "waypoint",
+                "stop",
+                "inspect_look",
+                "manipulation_contact",
+            ],
+        },
         "safety_limits": dict(SAFETY_LIMITS),
     }
 
@@ -1754,7 +5287,7 @@ def _fixture_policy_action(*, observation: Mapping[str, Any]) -> dict[str, Any]:
             "action": {"action_type": "inspect_look", "yaw_rate_rad_s": 0.35},
         }
     if task_id == "contact_or_push_light_object":
-        object_pos = object_state.get("position") or [0.36, -0.65, 0.27]
+        object_pos = object_state.get("position") or [0.36, -0.65, 0.24]
         return {
             "policy_id": REFERENCE_FIXTURE_POLICY_ID,
             "action": {
@@ -1893,6 +5426,7 @@ def normalize_policy_action(
     vx = 0.0
     vy = 0.0
     yaw_rate = 0.0
+    velocity_frame = "robot_base"
     target_waypoint: list[float] | None = None
     if action_type == "base_velocity":
         linear = _number(action.get("linear_velocity_mps"))
@@ -1900,24 +5434,48 @@ def normalize_policy_action(
             rejected = {"reason": "base_velocity_missing_numeric_linear_velocity"}
         else:
             lateral = _number(action.get("lateral_velocity_mps"), 0.0) or 0.0
-            raw_yaw_rate = _number(action.get("yaw_rate_rad_s") or action.get("yaw_rate"), 0.0) or 0.0
-            vx = max(-SAFETY_LIMITS["max_forward_velocity_mps"], min(SAFETY_LIMITS["max_forward_velocity_mps"], linear))
-            vy = max(-SAFETY_LIMITS["max_lateral_velocity_mps"], min(SAFETY_LIMITS["max_lateral_velocity_mps"], lateral))
-            yaw_rate = max(-SAFETY_LIMITS["max_yaw_rate_rad_s"], min(SAFETY_LIMITS["max_yaw_rate_rad_s"], raw_yaw_rate))
+            raw_yaw_rate = (
+                _number(action.get("yaw_rate_rad_s") or action.get("yaw_rate"), 0.0) or 0.0
+            )
+            requested_frame = str(action.get("velocity_frame") or "robot_base")
+            velocity_frame = "world_xy" if requested_frame == "world_xy" else "robot_base"
+            vx = max(
+                -SAFETY_LIMITS["max_forward_velocity_mps"],
+                min(SAFETY_LIMITS["max_forward_velocity_mps"], linear),
+            )
+            vy = max(
+                -SAFETY_LIMITS["max_lateral_velocity_mps"],
+                min(SAFETY_LIMITS["max_lateral_velocity_mps"], lateral),
+            )
+            yaw_rate = max(
+                -SAFETY_LIMITS["max_yaw_rate_rad_s"],
+                min(SAFETY_LIMITS["max_yaw_rate_rad_s"], raw_yaw_rate),
+            )
     elif action_type == "heading_yaw":
         target_yaw = _number(action.get("target_yaw_rad"))
         if target_yaw is None:
             rejected = {"reason": "heading_yaw_missing_numeric_target_yaw"}
         else:
             diff = math.atan2(math.sin(target_yaw - yaw), math.cos(target_yaw - yaw))
-            yaw_rate = max(-SAFETY_LIMITS["max_yaw_rate_rad_s"], min(SAFETY_LIMITS["max_yaw_rate_rad_s"], diff * 2.0))
+            yaw_rate = max(
+                -SAFETY_LIMITS["max_yaw_rate_rad_s"],
+                min(SAFETY_LIMITS["max_yaw_rate_rad_s"], diff * 2.0),
+            )
     elif action_type == "waypoint":
         waypoint = action.get("waypoint")
-        if not isinstance(waypoint, Sequence) or isinstance(waypoint, (str, bytes)) or len(waypoint) < 2:
+        if (
+            not isinstance(waypoint, Sequence)
+            or isinstance(waypoint, (str, bytes))
+            or len(waypoint) < 2
+        ):
             rejected = {"reason": "waypoint_missing_xy"}
         else:
             try:
-                target_waypoint = [float(waypoint[0]), float(waypoint[1]), float(waypoint[2]) if len(waypoint) > 2 else 0.79]
+                target_waypoint = [
+                    float(waypoint[0]),
+                    float(waypoint[1]),
+                    float(waypoint[2]) if len(waypoint) > 2 else 0.79,
+                ]
                 dx = target_waypoint[0] - float(base_pos[0])
                 dy = target_waypoint[1] - float(base_pos[1])
                 distance = math.hypot(dx, dy)
@@ -1927,12 +5485,30 @@ def normalize_policy_action(
                     dy *= scale
                     distance = SAFETY_LIMITS["max_waypoint_distance_m"]
                 if distance > 1e-6:
-                    speed = min(SAFETY_LIMITS["max_forward_velocity_mps"], max(0.12, distance * 2.2))
+                    requested_speed = _number(
+                        action.get("max_speed_mps") or action.get("approach_speed_mps")
+                    )
+                    if requested_speed is not None:
+                        speed = min(
+                            SAFETY_LIMITS["max_forward_velocity_mps"],
+                            max(0.0, requested_speed),
+                            max(0.0, distance * 2.2),
+                        )
+                    else:
+                        speed = min(
+                            SAFETY_LIMITS["max_forward_velocity_mps"], max(0.12, distance * 2.2)
+                        )
                     vx = speed * dx / distance
                     vy = speed * dy / distance
+                    velocity_frame = "world_xy"
                     target_heading = math.atan2(dy, dx)
-                    diff = math.atan2(math.sin(target_heading - yaw), math.cos(target_heading - yaw))
-                    yaw_rate = max(-SAFETY_LIMITS["max_yaw_rate_rad_s"], min(SAFETY_LIMITS["max_yaw_rate_rad_s"], diff * 1.5))
+                    diff = math.atan2(
+                        math.sin(target_heading - yaw), math.cos(target_heading - yaw)
+                    )
+                    yaw_rate = max(
+                        -SAFETY_LIMITS["max_yaw_rate_rad_s"],
+                        min(SAFETY_LIMITS["max_yaw_rate_rad_s"], diff * 1.5),
+                    )
             except (TypeError, ValueError):
                 rejected = {"reason": "waypoint_contains_non_numeric_value"}
     elif action_type == "stop":
@@ -1949,18 +5525,41 @@ def normalize_policy_action(
         )
     elif action_type == "manipulation_contact":
         waypoint = action.get("waypoint")
-        if isinstance(waypoint, Sequence) and not isinstance(waypoint, (str, bytes)) and len(waypoint) >= 2:
-            target_waypoint = [float(waypoint[0]), float(waypoint[1]), float(waypoint[2]) if len(waypoint) > 2 else 0.79]
+        if (
+            isinstance(waypoint, Sequence)
+            and not isinstance(waypoint, (str, bytes))
+            and len(waypoint) >= 2
+        ):
+            target_waypoint = [
+                float(waypoint[0]),
+                float(waypoint[1]),
+                float(waypoint[2]) if len(waypoint) > 2 else 0.79,
+            ]
         else:
             object_state = _mapping(observation.get("object_state"))
-            object_pos = object_state.get("position") or [0.36, -0.65, 0.27]
+            object_pos = object_state.get("position") or [0.36, -0.65, 0.24]
             target_waypoint = [float(object_pos[0]) + 0.18, float(object_pos[1]), 0.79]
         dx = target_waypoint[0] - float(base_pos[0])
         dy = target_waypoint[1] - float(base_pos[1])
         distance = max(1e-6, math.hypot(dx, dy))
-        speed = min(SAFETY_LIMITS["max_forward_velocity_mps"], max(0.18, distance * 2.5))
+        velocity_frame = "world_xy"
+        requested_speed = _number(action.get("approach_speed_mps") or action.get("max_speed_mps"))
+        if requested_speed is not None:
+            speed = min(
+                SAFETY_LIMITS["max_forward_velocity_mps"],
+                max(0.0, requested_speed),
+                max(0.0, distance * 2.5),
+            )
+        else:
+            speed = min(SAFETY_LIMITS["max_forward_velocity_mps"], max(0.18, distance * 2.5))
         vx = speed * dx / distance
         vy = speed * dy / distance
+        target_heading = math.atan2(dy, dx)
+        diff = math.atan2(math.sin(target_heading - yaw), math.cos(target_heading - yaw))
+        yaw_rate = max(
+            -SAFETY_LIMITS["max_yaw_rate_rad_s"],
+            min(SAFETY_LIMITS["max_yaw_rate_rad_s"], diff * 1.2),
+        )
     else:
         rejected = {"reason": "unsupported_policy_action_type", "action_type": action_type or None}
     if rejected is not None:
@@ -1980,11 +5579,18 @@ def normalize_policy_action(
                 "scenario_eval_run_id": observation.get("scenario_eval_run_id"),
             },
         )
+    if velocity_frame == "world_xy":
+        controller_vx, controller_vy = _world_xy_velocity_to_body_frame(vx, vy, yaw)
+    else:
+        controller_vx, controller_vy = vx, vy
     return (
         {
             "action_type": action_type,
             "vx_mps": round(float(vx), 6),
             "vy_mps": round(float(vy), 6),
+            "velocity_frame": velocity_frame,
+            "controller_vx_mps": round(float(controller_vx), 6),
+            "controller_vy_mps": round(float(controller_vy), 6),
             "yaw_rate_rad_s": round(float(yaw_rate), 6),
             "target_waypoint": target_waypoint,
             "source": source,
@@ -2002,6 +5608,56 @@ def _set_joint_position_holds(model: Any, data: Any) -> None:
             continue
         qpos_addr = int(model.jnt_qposadr[joint_id])
         data.ctrl[actuator_index] = data.qpos[qpos_addr]
+
+
+def _apply_egocentric_upper_body_observation_pose(
+    *,
+    model: Any,
+    mujoco_module: Any,
+    data: Any,
+    generated_at: str,
+) -> dict[str, Any]:
+    applied: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for joint_name, target_rad in EGOCENTRIC_UPPER_BODY_OBSERVATION_POSE.items():
+        joint_id = _joint_id_by_name(mujoco_module, model, joint_name)
+        if joint_id < 0:
+            missing.append(joint_name)
+            continue
+        qpos_addr = int(model.jnt_qposadr[joint_id])
+        data.qpos[qpos_addr] = float(target_rad)
+        try:
+            qvel_addr = int(model.jnt_dofadr[joint_id])
+            data.qvel[qvel_addr] = 0.0
+        except Exception:
+            qvel_addr = None
+        applied.append(
+            {
+                "joint_name": joint_name,
+                "qpos_addr": qpos_addr,
+                "qvel_addr": qvel_addr,
+                "target_rad": float(target_rad),
+            }
+        )
+    return {
+        "schema_version": "egocentric_upper_body_observation_pose.v1",
+        "generated_at": generated_at,
+        "status": "completed" if applied and not missing else "partial" if applied else "blocked",
+        "pose_id": "g1_hands_forward_egocentric_observation_pose",
+        "applied_joint_count": len(applied),
+        "applied_joints": applied,
+        "missing_joint_names": missing,
+        "hands_or_end_effectors_expected_in_egocentric_torso_view": bool(applied),
+        "hand_end_effector_policy_used": False,
+        "pose_role": "camera_observation_framing_support",
+        "blockers": [f"missing_observation_pose_joint:{name}" for name in missing],
+        "claim_boundary": {
+            "upper_body_pose_is_support_framing_not_hand_policy_execution": True,
+            "hand_end_effector_policy_used": False,
+            "dexterous_manipulation_policy_proven": False,
+            "physical_robot_sensor_proof": False,
+        },
+    }
 
 
 def _mujoco_name(mujoco_module: Any, model: Any, obj_type: Any, index: int) -> str | None:
@@ -2075,19 +5731,35 @@ class _SameSceneUnitreeRLGymController:
         self.dof_vel_scale = float(config["dof_vel_scale"])
         self.ang_vel_scale = float(config["ang_vel_scale"])
         self.action = np.zeros(self.num_actions, dtype=np.float32)
+        self.raw_policy_action = np.zeros(self.num_actions, dtype=np.float32)
         self.target_dof_pos = self.default_angles.copy()
         self.upper_hold_targets: list[float] = []
         self.update_count = 0
+        self.policy_action_clipped_count = 0
+        self.max_raw_policy_action_abs = 0.0
+        self.max_applied_policy_action_abs = 0.0
 
     def reset(self, data: Any) -> None:
         import numpy as np
 
         self.action = np.zeros(self.num_actions, dtype=np.float32)
+        self.raw_policy_action = np.zeros(self.num_actions, dtype=np.float32)
         self.target_dof_pos = self.default_angles.copy()
+        if UNITREE_RL_GYM_RESET_TO_POLICY_DEFAULT_LEG_POSE:
+            for qpos_addr, qvel_addr, default_angle in zip(
+                self.leg_qpos_addrs,
+                self.leg_qvel_addrs,
+                self.default_angles,
+            ):
+                data.qpos[qpos_addr] = float(default_angle)
+                data.qvel[qvel_addr] = 0.0
         self.upper_hold_targets = [
             float(data.qpos[qpos_addr]) for qpos_addr in self.upper_hold_qpos_addrs
         ]
         self.update_count = 0
+        self.policy_action_clipped_count = 0
+        self.max_raw_policy_action_abs = 0.0
+        self.max_applied_policy_action_abs = 0.0
         self.apply(data=data)
 
     def _gravity_orientation(self, quaternion: Any) -> Any:
@@ -2118,7 +5790,9 @@ class _SameSceneUnitreeRLGymController:
                 data.ctrl[actuator_id] = target
         else:
             q = np.array([float(data.qpos[addr]) for addr in self.leg_qpos_addrs], dtype=np.float32)
-            dq = np.array([float(data.qvel[addr]) for addr in self.leg_qvel_addrs], dtype=np.float32)
+            dq = np.array(
+                [float(data.qvel[addr]) for addr in self.leg_qvel_addrs], dtype=np.float32
+            )
             tau = (self.target_dof_pos - q) * self.kps + (np.zeros_like(self.kds) - dq) * self.kds
             for action_index, actuator_id in enumerate(self.leg_actuator_ids):
                 data.ctrl[actuator_id] = float(tau[action_index])
@@ -2138,8 +5812,12 @@ class _SameSceneUnitreeRLGymController:
         command = np.array([float(value) for value in command_xyz[:3]], dtype=np.float32)
         update_row: dict[str, Any] | None = None
         if int(step) % max(1, self.control_decimation) == 0:
-            qj = np.array([float(data.qpos[addr]) for addr in self.leg_qpos_addrs], dtype=np.float32)
-            dqj = np.array([float(data.qvel[addr]) for addr in self.leg_qvel_addrs], dtype=np.float32)
+            qj = np.array(
+                [float(data.qpos[addr]) for addr in self.leg_qpos_addrs], dtype=np.float32
+            )
+            dqj = np.array(
+                [float(data.qvel[addr]) for addr in self.leg_qvel_addrs], dtype=np.float32
+            )
             quat = np.array(
                 [float(value) for value in data.qpos[self.root_qpos + 3 : self.root_qpos + 7]],
                 dtype=np.float32,
@@ -2168,9 +5846,31 @@ class _SameSceneUnitreeRLGymController:
             )
             with torch.no_grad():
                 obs_tensor = torch.from_numpy(obs).unsqueeze(0)
-                self.action = (
+                raw_action = (
                     self.policy(obs_tensor).detach().cpu().numpy().squeeze().astype(np.float32)
                 )
+            clip_abs = None
+            action_clipped = False
+            if self.actuator_output_mode == "position_target":
+                clip_abs = _unitree_rl_gym_position_target_action_clip_abs()
+                self.action = np.clip(raw_action, -clip_abs, clip_abs).astype(np.float32)
+                action_clipped = bool(np.any(np.abs(raw_action - self.action) > 1e-6))
+            else:
+                self.action = raw_action
+            self.raw_policy_action = raw_action.astype(np.float32)
+            if action_clipped:
+                self.policy_action_clipped_count += 1
+            raw_abs = (
+                float(np.max(np.abs(self.raw_policy_action)))
+                if self.raw_policy_action.size
+                else 0.0
+            )
+            applied_abs = float(np.max(np.abs(self.action))) if self.action.size else 0.0
+            self.max_raw_policy_action_abs = max(self.max_raw_policy_action_abs, raw_abs)
+            self.max_applied_policy_action_abs = max(
+                self.max_applied_policy_action_abs,
+                applied_abs,
+            )
             self.target_dof_pos = self.action * self.action_scale + self.default_angles
             self.update_count += 1
             update_row = {
@@ -2180,6 +5880,10 @@ class _SameSceneUnitreeRLGymController:
                 "command_xyz": [round(float(value), 6) for value in command],
                 "target_dof_pos": [round(float(value), 6) for value in self.target_dof_pos],
                 "action": [round(float(value), 6) for value in self.action],
+                "raw_policy_action": [round(float(value), 6) for value in self.raw_policy_action],
+                "policy_action_clipped": action_clipped,
+                "policy_action_clip_abs": clip_abs,
+                "actuator_output_mode": self.actuator_output_mode,
             }
         self.apply(data=data)
         return update_row
@@ -2205,6 +5909,7 @@ def _same_scene_unitree_controller_manifest(
         "realistic_navigation_policy_used_for_endpoint_rollouts": status == "ready",
         "freejoint_proxy_used_for_endpoint_rollouts": status != "ready",
         "controller_command_limits": dict(UNITREE_RL_GYM_CONTROLLER_COMMAND_LIMITS),
+        "reset_to_policy_default_leg_pose": UNITREE_RL_GYM_RESET_TO_POLICY_DEFAULT_LEG_POSE,
         "balanced_walking_controller_proven": False,
         "blockers": list(blockers),
         "claim_boundary": {
@@ -2302,9 +6007,16 @@ def _create_same_scene_unitree_rl_gym_controller(
 
     actuator_output_mode = "torque"
     try:
-        gain_values = [float(model.actuator_gainprm[actuator_id][0]) for actuator_id in leg_actuator_ids]
-        bias_values = [float(model.actuator_biasprm[actuator_id][1]) for actuator_id in leg_actuator_ids]
-        if all(abs(bias + gain) < max(1.0, abs(gain) * 0.05) and gain > 10.0 for gain, bias in zip(gain_values, bias_values)):
+        gain_values = [
+            float(model.actuator_gainprm[actuator_id][0]) for actuator_id in leg_actuator_ids
+        ]
+        bias_values = [
+            float(model.actuator_biasprm[actuator_id][1]) for actuator_id in leg_actuator_ids
+        ]
+        if all(
+            abs(bias + gain) < max(1.0, abs(gain) * 0.05) and gain > 10.0
+            for gain, bias in zip(gain_values, bias_values)
+        ):
             actuator_output_mode = "position_target"
     except Exception:
         actuator_output_mode = "torque"
@@ -2351,6 +6063,29 @@ def _create_same_scene_unitree_rl_gym_controller(
             "leg_actuator_ids": leg_actuator_ids,
             "upper_hold_actuator_count": len(upper_hold_actuator_ids),
             "actuator_output_mode": actuator_output_mode,
+            "position_target_action_clip_abs": (
+                _unitree_rl_gym_position_target_action_clip_abs()
+                if actuator_output_mode == "position_target"
+                else None
+            ),
+            "position_target_action_clip_env": (
+                UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ENV
+                if actuator_output_mode == "position_target"
+                else None
+            ),
+            "position_target_action_clip_default_abs": (
+                DEFAULT_UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ABS
+                if actuator_output_mode == "position_target"
+                else None
+            ),
+            "position_target_action_clip_reason": (
+                "Blueprint task scenes use the MuJoCo Menagerie G1 position actuators; "
+                "the Unitree RL Gym policy was trained/deployed against a torque-controlled "
+                "G1 XML, so same-scene position-target adaptation conservatively clips "
+                "policy outputs before applying actuator targets."
+                if actuator_output_mode == "position_target"
+                else None
+            ),
             "control_decimation": int(config["control_decimation"]),
             "simulation_dt": float(config["simulation_dt"]),
             "policy_num_obs": int(config["num_obs"]),
@@ -2359,10 +6094,17 @@ def _create_same_scene_unitree_rl_gym_controller(
     )
 
 
-def _camera_for(mujoco_module: Any, camera_id: str, root_position: Sequence[float], yaw: float) -> Any:
+def _camera_for(
+    mujoco_module: Any, camera_id: str, root_position: Sequence[float], yaw: float
+) -> Any:
     camera = mujoco_module.MjvCamera()
     camera.type = mujoco_module.mjtCamera.mjCAMERA_FREE
-    camera.lookat[:] = [float(root_position[0]), float(root_position[1]), float(root_position[2]) + 0.55]
+    forward_x = math.cos(float(yaw))
+    forward_y = math.sin(float(yaw))
+    root_x = float(root_position[0])
+    root_y = float(root_position[1])
+    root_z = float(root_position[2])
+    camera.lookat[:] = [root_x, root_y, root_z + 0.55]
     if camera_id == "overhead":
         camera.distance = 4.8
         camera.azimuth = 0.0
@@ -2371,11 +6113,84 @@ def _camera_for(mujoco_module: Any, camera_id: str, root_position: Sequence[floa
         camera.distance = 2.0
         camera.azimuth = math.degrees(yaw) + 180.0
         camera.elevation = -14.0
+    elif camera_id in {"head_pov", "robot_pov"}:
+        eye_z = root_z + 1.23
+        look_distance = 1.15
+        camera.lookat[:] = [
+            root_x + forward_x * look_distance,
+            root_y + forward_y * look_distance,
+            eye_z,
+        ]
+        camera.distance = look_distance
+        camera.azimuth = math.degrees(yaw) + 180.0
+        camera.elevation = 0.0
+    elif camera_id == "torso_pov":
+        eye_z = root_z + 0.92
+        look_distance = 1.05
+        camera.lookat[:] = [
+            root_x + forward_x * look_distance,
+            root_y + forward_y * look_distance,
+            eye_z - 0.03,
+        ]
+        camera.distance = look_distance
+        camera.azimuth = math.degrees(yaw) + 180.0
+        camera.elevation = -2.0
     else:
         camera.distance = 3.2
         camera.azimuth = 220.0
         camera.elevation = -18.0
     return camera
+
+
+def _has_fixed_camera(mujoco_module: Any, model: Any, camera_id: str) -> bool:
+    camera_name = FIXED_G1_CAMERA_NAMES.get(camera_id)
+    if not camera_name:
+        return False
+    try:
+        return (
+            int(mujoco_module.mj_name2id(model, mujoco_module.mjtObj.mjOBJ_CAMERA, camera_name))
+            >= 0
+        )
+    except Exception:
+        return False
+
+
+def _camera_for_render(
+    mujoco_module: Any,
+    model: Any,
+    camera_id: str,
+    root_position: Sequence[float],
+    yaw: float,
+) -> Any:
+    if _has_fixed_camera(mujoco_module, model, camera_id):
+        return FIXED_G1_CAMERA_NAMES[camera_id]
+    return _camera_for(mujoco_module, camera_id, root_position, yaw)
+
+
+def _camera_contract(camera_id: str, *, fixed_camera_used: bool) -> dict[str, Any]:
+    egocentric = camera_id in EGOCENTRIC_VIDEO_CAMERAS
+    return {
+        "camera_id": camera_id,
+        "camera_mount": (
+            "g1_head_fixed_mjcf_camera"
+            if camera_id in {"head_pov", "robot_pov"}
+            else "g1_torso_fixed_mjcf_camera"
+            if camera_id == "torso_pov"
+            else "external_review_camera"
+        ),
+        "fixed_mujoco_camera_used": bool(fixed_camera_used),
+        "fixed_mujoco_camera_name": FIXED_G1_CAMERA_NAMES.get(camera_id),
+        "egocentric_sensor_view": bool(egocentric),
+        "first_person_policy_observation_candidate": bool(egocentric),
+        "hands_or_end_effectors_expected_in_view": bool(egocentric),
+        "hands_or_end_effectors_expected_due_to_observation_pose": bool(egocentric),
+        "fallback_free_camera_used": bool(egocentric and not fixed_camera_used),
+        "camera_truth_boundary": {
+            "simulated_camera_view": True,
+            "physical_robot_sensor_proof": False,
+            "third_person_overview_is_diagnostic_not_policy_observation": not egocentric,
+        },
+    }
 
 
 def _write_video_from_frames(*, frames_dir: Path, output_path: Path, fps: int) -> dict[str, Any]:
@@ -2410,6 +6225,106 @@ def _write_video_from_frames(*, frames_dir: Path, output_path: Path, fps: int) -
         "stderr": (result.stderr or "")[-800:],
         "size_bytes": output_path.stat().st_size if output_path.is_file() else 0,
     }
+
+
+def _capture_policy_visual_observation(
+    *,
+    job_dir: Path,
+    renderer: Any,
+    image_module: Any,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    run: Mapping[str, Any],
+    step: int,
+    camera_id: str,
+    root_position: Sequence[float],
+    yaw: float,
+    root_qpos: int,
+) -> dict[str, Any]:
+    if renderer is None or image_module is None:
+        return {
+            "schema_version": "policy_visual_observation.v1",
+            "available": False,
+            "episode_id": run.get("episode_id"),
+            "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+            "task_id": run.get("task_id"),
+            "spawn_id": run.get("spawn_id"),
+            "step": step,
+            "camera_id": camera_id,
+            "camera_frame_path": None,
+            "blockers": ["policy_observation_renderer_unavailable"],
+            "claim_boundary": {
+                "visual_observation_required_for_real_vla_policy": True,
+                "missing_visual_observation_blocks_openvla_or_cosmos_policy_proof": True,
+            },
+        }
+    try:
+        fixed_camera_used = _has_fixed_camera(mujoco_module, model, camera_id)
+        camera = _camera_for_render(mujoco_module, model, camera_id, root_position, yaw)
+        renderer.update_scene(data, camera=camera)
+        frame = renderer.render()
+        frame_dir = job_dir / "policy_observation_frames" / str(run.get("episode_id")) / camera_id
+        ensure_dir(frame_dir)
+        frame_path = frame_dir / f"step_{int(step):06d}.jpg"
+        image_module.fromarray(frame).save(frame_path, quality=85)
+        unitree_g1_sonic_state, unitree_g1_sonic_state_metadata = (
+            _build_unitree_g1_sonic_state_from_mujoco(
+                mujoco_module=mujoco_module,
+                model=model,
+                data=data,
+                root_qpos=root_qpos,
+            )
+        )
+        return {
+            "schema_version": "policy_visual_observation.v1",
+            "available": True,
+            "episode_id": run.get("episode_id"),
+            "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+            "task_id": run.get("task_id"),
+            "spawn_id": run.get("spawn_id"),
+            "step": int(step),
+            "camera_id": camera_id,
+            "camera_frame_path": str(frame_path),
+            "image_width": int(frame.shape[1]),
+            "image_height": int(frame.shape[0]),
+            "image_encoding": "jpeg",
+            "fixed_mujoco_camera_used": bool(fixed_camera_used),
+            "fixed_mujoco_camera_name": FIXED_G1_CAMERA_NAMES.get(camera_id),
+            "egocentric_sensor_view": camera_id in EGOCENTRIC_VIDEO_CAMERAS,
+            "first_person_policy_observation_candidate": camera_id in EGOCENTRIC_VIDEO_CAMERAS,
+            "physical_robot_sensor_proof": False,
+            "unitree_g1_sonic_state": unitree_g1_sonic_state,
+            "unitree_g1_sonic_state_source": "simulated_mujoco_qpos_joint_groups",
+            "unitree_g1_sonic_state_metadata": unitree_g1_sonic_state_metadata,
+            "blockers": [],
+            "claim_boundary": {
+                "simulated_camera_view": True,
+                "physical_robot_sensor_proof": False,
+                "visual_observation_path_can_feed_vla_policy_endpoint": True,
+                "unitree_g1_sonic_state_is_simulated_mujoco_state": True,
+                "unitree_g1_sonic_state_is_physical_proprioception": False,
+            },
+        }
+    except Exception as exc:
+        return {
+            "schema_version": "policy_visual_observation.v1",
+            "available": False,
+            "episode_id": run.get("episode_id"),
+            "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+            "task_id": run.get("task_id"),
+            "spawn_id": run.get("spawn_id"),
+            "step": step,
+            "camera_id": camera_id,
+            "camera_frame_path": None,
+            "blockers": ["policy_observation_frame_capture_failed"],
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:300],
+            "claim_boundary": {
+                "visual_observation_required_for_real_vla_policy": True,
+                "missing_visual_observation_blocks_openvla_or_cosmos_policy_proof": True,
+            },
+        }
 
 
 def _episode_frame_steps(
@@ -2460,11 +6375,7 @@ def _video_timing_contract(
     )
     playback_scale = encoded_duration_s / physics_duration_s if physics_duration_s > 0 else None
     fixed_fps_forced = int(requested_fps) > 0
-    slow_motion = bool(
-        fixed_fps_forced
-        and playback_scale is not None
-        and playback_scale > 1.2
-    )
+    slow_motion = bool(fixed_fps_forced and playback_scale is not None and playback_scale > 1.2)
     return {
         "requested_fps": int(requested_fps),
         "encoded_video_fps": int(encoded_fps),
@@ -2479,9 +6390,61 @@ def _video_timing_contract(
         "fixed_fps_forced_by_user": fixed_fps_forced,
         "video_playback_may_look_slow_motion": slow_motion,
         "slow_motion_reason": (
-            "fixed_fps_lower_than_mujoco_step_rate_for_captured_frames"
-            if slow_motion
-            else None
+            "fixed_fps_lower_than_mujoco_step_rate_for_captured_frames" if slow_motion else None
+        ),
+    }
+
+
+def _review_video_sampling_contract(
+    *,
+    fps: int,
+    timestep: float,
+    video_frame_stride_steps: int,
+    render_frame_count: int,
+    extend_terminal_frame_for_review: bool,
+) -> dict[str, Any]:
+    stride = max(1, int(video_frame_stride_steps))
+    expected_sim_time_fps = _video_output_fps(
+        requested_fps=0,
+        timestep=timestep,
+        stride_steps=stride,
+    )
+    captures_every_step = stride == 1
+    fixed_fps = int(fps) > 0
+    default_stride = int(render_frame_count) <= 0 and stride == DEFAULT_VIDEO_FRAME_STRIDE_STEPS
+    nominal_realtime_review_mp4 = bool(default_stride and int(fps) == DEFAULT_REVIEW_VIDEO_FPS)
+    if nominal_realtime_review_mp4:
+        sampling_mode = "nominal_realtime_stride_review"
+    elif captures_every_step and not fixed_fps:
+        sampling_mode = "every_sim_step_sim_time_review"
+    elif captures_every_step and fixed_fps:
+        sampling_mode = "every_sim_step_fixed_fps_debug_slow_motion"
+    elif int(render_frame_count) > 0:
+        sampling_mode = "fixed_sample_count_review"
+    else:
+        sampling_mode = "custom_stride_review"
+    return {
+        "schema_version": "review_video_sampling_contract.v1",
+        "sampling_mode": sampling_mode,
+        "sample_every_n_sim_steps": stride,
+        "captures_every_mujoco_step": captures_every_step,
+        "captures_bounded_stride_frames": not captures_every_step,
+        "mujoco_timestep_s": round(float(timestep), 9),
+        "sim_seconds_per_rendered_frame": round(float(timestep) * stride, 9),
+        "expected_sim_time_fps_for_stride": expected_sim_time_fps,
+        "requested_or_default_fps": int(fps),
+        "default_review_video_fps": DEFAULT_REVIEW_VIDEO_FPS,
+        "nominal_realtime_review_mp4": nominal_realtime_review_mp4,
+        "recommended_for_matrix_runs": nominal_realtime_review_mp4,
+        "every_frame_at_fixed_60fps_is_debug_slow_motion": bool(captures_every_step and fixed_fps),
+        "why_not_every_frame_by_default": (
+            "MuJoCo steps at 0.002s by default; encoding every step at fixed 60fps "
+            "turns simulator time into slow-motion review video. The default samples "
+            "every 8 sim steps and encodes at 60fps, which is close to real-time."
+        ),
+        "terminal_failure_frame_hold_enabled": bool(extend_terminal_frame_for_review),
+        "review_video_stops_at_terminal_failure_by_default": not bool(
+            extend_terminal_frame_for_review
         ),
     }
 
@@ -2558,7 +6521,11 @@ def _score_attempt(
         blocker_labels.append("failure_g1_fell_in_mujoco")
     if unsafe_collision_count:
         blocker_labels.append("failure_unsafe_obstacle_contact")
-    if rejected_action_count and run.get("spawn_id") == "blocked_or_occluded" and task_id == "inspect_target":
+    if (
+        rejected_action_count
+        and run.get("spawn_id") == "blocked_or_occluded"
+        and task_id == "inspect_target"
+    ):
         return (
             "blocked",
             False,
@@ -2578,7 +6545,9 @@ def _score_attempt(
         and object_displacement_m >= SAFETY_LIMITS["object_displacement_success_m"]
     )
     if task_id == "inspect_target":
-        success = route_safety and any(action in {"inspect_look", "look"} for action in action_types)
+        success = route_safety and any(
+            action in {"inspect_look", "look"} for action in action_types
+        )
     elif task_id == "approach_target":
         success = route_safety and navigation_success
     elif task_id == "route_around_obstruction":
@@ -2590,7 +6559,11 @@ def _score_attempt(
     else:
         success = route_safety and navigation_success
     labels = list(blocker_labels)
-    if not navigation_success and task_id in {"approach_target", "route_around_obstruction", "stop_at_goal_and_report"}:
+    if not navigation_success and task_id in {
+        "approach_target",
+        "route_around_obstruction",
+        "stop_at_goal_and_report",
+    }:
         labels.append("failure_goal_not_reached")
     if task_id == "contact_or_push_light_object" and not contact_success:
         labels.append("failure_object_contact_or_displacement_not_validated")
@@ -2643,13 +6616,15 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     run_unitree_controller_replay_from_endpoint_actions: bool = False,
     unitree_controller_replay_steps: int = 400,
     controller_backend: str = DEFAULT_CONTROLLER_BACKEND,
+    policy_lane: str = "auto",
+    unitree_lerobot_mode: str = "probe",
+    allow_policy_action_model_command_run: bool = False,
+    wam_loop_step_count: int = DEFAULT_WAM_LOOP_STEP_COUNT,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated_at = generated_at or utc_now_iso()
     if controller_backend not in CONTROLLER_BACKENDS:
-        raise ValueError(
-            f"controller_backend must be one of {', '.join(CONTROLLER_BACKENDS)}"
-        )
+        raise ValueError(f"controller_backend must be one of {', '.join(CONTROLLER_BACKENDS)}")
     if job_dir is None:
         root = job_root or (_repo_root() / "robot_eval_jobs")
         job_dir = root / f"mujoco_g1_wam_vla_policy_endpoint_eval_{_utc_timestamp_for_path()}"
@@ -2723,8 +6698,92 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "isaac_runtime_proven_by_this_lane": False,
         },
     )
+    unitree_lerobot_config = UnitreeLeRobotPolicyRuntimeConfig.from_env(
+        job_dir=job_dir,
+        mode=unitree_lerobot_mode,
+        timeout_seconds=min(float(endpoint_timeout_seconds), 30.0),
+    )
+    unitree_lerobot_runtime_summary = run_unitree_lerobot_g1_policy_eval(
+        job_dir=job_dir,
+        config=unitree_lerobot_config,
+        generated_at=generated_at,
+    )
+    unitree_groot_n17_sonic_runtime_summary = run_unitree_groot_n17_sonic_policy_runtime(
+        job_dir=job_dir,
+        generated_at=generated_at,
+    )
+    unitree_stack_installation_audit = build_unitree_policy_stack_installation_audit(
+        job_dir=job_dir,
+        generated_at=generated_at,
+        config=unitree_lerobot_config,
+    )
+    write_json(
+        job_dir / "unitree_policy_stack_installation_audit.json",
+        unitree_stack_installation_audit,
+    )
+    write_json(
+        job_dir / "unitree_policy_provider_registry_probe.json",
+        build_policy_provider_registry_probe(
+            job_dir=job_dir,
+            generated_at=generated_at,
+            config=unitree_lerobot_config,
+        ),
+    )
     write_json(job_dir / "wam_vla_observation_packet_schema.json", _observation_schema())
     write_json(job_dir / "wam_vla_action_schema.json", _action_schema())
+    policy_action_model_command_execution = run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at=generated_at,
+        allow_policy_action_model_command_run=allow_policy_action_model_command_run,
+        timeout_seconds=min(float(endpoint_timeout_seconds), 30.0),
+    )
+    if (
+        policy_action_model_command_execution.get("selected_candidate_id")
+        == GROOT_POLICY_ID
+    ):
+        unitree_groot_n17_sonic_audit = probe_unitree_groot_n17_sonic_runtime(
+            generated_at=generated_at
+        )
+        unitree_groot_n17_sonic_truth = (
+            build_unitree_groot_n17_sonic_runtime_truth_boundary(
+                audit=unitree_groot_n17_sonic_audit,
+                policy_action_command_result=policy_action_model_command_execution,
+            )
+        )
+        unitree_groot_n17_sonic_runtime_summary = {
+            **unitree_groot_n17_sonic_runtime_summary,
+            "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_groot_n17_sonic_policy_action_command_ran"
+                )
+            ),
+            "unitree_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_policy_action_command_ran"
+                )
+            ),
+            "unitree_specific_manipulation_candidate_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_specific_manipulation_candidate_ran"
+                )
+            ),
+            "openvla_policy_action_command_ran": False,
+            "truth_boundary_path": str(
+                job_dir / "unitree_groot_n17_sonic_policy_runtime_truth_boundary.json"
+            ),
+        }
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_installation_audit.json",
+            unitree_groot_n17_sonic_audit,
+        )
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_policy_runtime_truth_boundary.json",
+            unitree_groot_n17_sonic_truth,
+        )
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_policy_runtime_summary.json",
+            unitree_groot_n17_sonic_runtime_summary,
+        )
 
     try:
         import mujoco  # type: ignore[import-not-found]
@@ -2745,6 +6804,22 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "job_dir": str(job_dir),
             "mujoco_runtime_available": False,
             "unitree_g1_loaded_in_mujoco": False,
+            "policy_lane": policy_lane,
+            "unitree_lerobot_runtime_status": unitree_lerobot_runtime_summary.get("status"),
+            "unitree_lerobot_runtime_configured": unitree_lerobot_runtime_summary.get(
+                "unitree_lerobot_runtime_configured"
+            ),
+            "unitree_lerobot_sim_inference_proven": unitree_lerobot_runtime_summary.get(
+                "unitree_lerobot_sim_inference_proven"
+            ),
+            "unitree_groot_n17_sonic_runtime_status": (
+                unitree_groot_n17_sonic_runtime_summary.get("status")
+            ),
+            "unitree_groot_n17_sonic_policy_configured": (
+                unitree_groot_n17_sonic_runtime_summary.get(
+                    "unitree_groot_n17_sonic_policy_configured"
+                )
+            ),
             "blockers": ["mujoco_import_failed"],
             "physical_robot_readiness_proven": False,
             "deployment_readiness_proven": False,
@@ -2774,14 +6849,27 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         allow_fetch=allow_fetch_g1_assets,
         menagerie_ref=menagerie_ref,
     )
+    g1_source_xml, g1_mjcf_selection = _select_g1_policy_observation_mjcf(g1_root)
     g1_abs_xml = job_dir / "generated_mujoco" / "unitree_g1_absolute_meshes.xml"
-    _write_g1_xml_with_absolute_meshes(g1_root / "g1.xml", g1_abs_xml)
+    _write_g1_xml_with_absolute_meshes(g1_source_xml, g1_abs_xml)
+    g1_fixed_camera_manifest = _add_g1_fixed_egocentric_cameras(g1_abs_xml)
+    write_json(job_dir / "g1_fixed_egocentric_camera_manifest.json", g1_fixed_camera_manifest)
     asset_manifest = {
         "schema_version": "unitree_g1_mujoco_asset_source_manifest.v1",
         "generated_at": generated_at,
         **_asset_source_manifest(g1_root),
-        "resolved_g1_xml": str(g1_root / "g1.xml"),
+        "resolved_g1_xml": str(g1_source_xml),
+        "g1_mjcf_selection": g1_mjcf_selection,
+        "hands_capable_g1_mjcf_selected": bool(
+            g1_mjcf_selection.get("hands_capable_g1_mjcf_selected")
+        ),
         "generated_absolute_mesh_xml": str(g1_abs_xml),
+        "g1_fixed_egocentric_camera_manifest": str(
+            job_dir / "g1_fixed_egocentric_camera_manifest.json"
+        ),
+        "g1_fixed_egocentric_cameras_mounted": bool(
+            g1_fixed_camera_manifest.get("status") == "completed"
+        ),
         "unitree_g1_mujoco_model_source": "google_deepmind_mujoco_menagerie",
     }
     write_json(job_dir / "unitree_g1_mujoco_asset_source_manifest.json", asset_manifest)
@@ -2792,6 +6880,11 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     write_json(job_dir / "mujoco_scene_manifest.json", scene_manifest)
     navigation_discovery = discover_realistic_navigation_policy(generated_at=generated_at)
     write_json(job_dir / "realistic_navigation_policy_discovery.json", navigation_discovery)
+    manipulation_policy_discovery = discover_unitree_manipulation_policy(generated_at=generated_at)
+    write_json(
+        job_dir / "unitree_g1_manipulation_policy_discovery.json",
+        manipulation_policy_discovery,
+    )
     official_controller_sidecar = _run_official_unitree_controller_sidecar(
         job_dir=job_dir,
         job_id=job_id,
@@ -2850,6 +6943,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         max_spawns=max_spawns,
     )
     write_json(job_dir / "scenario_eval_matrix.json", matrix)
+    timestep: float | None = None
     write_json(
         job_dir / "episode_spec_manifest.json",
         {
@@ -2865,9 +6959,11 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     "spawn_id": run["spawn_id"],
                     "steps_per_episode": steps_per_episode,
                     "policy_interval_steps": policy_interval_steps,
-                    "expected_sim_duration_seconds": round(float(steps_per_episode) * float(timestep), 6)
-                    if "timestep" in locals()
-                    else None,
+                    "expected_sim_duration_seconds": (
+                        round(float(steps_per_episode) * timestep, 6)
+                        if timestep is not None
+                        else None
+                    ),
                     "simulator": "mujoco",
                     "robot_profile_id": ROBOT_PROFILE_ID,
                 }
@@ -2892,9 +6988,109 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     stand_key_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "stand")
     base_qpos = model.key_qpos[stand_key_id].copy() if stand_key_id >= 0 else model.qpos0.copy()
     root_z = float(base_qpos[root_qpos + 2])
-    object_initial_pose = [0.36, -0.65, 0.27, 1.0, 0.0, 0.0, 0.0]
+    object_initial_pose = [0.36, -0.65, 0.24, 1.0, 0.0, 0.0, 0.0]
     timestep = float(model.opt.timestep)
     contact_metadata = _build_contact_metadata(model, mujoco)
+    unitree_groot_n17_sonic_sim2sim_execution: dict[str, Any] = {
+        "schema_version": "unitree_groot_n17_sonic_sim2sim_execution.v1",
+        "generated_at": generated_at,
+        "status": "skipped",
+        "policy_id": GROOT_POLICY_ID,
+        "selected_candidate_id": policy_action_model_command_execution.get(
+            "selected_candidate_id"
+        ),
+        "unitree_groot_n17_sonic_sim2sim_command_ran": False,
+        "unitree_groot_n17_sonic_action_chunk_consumed": False,
+        "blockers": ["skipped_unitree_groot_n17_sonic_policy_action_command_not_completed"],
+        "claim_boundary": {
+            "simulator_only": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "real_world_manipulation_success_proven": False,
+        },
+    }
+    if (
+        policy_action_model_command_execution.get("selected_candidate_id")
+        == GROOT_POLICY_ID
+        and policy_action_model_command_execution.get(
+            "unitree_groot_n17_sonic_policy_action_command_ran"
+        )
+    ):
+        phase("unitree_groot_n17_sonic_sim2sim_started", "running")
+        unitree_groot_n17_sonic_sim2sim_execution = run_unitree_groot_n17_sonic_sim2sim(
+            job_dir=job_dir,
+            policy_action_output=job_dir / "policy_action_model_command_output.json",
+            scene_xml=Path(str(scene_manifest["scene_xml"])),
+            steps=min(40, max(1, int(steps_per_episode))),
+            action_hold_steps=10,
+            render_video=bool(render),
+            generated_at=generated_at,
+        )
+        phase(
+            "unitree_groot_n17_sonic_sim2sim_completed",
+            str(unitree_groot_n17_sonic_sim2sim_execution.get("status") or "blocked"),
+            sim2sim_command_ran=bool(
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "unitree_groot_n17_sonic_sim2sim_command_ran"
+                )
+            ),
+        )
+        unitree_groot_n17_sonic_audit = probe_unitree_groot_n17_sonic_runtime(
+            generated_at=generated_at
+        )
+        unitree_groot_n17_sonic_truth = (
+            build_unitree_groot_n17_sonic_runtime_truth_boundary(
+                audit=unitree_groot_n17_sonic_audit,
+                policy_action_command_result=policy_action_model_command_execution,
+                sim2sim_result=unitree_groot_n17_sonic_sim2sim_execution,
+            )
+        )
+        unitree_groot_n17_sonic_runtime_summary = {
+            **unitree_groot_n17_sonic_runtime_summary,
+            "ready_for_sim2sim": unitree_groot_n17_sonic_audit["ready_for_sim2sim"],
+            "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_groot_n17_sonic_policy_action_command_ran"
+                )
+            ),
+            "unitree_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_policy_action_command_ran"
+                )
+            ),
+            "unitree_specific_manipulation_candidate_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_specific_manipulation_candidate_ran"
+                )
+            ),
+            "openvla_policy_action_command_ran": False,
+            "sim2sim_command_ran": bool(
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "unitree_groot_n17_sonic_sim2sim_command_ran"
+                )
+            ),
+            "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": bool(
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "unitree_groot_n17_sonic_action_chunk_consumed"
+                )
+            ),
+            "sim2sim_execution_path": str(
+                job_dir / "unitree_groot_n17_sonic_sim2sim_execution.json"
+            ),
+        }
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_installation_audit.json",
+            unitree_groot_n17_sonic_audit,
+        )
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_policy_runtime_truth_boundary.json",
+            unitree_groot_n17_sonic_truth,
+        )
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_policy_runtime_summary.json",
+            unitree_groot_n17_sonic_runtime_summary,
+        )
     selected_unitree_root_for_auto = _select_unitree_rl_gym_root(
         explicit_root=unitree_rl_gym_root,
         discovery=navigation_discovery,
@@ -2937,10 +7133,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         same_scene_controller_manifest,
     )
     same_scene_controller_ready = same_scene_controller is not None
-    if (
-        controller_backend == "unitree_rl_gym"
-        and not same_scene_controller_ready
-    ):
+    if controller_backend == "unitree_rl_gym" and not same_scene_controller_ready:
         blocked_summary = {
             "schema_version": LANE_SCHEMA_VERSION,
             "generated_at": generated_at,
@@ -2949,7 +7142,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "job_dir": str(job_dir),
             "mujoco_runtime_available": True,
             "unitree_g1_mujoco_model_source": asset_manifest["unitree_g1_mujoco_model_source"],
-            "unitree_g1_mujoco_model_path": str(g1_root / "g1.xml"),
+            "unitree_g1_mujoco_model_path": str(g1_source_xml),
+            "unitree_g1_hands_capable_mjcf_selected": bool(
+                g1_mjcf_selection.get("hands_capable_g1_mjcf_selected")
+            ),
             "unitree_g1_loaded_in_mujoco": True,
             "requested_controller_backend": controller_backend,
             "resolved_controller_backend_for_setup": controller_backend_for_setup,
@@ -3016,6 +7212,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     action_rows: list[dict[str, Any]] = []
     rejected_actions: list[dict[str, Any]] = []
     endpoint_attempt_rows: list[dict[str, Any]] = []
+    policy_visual_observation_rows: list[dict[str, Any]] = []
+    g1_projected_skeleton_rows: list[dict[str, Any]] = []
     contact_rows: list[dict[str, Any]] = []
     manipulation_contacts: list[dict[str, Any]] = []
     contact_trace_row_limit = max(0, int(max_contact_trace_rows))
@@ -3037,6 +7235,26 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     poster_rows: list[dict[str, Any]] = []
     ffprobe_rows: list[dict[str, Any]] = []
     same_scene_controller_rows: list[dict[str, Any]] = []
+    review_video_sampling = _review_video_sampling_contract(
+        fps=fps,
+        timestep=timestep,
+        video_frame_stride_steps=video_frame_stride_steps,
+        render_frame_count=render_frame_count,
+        extend_terminal_frame_for_review=extend_terminal_frame_for_review,
+    )
+    egocentric_observation_pose_manifest: dict[str, Any] = {
+        "schema_version": "egocentric_upper_body_observation_pose.v1",
+        "generated_at": generated_at,
+        "status": "not_run",
+        "pose_id": "g1_hands_forward_egocentric_observation_pose",
+        "hand_end_effector_policy_used": False,
+        "claim_boundary": {
+            "upper_body_pose_is_support_framing_not_hand_policy_execution": True,
+            "hand_end_effector_policy_used": False,
+            "dexterous_manipulation_policy_proven": False,
+            "physical_robot_sensor_proof": False,
+        },
+    }
 
     try:
         for episode_index, run in enumerate(matrix["runs"], start=1):
@@ -3050,10 +7268,21 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 float(spawn_pose[1]),
                 root_z,
             ]
-            data.qpos[root_qpos + 3 : root_qpos + 7] = _yaw_quat(float(run.get("spawn_yaw_rad") or 0.0))
+            data.qpos[root_qpos + 3 : root_qpos + 7] = _yaw_quat(
+                float(run.get("spawn_yaw_rad") or 0.0)
+            )
             if object_qpos is not None:
                 data.qpos[object_qpos : object_qpos + 7] = object_initial_pose
-                data.qvel[int(model.jnt_dofadr[object_joint_id]) : int(model.jnt_dofadr[object_joint_id]) + 6] = 0.0
+                data.qvel[
+                    int(model.jnt_dofadr[object_joint_id]) : int(model.jnt_dofadr[object_joint_id])
+                    + 6
+                ] = 0.0
+            egocentric_observation_pose_manifest = _apply_egocentric_upper_body_observation_pose(
+                model=model,
+                mujoco_module=mujoco,
+                data=data,
+                generated_at=generated_at,
+            )
             if same_scene_controller is not None:
                 same_scene_controller.reset(data)
             else:
@@ -3081,17 +7310,26 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             video_render_mode = "not_requested"
             video_render_stride_steps = 0
             video_fps = max(1, int(fps) if int(fps) > 0 else 1)
-            render_episode_video = renderer is not None and image_module is not None and (
-                rendered_video_episode_cap is None or episode_index <= rendered_video_episode_cap
+            render_episode_video = (
+                renderer is not None
+                and image_module is not None
+                and (
+                    rendered_video_episode_cap is None
+                    or episode_index <= rendered_video_episode_cap
+                )
             )
             if render_episode_video:
-                frame_step_list, video_render_mode, video_render_stride_steps = _episode_frame_steps(
-                    steps_per_episode=steps_per_episode,
-                    render_frame_count=render_frame_count,
-                    video_frame_stride_steps=video_frame_stride_steps,
+                frame_step_list, video_render_mode, video_render_stride_steps = (
+                    _episode_frame_steps(
+                        steps_per_episode=steps_per_episode,
+                        render_frame_count=render_frame_count,
+                        video_frame_stride_steps=video_frame_stride_steps,
+                    )
                 )
                 frame_steps = set(frame_step_list)
-                frame_index_by_step = {frame_step: index for index, frame_step in enumerate(frame_step_list)}
+                frame_index_by_step = {
+                    frame_step: index for index, frame_step in enumerate(frame_step_list)
+                }
                 video_fps = _video_output_fps(
                     requested_fps=fps,
                     timestep=timestep,
@@ -3109,6 +7347,68 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 )
                 current_contacts = current_contact_state["records"]
                 if step % max(1, int(policy_interval_steps)) == 0:
+                    current_root_pos = [
+                        float(value) for value in data.qpos[root_qpos : root_qpos + 3]
+                    ]
+                    current_root_quat = [
+                        float(value) for value in data.qpos[root_qpos + 3 : root_qpos + 7]
+                    ]
+                    visual_observation = _capture_policy_visual_observation(
+                        job_dir=job_dir,
+                        renderer=renderer,
+                        image_module=image_module,
+                        mujoco_module=mujoco,
+                        model=model,
+                        data=data,
+                        run=run,
+                        step=step,
+                        camera_id="head_pov",
+                        root_position=current_root_pos,
+                        yaw=_yaw_from_quat(current_root_quat),
+                        root_qpos=root_qpos,
+                    )
+                    policy_visual_observation_rows.append(visual_observation)
+                    try:
+                        g1_projected_skeleton_rows.append(
+                            _build_g1_projected_skeleton_trace_row(
+                                mujoco_module=mujoco,
+                                model=model,
+                                data=data,
+                                run=run,
+                                step=step,
+                                visual_observation=visual_observation,
+                            )
+                        )
+                    except Exception as exc:
+                        g1_projected_skeleton_rows.append(
+                            {
+                                "schema_version": G1_PROJECTED_SKELETON_SCHEMA_ID,
+                                "status": "blocked",
+                                "episode_id": run.get("episode_id"),
+                                "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+                                "task_id": run.get("task_id"),
+                                "spawn_id": run.get("spawn_id"),
+                                "step": int(step),
+                                "camera_id": visual_observation.get("camera_id"),
+                                "camera_frame_path": visual_observation.get("camera_frame_path"),
+                                "landmarks": [],
+                                "segments": [
+                                    {"from": start, "to": end}
+                                    for start, end in G1_UPPER_BODY_SKELETON_SEGMENTS
+                                ],
+                                "available_landmark_count": 0,
+                                "projected_landmark_count": 0,
+                                "blockers": ["g1_projected_skeleton_trace_row_build_failed"],
+                                "error": str(exc),
+                                "claim_boundary": {
+                                    "uses_unitree_g1_mujoco_body_transforms": False,
+                                    "simulated_g1_kinematic_skeleton_available": False,
+                                    "not_hand_drawn_stick_figure": True,
+                                    "not_physical_robot_sensor_proof": True,
+                                    "not_dexterous_hand_policy_execution": True,
+                                },
+                            }
+                        )
                     observation = _build_observation_packet(
                         model=model,
                         data=data,
@@ -3119,6 +7419,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                         step=step,
                         contacts=current_contacts,
                         contact_summary=current_contact_state,
+                        visual_observation=visual_observation,
                         mujoco_version=str(getattr(mujoco, "__version__", "")),
                     )
                     raw_policy_payload, endpoint_meta = _call_endpoint_action(
@@ -3189,6 +7490,13 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                             "spawn_id": run["spawn_id"],
                             "step": step,
                             "source": source,
+                            "visual_observation_available": bool(
+                                visual_observation.get("available")
+                            ),
+                            "visual_observation_camera_id": visual_observation.get("camera_id"),
+                            "visual_observation_frame_path": visual_observation.get(
+                                "camera_frame_path"
+                            ),
                             **endpoint_meta,
                             "normalized_action_status": normalized["normalization_status"],
                         }
@@ -3232,9 +7540,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     data.qvel[root_dof + 5] = float(active_action.get("yaw_rate_rad_s") or 0.0)
                     _set_joint_position_holds(model, data)
                 mujoco.mj_step(model, data)
-                remaining_contact_trace_rows = max(
-                    0, contact_trace_row_limit - len(contact_rows)
-                )
+                remaining_contact_trace_rows = max(0, contact_trace_row_limit - len(contact_rows))
                 step_contact_state = _contact_state(
                     model,
                     data,
@@ -3302,11 +7608,14 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                         "root_position": [round(value, 6) for value in root_position],
                         "root_quaternion_wxyz": [round(value, 6) for value in root_quat],
                         "root_yaw_rad": round(_yaw_from_quat(root_quat), 6),
-                        "root_linear_velocity_xyz_mps": [round(value, 6) for value in root_velocity],
+                        "root_linear_velocity_xyz_mps": [
+                            round(value, 6) for value in root_velocity
+                        ],
                         "active_action": dict(active_action),
                         "controller_backend": selected_controller_backend,
                         "freejoint_proxy_used": selected_controller_backend == "freejoint_proxy",
-                        "official_unitree_controller_used": selected_controller_backend == "unitree_rl_gym",
+                        "official_unitree_controller_used": selected_controller_backend
+                        == "unitree_rl_gym",
                         "contact_count": int(step_contact_state.get("contact_count") or 0),
                         "sampled_contact_record_count": len(contacts),
                         "contact_trace_truncated": bool(
@@ -3321,7 +7630,13 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     for camera_id in selected_video_cameras:
                         frames_dir = job_dir / "mujoco_frames" / str(run["episode_id"]) / camera_id
                         ensure_dir(frames_dir)
-                        camera = _camera_for(mujoco, camera_id, root_position, _yaw_from_quat(root_quat))
+                        camera = _camera_for_render(
+                            mujoco,
+                            model,
+                            camera_id,
+                            root_position,
+                            _yaw_from_quat(root_quat),
+                        )
                         renderer.update_scene(data, camera=camera)
                         frame = renderer.render()
                         frame_index = frame_index_by_step[step]
@@ -3357,8 +7672,12 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 for camera_id in selected_video_cameras:
                     output_name = camera_id
                     frames_dir = job_dir / "mujoco_frames" / str(run["episode_id"]) / camera_id
-                    video_path = job_dir / "mujoco_videos" / f"{run['episode_id']}__{output_name}.mp4"
-                    poster_path = job_dir / "mujoco_posters" / f"{run['episode_id']}__{output_name}.png"
+                    video_path = (
+                        job_dir / "mujoco_videos" / f"{run['episode_id']}__{output_name}.mp4"
+                    )
+                    poster_path = (
+                        job_dir / "mujoco_posters" / f"{run['episode_id']}__{output_name}.png"
+                    )
                     if frames_dir.is_dir():
                         frame_files = sorted(frames_dir.glob("frame_*.png"))
                         if frame_files:
@@ -3396,12 +7715,19 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                             video.update(
                                 {
                                     "render_mode": video_render_mode,
+                                    **_camera_contract(
+                                        output_name,
+                                        fixed_camera_used=_has_fixed_camera(
+                                            mujoco, model, output_name
+                                        ),
+                                    ),
                                     "rendered_frame_count": len(frame_files),
                                     "physics_rendered_frame_count": physics_frame_count,
                                     "requested_frame_count": len(frame_step_list),
                                     "missing_terminal_frame_count": missing_terminal_frame_count,
                                     "terminal_frame_hold_count": terminal_frame_hold_count,
-                                    "terminal_frame_extended_for_review": terminal_frame_hold_count > 0,
+                                    "terminal_frame_extended_for_review": terminal_frame_hold_count
+                                    > 0,
                                     "terminal_failure_frame_hold_enabled": bool(
                                         extend_terminal_frame_for_review
                                     ),
@@ -3423,6 +7749,18 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                                     "video_playback_may_look_slow_motion": timing[
                                         "video_playback_may_look_slow_motion"
                                     ],
+                                    "review_video_sampling_mode": review_video_sampling[
+                                        "sampling_mode"
+                                    ],
+                                    "nominal_realtime_review_mp4": bool(
+                                        review_video_sampling["nominal_realtime_review_mp4"]
+                                    ),
+                                    "captures_every_mujoco_step": bool(
+                                        review_video_sampling["captures_every_mujoco_step"]
+                                    ),
+                                    "why_not_every_frame_by_default": review_video_sampling[
+                                        "why_not_every_frame_by_default"
+                                    ],
                                     "full_episode_video": (
                                         video_render_mode == "full_episode_stride"
                                         and missing_terminal_frame_count == 0
@@ -3432,19 +7770,56 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                                     ),
                                 }
                             )
-                            probe = _ffprobe_video(video_path) if video.get("status") == "complete" else {
-                                "path": str(video_path),
-                                "status": "not_checked",
-                                "reason": video.get("reason") or "video_not_complete",
+                            probe = (
+                                _ffprobe_video(video_path)
+                                if video.get("status") == "complete"
+                                else {
+                                    "path": str(video_path),
+                                    "status": "not_checked",
+                                    "reason": video.get("reason") or "video_not_complete",
+                                }
+                            )
+                            video_review_validation = (
+                                validate_generated_mp4_for_review(video_path)
+                                if video.get("status") == "complete"
+                                else {
+                                    "schema_version": "wam_generated_video_review_validation.v1",
+                                    "status": "blocked",
+                                    "path": str(video_path),
+                                    "exists": video_path.is_file(),
+                                    "size_bytes": video_path.stat().st_size
+                                    if video_path.is_file()
+                                    else 0,
+                                    "blockers": ["generated_video_not_complete"],
+                                }
+                            )
+                            video.update(
+                                {
+                                    "generated_video_review_validation": video_review_validation,
+                                    "decode_valid_for_review": video_review_validation.get("status")
+                                    == "completed",
+                                }
+                            )
+                            media[output_name] = {
+                                "video": video,
+                                "ffprobe": probe,
+                                "poster": str(poster_path),
                             }
-                            media[output_name] = {"video": video, "ffprobe": probe, "poster": str(poster_path)}
-                            video_rows.append({"episode_id": run["episode_id"], "camera": output_name, **video})
+                            video_identity = {
+                                "episode_id": run["episode_id"],
+                                "scenario_eval_run_id": run["scenario_eval_run_id"],
+                                "task_id": run["task_id"],
+                                "spawn_id": run["spawn_id"],
+                                "camera": output_name,
+                            }
+                            video_rows.append({**video_identity, **video})
                             poster_rows.append(
                                 {
-                                    "episode_id": run["episode_id"],
-                                    "camera": output_name,
+                                    **video_identity,
                                     "path": str(poster_path),
-                                    "size_bytes": poster_path.stat().st_size if poster_path.is_file() else 0,
+                                    "size_bytes": poster_path.stat().st_size
+                                    if poster_path.is_file()
+                                    else 0,
                                 }
                             )
                             ffprobe_rows.append(probe)
@@ -3455,8 +7830,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 and isinstance(camera_media.get("video"), Mapping)
             ]
             media_stops_at_terminal_failure = any(
-                bool(video.get("review_video_stops_at_terminal_failure"))
-                for video in media_videos
+                bool(video.get("review_video_stops_at_terminal_failure")) for video in media_videos
             )
             media_full_episode_video = bool(media_videos) and all(
                 bool(video.get("full_episode_video")) for video in media_videos
@@ -3479,12 +7853,16 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 "spawn_id": run["spawn_id"],
                 "status": status,
                 "success": success,
-                "policy_id": REFERENCE_FIXTURE_POLICY_ID if fixture_policy_used else "endpoint_policy",
+                "policy_id": REFERENCE_FIXTURE_POLICY_ID
+                if fixture_policy_used
+                else "endpoint_policy",
                 "policy_runtime_source": "reference_fixture_policy"
                 if fixture_policy_used
                 else selected_runtime.get("runtime"),
                 "fixture_policy_used": fixture_policy_used,
-                "endpoint_policy_used": bool(not fixture_policy_used and endpoint_policy_valid_actions),
+                "endpoint_policy_used": bool(
+                    not fixture_policy_used and endpoint_policy_valid_actions
+                ),
                 "start_root_position": [round(value, 6) for value in initial_root],
                 "final_root_position": [round(value, 6) for value in final_root],
                 "target_pose": target,
@@ -3515,8 +7893,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     "real_wam_vla_policy_requires_model_provenance": True,
                     "physical_robot_readiness_proven": False,
                     "deployment_readiness_proven": False,
-                    "official_policy_execution_proven": selected_controller_backend == "unitree_rl_gym",
-                    "same_scene_unitree_controller_backend_used": selected_controller_backend == "unitree_rl_gym",
+                    "official_policy_execution_proven": selected_controller_backend
+                    == "unitree_rl_gym",
+                    "same_scene_unitree_controller_backend_used": selected_controller_backend
+                    == "unitree_rl_gym",
                     "freejoint_proxy_used": selected_controller_backend == "freejoint_proxy",
                 },
             }
@@ -3637,6 +8017,23 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     same_scene_controller_clamped_update_count = sum(
         1 for row in same_scene_controller_rows if row.get("controller_command_clamped")
     )
+    same_scene_policy_action_clipped_update_count = sum(
+        1 for row in same_scene_controller_rows if row.get("policy_action_clipped")
+    )
+    same_scene_max_raw_policy_action_abs = max(
+        (
+            max(abs(float(value)) for value in row.get("raw_policy_action", []) or [0.0])
+            for row in same_scene_controller_rows
+        ),
+        default=0.0,
+    )
+    same_scene_max_applied_policy_action_abs = max(
+        (
+            max(abs(float(value)) for value in row.get("action", []) or [0.0])
+            for row in same_scene_controller_rows
+        ),
+        default=0.0,
+    )
     if same_scene_controller_ready:
         same_scene_blockers = list(same_scene_controller_manifest.get("blockers", []))
         if total_attempt_fall_count:
@@ -3648,6 +8045,13 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "controller_update_count": len(same_scene_controller_rows),
             "endpoint_action_controller_clamped_command_count": unitree_controller_clamped_command_count,
             "same_scene_controller_clamped_update_count": same_scene_controller_clamped_update_count,
+            "same_scene_policy_action_clipped_update_count": same_scene_policy_action_clipped_update_count,
+            "same_scene_max_raw_policy_action_abs": round(
+                float(same_scene_max_raw_policy_action_abs), 6
+            ),
+            "same_scene_max_applied_policy_action_abs": round(
+                float(same_scene_max_applied_policy_action_abs), 6
+            ),
             "controller_command_limits": dict(UNITREE_RL_GYM_CONTROLLER_COMMAND_LIMITS),
             "fall_count": total_attempt_fall_count,
             "balanced_walking_controller_proven": same_scene_balanced,
@@ -3672,6 +8076,155 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     _write_jsonl(job_dir / "normalized_policy_action_trace.jsonl", action_rows)
     _write_jsonl(job_dir / "policy_endpoint_attempt_trace.jsonl", endpoint_attempt_rows)
     _write_jsonl(job_dir / "policy_endpoint_invocation_trace.jsonl", endpoint_attempt_rows)
+    _write_jsonl(
+        job_dir / "policy_visual_observation_trace.jsonl",
+        policy_visual_observation_rows,
+    )
+    g1_projected_skeleton_trace_path = job_dir / "g1_projected_skeleton_trace.jsonl"
+    _write_jsonl(g1_projected_skeleton_trace_path, g1_projected_skeleton_rows)
+    g1_projected_skeleton_manifest = _g1_projected_skeleton_manifest(
+        generated_at=generated_at,
+        rows=g1_projected_skeleton_rows,
+        output_path=g1_projected_skeleton_trace_path,
+    )
+    write_json(
+        job_dir / "g1_projected_skeleton_manifest.json",
+        g1_projected_skeleton_manifest,
+    )
+    write_json(
+        job_dir / "policy_visual_observation_manifest.json",
+        {
+            "schema_version": "policy_visual_observation_manifest.v1",
+            "generated_at": generated_at,
+            "status": "completed"
+            if any(row.get("available") for row in policy_visual_observation_rows)
+            else "blocked_no_policy_visual_observations",
+            "camera_id": "head_pov",
+            "observation_count": len(policy_visual_observation_rows),
+            "available_observation_count": sum(
+                1 for row in policy_visual_observation_rows if row.get("available")
+            ),
+            "first_available_frame_path": next(
+                (
+                    str(row.get("camera_frame_path"))
+                    for row in policy_visual_observation_rows
+                    if row.get("available") and row.get("camera_frame_path")
+                ),
+                None,
+            ),
+            "blockers": []
+            if any(row.get("available") for row in policy_visual_observation_rows)
+            else ["policy_observation_renderer_unavailable"],
+            "claim_boundary": {
+                "simulated_camera_observation_available_for_vla_policy": any(
+                    row.get("available") for row in policy_visual_observation_rows
+                ),
+                "physical_robot_sensor_proof": False,
+                "visual_observation_does_not_prove_vla_model_execution": True,
+                "g1_projected_skeleton_trace_available_for_wam_conditioning": bool(
+                    g1_projected_skeleton_manifest.get("status") == "completed"
+                ),
+                "g1_projected_skeleton_trace_is_simulated_state_not_physical_proprioception": True,
+            },
+        },
+    )
+    policy_action_model_command_execution = run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at=generated_at,
+        allow_policy_action_model_command_run=allow_policy_action_model_command_run,
+        timeout_seconds=min(float(endpoint_timeout_seconds), 30.0),
+    )
+    if (
+        policy_action_model_command_execution.get("selected_candidate_id")
+        == GROOT_POLICY_ID
+        and policy_action_model_command_execution.get(
+            "unitree_groot_n17_sonic_policy_action_command_ran"
+        )
+        and not unitree_groot_n17_sonic_sim2sim_execution.get(
+            "unitree_groot_n17_sonic_sim2sim_command_ran"
+        )
+    ):
+        phase("unitree_groot_n17_sonic_sim2sim_started", "running")
+        unitree_groot_n17_sonic_sim2sim_execution = run_unitree_groot_n17_sonic_sim2sim(
+            job_dir=job_dir,
+            policy_action_output=job_dir / "policy_action_model_command_output.json",
+            scene_xml=Path(str(scene_manifest["scene_xml"])),
+            steps=min(40, max(1, int(steps_per_episode))),
+            action_hold_steps=10,
+            render_video=bool(render),
+            generated_at=generated_at,
+        )
+        phase(
+            "unitree_groot_n17_sonic_sim2sim_completed",
+            str(unitree_groot_n17_sonic_sim2sim_execution.get("status") or "blocked"),
+            sim2sim_command_ran=bool(
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "unitree_groot_n17_sonic_sim2sim_command_ran"
+                )
+            ),
+        )
+        unitree_groot_n17_sonic_audit = probe_unitree_groot_n17_sonic_runtime(
+            generated_at=generated_at
+        )
+        unitree_groot_n17_sonic_truth = (
+            build_unitree_groot_n17_sonic_runtime_truth_boundary(
+                audit=unitree_groot_n17_sonic_audit,
+                policy_action_command_result=policy_action_model_command_execution,
+                sim2sim_result=unitree_groot_n17_sonic_sim2sim_execution,
+            )
+        )
+        unitree_groot_n17_sonic_runtime_summary = {
+            **unitree_groot_n17_sonic_runtime_summary,
+            "ready_for_sim2sim": unitree_groot_n17_sonic_audit["ready_for_sim2sim"],
+            "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_groot_n17_sonic_policy_action_command_ran"
+                )
+            ),
+            "unitree_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_policy_action_command_ran"
+                )
+            ),
+            "unitree_specific_manipulation_candidate_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_specific_manipulation_candidate_ran"
+                )
+            ),
+            "openvla_policy_action_command_ran": False,
+            "sim2sim_command_ran": bool(
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "unitree_groot_n17_sonic_sim2sim_command_ran"
+                )
+            ),
+            "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": bool(
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "unitree_groot_n17_sonic_action_chunk_consumed"
+                )
+            ),
+            "sim2sim_execution_path": str(
+                job_dir / "unitree_groot_n17_sonic_sim2sim_execution.json"
+            ),
+        }
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_installation_audit.json",
+            unitree_groot_n17_sonic_audit,
+        )
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_policy_runtime_truth_boundary.json",
+            unitree_groot_n17_sonic_truth,
+        )
+        write_json(
+            job_dir / "unitree_groot_n17_sonic_policy_runtime_summary.json",
+            unitree_groot_n17_sonic_runtime_summary,
+        )
+    robot_policy_wam_closed_loop_attempt = run_robot_policy_wam_closed_loop_attempt(
+        job_dir=job_dir,
+        generated_at=generated_at,
+        policy_action_model_command_execution=policy_action_model_command_execution,
+        loop_step_count=wam_loop_step_count,
+        timeout_seconds=min(float(endpoint_timeout_seconds), 30.0),
+    )
     _write_jsonl(job_dir / "g1_mujoco_locomotion_trace.jsonl", locomotion_rows)
     _write_jsonl(
         job_dir / "same_scene_unitree_controller_trace.jsonl",
@@ -3694,7 +8247,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "total_policy_action_count": len(action_rows),
             "accepted_policy_action_count": len(action_rows) - len(rejected_actions),
             "rejected_policy_action_count": len(rejected_actions),
-            "action_validity_rate": round((len(action_rows) - len(rejected_actions)) / len(action_rows), 6)
+            "action_validity_rate": round(
+                (len(action_rows) - len(rejected_actions)) / len(action_rows), 6
+            )
             if action_rows
             else 0.0,
             "supported_action_types": [
@@ -3763,7 +8318,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "required_scenario_eval_run_count": len(required_ids),
             "covered_scenario_eval_run_count": len(covered_ids),
             "missing_scenario_eval_run_ids": sorted(set(required_ids) - set(covered_ids)),
-            "scenario_eval_run_coverage_complete": required_ids == covered_ids and bool(required_ids),
+            "scenario_eval_run_coverage_complete": required_ids == covered_ids
+            and bool(required_ids),
             "attempt_count_matches_matrix_count": len(attempts) == len(required_ids),
         },
     )
@@ -3829,9 +8385,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "max_sampled_contact_trace_rows": contact_trace_row_limit,
         "contact_trace_truncated": contact_trace_truncated,
         "dropped_contact_trace_row_count": contact_trace_dropped_count,
-        "unsafe_obstacle_contact_count": contact_aggregate_counts[
-            "obstacle_contact_count"
-        ],
+        "unsafe_obstacle_contact_count": contact_aggregate_counts["obstacle_contact_count"],
         "object_contact_count": contact_aggregate_counts["object_contact_count"],
         "floor_contact_count": contact_aggregate_counts["floor_contact_count"],
         "sample_contacts": contact_rows[:100],
@@ -3863,6 +8417,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             ),
             "hand_end_effector_control_available": False,
             "dexterous_hand_policy_required_for_vla_manipulation_claim": True,
+            "unitree_g1_manipulation_policy_discovery": str(
+                job_dir / "unitree_g1_manipulation_policy_discovery.json"
+            ),
             "success_threshold_object_displacement_m": SAFETY_LIMITS[
                 "object_displacement_success_m"
             ],
@@ -3903,11 +8460,71 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     manipulation_successes = [
         attempt
         for attempt in contact_attempts
-        if attempt["metrics"].get("object_displacement_m", 0) >= SAFETY_LIMITS[
-            "object_displacement_success_m"
-        ]
+        if attempt["metrics"].get("object_displacement_m", 0)
+        >= SAFETY_LIMITS["object_displacement_success_m"]
         and attempt["metrics"].get("object_contact_count", 0) > 0
     ]
+    endpoint_policy_responses = [
+        _mapping(row.get("raw_policy_response_redacted"))
+        for row in action_rows
+        if row.get("source") == "endpoint_policy"
+    ]
+    endpoint_policy_inner_responses = [
+        _mapping(_mapping(row.get("endpoint_metadata")).get("raw_response_redacted"))
+        or row
+        for row in endpoint_policy_responses
+    ]
+    unitree_groot_n17_sonic_sim2sim_command_ran = bool(
+        unitree_groot_n17_sonic_sim2sim_execution.get(
+            "unitree_groot_n17_sonic_sim2sim_command_ran"
+        )
+    )
+    unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim = bool(
+        unitree_groot_n17_sonic_sim2sim_execution.get(
+            "unitree_groot_n17_sonic_action_chunk_consumed"
+        )
+    )
+    unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout = bool(
+        unitree_groot_n17_sonic_sim2sim_execution.get(
+            "policy_action_chunk_integrated_into_contact_rollout"
+        )
+        or unitree_groot_n17_sonic_sim2sim_execution.get(
+            "policy_chunk_integrated_contact_rollout_success"
+        )
+    )
+    unitree_endpoint_policy_summary = _unitree_endpoint_policy_response_summary(
+        endpoint_policy_inner_responses
+    )
+    unitree_endpoint_hand_policy_output_observed = unitree_endpoint_policy_summary[
+        "unitree_endpoint_hand_policy_output_observed"
+    ]
+    policy_action_provider_output_replay_used = _policy_action_provider_output_replay_used(
+        policy_action_model_command_execution=policy_action_model_command_execution,
+        robot_policy_wam_closed_loop_attempt=robot_policy_wam_closed_loop_attempt,
+    )
+    unitree_endpoint_provider_output_replay_used = bool(
+        unitree_endpoint_policy_summary["unitree_endpoint_provider_output_replay_used"]
+        or policy_action_provider_output_replay_used
+    )
+    unitree_endpoint_action_chunk_used = unitree_endpoint_policy_summary[
+        "unitree_endpoint_action_chunk_used"
+    ]
+    unitree_endpoint_fresh_policy_action_command_ran = unitree_endpoint_policy_summary[
+        "unitree_endpoint_fresh_policy_action_command_ran"
+    ]
+    unitree_endpoint_hand_policy_used = unitree_endpoint_policy_summary[
+        "unitree_endpoint_hand_policy_used"
+    ]
+    g1_robot_policy_selected_family = unitree_endpoint_policy_summary[
+        "g1_robot_policy_selected_family"
+    ]
+    unitree_hand_manipulation_policy_scope = unitree_endpoint_policy_summary[
+        "unitree_hand_manipulation_policy_scope"
+    ]
+    unitree_action_chunk_consumed_by_any_sim_path = bool(
+        unitree_endpoint_action_chunk_used
+        or unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+    )
     write_json(
         job_dir / "manipulation_success_evaluator_results.json",
         {
@@ -3916,9 +8533,41 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "status": "completed" if contact_attempts else "blocked",
             "attempt_count": len(contact_attempts),
             "success_count": len(manipulation_successes),
+            "policy_chunk_integrated_success_count": int(
+                unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+            ),
             "success_rate": round(len(manipulation_successes) / len(contact_attempts), 6)
             if contact_attempts
             else 0.0,
+            "unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout": (
+                unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+            ),
+            "unitree_groot_n17_sonic_object_robot_contact_count": int(
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count")
+                or 0
+            ),
+            "unitree_groot_n17_sonic_object_displacement_m": (
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_displacement_m")
+            ),
+            "unitree_groot_n17_sonic_object_horizontal_displacement_m": (
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "object_horizontal_displacement_m"
+                )
+            ),
+            "unitree_groot_n17_sonic_object_displacement_success_axis": (
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "object_displacement_success_axis"
+                )
+            ),
+            "unitree_groot_n17_sonic_object_displacement_without_robot_contact": bool(
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "object_displacement_without_robot_contact"
+                )
+            ),
+            "unitree_groot_n17_sonic_contact_rollout_blockers": list(
+                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers")
+                or []
+            ),
             "results": [
                 {
                     "attempt_id": attempt["attempt_id"],
@@ -3932,18 +8581,42 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             ],
         },
     )
-    manipulation_validated = bool(manipulation_successes)
+    manipulation_validated = bool(
+        manipulation_successes
+        or unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+    )
     manipulation_blockers: list[str] = []
     if not contact_attempts:
         manipulation_blockers.append("blocked_missing_contact_task_attempts")
     if contact_attempts and not manipulation_validated:
         manipulation_blockers.append("blocked_manipulation_contact_not_validated")
-    manipulation_blockers.extend(
-        [
-            "blocked_dexterous_hand_policy_not_integrated",
-            "blocked_real_vla_model_not_configured",
-        ]
-    )
+    if (
+        not unitree_endpoint_hand_policy_used
+        and not unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+    ):
+        manipulation_blockers.extend(
+            [
+                "blocked_dexterous_hand_policy_not_integrated",
+                "blocked_real_vla_model_not_configured",
+            ]
+        )
+    if unitree_endpoint_provider_output_replay_used:
+        manipulation_blockers.append(
+            "blocked_unitree_hand_policy_endpoint_used_provider_output_replay_not_fresh_per_observation"
+        )
+    if (
+        (unitree_endpoint_hand_policy_used or unitree_groot_n17_sonic_sim2sim_command_ran)
+        and not unitree_action_chunk_consumed_by_any_sim_path
+    ):
+        manipulation_blockers.append("blocked_unitree_hand_policy_endpoint_missing_action_chunk")
+    if (
+        unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+        and not unitree_endpoint_action_chunk_used
+        and not unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+    ):
+        manipulation_blockers.append(
+            "blocked_gr00t_sonic_chunk_not_integrated_into_contact_task_rollout"
+        )
     write_json(
         job_dir / "manipulation_endpoint_task_report.json",
         {
@@ -3952,29 +8625,79 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "status": "completed" if contact_attempts else "blocked",
             "endpoint_action_path_required": True,
             "endpoint_action_path_used": bool(
-                contact_attempts and any(attempt.get("endpoint_policy_used") for attempt in contact_attempts)
+                contact_attempts
+                and any(attempt.get("endpoint_policy_used") for attempt in contact_attempts)
             ),
             "manipulation_endpoint_path_used": bool(
-                contact_attempts and any(attempt.get("endpoint_policy_used") for attempt in contact_attempts)
+                contact_attempts
+                and any(attempt.get("endpoint_policy_used") for attempt in contact_attempts)
             ),
             "fixture_policy_used": bool(
-                contact_attempts and any(attempt.get("fixture_policy_used") for attempt in contact_attempts)
+                contact_attempts
+                and any(attempt.get("fixture_policy_used") for attempt in contact_attempts)
             ),
             "attempt_count": len(contact_attempts),
             "object_contact_count": sum(
-                int(attempt["metrics"].get("object_contact_count", 0)) for attempt in contact_attempts
+                int(attempt["metrics"].get("object_contact_count", 0))
+                for attempt in contact_attempts
             ),
             "max_object_displacement_m": max(
-                [float(attempt["metrics"].get("object_displacement_m", 0.0)) for attempt in contact_attempts]
+                [
+                    float(attempt["metrics"].get("object_displacement_m", 0.0))
+                    for attempt in contact_attempts
+                ]
                 or [0.0]
             ),
             "unsafe_collision_count": sum(
                 int(attempt["metrics"].get("unsafe_collision_contact_count", 0))
                 for attempt in contact_attempts
             ),
-            "fall_count": sum(int(attempt["metrics"].get("fall_count", 0)) for attempt in contact_attempts),
+            "fall_count": sum(
+                int(attempt["metrics"].get("fall_count", 0)) for attempt in contact_attempts
+            ),
             "successful_contact_attempt_count": len(manipulation_successes),
             "hand_end_effector_policy_used": False,
+            "g1_robot_policy_selection_contract": "unitree_native_policy_required_for_g1_claims",
+            "g1_robot_policy_selected_family": g1_robot_policy_selected_family,
+            "unitree_hand_manipulation_policy_scope": unitree_hand_manipulation_policy_scope,
+            "openvla_selected_as_g1_robot_policy": False,
+            "wam_rollout_selected_as_g1_robot_policy": False,
+            "unitree_endpoint_hand_policy_output_observed": (
+                unitree_endpoint_hand_policy_output_observed
+            ),
+            "unitree_endpoint_hand_policy_used": unitree_endpoint_hand_policy_used,
+            "unitree_endpoint_provider_output_replay_used": (
+                unitree_endpoint_provider_output_replay_used
+            ),
+            "unitree_endpoint_fresh_policy_action_command_ran": (
+                unitree_endpoint_fresh_policy_action_command_ran
+            ),
+            "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+            "unitree_groot_n17_sonic_sim2sim_command_ran": (
+                unitree_groot_n17_sonic_sim2sim_command_ran
+            ),
+            "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": (
+                unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+            ),
+            "unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout": (
+                unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+            ),
+            "unitree_groot_n17_sonic_object_robot_contact_count": int(
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count")
+                or 0
+            ),
+            "unitree_groot_n17_sonic_object_horizontal_displacement_m": (
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "object_horizontal_displacement_m"
+                )
+            ),
+            "unitree_groot_n17_sonic_contact_rollout_blockers": list(
+                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers")
+                or []
+            ),
+            "unitree_action_chunk_consumed_by_any_sim_path": (
+                unitree_action_chunk_consumed_by_any_sim_path
+            ),
             "base_proxy_contact_path_used": bool(
                 contact_attempts and selected_controller_backend == "freejoint_proxy"
             ),
@@ -3982,6 +8705,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 contact_attempts and selected_controller_backend == "unitree_rl_gym"
             ),
             "task_requires_dexterous_hand_policy_for_vla_manipulation_claim": True,
+            "unitree_g1_manipulation_policy_discovery": str(
+                job_dir / "unitree_g1_manipulation_policy_discovery.json"
+            ),
             "claim_boundary": {
                 "simulator_only": True,
                 "contact_success_only_via_freejoint_proxy": bool(
@@ -3991,7 +8717,21 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     manipulation_validated and selected_controller_backend == "unitree_rl_gym"
                 ),
                 "dexterous_vla_manipulation_proven": False,
-                "real_vla_model_ran": False,
+                "unitree_hand_policy_output_observed": (
+                    unitree_endpoint_hand_policy_output_observed
+                ),
+                "unitree_hand_policy_endpoint_used": unitree_endpoint_hand_policy_used,
+                "unitree_hand_policy_provider_output_replay_used": (
+                    unitree_endpoint_provider_output_replay_used
+                ),
+                "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+                "unitree_groot_n17_sonic_sim2sim_command_ran": (
+                    unitree_groot_n17_sonic_sim2sim_command_ran
+                ),
+                "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": (
+                    unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+                ),
+                "real_vla_model_ran": unitree_endpoint_fresh_policy_action_command_ran,
                 "physical_robot_readiness_proven": False,
             },
             "blockers": manipulation_blockers,
@@ -4019,9 +8759,32 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 contact_attempts and selected_controller_backend == "unitree_rl_gym"
             ),
             "hand_end_effector_policy_used": False,
+            "unitree_endpoint_hand_policy_output_observed": (
+                unitree_endpoint_hand_policy_output_observed
+            ),
+            "unitree_endpoint_hand_policy_used": unitree_endpoint_hand_policy_used,
+            "unitree_endpoint_provider_output_replay_used": (
+                unitree_endpoint_provider_output_replay_used
+            ),
+            "unitree_endpoint_fresh_policy_action_command_ran": (
+                unitree_endpoint_fresh_policy_action_command_ran
+            ),
+            "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+            "unitree_groot_n17_sonic_sim2sim_command_ran": (
+                unitree_groot_n17_sonic_sim2sim_command_ran
+            ),
+            "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": (
+                unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+            ),
+            "unitree_action_chunk_consumed_by_any_sim_path": (
+                unitree_action_chunk_consumed_by_any_sim_path
+            ),
             "dexterous_hand_policy_proven": False,
             "vla_manipulation_policy_proven": False,
-            "real_wam_vla_model_ran": False,
+            "real_wam_vla_model_ran": unitree_endpoint_fresh_policy_action_command_ran,
+            "unitree_g1_manipulation_policy_discovery": str(
+                job_dir / "unitree_g1_manipulation_policy_discovery.json"
+            ),
             "physical_robot_readiness_proven": False,
             "blockers": manipulation_blockers,
         },
@@ -4100,12 +8863,62 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "deployment_readiness_proven": False,
         },
     )
+    generated_video_review_validations = [
+        dict(row["generated_video_review_validation"])
+        for row in video_rows
+        if isinstance(row.get("generated_video_review_validation"), Mapping)
+    ]
+    generated_rollout_review_rows = [
+        {
+            "rollout_id": (
+                f"{row.get('episode_id')}__{row.get('camera')}"
+                if row.get("episode_id") and row.get("camera")
+                else f"rendered_rollout_{index:04d}"
+            ),
+            "generated_video_path": str(row.get("path") or ""),
+            "model_family": "unitree_rl_gym"
+            if selected_controller_backend == "unitree_rl_gym"
+            else "mujoco_controller_trace",
+            "episode_id": row.get("episode_id"),
+            "scenario_eval_run_id": row.get("scenario_eval_run_id"),
+            "task_id": row.get("task_id"),
+            "spawn_id": row.get("spawn_id"),
+            "camera": row.get("camera"),
+        }
+        for index, row in enumerate(video_rows, start=1)
+        if row.get("path")
+    ]
+    generated_rollout_visual_smoke = visual_smoke_generated_rollouts_for_review(
+        rollouts=generated_rollout_review_rows,
+        output_dir=job_dir,
+        generated_at=generated_at,
+    )
+    write_json(job_dir / "generated_rollout_visual_smoke.json", generated_rollout_visual_smoke)
+    generated_rollout_visual_smoke_status = str(
+        generated_rollout_visual_smoke.get("status") or "not_applicable_missing_rollouts"
+    )
+    generated_rollout_visually_useful = bool(
+        generated_rollout_visual_smoke.get("claim_boundary", {}).get(
+            "visual_rollout_useful_for_task_success_review"
+        )
+    )
+    generated_videos_decode_valid_for_review = bool(video_rows) and all(
+        row.get("status") == "completed" for row in generated_video_review_validations
+    )
+    write_json(
+        job_dir / "egocentric_upper_body_observation_pose_manifest.json",
+        egocentric_observation_pose_manifest,
+    )
     video_status = {
         "schema_version": "video_generation_status.v1",
         "generated_at": generated_at,
         "status": "completed" if video_rows else "blocked",
         "video_count": len(video_rows),
         "poster_count": len(poster_rows),
+        "generated_video_review_validation_count": len(generated_video_review_validations),
+        "generated_videos_decode_valid_for_review": generated_videos_decode_valid_for_review,
+        "generated_rollout_visual_smoke_status": generated_rollout_visual_smoke_status,
+        "generated_rollout_visually_useful_for_success_review": generated_rollout_visually_useful,
         "render_contract": {
             "default_render_mode": "full_episode_stride"
             if int(render_frame_count) <= 0
@@ -4132,6 +8945,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             ),
             "rendered_video_episode_limit": rendered_video_episode_cap,
             "rendered_video_camera_ids": list(selected_video_cameras),
+            "egocentric_video_camera_ids": list(EGOCENTRIC_VIDEO_CAMERAS),
+            "fixed_g1_camera_names": dict(FIXED_G1_CAMERA_NAMES),
+            "egocentric_upper_body_observation_pose": egocentric_observation_pose_manifest,
             "scored_episode_count_can_exceed_rendered_video_episode_count": True,
             "fps": int(fps),
             "default_review_video_fps": DEFAULT_REVIEW_VIDEO_FPS,
@@ -4139,6 +8955,14 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 "stride-8 frame sampling encoded at 60fps unless --fps 0 requests exact simulator-time playback"
             ),
             "fps_zero_means_realtime_from_mujoco_timestep": True,
+            "review_video_sampling": review_video_sampling,
+            "nominal_realtime_review_mp4": bool(
+                review_video_sampling["nominal_realtime_review_mp4"]
+            ),
+            "review_video_sampling_mode": review_video_sampling["sampling_mode"],
+            "why_not_every_frame_by_default": review_video_sampling[
+                "why_not_every_frame_by_default"
+            ],
             "short_review_video_reason": (
                 "videos stop at the actual terminal physics failure frame unless terminal-frame hold is enabled"
             ),
@@ -4148,6 +8972,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "videos": video_rows,
         "posters": poster_rows,
         "ffprobe": ffprobe_rows,
+        "generated_video_review_validations": generated_video_review_validations,
+        "generated_rollout_visual_smoke": str(job_dir / "generated_rollout_visual_smoke.json"),
         "blockers": [] if video_rows else ["blocked_video_renderer_unavailable"],
     }
     write_json(job_dir / "video_generation_status.json", video_status)
@@ -4168,6 +8994,11 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     video_frame_stride_steps
                 )
                 == 1,
+                "nominal_realtime_review_mp4": bool(
+                    review_video_sampling["nominal_realtime_review_mp4"]
+                ),
+                "review_video_sampling_mode": review_video_sampling["sampling_mode"],
+                "review_video_sampling_contract": review_video_sampling,
                 "fps_zero_encodes_sim_time_playback": int(fps) == 0,
                 "videos_are_review_evidence_for_the_same_attempt_ids": True,
                 "automated_visual_success_classifier_used": False,
@@ -4205,9 +9036,31 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         selected_review_videos.append(
             {
                 "episode_id": row.get("episode_id"),
+                "scenario_eval_run_id": row.get("scenario_eval_run_id"),
+                "task_id": row.get("task_id"),
+                "spawn_id": row.get("spawn_id"),
                 "camera": row.get("camera"),
+                "camera_mount": row.get("camera_mount"),
+                "fixed_mujoco_camera_used": bool(row.get("fixed_mujoco_camera_used")),
+                "fixed_mujoco_camera_name": row.get("fixed_mujoco_camera_name"),
+                "egocentric_sensor_view": bool(row.get("egocentric_sensor_view")),
+                "first_person_policy_observation_candidate": bool(
+                    row.get("first_person_policy_observation_candidate")
+                ),
+                "hands_or_end_effectors_expected_in_view": bool(
+                    row.get("hands_or_end_effectors_expected_in_view")
+                ),
+                "hands_or_end_effectors_expected_due_to_observation_pose": bool(
+                    row.get("hands_or_end_effectors_expected_due_to_observation_pose")
+                ),
+                "fallback_free_camera_used": bool(row.get("fallback_free_camera_used")),
+                "camera_truth_boundary": row.get("camera_truth_boundary", {}),
                 "path": video_path,
                 "status": row.get("status"),
+                "decode_valid_for_review": bool(row.get("decode_valid_for_review")),
+                "generated_video_review_validation": row.get(
+                    "generated_video_review_validation", {}
+                ),
                 "full_episode_video": bool(row.get("full_episode_video")),
                 "configured_full_episode_timeline_requested": bool(
                     row.get("configured_full_episode_timeline_requested")
@@ -4232,6 +9085,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 "video_playback_may_look_slow_motion": bool(
                     row.get("video_playback_may_look_slow_motion")
                 ),
+                "review_video_sampling_mode": row.get("review_video_sampling_mode"),
+                "nominal_realtime_review_mp4": bool(row.get("nominal_realtime_review_mp4")),
+                "captures_every_mujoco_step": bool(row.get("captures_every_mujoco_step")),
+                "why_not_every_frame_by_default": row.get("why_not_every_frame_by_default"),
                 "ffprobe": ffprobe_by_path.get(video_path, {}),
             }
         )
@@ -4242,8 +9099,15 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "generated_at": generated_at,
             "status": "completed" if selected_review_videos else "blocked",
             "selection_policy": {
-                "default_camera": "third_person",
+                "default_camera": DEFAULT_VIDEO_CAMERAS[0],
+                "default_camera_role": "egocentric_robot_policy_observation_candidate",
                 "selected_camera_ids": list(selected_video_cameras),
+                "egocentric_video_camera_ids": list(EGOCENTRIC_VIDEO_CAMERAS),
+                "diagnostic_video_camera_ids": list(DIAGNOSTIC_VIDEO_CAMERAS),
+                "fixed_g1_camera_names": dict(FIXED_G1_CAMERA_NAMES),
+                "egocentric_upper_body_observation_pose": egocentric_observation_pose_manifest,
+                "third_person_overview_is_diagnostic_not_policy_observation": True,
+                "hands_or_end_effectors_visible_requires_egocentric_observation_pose_or_hand_policy": True,
                 "rendered_video_episode_limit": rendered_video_episode_cap,
                 "steps_per_episode": int(steps_per_episode),
                 "mujoco_timestep_s": round(float(timestep), 9),
@@ -4253,9 +9117,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 ),
                 "video_frame_stride_steps": int(video_frame_stride_steps),
                 "every_sim_step_captured": int(video_frame_stride_steps) == 1,
-                "terminal_failure_frame_hold_enabled": bool(
-                    extend_terminal_frame_for_review
-                ),
+                "terminal_failure_frame_hold_enabled": bool(extend_terminal_frame_for_review),
                 "review_videos_stop_at_terminal_failure_by_default": not bool(
                     extend_terminal_frame_for_review
                 ),
@@ -4264,6 +9126,14 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 "default_review_video_contract": (
                     "stride-8 frame sampling encoded at 60fps unless --fps 0 requests exact simulator-time playback"
                 ),
+                "review_video_sampling": review_video_sampling,
+                "nominal_realtime_review_mp4": bool(
+                    review_video_sampling["nominal_realtime_review_mp4"]
+                ),
+                "review_video_sampling_mode": review_video_sampling["sampling_mode"],
+                "why_not_every_frame_by_default": review_video_sampling[
+                    "why_not_every_frame_by_default"
+                ],
                 "fps_zero_encodes_sim_time_playback": int(fps) == 0,
                 "fixed_fps_with_every_step_can_create_slow_motion": True,
                 "rendered_attempts_are_subset_of_scored_attempts": True,
@@ -4271,7 +9141,11 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 "scored_all_matrix_rows": len(attempts) == required_count and required_count > 0,
             },
             "selected_review_video_count": len(selected_review_videos),
+            "generated_rollout_visual_smoke_status": generated_rollout_visual_smoke_status,
+            "generated_rollout_visually_useful_for_success_review": generated_rollout_visually_useful,
             "selected_review_videos": selected_review_videos,
+            "generated_video_review_validations": generated_video_review_validations,
+            "generated_rollout_visual_smoke": str(job_dir / "generated_rollout_visual_smoke.json"),
             "blockers": [] if selected_review_videos else ["blocked_video_renderer_unavailable"],
         },
     )
@@ -4294,7 +9168,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         if endpoint_policy_decisions
         else None
     )
-    endpoint_invocation_count = sum(1 for row in endpoint_attempt_rows if row.get("endpoint_invoked"))
+    endpoint_invocation_count = sum(
+        1 for row in endpoint_attempt_rows if row.get("endpoint_invoked")
+    )
     final_fixture_policy_used = fixture_policy_used or any(
         row.get("source") == "reference_fixture_policy" for row in action_rows
     )
@@ -4317,6 +9193,479 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         if same_scene_integrated
         else "freejoint_velocity_proxy_with_g1_joint_position_holds"
     )
+    unitree_lower_body_locomotion_policy_used = bool(same_scene_integrated)
+    unitree_locomotion_policy_config_path = (
+        same_scene_controller_manifest.get("config_path")
+        if unitree_lower_body_locomotion_policy_used
+        else None
+    )
+    unitree_locomotion_policy_checkpoint_path = (
+        same_scene_controller_manifest.get("policy_path")
+        if unitree_lower_body_locomotion_policy_used
+        else None
+    )
+    unitree_hand_manipulation_policy_used = bool(
+        unitree_endpoint_hand_policy_used or unitree_groot_n17_sonic_sim2sim_command_ran
+    )
+    unitree_hand_manipulation_policy_kind = (
+        "unitree_unifolm_endpoint_action_command"
+        if unitree_endpoint_hand_policy_used
+        else GROOT_POLICY_ID
+        if unitree_groot_n17_sonic_sim2sim_command_ran
+        else None
+    )
+    generated_rollout_review_blockers = sorted(
+        {
+            str(blocker)
+            for validation in generated_video_review_validations
+            for blocker in validation.get("blockers", [])
+        }
+        | {str(blocker) for blocker in generated_rollout_visual_smoke.get("blockers", [])}
+    )
+    unitree_generated_rollout_review_completed = bool(
+        unitree_lower_body_locomotion_policy_used
+        and generated_videos_decode_valid_for_review
+        and generated_rollout_visually_useful
+    )
+    unitree_generated_rollout_review_manifest = {
+        "schema_version": "unitree_generated_rollout_review_manifest.v1",
+        "generated_at": generated_at,
+        "status": "completed"
+        if unitree_generated_rollout_review_completed
+        else "blocked"
+        if unitree_lower_body_locomotion_policy_used
+        else "not_applicable_no_unitree_policy_rollout",
+        "model_family": "unitree_rl_gym",
+        "unitree_lower_body_locomotion_policy_ran": unitree_lower_body_locomotion_policy_used,
+        "unitree_locomotion_policy_kind": final_navigation_policy_kind
+        if unitree_lower_body_locomotion_policy_used
+        else None,
+        "unitree_locomotion_policy_checkpoint_path": unitree_locomotion_policy_checkpoint_path,
+        "unitree_locomotion_policy_config_path": unitree_locomotion_policy_config_path,
+        "generated_video_review_validation_count": len(generated_video_review_validations),
+        "generated_videos_decode_valid_for_review": generated_videos_decode_valid_for_review,
+        "generated_rollout_visual_smoke_status": generated_rollout_visual_smoke_status,
+        "generated_rollout_visually_useful_for_success_review": generated_rollout_visually_useful,
+        "visual_smoke": generated_rollout_visual_smoke,
+        "video_decode_validations": generated_video_review_validations,
+        "blockers": generated_rollout_review_blockers
+        if unitree_lower_body_locomotion_policy_used
+        else [],
+        "claim_boundary": {
+            "unitree_lower_body_locomotion_policy_ran": unitree_lower_body_locomotion_policy_used,
+            "generated_rollout_visually_useful_for_success_review": bool(
+                unitree_generated_rollout_review_completed
+            ),
+            "visual_smoke_is_not_forward_inverse_consistency": True,
+            "simulator_only_not_physical_robot_readiness": True,
+            "not_openvla_or_cosmos_execution": True,
+            "not_dexterous_manipulation_policy_proof": True,
+        },
+    }
+    write_json(
+        job_dir / "unitree_generated_rollout_review_manifest.json",
+        unitree_generated_rollout_review_manifest,
+    )
+    final_success_policy_command_ran = bool(
+        policy_action_model_command_execution.get("unitree_manipulation_policy_action_command_ran")
+        or unitree_endpoint_fresh_policy_action_command_ran
+    )
+    final_success_policy_action_consumed_by_sim = bool(
+        unitree_endpoint_action_chunk_used
+        or unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+    )
+    final_success_policy_chunk_integrated_into_contact_rollout = bool(
+        manipulation_validated
+        and final_success_policy_command_ran
+        and (
+            unitree_endpoint_action_chunk_used
+            or unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+        )
+    )
+    final_success_unitree_endpoint_action_available = bool(
+        final_success_policy_command_ran
+        or unitree_endpoint_hand_policy_used
+        or unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+    )
+    final_success_blockers = sorted(
+        {
+            *[str(blocker) for blocker in manipulation_blockers],
+            *[
+                str(blocker)
+                for blocker in robot_policy_wam_closed_loop_attempt.get("blockers", [])
+            ],
+        }
+    )
+    if not final_success_unitree_endpoint_action_available:
+        final_success_blockers.append("blocked_unitree_manipulation_action_command_not_run")
+    elif unitree_endpoint_provider_output_replay_used:
+        final_success_blockers.append(
+            "blocked_unitree_manipulation_action_was_provider_output_replay_not_fresh_per_observation"
+        )
+    if (
+        final_success_policy_action_consumed_by_sim
+        and not final_success_policy_chunk_integrated_into_contact_rollout
+    ):
+        final_success_blockers.append(
+            "blocked_policy_action_chunk_not_integrated_into_successful_contact_rollout"
+        )
+    final_success_judge = {
+        "schema_version": "final_success_judge.v1",
+        "generated_at": generated_at,
+        "status": "completed" if final_success_policy_command_ran else "blocked",
+        "final_question": "Did the object/tote end up correctly placed?",
+        "answer": "yes" if final_success_policy_chunk_integrated_into_contact_rollout else "not_proven",
+        "object_or_tote_correctly_placed": bool(
+            final_success_policy_chunk_integrated_into_contact_rollout
+        ),
+        "success_proven": bool(final_success_policy_chunk_integrated_into_contact_rollout),
+        "score": 1.0 if final_success_policy_chunk_integrated_into_contact_rollout else 0.0,
+        "structured_contact_or_push_success": bool(manipulation_validated),
+        "policy_action_chunk_consumed_by_sim": final_success_policy_action_consumed_by_sim,
+        "policy_action_chunk_integrated_into_contact_rollout": (
+            final_success_policy_chunk_integrated_into_contact_rollout
+        ),
+        "unitree_manipulation_policy_action_command_ran": final_success_policy_command_ran,
+        "g1_robot_policy_selection_contract": "unitree_native_policy_required_for_g1_claims",
+        "g1_robot_policy_selected_family": g1_robot_policy_selected_family,
+        "unitree_hand_manipulation_policy_scope": unitree_hand_manipulation_policy_scope,
+        "openvla_selected_as_g1_robot_policy": False,
+        "wam_rollout_selected_as_g1_robot_policy": False,
+        "unitree_endpoint_hand_policy_output_observed": (
+            unitree_endpoint_hand_policy_output_observed
+        ),
+        "unitree_endpoint_hand_policy_used": unitree_endpoint_hand_policy_used,
+        "unitree_endpoint_provider_output_replay_used": (
+            unitree_endpoint_provider_output_replay_used
+        ),
+        "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+        "unitree_groot_n17_sonic_sim2sim_command_ran": (
+            unitree_groot_n17_sonic_sim2sim_command_ran
+        ),
+        "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": (
+            unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+        ),
+        "unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout": (
+            unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+        ),
+        "unitree_groot_n17_sonic_object_robot_contact_count": int(
+            unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count") or 0
+        ),
+        "unitree_groot_n17_sonic_object_horizontal_displacement_m": (
+            unitree_groot_n17_sonic_sim2sim_execution.get(
+                "object_horizontal_displacement_m"
+            )
+        ),
+        "unitree_groot_n17_sonic_contact_rollout_blockers": list(
+            unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers")
+            or []
+        ),
+        "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get(
+                "unitree_groot_n17_sonic_policy_action_command_ran"
+            )
+        ),
+        "wam_evaluator_in_control_loop": bool(
+            robot_policy_wam_closed_loop_attempt.get("wam_evaluator_in_control_loop")
+        ),
+        "requested_wam_loop_step_count": int(wam_loop_step_count),
+        "policy_observes_wam_generated_next_observation": bool(
+            robot_policy_wam_closed_loop_attempt.get(
+                "policy_observes_wam_generated_next_observation"
+            )
+        ),
+        "video_review_status": unitree_generated_rollout_review_manifest["status"],
+        "vlm_success_judge_used": False,
+        "human_success_judge_used": False,
+        "structured_mujoco_trace_judge_used": True,
+        "blockers": sorted(set(final_success_blockers)),
+        "claim_boundary": {
+            "simulator_only": True,
+            "structured_contact_trace_is_not_real_world_success": True,
+            "success_not_proven_without_unitree_manipulation_action_command": True,
+            "success_not_proven_without_policy_chunk_integrated_contact_rollout": True,
+            "provider_output_replay_is_not_fresh_per_observation_policy_execution": (
+                unitree_endpoint_provider_output_replay_used
+            ),
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "real_world_manipulation_success_proven": False,
+        },
+    }
+    write_json(job_dir / "final_success_judge.json", final_success_judge)
+    write_json(
+        job_dir / "claim_boundary.json",
+        {
+            "schema_version": "closed_loop_claim_boundary.v1",
+            "generated_at": generated_at,
+            "simulator_only": True,
+            "policy_lane": policy_lane,
+            "locomotion_proof_is_separate_from_manipulation_proof": True,
+            "groot_n17_sonic_is_candidate_not_proven_unless_action_command_runs": True,
+            "unitree_manipulation_policy_action_command_ran": final_success_policy_command_ran,
+            "g1_robot_policy_selection_contract": "unitree_native_policy_required_for_g1_claims",
+            "g1_robot_policy_selected_family": g1_robot_policy_selected_family,
+            "unitree_hand_manipulation_policy_scope": unitree_hand_manipulation_policy_scope,
+            "openvla_selected_as_g1_robot_policy": False,
+            "wam_rollout_selected_as_g1_robot_policy": False,
+            "unitree_endpoint_hand_policy_output_observed": (
+                unitree_endpoint_hand_policy_output_observed
+            ),
+            "unitree_endpoint_hand_policy_used": unitree_endpoint_hand_policy_used,
+            "unitree_endpoint_provider_output_replay_used": (
+                unitree_endpoint_provider_output_replay_used
+            ),
+            "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+            "unitree_groot_n17_sonic_sim2sim_command_ran": (
+                unitree_groot_n17_sonic_sim2sim_command_ran
+            ),
+            "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": (
+                unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+            ),
+            "unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout": (
+                unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+            ),
+            "unitree_groot_n17_sonic_object_robot_contact_count": int(
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count")
+                or 0
+            ),
+            "unitree_groot_n17_sonic_object_horizontal_displacement_m": (
+                unitree_groot_n17_sonic_sim2sim_execution.get(
+                    "object_horizontal_displacement_m"
+                )
+            ),
+            "unitree_groot_n17_sonic_contact_rollout_blockers": list(
+                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers")
+                or []
+            ),
+            "policy_action_chunk_consumed_by_sim": final_success_policy_action_consumed_by_sim,
+            "policy_action_chunk_integrated_into_contact_rollout": (
+                final_success_policy_chunk_integrated_into_contact_rollout
+            ),
+            "wam_evaluator_in_control_loop": bool(
+                robot_policy_wam_closed_loop_attempt.get("wam_evaluator_in_control_loop")
+            ),
+            "policy_observes_wam_generated_next_observation": bool(
+                robot_policy_wam_closed_loop_attempt.get(
+                    "policy_observes_wam_generated_next_observation"
+                )
+            ),
+            "object_or_tote_correctly_placed": bool(
+                final_success_policy_chunk_integrated_into_contact_rollout
+            ),
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "real_world_manipulation_success_proven": False,
+            "not_claimed_as_openvla_oscar_cosmos_policy_proof": True,
+            "blockers": final_success_judge["blockers"],
+        },
+    )
+    robot_policy_wam_loop_manifest = {
+        "schema_version": "robot_policy_wam_loop_manifest.v1",
+        "generated_at": generated_at,
+        "status": "completed" if attempts else "blocked",
+        "target_architecture": (
+            "scene plus robot observation -> policy endpoint action chunk -> simulator/controller "
+            "execution -> WAM next-world evaluator -> policy observes generated next observation -> "
+            "repeat -> VLM/human success judge"
+        ),
+        "actual_loop_mode": (
+            "unitree_policy_wam_generated_observation_closed_loop"
+            if robot_policy_wam_closed_loop_attempt.get("status") == "completed"
+            else "mujoco_policy_endpoint_execution_with_offline_wam_trace_package"
+        ),
+        "scene_source": "procedural_mujoco_task_scene",
+        "scene_runtime_backend": "mujoco",
+        "robot_loaded_in_scene": True,
+        "robot_model": "unitree_g1_mjcf",
+        "robot_model_path": str(g1_source_xml),
+        "hands_capable_g1_mjcf_selected": bool(
+            g1_mjcf_selection.get("hands_capable_g1_mjcf_selected")
+        ),
+        "g1_robot_policy_selection_contract": "unitree_native_policy_required_for_g1_claims",
+        "g1_robot_policy_selected_family": g1_robot_policy_selected_family,
+        "unitree_hand_manipulation_policy_scope": unitree_hand_manipulation_policy_scope,
+        "openvla_selected_as_g1_robot_policy": False,
+        "wam_rollout_selected_as_g1_robot_policy": False,
+        "policy_endpoint_used": endpoint_policy_used,
+        "policy_action_model_command_ran": bool(
+            policy_action_model_command_execution.get("policy_action_model_command_ran")
+        ),
+        "openvla_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get("openvla_policy_action_command_ran")
+        ),
+        "unitree_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get("unitree_policy_action_command_ran")
+        ),
+        "unitree_lerobot_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get("unitree_lerobot_policy_action_command_ran")
+        ),
+        "unitree_unifolm_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get("unitree_unifolm_policy_action_command_ran")
+        ),
+        "unitree_endpoint_hand_policy_output_observed": (
+            unitree_endpoint_hand_policy_output_observed
+        ),
+        "unitree_endpoint_hand_policy_used": unitree_endpoint_hand_policy_used,
+        "unitree_endpoint_provider_output_replay_used": (
+            unitree_endpoint_provider_output_replay_used
+        ),
+        "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+        "unitree_endpoint_fresh_policy_action_command_ran": (
+            unitree_endpoint_fresh_policy_action_command_ran
+        ),
+        "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get(
+                "unitree_groot_n17_sonic_policy_action_command_ran"
+            )
+        ),
+        "unitree_groot_n17_sonic_sim2sim_command_ran": (
+            unitree_groot_n17_sonic_sim2sim_command_ran
+        ),
+        "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": (
+            unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+        ),
+        "unitree_unifolm_endpoint_policy_action_command_ran": (
+            unitree_endpoint_fresh_policy_action_command_ran
+        ),
+        "real_vla_or_unitree_hand_policy_endpoint_used": unitree_endpoint_hand_policy_used,
+        "policy_action_chunk_consumed_by_sim": final_success_policy_action_consumed_by_sim,
+        "policy_action_chunk_integrated_into_contact_rollout": (
+            final_success_policy_chunk_integrated_into_contact_rollout
+        ),
+        "unitree_groot_n17_sonic_sim2sim_execution": str(
+            job_dir / "unitree_groot_n17_sonic_sim2sim_execution.json"
+        ),
+        "unitree_manipulation_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get(
+                "unitree_manipulation_policy_action_command_ran"
+            )
+        ),
+        "policy_action_model_command_selected_candidate_id": policy_action_model_command_execution.get(
+            "selected_candidate_id"
+        ),
+        "fixture_policy_used": final_fixture_policy_used,
+        "endpoint_invocation_count": endpoint_invocation_count,
+        "selected_policy_runtime": selected_runtime,
+        "policy_action_contract": [
+            "waypoint",
+            "base_velocity",
+            "stop",
+            "inspect_look",
+            "manipulation_contact",
+        ],
+        "controller_backend": selected_controller_backend,
+        "navigation_policy_kind": final_navigation_policy_kind,
+        "unitree_lower_body_locomotion_policy_used": unitree_lower_body_locomotion_policy_used,
+        "unitree_locomotion_policy_checkpoint_path": unitree_locomotion_policy_checkpoint_path,
+        "unitree_locomotion_policy_config_path": unitree_locomotion_policy_config_path,
+        "unitree_hand_manipulation_policy_used": unitree_hand_manipulation_policy_used,
+        "unitree_hand_manipulation_policy_kind": unitree_hand_manipulation_policy_kind,
+        "unitree_generated_rollout_review_status": unitree_generated_rollout_review_manifest[
+            "status"
+        ],
+        "unitree_generated_rollout_visually_useful_for_success_review": bool(
+            unitree_generated_rollout_review_completed
+        ),
+        "generated_rollout_visual_smoke_status": generated_rollout_visual_smoke_status,
+        "generated_rollout_visually_useful_for_success_review": generated_rollout_visually_useful,
+        "generated_videos_decode_valid_for_review": generated_videos_decode_valid_for_review,
+        "manipulation_policy_kind": "contact_trace_proxy_only",
+        "policy_observation_source": (
+            "mujoco_structured_state_plus_simulated_egocentric_frame_when_renderer_available"
+        ),
+        "policy_visual_observation_count": len(policy_visual_observation_rows),
+        "policy_visual_observation_available_count": sum(
+            1 for row in policy_visual_observation_rows if row.get("available")
+        ),
+        "policy_visual_observation_trace": str(job_dir / "policy_visual_observation_trace.jsonl"),
+        "policy_visual_observation_manifest": str(
+            job_dir / "policy_visual_observation_manifest.json"
+        ),
+        "g1_projected_skeleton_trace": str(g1_projected_skeleton_trace_path),
+        "g1_projected_skeleton_manifest": str(job_dir / "g1_projected_skeleton_manifest.json"),
+        "g1_projected_skeleton_trace_status": g1_projected_skeleton_manifest.get("status"),
+        "camera_views_rendered_for_review": list(selected_video_cameras),
+        "egocentric_camera_views_available": list(EGOCENTRIC_VIDEO_CAMERAS),
+        "egocentric_upper_body_observation_pose_manifest": str(
+            job_dir / "egocentric_upper_body_observation_pose_manifest.json"
+        ),
+        "hands_or_end_effectors_expected_in_egocentric_view": bool(
+            egocentric_observation_pose_manifest.get(
+                "hands_or_end_effectors_expected_in_egocentric_torso_view"
+            )
+        ),
+        "first_person_policy_observation_candidate_available": any(
+            bool(row.get("first_person_policy_observation_candidate")) for row in video_rows
+        ),
+        "wam_evaluator_in_control_loop": bool(
+            robot_policy_wam_closed_loop_attempt.get("wam_evaluator_in_control_loop")
+        ),
+        "policy_observes_wam_generated_next_observation": bool(
+            robot_policy_wam_closed_loop_attempt.get(
+                "policy_observes_wam_generated_next_observation"
+            )
+        ),
+        "repeated_policy_calls_count": int(
+            robot_policy_wam_closed_loop_attempt.get("repeated_policy_calls_count") or 0
+        ),
+        "generated_next_observation_count": int(
+            robot_policy_wam_closed_loop_attempt.get("generated_next_observation_count") or 0
+        ),
+        "robot_policy_wam_closed_loop_attempt_status": robot_policy_wam_closed_loop_attempt.get(
+            "status"
+        ),
+        "robot_policy_wam_closed_loop_attempt_blockers": robot_policy_wam_closed_loop_attempt.get(
+            "blockers", []
+        ),
+        "robot_policy_wam_closed_loop_attempt": str(
+            job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_closed_loop_attempt.json"
+        ),
+        "robot_policy_wam_loop_trace": str(
+            job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_loop_trace.jsonl"
+        ),
+        "wam_generated_next_observation_trace": str(
+            job_dir
+            / "robot_policy_wam_closed_loop"
+            / "wam_generated_next_observations.jsonl"
+        ),
+        "robot_policy_wam_side_by_side_trace_manifest": str(
+            job_dir
+            / "robot_policy_wam_closed_loop"
+            / "robot_policy_wam_side_by_side_trace_manifest.json"
+        ),
+        "robot_policy_wam_side_by_side_trace_jsonl": str(
+            job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_side_by_side_trace.jsonl"
+        ),
+        "robot_policy_wam_side_by_side_trace_html": str(
+            job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_side_by_side_trace.html"
+        ),
+        "robot_policy_wam_side_by_side_transition_count": int(
+            robot_policy_wam_closed_loop_attempt.get("side_by_side_transition_count") or 0
+        ),
+        "oscar_cosmos_wam_evaluator_role": (
+            "offline evaluator package consumer; run blueprint-run-oscar-cosmos-wam-evaluator "
+            "against this job_dir to generate WAM rollout/evaluator artifacts"
+        ),
+        "automated_success_source": "structured_mujoco_state_contact_action_traces",
+        "vlm_success_judge_in_this_lane": False,
+        "required_to_match_requested_closed_loop": [
+            "real scene ingestion boundary for USD/MJCF/PLY/SPZ inputs",
+            "task-specific VLA or Unitree manipulation policy endpoint with checkpoint/runtime",
+            "WAM evaluator API called between policy action chunks",
+            "policy adapter that can consume WAM-generated next observations",
+            "VLM success judge configured over selected generated or MuJoCo episode videos",
+        ],
+        "truth_boundary": (
+            "This run proves local MuJoCo execution and, only when the loop-attempt status is "
+            "completed, repeated Unitree-specific policy calls over evaluator-generated next "
+            "observations. It does not prove physical robot readiness, deployment approval, "
+            "safety validation, or real-world manipulation success."
+        ),
+    }
+    write_json(job_dir / "robot_policy_wam_loop_manifest.json", robot_policy_wam_loop_manifest)
     write_json(
         job_dir / "controller_truth_boundary.json",
         {
@@ -4325,6 +9674,75 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "requested_controller_backend": controller_backend,
             "controller_backend": selected_controller_backend,
             "controller_kind": final_navigation_policy_kind,
+            "unitree_lower_body_locomotion_policy_used": unitree_lower_body_locomotion_policy_used,
+            "unitree_locomotion_policy_kind": final_navigation_policy_kind
+            if unitree_lower_body_locomotion_policy_used
+            else None,
+            "unitree_locomotion_policy_config_path": unitree_locomotion_policy_config_path,
+            "unitree_locomotion_policy_checkpoint_path": unitree_locomotion_policy_checkpoint_path,
+            "unitree_hand_manipulation_policy_used": unitree_hand_manipulation_policy_used,
+            "unitree_endpoint_hand_policy_output_observed": (
+                unitree_endpoint_hand_policy_output_observed
+            ),
+            "unitree_endpoint_hand_policy_used": unitree_endpoint_hand_policy_used,
+            "unitree_endpoint_provider_output_replay_used": (
+                unitree_endpoint_provider_output_replay_used
+            ),
+            "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+            "unitree_groot_n17_sonic_sim2sim_command_ran": (
+                unitree_groot_n17_sonic_sim2sim_command_ran
+            ),
+            "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": (
+                unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+            ),
+            "policy_action_chunk_consumed_by_sim": final_success_policy_action_consumed_by_sim,
+            "policy_action_chunk_integrated_into_contact_rollout": (
+                final_success_policy_chunk_integrated_into_contact_rollout
+            ),
+            "unitree_hand_manipulation_policy_kind": unitree_hand_manipulation_policy_kind,
+            "unitree_lerobot_or_isaaclab_manipulation_policy_used": False,
+            "policy_action_model_command_ran": bool(
+                policy_action_model_command_execution.get("policy_action_model_command_ran")
+            ),
+            "unitree_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get("unitree_policy_action_command_ran")
+            ),
+            "unitree_lerobot_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_lerobot_policy_action_command_ran"
+                )
+            ),
+            "unitree_unifolm_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_unifolm_policy_action_command_ran"
+                )
+            ),
+            "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+                policy_action_model_command_execution.get(
+                    "unitree_groot_n17_sonic_policy_action_command_ran"
+                )
+            ),
+            "unitree_groot_n17_sonic_sim2sim_execution": str(
+                job_dir / "unitree_groot_n17_sonic_sim2sim_execution.json"
+            ),
+            "wam_evaluator_in_control_loop": bool(
+                robot_policy_wam_closed_loop_attempt.get("wam_evaluator_in_control_loop")
+            ),
+            "policy_observes_wam_generated_next_observation": bool(
+                robot_policy_wam_closed_loop_attempt.get(
+                    "policy_observes_wam_generated_next_observation"
+                )
+            ),
+            "repeated_policy_calls_count": int(
+                robot_policy_wam_closed_loop_attempt.get("repeated_policy_calls_count") or 0
+            ),
+            "generated_next_observation_count": int(
+                robot_policy_wam_closed_loop_attempt.get("generated_next_observation_count") or 0
+            ),
+            "unitree_g1_manipulation_policy_discovery": str(
+                job_dir / "unitree_g1_manipulation_policy_discovery.json"
+            ),
+            "manipulation_policy_kind": "contact_trace_proxy_only",
             "realistic_navigation_policy_used": same_scene_integrated,
             "realistic_navigation_policy_used_for_endpoint_rollouts": same_scene_integrated,
             "official_unitree_controller_sidecar_status": official_controller_sidecar.get("status"),
@@ -4341,11 +9759,21 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "same_scene_unitree_controller_update_count": len(same_scene_controller_rows),
             "endpoint_action_controller_clamped_command_count": unitree_controller_clamped_command_count,
             "same_scene_controller_clamped_update_count": same_scene_controller_clamped_update_count,
+            "same_scene_policy_action_clipped_update_count": same_scene_policy_action_clipped_update_count,
+            "same_scene_max_raw_policy_action_abs": round(
+                float(same_scene_max_raw_policy_action_abs), 6
+            ),
+            "same_scene_max_applied_policy_action_abs": round(
+                float(same_scene_max_applied_policy_action_abs), 6
+            ),
             "controller_command_limits": dict(UNITREE_RL_GYM_CONTROLLER_COMMAND_LIMITS),
             "official_unitree_controller_sidecar_command_xyz": official_controller_sidecar.get(
                 "command_xyz"
             ),
             "freejoint_proxy_used": final_freejoint_proxy_used,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
             "blockers": same_scene_controller_manifest.get("blockers", [])
             if same_scene_integrated
             else same_scene_controller_manifest.get("blockers", [])
@@ -4368,6 +9796,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             endpoint_invocation_count=endpoint_invocation_count,
             endpoint_valid_action_count=endpoint_policy_valid_actions,
             rejected_policy_action_count=len(rejected_actions),
+            unitree_endpoint_policy_summary=unitree_endpoint_policy_summary,
         ),
     )
     write_json(
@@ -4383,11 +9812,80 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "status": "completed" if attempts else "blocked",
         "job_id": job_id,
         "job_dir": str(job_dir),
+        "policy_lane": policy_lane,
         "mujoco_runtime_available": True,
         "unitree_g1_mujoco_model_source": asset_manifest["unitree_g1_mujoco_model_source"],
-        "unitree_g1_mujoco_model_path": str(g1_root / "g1.xml"),
+        "unitree_g1_mujoco_model_path": str(g1_source_xml),
+        "unitree_g1_hands_capable_mjcf_selected": bool(
+            g1_mjcf_selection.get("hands_capable_g1_mjcf_selected")
+        ),
         "unitree_g1_loaded_in_mujoco": True,
         "policy_endpoint_runtime_proven": endpoint_policy_used,
+        "policy_action_model_command_ran": bool(
+            policy_action_model_command_execution.get("policy_action_model_command_ran")
+        ),
+        "openvla_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get("openvla_policy_action_command_ran")
+        ),
+        "unitree_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get("unitree_policy_action_command_ran")
+        ),
+        "unitree_lerobot_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get("unitree_lerobot_policy_action_command_ran")
+        ),
+        "unitree_unifolm_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get("unitree_unifolm_policy_action_command_ran")
+        ),
+        "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get(
+                "unitree_groot_n17_sonic_policy_action_command_ran"
+            )
+        ),
+        "unitree_groot_n17_sonic_sim2sim_command_ran": (
+            unitree_groot_n17_sonic_sim2sim_command_ran
+        ),
+        "unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim": (
+            unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
+        ),
+        "policy_action_chunk_consumed_by_sim": final_success_policy_action_consumed_by_sim,
+        "policy_action_chunk_integrated_into_contact_rollout": (
+            final_success_policy_chunk_integrated_into_contact_rollout
+        ),
+        "unitree_manipulation_policy_action_command_ran": bool(
+            policy_action_model_command_execution.get(
+                "unitree_manipulation_policy_action_command_ran"
+            )
+        ),
+        "policy_action_model_command_selected_candidate_id": policy_action_model_command_execution.get(
+            "selected_candidate_id"
+        ),
+        "wam_evaluator_in_control_loop": bool(
+            robot_policy_wam_closed_loop_attempt.get("wam_evaluator_in_control_loop")
+        ),
+        "policy_observes_wam_generated_next_observation": bool(
+            robot_policy_wam_closed_loop_attempt.get(
+                "policy_observes_wam_generated_next_observation"
+            )
+        ),
+        "repeated_policy_calls_count": int(
+            robot_policy_wam_closed_loop_attempt.get("repeated_policy_calls_count") or 0
+        ),
+        "generated_next_observation_count": int(
+            robot_policy_wam_closed_loop_attempt.get("generated_next_observation_count") or 0
+        ),
+        "robot_policy_wam_closed_loop_attempt_status": robot_policy_wam_closed_loop_attempt.get(
+            "status"
+        ),
+        "robot_policy_wam_closed_loop_attempt_blockers": robot_policy_wam_closed_loop_attempt.get(
+            "blockers", []
+        ),
+        "whole_unitree_policy_stack_installed": unitree_stack_installation_audit[
+            "whole_unitree_policy_stack_installed"
+        ],
+        "unitree_policy_stack_installation_status": unitree_stack_installation_audit["status"],
+        "unitree_policy_stack_installation_blockers": unitree_stack_installation_audit[
+            "blockers"
+        ],
         "wam_vla_runtime_proven": bool(
             endpoint_policy_used
             and selected_runtime
@@ -4400,12 +9898,100 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "endpoint_policy_decision_count": endpoint_policy_decisions,
         "endpoint_valid_action_count": endpoint_policy_valid_actions,
         "endpoint_policy_action_validity_rate": endpoint_validity_rate,
+        "policy_visual_observation_count": len(policy_visual_observation_rows),
+        "policy_visual_observation_available_count": sum(
+            1 for row in policy_visual_observation_rows if row.get("available")
+        ),
+        "g1_projected_skeleton_trace_status": g1_projected_skeleton_manifest.get("status"),
+        "g1_projected_skeleton_trace_row_count": int(
+            g1_projected_skeleton_manifest.get("row_count") or 0
+        ),
+        "g1_projected_skeleton_projectable_row_count": int(
+            g1_projected_skeleton_manifest.get("projectable_row_count") or 0
+        ),
+        "simulated_g1_projected_skeleton_available_for_wam_conditioning": bool(
+            g1_projected_skeleton_manifest.get("status") == "completed"
+        ),
+        "policy_visual_observation_available_for_vla": any(
+            row.get("available") for row in policy_visual_observation_rows
+        ),
         "locomotion_continuity_validated": continuity_report["locomotion_continuity_validated"],
         "collision_dynamics_validated": collision_report["collision_dynamics_validated"],
         "manipulation_contact_dynamics_validated": manipulation_validated,
         "wam_evaluator_trace_scored": True,
         "requested_controller_backend": controller_backend,
         "controller_backend": selected_controller_backend,
+        "unitree_lower_body_locomotion_policy_used": unitree_lower_body_locomotion_policy_used,
+        "unitree_locomotion_policy_kind": final_navigation_policy_kind
+        if unitree_lower_body_locomotion_policy_used
+        else None,
+        "unitree_locomotion_policy_config_path": unitree_locomotion_policy_config_path,
+        "unitree_locomotion_policy_checkpoint_path": unitree_locomotion_policy_checkpoint_path,
+        "g1_robot_policy_selection_contract": "unitree_native_policy_required_for_g1_claims",
+        "g1_robot_policy_selected_family": g1_robot_policy_selected_family,
+        "unitree_hand_manipulation_policy_scope": unitree_hand_manipulation_policy_scope,
+        "openvla_selected_as_g1_robot_policy": False,
+        "wam_rollout_selected_as_g1_robot_policy": False,
+        "unitree_endpoint_hand_policy_output_observed": (
+            unitree_endpoint_hand_policy_output_observed
+        ),
+        "unitree_endpoint_hand_policy_used": unitree_endpoint_hand_policy_used,
+        "unitree_endpoint_provider_output_replay_used": (
+            unitree_endpoint_provider_output_replay_used
+        ),
+        "unitree_endpoint_fresh_policy_action_command_ran": (
+            unitree_endpoint_fresh_policy_action_command_ran
+        ),
+        "unitree_endpoint_action_chunk_used": unitree_endpoint_action_chunk_used,
+        "unitree_endpoint_provider_replay_is_not_fresh_hand_policy_inference": (
+            unitree_endpoint_provider_output_replay_used
+        ),
+        "unitree_hand_manipulation_policy_used": unitree_hand_manipulation_policy_used,
+        "unitree_hand_manipulation_policy_kind": unitree_hand_manipulation_policy_kind,
+        "unitree_lerobot_or_isaaclab_manipulation_policy_used": False,
+        "unitree_lerobot_runtime_status": unitree_lerobot_runtime_summary.get("status"),
+        "unitree_lerobot_runtime_configured": unitree_lerobot_runtime_summary.get(
+            "unitree_lerobot_runtime_configured"
+        ),
+        "unitree_lerobot_command_built": unitree_lerobot_runtime_summary.get(
+            "unitree_lerobot_command_built"
+        ),
+        "unitree_lerobot_sim_inference_attempted": unitree_lerobot_runtime_summary.get(
+            "unitree_lerobot_sim_inference_attempted"
+        ),
+        "unitree_lerobot_sim_inference_proven": unitree_lerobot_runtime_summary.get(
+            "unitree_lerobot_sim_inference_proven"
+        ),
+        "unitree_lerobot_truth_boundary": unitree_lerobot_runtime_summary.get(
+            "truth_boundary_path"
+        ),
+        "unitree_lerobot_handoff_manifest": unitree_lerobot_runtime_summary.get(
+            "handoff_manifest_path"
+        ),
+        "unitree_groot_n17_sonic_runtime_status": (
+            unitree_groot_n17_sonic_runtime_summary.get("status")
+        ),
+        "unitree_groot_n17_sonic_policy_configured": (
+            unitree_groot_n17_sonic_runtime_summary.get(
+                "unitree_groot_n17_sonic_policy_configured"
+            )
+        ),
+        "unitree_groot_n17_sonic_ready_for_policy_action_command": (
+            unitree_groot_n17_sonic_runtime_summary.get("ready_for_policy_action_command")
+        ),
+        "unitree_groot_n17_sonic_ready_for_sim2sim": (
+            unitree_groot_n17_sonic_runtime_summary.get("ready_for_sim2sim")
+        ),
+        "unitree_groot_n17_sonic_installation_audit": (
+            unitree_groot_n17_sonic_runtime_summary.get("installation_audit_path")
+        ),
+        "unitree_groot_n17_sonic_truth_boundary": (
+            unitree_groot_n17_sonic_runtime_summary.get("truth_boundary_path")
+        ),
+        "unitree_g1_manipulation_policy_discovery": str(
+            job_dir / "unitree_g1_manipulation_policy_discovery.json"
+        ),
+        "manipulation_policy_kind": "contact_trace_proxy_only",
         "realistic_navigation_policy_used": same_scene_integrated,
         "realistic_navigation_policy_used_for_endpoint_rollouts": same_scene_integrated,
         "official_unitree_controller_sidecar_status": official_controller_sidecar.get("status"),
@@ -4418,12 +10004,37 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "official_unitree_controller_sidecar_command_xyz": official_controller_sidecar.get(
             "command_xyz"
         ),
-        "same_scene_unitree_controller_backend_status": same_scene_controller_manifest.get("status"),
+        "same_scene_unitree_controller_backend_status": same_scene_controller_manifest.get(
+            "status"
+        ),
         "same_scene_unitree_controller_rollout_fall_count": total_attempt_fall_count,
         "same_scene_unitree_controller_update_count": len(same_scene_controller_rows),
+        "unitree_generated_rollout_review_status": unitree_generated_rollout_review_manifest[
+            "status"
+        ],
+        "unitree_generated_rollout_visually_useful_for_success_review": bool(
+            unitree_generated_rollout_review_completed
+        ),
+        "generated_rollout_visual_smoke_status": generated_rollout_visual_smoke_status,
+        "generated_rollout_visually_useful_for_success_review": generated_rollout_visually_useful,
+        "generated_videos_decode_valid_for_review": generated_videos_decode_valid_for_review,
+        "generated_video_review_validation_count": len(generated_video_review_validations),
+        "final_success_judge_status": final_success_judge["status"],
+        "final_success_judge_score": final_success_judge["score"],
+        "object_or_tote_correctly_placed": final_success_judge[
+            "object_or_tote_correctly_placed"
+        ],
+        "final_success_judge_answer": final_success_judge["answer"],
         "unitree_endpoint_action_command_count": len(unitree_endpoint_command_rows),
         "unitree_endpoint_action_controller_clamped_command_count": unitree_controller_clamped_command_count,
         "same_scene_controller_clamped_update_count": same_scene_controller_clamped_update_count,
+        "same_scene_policy_action_clipped_update_count": same_scene_policy_action_clipped_update_count,
+        "same_scene_max_raw_policy_action_abs": round(
+            float(same_scene_max_raw_policy_action_abs), 6
+        ),
+        "same_scene_max_applied_policy_action_abs": round(
+            float(same_scene_max_applied_policy_action_abs), 6
+        ),
         "unitree_controller_command_limits": dict(UNITREE_RL_GYM_CONTROLLER_COMMAND_LIMITS),
         "endpoint_action_trace_bound_to_unitree_command_stream": bool(
             unitree_endpoint_command_rows
@@ -4449,7 +10060,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "max_sampled_contact_trace_rows": contact_trace_row_limit,
         "contact_trace_truncated": contact_trace_truncated,
         "dropped_contact_trace_row_count": contact_trace_dropped_count,
-        "scenario_eval_run_coverage_complete": len(attempts) == required_count and required_count > 0,
+        "scenario_eval_run_coverage_complete": len(attempts) == required_count
+        and required_count > 0,
         "attempt_count_matches_matrix_count": len(attempts) == required_count,
         "pass_fail_by_task": _counts_by_key(attempts, "task_id"),
         "pass_fail_by_spawn": _counts_by_key(attempts, "spawn_id"),
@@ -4459,21 +10071,93 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "deployment_readiness_proven": False,
         "artifact_paths": {
             "policy_endpoint_discovery": str(job_dir / "policy_endpoint_discovery.json"),
-            "policy_endpoint_runtime_manifest": str(job_dir / "policy_endpoint_runtime_manifest.json"),
-            "policy_endpoint_server_manifest": str(job_dir / "policy_endpoint_server_manifest.json"),
-            "policy_command_adapter_manifest": str(job_dir / "policy_command_adapter_manifest.json"),
+            "policy_endpoint_runtime_manifest": str(
+                job_dir / "policy_endpoint_runtime_manifest.json"
+            ),
+            "policy_endpoint_server_manifest": str(
+                job_dir / "policy_endpoint_server_manifest.json"
+            ),
+            "policy_command_adapter_manifest": str(
+                job_dir / "policy_command_adapter_manifest.json"
+            ),
             "wam_vla_runtime_discovery": str(job_dir / "wam_vla_runtime_discovery.json"),
             "policy_endpoint_auth_manifest": str(job_dir / "policy_endpoint_auth_manifest.json"),
             "policy_endpoint_probe_results": str(job_dir / "policy_endpoint_probe_results.json"),
-            "policy_endpoint_invocation_trace_jsonl": str(job_dir / "policy_endpoint_invocation_trace.jsonl"),
+            "policy_endpoint_invocation_trace_jsonl": str(
+                job_dir / "policy_endpoint_invocation_trace.jsonl"
+            ),
+            "policy_visual_observation_manifest": str(
+                job_dir / "policy_visual_observation_manifest.json"
+            ),
+            "policy_visual_observation_trace_jsonl": str(
+                job_dir / "policy_visual_observation_trace.jsonl"
+            ),
+            "g1_projected_skeleton_trace_jsonl": str(g1_projected_skeleton_trace_path),
+            "g1_projected_skeleton_manifest": str(job_dir / "g1_projected_skeleton_manifest.json"),
             "policy_model_candidate_matrix": str(job_dir / "policy_model_candidate_matrix.json"),
             "policy_model_truth_boundary": str(job_dir / "policy_model_truth_boundary.json"),
-            "realistic_navigation_policy_discovery": str(job_dir / "realistic_navigation_policy_discovery.json"),
+            "policy_action_model_command_discovery": str(
+                job_dir / "policy_action_model_command_discovery.json"
+            ),
+            "policy_action_model_command_execution": str(
+                job_dir / "policy_action_model_command_execution.json"
+            ),
+            "policy_action_model_command_output": str(
+                job_dir / "policy_action_model_command_output.json"
+            ),
+            "unitree_policy_provider_registry_probe": str(
+                job_dir / "unitree_policy_provider_registry_probe.json"
+            ),
+            "unitree_policy_stack_installation_audit": str(
+                job_dir / "unitree_policy_stack_installation_audit.json"
+            ),
+            "unitree_lerobot_g1_runtime_probe": str(
+                job_dir / "unitree_lerobot_g1_runtime_probe.json"
+            ),
+            "unitree_lerobot_g1_policy_runtime_summary": str(
+                job_dir / "unitree_lerobot_g1_policy_runtime_summary.json"
+            ),
+            "unitree_lerobot_g1_policy_runtime_truth_boundary": str(
+                job_dir / "unitree_lerobot_g1_policy_runtime_truth_boundary.json"
+            ),
+            "unitree_lerobot_g1_policy_handoff_manifest": str(
+                job_dir / "unitree_lerobot_g1_policy_handoff" / "robot_team_handoff_manifest.json"
+            ),
+            "unitree_groot_n17_sonic_installation_audit": str(
+                job_dir / "unitree_groot_n17_sonic_installation_audit.json"
+            ),
+            "unitree_groot_n17_sonic_policy_runtime_summary": str(
+                job_dir / "unitree_groot_n17_sonic_policy_runtime_summary.json"
+            ),
+            "unitree_groot_n17_sonic_policy_runtime_truth_boundary": str(
+                job_dir / "unitree_groot_n17_sonic_policy_runtime_truth_boundary.json"
+            ),
+            "unitree_groot_n17_sonic_sim2sim_execution": str(
+                job_dir / "unitree_groot_n17_sonic_sim2sim_execution.json"
+            ),
+            "unitree_groot_n17_sonic_sim2sim_action_trace_jsonl": str(
+                job_dir / "unitree_groot_n17_sonic_sim2sim_action_trace.jsonl"
+            ),
+            "unitree_groot_n17_sonic_sim2sim_controller_truth": str(
+                job_dir / "unitree_groot_n17_sonic_sim2sim_controller_truth.json"
+            ),
+            "unitree_groot_n17_sonic_sim2sim_review_video": str(
+                job_dir / "unitree_groot_n17_sonic_sim2sim_review.mp4"
+            ),
+            "realistic_navigation_policy_discovery": str(
+                job_dir / "realistic_navigation_policy_discovery.json"
+            ),
+            "unitree_g1_manipulation_policy_discovery": str(
+                job_dir / "unitree_g1_manipulation_policy_discovery.json"
+            ),
             "official_unitree_controller_sidecar_manifest": str(
                 job_dir / "official_unitree_controller_sidecar_manifest.json"
             ),
             "unitree_endpoint_action_command_stream": str(
                 job_dir / "unitree_endpoint_action_command_stream.json"
+            ),
+            "egocentric_upper_body_observation_pose_manifest": str(
+                job_dir / "egocentric_upper_body_observation_pose_manifest.json"
             ),
             "unitree_endpoint_action_controller_replay_manifest": str(
                 job_dir / "unitree_endpoint_action_controller_replay_manifest.json"
@@ -4481,25 +10165,71 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "unitree_controller_bridge_manifest": str(
                 job_dir / "unitree_controller_bridge_manifest.json"
             ),
+            "robot_policy_wam_loop_manifest": str(job_dir / "robot_policy_wam_loop_manifest.json"),
+            "final_success_judge": str(job_dir / "final_success_judge.json"),
+            "claim_boundary": str(job_dir / "claim_boundary.json"),
+            "manipulation_success_evaluator_results": str(
+                job_dir / "manipulation_success_evaluator_results.json"
+            ),
+            "robot_policy_wam_closed_loop_attempt": str(
+                job_dir
+                / "robot_policy_wam_closed_loop"
+                / "robot_policy_wam_closed_loop_attempt.json"
+            ),
+            "robot_policy_wam_loop_trace_jsonl": str(
+                job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_loop_trace.jsonl"
+            ),
+            "wam_generated_next_observations_jsonl": str(
+                job_dir
+                / "robot_policy_wam_closed_loop"
+                / "wam_generated_next_observations.jsonl"
+            ),
+            "robot_policy_wam_side_by_side_trace_manifest": str(
+                job_dir
+                / "robot_policy_wam_closed_loop"
+                / "robot_policy_wam_side_by_side_trace_manifest.json"
+            ),
+            "robot_policy_wam_side_by_side_trace_jsonl": str(
+                job_dir
+                / "robot_policy_wam_closed_loop"
+                / "robot_policy_wam_side_by_side_trace.jsonl"
+            ),
+            "robot_policy_wam_side_by_side_trace_html": str(
+                job_dir
+                / "robot_policy_wam_closed_loop"
+                / "robot_policy_wam_side_by_side_trace.html"
+            ),
             "same_scene_unitree_controller_backend_manifest": str(
                 job_dir / "same_scene_unitree_controller_backend_manifest.json"
             ),
             "same_scene_unitree_controller_trace_jsonl": str(
                 job_dir / "same_scene_unitree_controller_trace.jsonl"
             ),
+            "unitree_generated_rollout_review_manifest": str(
+                job_dir / "unitree_generated_rollout_review_manifest.json"
+            ),
+            "generated_rollout_visual_smoke": str(job_dir / "generated_rollout_visual_smoke.json"),
             "scenario_eval_matrix": str(job_dir / "scenario_eval_matrix.json"),
             "normalized_attempt_trace": str(job_dir / "normalized_attempt_trace.json"),
-            "normalized_policy_action_trace_jsonl": str(job_dir / "normalized_policy_action_trace.jsonl"),
+            "normalized_policy_action_trace_jsonl": str(
+                job_dir / "normalized_policy_action_trace.jsonl"
+            ),
             "g1_mujoco_locomotion_trace_jsonl": str(job_dir / "g1_mujoco_locomotion_trace.jsonl"),
             "wam_evaluator_results": str(job_dir / "wam_evaluator_results.json"),
             "video_generation_status": str(job_dir / "video_generation_status.json"),
             "video_analysis_manifest": str(job_dir / "video_analysis_manifest.json"),
-            "review_video_selection_manifest": str(job_dir / "review_video_selection_manifest.json"),
-            "manipulation_endpoint_task_report": str(job_dir / "manipulation_endpoint_task_report.json"),
+            "review_video_selection_manifest": str(
+                job_dir / "review_video_selection_manifest.json"
+            ),
+            "manipulation_endpoint_task_report": str(
+                job_dir / "manipulation_endpoint_task_report.json"
+            ),
         },
         "recommendation": (
             "Use this as the fast local policy-endpoint plumbing evaluator before Isaac. "
-            "Do not use it as Isaac, physical robot, deployment, safety, or official Unitree controller proof."
+            "When controller_backend is unitree_rl_gym and controller_truth_boundary proves "
+            "same-scene integration, it is simulator-only Unitree RL Gym locomotion proof. "
+            "Do not use it as Isaac, physical robot, deployment, safety, or dexterous VLA proof."
         ),
     }
     write_json(job_dir / "policy_evaluation_summary.json", summary)
@@ -4520,12 +10250,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--steps-per-episode", type=int, default=DEFAULT_STEPS_PER_EPISODE)
     parser.add_argument("--policy-interval-steps", type=int, default=20)
     parser.add_argument(
+        "--wam-loop-step-count",
+        type=int,
+        default=DEFAULT_WAM_LOOP_STEP_COUNT,
+        help=(
+            "Policy/WAM closed-loop calls to run. Defaults to 12 so the simulator "
+            "artifact shows a multi-call policy/WAM loop rather than a three-call smoke test."
+        ),
+    )
+    parser.add_argument(
         "--render-frame-count",
         type=int,
         default=0,
         help="Fixed sampled frame count. Use 0 for full-episode stride rendering.",
     )
-    parser.add_argument("--video-frame-stride-steps", type=int, default=DEFAULT_VIDEO_FRAME_STRIDE_STEPS)
+    parser.add_argument(
+        "--video-frame-stride-steps", type=int, default=DEFAULT_VIDEO_FRAME_STRIDE_STEPS
+    )
     parser.add_argument(
         "--capture-every-sim-step-review-video",
         action="store_true",
@@ -4554,7 +10295,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="video_cameras",
         choices=AVAILABLE_VIDEO_CAMERAS,
         default=None,
-        help="Camera to render. Repeat for multiple cameras. Defaults to all cameras.",
+        help=(
+            "Camera to render. Repeat for multiple cameras. Defaults to head_pov and "
+            "torso_pov egocentric policy-observation candidates."
+        ),
     )
     parser.add_argument(
         "--fps",
@@ -4619,6 +10363,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             "the legacy fast lane; unitree_rl_gym fail-closes if the controller cannot load."
         ),
     )
+    parser.add_argument(
+        "--policy-lane",
+        default="auto",
+        choices=(
+            "auto",
+            "official_unitree_rl_gym",
+            "unitree_lerobot_g1",
+            GROOT_POLICY_ID,
+            "openvla_endpoint",
+            "unifolm_vla",
+            "unifolm_wma",
+            "unsupported",
+        ),
+    )
+    parser.add_argument(
+        "--unitree-lerobot-mode",
+        default="probe",
+        choices=("probe", "dry_run", "sim_eval", "not_configured"),
+        help="Unitree LeRobot G1 provider mode. Probe is the default and never runs inference.",
+    )
+    parser.add_argument("--allow-policy-action-model-command-run", action="store_true")
     args = parser.parse_args(argv)
     effective_video_frame_stride_steps = (
         1 if args.capture_every_sim_step_review_video else args.video_frame_stride_steps
@@ -4658,6 +10423,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         unitree_controller_replay_steps=args.unitree_controller_replay_steps,
         controller_backend=args.controller_backend,
+        policy_lane=args.policy_lane,
+        unitree_lerobot_mode=args.unitree_lerobot_mode,
+        allow_policy_action_model_command_run=args.allow_policy_action_model_command_run,
+        wam_loop_step_count=args.wam_loop_step_count,
     )
     print(
         json.dumps(

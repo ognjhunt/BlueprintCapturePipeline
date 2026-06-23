@@ -11,6 +11,40 @@ import pytest
 from blueprint_pipeline import mujoco_g1_wam_vla_policy_endpoint_eval as lane
 
 
+def _configure_fake_live_wam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, name: str = "fake_live_wam"
+) -> Path:
+    command = tmp_path / f"{name}.py"
+    command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_WAM_ROLLOUT_INPUT"]).read_text(encoding="utf-8"))
+target = Path(request["requested_output"]["next_observation_frame_path"])
+source = Path(request["source_policy_observation_frame_path"])
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_bytes(source.read_bytes())
+payload = {
+    "schema_version": "fake_live_wam_generation.v1",
+    "status": "completed",
+    "wam_evaluator_backend": "oscar_wam",
+    "action_conditioned_generation_ran": True,
+    "generated_next_observation_frame_path": str(target),
+}
+Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    checkpoint = tmp_path / f"{name}_checkpoint"
+    checkpoint.mkdir()
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_COMMAND", f"{sys.executable} {command}")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", str(checkpoint))
+    monkeypatch.setenv(lane.WAM_GENERATION_COMMAND_GATE_ENV, "true")
+    return command
+
+
 def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -35,6 +69,25 @@ def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
     assert len(lane._utc_timestamp_for_path()) == len("20260102T030405Z")
     quat = lane._yaw_quat(math.pi / 2)
     assert lane._yaw_from_quat(quat) == pytest.approx(math.pi / 2)
+
+    class FakeCamera:
+        def __init__(self) -> None:
+            self.type = None
+            self.lookat = [0.0, 0.0, 0.0]
+            self.distance = 0.0
+            self.azimuth = 0.0
+            self.elevation = 0.0
+
+    fake_mujoco = SimpleNamespace(
+        MjvCamera=FakeCamera,
+        mjtCamera=SimpleNamespace(mjCAMERA_FREE="free"),
+    )
+    head_pov = lane._camera_for(fake_mujoco, "head_pov", [1.0, 2.0, 0.79], 0.0)
+    assert head_pov.type == "free"
+    assert head_pov.distance == pytest.approx(1.15)
+    assert head_pov.azimuth == pytest.approx(180.0)
+    assert head_pov.lookat[0] > 1.0
+    assert head_pov.lookat[2] > 1.9
     assert lane._episode_frame_steps(
         steps_per_episode=100,
         render_frame_count=0,
@@ -42,7 +95,40 @@ def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
     ) == (list(range(100)), "full_episode_stride", 1)
     assert lane.DEFAULT_VIDEO_FRAME_STRIDE_STEPS == 8
     assert lane.DEFAULT_REVIEW_VIDEO_FPS == 60
+    assert lane.DEFAULT_WAM_LOOP_STEP_COUNT == 12
+    default_sampling = lane._review_video_sampling_contract(
+        fps=60,
+        timestep=0.002,
+        video_frame_stride_steps=8,
+        render_frame_count=0,
+        extend_terminal_frame_for_review=False,
+    )
+    assert default_sampling["sampling_mode"] == "nominal_realtime_stride_review"
+    assert default_sampling["nominal_realtime_review_mp4"] is True
+    assert default_sampling["captures_every_mujoco_step"] is False
+    assert default_sampling["sample_every_n_sim_steps"] == 8
+    assert "slow-motion" in default_sampling["why_not_every_frame_by_default"]
+    every_step_fixed_fps = lane._review_video_sampling_contract(
+        fps=60,
+        timestep=0.002,
+        video_frame_stride_steps=1,
+        render_frame_count=0,
+        extend_terminal_frame_for_review=False,
+    )
+    assert (
+        every_step_fixed_fps["sampling_mode"]
+        == "every_sim_step_fixed_fps_debug_slow_motion"
+    )
+    assert every_step_fixed_fps["every_frame_at_fixed_60fps_is_debug_slow_motion"] is True
+    assert "head_pov" in lane.AVAILABLE_VIDEO_CAMERAS
+    assert "robot_pov" in lane.AVAILABLE_VIDEO_CAMERAS
+    assert "torso_pov" in lane.AVAILABLE_VIDEO_CAMERAS
+    assert lane.DEFAULT_VIDEO_CAMERAS == ("head_pov", "torso_pov")
+    assert "third_person" in lane.DIAGNOSTIC_VIDEO_CAMERAS
+    assert lane.PREFERRED_G1_POLICY_OBSERVATION_MJCF == "g1_with_hands.xml"
     assert lane.DEFAULT_CONTROLLER_BACKEND == "auto"
+    assert lane.DEFAULT_UNITREE_RL_GYM_POSITION_TARGET_ACTION_CLIP_ABS == 0.5
+    assert lane._unitree_rl_gym_position_target_action_clip_abs() == 0.5
     assert set(lane.CONTROLLER_BACKENDS) == {"auto", "freejoint_proxy", "unitree_rl_gym"}
     assert lane._episode_frame_steps(
         steps_per_episode=100,
@@ -126,6 +212,31 @@ def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
         "unitree_lerobot",
         "lerobot_unitree_g1",
     }
+    manipulation_discovery = lane.discover_unitree_manipulation_policy(generated_at="now")
+    assert manipulation_discovery["status"] == "blocked_missing_hand_policy_runtime"
+    assert manipulation_discovery["unitree_hand_manipulation_policy_used"] is False
+    assert manipulation_discovery["current_mujoco_manipulation_policy_kind"] == "contact_trace_proxy_only"
+    assert "blocked_dexterous_hand_policy_not_integrated" in manipulation_discovery["blockers"]
+    manipulation_command = tmp_path / "unitree-manipulation-command"
+    manipulation_command.write_text("#!/bin/sh\n", encoding="utf-8")
+    manipulation_checkpoint = tmp_path / "unitree-hand-policy.pt"
+    manipulation_checkpoint.write_text("weights", encoding="utf-8")
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        str(manipulation_command),
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT",
+        str(manipulation_checkpoint),
+    )
+    ready_manipulation = lane.discover_unitree_manipulation_policy(generated_at="now")
+    assert ready_manipulation["status"] == "candidate_ready"
+    assert ready_manipulation["ready_candidate_count"] == 1
+    assert ready_manipulation["selected_candidate_id"] == "unitree_lerobot_g1_dex"
+    assert ready_manipulation["unitree_hand_manipulation_policy_used"] is False
+    assert ready_manipulation["can_claim_vla_or_dexterous_manipulation"] is False
+    monkeypatch.delenv("BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND")
+    monkeypatch.delenv("BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT")
     unitree_root = tmp_path / "unitree_rl_gym"
     for path in lane._unitree_rl_gym_required_files(unitree_root).values():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,7 +247,12 @@ def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
     assert navigation["unitree_policy_root_ready_for_sidecar_execution"] is True
     assert navigation["unitree_policy_root_ready_for_same_scene_endpoint_controller"] is True
     assert navigation["same_scene_endpoint_controller_can_be_selected_with"] == "--controller-backend unitree_rl_gym"
-    assert navigation["candidate_root_envs"][1]["required_files_present"] is True
+    unitree_rl_gym_env_row = next(
+        row
+        for row in navigation["candidate_root_envs"]
+        if row["env"] == "BLUEPRINT_UNITREE_RL_GYM_ROOT"
+    )
+    assert unitree_rl_gym_env_row["required_files_present"] is True
     assert "blocked_missing_realistic_g1_navigation_policy" not in navigation["blockers"]
     monkeypatch.delenv("BLUEPRINT_UNITREE_RL_GYM_ROOT")
     monkeypatch.setenv("BLUEPRINT_REALISTIC_G1_POLICY_COMMAND", "'unterminated")
@@ -144,6 +260,24 @@ def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
     assert malformed_navigation["candidate_command_envs"][0]["configured"] is True
     assert malformed_navigation["candidate_command_envs"][0]["available"] is False
     monkeypatch.delenv("BLUEPRINT_REALISTIC_G1_POLICY_COMMAND")
+    for name in (
+        "BLUEPRINT_UNITREE_LEROBOT_ROOT",
+        "BLUEPRINT_UNITREE_LEROBOT_PYTHON",
+        "BLUEPRINT_UNITREE_LEROBOT_POLICY_PATH",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+        "BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_CHECKPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
     discovery, runtime, auth, probe = lane.discover_policy_runtime(generated_at="now")
     assert discovery["status"] == "blocked_missing_policy_endpoint"
@@ -190,6 +324,937 @@ def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
     )
     assert scene_manifest["status"] == "completed"
     assert (tmp_path / "scene" / "eval.xml").is_file()
+    g1_variant_root = tmp_path / "g1_variant"
+    (g1_variant_root / "assets").mkdir(parents=True)
+    (g1_variant_root / "g1.xml").write_text("<mujoco/>", encoding="utf-8")
+    fallback_xml, fallback_selection = lane._select_g1_policy_observation_mjcf(g1_variant_root)
+    assert fallback_xml.name == "g1.xml"
+    assert fallback_selection["hands_capable_g1_mjcf_selected"] is False
+    (g1_variant_root / "g1_with_hands.xml").write_text("<mujoco/>", encoding="utf-8")
+    for mesh_name in fallback_selection["hand_mesh_probe_names"]:
+        (g1_variant_root / "assets" / mesh_name).write_text("mesh", encoding="utf-8")
+    hands_xml, hands_selection = lane._select_g1_policy_observation_mjcf(g1_variant_root)
+    assert hands_xml.name == "g1_with_hands.xml"
+    assert hands_selection["hands_capable_g1_mjcf_available"] is True
+    assert hands_selection["hands_capable_g1_mjcf_selected"] is True
+    assert hands_selection["hand_meshes_present"] is True
+    assert (
+        hands_selection["claim_boundary"][
+            "hands_capable_mjcf_does_not_prove_dexterous_hand_policy_execution"
+        ]
+        is True
+    )
+    g1_with_torso = tmp_path / "g1_with_torso.xml"
+    g1_with_torso.write_text(
+        '<mujoco model="g1"><worldbody><body name="torso_link"/></worldbody></mujoco>',
+        encoding="utf-8",
+    )
+    camera_manifest = lane._add_g1_fixed_egocentric_cameras(g1_with_torso)
+    camera_xml = g1_with_torso.read_text(encoding="utf-8")
+    assert camera_manifest["status"] == "completed"
+    assert "blueprint_g1_head_pov" in camera_xml
+    assert "blueprint_g1_torso_pov" in camera_xml
+    assert camera_manifest["truth_boundary"]["camera_mounted_in_mujoco_g1_mjcf"] is True
+
+
+def test_policy_action_model_command_execution_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_dir = tmp_path / "policy-action-command"
+    job_dir.mkdir()
+    blocked = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=False,
+        timeout_seconds=1,
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["policy_action_model_command_ran"] is False
+    assert "missing_cli_allow_policy_action_model_command_run" in blocked["blockers"]
+
+    command = tmp_path / "unitree_policy_command.py"
+    command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_POLICY_ACTION_INPUT"]).read_text(encoding="utf-8"))
+assert request["schema_version"] == "policy_action_model_command_input.v1"
+frame_path = request["observation"]["camera_frame_path"]
+assert frame_path
+assert Path(frame_path).is_file()
+assert request["observation"]["visual_observation"]["available"] is True
+payload = {
+    "schema_version": "unitree_g1_policy_command_adapter.v1",
+    "status": "completed",
+    "unitree_policy_action_command_ran": True,
+    "normalized_action": {
+        "action_type": "waypoint",
+        "target_waypoint": [0.5, 0.0],
+    },
+}
+Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "step_000000.jpg").write_bytes(b"fake-jpeg")
+    checkpoint = tmp_path / "unitree-g1-policy.pt"
+    checkpoint.write_text("weights", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_POLICY_COMMAND", f"{sys.executable} {command}")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_POLICY_CHECKPOINT", str(checkpoint))
+    monkeypatch.setenv(lane.POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "true")
+
+    completed = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=True,
+        timeout_seconds=5,
+    )
+
+    assert completed["status"] == "completed"
+    assert completed["policy_action_model_command_ran"] is True
+    assert completed["openvla_policy_action_command_ran"] is False
+    assert completed["openvla_model_executed"] is False
+    assert completed["openvla_predict_action_invoked"] is False
+    assert completed["unitree_policy_action_command_ran"] is True
+    assert completed["selected_candidate_id"] == "unitree_g1_policy"
+    assert completed["action_payload_redacted"]["action_type"] == "waypoint"
+    assert (job_dir / "policy_action_model_command_discovery.json").is_file()
+    assert (job_dir / "policy_action_model_command_execution.json").is_file()
+
+
+def test_unitree_lerobot_policy_action_model_can_drive_wam_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    job_dir = tmp_path / "unitree-lerobot-loop"
+    frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "step_000000.jpg").write_bytes(b"fake-jpeg")
+    command = tmp_path / "unitree_lerobot_policy_command.py"
+    command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_POLICY_ACTION_INPUT"]).read_text(encoding="utf-8"))
+observation = request["observation"]
+frame = observation.get("camera_frame_path") or observation["visual_observation"]["camera_frame_path"]
+assert Path(frame).is_file()
+payload = {
+    "schema_version": "unitree_lerobot_policy_command_adapter.v1",
+    "status": "completed",
+    "policy_id": "unitree_lerobot_g1_policy",
+    "unitree_lerobot_policy_action_command_ran": True,
+    "action_chunk": [0.1, 0.2, 0.3],
+}
+Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    checkpoint = tmp_path / "unitree-lerobot-hand-policy.pt"
+    checkpoint.write_text("weights", encoding="utf-8")
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        f"{sys.executable} {command}",
+    )
+    monkeypatch.setenv("BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT", str(checkpoint))
+    monkeypatch.setenv(lane.POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "true")
+
+    execution = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=True,
+        timeout_seconds=15,
+    )
+    assert execution["status"] == "completed"
+    assert execution["selected_candidate_id"] == "unitree_lerobot_policy"
+    assert execution["unitree_policy_action_command_ran"] is True
+    assert execution["unitree_lerobot_policy_action_command_ran"] is True
+    assert execution["unitree_manipulation_policy_action_command_ran"] is True
+    assert execution["action_payload_redacted"]["unitree_action_chunk_present"] is True
+
+    _configure_fake_live_wam(tmp_path, monkeypatch, name="fake_lerobot_live_wam")
+    loop = lane.run_robot_policy_wam_closed_loop_attempt(
+        job_dir=job_dir,
+        generated_at="now",
+        policy_action_model_command_execution=execution,
+        loop_step_count=3,
+        timeout_seconds=15,
+    )
+
+    assert loop["status"] == "completed"
+    assert loop["wam_evaluator_in_control_loop"] is True
+    assert loop["policy_observes_wam_generated_next_observation"] is True
+    assert loop["unitree_policy_action_command_ran"] is True
+    assert loop["unitree_lerobot_policy_action_command_ran"] is True
+    assert loop["repeated_policy_calls_count"] >= 2
+    assert loop["generated_next_observation_count"] >= 1
+    assert loop["live_wam_generation_command_ran"] is True
+    assert loop["action_conditioned_generation_ran"] is True
+    assert loop["live_wam_generation_success_count"] >= 1
+    assert loop["structural_wam_generation_count"] == 0
+    assert (job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_loop_trace.jsonl").is_file()
+    assert (
+        job_dir / "robot_policy_wam_closed_loop" / "wam_generated_next_observations.jsonl"
+    ).is_file()
+    assert (
+        job_dir / "robot_policy_wam_closed_loop" / "wam_generation_command_discovery.json"
+    ).is_file()
+    assert (
+        job_dir / "robot_policy_wam_closed_loop" / "wam_generation_command_execution.json"
+    ).is_file()
+    assert (
+        job_dir / "robot_policy_wam_closed_loop" / "wam_generation_command_output.json"
+    ).is_file()
+
+
+def test_unitree_groot_n17_sonic_policy_action_model_can_drive_wam_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_HOST",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_PORT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_TOKEN_FILE",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    job_dir = tmp_path / "unitree-groot-loop"
+    frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "step_000000.jpg").write_bytes(b"fake-jpeg")
+    command = tmp_path / "unitree_groot_n17_sonic_policy_command.py"
+    command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_POLICY_ACTION_INPUT"]).read_text(encoding="utf-8"))
+observation = request["observation"]
+frame = observation.get("camera_frame_path") or observation["visual_observation"]["camera_frame_path"]
+assert Path(frame).is_file()
+payload = {
+    "schema_version": "unitree_groot_n17_sonic_policy_command_adapter.v1",
+    "status": "completed",
+    "policy_id": "unitree_groot_n17_sonic_policy",
+    "unitree_groot_n17_sonic_policy_action_command_ran": True,
+    "action_chunk": [0.1] * 78,
+}
+Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        f"{sys.executable} {command}",
+    )
+    n17_checkpoint = tmp_path / "finetuned_n17_unitree_g1_sonic"
+    n17_checkpoint.mkdir()
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT", str(n17_checkpoint))
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT", "nvidia/GEAR-SONIC")
+    monkeypatch.setenv(lane.POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "true")
+
+    execution = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=True,
+        timeout_seconds=5,
+    )
+    assert execution["status"] == "completed"
+    assert execution["selected_candidate_id"] == "unitree_groot_n17_sonic_policy"
+    assert execution["unitree_policy_action_command_ran"] is True
+    assert execution["unitree_groot_n17_sonic_policy_action_command_ran"] is True
+    assert execution["unitree_manipulation_policy_action_command_ran"] is True
+    assert execution["action_payload_redacted"]["unitree_action_chunk_present"] is True
+
+    _configure_fake_live_wam(tmp_path, monkeypatch, name="fake_groot_live_wam")
+    loop = lane.run_robot_policy_wam_closed_loop_attempt(
+        job_dir=job_dir,
+        generated_at="now",
+        policy_action_model_command_execution=execution,
+        timeout_seconds=5,
+    )
+
+    assert loop["status"] == "completed"
+    assert loop["requested_loop_step_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT
+    assert loop["wam_evaluator_in_control_loop"] is True
+    assert loop["policy_observes_wam_generated_next_observation"] is True
+    assert loop["unitree_policy_action_command_ran"] is True
+    assert loop["unitree_groot_n17_sonic_policy_action_command_ran"] is True
+    assert loop["repeated_policy_calls_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT
+    assert loop["fresh_policy_action_call_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT
+    assert loop["structural_policy_action_response_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT
+    assert loop["provider_output_replay_used"] is False
+    assert loop["generated_next_observation_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT - 1
+    assert loop["live_wam_generation_success_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT - 1
+    assert loop["structural_wam_generation_count"] == 0
+    assert loop["action_conditioned_generation_ran"] is True
+    assert loop["side_by_side_transition_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT - 1
+    side_by_side_manifest = json.loads(
+        Path(loop["side_by_side_trace_manifest"]).read_text(encoding="utf-8")
+    )
+    assert side_by_side_manifest["transition_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT - 1
+    assert Path(side_by_side_manifest["trace_html_path"]).is_file()
+    assert Path(loop["side_by_side_trace_html_path"]).is_file()
+    side_by_side_html = Path(loop["side_by_side_trace_html_path"]).read_text(encoding="utf-8")
+    assert "Robot Policy WAM Side By Side Trace" in side_by_side_html
+    assert "Transition 1" in side_by_side_html
+    side_by_side_rows = [
+        json.loads(line)
+        for line in Path(loop["side_by_side_trace_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(side_by_side_rows) == lane.DEFAULT_WAM_LOOP_STEP_COUNT - 1
+    assert side_by_side_rows[0]["policy_pov_frame_path"].endswith("step_000000.jpg")
+    assert side_by_side_rows[0]["policy_action_summary"]["action_chunk_length"] == 78
+    assert side_by_side_rows[0]["wam_generated_next_observation_frame_path"].endswith(
+        "wam_generated_next_observation_step_0001.jpg"
+    )
+    assert side_by_side_rows[0]["next_policy_call_status"] == "completed"
+
+
+def test_unitree_groot_n17_sonic_replay_cannot_satisfy_wam_loop_fresh_policy_truth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        lane.GROOT_ROOT_ENV,
+        lane.WBC_ROOT_ENV,
+        lane.N17_CHECKPOINT_ENV,
+        lane.SONIC_CHECKPOINT_ENV,
+        lane.GROOT_POLICY_COMMAND_ENV,
+        lane.POLICY_SERVER_URL_ENV,
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_HOST",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_PORT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_TOKEN_FILE",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_HF_TOKEN_FILE",
+        lane.SIM2SIM_COMMAND_ENV,
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    job_dir = tmp_path / "unitree-groot-replay-loop"
+    frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "step_000000.jpg").write_bytes(b"fake-jpeg")
+    provider_output = tmp_path / "groot_provider_output.json"
+    provider_output.write_text(
+        json.dumps(
+            {
+                "schema_version": "unitree_groot_n17_sonic_policy_command_adapter.v1",
+                "status": "completed",
+                "policy_id": "unitree_groot_n17_sonic_policy",
+                "unitree_groot_n17_sonic_policy_action_command_ran": True,
+                "action": {
+                    "action_type": "unitree_g1_sonic_action_chunk",
+                    "action_chunk": [0.1] * 78,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    n17_checkpoint = tmp_path / "finetuned_n17_unitree_g1_sonic"
+    n17_checkpoint.mkdir()
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        f"{sys.executable} -m blueprint_pipeline.unitree_groot_n17_sonic_policy_command_adapter",
+    )
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT", str(n17_checkpoint))
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT", "nvidia/GEAR-SONIC")
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT",
+        str(provider_output),
+    )
+    monkeypatch.setenv(lane.POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "true")
+
+    execution = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=True,
+        timeout_seconds=5,
+    )
+
+    assert execution["status"] == "completed"
+    assert execution["policy_action_model_command_ran"] is True
+    assert execution["provider_output_replay_used"] is True
+    assert execution["fresh_policy_action_model_executed_this_invocation"] is False
+    assert execution["unitree_policy_action_command_ran"] is False
+
+    loop = lane.run_robot_policy_wam_closed_loop_attempt(
+        job_dir=job_dir,
+        generated_at="now",
+        policy_action_model_command_execution=execution,
+        loop_step_count=3,
+        timeout_seconds=5,
+    )
+
+    assert loop["status"] == "blocked"
+    assert loop["wam_evaluator_in_control_loop"] is False
+    assert loop["policy_observes_wam_generated_next_observation"] is False
+    assert loop["unitree_policy_action_command_ran"] is False
+    assert loop["unitree_groot_n17_sonic_policy_action_command_ran"] is False
+    assert loop["repeated_policy_calls_count"] == 0
+    assert loop["fresh_policy_action_call_count"] == 0
+    assert loop["structural_policy_action_response_count"] >= 2
+    assert loop["provider_output_replay_action_response_count"] >= 2
+    assert loop["provider_output_replay_used"] is True
+    assert "blocked_repeated_fresh_unitree_policy_calls_not_proven" in loop["blockers"]
+
+
+def test_unifolm_repo_id_checkpoints_are_configured_policy_action_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    command = tmp_path / "unitree_unifolm_vla_command"
+    command.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND", str(command))
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT",
+        "unitreerobotics/UnifoLM-VLA-Base",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT",
+        "unitreerobotics/UnifoLM-VLM-Base",
+    )
+
+    discovery = lane.discover_policy_action_model_commands(generated_at="now")
+    row = next(
+        item for item in discovery["candidates"] if item["candidate_id"] == "unitree_unifolm_vla_policy"
+    )
+
+    assert discovery["selected_candidate_id"] == "unitree_unifolm_vla_policy"
+    assert row["ready_for_policy_action_command"] is True
+    assert row["checkpoint_configured"] is True
+    assert row["checkpoint_exists"] is False
+    assert row["checkpoint_reference_kind"] == "repo_id"
+    assert row["extra_required_checkpoints"][0]["checkpoint_reference_kind"] == "repo_id"
+
+
+def test_groot_sonic_repo_id_checkpoints_are_configured_policy_action_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    command = tmp_path / "unitree_groot_n17_sonic_command"
+    command.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND", str(command))
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+        "blueprint-test/GR00T-N1.7-UNITREE-G1-SONIC-Finetuned",
+    )
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT", "nvidia/GEAR-SONIC")
+
+    discovery = lane.discover_policy_action_model_commands(generated_at="now")
+    row = next(
+        item
+        for item in discovery["candidates"]
+        if item["candidate_id"] == "unitree_groot_n17_sonic_policy"
+    )
+
+    assert discovery["selected_candidate_id"] == "unitree_groot_n17_sonic_policy"
+    assert row["ready_for_policy_action_command"] is True
+    assert row["checkpoint_configured"] is True
+    assert row["checkpoint_exists"] is False
+    assert row["checkpoint_reference_kind"] == "repo_id"
+    assert row["extra_required_checkpoints"][0]["checkpoint_reference_kind"] == "repo_id"
+
+
+def test_groot_sonic_base_n17_repo_id_uses_default_experimental_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    command = tmp_path / "unitree_groot_n17_sonic_command"
+    command.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND", str(command))
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT", "nvidia/GR00T-N1.7-3B")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT", "nvidia/GEAR-SONIC")
+
+    discovery = lane.discover_policy_action_model_commands(generated_at="now")
+    row = next(
+        item
+        for item in discovery["candidates"]
+        if item["candidate_id"] == "unitree_groot_n17_sonic_policy"
+    )
+
+    assert discovery["selected_candidate_id"] == "unitree_groot_n17_sonic_policy"
+    assert discovery["selected_candidate_ready_for_policy_action_command"] is True
+    assert discovery["status"] == "ready"
+    assert discovery["blockers"] == []
+    assert row["ready_for_policy_action_command"] is True
+    assert row["checkpoint_known_base_model_without_unitree_g1_sonic_support"] is True
+    assert row["checkpoint_default_applied"] is True
+    assert (
+        row["checkpoint_path"]
+        == lane.DEFAULT_EXPERIMENTAL_UNITREE_G1_SONIC_POLICY_CHECKPOINT
+    )
+    assert row["task_specific_finetuning_required_for_admission"] is False
+    assert row["trusted_for_production"] is False
+    assert row["checkpoint_provenance"]["trusted_for_production"] is False
+    assert (
+        "blocked_BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT_points_to_base_GR00T_N17_without_UNITREE_G1_SONIC_support"
+        not in row["blockers"]
+    )
+
+
+def test_groot_sonic_candidate_uses_builtin_command_when_command_env_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    groot_root = tmp_path / "Isaac-GR00T"
+    groot_root.mkdir()
+    wbc_root = tmp_path / "GR00T-WholeBodyControl"
+    wbc_root.mkdir()
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT", str(groot_root))
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT", str(wbc_root))
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT", "nvidia/GR00T-N1.7-3B")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT", "nvidia/GEAR-SONIC")
+
+    discovery = lane.discover_policy_action_model_commands(generated_at="now")
+    row = next(
+        item
+        for item in discovery["candidates"]
+        if item["candidate_id"] == "unitree_groot_n17_sonic_policy"
+    )
+
+    assert discovery["status"] == "ready"
+    assert discovery["selected_candidate_id"] == "unitree_groot_n17_sonic_policy"
+    assert discovery["selected_candidate_ready_for_policy_action_command"] is True
+    assert row["command_from_default"] is True
+    assert row["command_available"] is True
+    assert row["checkpoint_default_applied"] is True
+    assert row["checkpoint_path"] == lane.DEFAULT_EXPERIMENTAL_UNITREE_G1_SONIC_POLICY_CHECKPOINT
+    assert row["task_specific_finetuning_required_for_admission"] is False
+
+
+def test_policy_action_model_requires_egocentric_frame_and_ignores_openvla_as_g1_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+        "BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    job_dir = tmp_path / "policy-action-negative"
+    third_person_frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "third_person"
+    third_person_frame_dir.mkdir(parents=True)
+    (third_person_frame_dir / "step_000000.jpg").write_bytes(b"fake-jpeg")
+
+    sample = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+
+    assert sample["observation"]["visual_observation"]["available"] is False
+    assert sample["observation"]["visual_observation"]["camera_id"] is None
+    assert sample["observation"]["visual_observation"]["first_person_policy_observation_candidate"] is False
+    assert "policy_observation_frame_not_captured" in sample["observation"]["visual_observation"]["blockers"]
+    assert sorted(sample["observation"]["unitree_g1_sonic_state"]) == [
+        "left_arm",
+        "left_hand",
+        "left_leg",
+        "projected_gravity",
+        "right_arm",
+        "right_hand",
+        "right_leg",
+        "waist",
+    ]
+    assert sample["claim_boundary"]["unitree_g1_sonic_state_is_simulated_observation"] is True
+    assert sample["claim_boundary"]["unitree_g1_sonic_state_is_contract_probe"] is True
+    assert lane._policy_action_model_frame_candidates(job_dir) == []
+
+    head_frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    head_frame_dir.mkdir(parents=True)
+    (head_frame_dir / "step_000000.jpg").write_bytes(b"fake-jpeg")
+    command = tmp_path / "generic_policy_command.py"
+    command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+payload = {
+    "schema_version": "policy_action_model_command_output.v1",
+    "status": "completed",
+    "normalized_action": {"action_type": "waypoint", "target_waypoint": [0.5, 0.0]},
+}
+Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENVLA_POLICY_COMMAND", f"{sys.executable} {command}")
+    monkeypatch.setenv(lane.POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "true")
+
+    result = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=True,
+        timeout_seconds=5,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["policy_action_model_command_ran"] is False
+    assert result["openvla_policy_action_command_ran"] is False
+    assert result.get("openvla_model_executed", False) is False
+    assert "blocked_missing_unitree_specific_policy_action_model_command" in result["blockers"]
+    blocked_output = json.loads(
+        (job_dir / "policy_action_model_command_output.json").read_text(encoding="utf-8")
+    )
+    assert blocked_output["status"] == "blocked"
+    assert blocked_output["action_payload_present"] is False
+    assert blocked_output["unitree_policy_action_command_ran"] is False
+    assert blocked_output["unitree_groot_n17_sonic_policy_action_command_ran"] is False
+    assert blocked_output["claim_boundary"]["safety_validation_proven"] is False
+    discovery = result["discovery"]
+    assert discovery["selection_policy"] == "unitree_specific_policy_candidates_only"
+    assert discovery["selected_candidate_id"] is None
+    openvla_rows = [
+        row
+        for row in discovery["generic_policy_comparison_candidates"]
+        if row["candidate_id"] == "openvla_policy"
+    ]
+    assert openvla_rows
+    assert openvla_rows[0]["command_configured"] is True
+    assert openvla_rows[0]["ready_for_policy_action_command"] is False
+
+
+def test_policy_action_model_input_prefers_captured_unitree_g1_sonic_state(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "policy-action-with-sonic-state"
+    frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    frame_dir.mkdir(parents=True)
+    frame = frame_dir / "step_000000.jpg"
+    frame.write_bytes(b"fake-jpeg")
+    state = {
+        "left_leg": [1.0] * 6,
+        "right_leg": [2.0] * 6,
+        "waist": [3.0] * 3,
+        "left_arm": [4.0] * 7,
+        "right_arm": [5.0] * 7,
+        "left_hand": [6.0] * 7,
+        "right_hand": [7.0] * 7,
+        "projected_gravity": [0.0, 0.0, -1.0],
+    }
+    (job_dir / "policy_visual_observation_trace.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": "policy_visual_observation.v1",
+                "available": True,
+                "episode_id": "episode_0001",
+                "scenario_eval_run_id": "run-1",
+                "task_id": "contact_or_push_light_object",
+                "step": 0,
+                "camera_frame_path": str(frame),
+                "unitree_g1_sonic_state": state,
+                "unitree_g1_sonic_state_source": "simulated_mujoco_qpos_joint_groups",
+                "unitree_g1_sonic_state_metadata": {
+                    "complete": True,
+                    "missing_joint_names": [],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    sample = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+
+    assert sample["observation"]["unitree_g1_sonic_state"] == state
+    assert (
+        sample["observation"]["unitree_g1_sonic_state_source"]
+        == "simulated_mujoco_qpos_joint_groups"
+    )
+    assert sample["observation"]["unitree_g1_sonic_state_metadata"]["step"] == 0
+    assert sample["claim_boundary"]["unitree_g1_sonic_state_is_contract_probe"] is False
+    assert sample["claim_boundary"]["unitree_g1_sonic_state_derived_from_mujoco_qpos"] is True
+
+
+def test_policy_action_model_execution_preserves_blocked_output_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_OPENVLA_POLICY_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    job_dir = tmp_path / "policy-action-blocked-output"
+    frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "step_000000.jpg").write_bytes(b"fake-jpeg")
+    command = tmp_path / "blocked_groot_command.py"
+    command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+payload = {
+    "schema_version": "unitree_groot_n17_sonic_policy_server_command.v1",
+    "status": "blocked",
+    "selected_candidate_id": "unitree_groot_n17_sonic_policy",
+    "unitree_groot_n17_sonic_policy_action_command_ran": False,
+    "unitree_policy_action_command_ran": False,
+    "unitree_specific_manipulation_candidate_ran": False,
+    "blockers": ["set_BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL_to_running_gr00t_policy_server"],
+}
+Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+raise SystemExit(2)
+""".strip(),
+        encoding="utf-8",
+    )
+    groot_root = tmp_path / "Isaac-GR00T"
+    groot_root.mkdir()
+    wbc_root = tmp_path / "GR00T-WholeBodyControl"
+    wbc_root.mkdir()
+    sonic_checkpoint = tmp_path / "sonic"
+    sonic_checkpoint.mkdir()
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        f"{sys.executable} {command}",
+    )
+    n17_checkpoint = tmp_path / "finetuned_n17_unitree_g1_sonic"
+    n17_checkpoint.mkdir()
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT", str(n17_checkpoint))
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT", str(sonic_checkpoint))
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT", str(groot_root))
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT", str(wbc_root))
+    monkeypatch.setenv(lane.POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "true")
+
+    result = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=True,
+        timeout_seconds=5,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["unitree_groot_n17_sonic_policy_action_command_ran"] is False
+    assert "policy_action_model_command_nonzero_exit" in result["blockers"]
+    assert (
+        "set_BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL_to_running_gr00t_policy_server"
+        in result["blockers"]
+    )
+
+
+def test_policy_runtime_records_vla_provider_output_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "WAM_POLICY_ENDPOINT_URL",
+        "WAM_POLICY_AUTH_TOKEN_FILE",
+        "TEAM_POLICY_ENDPOINT_URL",
+        "TEAM_POLICY_AUTH_TOKEN_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    token_file = tmp_path / "token.txt"
+    token_file.write_text("tok", encoding="utf-8")
+    provider_output = tmp_path / "openvla_policy_provider_output.json"
+    provider_output.write_text(
+        json.dumps(
+            {
+                "openvla_model_executed": True,
+                "openvla_policy_action_command_ran": True,
+                "action": {"action_type": "stop"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VLA_POLICY_ENDPOINT_URL", "http://127.0.0.1:8768/policy/action")
+    monkeypatch.setenv("VLA_POLICY_AUTH_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("BLUEPRINT_OPENVLA_POLICY_COMMAND", "python -m blueprint_pipeline.openvla_policy_command_adapter")
+    monkeypatch.setenv("BLUEPRINT_OPENVLA_PROVIDER_OUTPUT", str(provider_output))
+
+    discovery, runtime, auth, _probe = lane.discover_policy_runtime(generated_at="now")
+    selected = lane.selected_endpoint(discovery)
+
+    assert selected is not None
+    assert selected["runtime"] == "vla"
+    assert selected["model_command_configured"] is True
+    assert selected["model_provenance_recorded"] is True
+    assert selected["model_provenance_kind"] == "provider_output_replay"
+    assert selected["model_provider_output_path"] == str(provider_output)
+    assert auth["raw_token_values_persisted"] is False
+    assert runtime["endpoint_runtimes"][1]["model_provenance_recorded"] is True
+
+
+def test_unitree_endpoint_policy_response_summary_keeps_replay_separate() -> None:
+    replay_summary = lane._unitree_endpoint_policy_response_summary(
+        [
+            {
+                "policy_id": "unitree_unifolm_vla_policy_provider_replay",
+                "provider_output_replay_used": True,
+                "action": {
+                    "action_type": "manipulation_contact",
+                    "unitree_unifolm_action_chunk_present": True,
+                },
+                "claim_boundary": {
+                    "provider_output_replay_used": True,
+                    "unitree_hand_manipulation_policy_used": False,
+                },
+            }
+        ]
+    )
+
+    assert replay_summary["unitree_endpoint_hand_policy_output_observed"] is True
+    assert replay_summary["unitree_endpoint_provider_output_replay_used"] is True
+    assert replay_summary["unitree_endpoint_action_chunk_used"] is True
+    assert replay_summary["unitree_endpoint_fresh_policy_action_command_ran"] is False
+    assert replay_summary["unitree_endpoint_hand_policy_used"] is False
+    assert replay_summary["g1_robot_policy_selected_family"] is None
+    assert replay_summary["unitree_hand_manipulation_policy_scope"] is None
+    assert replay_summary["openvla_selected_as_g1_robot_policy"] is False
+    assert replay_summary["wam_rollout_selected_as_g1_robot_policy"] is False
+
+    fresh_summary = lane._unitree_endpoint_policy_response_summary(
+        [
+            {
+                "policy_id": "unitree_unifolm_vla_policy",
+                "unitree_unifolm_policy_action_command_ran": True,
+                "action": {
+                    "action_type": "manipulation_contact",
+                    "unitree_unifolm_action_chunk_present": True,
+                },
+                "claim_boundary": {
+                    "provider_output_replay_used": False,
+                    "unitree_hand_manipulation_policy_used": True,
+                },
+            }
+        ]
+    )
+
+    assert fresh_summary["unitree_endpoint_hand_policy_output_observed"] is True
+    assert fresh_summary["unitree_endpoint_provider_output_replay_used"] is False
+    assert fresh_summary["unitree_endpoint_fresh_policy_action_command_ran"] is True
+    assert fresh_summary["unitree_endpoint_hand_policy_used"] is True
+    assert fresh_summary["g1_robot_policy_selected_family"] == "unitree_native_hand_policy_endpoint"
+    assert fresh_summary["unitree_hand_manipulation_policy_scope"] == "endpoint_action_command"
+    assert fresh_summary["openvla_selected_as_g1_robot_policy"] is False
+    assert fresh_summary["wam_rollout_selected_as_g1_robot_policy"] is False
+
+
+def test_policy_action_provider_replay_propagates_to_final_truth() -> None:
+    assert (
+        lane._policy_action_provider_output_replay_used(
+            policy_action_model_command_execution={"provider_output_replay_used": True},
+            robot_policy_wam_closed_loop_attempt={"provider_output_replay_used": False},
+        )
+        is True
+    )
+    assert (
+        lane._policy_action_provider_output_replay_used(
+            policy_action_model_command_execution={"provider_output_replay_used": False},
+            robot_policy_wam_closed_loop_attempt={"provider_output_replay_used": True},
+        )
+        is True
+    )
+    assert (
+        lane._policy_action_provider_output_replay_used(
+            policy_action_model_command_execution={},
+            robot_policy_wam_closed_loop_attempt={},
+        )
+        is False
+    )
+
+
+def test_policy_endpoint_runtime_manifest_exposes_unitree_replay_boundary() -> None:
+    replay_summary = lane._unitree_endpoint_policy_response_summary(
+        [
+            {
+                "policy_id": "unitree_unifolm_vla_policy_provider_replay",
+                "action": {
+                    "action_type": "manipulation_contact",
+                    "unitree_unifolm_action_chunk_present": True,
+                },
+                "claim_boundary": {"provider_output_replay_used": True},
+            }
+        ]
+    )
+
+    manifest = lane.build_policy_endpoint_runtime_manifest(
+        generated_at="now",
+        selected_runtime={"runtime": "team", "endpoint_env": "TEAM_POLICY_ENDPOINT_URL"},
+        endpoint_policy_used=True,
+        fixture_policy_used=False,
+        endpoint_invocation_count=4,
+        endpoint_valid_action_count=4,
+        rejected_policy_action_count=0,
+        unitree_endpoint_policy_summary=replay_summary,
+    )
+
+    assert manifest["endpoint_policy_used"] is True
+    assert manifest["fixture_policy_used"] is False
+    assert manifest["unitree_endpoint_hand_policy_output_observed"] is True
+    assert manifest["unitree_endpoint_hand_policy_used"] is False
+    assert manifest["unitree_endpoint_provider_output_replay_used"] is True
+    assert manifest["unitree_endpoint_fresh_policy_action_command_ran"] is False
+    assert manifest["unitree_endpoint_action_chunk_used"] is True
+    assert manifest["g1_robot_policy_selected_family"] is None
+    assert manifest["openvla_selected_as_g1_robot_policy"] is False
+    assert manifest["wam_rollout_selected_as_g1_robot_policy"] is False
+    assert (
+        manifest["claim_boundary"][
+            "unitree_endpoint_provider_replay_is_not_fresh_hand_policy_inference"
+        ]
+        is True
+    )
 
 
 def test_official_unitree_controller_sidecar_passes_command_vector(
@@ -246,16 +1311,20 @@ def test_official_unitree_controller_sidecar_passes_command_vector(
                     "action_type": "base_velocity",
                     "vx_mps": 0.3,
                     "vy_mps": 0.1,
+                    "controller_vx_mps": 0.2,
+                    "controller_vy_mps": -0.05,
                     "yaw_rate_rad_s": -0.2,
                 },
                 "rejected": False,
             }
         ]
     )
-    assert lane._representative_unitree_command(command_rows) == [0.3, 0.1, -0.2]
-    assert command_rows[0]["raw_endpoint_command_xyz"] == [0.3, 0.1, -0.2]
-    assert command_rows[0]["controller_command_xyz"] == [0.3, 0.1, -0.2]
-    assert command_rows[0]["controller_command_clamped"] is False
+    assert lane._representative_unitree_command(command_rows) == [0.18, -0.04, -0.2]
+    assert command_rows[0]["raw_endpoint_command_xyz"] == [0.2, -0.05, -0.2]
+    assert command_rows[0]["controller_command_xyz"] == [0.18, -0.04, -0.2]
+    assert command_rows[0]["world_velocity_xy_mps"] == [0.3, 0.1]
+    assert command_rows[0]["controller_velocity_xy_mps"] == [0.2, -0.05]
+    assert command_rows[0]["controller_command_clamped"] is True
     replay = lane._run_unitree_controller_replay_from_endpoint_actions(
         job_dir=tmp_path / "job",
         job_id="job-sidecar",
@@ -268,8 +1337,8 @@ def test_official_unitree_controller_sidecar_passes_command_vector(
     )
     assert replay["status"] == "completed"
     assert replay["endpoint_action_trace_bound_to_unitree_command_stream"] is True
-    assert replay["representative_endpoint_command_xyz"] == [0.3, 0.1, -0.2]
-    assert calls[1]["command_xyz"] == [0.3, 0.1, -0.2]
+    assert replay["representative_endpoint_command_xyz"] == [0.18, -0.04, -0.2]
+    assert calls[1]["command_xyz"] == [0.18, -0.04, -0.2]
     bridge = lane.build_unitree_controller_bridge_manifest(
         generated_at="now",
         command_rows=command_rows,
@@ -302,10 +1371,10 @@ def test_unitree_controller_safe_command_clamps_endpoint_actions() -> None:
     safe = lane._unitree_controller_safe_command_from_values(0.9, -0.5, 2.0)
 
     assert safe["raw_endpoint_command_xyz"] == [0.9, -0.5, 2.0]
-    assert safe["controller_command_xyz"] == [0.35, -0.12, 0.45]
-    assert safe["command_xyz"] == [0.35, -0.12, 0.45]
+    assert safe["controller_command_xyz"] == [0.18, -0.04, 0.2]
+    assert safe["command_xyz"] == [0.18, -0.04, 0.2]
     assert safe["controller_command_clamped"] is True
-    assert safe["controller_command_limits"]["max_forward_velocity_mps"] == 0.35
+    assert safe["controller_command_limits"]["max_forward_velocity_mps"] == 0.18
 
     command_rows = lane._unitree_command_rows_from_endpoint_actions(
         [
@@ -329,7 +1398,7 @@ def test_unitree_controller_safe_command_clamps_endpoint_actions() -> None:
         ]
     )
 
-    assert lane._representative_unitree_command(command_rows) == [0.35, -0.12, 0.45]
+    assert lane._representative_unitree_command(command_rows) == [0.18, -0.04, 0.2]
     assert command_rows[0]["raw_endpoint_command_xyz"] == [0.9, -0.5, 2.0]
     assert command_rows[0]["controller_command_clamped"] is True
 
@@ -381,6 +1450,44 @@ def test_wam_vla_policy_action_normalization_endpoint_and_scoring(
         )
         assert rejected is None
         assert normalized["normalization_status"] == "accepted"
+    low_speed_contact, rejected = lane.normalize_policy_action(
+        raw_payload={
+            "action": {
+                "action_type": "manipulation_contact",
+                "waypoint": [0.3, 0.0],
+                "approach_speed_mps": 0.1,
+            }
+        },
+        observation=observation,
+        source="unit",
+    )
+    assert rejected is None
+    assert low_speed_contact["vx_mps"] == pytest.approx(0.1)
+    assert abs(low_speed_contact["vy_mps"]) < 1e-9
+    assert low_speed_contact["velocity_frame"] == "world_xy"
+    assert low_speed_contact["controller_vx_mps"] == pytest.approx(0.1)
+    assert abs(low_speed_contact["controller_vy_mps"]) < 1e-9
+
+    yawed_world_velocity, rejected = lane.normalize_policy_action(
+        raw_payload={
+            "action": {
+                "action_type": "base_velocity",
+                "velocity_frame": "world_xy",
+                "linear_velocity_mps": 0.1,
+                "lateral_velocity_mps": 0.0,
+            }
+        },
+        observation={
+            **observation,
+            "base_pose": {"position": [0.0, 0.0, 0.79], "yaw_rad": math.pi / 2},
+        },
+        source="unit",
+    )
+    assert rejected is None
+    assert yawed_world_velocity["vx_mps"] == pytest.approx(0.1)
+    assert yawed_world_velocity["velocity_frame"] == "world_xy"
+    assert yawed_world_velocity["controller_vx_mps"] == pytest.approx(0.0, abs=1e-6)
+    assert yawed_world_velocity["controller_vy_mps"] == pytest.approx(-0.1)
 
     blocked_observation = {**observation, "task_id": "inspect_target", "spawn_id": "blocked_or_occluded"}
     assert lane._fixture_policy_action(observation=blocked_observation)["fixture_intent"]
@@ -532,6 +1639,36 @@ def test_wam_vla_contact_observation_camera_and_media_helpers(
     )
     lane._set_joint_position_holds(model, data)
     assert data.ctrl[0] == data.qpos[0]
+    pose_joint_names = list(lane.EGOCENTRIC_UPPER_BODY_OBSERVATION_POSE)
+    pose_model = SimpleNamespace(
+        jnt_qposadr=list(range(len(pose_joint_names))),
+        jnt_dofadr=list(range(len(pose_joint_names))),
+    )
+    pose_data = SimpleNamespace(
+        qpos=[0.0] * len(pose_joint_names),
+        qvel=[1.0] * len(pose_joint_names),
+    )
+    pose_mujoco = SimpleNamespace(
+        mjtObj=SimpleNamespace(mjOBJ_JOINT=99),
+        mj_name2id=lambda _model, _obj, name: pose_joint_names.index(name)
+        if name in pose_joint_names
+        else -1,
+    )
+    pose_manifest = lane._apply_egocentric_upper_body_observation_pose(
+        model=pose_model,
+        mujoco_module=pose_mujoco,
+        data=pose_data,
+        generated_at="now",
+    )
+    assert pose_manifest["status"] == "completed"
+    assert pose_manifest["hand_end_effector_policy_used"] is False
+    assert pose_manifest["claim_boundary"][
+        "upper_body_pose_is_support_framing_not_hand_policy_execution"
+    ] is True
+    assert pose_data.qpos[0] == pytest.approx(
+        lane.EGOCENTRIC_UPPER_BODY_OBSERVATION_POSE[pose_joint_names[0]]
+    )
+    assert pose_data.qvel[0] == 0.0
 
     class FakeCamera:
         def __init__(self) -> None:
@@ -612,6 +1749,7 @@ def test_wam_vla_contact_observation_camera_and_media_helpers(
     assert packet["route_task_state"]["target_error_m"] == 0.5
     assert lane._camera_for(fake_mujoco, "overhead", [0, 0, 1], 0).elevation == -89.0
     assert lane._camera_for(fake_mujoco, "robot_follow", [0, 0, 1], 0).azimuth == 180.0
+    assert lane._camera_for(fake_mujoco, "torso_pov", [0, 0, 1], 0).distance == pytest.approx(1.05)
     assert lane._camera_for(fake_mujoco, "third_person", [0, 0, 1], 0).distance == 3.2
     assert lane._episode_frame_steps(
         steps_per_episode=5, render_frame_count=0, video_frame_stride_steps=2
@@ -649,9 +1787,115 @@ def test_wam_vla_contact_observation_camera_and_media_helpers(
     assert lane._ffprobe_video(tmp_path / "out.mp4")["status"] == "blocked"
 
 
+def test_g1_projected_skeleton_trace_row_uses_mujoco_body_projection() -> None:
+    class FakeModel:
+        cam_fovy = [75.0]
+
+    class FakeData:
+        time = 0.25
+        xpos = [
+            [0.0, 0.1, 1.0],
+            [0.0, 0.05, 0.9],
+            [0.18, 0.03, 0.78],
+            [0.24, 0.03, 0.76],
+            [0.0, -0.1, 1.0],
+            [0.0, -0.05, 0.9],
+            [0.18, -0.03, 0.78],
+            [0.24, -0.03, 0.76],
+        ]
+        xmat = [[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] for _ in range(8)]
+        cam_xpos = [[0.0, 0.0, 1.1]]
+        cam_xmat = [[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]]
+
+    ids = {
+        "blueprint_g1_head_pov": 0,
+        "left_shoulder_pitch_link": 0,
+        "left_elbow_link": 1,
+        "left_wrist_yaw_link": 2,
+        "right_shoulder_pitch_link": 4,
+        "right_elbow_link": 5,
+        "right_wrist_yaw_link": 6,
+    }
+    fake_mujoco = SimpleNamespace(
+        mjtObj=SimpleNamespace(mjOBJ_BODY=1, mjOBJ_CAMERA=2),
+        mj_name2id=lambda _model, _obj, name: ids.get(name, -1),
+    )
+
+    row = lane._build_g1_projected_skeleton_trace_row(
+        mujoco_module=fake_mujoco,
+        model=FakeModel(),
+        data=FakeData(),
+        run={
+            "episode_id": "episode_0001",
+            "scenario_eval_run_id": "run",
+            "task_id": "inspect",
+            "spawn_id": "doorway",
+        },
+        step=4,
+        visual_observation={
+            "available": True,
+            "camera_id": "head_pov",
+            "camera_frame_path": "/tmp/frame.jpg",
+            "image_width": 640,
+            "image_height": 480,
+        },
+    )
+
+    assert row["status"] == "completed"
+    assert row["episode_id"] == "episode_0001"
+    assert row["camera_id"] == "head_pov"
+    assert row["available_landmark_count"] == 8
+    assert row["projected_landmark_count"] == 8
+    assert row["claim_boundary"]["uses_unitree_g1_mujoco_body_transforms"] is True
+    assert row["claim_boundary"]["not_hand_drawn_stick_figure"] is True
+    assert row["claim_boundary"]["not_physical_robot_sensor_proof"] is True
+    left_hand = next(
+        landmark for landmark in row["landmarks"] if landmark["landmark_id"] == "left_hand"
+    )
+    assert left_hand["image_projection"]["available"] is True
+    assert left_hand["image_projection"]["inside_image"] is True
+
+    manifest = lane._g1_projected_skeleton_manifest(
+        generated_at="now", rows=[row], output_path=Path("trace.jsonl")
+    )
+    assert manifest["status"] == "completed"
+    assert manifest["projectable_row_count"] == 1
+    assert manifest["claim_boundary"][
+        "simulated_g1_arm_hand_state_available_for_wam_conditioning"
+    ] is True
+    assert manifest["claim_boundary"]["not_physical_robot_sensor_proof"] is True
+
+
 def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_RL_GYM_ROOT",
+        "BLUEPRINT_UNITREE_G1_POLICY_ROOT",
+        "BLUEPRINT_UNITREE_G1_POLICY_SOURCE_ROOT",
+        "BLUEPRINT_UNITREE_G1_POLICY_CHECKPOINT",
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_ROOT",
+        "BLUEPRINT_UNITREE_LEROBOT_PYTHON",
+        "BLUEPRINT_UNITREE_LEROBOT_POLICY_PATH",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+        "BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIM2SIM_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_CHECKPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
     class FakeVec(list[float]):
         def __setitem__(self, key: object, value: object) -> None:
             if isinstance(key, slice) and isinstance(value, (int, float)):
@@ -664,17 +1908,35 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     state = {"contact": False, "fall": False, "jump": False}
 
     class FakeModel:
-        nq = 14
-        nv = 12
+        nq = 20
+        nv = 18
         nu = 1
         opt = SimpleNamespace(timestep=0.05)
         actuator_trnid = [[0]]
-        jnt_qposadr = [0, 7]
-        jnt_dofadr = [0, 6]
+        jnt_qposadr = [0, 7, 14, 15, 16, 17, 18, 19]
+        jnt_dofadr = [0, 6, 12, 13, 14, 15, 16, 17]
         geom_bodyid = [0, 1]
 
         def __init__(self) -> None:
-            self.qpos0 = FakeVec([0.0, 0.0, 0.79, 1.0, 0.0, 0.0, 0.0, 0.36, -0.65, 0.27, 1.0, 0.0, 0.0, 0.0])
+            self.qpos0 = FakeVec(
+                [
+                    0.0,
+                    0.0,
+                    0.79,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.36,
+                    -0.65,
+                    0.27,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ]
+                + [0.0] * 6
+            )
             self.key_qpos = [self.qpos0.copy()]
 
         @classmethod
@@ -691,12 +1953,19 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
             self.contact: list[object] = []
 
     def fake_mj_name2id(_model: FakeModel, obj: int, name: str) -> int:
-        if name == "floating_base_joint":
-            return 0
-        if name == "blueprint_light_object_freejoint":
-            return 1
-        if name == "stand":
-            return 0
+        ids = {
+            "floating_base_joint": 0,
+            "blueprint_light_object_freejoint": 1,
+            "left_shoulder_pitch_joint": 2,
+            "right_shoulder_pitch_joint": 3,
+            "left_shoulder_roll_joint": 4,
+            "right_shoulder_roll_joint": 5,
+            "left_elbow_joint": 6,
+            "right_elbow_joint": 7,
+            "stand": 0,
+        }
+        if name in ids:
+            return ids[name]
         return -1
 
     def fake_step(model: FakeModel, data: FakeData) -> None:
@@ -744,6 +2013,7 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     g1_root = tmp_path / "g1"
     g1_root.mkdir()
     (g1_root / "g1.xml").write_text("<mujoco/>", encoding="utf-8")
+    (g1_root / "g1_with_hands.xml").write_text("<mujoco/>", encoding="utf-8")
     monkeypatch.setattr(lane, "_resolve_g1_model_root", lambda **_kwargs: g1_root)
     def fake_write_g1_xml(_src: Path, dst: Path) -> None:
         Path(dst).parent.mkdir(parents=True, exist_ok=True)
@@ -768,14 +2038,116 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     assert summary["status"] == "completed"
     assert summary["attempted_episode_count"] == 1
     assert summary["fixture_policy_used"] is True
+    assert summary["unitree_lower_body_locomotion_policy_used"] is False
+    assert summary["unitree_hand_manipulation_policy_used"] is False
+    assert summary["g1_robot_policy_selected_family"] is None
+    assert summary["unitree_hand_manipulation_policy_scope"] is None
+    assert summary["openvla_selected_as_g1_robot_policy"] is False
+    assert summary["wam_rollout_selected_as_g1_robot_policy"] is False
+    assert summary["unitree_endpoint_hand_policy_output_observed"] is False
+    assert summary["unitree_endpoint_hand_policy_used"] is False
+    assert summary["unitree_endpoint_provider_output_replay_used"] is False
+    assert summary["unitree_endpoint_fresh_policy_action_command_ran"] is False
+    assert summary["unitree_lerobot_or_isaaclab_manipulation_policy_used"] is False
+    assert summary["manipulation_policy_kind"] == "contact_trace_proxy_only"
     assert (tmp_path / "job" / "normalized_attempt_trace.json").is_file()
     assert (tmp_path / "job" / "policy_model_candidate_matrix.json").is_file()
     assert (tmp_path / "job" / "policy_model_truth_boundary.json").is_file()
     assert (tmp_path / "job" / "policy_endpoint_runtime_manifest.json").is_file()
     assert (tmp_path / "job" / "policy_endpoint_invocation_trace.jsonl").is_file()
     assert (tmp_path / "job" / "realistic_navigation_policy_discovery.json").is_file()
+    assert (tmp_path / "job" / "unitree_g1_manipulation_policy_discovery.json").is_file()
+    runtime_manifest = json.loads(
+        (tmp_path / "job" / "policy_endpoint_runtime_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert runtime_manifest["unitree_endpoint_hand_policy_output_observed"] is False
+    assert runtime_manifest["unitree_endpoint_hand_policy_used"] is False
+    assert runtime_manifest["unitree_endpoint_provider_output_replay_used"] is False
+    assert runtime_manifest["openvla_selected_as_g1_robot_policy"] is False
+    assert runtime_manifest["wam_rollout_selected_as_g1_robot_policy"] is False
+    asset_manifest = json.loads(
+        (tmp_path / "job" / "unitree_g1_mujoco_asset_source_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert asset_manifest["resolved_g1_xml"].endswith("g1_with_hands.xml")
+    assert asset_manifest["hands_capable_g1_mjcf_selected"] is True
+    assert (
+        asset_manifest["g1_mjcf_selection"]["claim_boundary"][
+            "hands_capable_mjcf_does_not_prove_dexterous_hand_policy_execution"
+        ]
+        is True
+    )
     assert (tmp_path / "job" / "unitree_endpoint_action_command_stream.json").is_file()
     assert (tmp_path / "job" / "unitree_controller_bridge_manifest.json").is_file()
+    assert (tmp_path / "job" / "robot_policy_wam_loop_manifest.json").is_file()
+    assert (tmp_path / "job" / "policy_action_model_command_output.json").is_file()
+    assert (tmp_path / "job" / "final_success_judge.json").is_file()
+    assert (tmp_path / "job" / "claim_boundary.json").is_file()
+    assert (tmp_path / "job" / "g1_projected_skeleton_trace.jsonl").is_file()
+    assert (tmp_path / "job" / "g1_projected_skeleton_manifest.json").is_file()
+    projected_manifest = json.loads(
+        (tmp_path / "job" / "g1_projected_skeleton_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert projected_manifest["claim_boundary"][
+        "derived_from_unitree_g1_mujoco_body_transforms"
+    ] is True
+    assert projected_manifest["claim_boundary"]["not_physical_robot_sensor_proof"] is True
+    assert summary["artifact_paths"]["g1_projected_skeleton_trace_jsonl"].endswith(
+        "g1_projected_skeleton_trace.jsonl"
+    )
+    assert summary["unitree_g1_manipulation_policy_discovery"] == str(
+        tmp_path / "job" / "unitree_g1_manipulation_policy_discovery.json"
+    )
+    loop_manifest = json.loads(
+        (tmp_path / "job" / "robot_policy_wam_loop_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert loop_manifest["actual_loop_mode"] == (
+        "mujoco_policy_endpoint_execution_with_offline_wam_trace_package"
+    )
+    assert loop_manifest["robot_loaded_in_scene"] is True
+    assert loop_manifest["wam_evaluator_in_control_loop"] is False
+    assert loop_manifest["policy_observes_wam_generated_next_observation"] is False
+    assert summary["artifact_paths"]["robot_policy_wam_loop_manifest"].endswith(
+        "robot_policy_wam_loop_manifest.json"
+    )
+    assert summary["artifact_paths"]["policy_action_model_command_output"].endswith(
+        "policy_action_model_command_output.json"
+    )
+    assert summary["artifact_paths"]["final_success_judge"].endswith("final_success_judge.json")
+    final_success_judge = json.loads(
+        (tmp_path / "job" / "final_success_judge.json").read_text(encoding="utf-8")
+    )
+    assert final_success_judge["final_question"] == (
+        "Did the object/tote end up correctly placed?"
+    )
+    assert final_success_judge["answer"] == "not_proven"
+    assert final_success_judge["object_or_tote_correctly_placed"] is False
+    assert final_success_judge["claim_boundary"]["physical_robot_readiness_proven"] is False
+    claim_boundary = json.loads(
+        (tmp_path / "job" / "claim_boundary.json").read_text(encoding="utf-8")
+    )
+    assert claim_boundary["groot_n17_sonic_is_candidate_not_proven_unless_action_command_runs"]
+    assert claim_boundary["physical_robot_readiness_proven"] is False
+    controller_truth = json.loads(
+        (tmp_path / "job" / "controller_truth_boundary.json").read_text(encoding="utf-8")
+    )
+    assert controller_truth["unitree_lower_body_locomotion_policy_used"] is False
+    assert controller_truth["unitree_hand_manipulation_policy_used"] is False
+    assert controller_truth["unitree_lerobot_or_isaaclab_manipulation_policy_used"] is False
+    assert controller_truth["manipulation_policy_kind"] == "contact_trace_proxy_only"
+    manipulation_discovery = json.loads(
+        (tmp_path / "job" / "unitree_g1_manipulation_policy_discovery.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manipulation_discovery["status"] == "blocked_missing_hand_policy_runtime"
 
     generated_summary = lane.run_mujoco_g1_wam_vla_policy_endpoint_eval(
         job_root=tmp_path / "generated-jobs",
@@ -986,17 +2358,74 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
         (tmp_path / "render-job" / "video_generation_status.json").read_text(encoding="utf-8")
     )
     assert "every_sim_step_captured_for_selected_review_videos" in video_status["render_contract"]
+    assert video_status["render_contract"]["review_video_sampling"][
+        "sampling_mode"
+    ] == "fixed_sample_count_review"
+    assert (
+        video_status["render_contract"]["egocentric_upper_body_observation_pose"][
+            "hand_end_effector_policy_used"
+        ]
+        is False
+    )
+    assert (
+        video_status["render_contract"]["egocentric_upper_body_observation_pose"][
+            "claim_boundary"
+        ]["upper_body_pose_is_support_framing_not_hand_policy_execution"]
+        is True
+    )
+    assert video_status["render_contract"]["nominal_realtime_review_mp4"] is False
     assert "playback_timing" in video_status["videos"][0]
     assert video_status["videos"][0]["video_fps"] == lane.DEFAULT_REVIEW_VIDEO_FPS
     assert video_status["videos"][0]["playback_timing"]["fps_zero_used_for_sim_time_playback"] is False
-    assert (
-        json.loads(
-            (tmp_path / "render-job" / "review_video_selection_manifest.json").read_text(
-                encoding="utf-8"
-            )
-        )["selected_review_video_count"]
-        >= 1
+    assert video_status["videos"][0]["review_video_sampling_mode"] == "fixed_sample_count_review"
+    assert video_status["videos"][0]["nominal_realtime_review_mp4"] is False
+    assert video_status["generated_video_review_validation_count"] == len(
+        lane.DEFAULT_VIDEO_CAMERAS
     )
+    assert video_status["generated_videos_decode_valid_for_review"] is False
+    assert video_status["generated_rollout_visual_smoke_status"] == "blocked_visual_probe_failed"
+    assert video_status["generated_rollout_visually_useful_for_success_review"] is False
+    assert video_status["videos"][0]["decode_valid_for_review"] is False
+    assert video_status["videos"][0]["generated_video_review_validation"]["blockers"] == [
+        "generated_video_missing"
+    ]
+    assert (tmp_path / "render-job" / "generated_rollout_visual_smoke.json").is_file()
+    unitree_review = json.loads(
+        (tmp_path / "render-job" / "unitree_generated_rollout_review_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert unitree_review["status"] == "not_applicable_no_unitree_policy_rollout"
+    selection_manifest = json.loads(
+        (tmp_path / "render-job" / "review_video_selection_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert selection_manifest["selected_review_video_count"] >= 1
+    assert selection_manifest["selection_policy"]["default_camera"] == "head_pov"
+    assert (
+        selection_manifest["selection_policy"]["egocentric_upper_body_observation_pose"][
+            "hands_or_end_effectors_expected_in_egocentric_torso_view"
+        ]
+        is True
+    )
+    assert (
+        selection_manifest["selection_policy"][
+            "third_person_overview_is_diagnostic_not_policy_observation"
+        ]
+        is True
+    )
+    assert selection_manifest["generated_rollout_visually_useful_for_success_review"] is False
+    selected_video = selection_manifest["selected_review_videos"][0]
+    assert selected_video["scenario_eval_run_id"] == "render-job__doorway__inspect_target"
+    assert selected_video["task_id"] == "inspect_target"
+    assert selected_video["spawn_id"] == "doorway"
+    assert selected_video["camera"] == "head_pov"
+    assert selected_video["first_person_policy_observation_candidate"] is True
+    assert selected_video["hands_or_end_effectors_expected_due_to_observation_pose"] is True
+    assert selected_video["decode_valid_for_review"] is False
+    assert selected_video["review_video_sampling_mode"] == "fixed_sample_count_review"
+    assert selected_video["nominal_realtime_review_mp4"] is False
 
     class SparseFakeImage:
         @staticmethod
@@ -1093,6 +2522,37 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     assert cli_calls[-1]["controller_backend"] == "auto"
     assert cli_calls[-1]["video_frame_stride_steps"] == lane.DEFAULT_VIDEO_FRAME_STRIDE_STEPS
     assert cli_calls[-1]["fps"] == lane.DEFAULT_REVIEW_VIDEO_FPS
+    assert cli_calls[-1]["wam_loop_step_count"] == lane.DEFAULT_WAM_LOOP_STEP_COUNT
+    assert (
+        lane.main(
+            [
+                "--job-dir",
+                str(tmp_path / "cli-groot-policy"),
+                "--skip-render",
+                "--max-tasks",
+                "1",
+                "--policy-lane",
+                "unitree_groot_n17_sonic_policy",
+            ]
+        )
+        == 0
+    )
+    assert cli_calls[-1]["policy_lane"] == "unitree_groot_n17_sonic_policy"
+    assert (
+        lane.main(
+            [
+                "--job-dir",
+                str(tmp_path / "cli-long-wam-loop"),
+                "--skip-render",
+                "--max-tasks",
+                "1",
+                "--wam-loop-step-count",
+                "20",
+            ]
+        )
+        == 0
+    )
+    assert cli_calls[-1]["wam_loop_step_count"] == 20
     assert (
         lane.main(
             [

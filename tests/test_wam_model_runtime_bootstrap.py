@@ -55,16 +55,26 @@ def test_wam_model_runtime_bootstrap_writes_blocked_package(
     assert "BLUEPRINT_OSCAR_WAM_CHECKPOINT" in env_template
     assert "blueprint_pipeline.oscar_wam_command_adapter" in env_template
     assert "hf_" not in env_template.lower()
+    dockerfile = (tmp_path / "bootstrap" / "Dockerfile.wam-provider").read_text(
+        encoding="utf-8"
+    )
+    assert "nvidia/cuda:12.8.0-devel-ubuntu22.04" in dockerfile
+    assert "https://download.pytorch.org/whl/cu128" in dockerfile
+    assert "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL=true" in dockerfile
 
 
 def test_wam_model_runtime_bootstrap_ready_when_command_and_paths_exist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    candidate = dict(bootstrap.BOOTSTRAP_CANDIDATES["openvla_policy"])
+    candidate["expected_checkpoint_bytes"] = 2048
+    monkeypatch.setitem(bootstrap.BOOTSTRAP_CANDIDATES, "openvla_policy", candidate)
     source_root = tmp_path / "source"
     checkpoint_root = tmp_path / "checkpoint"
     source_root.mkdir()
     checkpoint_root.mkdir()
+    (checkpoint_root / "model.safetensors").write_bytes(b"0" * 4096)
     command = tmp_path / "adapter.py"
     command.write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -98,6 +108,8 @@ def test_wam_model_runtime_bootstrap_ready_when_command_and_paths_exist(
     )
     assert manifest["source_status"]["exists"] is True
     assert manifest["checkpoint_status"]["exists"] is True
+    assert manifest["checkpoint_status"]["ready"] is True
+    assert manifest["checkpoint_status"]["checkpoint_file_count"] == 1
     assert manifest["adapter_command"]["available"] is True
     assert (
         manifest["provider_gate_status"]["providers"][2]["provider_id"]
@@ -116,6 +128,56 @@ def test_wam_model_runtime_bootstrap_ready_when_command_and_paths_exist(
     assert (tmp_path / "bootstrap" / "Dockerfile.wam-provider").is_file()
 
 
+def test_wam_model_runtime_bootstrap_blocks_incomplete_checkpoint_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    (source_root / "inference").mkdir(parents=True)
+    (source_root / "inference" / "inference_oscar.py").write_text(
+        "print('ok')\n",
+        encoding="utf-8",
+    )
+    checkpoint_root = tmp_path / "checkpoint"
+    (checkpoint_root / "refs").mkdir(parents=True)
+    (checkpoint_root / "refs" / "main").write_text("deadbeef\n", encoding="utf-8")
+    command = tmp_path / "adapter.py"
+    command.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        bootstrap,
+        "_disk_status",
+        lambda path, *, required_bytes: {
+            "path": str(path),
+            "free_bytes": required_bytes + 1,
+            "required_bytes": required_bytes,
+            "free_gib": 10.0,
+            "required_gib": 1.0,
+            "has_required_space": True,
+        },
+    )
+
+    summary = bootstrap.build_bootstrap_package(
+        candidate_id="oscar_wam",
+        output_dir=tmp_path / "bootstrap",
+        source_root=source_root,
+        checkpoint_root=checkpoint_root,
+        adapter_command=str(command),
+        generated_at="now",
+    )
+
+    assert summary["status"] == "blocked"
+    assert "blocked_incomplete_or_unusable_model_checkpoint" in summary["blockers"]
+    manifest = json.loads(
+        (tmp_path / "bootstrap" / "wam_model_runtime_bootstrap_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["checkpoint_status"]["exists"] is True
+    assert manifest["checkpoint_status"]["ready"] is False
+    assert manifest["checkpoint_status"]["checkpoint_file_count"] == 0
+    assert manifest["checkpoint_status"]["file_count"] == 1
+
+
 def test_wam_model_runtime_bootstrap_cli(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
     code = bootstrap.main(["--candidate", "cosmos_wam", "--output-dir", str(tmp_path / "cli")])
 
@@ -123,6 +185,34 @@ def test_wam_model_runtime_bootstrap_cli(tmp_path: Path, capsys) -> None:  # typ
     payload = json.loads(capsys.readouterr().out)
     assert payload["candidate_id"] == "cosmos_wam"
     assert (tmp_path / "cli" / "wam_model_provider_launch_request.json").is_file()
+
+
+def test_wam_model_runtime_bootstrap_default_output_dir_includes_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bootstrap, "_timestamp", lambda: "20260621T195505Z")
+
+    oscar = bootstrap.build_bootstrap_package(
+        candidate_id="oscar_wam",
+        job_root=tmp_path / "jobs",
+        generated_at="now",
+    )
+    cosmos = bootstrap.build_bootstrap_package(
+        candidate_id="cosmos_wam",
+        job_root=tmp_path / "jobs",
+        generated_at="now",
+    )
+
+    assert oscar["output_dir"].endswith(
+        "wam_model_runtime_bootstrap_oscar_wam_20260621T195505Z"
+    )
+    assert cosmos["output_dir"].endswith(
+        "wam_model_runtime_bootstrap_cosmos_wam_20260621T195505Z"
+    )
+    assert oscar["output_dir"] != cosmos["output_dir"]
+    assert Path(oscar["artifact_paths"]["manifest"]).is_file()
+    assert Path(cosmos["artifact_paths"]["manifest"]).is_file()
 
 
 def test_wam_model_runtime_bootstrap_helper_edges(
@@ -160,6 +250,12 @@ def test_wam_model_runtime_bootstrap_helper_edges(
     nested_shard = nested_checkpoint_dir / "shards" / "model.bin"
     nested_shard.write_text("weights", encoding="utf-8")
     assert bootstrap._candidate_checkpoint_ready(nested_checkpoint_dir) is True
+    assert bootstrap._candidate_checkpoint_ready(
+        nested_checkpoint_dir,
+        minimum_bytes=nested_shard.stat().st_size + 1,
+    ) is False
+    assert bootstrap._checkpoint_inventory(nested_checkpoint_dir)["checkpoint_file_count"] == 1
+    assert bootstrap._checkpoint_minimum_ready_bytes(0) == 1024
     old_ready = tmp_path / "old-ready"
     new_ready = tmp_path / "new-ready"
     old_ready.mkdir()
@@ -324,4 +420,5 @@ def test_wam_model_runtime_bootstrap_provider_image_plan_with_file_auth(
     assert image_plan["registry_auth"]["docker_pat_file"]["mode_is_0600"] is True
     assert "docker-token-should-not-leak" not in plan_path.read_text(encoding="utf-8")
     dockerfile = Path(summary["artifact_paths"]["provider_dockerfile"]).read_text(encoding="utf-8")
-    assert "blueprint_pipeline.oscar_wam_command_adapter" in dockerfile
+    assert "torch==2.10.0" in dockerfile
+    assert "install_transformer_engine_shim.py" in dockerfile

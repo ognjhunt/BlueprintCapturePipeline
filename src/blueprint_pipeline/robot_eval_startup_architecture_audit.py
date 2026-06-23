@@ -24,6 +24,7 @@ EXPECTED_JOB_ARTIFACTS = {
 }
 
 OPTIONAL_JOB_ARTIFACTS = {
+    "gpu_startup_pipeline_plan": "gpu_startup_pipeline_plan.json",
     "worker_runtime_manifest": "worker_runtime_manifest.json",
     "worker_runtime_preflight": "worker_runtime_preflight.json",
     "gpu_provider_launcher_result": "gpu_provider_launcher_result.json",
@@ -33,6 +34,7 @@ OPTIONAL_JOB_ARTIFACTS = {
 EXPECTED_OUTPUTS = {
     "scheduler_decision",
     "worker_launch_plan",
+    "gpu_startup_pipeline_plan",
     "worker_manifest",
     "gpu_provider_launch_request",
     "gpu_provider_launcher_result",
@@ -241,6 +243,7 @@ def _startup_artifact_checks(
     worker = artifacts.get("worker_launch_plan", {})
     worker_manifest = artifacts.get("worker_manifest", {})
     provider = artifacts.get("gpu_provider_launch_request", {})
+    startup_pipeline = artifacts.get("gpu_startup_pipeline_plan", {})
     ledger = artifacts.get("gpu_cost_control_ledger", {})
     worker_runtime_manifest = artifacts.get("worker_runtime_manifest", {})
     worker_runtime_preflight = artifacts.get("worker_runtime_preflight", {})
@@ -289,6 +292,107 @@ def _startup_artifact_checks(
         payload=provider,
         expected_schema="robot_eval_gpu_provider_launch_request.v1",
     )
+    provider_name = _string(provider.get("provider")) or _string(worker.get("provider"))
+    simulator_name = _string(worker.get("simulator"))
+    live_provider_job = provider_name in {"runpod", "vast", "gcp"} and simulator_name != "fixture"
+    startup_pipeline_present = bool(startup_pipeline)
+    required_startup_outputs = set(EXPECTED_OUTPUTS)
+    if not live_provider_job and not startup_pipeline_present:
+        required_startup_outputs.discard("gpu_startup_pipeline_plan")
+    _append_check(
+        checks,
+        blockers,
+        check_id="startup_pipeline:plan_present_for_live_provider",
+        passed=not live_provider_job or startup_pipeline_present,
+        message="Live provider jobs include a managed GPU startup pipeline plan",
+        evidence={
+            "provider": provider_name,
+            "simulator": simulator_name,
+            "startup_pipeline_present": startup_pipeline_present,
+        },
+    )
+    if startup_pipeline_present:
+        _append_schema_check(
+            checks,
+            blockers,
+            artifact_name="gpu_startup_pipeline_plan",
+            payload=startup_pipeline,
+            expected_schema="robot_eval_gpu_startup_pipeline_plan.v1",
+        )
+        startup_webapp_boundary = _mapping(startup_pipeline.get("webapp_boundary"))
+        _append_check(
+            checks,
+            blockers,
+            check_id="startup_pipeline:pipeline_owns_provider_selection",
+            passed=startup_pipeline.get("provider_selection_owner")
+            == "BlueprintCapturePipeline"
+            and startup_webapp_boundary.get("webapp_gpu_spend_approval_allowed") is False
+            and startup_webapp_boundary.get("webapp_gpu_allocation_allowed") is False
+            and startup_webapp_boundary.get("pipeline_owns_provider_selection") is True,
+            message="Startup pipeline keeps GPU selection and spend approval out of the WebApp",
+            evidence={
+                "provider_selection_owner": startup_pipeline.get(
+                    "provider_selection_owner"
+                ),
+                "webapp_boundary": startup_webapp_boundary,
+            },
+        )
+        preflight_canary = _mapping(startup_pipeline.get("preflight_canary_policy"))
+        _append_check(
+            checks,
+            blockers,
+            check_id="startup_pipeline:strict_preflight_before_customer_eval",
+            passed=not live_provider_job
+            or (
+                preflight_canary.get("required_before_customer_eval") is True
+                and preflight_canary.get("customer_eval_waits_for_canary") is True
+                and preflight_canary.get("block_scene_load_until_preflight_passes")
+                is True
+            ),
+            message="Startup pipeline gates customer scene load on strict preflight/canary",
+            evidence={
+                "provider": provider_name,
+                "simulator": simulator_name,
+                "preflight_canary_policy": preflight_canary,
+            },
+        )
+        same_sku = _mapping(startup_pipeline.get("same_sku_burst_policy"))
+        _append_check(
+            checks,
+            blockers,
+            check_id="startup_pipeline:same_image_sku_burst_policy",
+            passed=not live_provider_job
+            or (
+                same_sku.get("burst_workers_must_use_same_image_ref") is True
+                and same_sku.get("burst_workers_must_use_same_gpu_family") is True
+                and same_sku.get("provider_worker_selection_disallows_random_hosts")
+                is True
+            ),
+            message="Startup pipeline pins burst workers to the same image and GPU family",
+            evidence={"same_sku_burst_policy": same_sku},
+        )
+        marketplace = _mapping(startup_pipeline.get("marketplace_policy"))
+        startup_blockers = _list(startup_pipeline.get("blockers"))
+        marketplace_fail_closed = (
+            startup_pipeline.get("selected_provider_is_marketplace") is not True
+            or marketplace.get("explicit_marketplace_customer_job_override") is True
+            or "marketplace_provider_requires_explicit_customer_job_override"
+            in startup_blockers
+        )
+        _append_check(
+            checks,
+            blockers,
+            check_id="startup_pipeline:marketplace_capacity_fail_closed",
+            passed=marketplace_fail_closed,
+            message="Marketplace/community capacity is either explicitly canaried or fail-closed",
+            evidence={
+                "selected_provider_is_marketplace": startup_pipeline.get(
+                    "selected_provider_is_marketplace"
+                ),
+                "marketplace_policy": marketplace,
+                "startup_blockers": startup_blockers,
+            },
+        )
     _append_schema_check(
         checks,
         blockers,
@@ -640,12 +744,12 @@ def _startup_artifact_checks(
         checks,
         blockers,
         check_id="artifact_contract:startup_outputs_listed",
-        passed=EXPECTED_OUTPUTS.issubset(expected_outputs)
+        passed=required_startup_outputs.issubset(expected_outputs)
         and artifact_contract.get("simulator_execution_proven_by_webapp") is False
         and artifact_contract.get("public_claim_upgrade_allowed") is False,
         message="Startup artifact contract lists required outputs without proof upgrades",
         evidence={
-            "missing_outputs": sorted(EXPECTED_OUTPUTS.difference(expected_outputs)),
+            "missing_outputs": sorted(required_startup_outputs.difference(expected_outputs)),
             "simulator_execution_proven_by_webapp": artifact_contract.get(
                 "simulator_execution_proven_by_webapp"
             ),
@@ -889,13 +993,13 @@ def _startup_artifact_checks(
         blockers,
         check_id="worker:artifact_upload_before_shutdown",
         passed=upload_contract.get("upload_before_shutdown_required") is True
-        and EXPECTED_OUTPUTS.issubset(upload_outputs),
+        and required_startup_outputs.issubset(upload_outputs),
         message="Worker upload contract requires startup/result artifacts before shutdown",
         evidence={
             "upload_before_shutdown_required": upload_contract.get(
                 "upload_before_shutdown_required"
             ),
-            "missing_outputs": sorted(EXPECTED_OUTPUTS.difference(upload_outputs)),
+            "missing_outputs": sorted(required_startup_outputs.difference(upload_outputs)),
         },
     )
 

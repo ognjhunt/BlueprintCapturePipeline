@@ -85,6 +85,76 @@ CLAIM_BOUNDARY: dict[str, Any] = {
     "public_claim_upgrade_allowed": False,
 }
 
+PRIVATE_HARDWARE_INTEGRATION_MODES: dict[str, dict[str, Any]] = {
+    "reference_public_robot": {
+        "label": "Reference public robot",
+        "default_site_ip_protection_level": "blueprint_hosted",
+        "customer_private_robot_assets_required": False,
+        "blueprint_hosts_robot_asset": False,
+        "customer_hosts_private_runtime": False,
+        "typical_use": "Unitree G1 or other public/reference embodiment for plumbing and demos.",
+    },
+    "private_asset_hosted_by_blueprint": {
+        "label": "Private robot asset hosted by Blueprint",
+        "default_site_ip_protection_level": "blueprint_hosted",
+        "customer_private_robot_assets_required": True,
+        "blueprint_hosts_robot_asset": True,
+        "customer_hosts_private_runtime": False,
+        "typical_use": (
+            "The robot team supplies an NDA-bound URDF/MJCF/USD, limits, cameras, "
+            "and action contract so Blueprint can compose the robot into a private run."
+        ),
+    },
+    "customer_hosted_sealed_eval_capsule": {
+        "label": "Customer-hosted sealed eval capsule",
+        "default_site_ip_protection_level": "sealed_eval_capsule",
+        "customer_private_robot_assets_required": False,
+        "blueprint_hosts_robot_asset": False,
+        "customer_hosts_private_runtime": True,
+        "typical_use": (
+            "Closed-stack robot teams keep private models and simulators in their "
+            "environment while running a least-privilege Blueprint eval packet."
+        ),
+    },
+    "physical_robot_evidence_bridge": {
+        "label": "Physical robot evidence bridge",
+        "default_site_ip_protection_level": "redacted_anchor_packet",
+        "customer_private_robot_assets_required": False,
+        "blueprint_hosts_robot_asset": False,
+        "customer_hosts_private_runtime": True,
+        "typical_use": (
+            "The customer runs a hardware bridge and returns camera/action/outcome "
+            "evidence joined to Blueprint scenario_eval_run_id values."
+        ),
+    },
+}
+
+SITE_IP_PROTECTION_LEVELS: dict[str, dict[str, Any]] = {
+    "blueprint_hosted": {
+        "label": "Blueprint-hosted harness",
+        "raw_capture_shared": False,
+        "full_scene_mesh_shared": False,
+        "full_scoring_harness_shared": False,
+        "sealed_audit_scenarios_disclosed": False,
+    },
+    "sealed_eval_capsule": {
+        "label": "Sealed eval capsule",
+        "raw_capture_shared": False,
+        "full_scene_mesh_shared": False,
+        "full_scoring_harness_shared": False,
+        "sealed_audit_scenarios_disclosed": False,
+    },
+    "redacted_anchor_packet": {
+        "label": "Redacted anchor packet",
+        "raw_capture_shared": False,
+        "full_scene_mesh_shared": False,
+        "full_scoring_harness_shared": False,
+        "sealed_audit_scenarios_disclosed": False,
+    },
+}
+
+DEFAULT_PRIVATE_HARDWARE_INTEGRATION_MODE = "customer_hosted_sealed_eval_capsule"
+
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
@@ -256,6 +326,145 @@ def _policy_autoresearch_summary(
         "simulator_execution_proven": candidate.get("simulator_execution_proven") is True,
         "robot_readiness_proven": candidate.get("robot_readiness_proven") is True,
         "public_claim_upgrade_allowed": candidate.get("public_claim_upgrade_allowed") is True,
+    }
+
+
+def _private_hardware_integration_plan(
+    *,
+    job_request: Mapping[str, Any],
+    mode: str | None,
+    site_ip_protection_level: str | None,
+    robot_embodiment_pack_ref: str | None,
+    customer_hosted_connector_ref: str | None,
+) -> dict[str, Any]:
+    request_integration = _mapping(
+        job_request.get("private_hardware_integration")
+        or job_request.get("hardware_integration")
+        or {}
+    )
+    requested_mode = _first_string(
+        mode,
+        request_integration.get("integration_mode"),
+        request_integration.get("mode"),
+        DEFAULT_PRIVATE_HARDWARE_INTEGRATION_MODE,
+    )
+    if requested_mode not in PRIVATE_HARDWARE_INTEGRATION_MODES:
+        raise ValueError(f"Unsupported private hardware integration mode: {requested_mode}")
+
+    mode_profile = dict(PRIVATE_HARDWARE_INTEGRATION_MODES[requested_mode])
+    protection_level = _first_string(
+        site_ip_protection_level,
+        request_integration.get("site_ip_protection_level"),
+        request_integration.get("ip_protection_level"),
+        mode_profile.get("default_site_ip_protection_level"),
+    )
+    if protection_level not in SITE_IP_PROTECTION_LEVELS:
+        raise ValueError(f"Unsupported site IP protection level: {protection_level}")
+
+    supplied_pack = _first_string(
+        robot_embodiment_pack_ref,
+        request_integration.get("robot_embodiment_pack_ref"),
+        request_integration.get("robotEmbodimentPackRef"),
+    )
+    connector_ref = _first_string(
+        customer_hosted_connector_ref,
+        request_integration.get("customer_hosted_connector_ref"),
+        request_integration.get("customerHostedConnectorRef"),
+    )
+    protection = dict(SITE_IP_PROTECTION_LEVELS[protection_level])
+
+    execution_blockers: list[str] = []
+    if mode_profile.get("customer_private_robot_assets_required") and not supplied_pack:
+        execution_blockers.append("missing_robot_embodiment_pack_ref")
+    if mode_profile.get("customer_hosts_private_runtime") and not connector_ref:
+        execution_blockers.append("missing_customer_hosted_connector_ref")
+
+    return {
+        "schema_version": "private_hardware_integration_plan.v1",
+        "integration_mode": requested_mode,
+        "integration_label": mode_profile["label"],
+        "site_ip_protection_level": protection_level,
+        "site_ip_protection_label": protection["label"],
+        "recommended_default_for_closed_hardware": "customer_hosted_sealed_eval_capsule",
+        "robot_embodiment_pack_ref": supplied_pack or None,
+        "customer_hosted_connector_ref": connector_ref or None,
+        "blueprint_ip_controls": {
+            "raw_capture_bundle_shared_with_customer": protection["raw_capture_shared"],
+            "full_resolution_scene_mesh_shared_by_default": protection[
+                "full_scene_mesh_shared"
+            ],
+            "full_scoring_harness_shared_by_default": protection[
+                "full_scoring_harness_shared"
+            ],
+            "sealed_audit_scenarios_disclosed_to_customer": protection[
+                "sealed_audit_scenarios_disclosed"
+            ],
+            "exported_packet_is_least_privilege": True,
+            "signed_expiring_artifact_urls_required": True,
+            "packet_watermarking_or_request_binding_required": True,
+            "customer_visible_packet_fields": [
+                "task_id",
+                "scenario_eval_run_id",
+                "redacted_scene_anchors_or_proxy_assets",
+                "observation_schema",
+                "action_schema",
+                "success_criteria",
+                "cycle_time_and_intervention_thresholds",
+                "evidence_envelope_contract",
+            ],
+            "withheld_by_default": [
+                "raw_capture_bundle",
+                "full_site_geometry_or_dense_scene_assets",
+                "capturer_or_site_private_metadata",
+                "full_scoring_harness_implementation",
+                "sealed_audit_scenario_seeds",
+                "hidden_failure_labels_or_verifier_weights",
+            ],
+        },
+        "customer_hardware_controls": {
+            "customer_private_robot_model_may_remain_customer_side": bool(
+                mode_profile.get("customer_hosts_private_runtime")
+            ),
+            "customer_private_robot_assets_required_by_blueprint": bool(
+                mode_profile.get("customer_private_robot_assets_required")
+            ),
+            "blueprint_hosts_customer_robot_asset": bool(
+                mode_profile.get("blueprint_hosts_robot_asset")
+            ),
+            "customer_hosts_private_runtime_or_hardware_bridge": bool(
+                mode_profile.get("customer_hosts_private_runtime")
+            ),
+            "private_robot_asset_inputs_if_shared": [
+                "URDF_MJCF_or_USD",
+                "kinematic_and_dynamic_limits",
+                "collision_meshes_or_proxy_collision_shapes",
+                "camera_frames_intrinsics_extrinsics",
+                "sensor_topics_or_observation_schema",
+                "action_command_schema_units_frequency_limits",
+                "controller_reset_and_safety_envelope",
+            ],
+        },
+        "required_connector_evidence": [
+            "camera_video_or_frame_refs_by_scenario_eval_run_id",
+            "action_or_skill_logs_with_timestamps",
+            "robot_state_or_joint_state_logs_when_available",
+            "observation_action_alignment_summary",
+            "outcome_labels_and_failure_modes",
+            "checksums_for_returned_artifacts",
+            "owner_or_operator_attestation",
+        ],
+        "claim_boundary": {
+            "customer_hosted_connector_outputs_are_owner_evidence": True,
+            "customer_hosted_connector_does_not_export_blueprint_raw_scene_ip": True,
+            "robot_model_or_urdf_presence_alone_is_not_hardware_readiness": True,
+            "physical_robot_readiness_requires_accepted_real_robot_evidence": True,
+            "blueprint_scene_packet_is_not_unbounded_site_asset_delivery": True,
+        },
+        "execution_status": "ready_for_contract_review"
+        if not execution_blockers
+        else "blocked_missing_private_hardware_inputs",
+        "execution_blockers": execution_blockers,
+        "typical_use": mode_profile["typical_use"],
     }
 
 
@@ -468,6 +677,7 @@ def _webapp_summary_projection(manifest: Mapping[str, Any]) -> dict[str, Any]:
     policy_summary = _mapping(manifest.get("policy_autoresearch_summary"))
     baseline = _mapping(manifest.get("baseline_evaluation_summary"))
     customer_inputs = _mapping(manifest.get("customer_inputs"))
+    private_hardware = _mapping(manifest.get("private_hardware_integration"))
     return {
         "schema_version": "policy_improvement_run_webapp_summary.v1",
         "product_family": "policy_improvement_run",
@@ -486,6 +696,18 @@ def _webapp_summary_projection(manifest: Mapping[str, Any]) -> dict[str, Any]:
         "artifact_uris": {
             "manifest": manifest.get("manifest_path"),
             "brief": manifest.get("brief_path"),
+        },
+        "private_hardware_integration": {
+            "integration_mode": private_hardware.get("integration_mode"),
+            "site_ip_protection_level": private_hardware.get("site_ip_protection_level"),
+            "execution_status": private_hardware.get("execution_status"),
+            "execution_blockers": private_hardware.get("execution_blockers") or [],
+            "blueprint_raw_capture_shared": _mapping(
+                private_hardware.get("blueprint_ip_controls")
+            ).get("raw_capture_bundle_shared_with_customer"),
+            "full_scoring_harness_shared": _mapping(
+                private_hardware.get("blueprint_ip_controls")
+            ).get("full_scoring_harness_shared_by_default"),
         },
         "safe_for_firestore": True,
         "dense_or_secret_payloads_included": False,
@@ -541,6 +763,8 @@ def _markdown_brief(manifest: Mapping[str, Any]) -> str:
     access = _mapping(manifest.get("access_model"))
     summary = _mapping(manifest.get("policy_autoresearch_summary"))
     boundary = _mapping(manifest.get("claim_boundary"))
+    private_hardware = _mapping(manifest.get("private_hardware_integration"))
+    ip_controls = _mapping(private_hardware.get("blueprint_ip_controls"))
     lines = [
         "# Policy Improvement Run",
         "",
@@ -554,6 +778,14 @@ def _markdown_brief(manifest: Mapping[str, Any]) -> str:
         "",
         f"- Level: `{access.get('access_level')}`",
         f"- Source code required: `{access.get('source_code_required')}`",
+        "",
+        "## Private Hardware / IP Controls",
+        "",
+        f"- Integration mode: `{private_hardware.get('integration_mode')}`",
+        f"- Site IP protection: `{private_hardware.get('site_ip_protection_level')}`",
+        f"- Raw capture shared: `{ip_controls.get('raw_capture_bundle_shared_with_customer')}`",
+        f"- Full scoring harness shared: `{ip_controls.get('full_scoring_harness_shared_by_default')}`",
+        f"- Execution status: `{private_hardware.get('execution_status')}`",
         "",
         "## Evidence",
         "",
@@ -587,6 +819,10 @@ def build_policy_improvement_run_offer(
     target_task: str | None = None,
     success_threshold: float | None = None,
     cycle_time_threshold_seconds: float | None = None,
+    hardware_integration_mode: str | None = None,
+    site_ip_protection_level: str | None = None,
+    robot_embodiment_pack_ref: str | None = None,
+    customer_hosted_connector_ref: str | None = None,
     improvement_targets: Sequence[str] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -696,6 +932,13 @@ def build_policy_improvement_run_offer(
         success_threshold=success_threshold,
         cycle_time_threshold_seconds=cycle_time_threshold_seconds,
     )
+    private_hardware_plan = _private_hardware_integration_plan(
+        job_request=job_request,
+        mode=hardware_integration_mode,
+        site_ip_protection_level=site_ip_protection_level,
+        robot_embodiment_pack_ref=robot_embodiment_pack_ref,
+        customer_hosted_connector_ref=customer_hosted_connector_ref,
+    )
     split_counts = _split_counts(scenario_matrix)
     policy_summary = _policy_autoresearch_summary(
         report=policy_report,
@@ -735,6 +978,9 @@ def build_policy_improvement_run_offer(
     boundary["wam_evaluation_substrate"] = wam_claim_boundary.get("evaluation_substrate")
     boundary["wam_scorecard_included"] = bool(wam_scorecard)
     boundary["customer_specific_srcc_claimed"] = False
+    boundary["blueprint_raw_capture_exported_to_customer_by_default"] = False
+    boundary["blueprint_full_scoring_harness_exported_to_customer_by_default"] = False
+    boundary["customer_hosted_connector_outputs_are_owner_evidence"] = True
 
     manifest: dict[str, Any] = {
         "schema_version": POLICY_IMPROVEMENT_RUN_SCHEMA_VERSION,
@@ -754,6 +1000,7 @@ def build_policy_improvement_run_offer(
             "primary_sale": "policy lift toward a pilot gate",
             "not_sold_as": [
                 "foundation-model ownership",
+                "unbounded raw scene or scoring-harness export",
                 "deployment approval",
                 "physical safety certification",
                 "guaranteed site production readiness",
@@ -764,6 +1011,7 @@ def build_policy_improvement_run_offer(
         "blockers": blockers,
         "customer_inputs": customer_input_summary,
         "access_model": access,
+        "private_hardware_integration": private_hardware_plan,
         "improvement_targets": list(targets),
         "workflow": [
             "baseline_evaluation",
@@ -816,6 +1064,7 @@ def build_policy_improvement_run_offer(
         "readiness_ladder": readiness_ladder,
         "deliverables": [
             "baseline_eval_report",
+            "private_hardware_integration_plan",
             "wam_rollout_and_policy_ranking_scorecard_when_requested",
             "failure_mode_report",
             "twin_and_cousin_scenario_curriculum",
@@ -842,11 +1091,16 @@ def build_policy_improvement_run_offer(
         "included_artifacts": included_artifacts,
         "manifest_path": "policy_improvement_run_offer.json",
         "brief_path": "policy_improvement_run_offer.md",
+        "private_hardware_integration_path": "private_hardware_integration_plan.json",
         "claim_boundary": boundary,
     }
     manifest["webapp_summary_projection"] = _webapp_summary_projection(manifest)
 
     write_json(resolved_output_dir / "policy_improvement_run_offer.json", manifest)
+    write_json(
+        resolved_output_dir / "private_hardware_integration_plan.json",
+        private_hardware_plan,
+    )
     write_json(
         resolved_output_dir / "policy_improvement_run_webapp_summary.json",
         manifest["webapp_summary_projection"],
@@ -872,6 +1126,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--success-threshold", type=float)
     parser.add_argument("--cycle-time-threshold-seconds", type=float)
     parser.add_argument(
+        "--hardware-integration-mode",
+        choices=sorted(PRIVATE_HARDWARE_INTEGRATION_MODES),
+    )
+    parser.add_argument(
+        "--site-ip-protection-level",
+        choices=sorted(SITE_IP_PROTECTION_LEVELS),
+    )
+    parser.add_argument("--robot-embodiment-pack-ref")
+    parser.add_argument("--customer-hosted-connector-ref")
+    parser.add_argument(
         "--improvement-target",
         action="append",
         choices=IMPROVEMENT_TARGETS,
@@ -889,6 +1153,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         target_task=args.target_task,
         success_threshold=args.success_threshold,
         cycle_time_threshold_seconds=args.cycle_time_threshold_seconds,
+        hardware_integration_mode=args.hardware_integration_mode,
+        site_ip_protection_level=args.site_ip_protection_level,
+        robot_embodiment_pack_ref=args.robot_embodiment_pack_ref,
+        customer_hosted_connector_ref=args.customer_hosted_connector_ref,
         improvement_targets=args.improvement_targets,
     )
     manifest_dir = Path(args.output_dir or Path(args.job_dir) / DEFAULT_OUTPUT_DIR_NAME)

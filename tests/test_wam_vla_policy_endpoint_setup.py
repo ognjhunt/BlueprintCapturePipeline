@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,35 @@ from blueprint_pipeline import wam_vla_policy_endpoint_server as endpoint_server
 from blueprint_pipeline import wam_vla_policy_endpoint_setup as endpoint_setup
 from blueprint_pipeline.wam_vla_policy_endpoint_server import create_app, run_policy_command
 from blueprint_pipeline.wam_vla_policy_endpoint_setup import build_wam_vla_policy_endpoint_setup
+
+
+def _write_openvla_provider_smoke_job(job_dir: Path) -> Path:
+    (job_dir / "openvla_provider_output").mkdir(parents=True)
+    action = {"action_type": "waypoint", "waypoint": [0.36, -0.65, 0.79]}
+    summary = {
+        "status": "completed",
+        "openvla_model_executed": True,
+        "openvla_policy_action_command_ran": True,
+        "action": action,
+        "blockers": [],
+    }
+    output = {
+        **summary,
+        "schema_version": "openvla_policy_provider_output.v1",
+        "openvla_model_loaded": True,
+        "openvla_predict_action_invoked": True,
+    }
+    (job_dir / "openvla_policy_provider_smoke_summary.json").write_text(
+        json.dumps(summary),
+        encoding="utf-8",
+    )
+    (
+        job_dir / "openvla_provider_output" / "openvla_policy_provider_output.json"
+    ).write_text(
+        json.dumps(output),
+        encoding="utf-8",
+    )
+    return job_dir
 
 
 def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
@@ -35,6 +65,8 @@ def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
     }
     assert Path(summary["artifacts"]["env_template"]).is_file()
     assert Path(summary["artifacts"]["runbook"]).is_file()
+    assert Path(summary["artifacts"]["policy_model_runnable_env"]).is_file()
+    assert Path(summary["artifacts"]["policy_model_runnable_env_manifest"]).is_file()
     candidate_matrix = json.loads(
         Path(summary["artifacts"]["policy_model_candidate_matrix"]).read_text(encoding="utf-8")
     )
@@ -45,6 +77,17 @@ def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
         "unitree_g1_policy",
         "command_policy",
     }
+    openvla_candidate = next(
+        row for row in candidate_matrix["candidates"] if row["id"] == "openvla_policy"
+    )
+    assert (
+        openvla_candidate["default_adapter_command"]
+        == "blueprint-openvla-policy-command-adapter"
+    )
+    assert (
+        openvla_candidate["current_repo_support"]
+        == "implemented_command_adapter_requires_runtime_checkpoint_and_visual_frame"
+    )
     truth = json.loads(
         Path(summary["artifacts"]["policy_model_truth_boundary"]).read_text(encoding="utf-8")
     )
@@ -68,6 +111,19 @@ def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
         )
     )
     assert creation_plan["http_wrapper_binary_available"] is True
+    layer_summary = creation_plan["readiness_layer_summary"]
+    assert layer_summary["reference_endpoint_wrapper_ready"] is True
+    assert layer_summary["reference_endpoint_real_model_claim_allowed"] is False
+    assert layer_summary["wam_rollout_provider_ready"] is False
+    assert layer_summary["vla_manipulation_policy_ready_candidate_count"] == 0
+    assert layer_summary["closed_loop_wam_policy_endpoint_ready"] is False
+    assert (
+        "blocked_closed_loop_wam_policy_requery_not_yet_proven"
+        in layer_summary["closed_loop_wam_policy_endpoint_blockers"]
+    )
+    assert layer_summary["claim_boundary"][
+        "wam_rollout_provider_ready_is_not_robot_policy_ready"
+    ] is True
     assert creation_plan["can_create_real_model_endpoint_now"] is False
     assert creation_plan["minimum_user_supplied_inputs"]
     assert "HTTP endpoint without a runnable command" in " ".join(
@@ -76,7 +132,110 @@ def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
     adapter = json.loads(
         Path(summary["artifacts"]["policy_command_adapter_manifest"]).read_text(encoding="utf-8")
     )
-    assert adapter["default_reference_adapter_command"] == "blueprint-g1-endpoint-reference-adapter"
+    assert (
+        adapter["default_reference_adapter_command"]
+        == endpoint_server.BUILTIN_REFERENCE_ADAPTER_COMMAND
+    )
+    assert adapter["fallback_reference_adapter_subprocess_command"].endswith(
+        "src/blueprint_pipeline/g1_endpoint_reference_adapter.py"
+    )
+    assert adapter["default_reference_adapter_invocation_mode"] == "in_process_builtin"
+    assert (
+        adapter["console_script_reference_adapter_command"]
+        == "blueprint-g1-endpoint-reference-adapter"
+    )
+    assert adapter["openvla_policy_adapter_command"] == "blueprint-openvla-policy-command-adapter"
+
+
+def test_wam_vla_policy_endpoint_setup_imports_openvla_provider_smoke_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_job = _write_openvla_provider_smoke_job(
+        tmp_path / "robot_eval_jobs" / "openvla_policy_provider_smoke_20260622T092432Z"
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENVLA_PROVIDER_SMOKE_JOB_DIR", str(provider_job))
+    monkeypatch.setattr(endpoint_setup, "_repo_root", lambda: tmp_path)
+
+    summary = build_wam_vla_policy_endpoint_setup(
+        output_dir=tmp_path / "setup-openvla-proof",
+        generated_at="now",
+    )
+
+    candidate_matrix = json.loads(
+        Path(summary["artifacts"]["policy_model_candidate_matrix"]).read_text(encoding="utf-8")
+    )
+    openvla_candidate = next(
+        row for row in candidate_matrix["candidates"] if row["id"] == "openvla_policy"
+    )
+    assert openvla_candidate["provider_smoke_completed"] is True
+    assert openvla_candidate["openvla_model_executed"] is True
+    assert openvla_candidate["openvla_policy_action_command_ran"] is False
+    assert openvla_candidate["openvla_policy_action_command_imported"] is True
+    assert openvla_candidate["last_provider_action"]["action_type"] == "waypoint"
+    assert openvla_candidate["endpoint_closed_loop_policy_proven"] is False
+    assert openvla_candidate["unitree_g1_dexterous_manipulation_proven"] is False
+
+    truth = json.loads(
+        Path(summary["artifacts"]["policy_model_truth_boundary"]).read_text(encoding="utf-8")
+    )
+    assert truth["openvla_provider_smoke_model_executed"] is True
+    assert truth["policy_action_model_command_ran"] is False
+    assert truth["openvla_policy_action_command_ran"] is False
+    assert truth["policy_action_model_provider_smoke_imported"] is True
+    assert truth["openvla_policy_action_command_imported"] is True
+    assert (
+        truth["openvla_provider_smoke_is_not_closed_loop_endpoint_or_dexterous_manipulation"]
+        is True
+    )
+
+
+def test_policy_model_runnable_env_detects_oscar_replay_artifacts(tmp_path: Path) -> None:
+    checkpoint = (
+        tmp_path
+        / "robot_eval_jobs"
+        / "wam_model_runtime_bootstrap_oscar_20260621T025044Z"
+        / "runtime_sources"
+        / "oscar_wam"
+        / "checkpoint"
+    )
+    checkpoint.mkdir(parents=True)
+    provider_dir = (
+        tmp_path
+        / "robot_eval_jobs"
+        / "oscar_wam_hands_pov_first_person_passthrough_fresh_vast_49f_20260622T065451Z"
+        / "oscar_wam_provider_command_workspace"
+        / "vast_provider_run"
+    )
+    provider_dir.mkdir(parents=True)
+    with zipfile.ZipFile(provider_dir / "vast_provider_runtime_output.zip", "w") as archive:
+        archive.writestr(
+            "wam_runtime_result.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "learned_wam_model_ran": True,
+                    "truth_boundary": {"generated_video_is_model_output": True},
+                }
+            ),
+        )
+
+    metadata, env_text = endpoint_setup.build_policy_model_runnable_env_artifact(
+        repo_root=tmp_path,
+        generated_at="now",
+    )
+
+    assert metadata["status"] == "ready"
+    assert metadata["oscar_replay_provider_ready"] is True
+    assert metadata["oscar_fresh_provider_command_ready"] is True
+    assert metadata["oscar_checkpoint_path"] == str(checkpoint)
+    assert metadata["oscar_completed_provider_job_dir"] == str(provider_dir)
+    assert "BLUEPRINT_ALLOW_LOCAL_WAM_MODEL=true" in env_text
+    assert "BLUEPRINT_OSCAR_WAM_PROVIDER_COMPLETED_JOB_DIR" in env_text
+    assert (
+        metadata["claim_boundary"]["replay_completed_provider_output_is_not_fresh_model_run"]
+        is True
+    )
 
 
 def test_wam_vla_policy_endpoint_setup_main_prints_summary(
@@ -154,13 +313,32 @@ print(json.dumps({
     )
     assert response["action"]["action_type"] == "waypoint"
     assert meta["command_exit_code"] == 0
+    assert meta["policy_adapter_invocation_mode"] == "subprocess"
+    assert meta["subprocess_spawned"] is True
+
+    builtin_response, builtin_meta = run_policy_command(
+        command=endpoint_server.BUILTIN_REFERENCE_ADAPTER_COMMAND,
+        payload={
+            "observation": {
+                "task_id": "approach_target",
+                "step_index": 0,
+                "base_pose": {"position": [0.0, 0.0, 0.79], "yaw_rad": 0.0},
+                "route_task_state": {"target_pose": [1.0, 0.0, 0.79], "target_error_m": 1.0},
+            }
+        },
+        timeout_seconds=0.001,
+    )
+    assert builtin_response["policy_id"] == "blueprint_g1_endpoint_reference_adapter"
+    assert builtin_response["action"]["action_type"] == "base_velocity"
+    assert builtin_meta["policy_adapter_invocation_mode"] == "in_process_builtin"
+    assert builtin_meta["subprocess_spawned"] is False
 
     token_file = tmp_path / "token.txt"
     token_file.write_text("secret-token\n", encoding="utf-8")
     app = create_app(
         policy_command=command,
         auth_token_file=str(token_file),
-        timeout_seconds=2.0,
+        timeout_seconds=5.0,
     )
     client = TestClient(app)
     assert client.get("/health").json()["policy_command_configured"] is True
@@ -185,6 +363,35 @@ print(json.dumps({
     assert payload["policy_id"] == "unit_test_policy"
     assert payload["action"]["action_type"] == "waypoint"
     assert payload["endpoint_metadata"]["raw_token_values_returned"] is False
+
+    builtin_client = TestClient(
+        create_app(
+            policy_command=endpoint_server.BUILTIN_REFERENCE_ADAPTER_COMMAND,
+            auth_token_file=None,
+            timeout_seconds=0.001,
+        )
+    )
+    builtin_health = builtin_client.get("/health").json()
+    assert builtin_health["policy_adapter_invocation_mode"] == "in_process_builtin"
+    assert builtin_health["subprocess_spawned_per_request"] is False
+    builtin_ok = builtin_client.post(
+        "/policy/action",
+        json={
+            "observation": {
+                "task_id": "contact_or_push_light_object",
+                "object_state": {"position": [0.3, -0.6, 0.27]},
+            }
+        },
+    )
+    assert builtin_ok.status_code == 200
+    builtin_payload = builtin_ok.json()
+    assert builtin_payload["policy_id"] == "blueprint_g1_endpoint_reference_adapter"
+    assert builtin_payload["action"]["action_type"] == "manipulation_contact"
+    assert (
+        builtin_payload["endpoint_metadata"]["policy_adapter_invocation_mode"]
+        == "in_process_builtin"
+    )
+    assert builtin_payload["endpoint_metadata"]["subprocess_spawned"] is False
 
     with pytest.raises(RuntimeError, match="missing_policy_command"):
         run_policy_command(command="", payload={}, timeout_seconds=0.1)

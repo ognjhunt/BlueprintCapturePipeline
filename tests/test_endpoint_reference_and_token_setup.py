@@ -102,26 +102,32 @@ def test_g1_endpoint_reference_adapter_actions_manifest_and_cli(
             "route_task_state": {"target_error_m": 1.0},
         }
     )["action_type"] == "base_velocity"
-    assert adapter.choose_action(
+    approach_action = adapter.choose_action(
         {
             "task_id": "approach_target",
             "step_index": 90,
-            "route_task_state": {"target_error_m": 1.0, "target_pose": [1, 2, 3]},
+            "base_pose": {"position": [0, 0, 0.79], "yaw_rad": 0},
+            "route_task_state": {"target_error_m": 1.0, "target_pose": [1, 0, 3]},
         }
-    )["waypoint"] == [1.0, 2.0, 3.0]
-    assert adapter.choose_action(
+    )
+    assert approach_action["velocity_frame"] == "robot_base"
+    assert approach_action["linear_velocity_mps"] == adapter.SAFE_APPROACH_SPEED_MPS
+    assert abs(approach_action["lateral_velocity_mps"]) < 1e-9
+    route_action = adapter.choose_action(
         {
             "task_id": "route_around_obstruction",
             "step_index": 240,
             "route_task_state": {"route_waypoints": [[1, 2], [3, 4, 0.5]]},
         }
-    )["waypoint"] == [3.0, 4.0, 0.5]
+    )
+    assert route_action["waypoint"] == [3.0, 4.0, 0.5]
+    assert route_action["max_speed_mps"] == adapter.SAFE_WAYPOINT_SPEED_MPS
     assert adapter.choose_action(
         {"task_id": "route_around_obstruction", "route_task_state": {"route_waypoints": "bad"}}
     )["action_type"] == "waypoint"
-    assert adapter.choose_action({"task_id": "contact_or_push_light_object"})[
-        "action_type"
-    ] == "manipulation_contact"
+    contact_action = adapter.choose_action({"task_id": "contact_or_push_light_object"})
+    assert contact_action["action_type"] == "manipulation_contact"
+    assert contact_action["approach_speed_mps"] == adapter.SAFE_CONTACT_APPROACH_SPEED_MPS
     assert adapter.choose_action(
         {
             "task_id": "stop_at_goal_and_report",
@@ -129,14 +135,18 @@ def test_g1_endpoint_reference_adapter_actions_manifest_and_cli(
             "route_task_state": {"target_error_m": 0.2},
         }
     )["action_type"] == "stop"
-    assert adapter.choose_action(
+    stop_approach = adapter.choose_action(
         {
             "task_id": "stop_at_goal_and_report",
             "step_index": 10,
             "route_task_state": {"target_error_m": 2.0},
         }
-    )["action_type"] == "waypoint"
-    assert adapter.choose_action({"task_id": "unknown"})["action_type"] == "waypoint"
+    )
+    assert stop_approach["action_type"] == "waypoint"
+    assert stop_approach["max_speed_mps"] == adapter.SAFE_STOP_APPROACH_SPEED_MPS
+    unknown = adapter.choose_action({"task_id": "unknown"})
+    assert unknown["action_type"] == "waypoint"
+    assert unknown["max_speed_mps"] == adapter.SAFE_WAYPOINT_SPEED_MPS
 
     manifest = adapter.adapter_manifest()
     assert manifest["policy_id"] == adapter.POLICY_ID

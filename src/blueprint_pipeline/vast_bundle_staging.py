@@ -571,8 +571,8 @@ def _head_bundle_url(
     bundle_path: Path | None,
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    request = urllib.request.Request(bundle_url, method="HEAD")
     try:
+        request = urllib.request.Request(bundle_url, method="HEAD")
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             status_code = int(getattr(response, "status", 200))
             headers = dict(response.headers.items())
@@ -616,13 +616,13 @@ def _put_output_probe(
     timeout_seconds: float,
     probe_zip: bytes,
 ) -> dict[str, Any]:
-    request = urllib.request.Request(
-        output_put_url,
-        data=probe_zip,
-        method="PUT",
-        headers={"Content-Type": "application/zip"},
-    )
     try:
+        request = urllib.request.Request(
+            output_put_url,
+            data=probe_zip,
+            method="PUT",
+            headers={"Content-Type": "application/zip"},
+        )
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             status_code = int(getattr(response, "status", 200))
             response_text = response.read().decode("utf-8", errors="replace")

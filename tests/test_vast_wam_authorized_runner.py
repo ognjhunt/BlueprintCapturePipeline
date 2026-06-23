@@ -120,7 +120,7 @@ def test_vast_wam_authorized_runner_paid_path_delegates_wam_adapter(
     assert captured["enable_isaac_smoke"] is False
     assert captured["ngc_image_login_mode"] == "never"
     assert captured["require_known_supported_isaac_driver"] is False
-    assert captured["vast_launch_mode"] == "args"
+    assert captured["vast_launch_mode"] == "auto"
     assert captured["public_image"] == "pytorch/pytorch:test"
     assert "token=" in str(captured["provider_bundle_url"])
     assert "token=" in str(captured["provider_output_put_url"])

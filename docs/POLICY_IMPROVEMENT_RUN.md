@@ -25,6 +25,9 @@ foundation model." The sales promise is:
   safety envelope.
 - Action interface: command schema, frequency, units, limits, and reset
   behavior.
+- Private hardware integration mode: reference/public robot, private asset
+  hosted by Blueprint, customer-hosted sealed eval capsule, or physical robot
+  evidence bridge.
 - Target task: task statement, operating envelope, fixtures, objects, and
   allowed recovery behavior.
 - Required success threshold: for example `0.95`.
@@ -88,12 +91,42 @@ blueprint-build-policy-improvement-run \
   --customer-policy-ref customer-policy-v3 \
   --embodiment g1-humanoid \
   --action-interface joint_position_delta_20hz \
+  --hardware-integration-mode customer_hosted_sealed_eval_capsule \
+  --site-ip-protection-level sealed_eval_capsule \
+  --customer-hosted-connector-ref gs://team/blueprint/connector-contract.json \
   --target-task tote-transfer \
   --success-threshold 0.95 \
   --cycle-time-threshold-seconds 90 \
   --improvement-target adapter \
   --improvement-target task_head
 ```
+
+## Private Hardware And Blueprint IP
+
+Closed robot teams do not need to hand Blueprint their full robot model on day
+one, and Blueprint should not hand customers the raw site scene, raw capture
+bundle, full scoring harness, or sealed audit seeds by default.
+
+The Policy Improvement Run manifest writes
+`private_hardware_integration_plan.json` with one of four modes:
+
+- `reference_public_robot`: public/reference embodiment such as Unitree G1 for
+  plumbing and demos.
+- `private_asset_hosted_by_blueprint`: the customer supplies an NDA-bound
+  URDF/MJCF/USD, limits, cameras, action schema, controller reset behavior, and
+  safety envelope so Blueprint can run a private hosted evaluation.
+- `customer_hosted_sealed_eval_capsule`: the default for closed hardware. The
+  customer keeps its robot model, simulator, and controller private; Blueprint
+  sends a least-privilege eval packet and expects normalized owner proof back.
+- `physical_robot_evidence_bridge`: the customer runs a hardware bridge and
+  returns camera/action/outcome evidence joined to exact
+  `scenario_eval_run_id` values.
+
+The default IP posture is least privilege: no raw capture bundle, no full
+resolution scene mesh by default, no full scoring harness, no sealed audit seeds,
+signed expiring artifact URLs, and request-bound/watermarked packets. Customer
+hosted connector output is owner evidence. It does not by itself prove physical
+readiness, safety validation, customer-specific SRCC, or deployment approval.
 
 Run a WAM/substrate policy-autoresearch loop:
 
@@ -160,6 +193,9 @@ python -m pytest tests/test_policy_improvement_run.py tests/test_policy_autorese
 - Always preserve raw capture, rights, privacy, and provenance truth.
 - Always keep model backends replaceable and customer policies supported through
   API/container/action-trace paths.
+- Always protect Blueprint site/scenario/harness IP when a customer-hosted
+  connector is used; export only a least-privilege packet unless a separate
+  contract approves broader access.
 - Always separate development, validation, heldout, and sealed audit scenario
   pools.
 - Never let the policy-improvement agent mutate final scoring, success

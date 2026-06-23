@@ -31,6 +31,19 @@ def _source_root(tmp_path: Path) -> Path:
     return source_root
 
 
+def _write_test_video(path: Path) -> None:
+    cv2 = pytest.importorskip("cv2")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (64, 48))
+    assert writer.isOpened()
+    for index in range(4):
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        frame[:, :32] = (255 - index * 20, 0, 40 + index * 10)
+        frame[:, 32:] = (0, 200, 80 + index * 10)
+        writer.write(frame)
+    writer.release()
+
+
 def _rollout_manifest_path(tmp_path: Path) -> Path:
     review_video = tmp_path / "review" / "episode_0001__third_person.mp4"
     review_video.parent.mkdir(parents=True)
@@ -94,6 +107,38 @@ def test_oscar_cosmos_helpers_materialize_action_conditioning_package(
     rollout_manifest = adapter._read_json(rollout_manifest_path)
     review_video = adapter._selected_video_path(rollout_manifest)
     assert review_video.name == "episode_0001__third_person.mp4"
+    robot_pov_video = tmp_path / "review" / "episode_0004_contact_or_push_light_object__robot_pov.mp4"
+    robot_pov_video.write_bytes(b"fake robot pov mp4")
+    monkeypatch.setenv("BLUEPRINT_WAM_PREFERRED_CAMERA", "robot_pov,third_person")
+    monkeypatch.setenv("BLUEPRINT_WAM_PREFERRED_TASK_ID", "contact_or_push_light_object")
+    selected = adapter._selected_video_row(
+        {
+            "selected_review_videos": [
+                {
+                    "path": str(review_video),
+                    "camera": "third_person",
+                    "scenario_eval_run_id": "run-approach",
+                    "task_id": "approach_target",
+                },
+                {
+                    "path": str(robot_pov_video),
+                    "camera": "robot_pov",
+                    "scenario_eval_run_id": "run-contact",
+                    "task_id": "contact_or_push_light_object",
+                },
+            ],
+            "task_prompts": [
+                {
+                    "scenario_eval_run_id": "run-contact",
+                    "task_prompt": "Push the lightweight object from robot POV.",
+                    "spawn_id": "doorway",
+                }
+            ],
+        }
+    )
+    assert selected["path"] == str(robot_pov_video.resolve())
+    assert selected["camera"] == "robot_pov"
+    assert selected["task_prompt"] == "Push the lightweight object from robot POV."
     selection_manifest = tmp_path / "selection.json"
     _write_json(selection_manifest, {"selected_review_videos": [{"path": str(review_video)}]})
     assert (
@@ -385,7 +430,7 @@ def test_oscar_cosmos_run_blocks_probes_and_materializes_rollouts(
     def fake_run_cosmos(**kwargs: Any) -> dict[str, Any]:
         save_root = Path(kwargs["package_manifest"]["save_root"])
         (save_root / "sample").mkdir(parents=True)
-        (save_root / "sample" / "rollout.mp4").write_bytes(b"generated")
+        _write_test_video(save_root / "sample" / "rollout.mp4")
         return {"schema_version": "cosmos", "status": "completed", "blockers": []}
 
     monkeypatch.setattr(adapter, "_run_cosmos", fake_run_cosmos)
@@ -462,7 +507,7 @@ def test_oscar_cosmos_rollout_payload_main_and_module_guard(
     checkpoint.write_text("weights", encoding="utf-8")
     save_root = tmp_path / "save-root"
     (save_root / "nested").mkdir(parents=True)
-    (save_root / "nested" / "rollout.mp4").write_bytes(b"mp4")
+    _write_test_video(save_root / "nested" / "rollout.mp4")
 
     payload = adapter._rollout_payload(
         package_manifest={
@@ -479,6 +524,23 @@ def test_oscar_cosmos_rollout_payload_main_and_module_guard(
     assert payload["rollouts"][0]["generated_rollout_termination_reason"] == (
         "cosmos_command_completed"
     )
+
+    invalid_save_root = tmp_path / "invalid-save-root"
+    (invalid_save_root / "nested").mkdir(parents=True)
+    (invalid_save_root / "nested" / "rollout.mp4").write_bytes(b"mp4-placeholder")
+    invalid = adapter._rollout_payload(
+        package_manifest={
+            "save_root": str(invalid_save_root),
+            "source_review_video_path": str(tmp_path / "review.mp4"),
+        },
+        checkpoint=checkpoint,
+        source_root=source_root,
+        subprocess_detail={"status": "completed"},
+        model="model",
+        experiment="experiment",
+    )
+    assert invalid["status"] == "blocked"
+    assert "blocked_generated_cosmos_mp4_not_reviewable" in invalid["blockers"]
 
     blocked = adapter._rollout_payload(
         package_manifest={"save_root": str(tmp_path / "empty-save-root")},

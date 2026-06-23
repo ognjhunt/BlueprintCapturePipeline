@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .wam_generated_video_review import validate_generated_mp4_for_review
+
 
 ADAPTER_ID = "blueprint_oscar_cosmos_action_conditioned_wam_adapter"
 SCHEMA_VERSION = "oscar_cosmos_wam_command_adapter.v1"
@@ -103,11 +105,17 @@ def _checkpoint_from_env() -> Path | None:
     )
 
 
-def _selected_video_path(rollout_manifest: Mapping[str, Any]) -> Path:
+def _preference_list(env_name: str, default: Sequence[str]) -> list[str]:
+    configured = os.getenv(env_name, "")
+    values = configured.split(",") if configured else list(default)
+    return [_string(value) for value in values if _string(value)]
+
+
+def _video_candidates(rollout_manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     for row in rollout_manifest.get("selected_review_videos", []) or []:
-        path = Path(_string(_mapping(row).get("path"))).expanduser()
-        if path.is_file():
-            return path.resolve()
+        if isinstance(row, Mapping):
+            rows.append(dict(row))
     inputs = _mapping(rollout_manifest.get("inputs"))
     selection_manifest_path = Path(
         _string(inputs.get("review_video_selection_manifest"))
@@ -115,13 +123,65 @@ def _selected_video_path(rollout_manifest: Mapping[str, Any]) -> Path:
     if selection_manifest_path.is_file():
         selection_manifest = _read_json(selection_manifest_path)
         for row in selection_manifest.get("selected_review_videos", []) or []:
-            path = Path(_string(_mapping(row).get("path"))).expanduser()
-            if path.is_file():
-                return path.resolve()
+            if isinstance(row, Mapping):
+                rows.append(dict(row))
+    return rows
+
+
+def _task_prompt_by_run_id(rollout_manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for row in rollout_manifest.get("task_prompts", []) or []:
+        if isinstance(row, Mapping) and _string(row.get("scenario_eval_run_id")):
+            rows[_string(row.get("scenario_eval_run_id"))] = dict(row)
+    return rows
+
+
+def _selected_video_row(rollout_manifest: Mapping[str, Any]) -> dict[str, Any]:
+    camera_preferences = _preference_list(
+        "BLUEPRINT_WAM_PREFERRED_CAMERA",
+        ("robot_pov", "torso_pov", "robot_follow", "third_person", "overhead"),
+    )
+    task_preferences = _preference_list("BLUEPRINT_WAM_PREFERRED_TASK_ID", ())
+    prompt_rows = _task_prompt_by_run_id(rollout_manifest)
+    ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+    for index, candidate in enumerate(_video_candidates(rollout_manifest)):
+        path = Path(_string(candidate.get("path"))).expanduser()
+        if not path.is_file():
+            continue
+        row = dict(candidate)
+        run_id = _string(row.get("scenario_eval_run_id"))
+        if run_id and run_id in prompt_rows:
+            row = {**prompt_rows[run_id], **row}
+        text = " ".join(
+            _string(row.get(key))
+            for key in ("task_id", "episode_id", "scenario_eval_run_id", "path")
+        )
+        camera = _string(row.get("camera"))
+        camera_rank = camera_preferences.index(camera) if camera in camera_preferences else len(camera_preferences)
+        task_rank = len(task_preferences)
+        for pref_index, task_id in enumerate(task_preferences):
+            if task_id and task_id in text:
+                task_rank = pref_index
+                break
+        ranked.append(((task_rank, camera_rank, index), {**row, "path": str(path.resolve())}))
+    if ranked:
+        ranked.sort(key=lambda item: item[0])
+        return ranked[0][1]
     raise FileNotFoundError("missing_selected_review_video")
 
 
+def _selected_video_path(rollout_manifest: Mapping[str, Any]) -> Path:
+    return Path(_selected_video_row(rollout_manifest)["path"]).resolve()
+
+
 def _task_prompt(rollout_manifest: Mapping[str, Any]) -> str:
+    try:
+        selected = _selected_video_row(rollout_manifest)
+        prompt = _string(selected.get("task_prompt"))
+        if prompt:
+            return prompt
+    except FileNotFoundError:
+        pass
     for row in rollout_manifest.get("task_prompts", []) or []:
         prompt = _string(_mapping(row).get("task_prompt"))
         if prompt:
@@ -190,7 +250,8 @@ def _materialize_cosmos_input_package(
     video_dir.mkdir(parents=True, exist_ok=True)
     save_root.mkdir(parents=True, exist_ok=True)
 
-    review_video = _selected_video_path(rollout_manifest)
+    selected_video = _selected_video_row(rollout_manifest)
+    review_video = Path(selected_video["path"]).resolve()
     local_video = video_dir / "rgb.mp4"
     if review_video.resolve() != local_video.resolve():
         shutil.copyfile(review_video, local_video)
@@ -207,6 +268,11 @@ def _materialize_cosmos_input_package(
                 "source_mujoco_endpoint_eval_job_dir"
             ),
             "selected_review_video_path": str(review_video),
+            "selected_review_video": selected_video,
+            "selected_camera": selected_video.get("camera"),
+            "scenario_eval_run_id": selected_video.get("scenario_eval_run_id"),
+            "task_id": selected_video.get("task_id"),
+            "spawn_id": selected_video.get("spawn_id"),
             "action_trace_jsonl": _mapping(rollout_manifest.get("inputs")).get(
                 "normalized_policy_action_trace_jsonl"
             ),
@@ -259,6 +325,11 @@ def _materialize_cosmos_input_package(
         "inference_params_path": str(inference_path),
         "save_root": str(save_root),
         "source_review_video_path": str(review_video),
+        "source_review_video": selected_video,
+        "source_camera": selected_video.get("camera"),
+        "scenario_eval_run_id": selected_video.get("scenario_eval_run_id"),
+        "task_id": selected_video.get("task_id"),
+        "spawn_id": selected_video.get("spawn_id"),
         "action_count": len(actions),
         "action_load_fn": inference_params["action_load_fn"],
     }
@@ -422,29 +493,54 @@ def _rollout_payload(
 ) -> dict[str, Any]:
     save_root = Path(_string(package_manifest.get("save_root")))
     generated_videos = sorted(path.resolve() for path in save_root.rglob("*.mp4"))
-    rollouts = [
-        {
-            "rollout_id": f"oscar_cosmos_rollout_{index:04d}",
-            "policy_id": ADAPTER_ID,
-            "model_candidate": os.getenv("BLUEPRINT_WAM_MODEL_CANDIDATE") or "oscar_wam",
-            "model": model,
-            "experiment": experiment,
-            "generated_video_path": str(path),
-            "source_review_video_path": package_manifest.get("source_review_video_path"),
-            "model_rollout_confidence": None,
-            "generated_rollout_termination_reason": "cosmos_command_completed",
-            "success_label_source": "generated_video_requires_review",
-        }
-        for index, path in enumerate(generated_videos, start=1)
+    video_validations = [
+        validate_generated_mp4_for_review(path) for path in generated_videos
     ]
+    rollouts = []
+    for index, (path, validation) in enumerate(zip(generated_videos, video_validations), start=1):
+        if validation.get("status") != "completed":
+            continue
+        rollouts.append(
+            {
+                "rollout_id": f"oscar_cosmos_rollout_{index:04d}",
+                "policy_id": ADAPTER_ID,
+                "model_candidate": os.getenv("BLUEPRINT_WAM_MODEL_CANDIDATE") or "oscar_wam",
+                "model": model,
+                "experiment": experiment,
+                "generated_video_path": str(path),
+                "source_review_video_path": package_manifest.get("source_review_video_path"),
+                "source_camera": package_manifest.get("source_camera"),
+                "scenario_eval_run_id": package_manifest.get("scenario_eval_run_id"),
+                "task_id": package_manifest.get("task_id"),
+                "spawn_id": package_manifest.get("spawn_id"),
+                "model_rollout_confidence": None,
+                "generated_rollout_termination_reason": "cosmos_command_completed",
+                "success_label_source": "generated_video_requires_review",
+                "generated_video_review_validation": validation,
+            }
+        )
     status = "completed" if rollouts else "blocked"
-    blockers = [] if rollouts else ["blocked_no_generated_cosmos_mp4"]
+    validation_blockers = sorted(
+        {
+            str(blocker)
+            for validation in video_validations
+            for blocker in validation.get("blockers", [])
+            if str(blocker)
+        }
+    )
+    blockers = [] if rollouts else [
+        "blocked_generated_cosmos_mp4_not_reviewable"
+        if generated_videos
+        else "blocked_no_generated_cosmos_mp4",
+        *validation_blockers,
+    ]
     return {
         "schema_version": SCHEMA_VERSION,
         "status": status,
         "adapter_id": ADAPTER_ID,
         "rollouts": rollouts,
         "generated_video_count": len(generated_videos),
+        "generated_video_review_validations": video_validations,
         "model_provenance": {
             "candidate": os.getenv("BLUEPRINT_WAM_MODEL_CANDIDATE") or "oscar_wam",
             "source_root": str(source_root),
@@ -456,6 +552,24 @@ def _rollout_payload(
         "input_package": dict(package_manifest),
         "cosmos_subprocess": dict(subprocess_detail),
         "blockers": blockers,
+        "fresh_model_command_executed_this_invocation": bool(
+            rollouts and subprocess_detail.get("status") == "completed"
+        ),
+        "fresh_model_run_claimed": bool(
+            rollouts and subprocess_detail.get("status") == "completed"
+        ),
+        "learned_wam_model_ran": bool(
+            rollouts and subprocess_detail.get("status") == "completed"
+        ),
+        "truth_boundary": {
+            "generated_video_is_model_output": bool(
+                rollouts and subprocess_detail.get("status") == "completed"
+            ),
+            "generated_rollout_not_physical_robot_proof": True,
+            "generated_success_label_requires_external_vlm_or_human_judge": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+        },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
     }

@@ -131,6 +131,45 @@ def _write_valid_wam_provider_bundle(path: Path) -> None:
         )
 
 
+def _write_valid_unitree_unifolm_provider_bundle(path: Path) -> None:
+    readiness = {
+        "schema_version": "unitree_unifolm_policy_provider_bundle.v1",
+        "local_bundle_ready_for_remote_staging": True,
+        "ready_for_fresh_model_execution": True,
+        "runtime_execution_blockers": [],
+    }
+    readiness_path = path.parent / "provider_runtime" / "unitree_unifolm_policy_provider_manifest.json"
+    readiness_path.parent.mkdir(parents=True, exist_ok=True)
+    readiness_path.write_text(json.dumps(readiness), encoding="utf-8")
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "provider_runtime/run_unitree_unifolm_provider_runtime.sh",
+            "unitree_unifolm_provider_runner_failed_without_runtime_result\n"
+            "blocked_unitree_unifolm_process_exited_without_result\n",
+        )
+        archive.writestr(
+            "provider_runtime/unitree_unifolm_provider_runner.py",
+            "unitree_unifolm_policy_provider_output.json\n"
+            "unitree_unifolm_model_executed = False\n"
+            "unitree_unifolm_policy_action_command_ran = False\n",
+        )
+        archive.writestr(
+            "provider_runtime/unitree_unifolm_policy_provider_manifest.json",
+            json.dumps(readiness),
+        )
+        archive.writestr("provider_runtime/policy_input.json", "{}\n")
+        archive.writestr("provider_runtime/input_frame.png", b"png")
+        archive.writestr("provider_runtime/blueprint_pipeline/__init__.py", "")
+        archive.writestr(
+            "provider_runtime/blueprint_pipeline/unitree_unifolm_policy_command_adapter.py",
+            "# bundled adapter\n",
+        )
+        archive.writestr(
+            "provider_runtime/blueprint_pipeline/unitree_unifolm_vla_server_bridge.py",
+            "# bundled bridge\n",
+        )
+
+
 def test_blocked_phase_artifacts_refresh_stale_video_smoke_result(tmp_path: Path) -> None:
     stale_video_path = tmp_path / "vast_video_smoke_result.json"
     stale_video_path.write_text(
@@ -292,6 +331,37 @@ def test_wam_bundle_preflight_does_not_require_isaac_smoke(tmp_path: Path) -> No
     )
 
 
+def test_unitree_unifolm_bundle_preflight_uses_unitree_entrypoint(tmp_path: Path) -> None:
+    bundle = tmp_path / "unitree_unifolm_bundle.zip"
+    _write_valid_unitree_unifolm_provider_bundle(bundle)
+
+    manifest = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path,
+        generated_at="2026-06-22T00:00:00+00:00",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="unitree_unifolm",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.trycloudflare.com/bundle.zip?token=redacted",
+        provider_output_put_url="https://example.trycloudflare.com/output.zip?token=redacted",
+    )
+
+    assert manifest["status"] == "passed"
+    assert manifest["provider_bundle_kind"] == "unitree_unifolm"
+    assert manifest["isaac_smoke_enabled"] is False
+    assert manifest["missing_zip_entries"] == []
+    assert manifest["provider_bundle_local_ready_for_remote_staging"] is True
+    assert (
+        vpa._resolve_launch_mode(
+            requested="auto",
+            enable_isaac_smoke=False,
+            enable_blueprint_bundle=True,
+            provider_bundle_kind="unitree_unifolm",
+        )
+        == "ssh_direct"
+    )
+
+
 def test_inline_wam_provider_bundle_payload_is_redacted_in_request_summary(
     tmp_path: Path,
 ) -> None:
@@ -358,7 +428,20 @@ def test_inline_provider_bundle_payload_is_wam_only_and_size_capped(
         enable_blueprint_bundle=True,
     )
     assert isaac_inline["inline_provider_bundle_transport_used"] is False
-    assert isaac_inline["inline_provider_bundle_transport_reason"] == "inline_transport_wam_only"
+    assert (
+        isaac_inline["inline_provider_bundle_transport_reason"]
+        == "inline_transport_provider_kind_not_supported"
+    )
+
+    unitree_bundle = tmp_path / "unitree_bundle.zip"
+    _write_valid_unitree_unifolm_provider_bundle(unitree_bundle)
+    unitree_inline = vpa._inline_provider_bundle_payload(
+        unitree_bundle,
+        provider_bundle_kind="unitree_unifolm",
+        enable_blueprint_bundle=True,
+    )
+    assert unitree_inline["inline_provider_bundle_transport_used"] is True
+    assert unitree_inline["inline_provider_bundle_sha256_present"] is True
 
     too_large = vpa._inline_provider_bundle_payload(
         bundle,
@@ -370,6 +453,59 @@ def test_inline_provider_bundle_payload_is_wam_only_and_size_capped(
     assert (
         too_large["inline_provider_bundle_transport_reason"]
         == "provider_bundle_too_large_for_inline_env"
+    )
+
+
+def test_vast_adapter_disables_inline_wam_or_unitree_bundle_when_fetch_url_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_live_gates(tmp_path, monkeypatch)
+    bundle = tmp_path / "wam_bundle.zip"
+    _write_valid_wam_provider_bundle(bundle)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "dry-run",
+        mode="dry-run",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        provider_bundle=bundle,
+        provider_bundle_url="https://bundle.example/wam.zip?token=redacted",
+        provider_output_put_url="https://bundle.example/out.zip?token=redacted",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="wam",
+        vast_launch_mode="ssh_direct",
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["provider_bundle_inline_transport_used"] is False
+    assert (
+        result["provider_bundle_inline_transport_reason"]
+        == "disabled_for_vast_env_size_with_fetch_url"
+    )
+
+    unitree_bundle = tmp_path / "unitree_bundle.zip"
+    _write_valid_unitree_unifolm_provider_bundle(unitree_bundle)
+    unitree_result = run_vast_provider_adapter(
+        job_dir=tmp_path / "unitree-dry-run",
+        mode="dry-run",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        provider_bundle=unitree_bundle,
+        provider_bundle_url="https://bundle.example/unitree.zip?token=redacted",
+        provider_output_put_url="https://bundle.example/unitree-out.zip?token=redacted",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="unitree_unifolm",
+        vast_launch_mode="ssh_direct",
+        session_max_live_minutes=None,
+    )
+
+    assert unitree_result["status"] == "dry_run_ready"
+    assert unitree_result["provider_bundle_inline_transport_used"] is False
+    assert (
+        unitree_result["provider_bundle_inline_transport_reason"]
+        == "disabled_for_vast_env_size_with_fetch_url"
     )
 
 
@@ -500,6 +636,32 @@ def test_wam_provider_output_zip_accepts_wam_runtime_result(tmp_path: Path) -> N
     assert result["runtime_result_status"] == "completed"
 
 
+def test_unitree_unifolm_provider_output_zip_accepts_policy_output(tmp_path: Path) -> None:
+    output_zip = tmp_path / "unitree-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_unifolm_policy_provider_output.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "unitree_unifolm_model_executed": True,
+                    "unitree_unifolm_policy_action_command_ran": True,
+                    "action": {"action_type": "manipulation_contact"},
+                    "blockers": [],
+                }
+            ),
+        )
+
+    result = vpa._inspect_provider_runtime_output_zip(
+        output_zip,
+        expected_video_count=0,
+    )
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == "completed"
+    assert result["video_smoke_proven"] is False
+
+
 def test_request_logs_breaks_on_missing_container_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -574,6 +736,72 @@ def test_request_logs_retries_transient_missing_container_marker(
     assert "BLUEPRINT_VAST_ONSTART_DONE" in (tmp_path / "onstart.log").read_text(
         encoding="utf-8"
     )
+
+
+def test_request_logs_records_api_url_error_without_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_api_json(**_kwargs):  # type: ignore[no-untyped-def]
+        raise urllib.error.URLError("temporary dns failure")
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=99,
+        max_wait_seconds=0,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+    )
+
+    assert result["result_url_present"] is False
+    assert result["output_size_bytes"] == 0
+    assert result["output_fetch_error"].startswith("URLError:")
+    assert result["log_poll_attempts"][0]["api_request_error"].startswith("URLError:")
+    assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
+
+
+def test_request_logs_breaks_on_no_progress_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: "")
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=2,
+    )
+
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["no_progress_timeout_reached"] is True
+    assert result["log_poll_attempts"][-1]["no_progress_timeout_reached"] is True
+    assert result["log_poll_attempts"][-1]["progress_observed"] is False
+    assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
 
 
 def test_vast_adapter_dry_run_writes_required_artifacts(tmp_path: Path) -> None:
@@ -1043,12 +1271,23 @@ def test_vast_adapter_redacts_url_encoded_signed_url_tokens() -> None:
 
     assert "abc+def=" in secrets
     assert "abc%2Bdef%3D" in secrets
-    assert "abc%2Bdef%3D" not in _redact_text(url, secrets)
+    redacted = _redact_text(url, secrets)
+    assert "abc%2Bdef%3D" not in redacted
+    assert redacted == "https://example.invalid/bundle.zip?REDACTED_QUERY"
 
-    s3_url = "https://object.example/bundle.zip?X-Amz-Signature=s3-secret&X-Amz-Date=20260621"
+    s3_url = (
+        "https://object.example/bundle.zip?"
+        "X-Amz-Credential=AKIAEXAMPLE%2F20260621%2Fus-east-1%2Fs3%2Faws4_request"
+        "&X-Amz-Signature=s3-secret&X-Amz-Date=20260621"
+    )
     s3_secrets = _url_secret_values(s3_url)
     assert "s3-secret" in s3_secrets
-    assert "s3-secret" not in _redact_text(s3_url, s3_secrets)
+    assert "AKIAEXAMPLE/20260621/us-east-1/s3/aws4_request" in s3_secrets
+    s3_redacted = _redact_text(s3_url, s3_secrets)
+    assert "s3-secret" not in s3_redacted
+    assert "X-Amz-Credential" not in s3_redacted
+    assert "AKIAEXAMPLE" not in s3_redacted
+    assert s3_redacted == "https://object.example/bundle.zip?REDACTED_QUERY"
 
 
 def test_vast_adapter_mocked_live_heartbeat_gpu_and_teardown(
@@ -1154,6 +1393,198 @@ def test_vast_adapter_mocked_live_heartbeat_gpu_and_teardown(
     persisted = (tmp_path / "vast_provider_adapter_result.json").read_text(encoding="utf-8")
     assert secret not in persisted
     assert (tmp_path / "vast_final_validation.json").is_file()
+
+
+def test_vast_adapter_honors_min_gpu_ram_env_in_offer_selection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_WAM_MIN_GPU_RAM_MB_ENV, "48000")
+    selected_ask_paths: list[str] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 201,
+                        "ask_contract_id": 201,
+                        "gpu_name": "RTX 3090",
+                        "gpu_ram": 24576,
+                        "dph_total": 0.12,
+                        "driver_version": "580.159.03",
+                        "machine_id": 9201,
+                        "num_gpus": 1,
+                        "rentable": True,
+                    },
+                    {
+                        "id": 202,
+                        "ask_contract_id": 202,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram": 49152,
+                        "dph_total": 0.42,
+                        "driver_version": "580.159.03",
+                        "machine_id": 9202,
+                        "num_gpus": 1,
+                        "rentable": True,
+                    },
+                ]
+            }
+        if method == "PUT" and path == "/asks/202/":
+            selected_ask_paths.append(path)
+            return 200, {"success": True, "new_contract": 2020}
+        if method == "PUT" and path == "/asks/201/":
+            raise AssertionError("24GB offer should be excluded by min GPU RAM")
+        if method == "GET" and path == "/instances/2020/":
+            return 200, {"instances": {"actual_status": "running", "cur_state": "running"}}
+        if method == "PUT" and path == "/instances/request_logs/2020":
+            return 200, {"success": True, "result_url": "https://logs.example/min-gpu"}
+        if method == "DELETE" and path == "/instances/2020/":
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        assert url == "https://logs.example/min-gpu"
+        return (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "RTX A6000, 580.159.03, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+        )
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._fetch_text", fake_fetch_text)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda _: None)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "completed"
+    assert selected_ask_paths == ["/asks/202/"]
+    assert result["min_gpu_ram_mb"] == 48000
+    offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
+    assert offer["min_gpu_ram_mb"] == 48000
+    assert offer["selected_offer"]["ask_contract_id"] == 202
+    assert offer["selected_offer"]["gpu_ram_mb"] == 49152
+
+
+def test_vast_adapter_retries_stale_offer_create_before_allocation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    created_paths: list[str] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 301,
+                        "ask_contract_id": 301,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram": 49152,
+                        "dph_total": 0.25,
+                        "driver_version": "580.159.03",
+                        "machine_id": 9301,
+                        "num_gpus": 1,
+                        "rentable": True,
+                    },
+                    {
+                        "id": 302,
+                        "ask_contract_id": 302,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram": 49152,
+                        "dph_total": 0.26,
+                        "driver_version": "580.159.03",
+                        "machine_id": 9302,
+                        "num_gpus": 1,
+                        "rentable": True,
+                    },
+                ]
+            }
+        if method == "PUT" and path == "/asks/301/":
+            created_paths.append(path)
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/asks/301/",
+                410,
+                "gone",
+                {},
+                BytesIO(b"offer no longer available"),
+            )
+        if method == "PUT" and path == "/asks/302/":
+            created_paths.append(path)
+            return 200, {"success": True, "new_contract": 3020}
+        if method == "GET" and path == "/instances/3020/":
+            return 200, {"instances": {"actual_status": "running", "cur_state": "running"}}
+        if method == "PUT" and path == "/instances/request_logs/3020":
+            return 200, {"success": True, "result_url": "https://logs.example/stale-retry"}
+        if method == "DELETE" and path == "/instances/3020/":
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        assert url == "https://logs.example/stale-retry"
+        return (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "RTX A6000, 580.159.03, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+        )
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "completed"
+    assert created_paths == ["/asks/301/", "/asks/302/"]
+    assert result["vast_instance_ids"] == [3020]
+    assert result["excluded_machine_ids"] == [9301]
+    offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
+    assert offer["selected_offer"]["ask_contract_id"] == 302
+    assert offer["create_retry_attempts"][0]["http_status_code"] == 410
+    assert offer["create_retry_attempts"][0]["machine_id"] == 9301
+    assert "offer no longer available" in offer["create_retry_attempts"][0]["error_preview"]
+    teardown = _read_json(tmp_path / "vast_teardown_manifest.json")
+    assert teardown["status"] == "completed"
+    assert teardown["continuing_spend_from_this_run"] is False
 
 
 def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
@@ -1359,6 +1790,35 @@ def test_vast_adapter_prefers_newer_supported_driver_branch() -> None:
     assert selected is not None
     assert selected["ask_contract_id"] == 2
     assert selected["driver_version"] == "580.159.03"
+
+
+def test_vast_adapter_can_require_minimum_gpu_memory() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "RTX 3090",
+                "gpu_ram_mb": 24576,
+                "dph_total": 0.15,
+                "driver_version": "580.159.03",
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "RTX 6000 Ada",
+                "gpu_ram_mb": 49152,
+                "dph_total": 0.82,
+                "driver_version": "580.159.03",
+            },
+        ],
+        max_hourly_rate=1.00,
+        min_gpu_ram_mb=48000,
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+    assert selected["gpu_ram_mb"] == 49152
 
 
 def test_vast_adapter_excludes_avoidlisted_machine_ids() -> None:
@@ -1829,6 +2289,15 @@ def test_vast_adapter_private_helper_edges(
     ) == {
         "extra_env": [["HF_TOKEN", vpa.REDACTED_SECRET_FIELD], ["VISIBLE", "ok"]],
     }
+    assert vpa._redact_runtime_value(
+        {"last_instance_payload": {"jupyter_token": "raw-vast-token", "label": "ok"}},
+        [],
+    ) == {
+        "last_instance_payload": {
+            "jupyter_token": vpa.REDACTED_SECRET_FIELD,
+            "label": "ok",
+        }
+    }
 
     assert vpa._offers_from_response({"offers": {"id": 11}}) == [{"id": 11}]
     assert vpa._offers_from_response({"offers": {"a": {"id": 12}, "bad": []}}) == [
@@ -1899,6 +2368,36 @@ def test_vast_adapter_private_helper_edges(
         ngc_key="secret-ngc",
         mode="always",
     )[1]["reason"] == "non_ngc_image"
+    login, summary = vpa._resolve_image_login(
+        image="docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124-sdpa3",
+        ngc_key="",
+        docker_username="nijelhunt",
+        docker_pat="secret-docker-pat",
+        mode="auto",
+    )
+    assert login == "-u nijelhunt -p secret-docker-pat docker.io"
+    assert summary["reason"] == "docker_hub_image_login_supplied"
+    assert summary["image_login_supplied"] is True
+    assert summary["docker_secret_file_present"] is True
+    missing_login, missing_summary = vpa._resolve_image_login(
+        image="docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124-sdpa3",
+        ngc_key="",
+        docker_username="nijelhunt",
+        docker_pat="",
+        mode="auto",
+    )
+    assert missing_login is None
+    assert missing_summary["reason"] == "docker_pat_missing"
+    assert (
+        vpa._resolve_image_login(
+            image="nvidia/cuda:12.4.1-runtime-ubuntu22.04",
+            ngc_key="",
+            docker_username="nijelhunt",
+            docker_pat="secret-docker-pat",
+            mode="auto",
+        )[1]["reason"]
+        == "non_ngc_image"
+    )
     assert vpa._resolve_image_login(
         image="nvcr.io/private/image:1",
         ngc_key="",
@@ -1931,6 +2430,12 @@ def test_vast_adapter_private_helper_edges(
     assert payload["use_jupyter_lab"] is True
     assert payload["jupyter_dir"] == "/workspace"
     assert payload["image_login"] == "login"
+    summary = vpa._create_request_summary(
+        payload,
+        secret_values=["login", "secret-docker-pat", "secret-ngc"],
+    )
+    assert summary["image_login_supplied"] is True
+    assert summary["raw_payload_redacted"]["image_login"] == vpa.REDACTED_SECRET_FIELD
     template_payload = vpa._create_payload(
         image=None,
         label="label",
@@ -2681,6 +3186,14 @@ def test_vast_adapter_small_provider_helper_edges(
     assert forwarded_env["MY_API_KEY"] == "forwarded-secret"
     assert "SAFE_NAME" not in forwarded_env
     assert vpa._forwarded_secret_values() == ["forwarded-secret"]
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY", "disabled")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL", "true")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OMIT_FPS_ARG", "true")
+    runtime_env = vpa._probe_env(job_dir=tmp_path / "runtime", enable_isaac_smoke=False)
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY"] == "disabled"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL"] == "true"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_OMIT_FPS_ARG"] == "true"
+    assert runtime_env["MY_API_KEY"] == "forwarded-secret"
     payload = vpa._create_payload(
         image="image",
         label="label",
@@ -2724,6 +3237,16 @@ def test_vast_adapter_small_provider_helper_edges(
     assert vpa.VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV in wam_script
     assert "BLUEPRINT_VAST_INLINE_BUNDLE_DECODED" in wam_script
     assert "BLUEPRINT_VAST_INLINE_BUNDLE_SHA256_MISMATCH" in wam_script
+    assert "if [ -x /opt/conda/bin/python ]; then RUNTIME_PY=/opt/conda/bin/python" in wam_script
+    assert "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python" in wam_script
+    unitree_script = vpa._probe_shell_script(
+        "https://heartbeat.example",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="unitree_unifolm",
+    )
+    assert "unitree_unifolm_provider_bundle" in unitree_script
+    assert "run_unitree_unifolm_provider_runtime.sh" in unitree_script
+    assert "unitree_unifolm_policy_provider_output.json" in unitree_script
 
     monkeypatch.setattr(vpa.shutil, "which", lambda name: None if name == "ffprobe" else name)
     missing_video = vpa._ffprobe_video(tmp_path / "missing.mp4")
@@ -2857,6 +3380,31 @@ def test_vast_adapter_small_provider_helper_edges(
     )
     assert inventory["blockers"] == ["vast_prelaunch_inventory_query_failed"]
 
+    inventory_calls = {"count": 0}
+
+    def rate_limited_once_then_passes(**_kwargs):  # type: ignore[no-untyped-def]
+        inventory_calls["count"] += 1
+        if inventory_calls["count"] == 1:
+            raise urllib.error.HTTPError(
+                "https://console.vast.ai/api/v0/instances/",
+                429,
+                "Too Many Requests",
+                {},
+                None,
+            )
+        return 200, {"instances": []}
+
+    monkeypatch.setattr(vpa, "_api_json", rate_limited_once_then_passes)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    retried_inventory = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "inventory-retried",
+        generated_at="2026-06-20T00:00:00Z",
+        api_key="secret",
+    )
+    assert retried_inventory["status"] == "passed"
+    assert retried_inventory["query_attempt_count"] == 2
+    assert inventory_calls["count"] == 2
+
     with pytest.raises(ValueError, match="unsupported_provider_bundle_kind"):
         run_vast_provider_adapter(job_dir=tmp_path / "bad-kind-run", provider_bundle_kind="bad")
 
@@ -2889,6 +3437,116 @@ def test_vast_adapter_request_logs_container_missing_retry(
     assert (tmp_path / "container-missing.log").read_text(encoding="utf-8") == (
         "No such container\n"
     )
+
+
+def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "secret-vast-key"
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text(secret + "\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    monkeypatch.setenv(vpa.VAST_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(vpa.VAST_API_GATE_ENV, "true")
+    monkeypatch.setenv(vpa.VAST_INSTANCE_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(vpa.VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV, "true")
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        calls.append((method, path))
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 101,
+                        "ask_contract_id": 101,
+                        "gpu_name": "RTX 4090",
+                        "dph_total": 0.42,
+                        "num_gpus": 1,
+                        "rentable": True,
+                        "verified": True,
+                    }
+                ]
+            }
+        if method == "PUT" and path == "/asks/101/":
+            return 200, {"success": True, "new_contract": 556}
+        if method == "GET" and path == "/instances/556/":
+            return 200, {"instances": {"actual_status": "running", "cur_state": "running"}}
+        if method == "PUT" and path == "/instances/request_logs/556":
+            return 200, {"success": True, "result_url": "https://logs.example/request"}
+        if method == "PUT" and path == "/instances/command/556/":
+            assert payload is not None
+            assert "BLUEPRINT_VAST_ONSTART_STARTED" in payload["command"]
+            return 200, {"success": True, "result_url": "https://logs.example/execute"}
+        if method == "DELETE" and path == "/instances/556/":
+            return 200, {"success": True, "msg": "Instance destroyed successfully"}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        if url == "https://logs.example/request":
+            return "Error response from daemon: No such container: C.556\n"
+        if url == "https://logs.example/execute":
+            return (
+                "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+                "RTX 4090, 590.48, 24576 MiB\n"
+                "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+    )
+
+    assert result["status"] == "completed"
+    assert ("PUT", "/instances/command/556/") in calls
+    heartbeat = _read_json(tmp_path / "vast_startup_probe_manifest.json")
+    assert heartbeat["status"] == "completed"
+    assert heartbeat["container_log_result"]["effective_log_source"] == "command_execute_fallback"
+    gpu = _read_json(tmp_path / "vast_gpu_sanity_report.json")
+    assert gpu["status"] == "completed"
+
+
+def test_execute_and_fetch_records_api_error_without_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_api_json(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("provider execute temporarily unavailable")
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    result = vpa._execute_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        command="echo hi",
+        output_log_path=tmp_path / "execute.log",
+        secret_values=[],
+        wait_seconds=0,
+    )
+
+    assert result["http_status_code"] == 0
+    assert result["result_url_present"] is False
+    assert "RuntimeError" in result["api_request_error"]
+    assert (tmp_path / "execute.log").is_file()
 
 
 def test_vast_adapter_io_zip_poll_and_validation_edges(
@@ -2947,7 +3605,15 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
     monkeypatch.setattr(
         vpa,
         "_api_json",
-        lambda **_: (200, {"result_url": "https://logs.invalid/result"}),
+        lambda **_: (
+            200,
+            {
+                "result_url": (
+                    "https://logs.invalid/result?"
+                    "X-Amz-Signature=abc123&X-Amz-Credential=credential"
+                )
+            },
+        ),
     )
     monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: "secret output")
     monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
@@ -2960,6 +3626,8 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
         wait_seconds=0,
     )
     assert execute_result["result_url_present"] is True
+    assert execute_result["result_url"] == "https://logs.invalid/result?REDACTED_QUERY"
+    assert "abc123" not in json.dumps(execute_result)
     assert (tmp_path / "execute.log").read_text(encoding="utf-8") == (
         f"{vpa.REDACTED_SECRET} output"
     )
@@ -2973,6 +3641,8 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
         max_wait_seconds=0,
     )
     assert log_result["http_status_code"] == 200
+    assert log_result["result_url"] == "https://logs.invalid/result?REDACTED_QUERY"
+    assert "abc123" not in json.dumps(log_result)
     assert log_result["log_poll_attempts"][0]["success_marker_found"] is False
 
     assert vpa._inspect_provider_runtime_output_zip(None)["status"] == "not_configured"
@@ -3281,9 +3951,12 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
             return 200, {"instances": []}
         if kwargs["method"] == "POST":
-            handler = captured[vpa.signal.SIGTERM]
-            assert callable(handler)
-            handler(vpa.signal.SIGTERM, None)
+            sigint_handler = captured[vpa.signal.SIGINT]
+            sigterm_handler = captured[vpa.signal.SIGTERM]
+            assert callable(sigint_handler)
+            assert callable(sigterm_handler)
+            sigint_handler(vpa.signal.SIGINT, None)
+            sigterm_handler(vpa.signal.SIGTERM, None)
             return 200, {"offers": []}
         raise AssertionError(kwargs)
 
@@ -3297,7 +3970,8 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
     )
     assert ignored["status"] == "blocked"
     signal_manifest = _read_json(tmp_path / "ignored-signal" / "vast_signal_handling_manifest.json")
-    assert signal_manifest["status"] == "ignored_local_sigterm"
+    assert signal_manifest["status"] == "ignored_local_probe_signal"
+    assert signal_manifest["ignored_signal_counts"][str(vpa.signal.SIGINT)] == 1
     assert signal_manifest["ignored_signal_counts"][str(vpa.signal.SIGTERM)] == 1
 
     monkeypatch.delenv("BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN", raising=False)
