@@ -2,6 +2,46 @@
 
 ## 2026-06-22
 
+### User-Facing
+
+- Committed Unitree-native G1 policy lanes through
+  `docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md`, the Unitree LeRobot/UnifoLM/GR00T
+  adapters, and the MuJoCo endpoint evaluation path. The buyer-facing meaning is
+  narrower than "robot ready": Unitree action-command plumbing, endpoint smoke
+  results, and simulator-only MuJoCo artifacts can support Task Evaluation Run
+  review, but they do not prove physical robot readiness, deployment approval,
+  safety validation, or task success without separate accepted evidence.
+- Committed a clearer WAM proof boundary: generated WAM rollouts and generated
+  video success labels are support evidence, while forward/inverse episode
+  consistency now requires a separate scorer output before it can be summarized
+  in `wam_consistency_checks.json`.
+- Recorded June 22 local proof artifacts for Unitree UnifoLM provider import,
+  endpoint replay, and WAM requery attempts in generated `robot_eval_jobs/`
+  directories. Those artifacts show action output and action chunks flowing
+  through endpoint/replay paths, while fresh per-observation Unitree
+  hand/manipulation policy execution remains blocked unless a live
+  Unitree-specific command, server, or provider call runs for the current
+  observation.
+
+### Employee-Facing
+
+- Added CLI entrypoints in `pyproject.toml` for OpenVLA comparison adapters,
+  OSCAR/WAM provider commands and images, Unitree UnifoLM GPU/server/provider
+  smoke paths, Unitree LeRobot runtime, GR00T N1.7 + SONIC preflight/runtime
+  commands, and WAM episode-consistency labeling.
+- Extended provider/runtime scaffolding across RunPod, Vast, OSCAR/Cosmos WAM,
+  Unitree UnifoLM, and endpoint setup code while preserving file/env-secret
+  boundaries and fail-closed runtime gates.
+- Added focused tests for the new adapter, provider, runtime, image, endpoint,
+  startup, and consistency-scorer contracts under `tests/`, matching the June 22
+  code expansion rather than claiming live provider or real-robot proof.
+- Uncommitted local June 22 work in
+  `src/blueprint_pipeline/scene_wam_policy_episode_packet.py` and
+  `tests/test_scene_wam_policy_episode_packet.py` adds MJCF/MuJoCo scene-target
+  inspection, USD-to-MuJoCo visual MJCF fallback rendering, texture export,
+  blank-frame rejection, and renderer content checks for initial policy
+  observations. Treat it as local changelog-worthy state until committed.
+
 ### Future-Agent-Facing
 
 - Added `docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md` and updated README/WAM/manipulation
