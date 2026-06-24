@@ -57,6 +57,10 @@ from .unitree_groot_n17_sonic_policy_runtime import (
     select_unitree_g1_sonic_policy_checkpoint,
     unitree_g1_sonic_checkpoint_provenance,
 )
+from .unitree_groot_n17_sonic_policy_command_adapter import (
+    PROVIDER_OUTPUT_ENV as GROOT_PROVIDER_OUTPUT_ENV,
+    run_unitree_groot_n17_sonic_policy as run_groot_policy_command_adapter,
+)
 from .unitree_groot_n17_sonic_sim2sim_command import (
     run_unitree_groot_n17_sonic_sim2sim,
 )
@@ -156,6 +160,7 @@ EGOCENTRIC_UPPER_BODY_OBSERVATION_POSE = {
 CONTROLLER_BACKENDS = ("auto", "freejoint_proxy", "unitree_rl_gym")
 DEFAULT_CONTROLLER_BACKEND = "auto"
 POLICY_ACTION_MODEL_COMMAND_GATE_ENV = "BLUEPRINT_ALLOW_POLICY_ACTION_MODEL_COMMAND"
+SCENE_WAM_POLICY_EPISODE_PACKET_ENV = "BLUEPRINT_SCENE_WAM_POLICY_EPISODE_PACKET"
 UNITREE_RL_GYM_SAME_SCENE_BACKEND_ID = "unitree_rl_gym_same_scene_lower_body_policy"
 UNITREE_RL_GYM_CONTROLLER_COMMAND_LIMITS = {
     "max_forward_velocity_mps": 0.18,
@@ -1283,7 +1288,8 @@ POLICY_ACTION_MODEL_COMMAND_CANDIDATES = (
             "blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
         ),
         "checkpoint_envs": (N17_CHECKPOINT_ENV,),
-        "extra_required_checkpoint_envs": (SONIC_CHECKPOINT_ENV,),
+        "extra_required_checkpoint_envs": (),
+        "optional_checkpoint_envs": (SONIC_CHECKPOINT_ENV,),
         "source_root_env": GROOT_ROOT_ENV,
         "extra_required_root_envs": (WBC_ROOT_ENV,),
         "runtime_role": "unitree_groot_n17_sonic_policy_action_model",
@@ -1444,6 +1450,20 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
                 blockers.append(f"blocked_missing_{env_name}")
             elif not configured:
                 blockers.append(f"blocked_missing_path_for_{env_name}")
+        optional_checkpoint_rows = []
+        for env_name in spec.get("optional_checkpoint_envs", ()):
+            value = os.getenv(str(env_name), "").strip()
+            configured, path_text, exists, reference_kind = _configured_checkpoint_reference(value)
+            optional_checkpoint_rows.append(
+                {
+                    "checkpoint_env": str(env_name),
+                    "checkpoint_configured": configured,
+                    "checkpoint_exists": exists,
+                    "checkpoint_path": path_text,
+                    "checkpoint_reference_kind": reference_kind,
+                    "required_for_policy_action_admission": False,
+                }
+            )
         source_root_env = _string(spec.get("source_root_env"))
         source_root_value = os.getenv(source_root_env, "").strip() if source_root_env else ""
         source_root_path = Path(source_root_value).expanduser() if source_root_value else None
@@ -1465,6 +1485,17 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
             )
             if value and not exists:
                 blockers.append(f"blocked_missing_path_for_{env_name}")
+        if spec["candidate_id"] == GROOT_POLICY_ID and command_default_applied:
+            explicit_groot_setup = bool(
+                checkpoint_original_value
+                or source_root_value
+                or any(row.get("root_configured") for row in extra_root_rows)
+                or any(row.get("checkpoint_configured") for row in optional_checkpoint_rows)
+            )
+            if not explicit_groot_setup:
+                blockers.append(
+                    "blocked_missing_explicit_unitree_groot_n17_sonic_runtime_configuration"
+                )
         ready = bool(
             command_value
             and command_available
@@ -1509,6 +1540,7 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
                 spec["candidate_id"] == GROOT_POLICY_ID
             ),
             "extra_required_checkpoints": extra_checkpoint_rows,
+            "optional_checkpoints": optional_checkpoint_rows,
             "source_root_env": source_root_env or None,
             "source_root_configured": bool(source_root_value),
             "source_root_path": str(source_root_path) if source_root_path else None,
@@ -1638,6 +1670,46 @@ def _policy_action_command_blockers(
     if status in {"blocked", "failed"} and not response_blockers:
         blockers.append(f"policy_action_model_command_output_{status}")
     return sorted(set(blockers))
+
+
+def _write_blocked_policy_action_model_command_output(
+    output_path: Path,
+    *,
+    generated_at: str,
+    selected_candidate_id: str | None,
+    blockers: Sequence[str],
+    command_result: Mapping[str, Any] | None = None,
+    response_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    blocked_output = {
+        "schema_version": "policy_action_model_command_output.v1",
+        "generated_at": generated_at,
+        "status": "blocked",
+        "selected_candidate_id": selected_candidate_id,
+        "policy_action_model_command_ran": False,
+        "action_payload_present": False,
+        "unitree_policy_action_command_ran": False,
+        "unitree_lerobot_policy_action_command_ran": False,
+        "unitree_unifolm_policy_action_command_ran": False,
+        "unitree_groot_n17_sonic_policy_action_command_ran": False,
+        "unitree_specific_manipulation_candidate_ran": False,
+        "openvla_policy_action_command_ran": False,
+        "blockers": sorted(set(str(item) for item in blockers if str(item))),
+        "command_result": _redact(command_result or {}),
+        "response_redacted": _redact(response_payload or {}),
+        "claim_boundary": {
+            "blocked_output_is_not_model_proof": True,
+            "policy_action_command_is_model_contract_probe_not_wam_rollout": True,
+            "policy_action_command_does_not_prove_task_success": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+    write_json(output_path, blocked_output)
+    return blocked_output
 
 
 def _unitree_policy_action_execution_flags(
@@ -1793,11 +1865,196 @@ def _first_unitree_g1_sonic_state_from_visual_trace(
     return None, None, {}
 
 
+def _scene_wam_policy_episode_packet_candidates(job_dir: Path | None) -> list[Path]:
+    candidates: list[Path] = []
+    env_value = os.getenv(SCENE_WAM_POLICY_EPISODE_PACKET_ENV, "").strip()
+    if env_value:
+        candidates.append(Path(env_value).expanduser())
+    if job_dir is not None:
+        candidates.extend(
+            [
+                job_dir / "scene_wam_policy_episode_packet.json",
+                job_dir / "scene_episode_packet" / "scene_wam_policy_episode_packet.json",
+            ]
+        )
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
+def _resolve_artifact_path(value: Any, *, base_dir: Path) -> Path | None:
+    text = _string(value)
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
+def _scene_policy_task_prompt(
+    *,
+    task_id: str | None,
+    target_object_id: str | None,
+) -> str:
+    task = task_id or "scene manipulation task"
+    target = target_object_id or "the target object"
+    if task == "turn_on_sink_handle":
+        return (
+            "Attempt the simulator-only kitchen task: turn on the sink handle. "
+            f"Use the Unitree G1/SONIC observation to actuate {target}, and return "
+            "a Unitree G1 SONIC-compatible action chunk or control target."
+        )
+    return (
+        f"Attempt the simulator-only scene task '{task}' on target '{target}'. "
+        "Return a Unitree G1 SONIC-compatible action chunk or control target."
+    )
+
+
+def _scene_packet_policy_action_model_input(
+    *,
+    generated_at: str,
+    job_dir: Path | None,
+) -> dict[str, Any] | None:
+    for packet_path in _scene_wam_policy_episode_packet_candidates(job_dir):
+        if not packet_path.is_file():
+            continue
+        try:
+            packet_value = json.loads(packet_path.read_text(encoding="utf-8"))
+            packet = _mapping(packet_value)
+            observation_path = _resolve_artifact_path(
+                packet.get("initial_policy_observation_path"),
+                base_dir=packet_path.parent,
+            ) or (packet_path.parent / "initial_policy_observation.json")
+            if not observation_path.is_file():
+                continue
+            observation_value = json.loads(observation_path.read_text(encoding="utf-8"))
+            observation = _mapping(observation_value)
+        except Exception:
+            continue
+        observation.setdefault("schema_version", "blueprint_policy_observation.v1")
+        frame_path = _resolve_artifact_path(
+            observation.get("camera_frame_path")
+            or _mapping(observation.get("visual_observation")).get("camera_frame_path")
+            or packet.get("initial_policy_observation_frame_path"),
+            base_dir=observation_path.parent,
+        )
+        visual_observation = _mapping(observation.get("visual_observation"))
+        frame_available = bool(frame_path and frame_path.is_file())
+        if frame_path is not None:
+            observation["camera_frame_path"] = str(frame_path)
+            visual_observation["camera_frame_path"] = str(frame_path)
+        visual_observation["available"] = frame_available
+        visual_observation.setdefault(
+            "camera_id",
+            _policy_action_model_frame_camera_id(frame_path) or "head_pov",
+        )
+        visual_observation["first_person_policy_observation_candidate"] = frame_available
+        visual_observation["simulated_camera_view"] = frame_available
+        visual_observation["physical_robot_sensor_proof"] = False
+        visual_observation["blockers"] = [] if frame_available else [
+            "scene_packet_policy_observation_frame_missing"
+        ]
+        observation["visual_observation"] = visual_observation
+        task_id = _string(observation.get("task_id") or packet.get("task_id"))
+        target_object_id = _string(
+            observation.get("target_object_id") or packet.get("target_object_id")
+        )
+        task_prompt = _string(observation.get("task_prompt")) or _scene_policy_task_prompt(
+            task_id=task_id,
+            target_object_id=target_object_id,
+        )
+        observation["task_id"] = task_id or observation.get("task_id")
+        observation["target_object_id"] = target_object_id or observation.get("target_object_id")
+        observation["task_prompt"] = task_prompt
+        observation.setdefault("unitree_g1_sonic_state", _unitree_g1_sonic_contract_probe_state())
+        observation.setdefault(
+            "unitree_g1_sonic_state_source",
+            "scene_packet_contract_probe_zero_state",
+        )
+        observation["scene_wam_policy_episode_packet_path"] = str(packet_path)
+        observation["initial_policy_observation_path"] = str(observation_path)
+        return {
+            "schema_version": "policy_action_model_command_input.v1",
+            "generated_at": generated_at,
+            "robot_profile_id": ROBOT_PROFILE_ID,
+            "observation_schema_id": OBSERVATION_SCHEMA_ID,
+            "action_schema_id": ACTION_SCHEMA_ID,
+            "task_prompt": task_prompt,
+            "observation": observation,
+            "allowed_action_types": [
+                "waypoint",
+                "base_velocity",
+                "stop",
+                "inspect_look",
+                "manipulation_contact",
+                "joint_targets",
+                "action_chunk",
+            ],
+            "scene_wam_policy_episode_packet_path": str(packet_path),
+            "claim_boundary": {
+                "sample_input_is_scene_packet_not_task_success_evidence": True,
+                "visual_frame_is_simulated_mujoco_policy_observation": frame_available,
+                "unitree_g1_sonic_state_is_simulated_observation": True,
+                "unitree_g1_sonic_state_is_contract_probe": (
+                    observation.get("unitree_g1_sonic_state_source")
+                    == "scene_packet_contract_probe_zero_state"
+                ),
+                "task_specific_finetuning_required_for_admission": False,
+                "policy_action_command_does_not_prove_physical_robot_readiness": True,
+            },
+        }
+    return None
+
+
+def _policy_action_scene_task(job_dir: Path) -> dict[str, Any]:
+    input_path = job_dir / "policy_action_model_command_input.json"
+    if not input_path.is_file():
+        return {}
+    try:
+        value = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    packet = _mapping(value)
+    observation = _mapping(packet.get("observation"))
+    return {
+        "task_id": _string(packet.get("task_id") or observation.get("task_id")),
+        "target_object_id": _string(
+            packet.get("target_object_id") or observation.get("target_object_id")
+        ),
+        "scene_wam_policy_episode_packet_path": _string(
+            packet.get("scene_wam_policy_episode_packet_path")
+            or observation.get("scene_wam_policy_episode_packet_path")
+        ),
+    }
+
+
+def _final_success_question_for_scene_task(scene_task: Mapping[str, Any]) -> tuple[str, str | None]:
+    task_id = _string(scene_task.get("task_id"))
+    target_object_id = _string(scene_task.get("target_object_id")).lower()
+    if task_id == "turn_on_sink_handle" or (
+        "sink" in target_object_id and "handle" in target_object_id
+    ):
+        return "Did the sink handle end up turned on?", "sink_handle_turned_on"
+    return "Did the object/tote end up correctly placed?", None
+
+
 def _sample_policy_action_model_input(
     *,
     generated_at: str,
     job_dir: Path | None = None,
 ) -> dict[str, Any]:
+    scene_packet_input = _scene_packet_policy_action_model_input(
+        generated_at=generated_at,
+        job_dir=job_dir,
+    )
+    if scene_packet_input is not None:
+        return scene_packet_input
     frame_path = None
     if job_dir is not None:
         frame_candidates = _policy_action_model_frame_candidates(job_dir)
@@ -1899,6 +2156,39 @@ def _openvla_policy_execution_proof(payload: Mapping[str, Any]) -> tuple[dict[st
     return proof, blockers
 
 
+def _groot_provider_replay_command_result(
+    *,
+    candidate: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    started: float,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if str(candidate.get("candidate_id") or "") != GROOT_POLICY_ID:
+        return None
+    provider_output = _string(os.getenv(GROOT_PROVIDER_OUTPUT_ENV))
+    if not provider_output:
+        return None
+    response_payload, exit_code = run_groot_policy_command_adapter(
+        payload=payload,
+        command=None,
+        n17_checkpoint=None,
+        sonic_checkpoint=None,
+        provider_output=Path(provider_output).expanduser(),
+    )
+    command_result = {
+        "status": "completed" if exit_code == 0 else "blocked",
+        "returncode": exit_code,
+        "duration_seconds": round(time.monotonic() - started, 6),
+        "stdout_size_bytes": 0,
+        "stderr_size_bytes": 0,
+        "stderr_omitted_to_avoid_secret_leakage": False,
+        "provider_output_replay_short_circuited": True,
+        "blockers": []
+        if exit_code == 0
+        else _policy_action_command_blockers({"status": "blocked"}, response_payload),
+    }
+    return command_result, response_payload
+
+
 def run_policy_action_model_command_contract(
     *,
     job_dir: Path,
@@ -1910,13 +2200,16 @@ def run_policy_action_model_command_contract(
     write_json(job_dir / "policy_action_model_command_discovery.json", discovery)
     input_path = job_dir / "policy_action_model_command_input.json"
     output_path = job_dir / "policy_action_model_command_output.json"
+    sample_input = _sample_policy_action_model_input(generated_at=generated_at, job_dir=job_dir)
     write_json(
         input_path,
-        _sample_policy_action_model_input(generated_at=generated_at, job_dir=job_dir),
+        sample_input,
     )
     ready_candidates = sorted(
         [
-        row for row in discovery["candidates"] if row.get("ready_for_policy_action_command")
+            row
+            for row in discovery["candidates"]
+            if row.get("ready_for_policy_action_command")
         ],
         key=lambda row: (
             row.get("candidate_id") != discovery.get("selected_candidate_id"),
@@ -1936,31 +2229,12 @@ def run_policy_action_model_command_contract(
     if not ready_candidates:
         blockers.extend(discovery.get("blockers", []))
     if blockers:
-        blocked_output = {
-            "schema_version": "policy_action_model_command_output.v1",
-            "generated_at": generated_at,
-            "status": "blocked",
-            "selected_candidate_id": discovery.get("selected_candidate_id"),
-            "policy_action_model_command_ran": False,
-            "action_payload_present": False,
-            "unitree_policy_action_command_ran": False,
-            "unitree_lerobot_policy_action_command_ran": False,
-            "unitree_unifolm_policy_action_command_ran": False,
-            "unitree_groot_n17_sonic_policy_action_command_ran": False,
-            "unitree_specific_manipulation_candidate_ran": False,
-            "openvla_policy_action_command_ran": False,
-            "blockers": sorted(set(blockers)),
-            "claim_boundary": {
-                "blocked_output_is_not_model_proof": True,
-                "policy_action_command_is_model_contract_probe_not_wam_rollout": True,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "safety_validation_proven": False,
-            },
-            "raw_credentials_written_to_artifacts": False,
-            "secret_hashes_written_to_artifacts": False,
-        }
-        write_json(output_path, blocked_output)
+        _write_blocked_policy_action_model_command_output(
+            output_path,
+            generated_at=generated_at,
+            selected_candidate_id=_string(discovery.get("selected_candidate_id")),
+            blockers=blockers,
+        )
         result = {
             "schema_version": "policy_action_model_command_execution.v1",
             "generated_at": generated_at,
@@ -2012,45 +2286,54 @@ def run_policy_action_model_command_contract(
         env[POLICY_SERVER_URL_ENV] = "tcp://127.0.0.1:5550"
     command_result: dict[str, Any]
     payload: dict[str, Any] = {}
-    try:
-        completed = subprocess.run(
-            shlex.split(command),
-            cwd=str(job_dir),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
-        command_result = {
-            "status": "completed" if completed.returncode == 0 else "blocked",
-            "returncode": completed.returncode,
-            "duration_seconds": round(time.monotonic() - started, 6),
-            "stdout_size_bytes": len(completed.stdout or ""),
-            "stderr_size_bytes": len(completed.stderr or ""),
-            "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
-            "blockers": []
-            if completed.returncode == 0
-            else ["policy_action_model_command_nonzero_exit"],
-        }
-        if output_path.is_file():
-            value = json.loads(output_path.read_text(encoding="utf-8"))
-            payload = dict(value) if isinstance(value, Mapping) else {}
-        elif completed.stdout.strip():
-            value = json.loads(completed.stdout)
-            payload = dict(value) if isinstance(value, Mapping) else {}
-        if _string(payload.get("status")) in {"blocked", "failed"}:
-            command_result["status"] = "blocked"
-            command_result["blockers"] = _policy_action_command_blockers(
-                command_result,
-                payload,
+    replay_result = _groot_provider_replay_command_result(
+        candidate=selected,
+        payload=sample_input,
+        started=started,
+    )
+    if replay_result is not None:
+        command_result, payload = replay_result
+        write_json(output_path, payload)
+    else:
+        try:
+            completed = subprocess.run(
+                shlex.split(command),
+                cwd=str(job_dir),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_seconds,
             )
-    except Exception as exc:
-        command_result = {
-            "status": "blocked",
-            "duration_seconds": round(time.monotonic() - started, 6),
-            "blockers": [f"policy_action_model_command_failed:{type(exc).__name__}"],
-        }
+            command_result = {
+                "status": "completed" if completed.returncode == 0 else "blocked",
+                "returncode": completed.returncode,
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "stdout_size_bytes": len(completed.stdout or ""),
+                "stderr_size_bytes": len(completed.stderr or ""),
+                "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
+                "blockers": []
+                if completed.returncode == 0
+                else ["policy_action_model_command_nonzero_exit"],
+            }
+            if output_path.is_file():
+                value = json.loads(output_path.read_text(encoding="utf-8"))
+                payload = dict(value) if isinstance(value, Mapping) else {}
+            elif completed.stdout.strip():
+                value = json.loads(completed.stdout)
+                payload = dict(value) if isinstance(value, Mapping) else {}
+            if _string(payload.get("status")) in {"blocked", "failed"}:
+                command_result["status"] = "blocked"
+                command_result["blockers"] = _policy_action_command_blockers(
+                    command_result,
+                    payload,
+                )
+        except Exception as exc:
+            command_result = {
+                "status": "blocked",
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "blockers": [f"policy_action_model_command_failed:{type(exc).__name__}"],
+            }
     action_payload = _policy_action_payload(payload)
     action_present = isinstance(action_payload, Mapping)
     if command_result.get("status") == "completed" and not action_present:
@@ -2064,6 +2347,17 @@ def run_policy_action_model_command_contract(
             command_result["blockers"] = openvla_blockers
     ran = command_result.get("status") == "completed"
     selected_candidate_id = str(selected["candidate_id"])
+    if not output_path.is_file():
+        if payload:
+            write_json(output_path, payload)
+        else:
+            _write_blocked_policy_action_model_command_output(
+                output_path,
+                generated_at=generated_at,
+                selected_candidate_id=selected_candidate_id,
+                blockers=command_result.get("blockers", []),
+                command_result=command_result,
+            )
     unitree_execution_flags = _unitree_policy_action_execution_flags(
         ran=ran,
         selected_candidate_id=selected_candidate_id,
@@ -2162,52 +2456,72 @@ def _execute_policy_action_model_candidate(
     }
     command_result: dict[str, Any]
     response_payload: dict[str, Any] = {}
-    try:
-        completed = subprocess.run(
-            shlex.split(command),
-            cwd=str(job_dir),
-            env=env,
-            input=json.dumps(dict(payload)),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
-        command_result = {
-            "status": "completed" if completed.returncode == 0 else "blocked",
-            "returncode": completed.returncode,
-            "duration_seconds": round(time.monotonic() - started, 6),
-            "stdout_size_bytes": len(completed.stdout or ""),
-            "stderr_size_bytes": len(completed.stderr or ""),
-            "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
-            "blockers": []
-            if completed.returncode == 0
-            else ["policy_action_model_command_nonzero_exit"],
-        }
-        if output_path.is_file():
-            value = json.loads(output_path.read_text(encoding="utf-8"))
-            response_payload = dict(value) if isinstance(value, Mapping) else {}
-        elif completed.stdout.strip():
-            value = json.loads(completed.stdout)
-            response_payload = dict(value) if isinstance(value, Mapping) else {}
-        if _string(response_payload.get("status")) in {"blocked", "failed"}:
-            command_result["status"] = "blocked"
-            command_result["blockers"] = _policy_action_command_blockers(
-                command_result,
-                response_payload,
+    replay_result = _groot_provider_replay_command_result(
+        candidate=candidate,
+        payload=dict(payload),
+        started=started,
+    )
+    if replay_result is not None:
+        command_result, response_payload = replay_result
+        write_json(output_path, response_payload)
+    else:
+        try:
+            completed = subprocess.run(
+                shlex.split(command),
+                cwd=str(job_dir),
+                env=env,
+                input=json.dumps(dict(payload)),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_seconds,
             )
-    except Exception as exc:
-        command_result = {
-            "status": "blocked",
-            "duration_seconds": round(time.monotonic() - started, 6),
-            "blockers": [f"policy_action_model_command_failed:{type(exc).__name__}"],
-        }
+            command_result = {
+                "status": "completed" if completed.returncode == 0 else "blocked",
+                "returncode": completed.returncode,
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "stdout_size_bytes": len(completed.stdout or ""),
+                "stderr_size_bytes": len(completed.stderr or ""),
+                "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
+                "blockers": []
+                if completed.returncode == 0
+                else ["policy_action_model_command_nonzero_exit"],
+            }
+            if output_path.is_file():
+                value = json.loads(output_path.read_text(encoding="utf-8"))
+                response_payload = dict(value) if isinstance(value, Mapping) else {}
+            elif completed.stdout.strip():
+                value = json.loads(completed.stdout)
+                response_payload = dict(value) if isinstance(value, Mapping) else {}
+            if _string(response_payload.get("status")) in {"blocked", "failed"}:
+                command_result["status"] = "blocked"
+                command_result["blockers"] = _policy_action_command_blockers(
+                    command_result,
+                    response_payload,
+                )
+        except Exception as exc:
+            command_result = {
+                "status": "blocked",
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "blockers": [f"policy_action_model_command_failed:{type(exc).__name__}"],
+            }
     action_payload = _policy_action_payload(response_payload)
     action_present = isinstance(action_payload, Mapping)
     ran = bool(command_result.get("status") == "completed" and action_present)
     if command_result.get("status") == "completed" and not action_present:
         command_result["status"] = "blocked"
         command_result["blockers"] = ["policy_action_model_command_missing_action_payload"]
+    if not output_path.is_file():
+        if response_payload:
+            write_json(output_path, response_payload)
+        else:
+            _write_blocked_policy_action_model_command_output(
+                output_path,
+                generated_at=utc_now_iso(),
+                selected_candidate_id=selected_candidate_id,
+                blockers=command_result.get("blockers", []),
+                command_result=command_result,
+            )
     unitree_execution_flags = _unitree_policy_action_execution_flags(
         ran=ran,
         selected_candidate_id=selected_candidate_id,
@@ -8288,15 +8602,61 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             },
         },
     )
+    backend_failure_labels: list[dict[str, Any]] = []
+    if not policy_action_model_command_execution.get("policy_action_model_command_ran"):
+        backend_failure_labels.append(
+            {
+                "label_id": f"failure_{len(failure_labels) + len(backend_failure_labels) + 1:04d}",
+                "attempt_id": "policy_action_model_command",
+                "failure_label_ids": [
+                    "blocked_policy_action_model_command_not_run",
+                    *[
+                        str(blocker)
+                        for blocker in policy_action_model_command_execution.get("blockers", [])
+                    ],
+                ],
+                "status": "blocked",
+                "review_required": True,
+                "claim_boundary": {
+                    "backend_blocker_label_not_task_success_score": True,
+                    "physical_robot_readiness_proven": False,
+                    "deployment_readiness_proven": False,
+                },
+            }
+        )
+    if robot_policy_wam_closed_loop_attempt.get("status") == "blocked":
+        backend_failure_labels.append(
+            {
+                "label_id": f"failure_{len(failure_labels) + len(backend_failure_labels) + 1:04d}",
+                "attempt_id": "robot_policy_wam_closed_loop",
+                "failure_label_ids": [
+                    "blocked_robot_policy_wam_closed_loop",
+                    *[
+                        str(blocker)
+                        for blocker in robot_policy_wam_closed_loop_attempt.get("blockers", [])
+                    ],
+                ],
+                "status": "blocked",
+                "review_required": True,
+                "claim_boundary": {
+                    "backend_blocker_label_not_task_success_score": True,
+                    "wam_evaluator_is_not_robot_policy": True,
+                    "physical_robot_readiness_proven": False,
+                    "deployment_readiness_proven": False,
+                },
+            }
+        )
+    all_failure_labels = failure_labels + backend_failure_labels
     write_json(
         job_dir / "failure_labels.json",
         {
             "schema_version": "mujoco_g1_wam_vla_failure_labels.v1",
             "generated_at": generated_at,
-            "status": "review_required" if failure_labels else "no_failures_labeled",
-            "label_count": len(failure_labels),
-            "labels": failure_labels,
-            "failed_or_blocked_attempt_count": len(failure_labels),
+            "status": "review_required" if all_failure_labels else "no_failures_labeled",
+            "label_count": len(all_failure_labels),
+            "backend_blocker_label_count": len(backend_failure_labels),
+            "labels": all_failure_labels,
+            "failed_or_blocked_attempt_count": len(all_failure_labels),
         },
     )
     write_json(
@@ -9266,6 +9626,28 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         job_dir / "unitree_generated_rollout_review_manifest.json",
         unitree_generated_rollout_review_manifest,
     )
+    write_json(
+        job_dir / "video_review_status.json",
+        {
+            "schema_version": "video_review_status.v1",
+            "generated_at": generated_at,
+            "status": unitree_generated_rollout_review_manifest["status"],
+            "source_manifest": str(job_dir / "unitree_generated_rollout_review_manifest.json"),
+            "selected_review_video_count": len(selected_review_videos),
+            "generated_videos_decode_valid_for_review": generated_videos_decode_valid_for_review,
+            "generated_rollout_visually_useful_for_success_review": (
+                generated_rollout_visually_useful
+            ),
+            "blockers": list(unitree_generated_rollout_review_manifest.get("blockers", [])),
+            "claim_boundary": {
+                "video_review_is_not_task_success_proof": True,
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+                "safety_validation_proven": False,
+                "real_world_manipulation_success_proven": False,
+            },
+        },
+    )
     final_success_policy_command_ran = bool(
         policy_action_model_command_execution.get("unitree_manipulation_policy_action_command_ran")
         or unitree_endpoint_fresh_policy_action_command_ran
@@ -9309,12 +9691,21 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         final_success_blockers.append(
             "blocked_policy_action_chunk_not_integrated_into_successful_contact_rollout"
         )
+    scene_task = _policy_action_scene_task(job_dir)
+    final_success_question, scene_task_success_field = _final_success_question_for_scene_task(
+        scene_task
+    )
     final_success_judge = {
         "schema_version": "final_success_judge.v1",
         "generated_at": generated_at,
         "status": "completed" if final_success_policy_command_ran else "blocked",
-        "final_question": "Did the object/tote end up correctly placed?",
+        "final_question": final_success_question,
         "answer": "yes" if final_success_policy_chunk_integrated_into_contact_rollout else "not_proven",
+        "scene_task_id": scene_task.get("task_id") or None,
+        "scene_target_object_id": scene_task.get("target_object_id") or None,
+        "scene_wam_policy_episode_packet_path": (
+            scene_task.get("scene_wam_policy_episode_packet_path") or None
+        ),
         "object_or_tote_correctly_placed": bool(
             final_success_policy_chunk_integrated_into_contact_rollout
         ),
@@ -9393,6 +9784,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "real_world_manipulation_success_proven": False,
         },
     }
+    if scene_task_success_field:
+        final_success_judge[scene_task_success_field] = bool(
+            final_success_policy_chunk_integrated_into_contact_rollout
+        )
     write_json(job_dir / "final_success_judge.json", final_success_judge)
     write_json(
         job_dir / "claim_boundary.json",

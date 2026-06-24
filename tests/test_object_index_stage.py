@@ -184,6 +184,15 @@ def test_object_index_basic_file_keyframe_and_prompt_helpers(
             {"timestamp": 9.0, "rotationRate": {"x": 99}},
         ],
     ) == 7.0
+    prompt_bank = oi._build_prompt_bank(
+        _descriptor(),
+        {"taskSteps": ["turn on the sink right handle"]},
+        {},
+        "kitchen",
+    )
+    assert "sink right handle" in prompt_bank["task_specific"]
+    assert "right handle" in prompt_bank["task_specific"]
+    assert "water stream" in prompt_bank["task_specific"]
 
     raw_root = tmp_path / "capture" / "raw"
     arkit_root = raw_root / "arkit"

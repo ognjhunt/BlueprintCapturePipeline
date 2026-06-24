@@ -104,6 +104,11 @@ Artifact families and advisory downstream outputs:
 - `simulation_automation/cpu_scene_proxy_manifest.json`
 - `simulation_automation/cpu_preflight_scorecard.json`
 - `simulation_automation/task_anchor_proposal_manifest.json`
+- `simulation_automation/eval_ready_task_grounding.json`
+- `simulation_automation/camera_calibration_quality_gate.json`
+- `simulation_automation/robot_fk_projection_manifest.json`
+- `simulation_automation/robot_fk_projected_skeleton_trace.jsonl`
+- `simulation_automation/handle_proxy_state_check.json`
 - `simulation_automation/episode_spec.v1.json`
 - `simulation_automation/episode_specs.json`
 - `simulation_automation/episode_spec_manifest.json`
@@ -186,6 +191,18 @@ Artifact families and advisory downstream outputs:
   episode-consistency scorer command runs
 - `robot_eval_jobs/<job_id>/wam_consistency_checks.json` when WAM/substrate
   evaluation is requested
+- `robot_eval_jobs/<job_id>/eval_ready_task_grounding.json` when WAM/substrate
+  evaluation consumes eval-ready task grounding
+- `robot_eval_jobs/<job_id>/camera_calibration_quality_gate.json` when
+  WAM/substrate evaluation consumes eval-ready task grounding
+- `robot_eval_jobs/<job_id>/robot_fk_projection_manifest.json` when
+  WAM/substrate evaluation consumes eval-ready task grounding
+- `robot_eval_jobs/<job_id>/robot_fk_projected_skeleton_trace.jsonl` when
+  WAM/substrate evaluation consumes eval-ready task grounding
+- `robot_eval_jobs/<job_id>/handle_proxy_state_check.json` when WAM/substrate
+  evaluation consumes eval-ready task grounding
+- `robot_eval_jobs/<job_id>/wam_prediction_outcome_correlation_ledger.json`
+  when WAM/substrate evaluation is requested
 - `robot_eval_jobs/<job_id>/policy_ranking_scorecard.json` when WAM/substrate
   evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_eval_claim_boundary.json` when WAM/substrate
@@ -874,6 +891,16 @@ failure-label, policy-ranking scorecard, claim-boundary, and real-world
 validation follow-up artifacts. It performs no live provider calls and does not
 prove physical robot readiness, deployment approval, safety approval, public
 readiness, or customer-specific SRCC.
+
+When `eval_ready_task_grounding.json` is present, the OSCAR/Cosmos WAM evaluator
+copies it into the job directory, enriches task prompts with the selected
+task-object target, attaches the camera calibration quality gate, consumes the
+robot FK/projected-skeleton trace as action-conditioning support, records the
+lightweight articulated-object proxy check, and writes
+`wam_prediction_outcome_correlation_ledger.json`. These files ground and audit
+the learned rollout, but they stay support artifacts: calibration gates,
+projected skeletons, VLM labels, and handle proxies do not prove physical
+contact, torque, safety, deployment approval, or real-world task success.
 
 Forward/inverse episode consistency is a separate scorer layer, not a property
 claimed by WAM execution or by the evaluator itself. The OSCAR/Cosmos WAM

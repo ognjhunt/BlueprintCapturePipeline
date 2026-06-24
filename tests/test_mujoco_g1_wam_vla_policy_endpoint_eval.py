@@ -426,6 +426,113 @@ Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload
     assert (job_dir / "policy_action_model_command_execution.json").is_file()
 
 
+def test_policy_action_model_timeout_writes_blocked_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
+        "BLUEPRINT_REALISTIC_G1_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+        "BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT",
+        "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND",
+        "BLUEPRINT_UNITREE_UNIFOLM_WMA_CHECKPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    job_dir = tmp_path / "policy-action-timeout"
+    frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "step_000000.jpg").write_bytes(b"fake-jpeg")
+    command = tmp_path / "slow_policy_command.py"
+    command.write_text("import time\ntime.sleep(10)\n", encoding="utf-8")
+    checkpoint = tmp_path / "unitree-g1-policy.pt"
+    checkpoint.write_text("weights", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_POLICY_COMMAND", f"{sys.executable} {command}")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_POLICY_CHECKPOINT", str(checkpoint))
+    monkeypatch.setenv(lane.POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "true")
+
+    execution = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=True,
+        timeout_seconds=0.1,
+    )
+
+    output = json.loads(
+        (job_dir / "policy_action_model_command_output.json").read_text(encoding="utf-8")
+    )
+    assert execution["status"] == "blocked"
+    assert execution["selected_candidate_id"] == "unitree_g1_policy"
+    assert execution["policy_action_model_command_ran"] is False
+    assert "policy_action_model_command_failed:TimeoutExpired" in execution["blockers"]
+    assert output["status"] == "blocked"
+    assert output["policy_action_model_command_ran"] is False
+    assert output["action_payload_present"] is False
+    assert "policy_action_model_command_failed:TimeoutExpired" in output["blockers"]
+    assert output["claim_boundary"]["blocked_output_is_not_model_proof"] is True
+
+
+def test_policy_action_model_input_uses_scene_wam_episode_packet(tmp_path: Path) -> None:
+    job_dir = tmp_path / "scene-policy-action"
+    job_dir.mkdir()
+    frame = job_dir / "rendered_observations" / "kitchen_head_pov.jpg"
+    frame.parent.mkdir()
+    frame.write_bytes(b"fake-jpeg")
+    observation = {
+        "schema_version": "scene_wam_policy_initial_observation.v1",
+        "task_id": "turn_on_sink_handle",
+        "target_object_id": "Sink054_handle",
+        "camera_frame_path": str(frame),
+        "visual_observation": {
+            "available": True,
+            "camera_frame_path": str(frame),
+            "camera_id": "head_pov",
+        },
+        "state": {"target_object_id": "Sink054_handle"},
+    }
+    observation_path = job_dir / "initial_policy_observation.json"
+    observation_path.write_text(json.dumps(observation), encoding="utf-8")
+    packet_path = job_dir / "scene_wam_policy_episode_packet.json"
+    packet_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "scene_wam_policy_episode_packet.v1",
+                "task_id": "turn_on_sink_handle",
+                "target_object_id": "Sink054_handle",
+                "initial_policy_observation_path": str(observation_path),
+                "initial_policy_observation_frame_path": str(frame),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sample = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+
+    assert sample["scene_wam_policy_episode_packet_path"] == str(packet_path)
+    assert sample["observation"]["task_id"] == "turn_on_sink_handle"
+    assert sample["observation"]["target_object_id"] == "Sink054_handle"
+    assert sample["observation"]["camera_frame_path"] == str(frame)
+    assert sample["observation"]["visual_observation"]["available"] is True
+    assert "sink handle" in sample["task_prompt"]
+    assert sample["claim_boundary"]["task_specific_finetuning_required_for_admission"] is False
+    (job_dir / "policy_action_model_command_input.json").write_text(
+        json.dumps(sample),
+        encoding="utf-8",
+    )
+    scene_task = lane._policy_action_scene_task(job_dir)
+    final_question, success_field = lane._final_success_question_for_scene_task(scene_task)
+    assert final_question == "Did the sink handle end up turned on?"
+    assert success_field == "sink_handle_turned_on"
+
+
 def test_unitree_lerobot_policy_action_model_can_drive_wam_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -789,7 +896,9 @@ def test_groot_sonic_repo_id_checkpoints_are_configured_policy_action_references
     assert row["checkpoint_configured"] is True
     assert row["checkpoint_exists"] is False
     assert row["checkpoint_reference_kind"] == "repo_id"
-    assert row["extra_required_checkpoints"][0]["checkpoint_reference_kind"] == "repo_id"
+    assert row["extra_required_checkpoints"] == []
+    assert row["optional_checkpoints"][0]["checkpoint_reference_kind"] == "repo_id"
+    assert row["optional_checkpoints"][0]["required_for_policy_action_admission"] is False
 
 
 def test_groot_sonic_base_n17_repo_id_uses_default_experimental_checkpoint(
@@ -2396,6 +2505,11 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
         )
     )
     assert unitree_review["status"] == "not_applicable_no_unitree_policy_rollout"
+    video_review_status = json.loads(
+        (tmp_path / "render-job" / "video_review_status.json").read_text(encoding="utf-8")
+    )
+    assert video_review_status["status"] == "not_applicable_no_unitree_policy_rollout"
+    assert video_review_status["claim_boundary"]["video_review_is_not_task_success_proof"] is True
     selection_manifest = json.loads(
         (tmp_path / "render-job" / "review_video_selection_manifest.json").read_text(
             encoding="utf-8"

@@ -84,6 +84,7 @@ blueprint-backfill-site-reference-db = "blueprint_pipeline.site_reference_backfi
 blueprint-run-city-launch-harness = "blueprint_pipeline.city_launch_autonomy_harness:main"
 blueprint-build-robot-eval-dataset = "blueprint_pipeline.robot_eval_dataset:main"
 blueprint-run-simulation-automation = "blueprint_pipeline.simulation_automation:main"
+blueprint-build-eval-ready-task-grounding = "blueprint_pipeline.eval_ready_task_grounding:main"
 blueprint-run-site-eval-director = "blueprint_pipeline.site_eval_director:main"
 blueprint-run-robot-eval-job = "blueprint_pipeline.robot_eval_job_orchestrator:main"
 blueprint-run-robot-eval-worker = "blueprint_pipeline.robot_eval_worker:main"

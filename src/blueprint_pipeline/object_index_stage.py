@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from .capture_enrichment_llm import build_capture_enrichment_runner
 from .capture_bridge import CaptureDescriptor
 from .common import join_gs_uri, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
+from .eval_ready_task_grounding import derive_task_aware_detection_prompts
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest
 from .local_capture import resolve_local_capture_context
 from .world_model_policy import WorldModelPolicy, build_output_linkage, build_provenance_record
@@ -451,6 +452,28 @@ def _build_prompt_bank(descriptor: CaptureDescriptor, intake: Mapping[str, Any],
     )
     joined = " ".join(text_fields).lower()
     task_specific: List[str] = []
+    target_label = str(
+        descriptor.metadata.get("target_label")
+        or descriptor.metadata.get("target_object")
+        or intake.get("targetLabel")
+        or intake.get("target_label")
+        or ""
+    )
+    explicit_task_text = " ".join(_string_list(intake.get("taskSteps"), intake.get("task_steps"))).lower()
+    fallback_task_text = " ".join(
+        _string_list(
+            descriptor.metadata.get("task_statement"),
+            descriptor.metadata.get("workflow_context"),
+            intake.get("workflowName"),
+        )
+    ).lower()
+    task_aware = derive_task_aware_detection_prompts(
+        task_text=explicit_task_text or fallback_task_text or joined,
+        target_label=target_label,
+    )
+    for prompt in task_aware:
+        if prompt not in task_specific:
+            task_specific.append(prompt)
     for token, prompts in _TASK_KEYWORD_PROMPTS.items():
         if token in joined:
             for prompt in prompts:

@@ -44,6 +44,7 @@ WAM_SUCCESS_LABEL_COMMAND_OUTPUT = "wam_success_labels.command.json"
 WAM_CONSISTENCY_GATE_ENV = "BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING"
 WAM_CONSISTENCY_COMMAND_ENV = "BLUEPRINT_WAM_EPISODE_CONSISTENCY_COMMAND"
 WAM_CONSISTENCY_COMMAND_OUTPUT = "wam_episode_consistency.command.json"
+EVAL_READY_TASK_GROUNDING_ENV = "BLUEPRINT_EVAL_READY_TASK_GROUNDING"
 EGOCENTRIC_WAM_INPUT_CAMERAS = ("head_pov", "torso_pov", "robot_pov")
 DIAGNOSTIC_REVIEW_CAMERAS = ("third_person", "robot_follow", "overhead")
 
@@ -514,6 +515,216 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     )
 
 
+def _eval_ready_grounding_candidates(input_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    env_path = _string(os.getenv(EVAL_READY_TASK_GROUNDING_ENV))
+    if env_path:
+        candidates.append(Path(env_path).expanduser())
+    candidates.extend(
+        [
+            input_dir / "eval_ready_task_grounding.json",
+            input_dir / "simulation_automation" / "eval_ready_task_grounding.json",
+            input_dir / "pipeline" / "simulation_automation" / "eval_ready_task_grounding.json",
+            input_dir.parent / "simulation_automation" / "eval_ready_task_grounding.json",
+            input_dir.parent / "pipeline" / "simulation_automation" / "eval_ready_task_grounding.json",
+            input_dir.parent.parent / "pipeline" / "simulation_automation" / "eval_ready_task_grounding.json",
+        ]
+    )
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(candidate)
+    return deduped
+
+
+def _load_eval_ready_task_grounding(input_dir: Path) -> tuple[dict[str, Any], Path | None]:
+    for candidate in _eval_ready_grounding_candidates(input_dir):
+        payload = _load_json(candidate)
+        if payload.get("schema_version") == "eval_ready_task_grounding.v1":
+            return payload, candidate
+    return {}, None
+
+
+def _grounding_artifact_path(grounding: Mapping[str, Any], key: str) -> Path | None:
+    artifacts = _mapping(grounding.get("generated_artifacts"))
+    value = _string(artifacts.get(key))
+    if not value:
+        nested = _mapping(grounding.get(key))
+        value = _string(nested.get("path"))
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    return path if path.is_file() else None
+
+
+def _copy_grounding_support_artifacts(
+    *,
+    grounding: Mapping[str, Any],
+    grounding_path: Path | None,
+    output_dir: Path,
+) -> dict[str, Any]:
+    copied: dict[str, Any] = {}
+    if grounding_path is not None and grounding_path.is_file():
+        target = output_dir / "eval_ready_task_grounding.json"
+        if grounding_path.resolve() != target.resolve():
+            shutil.copyfile(grounding_path, target)
+        copied["eval_ready_task_grounding"] = str(target)
+    for key, filename in (
+        ("camera_calibration_quality_gate", "camera_calibration_quality_gate.json"),
+        ("robot_fk_projection_manifest", "robot_fk_projection_manifest.json"),
+        ("robot_fk_projected_skeleton_trace", "robot_fk_projected_skeleton_trace.jsonl"),
+        ("handle_proxy_state_check", "handle_proxy_state_check.json"),
+    ):
+        source = _grounding_artifact_path(grounding, key)
+        if source is None:
+            continue
+        target = output_dir / filename
+        if source.resolve() != target.resolve():
+            shutil.copyfile(source, target)
+        copied[key] = str(target)
+    return copied
+
+
+def _grounding_enriched_task_prompts(
+    *,
+    matrix_runs: Sequence[Mapping[str, Any]],
+    grounding: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    task = _mapping(grounding.get("task"))
+    target_prompts = _string_list(task.get("target_prompts_for_object_index_backends"))
+    selected_target = _mapping(grounding.get("selected_task_target"))
+    success_check_plan = _mapping(grounding.get("success_check_plan"))
+    grounding_task_text = _string(task.get("task_text"))
+    grounding_task_id = _string(task.get("task_id"))
+    rows: list[dict[str, Any]] = []
+    for run in matrix_runs:
+        task_prompt = _string(run.get("task_prompt")) or grounding_task_text
+        rows.append(
+            {
+                "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+                "task_id": run.get("task_id") or grounding_task_id,
+                "spawn_id": run.get("spawn_id"),
+                "task_prompt": task_prompt,
+                "eval_ready_task_grounding_used": bool(grounding),
+                "target_prompts": target_prompts,
+                "selected_task_target": selected_target or None,
+                "success_check_plan": success_check_plan or None,
+            }
+        )
+    if not rows and grounding:
+        rows.append(
+            {
+                "scenario_eval_run_id": None,
+                "task_id": grounding_task_id,
+                "spawn_id": None,
+                "task_prompt": grounding_task_text,
+                "eval_ready_task_grounding_used": True,
+                "target_prompts": target_prompts,
+                "selected_task_target": selected_target or None,
+                "success_check_plan": success_check_plan or None,
+            }
+        )
+    return rows
+
+
+def _build_prediction_outcome_correlation_ledger(
+    *,
+    generated_at: str,
+    input_dir: Path,
+    output_dir: Path,
+    rollouts: Sequence[Mapping[str, Any]],
+    success_labels: Mapping[str, Any],
+    scorecard: Mapping[str, Any],
+    consistency: Mapping[str, Any],
+    visual_smoke: Mapping[str, Any],
+    grounding: Mapping[str, Any],
+) -> dict[str, Any]:
+    outcome_sources = [
+        input_dir / "deployment_outcome_ledger.json",
+        input_dir / "prediction_outcome_ledger.json",
+        input_dir / "actual_outcome_ledger.json",
+    ]
+    outcomes: list[dict[str, Any]] = []
+    for path in outcome_sources:
+        payload = _load_json(path)
+        raw_rows = payload.get("outcomes") or payload.get("records") or payload.get("items")
+        if isinstance(raw_rows, list):
+            for row in raw_rows:
+                if isinstance(row, Mapping):
+                    outcomes.append({**dict(row), "source_path": str(path)})
+    labels_by_rollout = {
+        _string(row.get("rollout_id")): dict(row)
+        for row in success_labels.get("labels", []) or []
+        if isinstance(row, Mapping)
+    }
+    state_check = _mapping(grounding.get("handle_proxy_state_check"))
+    records: list[dict[str, Any]] = []
+    for rollout in rollouts:
+        rollout_id = _string(rollout.get("rollout_id"))
+        run_id = _string(rollout.get("scenario_eval_run_id"))
+        task_id = _string(rollout.get("task_id"))
+        matching_outcomes = [
+            row
+            for row in outcomes
+            if _string(row.get("scenario_eval_run_id")) == run_id
+            or (_string(row.get("task_id")) == task_id and task_id)
+        ]
+        records.append(
+            {
+                "rollout_id": rollout_id,
+                "scenario_eval_run_id": run_id or None,
+                "task_id": task_id or None,
+                "wam_generated_video_path": rollout.get("generated_video_path"),
+                "visual_smoke_status": visual_smoke.get("status"),
+                "visual_rollout_useful_for_success_review": _mapping(
+                    visual_smoke.get("claim_boundary")
+                ).get("visual_rollout_useful_for_task_success_review"),
+                "wam_success_label": labels_by_rollout.get(rollout_id),
+                "score_source": scorecard.get("score_source"),
+                "forward_inverse_consistency_proven": consistency.get(
+                    "forward_inverse_consistency_proven"
+                ),
+                "lightweight_state_check": state_check or None,
+                "matched_real_world_outcome_count": len(matching_outcomes),
+                "matched_real_world_outcomes": matching_outcomes,
+                "calibration_status": _mapping(
+                    grounding.get("camera_calibration_quality_gate")
+                ).get("status"),
+                "robot_projection_ready": _mapping(grounding.get("readiness")).get(
+                    "robot_projection_ready"
+                ),
+            }
+        )
+    ledger = {
+        "schema_version": "wam_prediction_outcome_correlation_ledger.v1",
+        "generated_at": generated_at,
+        "status": "completed_with_real_world_outcomes"
+        if any(row["matched_real_world_outcome_count"] for row in records)
+        else "awaiting_real_world_outcomes",
+        "source_mujoco_endpoint_eval_job_dir": str(input_dir),
+        "prediction_record_count": len(records),
+        "matched_real_world_outcome_count": sum(
+            row["matched_real_world_outcome_count"] for row in records
+        ),
+        "records": records,
+        "outcome_source_paths_checked": [str(path) for path in outcome_sources],
+        "claim_boundary": {
+            "correlation_ledger_does_not_upgrade_current_rollout_claims": True,
+            "real_world_outcome_required_for_calibration": True,
+            "generated_rollout_predictions_are_model_derived_support_artifacts": True,
+        },
+    }
+    write_json(output_dir / "wam_prediction_outcome_correlation_ledger.json", ledger)
+    return ledger
+
+
 def _first_configured_env(env_names: Sequence[str]) -> tuple[str | None, str | None]:
     for env_name in env_names:
         value = os.getenv(env_name)
@@ -924,7 +1135,6 @@ def build_policy_model_endpoint_readiness_manifest(
         contract = MODEL_RUNTIME_CONTRACTS.get(candidate, {})
         source_hint = MODEL_SOURCE_HINTS.get(candidate, {})
         command_env, command = _first_configured_env(contract.get("command_envs", ()))
-        checkpoint_envs = tuple(contract.get("checkpoint_envs", ()))
         checkpoint_env, checkpoint = _first_configured_env(
             _checkpoint_env_names_with_aliases(contract)
         )
@@ -3463,6 +3673,18 @@ def run_oscar_cosmos_wam_evaluator(
         job_dir = root / f"oscar_cosmos_wam_evaluator_{_timestamp()}"
     output_dir = Path(job_dir).resolve()
     ensure_dir(output_dir)
+    eval_ready_grounding, eval_ready_grounding_source_path = _load_eval_ready_task_grounding(
+        input_dir
+    )
+    eval_ready_grounding_artifacts = (
+        _copy_grounding_support_artifacts(
+            grounding=eval_ready_grounding,
+            grounding_path=eval_ready_grounding_source_path,
+            output_dir=output_dir,
+        )
+        if eval_ready_grounding
+        else {}
+    )
 
     scenario_matrix = _load_json(input_dir / "scenario_eval_matrix.json")
     attempt_trace = _load_json(input_dir / "normalized_attempt_trace.json")
@@ -3472,6 +3694,35 @@ def run_oscar_cosmos_wam_evaluator(
     g1_projected_skeleton_rows = _read_jsonl(g1_projected_skeleton_trace_path)
     g1_projected_skeleton_manifest = _load_json(
         input_dir / "g1_projected_skeleton_manifest.json"
+    )
+    generic_fk_projection_manifest_path = Path(
+        eval_ready_grounding_artifacts.get("robot_fk_projection_manifest", "")
+    )
+    generic_fk_projection_manifest = _load_json(generic_fk_projection_manifest_path)
+    generic_fk_projection_trace_path = Path(
+        eval_ready_grounding_artifacts.get("robot_fk_projected_skeleton_trace", "")
+    )
+    generic_fk_projection_rows = _read_jsonl(generic_fk_projection_trace_path)
+    if eval_ready_grounding:
+        handle_check_path = Path(eval_ready_grounding_artifacts.get("handle_proxy_state_check", ""))
+        if handle_check_path.is_file():
+            eval_ready_grounding["handle_proxy_state_check"] = _load_json(handle_check_path)
+        calibration_gate_path = Path(
+            eval_ready_grounding_artifacts.get("camera_calibration_quality_gate", "")
+        )
+        if calibration_gate_path.is_file():
+            eval_ready_grounding["camera_calibration_quality_gate"] = _load_json(
+                calibration_gate_path
+            )
+        if generic_fk_projection_manifest:
+            eval_ready_grounding["robot_fk_projection"] = generic_fk_projection_manifest
+    generic_fk_projection_available = bool(
+        generic_fk_projection_manifest.get("status") == "completed"
+        and generic_fk_projection_rows
+        and any(
+            int(row.get("projected_landmark_count") or 0) > 0
+            for row in generic_fk_projection_rows
+        )
     )
     g1_projected_skeleton_available = bool(
         g1_projected_skeleton_rows
@@ -3575,12 +3826,28 @@ def run_oscar_cosmos_wam_evaluator(
         rollout_input_blockers.append("blocked_missing_inputs")
     if not wam_input_videos:
         rollout_input_blockers.append("blocked_missing_egocentric_wam_input_video")
+    if eval_ready_grounding:
+        grounding_readiness = _mapping(eval_ready_grounding.get("readiness"))
+        if not grounding_readiness.get("learned_rollout_request_ready"):
+            rollout_input_blockers.append("blocked_eval_ready_task_grounding_not_ready")
+            for blocker in _string_list(grounding_readiness.get("blockers")):
+                rollout_input_blockers.append(f"eval_ready:{blocker}")
+        if not grounding_readiness.get("robot_projection_ready"):
+            rollout_input_blockers.append("blocked_eval_ready_robot_projection_not_ready")
+        if _mapping(eval_ready_grounding.get("camera_calibration_quality_gate")).get(
+            "status"
+        ) == "blocked":
+            rollout_input_blockers.append("blocked_eval_ready_camera_calibration_quality")
     rollout_input_status = (
         "ready_for_model"
         if not rollout_input_blockers
         else "blocked_missing_egocentric_wam_input_video"
         if rollout_input_blockers == ["blocked_missing_egocentric_wam_input_video"]
         else "blocked_missing_inputs"
+    )
+    task_prompt_rows = _grounding_enriched_task_prompts(
+        matrix_runs=matrix_runs,
+        grounding=eval_ready_grounding,
     )
     rollout_input_manifest = {
         "schema_version": "wam_rollout_input_manifest.v1",
@@ -3604,6 +3871,21 @@ def run_oscar_cosmos_wam_evaluator(
             )
             if (input_dir / "g1_projected_skeleton_manifest.json").is_file()
             else None,
+            "eval_ready_task_grounding": eval_ready_grounding_artifacts.get(
+                "eval_ready_task_grounding"
+            ),
+            "robot_fk_projection_manifest": eval_ready_grounding_artifacts.get(
+                "robot_fk_projection_manifest"
+            ),
+            "robot_fk_projected_skeleton_trace_jsonl": eval_ready_grounding_artifacts.get(
+                "robot_fk_projected_skeleton_trace"
+            ),
+            "camera_calibration_quality_gate": eval_ready_grounding_artifacts.get(
+                "camera_calibration_quality_gate"
+            ),
+            "handle_proxy_state_check": eval_ready_grounding_artifacts.get(
+                "handle_proxy_state_check"
+            ),
             "review_video_selection_manifest": str(
                 input_dir / "review_video_selection_manifest.json"
             ),
@@ -3619,9 +3901,30 @@ def run_oscar_cosmos_wam_evaluator(
                 for row in g1_projected_skeleton_rows
                 if int(row.get("projected_landmark_count") or 0) > 0
             ),
+            "robot_fk_projection_trace_row_count": len(generic_fk_projection_rows),
+            "robot_fk_projection_projectable_row_count": sum(
+                1
+                for row in generic_fk_projection_rows
+                if int(row.get("projected_landmark_count") or 0) > 0
+            ),
             "selected_review_video_count": len(videos),
             "wam_input_video_count": len(wam_input_videos),
             "diagnostic_review_video_count": len(diagnostic_review_videos),
+        },
+        "eval_ready_task_grounding": {
+            "available": bool(eval_ready_grounding),
+            "source_path": str(eval_ready_grounding_source_path)
+            if eval_ready_grounding_source_path
+            else None,
+            "status": eval_ready_grounding.get("status"),
+            "learned_rollout_request_ready": _mapping(
+                eval_ready_grounding.get("readiness")
+            ).get("learned_rollout_request_ready"),
+            "robot_projection_ready": _mapping(eval_ready_grounding.get("readiness")).get(
+                "robot_projection_ready"
+            ),
+            "selected_task_target": eval_ready_grounding.get("selected_task_target"),
+            "success_check_plan": eval_ready_grounding.get("success_check_plan"),
         },
         "wam_input_video_contract": {
             "required_camera_role": "egocentric_robot_policy_observation_candidate",
@@ -3633,15 +3936,7 @@ def run_oscar_cosmos_wam_evaluator(
         "diagnostic_review_videos": diagnostic_review_videos,
         "selected_review_videos": videos,
         "blockers": rollout_input_blockers,
-        "task_prompts": [
-            {
-                "scenario_eval_run_id": run.get("scenario_eval_run_id"),
-                "task_id": run.get("task_id"),
-                "spawn_id": run.get("spawn_id"),
-                "task_prompt": run.get("task_prompt"),
-            }
-            for run in matrix_runs
-        ],
+        "task_prompts": task_prompt_rows,
     }
     write_json(output_dir / "wam_rollout_input_manifest.json", rollout_input_manifest)
 
@@ -3653,6 +3948,8 @@ def run_oscar_cosmos_wam_evaluator(
     ]
     if g1_projected_skeleton_available:
         conditioning_sources.insert(2, "g1_projected_skeleton_trace.jsonl")
+    if generic_fk_projection_available:
+        conditioning_sources.insert(2, "robot_fk_projected_skeleton_trace.jsonl")
 
     action_conditioning = {
         "schema_version": "wam_action_conditioning_manifest.v1",
@@ -3685,6 +3982,22 @@ def run_oscar_cosmos_wam_evaluator(
             ),
             "projected_g1_upper_body_skeleton_manifest_status": g1_projected_skeleton_manifest.get(
                 "status"
+            ),
+            "generic_robot_fk_projection_available": generic_fk_projection_available,
+            "generic_robot_fk_projection_manifest": str(generic_fk_projection_manifest_path)
+            if generic_fk_projection_manifest_path.is_file()
+            else None,
+            "generic_robot_fk_projected_skeleton_trace": str(generic_fk_projection_trace_path)
+            if generic_fk_projection_trace_path.is_file()
+            else None,
+            "generic_robot_fk_projection_row_count": len(generic_fk_projection_rows),
+            "generic_robot_fk_projection_projectable_row_count": sum(
+                1
+                for row in generic_fk_projection_rows
+                if int(row.get("projected_landmark_count") or 0) > 0
+            ),
+            "generic_robot_fk_projection_confidence": generic_fk_projection_manifest.get(
+                "projection_confidence"
             ),
             "projected_skeleton_is_simulated_mujoco_state": True,
             "projected_skeleton_is_not_physical_robot_proprioception": True,
@@ -3965,6 +4278,16 @@ def run_oscar_cosmos_wam_evaluator(
         "rollouts": rollouts,
         "blockers": visual_quality_blockers if rollouts and not visual_rollout_useful else generated_blockers,
         "task_prompts": rollout_input_manifest["task_prompts"],
+        "eval_ready_task_grounding": {
+            "available": bool(eval_ready_grounding),
+            "path": eval_ready_grounding_artifacts.get("eval_ready_task_grounding"),
+            "selected_task_target": eval_ready_grounding.get("selected_task_target"),
+            "success_check_plan": eval_ready_grounding.get("success_check_plan"),
+            "handle_proxy_state_check": eval_ready_grounding.get("handle_proxy_state_check"),
+            "camera_calibration_quality_gate": eval_ready_grounding.get(
+                "camera_calibration_quality_gate"
+            ),
+        },
         "success_label_contract": {
             "expected_output_path": str(output_dir / WAM_SUCCESS_LABEL_COMMAND_OUTPUT),
             "required_top_level_keys": ["labels"],
@@ -4063,6 +4386,15 @@ def run_oscar_cosmos_wam_evaluator(
                 input_dir / "g1_mujoco_locomotion_trace.jsonl"
             ),
             "normalized_attempt_trace": str(input_dir / "normalized_attempt_trace.json"),
+            "eval_ready_task_grounding": eval_ready_grounding_artifacts.get(
+                "eval_ready_task_grounding"
+            ),
+            "robot_fk_projected_skeleton_trace_jsonl": eval_ready_grounding_artifacts.get(
+                "robot_fk_projected_skeleton_trace"
+            ),
+            "handle_proxy_state_check": eval_ready_grounding_artifacts.get(
+                "handle_proxy_state_check"
+            ),
         },
         "trace_summary": {
             "action_row_count": len(action_rows),
@@ -4186,13 +4518,37 @@ def run_oscar_cosmos_wam_evaluator(
         if not rollouts or not visual_rollout_useful
         else "wam_generated_rollouts_pending_review",
         "blockers": [] if success_label_generated else success_label_blockers,
+        "eval_ready_task_grounding_used": bool(eval_ready_grounding),
+        "selected_task_target": eval_ready_grounding.get("selected_task_target"),
+        "camera_calibration_quality_status": _mapping(
+            eval_ready_grounding.get("camera_calibration_quality_gate")
+        ).get("status"),
+        "robot_fk_projection_status": generic_fk_projection_manifest.get("status"),
+        "handle_proxy_state": _mapping(
+            eval_ready_grounding.get("handle_proxy_state_check")
+        ).get("handle_proxy_state"),
+        "handle_proxy_on_candidate": bool(
+            _mapping(eval_ready_grounding.get("handle_proxy_state_check")).get("on_candidate")
+        ),
         "claim_boundary": {
             "score_source_is_generated_video_judge": success_label_generated,
+            "lightweight_state_proxy_does_not_prove_task_success": True,
             "score_does_not_prove_physical_robot_readiness": True,
             "score_does_not_prove_forward_inverse_consistency": True,
         },
     }
     write_json(output_dir / "wam_policy_scorecard.json", scorecard)
+    prediction_outcome_correlation_ledger = _build_prediction_outcome_correlation_ledger(
+        generated_at=generated,
+        input_dir=input_dir,
+        output_dir=output_dir,
+        rollouts=rollouts,
+        success_labels=success_labels,
+        scorecard=scorecard,
+        consistency=consistency,
+        visual_smoke=visual_smoke,
+        grounding=eval_ready_grounding,
+    )
 
     policy_requery_endpoint_readiness = _build_policy_requery_endpoint_readiness_manifest(
         generated_at=generated,
@@ -4248,6 +4604,15 @@ def run_oscar_cosmos_wam_evaluator(
         else "offline_action_conditioned_wam_evaluator",
         "source_mujoco_endpoint_eval_job_dir": str(input_dir),
         "policy_endpoint_actions_used_as_conditioning": bool(action_rows),
+        "eval_ready_task_grounding_used": bool(eval_ready_grounding),
+        "eval_ready_task_grounding_status": eval_ready_grounding.get("status"),
+        "robot_fk_projection_available": generic_fk_projection_available,
+        "camera_calibration_quality_status": _mapping(
+            eval_ready_grounding.get("camera_calibration_quality_gate")
+        ).get("status"),
+        "handle_proxy_state": _mapping(
+            eval_ready_grounding.get("handle_proxy_state_check")
+        ).get("handle_proxy_state"),
         "selected_model_candidate": runtime_discovery.get("selected_candidate"),
         "model_command_executed_this_invocation": model_command_executed_this_invocation,
         "fresh_model_command_executed_this_invocation": fresh_model_command_executed_this_invocation,
@@ -4416,6 +4781,21 @@ def run_oscar_cosmos_wam_evaluator(
             "review_video_selection_manifest": str(
                 input_dir / "review_video_selection_manifest.json"
             ),
+            "eval_ready_task_grounding": eval_ready_grounding_artifacts.get(
+                "eval_ready_task_grounding"
+            ),
+            "robot_fk_projection_manifest": eval_ready_grounding_artifacts.get(
+                "robot_fk_projection_manifest"
+            ),
+            "robot_fk_projected_skeleton_trace_jsonl": eval_ready_grounding_artifacts.get(
+                "robot_fk_projected_skeleton_trace"
+            ),
+            "camera_calibration_quality_gate": eval_ready_grounding_artifacts.get(
+                "camera_calibration_quality_gate"
+            ),
+            "handle_proxy_state_check": eval_ready_grounding_artifacts.get(
+                "handle_proxy_state_check"
+            ),
         },
         "output_paths": {
             name: str(output_dir / f"{name}.json")
@@ -4431,6 +4811,7 @@ def run_oscar_cosmos_wam_evaluator(
                 "wam_consistency_checks",
                 "wam_success_labels",
                 "wam_policy_scorecard",
+                "wam_prediction_outcome_correlation_ledger",
                 "wam_policy_requery_manifest",
                 "policy_requery_endpoint_readiness_manifest",
                 "single_step_wam_policy_requery_visual_candidate",
@@ -4471,6 +4852,20 @@ def run_oscar_cosmos_wam_evaluator(
         "status": "completed",
         "mujoco_source_job": str(input_dir),
         "mujoco_evidence_is_simulator_only": True,
+        "eval_ready_task_grounding_used": bool(eval_ready_grounding),
+        "eval_ready_task_grounding_status": eval_ready_grounding.get("status"),
+        "eval_ready_task_grounding_learned_rollout_request_ready": _mapping(
+            eval_ready_grounding.get("readiness")
+        ).get("learned_rollout_request_ready"),
+        "selected_task_target": eval_ready_grounding.get("selected_task_target"),
+        "camera_calibration_quality_gate": eval_ready_grounding.get(
+            "camera_calibration_quality_gate"
+        ),
+        "robot_fk_projection_available": generic_fk_projection_available,
+        "handle_proxy_state_check": eval_ready_grounding.get("handle_proxy_state_check"),
+        "prediction_outcome_correlation_status": prediction_outcome_correlation_ledger.get(
+            "status"
+        ),
         "http_endpoint_wrapper_available": True,
         "model_http_wrapper_ready": model_http_wrapper_ready,
         "real_model_endpoint_ready": real_model_endpoint_ready,
@@ -4816,7 +5211,25 @@ def run_oscar_cosmos_wam_evaluator(
             "wam_consistency_checks": str(output_dir / "wam_consistency_checks.json"),
             "wam_success_labels": str(output_dir / "wam_success_labels.json"),
             "wam_policy_scorecard": str(output_dir / "wam_policy_scorecard.json"),
+            "wam_prediction_outcome_correlation_ledger": str(
+                output_dir / "wam_prediction_outcome_correlation_ledger.json"
+            ),
             "wam_policy_requery_manifest": str(output_dir / "wam_policy_requery_manifest.json"),
+            "eval_ready_task_grounding": eval_ready_grounding_artifacts.get(
+                "eval_ready_task_grounding"
+            ),
+            "robot_fk_projection_manifest": eval_ready_grounding_artifacts.get(
+                "robot_fk_projection_manifest"
+            ),
+            "robot_fk_projected_skeleton_trace": eval_ready_grounding_artifacts.get(
+                "robot_fk_projected_skeleton_trace"
+            ),
+            "camera_calibration_quality_gate": eval_ready_grounding_artifacts.get(
+                "camera_calibration_quality_gate"
+            ),
+            "handle_proxy_state_check": eval_ready_grounding_artifacts.get(
+                "handle_proxy_state_check"
+            ),
             "policy_requery_endpoint_readiness_manifest": str(
                 output_dir / "policy_requery_endpoint_readiness_manifest.json"
             ),

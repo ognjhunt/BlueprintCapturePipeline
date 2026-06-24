@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import eval_ready_task_grounding as grounding
 from blueprint_pipeline import oscar_cosmos_wam_evaluator as evaluator
 
 
@@ -378,14 +379,130 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
     )
     assert loop_manifest["g1_robot_policy_selected_family"] is None
     assert loop_manifest["openvla_selected_as_g1_robot_policy"] is False
+
+
+def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    input_job = _input_job(tmp_path)
+    _write_json(
+        input_job / "raw" / "object_index.json",
+        {
+            "objects": [
+                {
+                    "object_id": "right_sink_handle_01",
+                    "label": "right sink handle",
+                    "source_prompt": "right sink handle",
+                    "reference_crop": "object_index_artifacts/crops/right_sink_handle.png",
+                    "all_crops": ["object_index_artifacts/crops/right_sink_handle.png"],
+                    "keypoints": {"center": [322, 188]},
+                    "mean_box_px": {"x": 302, "y": 168, "width": 40, "height": 40},
+                    "mean_confidence": 0.91,
+                }
+            ]
+        },
+    )
+    camera = input_job / "camera_calibration.json"
+    _write_json(
+        camera,
+        {
+            "fx": 800,
+            "fy": 800,
+            "cx": 320,
+            "cy": 240,
+            "width": 640,
+            "height": 480,
+            "reprojection_error_px": 1.2,
+        },
+    )
+    scene = input_job / "kitchen.splat"
+    scene.write_text("static 3dgs placeholder", encoding="utf-8")
+    initial_frame = input_job / "initial.png"
+    initial_frame.write_bytes(b"png")
+    robot_model = input_job / "unitree_g1.xml"
+    robot_model.write_text("<mujoco/>", encoding="utf-8")
+    robot_state = input_job / "robot_state.json"
+    _write_json(
+        robot_state,
+        {
+            "right_end_effector_xyz": [0.005, -0.13, 2.0],
+            "right_wrist_rotation_delta_deg": 22.0,
+        },
+    )
+    grounding.build_eval_ready_task_grounding(
+        capture_root=input_job,
+        task_id="turn_on_sink_handle",
+        task_text="turn on the sink right handle",
+        target_label="right sink handle",
+        scene_asset=scene,
+        initial_frame=initial_frame,
+        camera_calibration=camera,
+        robot_model=robot_model,
+        robot_state=robot_state,
+        output_path=input_job / "eval_ready_task_grounding.json",
+        articulated_handle_proxy=True,
+    )
+
+    grounded_job_dir = tmp_path / "wam_grounded_job"
+    summary = evaluator.run_oscar_cosmos_wam_evaluator(
+        input_job_dir=input_job,
+        job_dir=grounded_job_dir,
+        generated_at="now",
+    )
+
+    assert summary["status"] == "completed"
+    rollout_input = json.loads(
+        (grounded_job_dir / "wam_rollout_input_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert rollout_input["eval_ready_task_grounding"]["available"] is True
+    assert rollout_input["eval_ready_task_grounding"]["learned_rollout_request_ready"] is True
+    assert rollout_input["inputs"]["robot_fk_projected_skeleton_trace_jsonl"].endswith(
+        "robot_fk_projected_skeleton_trace.jsonl"
+    )
+    assert rollout_input["task_prompts"][0]["selected_task_target"]["object_id"] == (
+        "right_sink_handle_01"
+    )
+    assert "sink right handle" in rollout_input["task_prompts"][0]["target_prompts"]
+    action_conditioning = json.loads(
+        (grounded_job_dir / "wam_action_conditioning_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "robot_fk_projected_skeleton_trace.jsonl" in action_conditioning["conditioning_sources"]
+    assert action_conditioning["robot_pose_encoding"]["generic_robot_fk_projection_available"] is True
+    scorecard = json.loads(
+        (grounded_job_dir / "wam_policy_scorecard.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert scorecard["eval_ready_task_grounding_used"] is True
+    assert scorecard["handle_proxy_state"] == "on_candidate"
+    ledger = json.loads(
+        (grounded_job_dir / "wam_prediction_outcome_correlation_ledger.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert ledger["status"] == "awaiting_real_world_outcomes"
+    trace_binding = json.loads(
+        (grounded_job_dir / "wam_evaluator_trace_binding.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert trace_binding["source_paths"]["eval_ready_task_grounding"].endswith(
+        "eval_ready_task_grounding.json"
+    )
+    loop_manifest = json.loads(
+        (grounded_job_dir / "wam_policy_loop_manifest.json").read_text(encoding="utf-8")
+    )
     assert loop_manifest["wam_rollout_selected_as_g1_robot_policy"] is False
     assert loop_manifest["unitree_hand_policy_required_for_g1_manipulation"] is True
     manipulation_loop = json.loads(
-        (
-            tmp_path
-            / "wam_job"
-            / "wam_manipulation_loop_readiness_manifest.json"
-        ).read_text(encoding="utf-8")
+        (grounded_job_dir / "wam_manipulation_loop_readiness_manifest.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert manipulation_loop["status"] == "blocked"
     assert manipulation_loop["manipulation_attempt_count"] == 0
@@ -408,11 +525,9 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
         "wam_rollout_is_not_selected_g1_robot_policy"
     ] is True
     requery_readiness = json.loads(
-        (
-            tmp_path
-            / "wam_job"
-            / "policy_requery_endpoint_readiness_manifest.json"
-        ).read_text(encoding="utf-8")
+        (grounded_job_dir / "policy_requery_endpoint_readiness_manifest.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert requery_readiness["status"] == "blocked"
     assert requery_readiness["live_policy_requery_endpoint_ready"] is False
@@ -433,7 +548,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
         "blockers"
     ]
     truth = json.loads(
-        (tmp_path / "wam_job" / "wam_evaluator_truth_boundary.json").read_text(
+        (grounded_job_dir / "wam_evaluator_truth_boundary.json").read_text(
             encoding="utf-8"
         )
     )
@@ -458,14 +573,14 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
         truth["why_cannot_just_create_endpoints"]
     )
     policy_truth = json.loads(
-        (tmp_path / "wam_job" / "policy_model_truth_boundary.json").read_text(
+        (grounded_job_dir / "policy_model_truth_boundary.json").read_text(
             encoding="utf-8"
         )
     )
     assert policy_truth["schema_version"] == "policy_model_truth_boundary.v1"
     assert policy_truth["replaceable_model_adapter_boundary"] is True
     readiness = json.loads(
-        (tmp_path / "wam_job" / "policy_model_endpoint_readiness_manifest.json").read_text(
+        (grounded_job_dir / "policy_model_endpoint_readiness_manifest.json").read_text(
             encoding="utf-8"
         )
     )
@@ -478,7 +593,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
         "what_is_needed_to_make_true"
     ]
     creation_plan = json.loads(
-        (tmp_path / "wam_job" / "policy_model_endpoint_creation_plan.json").read_text(
+        (grounded_job_dir / "policy_model_endpoint_creation_plan.json").read_text(
             encoding="utf-8"
         )
     )
@@ -491,7 +606,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
         creation_plan["minimum_user_supplied_inputs"]
     )
     probe = json.loads(
-        (tmp_path / "wam_job" / "policy_model_endpoint_probe_results.json").read_text(
+        (grounded_job_dir / "policy_model_endpoint_probe_results.json").read_text(
             encoding="utf-8"
         )
     )
@@ -501,7 +616,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
     assert "blocked_model_command_not_available" in probe["blockers"]
     assert "wrapped command to run" in " ".join(probe["why_cannot_just_create_endpoints"])
     source_discovery = json.loads(
-        (tmp_path / "wam_job" / "local_model_source_tree_discovery.json").read_text(
+        (grounded_job_dir / "local_model_source_tree_discovery.json").read_text(
             encoding="utf-8"
         )
     )
