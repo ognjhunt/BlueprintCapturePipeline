@@ -57,6 +57,10 @@ def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
     contract = json.loads(Path(summary["artifacts"]["contract"]).read_text(encoding="utf-8"))
     options = json.loads(Path(summary["artifacts"]["options"]).read_text(encoding="utf-8"))
     assert contract["auth"]["raw_tokens_written_to_artifacts"] is False
+    assert contract["http_contract"]["canonical"]["readyz"]["path"] == "/readyz"
+    assert contract["http_contract"]["canonical"]["infer"]["path"] == "/infer"
+    assert contract["http_contract"]["legacy_compatibility"]["policy_action"]["path"] == "/policy/action"
+    assert "TEAM_POLICY_WORKER_URL" in contract["evaluator_envs"]["team"]
     assert "TEAM_POLICY_ENDPOINT_URL" in contract["evaluator_envs"]["team"]
     assert {row["id"] for row in options["options"]} >= {
         "openvla",
@@ -145,6 +149,13 @@ def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
         == "blueprint-g1-endpoint-reference-adapter"
     )
     assert adapter["openvla_policy_adapter_command"] == "blueprint-openvla-policy-command-adapter"
+    assert (
+        adapter["provider_worker_policy_adapter_command"]
+        == "blueprint-provider-worker-policy-command-adapter"
+    )
+    assert adapter["provider_worker_policy_adapter_contract"][
+        "requires_readyz_before_infer"
+    ] is True
 
 
 def test_wam_vla_policy_endpoint_setup_imports_openvla_provider_smoke_proof(
@@ -341,7 +352,14 @@ print(json.dumps({
         timeout_seconds=5.0,
     )
     client = TestClient(app)
-    assert client.get("/health").json()["policy_command_configured"] is True
+    legacy_health = client.get("/health").json()
+    assert legacy_health["policy_command_configured"] is True
+    assert legacy_health["canonical_http_contract"]["readyz"] == "/readyz"
+    assert legacy_health["canonical_http_contract"]["infer"] == "/infer"
+    assert client.get("/healthz").json()["policy_command_configured"] is True
+    ready = client.get("/readyz").json()
+    assert ready["model_ready"] is True
+    assert ready["ready_for_inference"] is True
     unauthorized = client.post(
         "/policy/action",
         json={"observation": {"task_id": "approach_target"}},
@@ -363,6 +381,26 @@ print(json.dumps({
     assert payload["policy_id"] == "unit_test_policy"
     assert payload["action"]["action_type"] == "waypoint"
     assert payload["endpoint_metadata"]["raw_token_values_returned"] is False
+    infer_ok = client.post(
+        "/infer",
+        headers={"authorization": "Bearer secret-token"},
+        json={"observation": {"task_id": "approach_target"}},
+    )
+    assert infer_ok.status_code == 200
+    assert infer_ok.json()["action"]["action_type"] == "waypoint"
+    shutdown = client.post(
+        "/shutdown",
+        headers={"authorization": "Bearer secret-token"},
+    )
+    assert shutdown.status_code == 200
+    assert shutdown.json()["provider_adapter_must_record_teardown"] is True
+    assert client.get("/readyz").json()["ready_for_inference"] is False
+    blocked_after_shutdown = client.post(
+        "/infer",
+        headers={"authorization": "Bearer secret-token"},
+        json={"observation": {"task_id": "approach_target"}},
+    )
+    assert blocked_after_shutdown.status_code == 503
 
     builtin_client = TestClient(
         create_app(
@@ -374,6 +412,7 @@ print(json.dumps({
     builtin_health = builtin_client.get("/health").json()
     assert builtin_health["policy_adapter_invocation_mode"] == "in_process_builtin"
     assert builtin_health["subprocess_spawned_per_request"] is False
+    assert builtin_client.get("/readyz").json()["ready_for_inference"] is True
     builtin_ok = builtin_client.post(
         "/policy/action",
         json={
@@ -392,6 +431,17 @@ print(json.dumps({
         == "in_process_builtin"
     )
     assert builtin_payload["endpoint_metadata"]["subprocess_spawned"] is False
+    builtin_infer = builtin_client.post(
+        "/infer",
+        json={
+            "observation": {
+                "task_id": "contact_or_push_light_object",
+                "object_state": {"position": [0.3, -0.6, 0.27]},
+            }
+        },
+    )
+    assert builtin_infer.status_code == 200
+    assert builtin_infer.json()["policy_id"] == "blueprint_g1_endpoint_reference_adapter"
 
     with pytest.raises(RuntimeError, match="missing_policy_command"):
         run_policy_command(command="", payload={}, timeout_seconds=0.1)

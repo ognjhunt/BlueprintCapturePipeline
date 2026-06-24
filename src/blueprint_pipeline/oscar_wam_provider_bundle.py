@@ -55,6 +55,356 @@ def _copy_file(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
+def _safe_error_text(exc: Exception) -> str:
+    text = str(exc).strip()
+    if not text:
+        return type(exc).__name__
+    if "/" in text or "\\" in text:
+        return Path(text).name or type(exc).__name__
+    return text[:240]
+
+
+def _source_frame_from_wam_generation_step(step_input: Mapping[str, Any]) -> Path:
+    candidates = [
+        _string(step_input.get("source_policy_observation_frame_path")),
+        _string(_mapping(step_input.get("current_policy_observation")).get("camera_frame_path")),
+        _string(
+            _mapping(
+                _mapping(step_input.get("current_policy_observation")).get("visual_observation")
+            ).get("camera_frame_path")
+        ),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.is_file():
+            return path.resolve()
+    raise FileNotFoundError("source_policy_observation_frame_missing")
+
+
+def _source_action_values(step_input: Mapping[str, Any]) -> list[float]:
+    action = _mapping(step_input.get("source_policy_action"))
+    values = action.get("action_chunk")
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        values = action.get("sonic_latent_action")
+        if isinstance(values, Sequence) and values and isinstance(values[0], Sequence):
+            values = values[0]
+    result: list[float] = []
+    if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
+        for value in values:
+            try:
+                result.append(float(value))
+            except (TypeError, ValueError):
+                continue
+    return result
+
+
+def _task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:
+    observation = _mapping(step_input.get("current_policy_observation"))
+    for key in (
+        "language_instruction",
+        "task_prompt",
+        "task_instruction",
+        "instruction",
+        "task_description",
+    ):
+        value = _string(observation.get(key))
+        if value:
+            return value
+    task_id = _string(observation.get("task_id"))
+    target_id = _string(observation.get("target_object_id"))
+    if task_id or target_id:
+        return "Predict the next robot-scene frames after the policy action for " + " ".join(
+            part for part in (task_id, target_id) if part
+        )
+    return "Predict the next robot-scene frames from the Unitree G1 SONIC policy action."
+
+
+def _materialize_step_first_frame(
+    *,
+    source_frame: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    import cv2
+    import numpy as np
+
+    frame = cv2.imread(str(source_frame), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise ValueError("source_policy_observation_frame_decode_failed")
+    resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+    ensure_dir(output_path.parent)
+    if not cv2.imwrite(str(output_path), resized):
+        raise RuntimeError("step_first_frame_write_failed")
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    return {
+        "path": str(output_path),
+        "source_policy_observation_frame_path": str(source_frame),
+        "width": width,
+        "height": height,
+        "source": "wam_generation_step_source_policy_observation_frame",
+        "luma_mean": round(float(gray.mean()), 6),
+        "luma_range": int(gray.max()) - int(gray.min()),
+        "non_dark_fraction": round(float(np.count_nonzero(gray > 12)) / float(width * height), 6),
+    }
+
+
+def _render_step_action_conditioning_video(
+    *,
+    source_frame: Path,
+    action_values: Sequence[float],
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: float,
+    num_frames: int,
+) -> dict[str, Any]:
+    import cv2
+    import numpy as np
+
+    frame = cv2.imread(str(source_frame), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise ValueError("source_policy_observation_frame_decode_failed")
+    base = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+    ensure_dir(output_path.parent)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        float(fps),
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError("cv2_video_writer_failed_for_wam_step_action_conditioning")
+    values = list(action_values)
+    if not values:
+        values = [0.0]
+    luma_ranges: list[int] = []
+    non_dark_fractions: list[float] = []
+    action_energy = sum(abs(value) for value in values) / max(len(values), 1)
+    left_bias = values[0] if values else 0.0
+    right_bias = values[1] if len(values) > 1 else -left_bias
+    reach_bias = values[2] if len(values) > 2 else action_energy
+    for index in range(max(1, int(num_frames))):
+        progress = index / max(int(num_frames) - 1, 1)
+        canvas = cv2.convertScaleAbs(base, alpha=0.72, beta=18)
+        overlay = canvas.copy()
+        target_center = (
+            int(width * (0.52 + 0.08 * np.tanh(left_bias + progress * reach_bias))),
+            int(height * (0.45 - 0.06 * np.tanh(right_bias + progress * action_energy))),
+        )
+        cv2.rectangle(
+            overlay,
+            (target_center[0] - max(18, width // 22), target_center[1] - max(14, height // 28)),
+            (target_center[0] + max(18, width // 22), target_center[1] + max(14, height // 28)),
+            (32, 190, 220),
+            -1,
+            cv2.LINE_AA,
+        )
+        canvas = cv2.addWeighted(overlay, 0.22, canvas, 0.78, 0)
+        left_wrist = (
+            int(width * (0.30 + 0.08 * progress + 0.03 * np.tanh(left_bias))),
+            int(height * (0.70 - 0.18 * progress)),
+        )
+        right_wrist = (
+            int(width * (0.70 - 0.08 * progress + 0.03 * np.tanh(right_bias))),
+            int(height * (0.70 - 0.18 * progress)),
+        )
+        hand_color = (112, 248, 198)
+        arm_color = (72, 232, 255)
+        target_color = (20, 196, 255)
+        for wrist, side in ((left_wrist, -1), (right_wrist, 1)):
+            elbow = (wrist[0] - side * int(width * 0.10), wrist[1] + int(height * 0.16))
+            cv2.line(canvas, elbow, wrist, arm_color, 5, cv2.LINE_AA)
+            cv2.ellipse(
+                canvas,
+                wrist,
+                (max(18, width // 28), max(12, height // 42)),
+                0,
+                0,
+                360,
+                hand_color,
+                3,
+                cv2.LINE_AA,
+            )
+            palm = (wrist[0] + side * int(width * 0.030), wrist[1] - int(height * 0.020))
+            cv2.line(canvas, wrist, palm, (245, 245, 230), 3, cv2.LINE_AA)
+            for finger_idx, angle in enumerate((-35, -12, 10, 30)):
+                finger_len = int(width * (0.028 - 0.002 * min(finger_idx, 2)))
+                dx = int(side * finger_len * np.cos(np.deg2rad(angle)))
+                dy = int(finger_len * np.sin(np.deg2rad(angle)) - height * 0.035)
+                cv2.line(canvas, palm, (palm[0] + dx, palm[1] + dy), (245, 245, 230), 2, cv2.LINE_AA)
+        midpoint = ((left_wrist[0] + right_wrist[0]) // 2, (left_wrist[1] + right_wrist[1]) // 2)
+        cv2.arrowedLine(canvas, midpoint, target_center, arm_color, 5, cv2.LINE_AA, tipLength=0.2)
+        cv2.circle(canvas, target_center, max(8, width // 55), target_color, 4, cv2.LINE_AA)
+        gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+        luma_ranges.append(int(gray.max()) - int(gray.min()))
+        non_dark_fractions.append(float(np.count_nonzero(gray > 12)) / float(width * height))
+        writer.write(canvas)
+    writer.release()
+    low_signal_blockers: list[str] = []
+    if luma_ranges and max(luma_ranges) < 40:
+        low_signal_blockers.append("policy_action_conditioning_luma_range_too_low")
+    if non_dark_fractions and max(non_dark_fractions) < 0.03:
+        low_signal_blockers.append("policy_action_conditioning_foreground_fraction_too_low")
+    return {
+        "path": str(output_path),
+        "frame_count": max(1, int(num_frames)),
+        "fps": fps,
+        "width": width,
+        "height": height,
+        "conditioning_mode": "unitree_sonic_policy_action_proxy_over_scene_frame",
+        "conditioning_source": "unitree_g1_sonic_policy_action_chunk_over_source_policy_observation",
+        "source_policy_observation_frame_path": str(source_frame),
+        "source_action_chunk_value_count": len(action_values),
+        "source_action_chunk_l1_mean": round(float(action_energy), 6),
+        "policy_action_conditioning_proxy_rendered": True,
+        "proxy_skeleton_overlay_drawn": False,
+        "projected_g1_skeleton_rendered": False,
+        "oscar_gripper_scenario_proxy_rendered": True,
+        "selected_review_video_background_used": True,
+        "visual_signal": {
+            "status": "ok" if not low_signal_blockers else "warning_low_signal_proxy_conditioning",
+            "blockers": low_signal_blockers,
+            "max_luma_range": max(luma_ranges) if luma_ranges else 0,
+            "max_non_dark_fraction": round(max(non_dark_fractions), 6)
+            if non_dark_fractions
+            else 0.0,
+        },
+    }
+
+
+def _materialize_oscar_input_package_from_wam_generation_step(
+    *,
+    step_input: Mapping[str, Any],
+    work_dir: Path,
+    width: int,
+    height: int,
+    fps: float,
+    num_frames: int,
+) -> dict[str, Any]:
+    source_frame = _source_frame_from_wam_generation_step(step_input)
+    package_dir = work_dir / "oscar_input"
+    first_frame = _materialize_step_first_frame(
+        source_frame=source_frame,
+        output_path=package_dir / "first_frame.png",
+        width=width,
+        height=height,
+    )
+    action_values = _source_action_values(step_input)
+    skeleton_video = _render_step_action_conditioning_video(
+        source_frame=source_frame,
+        action_values=action_values,
+        output_path=package_dir / "blueprint_proxy_skeleton_conditioning.mp4",
+        width=width,
+        height=height,
+        fps=fps,
+        num_frames=num_frames,
+    )
+    conditioning_validation = validate_generated_mp4_for_review(Path(skeleton_video["path"]))
+    conditioning_visual_smoke = visual_smoke_generated_rollouts_for_review(
+        rollouts=[
+            {
+                "rollout_id": "oscar_step_policy_action_conditioning_0001",
+                "generated_video_path": skeleton_video["path"],
+            }
+        ],
+        output_dir=work_dir / "oscar_input_conditioning_visual_review",
+        generated_at=utc_now_iso(),
+    )
+    observation = _mapping(step_input.get("current_policy_observation"))
+    requested_output = _mapping(step_input.get("requested_output"))
+    manifest = {
+        "schema_version": "blueprint_oscar_wam_input_package.v1",
+        "status": "completed",
+        "source_schema_version": _string(step_input.get("schema_version")),
+        "step_index": step_input.get("step_index"),
+        "first_frame": first_frame,
+        "skeleton_video": skeleton_video,
+        "conditioning_video_review_validation": conditioning_validation,
+        "conditioning_video_visual_smoke": conditioning_visual_smoke,
+        "conditioning_video_decode_valid_for_review": conditioning_validation.get("status")
+        == "completed",
+        "conditioning_video_visually_useful_for_model_input": bool(
+            _mapping(conditioning_visual_smoke.get("claim_boundary")).get(
+                "visual_rollout_useful_for_task_success_review"
+            )
+        ),
+        "prompt": _task_prompt_from_wam_generation_step(step_input),
+        "num_frames": num_frames,
+        "fps": fps,
+        "height": height,
+        "width": width,
+        "source_policy_observation_frame_path": str(source_frame),
+        "source_action": {
+            "action_type": _mapping(step_input.get("source_policy_action")).get("action_type"),
+            "action_chunk_value_count": len(action_values),
+            "unitree_groot_n17_sonic_action_chunk_present": bool(action_values),
+        },
+        "requested_output": {
+            "next_observation_frame_path": requested_output.get("next_observation_frame_path"),
+            "action_conditioned_generation_required": bool(
+                requested_output.get("action_conditioned_generation_required")
+            ),
+        },
+        "rgb_video": {
+            "path": None,
+            "source": "single_policy_observation_frame_only",
+            "used_for_oscar_rgb_latent_context": False,
+            "rgb_context_mode": "never",
+            "omitted_for_wam_generation_step_single_frame_input": True,
+        },
+        "source_review_video": {
+            "camera": _string(
+                _mapping(observation.get("visual_observation")).get("camera_id")
+            )
+            or "head_pov",
+            "source": "wam_generation_step_source_policy_observation_frame",
+            "review_video_available": False,
+            "single_frame_policy_observation_used": True,
+        },
+        "projected_skeleton_trace": {
+            "path": None,
+            "available": False,
+            "used_for_conditioning": False,
+            "row_count": 0,
+            "projectable_row_count": 0,
+            "conditioning_source": "policy_action_proxy_video_from_unitree_sonic_action_chunk",
+            "simulated_state_not_physical_robot_sensor_evidence": True,
+        },
+        "source_camera": _string(
+            _mapping(observation.get("visual_observation")).get("camera_id")
+        )
+        or "head_pov",
+        "task_id": observation.get("task_id"),
+        "target_object_id": observation.get("target_object_id"),
+        "claim_boundary": {
+            "wam_generation_step_input_materialized_for_oscar_provider": True,
+            "source_frame_is_simulated_policy_observation": True,
+            "single_frame_policy_observation_used_instead_of_review_video": True,
+            "policy_action_conditioning_proxy_video_used": True,
+            "policy_action_conditioning_proxy_is_not_wam_output": True,
+            "policy_action_conditioning_proxy_is_not_physical_robot_sensor_evidence": True,
+            "skeleton_conditioning_is_proxy_from_policy_action_chunk": True,
+            "projected_g1_skeleton_conditioning_used": False,
+            "projected_g1_skeleton_conditioning_is_not_physical_robot_sensor_evidence": True,
+            "rgb_video_uses_selected_review_video": False,
+            "rgb_video_used_for_oscar_rgb_latent_context": False,
+            "rgb_context_mode": "never",
+            "true_robot_proprioceptive_skeleton_available": False,
+            "generated_input_is_not_model_output": True,
+            "conditioning_video_visual_smoke_is_not_wam_output_success": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "real_world_manipulation_success_proven": False,
+        },
+    }
+    write_json(work_dir / "oscar_wam_input_package_manifest.json", manifest)
+    return manifest
+
+
 def _scrub_local_absolute_paths(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): _scrub_local_absolute_paths(item) for key, item in value.items()}
@@ -2330,6 +2680,7 @@ def build_oscar_wam_provider_bundle(
         blockers.append("wam_rollout_input_manifest_missing")
     else:
         rollout_manifest = _read_json(resolved_rollout_input)
+    materialization_error: dict[str, Any] = {}
     try:
         if not blockers and oscar_input_dir:
             resolved_input_dir = Path(oscar_input_dir).expanduser().resolve()
@@ -2343,6 +2694,18 @@ def build_oscar_wam_provider_bundle(
                 package_manifest_path=resolved_package_manifest,
                 rollout_manifest=rollout_manifest,
             )
+        elif not blockers and _string(rollout_manifest.get("schema_version")) == (
+            "wam_generation_step_input.v1"
+        ):
+            workspace = resolved_job_dir / "local_input_materialization"
+            input_package = _materialize_oscar_input_package_from_wam_generation_step(
+                step_input=rollout_manifest,
+                work_dir=workspace,
+                width=width,
+                height=height,
+                fps=fps,
+                num_frames=num_frames,
+            )
         elif not blockers:
             workspace = resolved_job_dir / "local_input_materialization"
             input_package = _materialize_oscar_input_package(
@@ -2354,7 +2717,17 @@ def build_oscar_wam_provider_bundle(
                 num_frames=num_frames,
             )
     except Exception as exc:
+        materialization_error = {
+            "type": type(exc).__name__,
+            "message": _safe_error_text(exc),
+            "raw_message_omitted_if_path_like": bool("/" in str(exc) or "\\" in str(exc)),
+        }
         blockers.append(f"oscar_wam_input_package_materialization_failed:{type(exc).__name__}")
+        if materialization_error["message"]:
+            blockers.append(
+                "oscar_wam_input_package_materialization_error:"
+                + str(materialization_error["message"])
+            )
     conditioning_video_blockers: list[str] = []
     if not blockers:
         conditioning_video_blockers = _conditioning_video_input_blockers(input_package)
@@ -2399,6 +2772,8 @@ def build_oscar_wam_provider_bundle(
         "oscar_source_url": oscar_source_url,
         "oscar_hf_repo": oscar_hf_repo,
         "input_package_conditioning_video_blockers": conditioning_video_blockers,
+        "input_package_materialization_error": materialization_error,
+        "input_package_source_schema_version": rollout_manifest.get("schema_version"),
         "blockers": blockers,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,

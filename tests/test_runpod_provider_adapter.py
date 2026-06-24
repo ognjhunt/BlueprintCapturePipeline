@@ -101,6 +101,19 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     assert result["api_call_performed"] is False
     assert result["secret_values_in_artifact"] is False
     assert result["raw_api_key_stored"] is False
+    endpoint_manifest_path = Path(result["provider_worker_endpoint_manifest_path"])
+    endpoint_manifest = _read_json(endpoint_manifest_path)
+    assert endpoint_manifest_path == tmp_path / "provider_worker_endpoint_manifest.json"
+    assert endpoint_manifest["provider"] == "runpod"
+    assert endpoint_manifest["provider_mode"] == "serverless-run"
+    assert endpoint_manifest["worker_invocation_grain"] == "evaluation_job_provider_submission"
+    assert endpoint_manifest["direct_policy_infer_from_local_loop_allowed"] is False
+    assert endpoint_manifest["known_endpoint"]["serverless_endpoint_id_present"] is True
+    assert (
+        endpoint_manifest["consumer_env_contract"]["worker_url_env"]
+        == "BLUEPRINT_PROVIDER_POLICY_WORKER_URL"
+    )
+    assert endpoint_manifest == result["provider_worker_endpoint_manifest"]
     cost_policy = result["cost_control_policy"]
     assert cost_policy["hard_timeout_seconds"] == 120  # type: ignore[index]
     assert cost_policy["idle_timeout_seconds"] == 60  # type: ignore[index]

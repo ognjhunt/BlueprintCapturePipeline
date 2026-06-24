@@ -27,6 +27,20 @@ from blueprint_pipeline.vast_provider_adapter import (
 @pytest.fixture(autouse=True)
 def _isolate_vast_launch_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(vpa.VAST_LAUNCH_LOCK_FILE_ENV, str(tmp_path / "vast_paid_launch.lock"))
+    monkeypatch.delenv(vpa.VAST_WAM_MIN_GPU_RAM_MB_ENV, raising=False)
+    monkeypatch.delenv(vpa.VAST_IMAGE_LOGIN_MODE_ENV, raising=False)
+    for env_name in vpa.HF_TOKEN_FILE_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv(vpa.HF_TOKEN_FILE_ENV, str(tmp_path / "missing_hf_token"))
+    for env_name in (
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+        "BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIM2SIM_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -167,6 +181,54 @@ def _write_valid_unitree_unifolm_provider_bundle(path: Path) -> None:
         archive.writestr(
             "provider_runtime/blueprint_pipeline/unitree_unifolm_vla_server_bridge.py",
             "# bundled bridge\n",
+        )
+
+
+def _write_valid_unitree_groot_n17_sonic_provider_bundle(path: Path) -> None:
+    readiness = {
+        "schema_version": "unitree_groot_n17_sonic_policy_provider_bundle.v1",
+        "local_bundle_ready_for_remote_staging": True,
+        "ready_for_fresh_model_execution": True,
+        "runtime_execution_blockers": [],
+    }
+    readiness_path = (
+        path.parent
+        / "provider_runtime"
+        / "unitree_groot_n17_sonic_policy_provider_manifest.json"
+    )
+    readiness_path.parent.mkdir(parents=True, exist_ok=True)
+    readiness_path.write_text(json.dumps(readiness), encoding="utf-8")
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh",
+            "unitree_groot_n17_sonic_provider_runner_failed_without_runtime_result\n"
+            "blocked_unitree_groot_n17_sonic_process_exited_without_result\n",
+        )
+        archive.writestr(
+            "provider_runtime/unitree_groot_n17_sonic_provider_runner.py",
+            "unitree_groot_n17_sonic_policy_provider_output.json\n"
+            "unitree_groot_n17_sonic_model_executed = False\n"
+            "unitree_groot_n17_sonic_policy_action_command_ran = False\n",
+        )
+        archive.writestr(
+            "provider_runtime/unitree_groot_n17_sonic_policy_provider_manifest.json",
+            json.dumps(readiness),
+        )
+        archive.writestr("provider_runtime/policy_input.json", "{}\n")
+        archive.writestr("provider_runtime/input_frame.png", b"png")
+        archive.writestr("provider_runtime/blueprint_pipeline/__init__.py", "")
+        archive.writestr("provider_runtime/blueprint_pipeline/common.py", "# bundled common\n")
+        archive.writestr(
+            "provider_runtime/blueprint_pipeline/unitree_groot_n17_sonic_policy_command_adapter.py",
+            "# bundled adapter\n",
+        )
+        archive.writestr(
+            "provider_runtime/blueprint_pipeline/unitree_groot_n17_sonic_policy_runtime.py",
+            "# bundled runtime\n",
+        )
+        archive.writestr(
+            "provider_runtime/blueprint_pipeline/unitree_groot_n17_sonic_policy_server_command.py",
+            "# bundled server command\n",
         )
 
 
@@ -362,6 +424,39 @@ def test_unitree_unifolm_bundle_preflight_uses_unitree_entrypoint(tmp_path: Path
     )
 
 
+def test_unitree_groot_n17_sonic_bundle_preflight_uses_groot_entrypoint(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "unitree_groot_n17_sonic_bundle.zip"
+    _write_valid_unitree_groot_n17_sonic_provider_bundle(bundle)
+
+    manifest = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path,
+        generated_at="2026-06-24T00:00:00+00:00",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="unitree_groot_n17_sonic",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.trycloudflare.com/groot.zip?token=redacted",
+        provider_output_put_url="https://example.trycloudflare.com/groot-out.zip?token=redacted",
+    )
+
+    assert manifest["status"] == "passed"
+    assert manifest["provider_bundle_kind"] == "unitree_groot_n17_sonic"
+    assert manifest["isaac_smoke_enabled"] is False
+    assert manifest["missing_zip_entries"] == []
+    assert manifest["provider_bundle_local_ready_for_remote_staging"] is True
+    assert (
+        vpa._resolve_launch_mode(
+            requested="auto",
+            enable_isaac_smoke=False,
+            enable_blueprint_bundle=True,
+            provider_bundle_kind="unitree_groot_n17_sonic",
+        )
+        == "ssh_direct"
+    )
+
+
 def test_inline_wam_provider_bundle_payload_is_redacted_in_request_summary(
     tmp_path: Path,
 ) -> None:
@@ -443,6 +538,16 @@ def test_inline_provider_bundle_payload_is_wam_only_and_size_capped(
     assert unitree_inline["inline_provider_bundle_transport_used"] is True
     assert unitree_inline["inline_provider_bundle_sha256_present"] is True
 
+    groot_bundle = tmp_path / "unitree_groot_bundle.zip"
+    _write_valid_unitree_groot_n17_sonic_provider_bundle(groot_bundle)
+    groot_inline = vpa._inline_provider_bundle_payload(
+        groot_bundle,
+        provider_bundle_kind="unitree_groot_n17_sonic",
+        enable_blueprint_bundle=True,
+    )
+    assert groot_inline["inline_provider_bundle_transport_used"] is True
+    assert groot_inline["inline_provider_bundle_sha256_present"] is True
+
     too_large = vpa._inline_provider_bundle_payload(
         bundle,
         provider_bundle_kind="wam",
@@ -505,6 +610,29 @@ def test_vast_adapter_disables_inline_wam_or_unitree_bundle_when_fetch_url_prese
     assert unitree_result["provider_bundle_inline_transport_used"] is False
     assert (
         unitree_result["provider_bundle_inline_transport_reason"]
+        == "disabled_for_vast_env_size_with_fetch_url"
+    )
+
+    groot_bundle = tmp_path / "unitree-groot-dry-run.zip"
+    _write_valid_unitree_groot_n17_sonic_provider_bundle(groot_bundle)
+    groot_result = run_vast_provider_adapter(
+        job_dir=tmp_path / "unitree-groot-dry-run",
+        mode="dry-run",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        provider_bundle=groot_bundle,
+        provider_bundle_url="https://bundle.example/groot.zip?token=redacted",
+        provider_output_put_url="https://bundle.example/groot-out.zip?token=redacted",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="unitree_groot_n17_sonic",
+        vast_launch_mode="ssh_direct",
+        session_max_live_minutes=None,
+    )
+
+    assert groot_result["status"] == "dry_run_ready"
+    assert groot_result["provider_bundle_inline_transport_used"] is False
+    assert (
+        groot_result["provider_bundle_inline_transport_reason"]
         == "disabled_for_vast_env_size_with_fetch_url"
     )
 
@@ -647,6 +775,34 @@ def test_unitree_unifolm_provider_output_zip_accepts_policy_output(tmp_path: Pat
                     "unitree_unifolm_model_executed": True,
                     "unitree_unifolm_policy_action_command_ran": True,
                     "action": {"action_type": "manipulation_contact"},
+                    "blockers": [],
+                }
+            ),
+        )
+
+    result = vpa._inspect_provider_runtime_output_zip(
+        output_zip,
+        expected_video_count=0,
+    )
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == "completed"
+    assert result["video_smoke_proven"] is False
+
+
+def test_unitree_groot_n17_sonic_provider_output_zip_accepts_policy_output(
+    tmp_path: Path,
+) -> None:
+    output_zip = tmp_path / "unitree-groot-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_policy_provider_output.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "unitree_groot_n17_sonic_model_executed": True,
+                    "unitree_groot_n17_sonic_policy_action_command_ran": True,
+                    "action": {"action_type": "unitree_g1_sonic_latent_action_chunk"},
                     "blockers": [],
                 }
             ),
@@ -822,15 +978,42 @@ def test_vast_adapter_dry_run_writes_required_artifacts(tmp_path: Path) -> None:
         "vast_provider_command_result.json",
         "vast_teardown_manifest.json",
         "vast_final_validation.json",
+        "provider_worker_endpoint_manifest.json",
     ]
     for name in required:
         assert (tmp_path / name).is_file(), name
+    endpoint_manifest_path = Path(result["provider_worker_endpoint_manifest_path"])
+    endpoint_manifest = _read_json(endpoint_manifest_path)
+    assert endpoint_manifest_path == tmp_path / "provider_worker_endpoint_manifest.json"
+    assert endpoint_manifest["provider"] == "vast"
+    assert endpoint_manifest["status"] == "endpoint_discovery_pending_provider_runtime"
+    assert endpoint_manifest["direct_http_worker_endpoint_expected"] is True
+    assert endpoint_manifest["direct_policy_infer_from_local_loop_allowed"] is False
+    assert endpoint_manifest["claim_boundary"]["readyz_probe_required_before_customer_eval"] is True
+    assert endpoint_manifest["blockers"] == ["provider_worker_endpoint_not_discovered_yet"]
+    assert endpoint_manifest == result["provider_worker_endpoint_manifest"]
     offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
     assert offer["status"] == "dry_run_ready"
     assert offer["offer_search_performed"] is False
     validation = _read_json(tmp_path / "vast_final_validation.json")
     assert validation["status"] == "passed"
     assert validation["continuing_spend_from_this_run"] is False
+
+
+def test_vast_adapter_uses_image_login_mode_env_for_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(vpa.VAST_IMAGE_LOGIN_MODE_ENV, "never")
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="dry-run",
+        public_image="docker.io/nijelhunt/blueprint-vast-unitree-groot-sonic:20260624-pydeps-vast1",
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["ngc_image_login_mode"] == "never"
 
 
 def test_vast_adapter_template_discovery_blocks_before_api_without_read_only_gate(
@@ -1850,6 +2033,38 @@ def test_vast_adapter_excludes_avoidlisted_machine_ids() -> None:
     assert selected["machine_id"] == 202
 
 
+def test_vast_adapter_restricts_to_allowed_machine_ids() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "RTX A6000",
+                "gpu_ram_mb": 49140,
+                "dph_total": 0.31,
+                "driver_version": "580.159.03",
+                "machine_id": 111,
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "RTX A6000",
+                "gpu_ram_mb": 49140,
+                "dph_total": 0.42,
+                "driver_version": "580.159.03",
+                "machine_id": 222,
+            },
+        ],
+        max_hourly_rate=0.60,
+        min_gpu_ram_mb=48000,
+        allowed_machine_ids=[222],
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+    assert selected["machine_id"] == 222
+
+
 def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
     tmp_path: Path,
     monkeypatch,
@@ -2002,6 +2217,126 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
     assert vast_secret not in persisted
     assert ngc_secret not in persisted
     assert tunnel_token not in persisted
+
+
+def test_vast_adapter_unitree_groot_bundle_completes_without_video_smoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vast_secret = _configure_live_gates(tmp_path, monkeypatch)
+    docker_username = "nijelhunt"
+    docker_pat = "secret-docker-pat"
+    username_file = tmp_path / "docker_username"
+    pat_file = tmp_path / "docker_pat"
+    _write_secret(username_file, docker_username)
+    _write_secret(pat_file, docker_pat)
+    monkeypatch.setenv(vpa.DOCKER_USERNAME_FILE_ENV, str(username_file))
+    monkeypatch.setenv(vpa.DOCKER_PAT_FILE_ENV, str(pat_file))
+    provider_bundle = tmp_path / "unitree_groot_n17_sonic_provider_bundle.zip"
+    _write_valid_unitree_groot_n17_sonic_provider_bundle(provider_bundle)
+    runtime_output_zip = tmp_path / "vast_provider_runtime_output.zip"
+    with zipfile.ZipFile(runtime_output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_policy_provider_output.json",
+            json.dumps(
+                {
+                    "schema_version": "unitree_groot_n17_sonic_policy_provider_output.v1",
+                    "status": "completed",
+                    "canary_only": True,
+                    "unitree_groot_n17_sonic_model_executed": False,
+                    "unitree_groot_n17_sonic_policy_action_command_ran": False,
+                    "policy_action_model_command_ran": False,
+                    "action": None,
+                    "blockers": [],
+                }
+            ),
+        )
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["api_key"] == vast_secret
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": []}
+        if kwargs["method"] == "POST":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 424,
+                        "ask_contract_id": 424,
+                        "gpu_name": "RTX 3090",
+                        "gpu_ram_mb": 24576,
+                        "dph_total": 0.13,
+                        "driver_version": "580.159.03",
+                        "machine_id": 4242,
+                    }
+                ]
+            }
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/asks/424/":
+            payload = kwargs["payload"]
+            assert payload["image"] == (
+                "docker.io/nijelhunt/blueprint-vast-unitree-groot-sonic:20260624-pydeps-vast1"
+            )
+            assert payload["runtype"] == "ssh_direct"
+            assert payload["image_login"].startswith("-u nijelhunt -p ")
+            return 200, {"new_contract": 4241}
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/4241/":
+            return 200, {"instances": {"actual_status": "running", "cur_state": "running"}}
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/4241":
+            return 200, {"success": True, "result_url": "https://logs.example/unitree"}
+        if kwargs["method"] == "DELETE":
+            return 200, {"success": True}
+        raise AssertionError(kwargs)
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(
+        vpa,
+        "_fetch_text",
+        lambda *_args, **_kwargs: (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "NVIDIA GeForce RTX 3090, 580.159.03, 24576 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+            "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED\n"
+            "BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED\n"
+            "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n"
+            "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:0\n"
+            "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK\n"
+            "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED\n"
+            "BLUEPRINT_VAST_ONSTART_DONE\n"
+        ),
+    )
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "unitree-live",
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        public_image="docker.io/nijelhunt/blueprint-vast-unitree-groot-sonic:20260624-pydeps-vast1",
+        provider_bundle=provider_bundle,
+        provider_bundle_url="https://example.invalid/unitree.zip",
+        provider_output_put_url="https://example.invalid/out.zip",
+        provider_runtime_output_zip=runtime_output_zip,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="unitree_groot_n17_sonic",
+        ngc_image_login_mode="auto",
+        poll_interval_seconds=0,
+        startup_timeout_seconds=10,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "completed"
+    assert result["reason"] == "vast_startup_probe_completed"
+    provider = _read_json(tmp_path / "unitree-live" / "vast_provider_command_result.json")
+    assert provider["status"] == "completed"
+    assert provider["blueprint_provider_bundle_execution_proven"] is True
+    assert provider["video_smoke_expected_video_count"] == 0
+    video = _read_json(tmp_path / "unitree-live" / "vast_video_smoke_result.json")
+    assert video["status"] == "not_required"
+    assert video["expected_video_count"] == 0
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8") for path in (tmp_path / "unitree-live").glob("*.json")
+    )
+    assert vast_secret not in persisted
+    assert docker_pat not in persisted
 
 
 def test_vast_adapter_infers_provider_start_when_log_tail_drops_early_markers(
@@ -2379,6 +2714,16 @@ def test_vast_adapter_private_helper_edges(
     assert summary["reason"] == "docker_hub_image_login_supplied"
     assert summary["image_login_supplied"] is True
     assert summary["docker_secret_file_present"] is True
+    public_login, public_summary = vpa._resolve_image_login(
+        image="docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124-sdpa3",
+        ngc_key="",
+        docker_username="nijelhunt",
+        docker_pat="secret-docker-pat",
+        mode="never",
+    )
+    assert public_login is None
+    assert public_summary["reason"] == "docker_hub_image_login_disabled"
+    assert public_summary["image_login_supplied"] is False
     missing_login, missing_summary = vpa._resolve_image_login(
         image="docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124-sdpa3",
         ngc_key="",
@@ -2990,7 +3335,7 @@ def test_vast_adapter_blueprint_preflight_branch_matrix(
         def __exit__(self, *_args: object) -> None:
             return None
 
-        def read(self) -> bytes:
+        def read(self, _size: int = -1) -> bytes:
             return self._body
 
     def run_preflight_with_urlopen(fake_urlopen, *, allow_put: bool = True) -> dict[str, object]:
@@ -3034,6 +3379,41 @@ def test_vast_adapter_blueprint_preflight_branch_matrix(
     http_errors = run_preflight_with_urlopen(http_error_urlopen)
     assert http_errors["bundle_url_probe"]["http_status_code"] == 404
     assert http_errors["output_put_probe"]["http_status_code"] == 403
+
+    def head_403_get_range_urlopen(request, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        method = request.get_method()
+        if method == "HEAD":
+            raise urllib.error.HTTPError(
+                request.full_url,
+                403,
+                "head denied",
+                {},
+                BytesIO(b"denied"),
+            )
+        assert method == "GET"
+        range_header = (
+            request.get_header("Range")
+            or request.headers.get("Range")
+            or request.unredirected_hdrs.get("Range")
+        )
+        assert range_header == "bytes=0-0"
+        return FakeResponse(
+            status=206,
+            headers={
+                "Content-Length": "1",
+                "Content-Range": f"bytes 0-0/{valid_bundle.stat().st_size}",
+            },
+            body=b"P",
+        )
+
+    head_403_get_range = run_preflight_with_urlopen(
+        head_403_get_range_urlopen,
+        allow_put=False,
+    )
+    assert head_403_get_range["bundle_url_probe"]["status"] == "passed"
+    assert head_403_get_range["bundle_url_probe"]["method"] == "GET"
+    assert head_403_get_range["bundle_url_probe"]["head_http_status_code"] == 403
+    assert "provider_bundle_fetch_url_unreachable" not in head_403_get_range["blockers"]
 
     monkeypatch.setattr(
         vpa,
@@ -3175,6 +3555,14 @@ def test_vast_adapter_small_provider_helper_edges(
         enable_blueprint_bundle=True,
         provider_bundle_kind="wam",
     ) == "public"
+    for env_name in (
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_REF",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
     assert vpa._probe_env(job_dir=tmp_path / "env", enable_isaac_smoke=False) == {
         "BLUEPRINT_VAST_PROBE": "true",
         "BLUEPRINT_VAST_PROBE_JOB_DIR_BASENAME": "env",
@@ -3194,6 +3582,50 @@ def test_vast_adapter_small_provider_helper_edges(
     assert runtime_env["BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL"] == "true"
     assert runtime_env["BLUEPRINT_OSCAR_WAM_OMIT_FPS_ARG"] == "true"
     assert runtime_env["MY_API_KEY"] == "forwarded-secret"
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        "python3 -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command",
+    )
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT", "LucaFrat/groot-bs16")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT", "nvidia/GEAR-SONIC")
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL",
+        "tcp://127.0.0.1:5550",
+    )
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL",
+        "https://github.com/NVIDIA/Isaac-GR00T.git",
+    )
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_REF", "main")
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS",
+        "1800",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS",
+        "900",
+    )
+    unitree_env = vpa._probe_env(job_dir=tmp_path / "unitree", enable_isaac_smoke=False)
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"].startswith(
+        "python3 -m"
+    )
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT"] == "LucaFrat/groot-bs16"
+    assert unitree_env["BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT"] == "nvidia/GEAR-SONIC"
+    assert (
+        unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL"]
+        == "tcp://127.0.0.1:5550"
+    )
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER"] == "true"
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL"].endswith(
+        "/NVIDIA/Isaac-GR00T.git"
+    )
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_REF"] == "main"
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS"] == "1800"
+    assert (
+        unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS"]
+        == "900"
+    )
     payload = vpa._create_payload(
         image="image",
         label="label",
@@ -3247,6 +3679,16 @@ def test_vast_adapter_small_provider_helper_edges(
     assert "unitree_unifolm_provider_bundle" in unitree_script
     assert "run_unitree_unifolm_provider_runtime.sh" in unitree_script
     assert "unitree_unifolm_policy_provider_output.json" in unitree_script
+    groot_script = vpa._probe_shell_script(
+        "https://heartbeat.example",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="unitree_groot_n17_sonic",
+    )
+    assert "unitree_groot_n17_sonic_provider_bundle" in groot_script
+    assert "run_unitree_groot_n17_sonic_provider_runtime.sh" in groot_script
+    assert "unitree_groot_n17_sonic_policy_provider_output.json" in groot_script
+    assert "BLUEPRINT_VAST_PROVIDER_PYTHON_DEPS_MISSING" in groot_script
+    assert "msgpack-numpy" in groot_script
 
     monkeypatch.setattr(vpa.shutil, "which", lambda name: None if name == "ffprobe" else name)
     missing_video = vpa._ffprobe_video(tmp_path / "missing.mp4")
@@ -3744,7 +4186,41 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
         session_max_live_minutes=None,
     )
     assert no_offer["status"] == "blocked"
-    assert no_offer["blockers"] == ["no_vast_offer_selected"]
+    assert no_offer["blockers"] == ["no_vast_offer_at_or_below_max_hourly_rate"]
+
+    def no_allowed_offer_api(**kwargs):  # type: ignore[no-untyped-def]
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": []}
+        if kwargs["method"] == "POST":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 11,
+                        "ask_contract_id": 11,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram_mb": 49140,
+                        "dph_total": 0.40,
+                        "driver_version": "580.159.03",
+                        "machine_id": 111,
+                    }
+                ]
+            }
+        raise AssertionError(kwargs)
+
+    monkeypatch.setattr(vpa, "_api_json", no_allowed_offer_api)
+    no_allowed_offer = run_vast_provider_adapter(
+        job_dir=tmp_path / "no-allowed-offer",
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        session_max_live_minutes=None,
+        allowed_machine_ids=[222],
+    )
+    assert no_allowed_offer["status"] == "blocked"
+    assert no_allowed_offer["blockers"] == [
+        "no_vast_offer_matching_allowed_machine_ids",
+        "no_vast_offer_at_or_below_max_hourly_rate",
+    ]
 
     def expensive_offer_api(**kwargs):  # type: ignore[no-untyped-def]
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
@@ -4023,7 +4499,7 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
         session_max_live_minutes=None,
     )
     assert registration_failed["status"] == "blocked"
-    assert registration_failed["blockers"] == ["no_vast_offer_selected"]
+    assert registration_failed["blockers"] == ["no_vast_offer_at_or_below_max_hourly_rate"]
 
 
 def test_vast_adapter_mocked_wam_bundle_marks_isaac_not_required(
@@ -4672,6 +5148,25 @@ def test_vast_adapter_remaining_small_helper_branches(
     assert env["API_TOKEN"] == "token-secret"
     assert env["OTHER_SECRET"] == "other-secret"
     assert vpa._forwarded_secret_values() == ["token-secret", "other-secret"]
+
+    monkeypatch.delenv(vpa.VAST_FORWARD_SECRET_ENV_VARS_ENV, raising=False)
+    hf_token_file = tmp_path / "hf_token"
+    _write_secret(hf_token_file, "hf-secret-token")
+    monkeypatch.setenv(vpa.HF_TOKEN_FILE_ENV, str(hf_token_file))
+    hf_env = vpa._probe_env(job_dir=tmp_path / "hf-env", enable_isaac_smoke=False)
+    assert hf_env["HF_TOKEN"] == "hf-secret-token"
+    assert hf_env["HUGGING_FACE_HUB_TOKEN"] == "hf-secret-token"
+    assert hf_env["HF_HUB_DISABLE_TELEMETRY"] == "1"
+    assert vpa._forwarded_secret_values() == ["hf-secret-token"]
+    summary = vpa._create_request_summary(
+        {"env": hf_env},
+        secret_values=vpa._forwarded_secret_values(),
+    )
+    assert summary["raw_payload_redacted"]["env"]["HF_TOKEN"] == vpa.REDACTED_SECRET_FIELD
+    assert (
+        summary["raw_payload_redacted"]["env"]["HUGGING_FACE_HUB_TOKEN"]
+        == vpa.REDACTED_SECRET_FIELD
+    )
 
     with pytest.raises(ValueError, match="unsupported_provider_bundle_kind"):
         run_vast_provider_adapter(job_dir=tmp_path / "bad-kind", provider_bundle_kind="bad")

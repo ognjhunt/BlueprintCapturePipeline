@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event
+from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 
 
 RUNPOD_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "runpod_provider_adapter_result.v1"
@@ -759,6 +760,25 @@ def run_runpod_provider_adapter(
     if mode == "auto":
         mode = "serverless-run" if selected_endpoint_id else "on-demand-pod"
         result["mode"] = mode
+    endpoint_manifest_mode = (
+        "serverless-run" if mode == "dry-run" and selected_endpoint_id else mode
+    )
+    provider_worker_endpoint_manifest = write_provider_worker_endpoint_manifest(
+        output_dir=request_path.parent,
+        provider="runpod",
+        mode=endpoint_manifest_mode,
+        job_id=_string(request.get("job_id")),
+        serverless_endpoint_id=selected_endpoint_id,
+        provider_request_shape=_provider_shape(request),
+    )
+    result.update(
+        {
+            "provider_worker_endpoint_manifest_path": str(
+                request_path.parent / "provider_worker_endpoint_manifest.json"
+            ),
+            "provider_worker_endpoint_manifest": provider_worker_endpoint_manifest,
+        }
+    )
     request_blockers = _request_blockers(
         request=request,
         mode=mode,

@@ -902,6 +902,17 @@ the learned rollout, but they stay support artifacts: calibration gates,
 projected skeletons, VLM labels, and handle proxies do not prove physical
 contact, torque, safety, deployment approval, or real-world task success.
 
+The MuJoCo Unitree policy/WAM closed-loop helper now has a default local
+OSCAR-style support backend for the no-live-provider case. If no gated
+OSCAR/Cosmos WAM command is configured, `run_robot_policy_wam_closed_loop_attempt`
+generates action-conditioned next-observation frames plus short MP4 segments,
+records the policy action, simulated proprioception keys, and projected G1
+skeleton support in `wam_generated_next_observations.jsonl`, then re-queries
+the selected Unitree policy on those generated frames. Those artifacts are labeled
+`default_local_wam_generator_used=true` and
+`learned_oscar_or_cosmos_model_ran=false`; they are useful loop evidence, not a
+claim that a learned OSCAR/Cosmos checkpoint or physical robot sensor loop ran.
+
 Forward/inverse episode consistency is a separate scorer layer, not a property
 claimed by WAM execution or by the evaluator itself. The OSCAR/Cosmos WAM
 evaluator writes `wam_episode_consistency_request.json`; a separate VLM or human
@@ -1124,6 +1135,23 @@ AWS G6/G5-class instances when hyperscaler controls matter, and CoreWeave for
 reserved/scale AI infrastructure. Vast and community marketplace capacity are
 not the default customer path; they remain experiment or overflow lanes and
 must fail closed unless an explicit strict-preflight/canary override is present.
+The startup plan now includes `provider_worker_session_policy`: allocate a
+provider worker once per evaluation job or worker role, wait for `/readyz`, send
+all repeated policy calls to `/infer`, then request `/shutdown` after final
+artifacts are uploaded. `blueprint-build-provider-worker-contract` can write the
+standalone `provider_worker_contract.json`, and
+`blueprint-build-provider-worker-endpoint-manifest` can write the provider
+endpoint/discovery side artifact that RunPod and Vast adapters also emit as
+`provider_worker_endpoint_manifest.json`. That manifest is endpoint discovery,
+not allocation, readiness, teardown, cost, safety, or deployment proof.
+`blueprint-provider-worker-policy-command-adapter` lets existing policy-command
+loops call an already-running worker via `BLUEPRINT_PROVIDER_POLICY_WORKER_URL`
+and `BLUEPRINT_PROVIDER_POLICY_WORKER_READY_URL`. For explicit batch checks,
+`blueprint-run-provider-worker-session` waits for `/readyz` once, sends multiple
+`/infer` requests, and optionally asks `/shutdown` once while still requiring a
+provider teardown artifact for cost proof. One-shot provider launchers, such as
+a Vast command that rents an instance for a single policy action, are blocked
+from repeated WAM/policy loops rather than silently cold-starting per inference.
 Each job writes `gpu_provider_launch_request.json` as a dry-run provider envelope
 with worker image, command, env-var names, GPU constraints, timeout, max-worker,
 idle-shutdown, and artifact-finalizer requirements. It never stores provider

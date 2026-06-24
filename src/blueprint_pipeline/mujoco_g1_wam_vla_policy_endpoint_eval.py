@@ -34,6 +34,11 @@ from .mujoco_g1_simulator_command import (
     _resolve_g1_model_root,
     _write_g1_xml_with_absolute_meshes,
 )
+from .provider_worker_contract import (
+    PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
+    classify_policy_worker_command,
+    write_provider_worker_contract,
+)
 from .unitree_lerobot_policy_runtime import (
     UnitreeLeRobotPolicyRuntimeConfig,
     build_policy_provider_registry_probe,
@@ -96,6 +101,12 @@ REFERENCE_FIXTURE_POLICY_ID = "reference_fixture_policy"
 ROBOT_PROFILE_ID = "unitree_g1_mujoco_menagerie"
 DEFAULT_STEPS_PER_EPISODE = 3000
 DEFAULT_WAM_LOOP_STEP_COUNT = 12
+DEFAULT_WAM_GENERATION_TIMEOUT_SECONDS = 900.0
+WAM_GENERATION_TIMEOUT_ENV = "BLUEPRINT_WAM_GENERATION_TIMEOUT_SECONDS"
+DEFAULT_POLICY_ACTION_MODEL_COMMAND_TIMEOUT_SECONDS = 1800.0
+POLICY_ACTION_MODEL_COMMAND_TIMEOUT_ENV = (
+    "BLUEPRINT_POLICY_ACTION_MODEL_COMMAND_TIMEOUT_SECONDS"
+)
 DEFAULT_VIDEO_FRAME_STRIDE_STEPS = 8
 DEFAULT_REVIEW_VIDEO_FPS = 60
 DEFAULT_EXTEND_TERMINAL_FRAME_FOR_REVIEW = False
@@ -187,6 +198,24 @@ UNITREE_RL_GYM_LEG_JOINT_NAMES = (
     "right_ankle_pitch_joint",
     "right_ankle_roll_joint",
 )
+
+
+def _policy_action_model_command_timeout_seconds(endpoint_timeout_seconds: float) -> float:
+    override = os.getenv(POLICY_ACTION_MODEL_COMMAND_TIMEOUT_ENV, "").strip()
+    if override:
+        return _float_env(
+            POLICY_ACTION_MODEL_COMMAND_TIMEOUT_ENV,
+            DEFAULT_POLICY_ACTION_MODEL_COMMAND_TIMEOUT_SECONDS,
+        )
+    try:
+        endpoint_timeout = float(endpoint_timeout_seconds)
+    except (TypeError, ValueError):
+        endpoint_timeout = 0.0
+    if math.isfinite(endpoint_timeout) and endpoint_timeout > 30.0:
+        return endpoint_timeout
+    return DEFAULT_POLICY_ACTION_MODEL_COMMAND_TIMEOUT_SECONDS
+
+
 UNITREE_G1_SONIC_STATE_JOINT_GROUPS = {
     "left_leg": UNITREE_RL_GYM_LEG_JOINT_NAMES[:6],
     "right_leg": UNITREE_RL_GYM_LEG_JOINT_NAMES[6:],
@@ -578,6 +607,25 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "".join(json.dumps(dict(row), sort_keys=True) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def _read_jsonl(path: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if limit is not None and len(rows) >= limit:
+                    break
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                if isinstance(value, Mapping):
+                    rows.append(dict(value))
+    except Exception:
+        return rows
+    return rows
 
 
 def _utc_timestamp_for_path() -> str:
@@ -1417,11 +1465,18 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
             checkpoint_reference_kind,
         ) = _configured_checkpoint_reference(checkpoint_value)
         command_available = _command_available(command_value)
+        policy_worker_contract = classify_policy_worker_command(command_value)
         blockers: list[str] = []
         if not command_value:
             blockers.append("blocked_missing_policy_action_model_command")
         elif not command_available:
             blockers.append("blocked_policy_action_model_command_unavailable")
+        if command_value and not policy_worker_contract.get("repeated_policy_loop_allowed"):
+            blockers.extend(
+                str(item)
+                for item in policy_worker_contract.get("blockers", [])
+                if str(item)
+            )
         if not checkpoint_value:
             blockers.append("blocked_missing_policy_action_model_checkpoint")
         elif not checkpoint_configured:
@@ -1546,6 +1601,17 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
             "source_root_path": str(source_root_path) if source_root_path else None,
             "source_root_exists": source_root_exists,
             "extra_required_roots": extra_root_rows,
+            "provider_worker_contract_schema_version": PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
+            "policy_worker_contract": policy_worker_contract,
+            "policy_worker_invocation_kind": policy_worker_contract.get(
+                "invocation_kind"
+            ),
+            "repeated_policy_loop_allowed": bool(
+                policy_worker_contract.get("repeated_policy_loop_allowed")
+            ),
+            "provider_instance_launch_per_inference": policy_worker_contract.get(
+                "provider_instance_launch_per_inference"
+            ),
             "ready_for_policy_action_command": ready,
             "blockers": blockers,
         }
@@ -1611,6 +1677,7 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
     return {
         "schema_version": "policy_action_model_command_discovery.v1",
         "generated_at": generated_at,
+        "provider_worker_contract_schema_version": PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
         "status": "ready" if ready else "blocked_missing_unitree_policy_action_model_command",
         "selection_policy": "unitree_specific_policy_candidates_only",
         "selected_candidate_id": selected_candidate_id,
@@ -2216,6 +2283,31 @@ def run_policy_action_model_command_contract(
             bool(row.get("command_from_default")),
         ),
     )
+    selected_contract_candidate = (
+        ready_candidates[0]
+        if ready_candidates
+        else next(
+            (
+                row
+                for row in discovery.get("candidates", [])
+                if row.get("candidate_id") == discovery.get("selected_candidate_id")
+            ),
+            None,
+        )
+    )
+    selected_contract_command = ""
+    if isinstance(selected_contract_candidate, Mapping):
+        selected_contract_command = _string(
+            selected_contract_candidate.get("command_value_for_execution")
+        ) or os.getenv(str(selected_contract_candidate.get("command_env") or ""), "").strip()
+    provider_worker_contract = write_provider_worker_contract(
+        output_dir=job_dir,
+        generated_at=generated_at,
+        provider="provider_neutral",
+        worker_role="unitree_policy_action_worker",
+        policy_command=selected_contract_command,
+    )
+    provider_worker_contract_path = str(job_dir / "provider_worker_contract.json")
     blockers: list[str] = []
     if not allow_policy_action_model_command_run:
         blockers.append("missing_cli_allow_policy_action_model_command_run")
@@ -2254,6 +2346,8 @@ def run_policy_action_model_command_contract(
             "fresh_policy_action_model_executed_this_invocation": False,
             "selected_candidate_id": discovery.get("selected_candidate_id"),
             "discovery": discovery,
+            "provider_worker_contract_path": provider_worker_contract_path,
+            "provider_worker_contract": provider_worker_contract,
             "input_path": str(input_path),
             "output_path": str(output_path),
             "blockers": sorted(set(blockers)),
@@ -2405,6 +2499,8 @@ def run_policy_action_model_command_contract(
         ),
         "selected_candidate_id": selected_candidate_id,
         "selected_command_env": selected["command_env"],
+        "provider_worker_contract_path": provider_worker_contract_path,
+        "provider_worker_contract": provider_worker_contract,
         "input_path": str(input_path),
         "output_path": str(output_path),
         "action_payload_present": action_present,
@@ -2444,9 +2540,64 @@ def _execute_policy_action_model_candidate(
     write_json(input_path, dict(payload))
     if output_path.exists():
         output_path.unlink()
-    command = os.getenv(str(candidate.get("command_env") or ""), "").strip()
+    command = _string(candidate.get("command_value_for_execution")) or os.getenv(
+        str(candidate.get("command_env") or ""), ""
+    ).strip()
     selected_candidate_id = str(candidate.get("candidate_id") or "")
     started = time.monotonic()
+    policy_worker_contract = _mapping(candidate.get("policy_worker_contract"))
+    if not policy_worker_contract:
+        policy_worker_contract = classify_policy_worker_command(command)
+    if not policy_worker_contract.get("repeated_policy_loop_allowed"):
+        blockers = [
+            str(item)
+            for item in policy_worker_contract.get("blockers", [])
+            if str(item)
+        ] or ["blocked_policy_worker_not_safe_for_repeated_loop"]
+        command_result = {
+            "status": "blocked",
+            "duration_seconds": round(time.monotonic() - started, 6),
+            "policy_worker_invocation_kind": policy_worker_contract.get("invocation_kind"),
+            "provider_instance_launch_per_inference": policy_worker_contract.get(
+                "provider_instance_launch_per_inference"
+            ),
+            "blockers": blockers,
+        }
+        _write_blocked_policy_action_model_command_output(
+            output_path,
+            generated_at=utc_now_iso(),
+            selected_candidate_id=selected_candidate_id,
+            blockers=blockers,
+            command_result=command_result,
+        )
+        unitree_execution_flags = _unitree_policy_action_execution_flags(
+            ran=False,
+            selected_candidate_id=selected_candidate_id,
+            payload={},
+        )
+        return {
+            "status": "blocked",
+            "selected_candidate_id": selected_candidate_id,
+            "input_path": str(input_path),
+            "output_path": str(output_path),
+            "policy_action_model_command_ran": False,
+            "action_payload_present": False,
+            "action_payload_redacted": None,
+            "response_redacted": None,
+            "command_result": command_result,
+            "blockers": blockers,
+            **unitree_execution_flags,
+            "provider_output_replay_used": False,
+            "fresh_policy_action_model_executed_this_invocation": False,
+            "provider_worker_contract_schema_version": PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
+            "policy_worker_contract": policy_worker_contract,
+            "policy_worker_invocation_kind": policy_worker_contract.get("invocation_kind"),
+            "provider_instance_launch_per_inference": policy_worker_contract.get(
+                "provider_instance_launch_per_inference"
+            ),
+            "raw_credentials_written_to_artifacts": False,
+            "secret_hashes_written_to_artifacts": False,
+        }
     env = {
         **os.environ,
         "BLUEPRINT_POLICY_ACTION_INPUT": str(input_path),
@@ -2554,6 +2705,12 @@ def _execute_policy_action_model_candidate(
                 )
                 or unitree_execution_flags.get("unitree_policy_action_command_ran")
             )
+        ),
+        "provider_worker_contract_schema_version": PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
+        "policy_worker_contract": policy_worker_contract,
+        "policy_worker_invocation_kind": policy_worker_contract.get("invocation_kind"),
+        "provider_instance_launch_per_inference": policy_worker_contract.get(
+            "provider_instance_launch_per_inference"
         ),
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -2816,6 +2973,642 @@ def _materialize_wam_generated_frame(
     }
 
 
+def _wam_generation_action_numeric_values(
+    action: Mapping[str, Any],
+    *,
+    limit: int = 24,
+) -> list[float]:
+    values: list[float] = []
+
+    def collect(value: Any) -> None:
+        if len(values) >= limit:
+            return
+        if isinstance(value, bool):
+            return
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if math.isfinite(numeric):
+                values.append(numeric)
+            return
+        if isinstance(value, Mapping):
+            for child in value.values():
+                collect(child)
+                if len(values) >= limit:
+                    break
+            return
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for child in value:
+                collect(child)
+                if len(values) >= limit:
+                    break
+
+    for key in (
+        "action_chunk",
+        "action",
+        "joint_targets",
+        "actions",
+        "action_vector",
+        "joint_positions",
+        "arm_targets",
+        "hand_targets",
+        "gripper_targets",
+    ):
+        if key in action:
+            collect(action.get(key))
+            if values:
+                break
+    if not values:
+        collect(action)
+    return values[:limit]
+
+
+def _wam_skeleton_trace_candidates(job_dir: Path) -> list[Path]:
+    candidates = [
+        job_dir / "g1_projected_skeleton_trace.jsonl",
+        job_dir / "robot_fk_projected_skeleton_trace.jsonl",
+        job_dir / "simulation_automation" / "robot_fk_projected_skeleton_trace.jsonl",
+    ]
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
+def _same_existing_path(left: Any, right: Path) -> bool:
+    text = _string(left)
+    if not text:
+        return False
+    try:
+        return Path(text).expanduser().resolve() == right.resolve()
+    except Exception:
+        return Path(text).expanduser() == right
+
+
+def _projected_skeleton_points(
+    row: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> dict[str, tuple[int, int]]:
+    points: dict[str, tuple[int, int]] = {}
+    for landmark in row.get("landmarks") or []:
+        if not isinstance(landmark, Mapping):
+            continue
+        projection = _mapping(landmark.get("image_projection"))
+        if not projection.get("available"):
+            continue
+        u = _number(projection.get("u_px"), None)
+        v = _number(projection.get("v_px"), None)
+        if u is None or v is None:
+            continue
+        x = max(0, min(width - 1, int(round(float(u)))))
+        y = max(0, min(height - 1, int(round(float(v)))))
+        landmark_id = _string(landmark.get("landmark_id"))
+        if landmark_id:
+            points[landmark_id] = (x, y)
+    return points
+
+
+def _select_wam_skeleton_conditioning(
+    *,
+    job_dir: Path,
+    source_frame: Path,
+) -> dict[str, Any]:
+    best_row: dict[str, Any] | None = None
+    best_trace_path: Path | None = None
+    best_rank: tuple[int, str] | None = None
+    inspected_paths: list[str] = []
+    for trace_path in _wam_skeleton_trace_candidates(job_dir):
+        if not trace_path.is_file():
+            continue
+        inspected_paths.append(str(trace_path))
+        for index, row in enumerate(_read_jsonl(trace_path, limit=5000)):
+            projected_count = int(row.get("projected_landmark_count") or 0)
+            if projected_count <= 0:
+                continue
+            same_frame = _same_existing_path(row.get("camera_frame_path"), source_frame)
+            camera_id = _string(row.get("camera_id"))
+            rank = (
+                0 if same_frame else 1,
+                f"{0 - projected_count:06d}:{camera_id}:{index:06d}",
+            )
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best_row = dict(row)
+                best_trace_path = trace_path
+    if best_row is None:
+        return {
+            "projected_skeleton_trace_used": False,
+            "inspected_trace_paths": inspected_paths,
+            "projected_landmark_count": 0,
+            "segments": [],
+            "landmarks": [],
+            "blockers": ["projected_g1_skeleton_trace_not_available"],
+            "claim_boundary": {
+                "simulated_skeleton_conditioning_available": False,
+                "physical_robot_proprioception_proof": False,
+            },
+        }
+    landmarks = []
+    for landmark in best_row.get("landmarks") or []:
+        if not isinstance(landmark, Mapping):
+            continue
+        projection = _mapping(landmark.get("image_projection"))
+        if not projection.get("available"):
+            continue
+        landmarks.append(
+            {
+                "landmark_id": landmark.get("landmark_id"),
+                "u_px": projection.get("u_px"),
+                "v_px": projection.get("v_px"),
+                "depth_m_abs": projection.get("depth_m_abs"),
+            }
+        )
+    return {
+        "projected_skeleton_trace_used": True,
+        "trace_path": str(best_trace_path) if best_trace_path else None,
+        "source_camera_frame_path": best_row.get("camera_frame_path"),
+        "episode_id": best_row.get("episode_id"),
+        "scenario_eval_run_id": best_row.get("scenario_eval_run_id"),
+        "step": best_row.get("step"),
+        "camera_id": best_row.get("camera_id"),
+        "projected_landmark_count": int(best_row.get("projected_landmark_count") or 0),
+        "segments": [
+            dict(item)
+            for item in best_row.get("segments") or []
+            if isinstance(item, Mapping)
+        ],
+        "landmarks": landmarks[:16],
+        "blockers": [],
+        "claim_boundary": {
+            "simulated_skeleton_conditioning_available": True,
+            "derived_from_unitree_g1_mujoco_body_transforms": True,
+            "physical_robot_proprioception_proof": False,
+        },
+    }
+
+
+def _default_wam_action_conditioning(
+    *,
+    current_action: Mapping[str, Any],
+    current_observation: Mapping[str, Any],
+) -> dict[str, Any]:
+    values = _wam_generation_action_numeric_values(current_action)
+    observation_state = _mapping(current_observation.get("state"))
+    proprioception = _mapping(current_observation.get("proprioception"))
+    if not proprioception:
+        proprioception = {
+            key: value
+            for key, value in observation_state.items()
+            if key in {"joint_positions", "joint_velocities", "qpos", "qvel", "robot_pose"}
+        }
+    return {
+        "source_policy_action_type": current_action.get("action_type"),
+        "source_policy_action_summary": _policy_action_trace_summary(current_action),
+        "numeric_action_value_count": len(values),
+        "numeric_action_value_sample": [round(value, 6) for value in values[:8]],
+        "proprioception_keys": sorted(str(key) for key in proprioception.keys()),
+        "action_and_proprioception_conditioning_used": bool(values or proprioception),
+        "claim_boundary": {
+            "conditioned_on_policy_action_payload": bool(current_action),
+            "conditioned_on_simulated_proprioception_if_available": bool(proprioception),
+            "physical_robot_proprioception_proof": False,
+        },
+    }
+
+
+def _render_default_wam_next_observation_frame(
+    *,
+    source_frame: Path,
+    target_frame: Path,
+    step_index: int,
+    action_conditioning: Mapping[str, Any],
+    skeleton_conditioning: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageOps  # type: ignore[import-untyped]
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "blockers": [f"pillow_import_failed:{type(exc).__name__}"],
+            "source_frame_decoded": False,
+        }
+
+    source_frame_decoded = True
+    try:
+        image = Image.open(source_frame).convert("RGB")
+        image = ImageOps.exif_transpose(image)
+    except Exception:
+        source_frame_decoded = False
+        image = Image.new("RGB", (640, 480), (34, 38, 44))
+    if image.width < 128 or image.height < 96:
+        image = image.resize((max(128, image.width * 4), max(96, image.height * 4)))
+
+    width, height = image.size
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    values = [
+        float(value)
+        for value in action_conditioning.get("numeric_action_value_sample", []) or []
+        if isinstance(value, (int, float))
+    ]
+    magnitude = sum(abs(value) for value in values[:6]) / max(1, min(6, len(values)))
+    dx = (
+        int(max(-0.32, min(0.32, sum(values[0::2]) * 0.08)) * width)
+        if values
+        else width // 10
+    )
+    dy = (
+        int(max(-0.24, min(0.24, sum(values[1::2]) * -0.08)) * height)
+        if len(values) > 1
+        else -height // 12
+    )
+    center = (width // 2, height // 2)
+    arrow_end = (
+        max(8, min(width - 9, center[0] + dx)),
+        max(8, min(height - 9, center[1] + dy)),
+    )
+    tint_alpha = max(34, min(118, int(42 + magnitude * 90)))
+    draw.rectangle((0, 0, width, height), fill=(20, 54, 68, tint_alpha))
+
+    skeleton_points: dict[str, tuple[int, int]] = {}
+    if skeleton_conditioning.get("projected_skeleton_trace_used"):
+        skeleton_row = {
+            "landmarks": [
+                {
+                    "landmark_id": landmark.get("landmark_id"),
+                    "image_projection": {
+                        "available": True,
+                        "u_px": landmark.get("u_px"),
+                        "v_px": landmark.get("v_px"),
+                    },
+                }
+                for landmark in skeleton_conditioning.get("landmarks", []) or []
+                if isinstance(landmark, Mapping)
+            ]
+        }
+        skeleton_points = _projected_skeleton_points(skeleton_row, width=width, height=height)
+        for segment in skeleton_conditioning.get("segments") or []:
+            if not isinstance(segment, Mapping):
+                continue
+            start = skeleton_points.get(_string(segment.get("from")))
+            end = skeleton_points.get(_string(segment.get("to")))
+            if start and end:
+                draw.line((start, end), fill=(72, 202, 228, 238), width=max(3, width // 180))
+        for point in skeleton_points.values():
+            radius = max(4, width // 160)
+            draw.ellipse(
+                (point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius),
+                fill=(249, 226, 116, 245),
+            )
+    wrist = (
+        skeleton_points.get("left_wrist")
+        or skeleton_points.get("right_wrist")
+        or skeleton_points.get("left_hand")
+        or skeleton_points.get("right_hand")
+        or center
+    )
+    draw.line((wrist, arrow_end), fill=(255, 116, 85, 250), width=max(4, width // 140))
+    radius = max(7, width // 90)
+    draw.ellipse(
+        (
+            arrow_end[0] - radius,
+            arrow_end[1] - radius,
+            arrow_end[0] + radius,
+            arrow_end[1] + radius,
+        ),
+        outline=(255, 245, 214, 250),
+        width=max(2, width // 260),
+    )
+    try:
+        font = ImageFont.load_default()
+        label = f"default WAM support step {step_index}"
+        draw.text((12, 10), label, fill=(240, 246, 250, 238), font=font)
+    except Exception:
+        pass
+    output = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+    ensure_dir(target_frame.parent)
+    output.save(target_frame, format="JPEG", quality=92)
+    return {
+        "status": "completed",
+        "blockers": [],
+        "source_frame_decoded": source_frame_decoded,
+        "source_frame_path": str(source_frame),
+        "generated_frame_path": str(target_frame),
+        "image_width": width,
+        "image_height": height,
+        "drawn_projected_skeleton_landmark_count": len(skeleton_points),
+        "drawn_action_vector": True,
+    }
+
+
+def _write_default_wam_next_observation_video_segment(
+    *,
+    generated_frame: Path,
+    target_video: Path,
+    step_index: int,
+    frame_count: int = 6,
+    fps: int = 6,
+) -> dict[str, Any]:
+    try:
+        from PIL import Image, ImageDraw, ImageFont  # type: ignore[import-untyped]
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "blockers": [f"pillow_import_failed:{type(exc).__name__}"],
+            "generated_video_segment_path": str(target_video),
+        }
+    frames_dir = target_video.parent / f"{target_video.stem}_frames"
+    ensure_dir(frames_dir)
+    try:
+        base = Image.open(generated_frame).convert("RGB")
+        font = ImageFont.load_default()
+        for index in range(frame_count):
+            frame = base.copy()
+            draw = ImageDraw.Draw(frame)
+            progress_x = int((index + 1) / max(1, frame_count) * frame.width)
+            draw.rectangle(
+                (0, frame.height - 8, progress_x, frame.height),
+                fill=(255, 116, 85),
+            )
+            draw.text(
+                (12, max(12, frame.height - 26)),
+                f"default WAM segment {step_index}.{index + 1}",
+                fill=(240, 246, 250),
+                font=font,
+            )
+            frame.save(frames_dir / f"frame_{index + 1:04d}.png")
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "blockers": [f"default_wam_video_segment_frame_write_failed:{type(exc).__name__}"],
+            "generated_video_segment_path": str(target_video),
+            "frame_dir": str(frames_dir),
+        }
+
+    ffmpeg_result = _write_video_from_frames(
+        frames_dir=frames_dir,
+        output_path=target_video,
+        fps=fps,
+    )
+    if ffmpeg_result.get("status") == "complete":
+        return {
+            "status": "completed",
+            "blockers": [],
+            "generated_video_segment_path": str(target_video),
+            "frame_dir": str(frames_dir),
+            "frame_count": frame_count,
+            "fps": fps,
+            "encoder": "ffmpeg_libx264",
+            "size_bytes": ffmpeg_result.get("size_bytes"),
+            "ffmpeg_result": ffmpeg_result,
+        }
+
+    try:
+        import cv2  # type: ignore[import-untyped]
+        import numpy as np  # type: ignore[import-untyped]
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "blockers": [
+                "ffmpeg_video_segment_write_failed",
+                f"opencv_video_segment_fallback_unavailable:{type(exc).__name__}",
+            ],
+            "generated_video_segment_path": str(target_video),
+            "frame_dir": str(frames_dir),
+            "ffmpeg_result": ffmpeg_result,
+        }
+
+    try:
+        first = Image.open(frames_dir / "frame_0001.png").convert("RGB")
+        width, height = first.size
+        ensure_dir(target_video.parent)
+        writer = cv2.VideoWriter(
+            str(target_video),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            float(fps),
+            (width, height),
+        )
+        if not writer.isOpened():
+            return {
+                "status": "blocked",
+                "blockers": ["opencv_video_writer_failed_for_default_wam_segment"],
+                "generated_video_segment_path": str(target_video),
+                "frame_dir": str(frames_dir),
+                "ffmpeg_result": ffmpeg_result,
+            }
+        try:
+            for index in range(frame_count):
+                frame = Image.open(frames_dir / f"frame_{index + 1:04d}.png").convert("RGB")
+                writer.write(cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR))
+        finally:
+            writer.release()
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "blockers": [f"opencv_video_segment_write_failed:{type(exc).__name__}"],
+            "generated_video_segment_path": str(target_video),
+            "frame_dir": str(frames_dir),
+            "ffmpeg_result": ffmpeg_result,
+        }
+    completed = target_video.is_file() and target_video.stat().st_size > 0
+    return {
+        "status": "completed" if completed else "blocked",
+        "blockers": [] if completed else ["default_wam_video_segment_missing_after_write"],
+        "generated_video_segment_path": str(target_video),
+        "frame_dir": str(frames_dir),
+        "frame_count": frame_count,
+        "fps": fps,
+        "encoder": "opencv_mp4v",
+        "size_bytes": target_video.stat().st_size if target_video.is_file() else 0,
+        "ffmpeg_result": ffmpeg_result,
+    }
+
+
+def _execute_default_local_wam_generation_step(
+    *,
+    job_dir: Path,
+    loop_dir: Path,
+    generated_at: str,
+    step_index: int,
+    source_frame: Path,
+    target_frame: Path,
+    current_action: Mapping[str, Any],
+    current_observation: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, Any]]:
+    input_dir = loop_dir / "wam_generation_inputs"
+    output_dir = loop_dir / "wam_generation_outputs"
+    video_dir = loop_dir / "generated_next_observation_video_segments"
+    input_path = input_dir / f"default_local_wam_step_{step_index:04d}_input.json"
+    output_path = output_dir / f"default_local_wam_step_{step_index:04d}_output.json"
+    video_path = video_dir / f"wam_generated_next_observation_step_{step_index:04d}.mp4"
+    action_conditioning = _default_wam_action_conditioning(
+        current_action=current_action,
+        current_observation=current_observation,
+    )
+    skeleton_conditioning = _select_wam_skeleton_conditioning(
+        job_dir=job_dir,
+        source_frame=source_frame,
+    )
+    input_payload = {
+        "schema_version": "default_local_wam_generation_step_input.v1",
+        "generated_at": generated_at,
+        "step_index": step_index,
+        "wam_evaluator_backend": "blueprint_default_oscar_style_wam",
+        "source_policy_observation_frame_path": str(source_frame),
+        "source_policy_action": dict(current_action),
+        "current_policy_observation": dict(current_observation),
+        "action_conditioning": action_conditioning,
+        "skeleton_conditioning": skeleton_conditioning,
+        "requested_output": {
+            "next_observation_frame_path": str(target_frame),
+            "next_observation_video_segment_path": str(video_path),
+            "action_conditioned_generation_required": True,
+            "action_conditioned_video_segment_required": True,
+        },
+        "claim_boundary": {
+            "default_local_wam_generator_used": True,
+            "oscar_style_action_skeleton_conditioning": True,
+            "learned_oscar_or_cosmos_model_ran": False,
+            "generated_next_observation_is_not_raw_capture": True,
+            "physical_robot_sensor_proof": False,
+        },
+    }
+    write_json(input_path, input_payload)
+    started = time.monotonic()
+    materialization = _render_default_wam_next_observation_frame(
+        source_frame=source_frame,
+        target_frame=target_frame,
+        step_index=step_index,
+        action_conditioning=action_conditioning,
+        skeleton_conditioning=skeleton_conditioning,
+    )
+    frame_completed = materialization.get("status") == "completed" and target_frame.is_file()
+    video_materialization = (
+        _write_default_wam_next_observation_video_segment(
+            generated_frame=target_frame,
+            target_video=video_path,
+            step_index=step_index,
+        )
+        if frame_completed
+        else {
+            "status": "blocked",
+            "blockers": ["default_wam_video_segment_not_attempted_without_frame"],
+            "generated_video_segment_path": str(video_path),
+        }
+    )
+    video_completed = video_materialization.get("status") == "completed" and video_path.is_file()
+    completed = bool(frame_completed and video_completed)
+    blockers = [str(item) for item in materialization.get("blockers", []) if str(item)]
+    blockers.extend(str(item) for item in video_materialization.get("blockers", []) if str(item))
+    if not frame_completed and not blockers:
+        blockers.append("default_local_wam_generated_frame_missing")
+    if frame_completed and not video_completed and not blockers:
+        blockers.append("default_local_wam_generated_video_segment_missing")
+    execution = {
+        "schema_version": "wam_generation_command_step_execution.v1",
+        "generated_at": generated_at,
+        "step_index": step_index,
+        "wam_evaluator_backend": "blueprint_default_oscar_style_wam",
+        "selected_command_env": None,
+        "input_path": str(input_path),
+        "output_path": str(output_path),
+        "command_ran": False,
+        "live_wam_generation_command_ran": False,
+        "default_local_wam_generator_used": True,
+        "duration_seconds": round(time.monotonic() - started, 6),
+        "status": "completed" if completed else "blocked",
+        "blockers": blockers,
+    }
+    output_summary = {
+        "schema_version": "wam_generation_command_step_output.v1",
+        "generated_at": generated_at,
+        "step_index": step_index,
+        "status": execution["status"],
+        "wam_evaluator_backend": "blueprint_default_oscar_style_wam",
+        "output_path": str(output_path),
+        "materialization": materialization,
+        "video_materialization": video_materialization,
+        "wam_model_checkpoint_used": False,
+        "action_conditioned_generation_ran": completed,
+        "default_local_wam_generator_used": True,
+        "live_wam_generation_command_ran": False,
+        "learned_oscar_or_cosmos_model_ran": False,
+        "action_conditioning": action_conditioning,
+        "skeleton_conditioning": skeleton_conditioning,
+        "blockers": blockers,
+        "claim_boundary": {
+            "generated_output_is_support_evidence_not_raw_capture": True,
+            "default_local_wam_generator_is_not_live_oscar_or_cosmos_model": True,
+            "learned_wam_checkpoint_invoked": False,
+            "physical_robot_sensor_proof": False,
+        },
+    }
+    write_json(
+        output_path,
+        {
+            "schema_version": "default_local_wam_generation_step_output.v1",
+            "generated_at": generated_at,
+            "status": execution["status"],
+            "generated_next_observation_frame_path": str(target_frame) if completed else None,
+            "generated_next_observation_video_path": str(video_path) if completed else None,
+            "wam_generation_step_output_summary": output_summary,
+            "action_conditioning": action_conditioning,
+            "skeleton_conditioning": skeleton_conditioning,
+            "materialization": materialization,
+            "video_materialization": video_materialization,
+            "blockers": blockers,
+        },
+    )
+    if not completed:
+        return None, execution, output_summary
+    generated_observation = {
+        "schema_version": "wam_generated_next_observation.v1",
+        "generated_at": generated_at,
+        "generated_observation_index": step_index,
+        "observation_source": "default_local_oscar_style_wam_next_observation",
+        "wam_evaluator_backend": "blueprint_default_oscar_style_wam",
+        "wam_model_checkpoint_used": False,
+        "action_conditioned_generation_ran": True,
+        "default_local_wam_generator_used": True,
+        "live_wam_generation_command_ran": False,
+        "learned_oscar_or_cosmos_model_ran": False,
+        "generated_next_observation_frame_path": str(target_frame),
+        "generated_next_observation_video_path": str(video_path),
+        "source_policy_action": dict(current_action),
+        "action_conditioning": action_conditioning,
+        "skeleton_conditioning": skeleton_conditioning,
+        "visual_observation": {
+            "available": True,
+            "camera_frame_path": str(target_frame),
+            "generated_video_segment_path": str(video_path),
+            "camera_id": "wam_generated_next_observation",
+            "wam_generated_observation": True,
+            "simulated_camera_view": True,
+            "physical_robot_sensor_proof": False,
+        },
+        "state": {
+            "generated_step_index": step_index,
+            "previous_action_type": current_action.get("action_type"),
+        },
+        "claim_boundary": {
+            "generated_observation_is_evaluator_output_not_raw_capture": True,
+            "generated_observation_from_default_local_wam_generator": True,
+            "generated_observation_from_live_wam_command": False,
+            "default_local_wam_generator_is_not_live_oscar_or_cosmos_model": True,
+            "learned_wam_checkpoint_invoked": False,
+            "frame_copy_placeholder_until_live_wam_model_configured": False,
+            "support_evidence_only": True,
+            "physical_robot_sensor_proof": False,
+        },
+    }
+    return generated_observation, execution, output_summary
+
+
 def _execute_live_wam_generation_step(
     *,
     loop_dir: Path,
@@ -2963,6 +3756,11 @@ def _execute_live_wam_generation_step(
             if row.get("backend_id") == selected_backend_id
         ),
         "action_conditioned_generation_ran": bool(execution["status"] == "completed"),
+        "default_local_wam_generator_used": False,
+        "live_wam_generation_command_ran": bool(
+            execution.get("command_ran") and execution.get("status") == "completed"
+        ),
+        "learned_oscar_or_cosmos_model_ran": bool(execution["status"] == "completed"),
         "blockers": execution.get("blockers", []),
     }
     if execution["status"] != "completed" or materialized_frame is None:
@@ -2975,6 +3773,9 @@ def _execute_live_wam_generation_step(
         "wam_evaluator_backend": selected_backend_id,
         "wam_model_checkpoint_used": output_summary["wam_model_checkpoint_used"],
         "action_conditioned_generation_ran": True,
+        "default_local_wam_generator_used": False,
+        "live_wam_generation_command_ran": True,
+        "learned_oscar_or_cosmos_model_ran": True,
         "generated_next_observation_frame_path": str(materialized_frame),
         "source_policy_action": dict(current_action),
         "visual_observation": {
@@ -2992,6 +3793,7 @@ def _execute_live_wam_generation_step(
         "claim_boundary": {
             "generated_observation_is_evaluator_output_not_raw_capture": True,
             "generated_observation_from_live_wam_command": True,
+            "generated_observation_from_default_local_wam_generator": False,
             "frame_copy_placeholder_until_live_wam_model_configured": False,
             "physical_robot_sensor_proof": False,
         },
@@ -3007,24 +3809,39 @@ def _write_wam_generation_command_artifacts(
     execution_steps: Sequence[Mapping[str, Any]],
     output_steps: Sequence[Mapping[str, Any]],
     structural_generation_count: int,
+    default_generation_count: int,
     blockers: Sequence[str],
 ) -> None:
     live_success_count = sum(
-        1 for row in output_steps if row.get("action_conditioned_generation_ran")
+        1
+        for row in output_steps
+        if row.get("action_conditioned_generation_ran")
+        and row.get("live_wam_generation_command_ran")
     )
+    default_success_count = sum(
+        1
+        for row in output_steps
+        if row.get("action_conditioned_generation_ran")
+        and row.get("default_local_wam_generator_used")
+    )
+    action_conditioned_success_count = live_success_count + default_success_count
     command_ran_count = sum(1 for row in execution_steps if row.get("command_ran"))
     write_json(
         loop_dir / "wam_generation_command_execution.json",
         {
             "schema_version": "wam_generation_command_execution.v1",
             "generated_at": generated_at,
-            "status": "completed" if live_success_count else "blocked",
+            "status": "completed" if action_conditioned_success_count else "blocked",
             "selected_backend_id": discovery.get("selected_backend_id"),
             "selected_command_env": discovery.get("selected_command_env"),
             "command_step_count": len(execution_steps),
             "command_ran_count": command_ran_count,
             "live_wam_generation_success_count": live_success_count,
+            "default_wam_generation_success_count": default_success_count,
+            "action_conditioned_generation_success_count": action_conditioned_success_count,
+            "default_local_wam_generator_used": bool(default_success_count),
             "structural_fallback_generation_count": structural_generation_count,
+            "default_local_generation_count": default_generation_count,
             "steps": [dict(row) for row in execution_steps],
             "blockers": sorted(set(str(item) for item in blockers if str(item))),
             "raw_credentials_written_to_artifacts": False,
@@ -3042,14 +3859,29 @@ def _write_wam_generation_command_artifacts(
         {
             "schema_version": "wam_generation_command_output.v1",
             "generated_at": generated_at,
-            "status": "completed" if live_success_count else "blocked",
-            "wam_evaluator_backend": discovery.get("selected_backend_id"),
+            "status": "completed" if action_conditioned_success_count else "blocked",
+            "wam_evaluator_backend": (
+                discovery.get("selected_backend_id")
+                if live_success_count
+                else (
+                    "blueprint_default_oscar_style_wam"
+                    if default_success_count
+                    else discovery.get("selected_backend_id")
+                )
+            ),
             "wam_model_checkpoint_used": any(
                 bool(row.get("wam_model_checkpoint_used")) for row in output_steps
             ),
-            "action_conditioned_generation_ran": bool(live_success_count),
+            "action_conditioned_generation_ran": bool(action_conditioned_success_count),
             "live_generated_next_observation_count": live_success_count,
+            "default_generated_next_observation_count": default_success_count,
+            "action_conditioned_generated_next_observation_count": (
+                action_conditioned_success_count
+            ),
+            "default_local_wam_generator_used": bool(default_success_count),
+            "learned_oscar_or_cosmos_model_ran": bool(live_success_count),
             "structural_fallback_generation_count": structural_generation_count,
+            "default_local_generation_count": default_generation_count,
             "outputs": [dict(row) for row in output_steps],
             "blockers": sorted(set(str(item) for item in blockers if str(item))),
             "claim_boundary": {
@@ -3058,6 +3890,13 @@ def _write_wam_generation_command_artifacts(
                 "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": (
                     structural_generation_count > 0
                 ),
+                "default_local_wam_generator_is_not_live_oscar_or_cosmos_model": bool(
+                    default_success_count
+                ),
+                "default_local_outputs_are_support_evidence_only": bool(
+                    default_success_count
+                ),
+                "learned_wam_checkpoint_invoked": bool(live_success_count),
                 "physical_robot_readiness_proven": False,
                 "deployment_readiness_proven": False,
                 "safety_validation_proven": False,
@@ -3364,6 +4203,7 @@ def run_robot_policy_wam_closed_loop_attempt(
             execution_steps=[],
             output_steps=[],
             structural_generation_count=0,
+            default_generation_count=0,
             blockers=list(wam_generation_discovery.get("blockers", []))
             + ["blocked_policy_loop_did_not_reach_wam_generation"],
         )
@@ -3420,6 +4260,8 @@ def run_robot_policy_wam_closed_loop_attempt(
             "live_wam_generation_command_ran": False,
             "action_conditioned_generation_ran": False,
             "live_wam_generation_success_count": 0,
+            "default_wam_generation_success_count": 0,
+            "default_local_wam_generator_used": False,
             "structural_wam_generation_count": 0,
             "side_by_side_trace_manifest": str(
                 loop_dir / "robot_policy_wam_side_by_side_trace_manifest.json"
@@ -3515,11 +4357,14 @@ def run_robot_policy_wam_closed_loop_attempt(
     wam_output_steps: list[dict[str, Any]] = []
     structural_wam_generation_count = 0
     live_wam_generation_success_count = 0
+    default_wam_generation_success_count = 0
     for step_index in range(1, max_calls):
         if source_frame is None or not source_frame.is_file():
             blockers.append("blocked_wam_loop_source_policy_frame_missing")
             break
-        generated_frame = generated_dir / f"wam_generated_next_observation_step_{step_index:04d}.jpg"
+        generated_frame = (
+            generated_dir / f"wam_generated_next_observation_step_{step_index:04d}.jpg"
+        )
         if wam_generation_discovery.get("ready_for_live_wam_generation"):
             generated_observation, execution_step, output_step = _execute_live_wam_generation_step(
                 loop_dir=loop_dir,
@@ -3541,37 +4386,26 @@ def run_robot_policy_wam_closed_loop_attempt(
                 break
             live_wam_generation_success_count += 1
         else:
-            shutil.copy2(source_frame, generated_frame)
-            structural_wam_generation_count += 1
-            generated_observation = {
-                "schema_version": "wam_generated_next_observation.v1",
-                "generated_at": generated_at,
-                "generated_observation_index": step_index,
-                "observation_source": "local_structural_wam_evaluator_next_observation",
-                "wam_evaluator_backend": "blueprint_local_structural_next_observation",
-                "wam_model_checkpoint_used": False,
-                "action_conditioned_generation_ran": False,
-                "generated_next_observation_frame_path": str(generated_frame),
-                "source_policy_action": current_action,
-                "visual_observation": {
-                    "available": True,
-                    "camera_frame_path": str(generated_frame),
-                    "camera_id": "wam_generated_next_observation",
-                    "wam_generated_observation": True,
-                    "simulated_camera_view": True,
-                    "physical_robot_sensor_proof": False,
-                },
-                "state": {
-                    "generated_step_index": step_index,
-                    "previous_action_type": current_action.get("action_type"),
-                },
-                "claim_boundary": {
-                    "generated_observation_is_evaluator_output_not_raw_capture": True,
-                    "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": True,
-                    "frame_copy_placeholder_until_live_wam_model_configured": True,
-                    "physical_robot_sensor_proof": False,
-                },
-            }
+            generated_observation, execution_step, output_step = (
+                _execute_default_local_wam_generation_step(
+                    job_dir=job_dir,
+                    loop_dir=loop_dir,
+                    generated_at=generated_at,
+                    step_index=step_index,
+                    source_frame=source_frame,
+                    target_frame=generated_frame,
+                    current_action=current_action,
+                    current_observation=current_observation,
+                )
+            )
+            wam_execution_steps.append(execution_step)
+            wam_output_steps.append(output_step)
+            if generated_observation is None:
+                blockers.extend(str(item) for item in execution_step.get("blockers", []))
+                if not execution_step.get("blockers"):
+                    blockers.append("blocked_default_local_wam_generation_failed")
+                break
+            default_wam_generation_success_count += 1
         generated_observations.append(generated_observation)
         packet = {
             **base_packet,
@@ -3606,9 +4440,14 @@ def run_robot_policy_wam_closed_loop_attempt(
         current_observation = _mapping(packet.get("observation"))
         source_frame = generated_frame
     wam_artifact_blockers = list(blockers)
-    if live_wam_generation_success_count == 0:
-        wam_artifact_blockers.extend(str(item) for item in wam_generation_discovery.get("blockers", []))
-        wam_artifact_blockers.append("blocked_live_wam_generation_command_not_run")
+    action_conditioned_generation_success_count = (
+        live_wam_generation_success_count + default_wam_generation_success_count
+    )
+    if action_conditioned_generation_success_count == 0:
+        wam_artifact_blockers.extend(
+            str(item) for item in wam_generation_discovery.get("blockers", [])
+        )
+        wam_artifact_blockers.append("blocked_wam_action_conditioned_generation_not_run")
     _write_wam_generation_command_artifacts(
         loop_dir=loop_dir,
         generated_at=generated_at,
@@ -3616,6 +4455,7 @@ def run_robot_policy_wam_closed_loop_attempt(
         execution_steps=wam_execution_steps,
         output_steps=wam_output_steps,
         structural_generation_count=structural_wam_generation_count,
+        default_generation_count=default_wam_generation_success_count,
         blockers=wam_artifact_blockers,
     )
     _write_jsonl(trace_path, policy_calls)
@@ -3638,11 +4478,11 @@ def run_robot_policy_wam_closed_loop_attempt(
     generated_count = len(generated_observations)
     if structural_action_responses >= 2 and generated_count >= 1 and repeated_policy_calls < 2:
         blockers.append("blocked_repeated_fresh_unitree_policy_calls_not_proven")
-    if generated_count >= 1 and live_wam_generation_success_count == 0:
-        blockers.append("blocked_live_wam_generation_command_not_run")
+    if generated_count >= 1 and action_conditioned_generation_success_count == 0:
+        blockers.append("blocked_wam_action_conditioned_generation_not_run")
     completed = bool(
         repeated_policy_calls >= 2
-        and live_wam_generation_success_count >= 1
+        and action_conditioned_generation_success_count >= 1
         and generated_count >= 1
         and not blockers
     )
@@ -3683,8 +4523,16 @@ def run_robot_policy_wam_closed_loop_attempt(
         "live_wam_generation_command_ran": any(
             row.get("command_ran") for row in wam_execution_steps
         ),
-        "action_conditioned_generation_ran": bool(live_wam_generation_success_count),
+        "action_conditioned_generation_ran": bool(
+            action_conditioned_generation_success_count
+        ),
         "live_wam_generation_success_count": live_wam_generation_success_count,
+        "default_wam_generation_success_count": default_wam_generation_success_count,
+        "action_conditioned_generation_success_count": (
+            action_conditioned_generation_success_count
+        ),
+        "default_local_wam_generator_used": bool(default_wam_generation_success_count),
+        "learned_oscar_or_cosmos_model_ran": bool(live_wam_generation_success_count),
         "structural_wam_generation_count": structural_wam_generation_count,
         "physical_robot_readiness_proven": False,
         "deployment_readiness_proven": False,
@@ -3720,6 +4568,13 @@ def run_robot_policy_wam_closed_loop_attempt(
             "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": (
                 structural_wam_generation_count > 0
             ),
+            "default_local_wam_generator_is_not_live_oscar_or_cosmos_model": (
+                default_wam_generation_success_count > 0
+            ),
+            "default_local_outputs_are_support_evidence_only": (
+                default_wam_generation_success_count > 0
+            ),
+            "learned_wam_checkpoint_invoked": live_wam_generation_success_count > 0,
             "frame_copy_placeholder_until_live_wam_model_configured": (
                 structural_wam_generation_count > 0
             ),
@@ -4398,6 +5253,7 @@ def build_policy_command_adapter_manifest(
         "status": "completed" if rows else "defined",
         "adapter_families": [
             "command_policy",
+            "provider_worker_policy",
             "unitree_g1_policy",
             GROOT_POLICY_ID,
             "unitree_lerobot_policy",
@@ -4414,6 +5270,17 @@ def build_policy_command_adapter_manifest(
         "openvla_policy_adapter_available_on_path": bool(
             shutil.which("blueprint-openvla-policy-command-adapter")
         ),
+        "provider_worker_policy_adapter_command": (
+            "blueprint-provider-worker-policy-command-adapter"
+        ),
+        "provider_worker_policy_adapter_available_on_path": bool(
+            shutil.which("blueprint-provider-worker-policy-command-adapter")
+        ),
+        "provider_worker_policy_adapter_contract": {
+            "requires_readyz_before_infer": True,
+            "does_not_allocate_provider": True,
+            "reuses_already_allocated_worker": True,
+        },
         "unitree_groot_n17_sonic_policy_adapter_command": (
             "blueprint-unitree-groot-n17-sonic-policy-command-adapter"
         ),
@@ -6934,9 +7801,15 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     unitree_lerobot_mode: str = "probe",
     allow_policy_action_model_command_run: bool = False,
     wam_loop_step_count: int = DEFAULT_WAM_LOOP_STEP_COUNT,
+    wam_generation_timeout_seconds: float | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated_at = generated_at or utc_now_iso()
+    effective_wam_generation_timeout_seconds = (
+        float(wam_generation_timeout_seconds)
+        if wam_generation_timeout_seconds and float(wam_generation_timeout_seconds) > 0.0
+        else _float_env(WAM_GENERATION_TIMEOUT_ENV, DEFAULT_WAM_GENERATION_TIMEOUT_SECONDS)
+    )
     if controller_backend not in CONTROLLER_BACKENDS:
         raise ValueError(f"controller_backend must be one of {', '.join(CONTROLLER_BACKENDS)}")
     if job_dir is None:
@@ -7049,7 +7922,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         job_dir=job_dir,
         generated_at=generated_at,
         allow_policy_action_model_command_run=allow_policy_action_model_command_run,
-        timeout_seconds=min(float(endpoint_timeout_seconds), 30.0),
+        timeout_seconds=_policy_action_model_command_timeout_seconds(
+            endpoint_timeout_seconds
+        ),
     )
     if (
         policy_action_model_command_execution.get("selected_candidate_id")
@@ -8442,11 +9317,12 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             },
         },
     )
-    policy_action_model_command_execution = run_policy_action_model_command_contract(
-        job_dir=job_dir,
-        generated_at=generated_at,
-        allow_policy_action_model_command_run=allow_policy_action_model_command_run,
-        timeout_seconds=min(float(endpoint_timeout_seconds), 30.0),
+    phase(
+        "policy_action_model_command_reused_for_wam_loop",
+        str(policy_action_model_command_execution.get("status") or "blocked"),
+        policy_action_model_command_ran=bool(
+            policy_action_model_command_execution.get("policy_action_model_command_ran")
+        ),
     )
     if (
         policy_action_model_command_execution.get("selected_candidate_id")
@@ -8537,7 +9413,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         generated_at=generated_at,
         policy_action_model_command_execution=policy_action_model_command_execution,
         loop_step_count=wam_loop_step_count,
-        timeout_seconds=min(float(endpoint_timeout_seconds), 30.0),
+        timeout_seconds=effective_wam_generation_timeout_seconds,
     )
     _write_jsonl(job_dir / "g1_mujoco_locomotion_trace.jsonl", locomotion_rows)
     _write_jsonl(
@@ -10710,6 +11586,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--skip-render", action="store_true")
     parser.add_argument("--endpoint-timeout-seconds", type=float, default=8.0)
     parser.add_argument(
+        "--wam-generation-timeout-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Timeout for live WAM generation commands. Defaults to "
+            f"${WAM_GENERATION_TIMEOUT_ENV} or {DEFAULT_WAM_GENERATION_TIMEOUT_SECONDS:.0f}s. "
+            "This is separate from short policy endpoint HTTP timeouts."
+        ),
+    )
+    parser.add_argument(
         "--max-contact-trace-rows",
         type=int,
         default=DEFAULT_MAX_CONTACT_TRACE_ROWS,
@@ -10806,6 +11692,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         video_cameras=args.video_cameras,
         fps=effective_fps,
         endpoint_timeout_seconds=args.endpoint_timeout_seconds,
+        wam_generation_timeout_seconds=args.wam_generation_timeout_seconds,
         max_contact_trace_rows=args.max_contact_trace_rows,
         allow_fetch_g1_assets=args.allow_fetch_g1_assets,
         menagerie_ref=args.menagerie_ref,

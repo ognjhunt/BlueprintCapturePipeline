@@ -12,6 +12,26 @@ from blueprint_pipeline import eval_ready_task_grounding as grounding
 from blueprint_pipeline import oscar_cosmos_wam_evaluator as evaluator
 
 
+_WAM_RUNTIME_ENV_VARS = (
+    "BLUEPRINT_OSCAR_WAM_COMMAND",
+    "BLUEPRINT_OSCAR_WAM_PROVIDER_COMMAND",
+    "BLUEPRINT_OSCAR_WAM_CHECKPOINT",
+    "BLUEPRINT_OSCAR_WAM_PROVIDER_USE_OBJECT_STORE",
+    "BLUEPRINT_COSMOS_WAM_COMMAND",
+    "BLUEPRINT_COSMOS_WAM_PROVIDER_COMMAND",
+    "BLUEPRINT_COSMOS_WAM_CHECKPOINT",
+    "BLUEPRINT_ALLOW_LOCAL_WAM_MODEL",
+    "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER",
+    "BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH",
+    "BLUEPRINT_WAM_MODEL_CHECKPOINT",
+)
+
+
+def _clear_wam_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _WAM_RUNTIME_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -273,9 +293,8 @@ def _input_job(tmp_path: Path) -> Path:
 def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _clear_wam_runtime_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_COMMAND", raising=False)
-    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", raising=False)
     monkeypatch.delenv("HF_TOKEN_FILE", raising=False)
     monkeypatch.delenv("NGC_API_KEY_FILE", raising=False)
     input_job = _input_job(tmp_path)
@@ -384,6 +403,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
 def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _clear_wam_runtime_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     input_job = _input_job(tmp_path)
     _write_json(
@@ -1988,6 +2008,7 @@ def test_oscar_cosmos_wam_evaluator_reports_source_tree_without_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_wam_runtime_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     source_root = tmp_path / "source-only-oscar"
     source_root.mkdir()
@@ -2016,9 +2037,9 @@ def test_oscar_cosmos_wam_evaluator_reports_checkpointed_missing_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_wam_runtime_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("BLUEPRINT_ALLOW_LOCAL_WAM_MODEL", "true")
-    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_COMMAND", raising=False)
     input_job = _input_job(tmp_path)
     checkpoint = tmp_path / "oscar-checkpoint"
     checkpoint.mkdir()

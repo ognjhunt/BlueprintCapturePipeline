@@ -48,6 +48,7 @@ def test_provider_rollout_normalization_handles_empty_and_invalid_numeric_payloa
 
 
 def test_provider_command_parser_and_live_gate_are_fail_closed(monkeypatch) -> None:
+    monkeypatch.delenv("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER", raising=False)
     commands = parse_wam_provider_commands(
         [
             "cosmos3_wam=/opt/cosmos adapter",

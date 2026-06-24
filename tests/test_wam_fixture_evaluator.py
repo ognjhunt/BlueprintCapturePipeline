@@ -346,6 +346,7 @@ def test_live_wam_provider_requires_explicit_and_env_gates(
     monkeypatch,
 ) -> None:
     capture_root, job_dir = _fixture_job(tmp_path)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER", raising=False)
     monkeypatch.setenv("BLUEPRINT_COSMOS3_WAM_API_KEY", "test-auth")
     command = f"{sys.executable} -c 'print(1)'"
 

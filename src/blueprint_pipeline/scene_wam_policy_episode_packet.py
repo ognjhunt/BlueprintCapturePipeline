@@ -2872,6 +2872,10 @@ def build_scene_wam_policy_episode_packet(
         "scene_physics_required_for_wam_loop": False,
         "physics_contact_validated": False,
         "scene_collision_geometry_validated": False,
+        "physical_robot_readiness_proven": False,
+        "deployment_readiness_proven": False,
+        "safety_validation_proven": False,
+        "real_world_manipulation_success_proven": False,
         "static_usd_aabb_clearance_proxy_passed": (
             _mapping(robot_placement.get("selected_clearance_check")).get("status") == "passed"
         ),

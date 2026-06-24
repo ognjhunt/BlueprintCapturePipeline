@@ -184,6 +184,10 @@ def test_scene_wam_policy_episode_packet_blocks_without_real_renderer(
     assert result["status"] == "blocked"
     assert result["scene_physics_required_for_wam_loop"] is False
     assert result["physics_contact_validated"] is False
+    assert result["physical_robot_readiness_proven"] is False
+    assert result["deployment_readiness_proven"] is False
+    assert result["safety_validation_proven"] is False
+    assert result["real_world_manipulation_success_proven"] is False
     assert (output_dir / "scene_wam_policy_episode_packet.json").is_file()
     assert (output_dir / "initial_policy_observation.json").is_file()
     assert (output_dir / "scene_episode_task_manifest.json").is_file()
@@ -230,6 +234,10 @@ def test_scene_wam_policy_episode_packet_ready_with_rendered_frame(
     )
 
     assert result["status"] == "ready_for_policy_wam_loop"
+    assert result["physical_robot_readiness_proven"] is False
+    assert result["deployment_readiness_proven"] is False
+    assert result["safety_validation_proven"] is False
+    assert result["real_world_manipulation_success_proven"] is False
     output_dir = Path(result["initial_policy_observation_path"]).parent
     observation = json.loads(
         (output_dir / "initial_policy_observation.json").read_text(encoding="utf-8")

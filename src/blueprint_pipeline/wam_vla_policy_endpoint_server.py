@@ -14,6 +14,17 @@ from typing import Any, Mapping, Sequence
 
 from fastapi import FastAPI, Header, HTTPException, Request
 
+from .provider_worker_contract import (
+    HEALTHZ_PATH,
+    INFER_PATH,
+    LEGACY_HEALTH_PATH,
+    LEGACY_POLICY_ACTION_PATH,
+    PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
+    READYZ_PATH,
+    SHUTDOWN_PATH,
+    classify_policy_worker_command,
+)
+
 
 COMMAND_ENV = "BLUEPRINT_WAM_VLA_POLICY_COMMAND"
 AUTH_TOKEN_FILE_ENV = "BLUEPRINT_WAM_VLA_POLICY_AUTH_TOKEN_FILE"
@@ -132,6 +143,43 @@ def run_policy_command(
     return dict(response), meta
 
 
+def _worker_health_payload(
+    *,
+    command: str,
+    token_file: str | None,
+    shutdown_requested: bool,
+) -> dict[str, Any]:
+    invocation_mode = _policy_adapter_invocation_mode(command)
+    command_classification = classify_policy_worker_command(command)
+    status = (
+        "blocked_shutdown_requested"
+        if shutdown_requested
+        else ("ready" if command else "blocked_missing_policy_command")
+    )
+    return {
+        "schema_version": "wam_vla_policy_endpoint_worker_health.v1",
+        "provider_worker_contract_schema_version": PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
+        "status": status,
+        "policy_command_configured": bool(command),
+        "policy_adapter_invocation_mode": invocation_mode,
+        "subprocess_spawned_per_request": invocation_mode == "subprocess",
+        "auth_token_file_configured": bool(token_file),
+        "shutdown_requested": shutdown_requested,
+        "canonical_http_contract": {
+            "healthz": HEALTHZ_PATH,
+            "readyz": READYZ_PATH,
+            "infer": INFER_PATH,
+            "shutdown": SHUTDOWN_PATH,
+        },
+        "legacy_http_contract": {
+            "health": LEGACY_HEALTH_PATH,
+            "policy_action": LEGACY_POLICY_ACTION_PATH,
+        },
+        "policy_worker_contract": command_classification,
+        "raw_token_values_returned": False,
+    }
+
+
 def create_app(
     *,
     policy_command: str | None = None,
@@ -146,25 +194,45 @@ def create_app(
         or os.getenv("VLA_POLICY_AUTH_TOKEN_FILE")
     )
     app = FastAPI(title="Blueprint WAM/VLA Policy Endpoint")
+    state: dict[str, Any] = {"shutdown_requested": False}
 
-    @app.get("/health")
+    @app.get(LEGACY_HEALTH_PATH)
     async def health() -> dict[str, Any]:
-        invocation_mode = _policy_adapter_invocation_mode(command)
+        return _worker_health_payload(
+            command=command,
+            token_file=token_file,
+            shutdown_requested=bool(state.get("shutdown_requested")),
+        )
+
+    @app.get(HEALTHZ_PATH)
+    async def healthz() -> dict[str, Any]:
+        return _worker_health_payload(
+            command=command,
+            token_file=token_file,
+            shutdown_requested=bool(state.get("shutdown_requested")),
+        )
+
+    @app.get(READYZ_PATH)
+    async def readyz() -> dict[str, Any]:
+        health_payload = _worker_health_payload(
+            command=command,
+            token_file=token_file,
+            shutdown_requested=bool(state.get("shutdown_requested")),
+        )
         return {
-            "status": "ready" if command else "blocked_missing_policy_command",
-            "policy_command_configured": bool(command),
-            "policy_adapter_invocation_mode": invocation_mode,
-            "subprocess_spawned_per_request": invocation_mode == "subprocess",
-            "auth_token_file_configured": bool(token_file),
-            "raw_token_values_returned": False,
+            **health_payload,
+            "schema_version": "wam_vla_policy_endpoint_worker_ready.v1",
+            "model_ready": bool(command) and not bool(state.get("shutdown_requested")),
+            "ready_for_inference": bool(command) and not bool(state.get("shutdown_requested")),
         }
 
-    @app.post("/policy/action")
-    async def policy_action(
+    async def _handle_policy_action_request(
         request: Request,
-        authorization: str | None = Header(default=None),
+        authorization: str | None,
     ) -> dict[str, Any]:
         _check_auth(authorization=authorization, token_file=token_file)
+        if state.get("shutdown_requested"):
+            raise HTTPException(status_code=503, detail="shutdown_requested")
         request_payload = await request.json()
         observation = _mapping(_mapping(request_payload).get("observation"))
         if not observation:
@@ -189,6 +257,45 @@ def create_app(
                 **meta,
                 "raw_response_redacted": _redact(response),
                 "raw_token_values_returned": False,
+                "canonical_infer_path": INFER_PATH,
+                "legacy_policy_action_path": LEGACY_POLICY_ACTION_PATH,
+            },
+        }
+
+    @app.post(LEGACY_POLICY_ACTION_PATH)
+    async def policy_action(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        return await _handle_policy_action_request(
+            request=request,
+            authorization=authorization,
+        )
+
+    @app.post(INFER_PATH)
+    async def infer(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        return await _handle_policy_action_request(
+            request=request,
+            authorization=authorization,
+        )
+
+    @app.post(SHUTDOWN_PATH)
+    async def shutdown(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _check_auth(authorization=authorization, token_file=token_file)
+        state["shutdown_requested"] = True
+        return {
+            "schema_version": "wam_vla_policy_endpoint_worker_shutdown.v1",
+            "status": "shutdown_requested",
+            "shutdown_acknowledged": True,
+            "process_shutdown_performed": False,
+            "provider_adapter_must_record_teardown": True,
+            "raw_token_values_returned": False,
+            "claim_boundary": {
+                "shutdown_response_is_not_provider_cost_or_teardown_proof": True,
+                "provider_adapter_teardown_artifact_required": True,
             },
         }
 

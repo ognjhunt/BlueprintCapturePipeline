@@ -10,6 +10,15 @@ The WAM/evaluator lane is separate. OSCAR, Cosmos, or Unitree WMA can generate
 or score future-world support artifacts, but that is not the same thing as a
 robot policy controlling G1 hands.
 
+When no live OSCAR/Cosmos command is configured, the MuJoCo Unitree policy/WAM
+loop uses Blueprint's default local OSCAR-style support generator. That default
+backend renders action-conditioned next-observation frames and short MP4
+segments, carries policy action/proprioception summaries and projected G1
+skeleton support into the WAM trace, and re-queries the selected Unitree policy
+on those generated frames. It sets `default_local_wam_generator_used=true` and
+`learned_oscar_or_cosmos_model_ran=false`; live learned WAM model execution still
+requires the explicit gated OSCAR/Cosmos command path.
+
 ## Current Policy Roles
 
 - `unitree_g1_policy`: realistic G1 locomotion/control candidate, such as
@@ -107,7 +116,12 @@ Implemented:
   manifest access succeeds, but that is image/runtime packaging evidence only,
   not live G1 hand-policy execution.
 - WAM evaluator requery artifacts that require a Unitree G1 hand/manipulation
-  policy endpoint before marking the policy/WAM loop as proven.
+  policy endpoint before marking the policy/WAM loop as proven. The default
+  no-live-WAM path now writes action-conditioned support frames, short MP4
+  segments, and `wam_generated_next_observations.jsonl` with projected skeleton
+  conditioning, then re-queries the selected Unitree policy on those generated
+  observations. This proves simulator-only policy/WAM loop plumbing, not learned
+  OSCAR/Cosmos model execution or physical robot readiness.
 
 ## Latest Proof Snapshot: 2026-06-22
 
@@ -747,6 +761,9 @@ scene + G1 observation
   -> separate VLM/human scorer labels success from generated or executed video
 ```
 
-The current repo has the adapter contracts and fail-closed manifests for this
-loop. It must continue to block rather than fake success when a runnable
-Unitree hand-policy command or checkpoint is missing.
+The current repo has adapter contracts, a default local action/skeleton
+conditioned support generator, and fail-closed manifests for this loop. It must
+continue to block rather than fake success when a runnable Unitree hand-policy
+command or checkpoint is missing. A default local WAM completion is not a live
+learned OSCAR/Cosmos completion, deployment readiness, safety validation, or
+physical robot task proof.

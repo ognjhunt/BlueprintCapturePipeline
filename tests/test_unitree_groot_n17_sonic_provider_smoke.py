@@ -43,8 +43,16 @@ def test_groot_n17_sonic_provider_bundle_contains_runtime_contract(tmp_path: Pat
     assert "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh" in names
     assert "provider_runtime/unitree_groot_n17_sonic_policy_provider_manifest.json" in names
     assert "provider_runtime/policy_input.json" in names
+    assert (
+        "provider_runtime/blueprint_pipeline/unitree_groot_n17_sonic_policy_server_command.py"
+        in names
+    )
     ast.parse(runner_text)
     assert "run_unitree_groot_n17_sonic_policy" in runner_text
+    assert "uv run --project" not in runner_text
+    assert "venv_python" in runner_text
+    assert "snapshot_download" in runner_text
+    assert '"processor_config.json"' in runner_text
     assert manifest["env_contract"]["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"] == (
         "<configured>"
     )
@@ -55,6 +63,51 @@ def test_groot_n17_sonic_provider_bundle_contains_runtime_contract(tmp_path: Pat
         is False
     )
     assert manifest["truth_boundary"]["physical_robot_readiness_proven"] is False
+
+
+def test_groot_provider_bundle_preserves_scene_policy_observation(tmp_path: Path) -> None:
+    observation_path = tmp_path / "initial_policy_observation.json"
+    observation = {
+        "schema_version": "blueprint_policy_observation.v1",
+        "task_id": "turn_on_sink_handle",
+        "visual_observation": {"camera_frame_path": "/old/frame.jpg"},
+        "unitree_g1_sonic_state": {
+            "left_leg": [0.0] * 6,
+            "right_leg": [0.0] * 6,
+            "waist": [0.0] * 3,
+            "left_arm": [0.0] * 7,
+            "right_arm": [0.0] * 7,
+            "left_hand": [0.0] * 7,
+            "right_hand": [0.0] * 7,
+            "projected_gravity": [0.0, 0.0, -1.0],
+        },
+        "unitree_g1_sonic_state_source": "scene_packet_contract_probe_zero_state",
+    }
+    observation_path.write_text(json.dumps(observation), encoding="utf-8")
+
+    manifest = smoke.build_unitree_groot_n17_sonic_policy_provider_bundle(
+        job_dir=tmp_path / "job",
+        frame_path=_frame(tmp_path / "frame.png"),
+        policy_observation_path=observation_path,
+    )
+
+    assert manifest["policy_observation_preserved"] is True
+    policy_input = json.loads(
+        Path(manifest["policy_input_path"]).read_text(encoding="utf-8")
+    )
+    bundled_observation = policy_input["observation"]
+    assert bundled_observation["task_id"] == "turn_on_sink_handle"
+    assert sorted(bundled_observation["unitree_g1_sonic_state"]) == [
+        "left_arm",
+        "left_hand",
+        "left_leg",
+        "projected_gravity",
+        "right_arm",
+        "right_hand",
+        "right_leg",
+        "waist",
+    ]
+    assert bundled_observation["visual_observation"]["camera_frame_path"] == "input_frame.png"
 
 
 def test_import_groot_n17_sonic_provider_output_completed(tmp_path: Path) -> None:

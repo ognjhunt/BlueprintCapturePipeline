@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .logging_utils import log_event
+from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 
 
 VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "vast_provider_adapter_result.v1"
@@ -70,6 +71,7 @@ VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64"
 VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256"
 VAST_INLINE_PROVIDER_BUNDLE_MAX_RAW_BYTES = 96_000
 VAST_INLINE_PROVIDER_BUNDLE_MAX_BASE64_CHARS = 130_000
+VAST_IMAGE_LOGIN_MODE_ENV = "BLUEPRINT_VAST_IMAGE_LOGIN_MODE"
 DEFAULT_VAST_API_KEY_FILE = "~/.blueprint-secrets/vast_api_key"
 DEFAULT_VAST_LAUNCH_LOCK_FILENAME = "vast_paid_launch.lock"
 DEFAULT_VAST_SESSION_BUDGET_FILENAME = "vast_session_cost_summary.json"
@@ -78,6 +80,14 @@ DOCKER_USERNAME_FILE_ENV = "DOCKER_USERNAME_FILE"
 DOCKER_PAT_FILE_ENV = "DOCKER_PAT_FILE"
 DEFAULT_DOCKER_USERNAME_FILE = "~/.blueprint-secrets/docker_username"
 DEFAULT_DOCKER_PAT_FILE = "~/.blueprint-secrets/docker_pat"
+HF_TOKEN_FILE_ENV = "HF_TOKEN_FILE"
+HF_TOKEN_FILE_ENV_NAMES = (
+    HF_TOKEN_FILE_ENV,
+    "HUGGINGFACE_TOKEN_FILE",
+    "HUGGING_FACE_HUB_TOKEN_FILE",
+    "BLUEPRINT_HF_TOKEN_FILE",
+)
+DEFAULT_HF_TOKEN_FILE = "~/.blueprint-secrets/huggingface_token"
 DEFAULT_PUBLIC_CUDA_IMAGE = "nvidia/cuda:12.4.1-runtime-ubuntu22.04"
 DEFAULT_ISAAC_IMAGE = "nvcr.io/nvidia/isaac-sim:6.0.0"
 DEFAULT_HEARTBEAT_URL = "https://example.com/"
@@ -85,7 +95,7 @@ DEFAULT_PUBLIC_DISK_GB = 32
 DEFAULT_ISAAC_DISK_GB = 100
 DEFAULT_VAST_LAUNCH_MODE = "auto"
 VAST_LAUNCH_MODES = ("auto", "ssh_direct", "jupyter_direct", "args")
-VAST_PROVIDER_BUNDLE_KINDS = ("isaac", "wam", "unitree_unifolm")
+VAST_PROVIDER_BUNDLE_KINDS = ("isaac", "wam", "unitree_unifolm", "unitree_groot_n17_sonic")
 DEFAULT_NGC_IMAGE_LOGIN_MODE = "auto"
 NGC_IMAGE_LOGIN_MODES = ("auto", "always", "never")
 DEFAULT_MAX_HOURLY_RATE = 0.60
@@ -96,6 +106,7 @@ DEFAULT_SESSION_MAX_LIVE_MINUTES = 45
 DEFAULT_VIDEO_SMOKE_CAMERA_COUNT = 6
 DEFAULT_WAM_ROLLOUT_VIDEO_COUNT = 1
 DEFAULT_UNITREE_UNIFOLM_VIDEO_COUNT = 0
+DEFAULT_UNITREE_GROOT_N17_SONIC_VIDEO_COUNT = 0
 DEFAULT_ARGS_LOG_HOLD_SECONDS = 180
 DEFAULT_MIN_COLD_ISAAC_PULL_LIVE_MINUTES = 18
 VAST_LIVE_ATTEMPT_ARTIFACT_NAMES = (
@@ -114,6 +125,7 @@ VAST_LIVE_ATTEMPT_ARTIFACT_NAMES = (
     "vast_blueprint_bundle_preflight.json",
     "vast_launch_lock_manifest.json",
     "vast_prelaunch_inventory_guard.json",
+    "provider_worker_endpoint_manifest.json",
     "vast_provider_runtime_output.zip",
     "vast_onstart_container.log",
 )
@@ -224,6 +236,8 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         return DEFAULT_WAM_ROLLOUT_VIDEO_COUNT
     if provider_bundle_kind == "unitree_unifolm":
         return DEFAULT_UNITREE_UNIFOLM_VIDEO_COUNT
+    if provider_bundle_kind == "unitree_groot_n17_sonic":
+        return DEFAULT_UNITREE_GROOT_N17_SONIC_VIDEO_COUNT
     return 0
 
 
@@ -242,6 +256,20 @@ def _number(value: Any) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def _content_range_total_bytes(value: Any) -> int | None:
+    text = _string(value)
+    if "/" not in text:
+        return None
+    total = text.rsplit("/", 1)[-1].strip()
+    if not total or total == "*":
+        return None
+    try:
+        parsed = int(total)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _version_tuple(value: Any) -> tuple[int, int, int] | None:
@@ -404,6 +432,22 @@ def _read_secret_file(env_var: str, default_path: str) -> tuple[str, dict[str, A
     return key, status
 
 
+def _read_hf_token_file() -> tuple[str, dict[str, Any]]:
+    selected_env = HF_TOKEN_FILE_ENV
+    for env_name in HF_TOKEN_FILE_ENV_NAMES:
+        if _string(os.getenv(env_name)):
+            selected_env = env_name
+            break
+    token, status = _read_secret_file(selected_env, DEFAULT_HF_TOKEN_FILE)
+    status["accepted_env_vars"] = list(HF_TOKEN_FILE_ENV_NAMES)
+    return token, status
+
+
+def _hf_token_secret_values() -> list[str]:
+    token, _status = _read_hf_token_file()
+    return [token] if token else []
+
+
 def _redact_text(text: str, secret_values: Sequence[str]) -> str:
     redacted = text
     for value in sorted((item for item in secret_values if item), key=len, reverse=True):
@@ -490,11 +534,15 @@ def _inline_provider_bundle_payload(
             "inline_provider_bundle_transport_used": False,
             "inline_provider_bundle_transport_reason": "blueprint_bundle_disabled",
         }
-    if provider_bundle_kind not in {"wam", "unitree_unifolm"}:
+    if provider_bundle_kind not in {"wam", "unitree_unifolm", "unitree_groot_n17_sonic"}:
         return {
             "inline_provider_bundle_transport_used": False,
             "inline_provider_bundle_transport_reason": "inline_transport_provider_kind_not_supported",
-            "inline_provider_bundle_supported_kinds": ["wam", "unitree_unifolm"],
+            "inline_provider_bundle_supported_kinds": [
+                "wam",
+                "unitree_unifolm",
+                "unitree_groot_n17_sonic",
+            ],
         }
     if not bundle_path or not bundle_path.is_file():
         return {
@@ -1357,9 +1405,11 @@ def _select_offer(
     max_hourly_rate: float,
     min_gpu_ram_mb: int = 0,
     excluded_machine_ids: Iterable[Any] = (),
+    allowed_machine_ids: Iterable[Any] = (),
     require_known_supported_isaac_driver: bool = False,
 ) -> dict[str, Any] | None:
     excluded = _machine_id_set(excluded_machine_ids)
+    allowed = _machine_id_set(allowed_machine_ids)
     summaries = [_offer_summary(offer) for offer in offers]
     candidates = [
         item
@@ -1370,6 +1420,10 @@ def _select_offer(
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
         and not item["disallowed_for_isaac_rendering"]
         and int(_number(item.get("machine_id")) or -1) not in excluded
+        and (
+            not allowed
+            or int(_number(item.get("machine_id")) or -1) in allowed
+        )
     ]
     if require_known_supported_isaac_driver:
         candidates = [
@@ -1418,6 +1472,7 @@ def _offer_selection_manifest(
     min_gpu_ram_mb: int,
     require_known_supported_isaac_driver: bool,
     excluded_machine_ids: Iterable[Any],
+    allowed_machine_ids: Iterable[Any],
     machine_avoidlist_path: Path,
     avoidlist_status: str | None,
     blockers: Sequence[str],
@@ -1437,8 +1492,12 @@ def _offer_selection_manifest(
         == "known_unsupported_omniverse_rtx_driver_range"
     )
     excluded = _machine_id_set(excluded_machine_ids)
+    allowed = _machine_id_set(allowed_machine_ids)
     excluded_offer_count = sum(
         1 for item in summaries if int(_number(item.get("machine_id")) or -1) in excluded
+    )
+    allowed_offer_count = sum(
+        1 for item in summaries if int(_number(item.get("machine_id")) or -1) in allowed
     )
     return {
         "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -1459,6 +1518,9 @@ def _offer_selection_manifest(
         "machine_avoidlist_path": str(machine_avoidlist_path),
         "excluded_machine_ids": sorted(excluded),
         "excluded_offer_count": excluded_offer_count,
+        "allowed_machine_ids": sorted(allowed),
+        "allowlist_active": bool(allowed),
+        "allowed_offer_count": allowed_offer_count if allowed else None,
         "avoidlist_status": avoidlist_status,
         "considered_offers": [_offer_artifact_summary(item) for item in summaries[:25]],
         "create_retry_attempts": [dict(item) for item in create_retry_attempts],
@@ -1724,6 +1786,18 @@ def _blueprint_bundle_preflight(
         "provider_runtime/blueprint_pipeline/unitree_unifolm_policy_command_adapter.py",
         "provider_runtime/blueprint_pipeline/unitree_unifolm_vla_server_bridge.py",
     }
+    unitree_groot_required_entries = {
+        "provider_runtime/unitree_groot_n17_sonic_provider_runner.py",
+        "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh",
+        "provider_runtime/unitree_groot_n17_sonic_policy_provider_manifest.json",
+        "provider_runtime/policy_input.json",
+        "provider_runtime/input_frame.png",
+        "provider_runtime/blueprint_pipeline/__init__.py",
+        "provider_runtime/blueprint_pipeline/common.py",
+        "provider_runtime/blueprint_pipeline/unitree_groot_n17_sonic_policy_command_adapter.py",
+        "provider_runtime/blueprint_pipeline/unitree_groot_n17_sonic_policy_runtime.py",
+        "provider_runtime/blueprint_pipeline/unitree_groot_n17_sonic_policy_server_command.py",
+    }
     if provider_bundle_kind == "isaac":
         required_entries = isaac_required_entries
         entrypoint_member = "provider_runtime/run_isaac_realistic_runtime.sh"
@@ -1734,6 +1808,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_unitree_unifolm_provider_runtime.sh"
         runner_member = "provider_runtime/unitree_unifolm_provider_runner.py"
         readiness_name = "unitree_unifolm_policy_provider_manifest.json"
+    elif provider_bundle_kind == "unitree_groot_n17_sonic":
+        required_entries = unitree_groot_required_entries
+        entrypoint_member = "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh"
+        runner_member = "provider_runtime/unitree_groot_n17_sonic_provider_runner.py"
+        readiness_name = "unitree_groot_n17_sonic_policy_provider_manifest.json"
     else:
         required_entries = wam_required_entries
         entrypoint_member = "provider_runtime/run_wam_provider_runtime.sh"
@@ -1751,7 +1830,7 @@ def _blueprint_bundle_preflight(
     eval_manifest: dict[str, Any] = {}
     eval_manifest_parse_error: str | None = None
     readiness_path = bundle_path.parent / readiness_name if bundle_path else job_dir / readiness_name
-    if provider_bundle_kind == "unitree_unifolm" and not readiness_path.is_file():
+    if provider_bundle_kind in {"unitree_unifolm", "unitree_groot_n17_sonic"} and not readiness_path.is_file():
         readiness_path = (
             bundle_path.parent / "provider_runtime" / readiness_name
             if bundle_path
@@ -1857,6 +1936,21 @@ def _blueprint_bundle_preflight(
                     missing_runtime_blocker = (
                         "provider_runner_missing_unitree_unifolm_runtime_contract"
                     )
+                elif provider_bundle_kind == "unitree_groot_n17_sonic":
+                    entrypoint_has_crash_fallback = (
+                        "unitree_groot_n17_sonic_provider_runner_failed_without_runtime_result"
+                        in entrypoint_text
+                        and "blocked_unitree_groot_n17_sonic_process_exited_without_result"
+                        in entrypoint_text
+                    )
+                    runner_has_required_runtime = (
+                        "unitree_groot_n17_sonic_policy_provider_output.json" in runner_text
+                        and "unitree_groot_n17_sonic_model_executed" in runner_text
+                        and "unitree_groot_n17_sonic_policy_action_command_ran" in runner_text
+                    )
+                    missing_runtime_blocker = (
+                        "provider_runner_missing_unitree_groot_n17_sonic_runtime_contract"
+                    )
                 else:
                     entrypoint_has_crash_fallback = (
                         "write_missing_result" in entrypoint_text
@@ -1936,13 +2030,82 @@ def _blueprint_bundle_preflight(
                 ):
                     blockers.append("provider_bundle_fetch_url_size_mismatch")
             except urllib.error.HTTPError as exc:
-                bundle_url_probe = {
-                    "status": "blocked",
-                    "method": "HEAD",
-                    "http_status_code": exc.code,
-                    "error_type": type(exc).__name__,
-                }
-                blockers.append("provider_bundle_fetch_url_unreachable")
+                if exc.code in {403, 405}:
+                    fallback_request = urllib.request.Request(
+                        _string(provider_bundle_url),
+                        method="GET",
+                        headers={"Range": "bytes=0-0"},
+                    )
+                    try:
+                        with urllib.request.urlopen(fallback_request, timeout=20) as response:
+                            status_code = int(getattr(response, "status", 200))
+                            headers = dict(response.headers.items())
+                            response.read(1)
+                        content_length = _content_range_total_bytes(headers.get("Content-Range"))
+                        if content_length is None:
+                            content_length = _number(headers.get("Content-Length"))
+                        bundle_url_probe = {
+                            "status": "passed" if 200 <= status_code < 300 else "blocked",
+                            "method": "GET",
+                            "range_request": "bytes=0-0",
+                            "head_http_status_code": exc.code,
+                            "http_status_code": status_code,
+                            "content_type": headers.get("Content-Type"),
+                            "content_range": headers.get("Content-Range"),
+                            "content_length": int(content_length)
+                            if content_length is not None
+                            else None,
+                            "head_error_type": type(exc).__name__,
+                        }
+                        if not (200 <= status_code < 300):
+                            blockers.append("provider_bundle_fetch_url_unreachable")
+                        elif (
+                            bundle_path
+                            and bundle_path.is_file()
+                            and content_length is not None
+                            and int(content_length) != bundle_path.stat().st_size
+                        ):
+                            blockers.append("provider_bundle_fetch_url_size_mismatch")
+                    except urllib.error.HTTPError as fallback_exc:
+                        bundle_url_probe = {
+                            "status": "blocked",
+                            "method": "GET",
+                            "range_request": "bytes=0-0",
+                            "head_http_status_code": exc.code,
+                            "http_status_code": fallback_exc.code,
+                            "head_error_type": type(exc).__name__,
+                            "error_type": type(fallback_exc).__name__,
+                        }
+                        blockers.append("provider_bundle_fetch_url_unreachable")
+                    except urllib.error.URLError as fallback_exc:
+                        bundle_url_probe = {
+                            "status": "blocked",
+                            "method": "GET",
+                            "range_request": "bytes=0-0",
+                            "head_http_status_code": exc.code,
+                            "head_error_type": type(exc).__name__,
+                            "error_type": type(fallback_exc).__name__,
+                            "reason_type": type(fallback_exc.reason).__name__,
+                        }
+                        blockers.append("provider_bundle_fetch_url_unreachable")
+                    except Exception as fallback_exc:
+                        bundle_url_probe = {
+                            "status": "blocked",
+                            "method": "GET",
+                            "range_request": "bytes=0-0",
+                            "head_http_status_code": exc.code,
+                            "head_error_type": type(exc).__name__,
+                            "error_type": type(fallback_exc).__name__,
+                        }
+                        blockers.append("provider_bundle_fetch_url_unreachable")
+                else:
+                    bundle_url_probe = {
+                        "status": "blocked",
+                        "method": "HEAD",
+                        "http_status_code": exc.code,
+                        "error_type": type(exc).__name__,
+                    }
+                    blockers.append("provider_bundle_fetch_url_unreachable")
             except urllib.error.URLError as exc:
                 fallback_probe = _head_with_public_dns_fallback(
                     _string(provider_bundle_url),
@@ -2257,6 +2420,11 @@ def _probe_env(
         env[VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV] = _string(provider_bundle_inline_base64)
     if _string(provider_bundle_inline_sha256):
         env[VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV] = _string(provider_bundle_inline_sha256)
+    hf_token, _hf_token_status = _read_hf_token_file()
+    if hf_token:
+        env["HF_TOKEN"] = hf_token
+        env["HUGGING_FACE_HUB_TOKEN"] = hf_token
+        env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     for env_name in (
         "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY",
         "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL",
@@ -2266,6 +2434,20 @@ def _probe_env(
         "BLUEPRINT_WAM_PROVIDER_ALLOW_BREAK_SYSTEM_PACKAGES",
         "BLUEPRINT_OSCAR_WAM_HF_REPO",
         "BLUEPRINT_OSCAR_WAM_SOURCE_URL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PERSISTENT_INNER_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_VAST_INNER_POLICY_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+        "BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIM2SIM_COMMAND",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_TIMEOUT_SECONDS",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_REF",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REMOTE_ROOT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS",
     ):
         value = os.getenv(env_name)
         if value:
@@ -2283,7 +2465,7 @@ def _probe_env(
 
 
 def _forwarded_secret_values() -> list[str]:
-    values: list[str] = []
+    values: list[str] = _hf_token_secret_values()
     for env_name in (
         item.strip()
         for item in _string(os.getenv(VAST_FORWARD_SECRET_ENV_VARS_ENV)).split(",")
@@ -2325,6 +2507,14 @@ def _resolve_image_login(
     if mode not in NGC_IMAGE_LOGIN_MODES:
         raise ValueError(f"unsupported_ngc_image_login_mode:{mode}")
     if not image.startswith("nvcr.io/"):
+        if mode == "never":
+            return None, {
+                "mode": mode,
+                "reason": "docker_hub_image_login_disabled",
+                "image_login_supplied": False,
+                "docker_secret_file_present": bool(docker_pat),
+                "docker_username_present": bool(docker_username),
+            }
         if _docker_hub_image_requires_login(image, docker_username):
             if not docker_pat:
                 return None, {
@@ -2601,9 +2791,20 @@ def _probe_shell_script(
                 "output_zip = work_dir / 'isaac_provider_runtime_output.zip'\n"
                 "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
                 "    if output_dir.is_dir():\n"
+                "        skipped = []\n"
                 "        for path in sorted(output_dir.rglob('*')):\n"
                 "            if path.is_file():\n"
-                "                archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "                rel = path.relative_to(output_dir)\n"
+                "                if rel.parts and rel.parts[0] in {'groot_runtime', 'hf_cache'}:\n"
+                "                    skipped.append({'path': rel.as_posix(), 'reason': 'large_runtime_or_model_cache_excluded_from_provider_output_zip'})\n"
+                "                    continue\n"
+                "                size = path.stat().st_size\n"
+                "                if size > 20_000_000:\n"
+                "                    skipped.append({'path': rel.as_posix(), 'reason': 'large_file_excluded_from_provider_output_zip', 'bytes': size})\n"
+                "                    continue\n"
+                "                archive.write(path, rel.as_posix())\n"
+                "        if skipped:\n"
+                "            archive.writestr('provider_output_zip_exclusions.json', json.dumps({'schema_version': 'unitree_groot_n17_sonic_provider_output_zip_exclusions.v1', 'skipped': skipped[:5000]}, indent=2, sort_keys=True))\n"
                 "    else:\n"
                 "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
                 "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
@@ -2669,6 +2870,97 @@ def _probe_shell_script(
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 "elif blueprint_upload_put \"$OUTPUT_PUT_URL\" \"$WORK_DIR/unitree_unifolm_policy_provider_runtime_output.zip\"; then "
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "unitree_groot_n17_sonic":
+            script += (
+                common_start
+                + "RUNTIME_PY=''; "
+                "if command -v apt-get >/dev/null 2>&1 && "
+                "{ ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || "
+                "! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; }; then "
+                "apt-get update >/tmp/blueprint_vast_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip git >/tmp/blueprint_vast_apt_install.log 2>&1; "
+                "fi; "
+                "if [ -x /opt/conda/bin/python ]; then RUNTIME_PY=/opt/conda/bin/python; "
+                "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python; "
+                "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); "
+                "elif command -v python >/dev/null 2>&1; then RUNTIME_PY=$(command -v python); fi; "
+                "if [ -z \"$RUNTIME_PY\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; "
+                "else "
+                "rm -rf \"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle\" \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip\" \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_output.zip\"; "
+                "blueprint_download_url \"$BUNDLE_URL\" \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip\"; dl=$?; "
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                "$RUNTIME_PY -m zipfile -e \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip\" \"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle\"; unzip_rc=$?; "
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                "elif [ ! -f \"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; "
+                "else "
+                "echo BLUEPRINT_VAST_PROVIDER_PYTHON_DEPS_CHECK_STARTED; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import importlib.util\n"
+                "import sys\n"
+                "packages = ['numpy', 'PIL', 'zmq', 'msgpack', 'msgpack_numpy']\n"
+                "missing = [name for name in packages if importlib.util.find_spec(name) is None]\n"
+                "if missing:\n"
+                "    print('BLUEPRINT_VAST_PROVIDER_PYTHON_DEPS_MISSING:' + ','.join(missing))\n"
+                "    sys.exit(1)\n"
+                "print('BLUEPRINT_VAST_PROVIDER_PYTHON_DEPS_READY')\n"
+                "PY\n"
+                "deps_rc=$?; "
+                "if [ $deps_rc -ne 0 ]; then "
+                "if [ \"${BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER:-}\" = \"true\" ] || [ \"${BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER:-}\" = \"1\" ]; then "
+                "echo BLUEPRINT_VAST_PROVIDER_PYTHON_DEPS_DELEGATED_TO_GROOT_UV; "
+                "else "
+                "echo BLUEPRINT_VAST_PROVIDER_PIP_INSTALL_STARTED; "
+                "$RUNTIME_PY -m pip install --quiet --only-binary=:all: --timeout 60 --retries 1 --break-system-packages numpy pillow pyzmq msgpack msgpack-numpy >/tmp/blueprint_unitree_groot_pip_install.log 2>&1; pip_rc=$?; "
+                "if [ $pip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_dependency_install_failed:$pip_rc; "
+                "else echo BLUEPRINT_VAST_PROVIDER_PIP_INSTALL_COMPLETED; fi; "
+                "fi; "
+                "fi; "
+                "export PYTHONPATH=\"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime:${PYTHONPATH:-}\"; "
+                "export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR=\"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/runtime_output\"; "
+                "export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT=\"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/runtime_output/unitree_groot_n17_sonic_policy_provider_output.json\"; "
+                "export BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_INPUT=\"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/policy_input.json\"; "
+                "mkdir -p \"$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR\"; "
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                "bash \"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh\"; provider_rc=$?; "
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR', '/workspace/unitree_groot_n17_sonic_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'unitree_groot_n17_sonic_policy_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        skipped = []\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file():\n"
+                "                rel = path.relative_to(output_dir)\n"
+                "                if rel.parts and rel.parts[0] in {'groot_runtime', 'hf_cache'}:\n"
+                "                    skipped.append({'path': rel.as_posix(), 'reason': 'large_runtime_or_model_cache_excluded_from_provider_output_zip'})\n"
+                "                    continue\n"
+                "                size = path.stat().st_size\n"
+                "                if size > 20_000_000:\n"
+                "                    skipped.append({'path': rel.as_posix(), 'reason': 'large_file_excluded_from_provider_output_zip', 'bytes': size})\n"
+                "                    continue\n"
+                "                archive.write(path, rel.as_posix())\n"
+                "        if skipped:\n"
+                "            archive.writestr('provider_output_zip_exclusions.json', json.dumps({'schema_version': 'unitree_groot_n17_sonic_provider_output_zip_exclusions.v1', 'skipped': skipped[:5000]}, indent=2, sort_keys=True))\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                "elif blueprint_upload_put \"$OUTPUT_PUT_URL\" \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_output.zip\"; then "
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3263,6 +3555,7 @@ def _inspect_provider_runtime_output_zip(
                         "isaac_runtime_result.json",
                         "wam_runtime_result.json",
                         "unitree_unifolm_policy_provider_output.json",
+                        "unitree_groot_n17_sonic_policy_provider_output.json",
                     )
                 ):
                     try:
@@ -3747,15 +4040,17 @@ def run_vast_provider_adapter(
     enable_blueprint_bundle: bool = False,
     provider_bundle_kind: str = "isaac",
     vast_launch_mode: str = DEFAULT_VAST_LAUNCH_MODE,
-    ngc_image_login_mode: str = DEFAULT_NGC_IMAGE_LOGIN_MODE,
+    ngc_image_login_mode: str | None = None,
     vast_template_hash_id: str | None = None,
     use_vast_template_image: bool = False,
     allow_cold_isaac_image_pull: bool = True,
     min_cold_isaac_pull_live_minutes: int = DEFAULT_MIN_COLD_ISAAC_PULL_LIVE_MINUTES,
     disk_gb: int | None = None,
+    min_gpu_ram_mb: int | None = None,
     poll_interval_seconds: int = 10,
     startup_timeout_seconds: int = 420,
     machine_avoidlist_path: str | Path | None = None,
+    allowed_machine_ids: Iterable[Any] = (),
     session_budget_ledger_path: str | Path | None = None,
     session_max_live_minutes: int | None = DEFAULT_SESSION_MAX_LIVE_MINUTES,
     verify_staging_urls: bool = False,
@@ -3765,6 +4060,13 @@ def run_vast_provider_adapter(
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
+    resolved_image_login_mode = (
+        _string(ngc_image_login_mode)
+        or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
+        or DEFAULT_NGC_IMAGE_LOGIN_MODE
+    )
+    if resolved_image_login_mode not in NGC_IMAGE_LOGIN_MODES:
+        raise ValueError(f"unsupported_ngc_image_login_mode:{resolved_image_login_mode}")
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     ensure_dir(resolved_job_dir)
     generated_at = utc_now_iso()
@@ -3785,10 +4087,15 @@ def run_vast_provider_adapter(
     )
     resolved_min_gpu_ram_mb = max(
         0,
-        int(_number(os.getenv(VAST_WAM_MIN_GPU_RAM_MB_ENV)) or 0),
+        int(
+            _number(min_gpu_ram_mb)
+            if min_gpu_ram_mb is not None
+            else (_number(os.getenv(VAST_WAM_MIN_GPU_RAM_MB_ENV)) or 0)
+        ),
     )
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
     excluded_machine_ids = _avoidlist_machine_ids(resolved_machine_avoidlist_path)
+    resolved_allowed_machine_ids = _machine_id_set(allowed_machine_ids)
     launch_mode = _resolve_launch_mode(
         requested=vast_launch_mode,
         enable_isaac_smoke=enable_isaac_smoke,
@@ -3846,6 +4153,7 @@ def run_vast_provider_adapter(
         DOCKER_USERNAME_FILE_ENV, DEFAULT_DOCKER_USERNAME_FILE
     )
     docker_pat, docker_pat_status = _read_secret_file(DOCKER_PAT_FILE_ENV, DEFAULT_DOCKER_PAT_FILE)
+    hf_token, hf_token_status = _read_hf_token_file()
     previous_path = Path(previous_job_dir).expanduser().resolve() if previous_job_dir else None
     bundle_path = Path(provider_bundle).expanduser().resolve() if provider_bundle else None
     output_zip_path = (
@@ -3859,7 +4167,7 @@ def run_vast_provider_adapter(
         enable_blueprint_bundle=enable_blueprint_bundle,
     )
     if (
-        provider_bundle_kind in {"wam", "unitree_unifolm"}
+        provider_bundle_kind in {"wam", "unitree_unifolm", "unitree_groot_n17_sonic"}
         and _string(provider_bundle_url)
         and inline_bundle_transport.get("inline_provider_bundle_transport_used") is True
     ):
@@ -3912,7 +4220,7 @@ def run_vast_provider_adapter(
         enable_blueprint_bundle=enable_blueprint_bundle,
         launch_mode=launch_mode,
         disk_gb=resolved_disk_gb,
-        ngc_image_login_mode=ngc_image_login_mode,
+        ngc_image_login_mode=resolved_image_login_mode,
         vast_template_hash_id=template_hash,
         use_vast_template_image=use_vast_template_image,
         allow_cold_isaac_image_pull=allow_cold_isaac_image_pull,
@@ -3942,7 +4250,7 @@ def run_vast_provider_adapter(
         "vast_instance_ids": instance_ids,
         "vast_launch_mode": launch_mode,
         "provider_bundle_kind": provider_bundle_kind,
-        "ngc_image_login_mode": ngc_image_login_mode,
+        "ngc_image_login_mode": resolved_image_login_mode,
         "vast_template_hash_present": bool(template_hash),
         "use_vast_template_image": use_vast_template_image,
         "allow_cold_isaac_image_pull": allow_cold_isaac_image_pull,
@@ -3969,6 +4277,8 @@ def run_vast_provider_adapter(
         ),
         "machine_avoidlist_path": str(resolved_machine_avoidlist_path),
         "excluded_machine_ids": sorted(excluded_machine_ids),
+        "allowed_machine_ids": sorted(resolved_allowed_machine_ids),
+        "machine_allowlist_active": bool(resolved_allowed_machine_ids),
         "min_gpu_ram_mb": resolved_min_gpu_ram_mb,
         "session_budget_ledger_path": str(resolved_session_budget_ledger_path),
         "vast_launch_lock_path": str(resolved_vast_launch_lock_path),
@@ -3981,8 +4291,37 @@ def run_vast_provider_adapter(
         "ngc_secret_file_status": ngc_secret_status,
         "docker_username_file_status": docker_username_status,
         "docker_pat_file_status": docker_pat_status,
+        "hf_token_file_status": hf_token_status,
         **_truth_boundaries(),
     }
+    provider_worker_endpoint_manifest = write_provider_worker_endpoint_manifest(
+        output_dir=resolved_job_dir,
+        provider="vast",
+        mode=mode,
+        job_id=resolved_job_dir.name,
+        provider_request_shape={
+            "operation": "vast_provider_worker_startup_probe",
+            "command": launch_mode,
+            "image": {"configured_image_ref": selected_container_image},
+            "inputs": {
+                "provider_bundle_kind": provider_bundle_kind,
+                "provider_bundle_url_present": bool(_string(provider_bundle_url)),
+                "provider_output_get_url_present": bool(_string(provider_output_get_url)),
+                "provider_output_put_url_present": bool(_string(provider_output_put_url)),
+            },
+            "vast_launch_mode": launch_mode,
+            "provider_bundle_kind": provider_bundle_kind,
+            "selected_container_image": selected_container_image,
+        },
+    )
+    base_result.update(
+        {
+            "provider_worker_endpoint_manifest_path": str(
+                resolved_job_dir / "provider_worker_endpoint_manifest.json"
+            ),
+            "provider_worker_endpoint_manifest": provider_worker_endpoint_manifest,
+        }
+    )
 
     if mode == "dry-run":
         dry_offer_request = _search_payload(limit=100, max_hourly_rate=max_hourly_rate)
@@ -3996,6 +4335,8 @@ def run_vast_provider_adapter(
             "selected_hourly_rate_usd": None,
             "machine_avoidlist_path": str(resolved_machine_avoidlist_path),
             "excluded_machine_ids": sorted(excluded_machine_ids),
+            "allowed_machine_ids": sorted(resolved_allowed_machine_ids),
+            "machine_allowlist_active": bool(resolved_allowed_machine_ids),
             "blockers": [],
             "raw_secret_values_recorded": False,
         }
@@ -4583,6 +4924,8 @@ def run_vast_provider_adapter(
             "selected_offer": None,
             "machine_avoidlist_path": str(resolved_machine_avoidlist_path),
             "excluded_machine_ids": sorted(excluded_machine_ids),
+            "allowed_machine_ids": sorted(resolved_allowed_machine_ids),
+            "machine_allowlist_active": bool(resolved_allowed_machine_ids),
             "prelaunch_inventory_guard_path": str(
                 resolved_job_dir / "vast_prelaunch_inventory_guard.json"
             ),
@@ -4649,6 +4992,7 @@ def run_vast_provider_adapter(
         ngc_key,
         docker_username,
         docker_pat,
+        hf_token,
         *_forwarded_secret_values(),
         *_url_secret_values(provider_bundle_url, provider_output_put_url, provider_output_get_url),
         _string(inline_bundle_transport.get("inline_provider_bundle_base64")),
@@ -4725,10 +5069,13 @@ def run_vast_provider_adapter(
                 max_hourly_rate=max_hourly_rate,
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                 excluded_machine_ids=excluded_machine_ids,
+                allowed_machine_ids=resolved_allowed_machine_ids,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
             )
             offer_blockers: list[str] = []
             if not selected_offer:
+                if resolved_allowed_machine_ids:
+                    offer_blockers.append("no_vast_offer_matching_allowed_machine_ids")
                 offer_blockers.append(
                     "no_vast_offer_with_known_supported_isaac_driver_at_or_below_max_hourly_rate"
                     if require_known_supported_isaac_driver
@@ -4743,6 +5090,7 @@ def run_vast_provider_adapter(
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
                 excluded_machine_ids=excluded_machine_ids,
+                allowed_machine_ids=resolved_allowed_machine_ids,
                 machine_avoidlist_path=resolved_machine_avoidlist_path,
                 avoidlist_status=_string(avoidlist.get("status")) or None,
                 blockers=offer_blockers,
@@ -4771,7 +5119,7 @@ def run_vast_provider_adapter(
                 ngc_key=ngc_key,
                 docker_username=docker_username,
                 docker_pat=docker_pat,
-                mode=ngc_image_login_mode,
+                mode=resolved_image_login_mode,
             )
             probe_script = _probe_shell_script(
                 heartbeat_url,
@@ -4859,6 +5207,7 @@ def run_vast_provider_adapter(
                     min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                     require_known_supported_isaac_driver=require_known_supported_isaac_driver,
                     excluded_machine_ids=excluded_machine_ids,
+                    allowed_machine_ids=resolved_allowed_machine_ids,
                     machine_avoidlist_path=resolved_machine_avoidlist_path,
                     avoidlist_status=_string(avoidlist.get("status")) or None,
                     blockers=["vast_create_stale_offer_retry"],
@@ -5497,21 +5846,34 @@ def run_vast_provider_adapter(
             provider_reason=interrupt_blocker,
         )
     except Exception as exc:
+        exc_text = str(exc)[:300] or type(exc).__name__
+        if exc_text.startswith("no_vast_offer"):
+            exception_status = "blocked"
+            exception_reason = "vast_offer_selection_blocked"
+            exception_blockers = (
+                ["no_vast_offer_matching_allowed_machine_ids", "no_vast_offer_at_or_below_max_hourly_rate"]
+                if resolved_allowed_machine_ids
+                else ["no_vast_offer_at_or_below_max_hourly_rate"]
+            )
+        else:
+            exception_status = "failed"
+            exception_reason = "vast_probe_failed"
+            exception_blockers = [exc_text]
         base_result.update(
             {
-                "status": "blocked" if str(exc).startswith("no_vast_offer") else "failed",
-                "reason": "vast_probe_failed",
-                "blockers": [str(exc)[:300] or type(exc).__name__],
+                "status": exception_status,
+                "reason": exception_reason,
+                "blockers": exception_blockers,
                 "api_call_performed": True,
             }
         )
         _write_blocked_phase_artifacts(
             job_dir=resolved_job_dir,
             generated_at=generated_at,
-            heartbeat_reason=str(exc)[:300],
-            gpu_reason=str(exc)[:300],
-            isaac_reason=str(exc)[:300],
-            provider_reason=str(exc)[:300],
+            heartbeat_reason=exception_blockers[0],
+            gpu_reason=exception_blockers[0],
+            isaac_reason=exception_blockers[0],
+            provider_reason=exception_blockers[0],
         )
     finally:
         if instance_ids:
@@ -5699,7 +6061,9 @@ def run_vast_provider_adapter(
             provider_blockers = _string_list(provider.get("blockers"))
             video_smoke_blockers = _string_list(video_smoke.get("blockers"))
             provider_status = _string(provider.get("status"))
-            video_smoke_blocked = enable_blueprint_bundle and video_smoke.get("status") != "completed"
+            expected_video_count = int(_number(video_smoke.get("expected_video_count")) or 0)
+            video_smoke_required = enable_blueprint_bundle and expected_video_count > 0
+            video_smoke_blocked = video_smoke_required and video_smoke.get("status") != "completed"
             requested_provider_blocked = enable_blueprint_bundle and (
                 provider_status != "completed" or video_smoke_blocked
             )
@@ -5848,7 +6212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--ngc-image-login-mode",
         choices=NGC_IMAGE_LOGIN_MODES,
-        default=DEFAULT_NGC_IMAGE_LOGIN_MODE,
+        default=os.getenv(VAST_IMAGE_LOGIN_MODE_ENV, DEFAULT_NGC_IMAGE_LOGIN_MODE),
         help="Use auto to avoid login for the official public Isaac image; always forces NGC credentials.",
     )
     parser.add_argument(
@@ -5892,6 +6256,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--machine-avoidlist",
         help="Optional JSON avoidlist of Vast machine IDs to exclude from offer selection. Defaults to <job-dir>/vast_machine_avoidlist.json.",
+    )
+    parser.add_argument(
+        "--allowed-machine-id",
+        action="append",
+        default=[],
+        help=(
+            "Restrict offer selection to this Vast machine ID. Can be repeated; "
+            "use after a host-specific canary has passed."
+        ),
     )
     parser.add_argument(
         "--session-budget-ledger",
@@ -5971,6 +6344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         poll_interval_seconds=args.poll_interval_seconds,
         startup_timeout_seconds=args.startup_timeout_seconds,
         machine_avoidlist_path=args.machine_avoidlist,
+        allowed_machine_ids=args.allowed_machine_id,
         session_budget_ledger_path=args.session_budget_ledger,
         session_max_live_minutes=args.session_max_live_minutes,
         vast_launch_lock_file=args.vast_launch_lock_file,

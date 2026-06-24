@@ -14,6 +14,15 @@ from .oscar_cosmos_wam_evaluator import (
     build_policy_model_endpoint_readiness_manifest,
 )
 from .policy_model_runtime_proofs import discover_openvla_provider_smoke_proof
+from .provider_worker_contract import (
+    HEALTHZ_PATH,
+    INFER_PATH,
+    LEGACY_HEALTH_PATH,
+    LEGACY_POLICY_ACTION_PATH,
+    PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
+    READYZ_PATH,
+    SHUTDOWN_PATH,
+)
 from .wam_vla_policy_endpoint_server import BUILTIN_REFERENCE_ADAPTER_COMMAND
 
 
@@ -214,9 +223,20 @@ def build_wam_vla_policy_endpoint_setup(
         "schema_version": "wam_vla_policy_endpoint_contract.v1",
         "generated_at": generated,
         "status": "ready_for_local_endpoint_setup",
+        "provider_worker_contract_schema_version": PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
         "http_contract": {
-            "health": {"method": "GET", "path": "/health"},
-            "policy_action": {"method": "POST", "path": "/policy/action"},
+            "canonical": {
+                "healthz": {"method": "GET", "path": HEALTHZ_PATH},
+                "readyz": {"method": "GET", "path": READYZ_PATH},
+                "infer": {"method": "POST", "path": INFER_PATH},
+                "shutdown": {"method": "POST", "path": SHUTDOWN_PATH},
+            },
+            "legacy_compatibility": {
+                "health": {"method": "GET", "path": LEGACY_HEALTH_PATH},
+                "policy_action": {"method": "POST", "path": LEGACY_POLICY_ACTION_PATH},
+            },
+            "health": {"method": "GET", "path": LEGACY_HEALTH_PATH},
+            "policy_action": {"method": "POST", "path": LEGACY_POLICY_ACTION_PATH},
             "request_json": {
                 "observation": "Blueprint WAM/VLA observation packet",
                 "optional_context": "adapter-specific context; must not contain raw secrets",
@@ -254,14 +274,20 @@ def build_wam_vla_policy_endpoint_setup(
         },
         "evaluator_envs": {
             "team": {
+                "TEAM_POLICY_WORKER_URL": "http://127.0.0.1:8765/infer",
+                "TEAM_POLICY_WORKER_READY_URL": "http://127.0.0.1:8765/readyz",
                 "TEAM_POLICY_ENDPOINT_URL": "http://127.0.0.1:8765/policy/action",
                 "TEAM_POLICY_AUTH_TOKEN_FILE": "$HOME/.blueprint-secrets/team_policy_endpoint_token.txt",
             },
             "wam": {
+                "WAM_POLICY_WORKER_URL": "http://127.0.0.1:8765/infer",
+                "WAM_POLICY_WORKER_READY_URL": "http://127.0.0.1:8765/readyz",
                 "WAM_POLICY_ENDPOINT_URL": "http://127.0.0.1:8765/policy/action",
                 "WAM_POLICY_AUTH_TOKEN_FILE": "$HOME/.blueprint-secrets/wam_policy_endpoint_token.txt",
             },
             "vla": {
+                "VLA_POLICY_WORKER_URL": "http://127.0.0.1:8765/infer",
+                "VLA_POLICY_WORKER_READY_URL": "http://127.0.0.1:8765/readyz",
                 "VLA_POLICY_ENDPOINT_URL": "http://127.0.0.1:8765/policy/action",
                 "VLA_POLICY_AUTH_TOKEN_FILE": "$HOME/.blueprint-secrets/vla_policy_endpoint_token.txt",
             },
@@ -478,8 +504,26 @@ def build_wam_vla_policy_endpoint_setup(
         "stdin_contract": {"observation": "Blueprint observation packet"},
         "stdout_contract": {"policy_id": "string", "action": "Blueprint supported action"},
         "supported_action_types": contract["supported_action_types"],
+        "provider_worker_policy_adapter_command": (
+            "blueprint-provider-worker-policy-command-adapter"
+        ),
+        "provider_worker_policy_adapter_contract": {
+            "worker_url_envs": [
+                "BLUEPRINT_PROVIDER_POLICY_WORKER_URL",
+                "BLUEPRINT_POLICY_WORKER_URL",
+                "TEAM_POLICY_WORKER_URL",
+            ],
+            "ready_url_envs": [
+                "BLUEPRINT_PROVIDER_POLICY_WORKER_READY_URL",
+                "BLUEPRINT_POLICY_WORKER_READY_URL",
+                "TEAM_POLICY_WORKER_READY_URL",
+            ],
+            "requires_readyz_before_infer": True,
+            "does_not_allocate_provider": True,
+        },
         "adapter_families": [
             "command_policy",
+            "provider_worker_policy",
             "unitree_g1_policy",
             "openvla_policy",
             "oscar_wam",
@@ -506,6 +550,8 @@ set -euo pipefail
 # Create this file yourself and keep the raw token out of logs/artifacts:
 #   blueprint-create-team-policy-endpoint-token
 
+export TEAM_POLICY_WORKER_URL="http://127.0.0.1:8765/infer"
+export TEAM_POLICY_WORKER_READY_URL="http://127.0.0.1:8765/readyz"
 export TEAM_POLICY_ENDPOINT_URL="http://127.0.0.1:8765/policy/action"
 export TEAM_POLICY_AUTH_TOKEN_FILE="$HOME/.blueprint-secrets/team_policy_endpoint_token.txt"
 
@@ -520,6 +566,12 @@ export BLUEPRINT_WAM_VLA_POLICY_AUTH_TOKEN_FILE="$TEAM_POLICY_AUTH_TOKEN_FILE"
 # export BLUEPRINT_OPENVLA_POLICY_CHECKPOINT="/path/to/openvla-7b-or-finetuned-checkpoint"
 # export BLUEPRINT_OPENVLA_POLICY_SOURCE_ROOT="/path/to/openvla/source"  # optional
 # export BLUEPRINT_WAM_VLA_POLICY_COMMAND="blueprint-openvla-policy-command-adapter"
+
+# To use an already-running provider worker for a Unitree policy candidate:
+# export BLUEPRINT_UNITREE_G1_POLICY_COMMAND="blueprint-provider-worker-policy-command-adapter"
+# export BLUEPRINT_UNITREE_G1_POLICY_CHECKPOINT="provider-worker/model-id"
+# export BLUEPRINT_PROVIDER_POLICY_WORKER_URL="$TEAM_POLICY_WORKER_URL"
+# export BLUEPRINT_PROVIDER_POLICY_WORKER_READY_URL="$TEAM_POLICY_WORKER_READY_URL"
 """.replace("__REFERENCE_ADAPTER_COMMAND__", reference_adapter_command)
 
     runbook = """# WAM/VLA Policy Endpoint Setup

@@ -54,16 +54,30 @@ def _copy_frame(frame_path: Path, output_path: Path) -> None:
     shutil.copy2(frame_path, output_path)
 
 
+def _load_policy_observation(path: str | Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    value = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(value, Mapping):
+        raise ValueError("policy_observation_json_must_be_object")
+    raw_observation = value.get("observation") if isinstance(value.get("observation"), Mapping) else value
+    return dict(raw_observation) if isinstance(raw_observation, Mapping) else None
+
+
 PROVIDER_RUNNER = r'''#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
 import os
+import shlex
+import socket
+import subprocess
 import sys
 import time
 import traceback
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 OUTPUT_SCHEMA_VERSION = "unitree_groot_n17_sonic_policy_provider_output.v1"
 
@@ -93,6 +107,421 @@ def _phase(name: str, **fields: Any) -> None:
     )
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _tail(path: Path, limit: int = 4000) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[-limit:]
+    except OSError:
+        return ""
+
+
+def _run_logged(
+    command: list[str],
+    *,
+    cwd: Path | None,
+    log_path: Path,
+    timeout_seconds: float | None = None,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    with log_path.open("ab") as handle:
+        handle.write(("BLUEPRINT_COMMAND_STARTED:" + json.dumps(command) + "\n").encode())
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(cwd) if cwd else None,
+                env=env,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_seconds,
+                check=False,
+            )
+            return {
+                "status": "completed" if completed.returncode == 0 else "failed",
+                "returncode": completed.returncode,
+                "duration_seconds": round(time.time() - started, 3),
+                "log_path": str(log_path),
+                "log_tail": _tail(log_path),
+            }
+        except subprocess.TimeoutExpired:
+            handle.write(b"\nBLUEPRINT_COMMAND_TIMED_OUT\n")
+            return {
+                "status": "timed_out",
+                "returncode": None,
+                "duration_seconds": round(time.time() - started, 3),
+                "log_path": str(log_path),
+                "log_tail": _tail(log_path),
+            }
+
+
+def _parse_tcp_url(value: str) -> tuple[str, int] | None:
+    text = value.strip()
+    if not text:
+        return None
+    parsed = urlparse(text if "://" in text else f"tcp://{text}")
+    if parsed.hostname and parsed.port:
+        return parsed.hostname, int(parsed.port)
+    return None
+
+
+def _tcp_ready(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
+def _install_uv(output_dir: Path) -> dict[str, Any]:
+    if subprocess.run(["bash", "-lc", "command -v uv"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        return {"status": "completed", "uv_already_available": True}
+    return _run_logged(
+        [
+            "bash",
+            "-lc",
+            "curl -LsSf https://astral.sh/uv/0.8.14/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh",
+        ],
+        cwd=None,
+        log_path=output_dir / "groot_policy_server_bootstrap_uv_install.log",
+        timeout_seconds=180,
+    )
+
+
+def _checkout_groot_repo(output_dir: Path) -> tuple[Path, dict[str, Any]]:
+    repo_url = os.environ.get(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL",
+        "https://github.com/NVIDIA/Isaac-GR00T.git",
+    ).strip()
+    repo_ref = os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_REF", "").strip()
+    root = Path(
+        os.environ.get(
+            "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REMOTE_ROOT",
+            output_dir / "groot_runtime" / "Isaac-GR00T",
+        )
+    )
+    if (root / "gr00t" / "eval" / "run_gr00t_server.py").is_file():
+        return root, {"status": "completed", "repo_already_available": True, "repo_root": str(root)}
+    root.parent.mkdir(parents=True, exist_ok=True)
+    if repo_ref:
+        result = _run_logged(
+            [
+                "bash",
+                "-lc",
+                (
+                    f"rm -rf {root!s} && git init {root!s} && cd {root!s} && "
+                    f"git remote add origin {repo_url} && "
+                    f"git fetch --depth 1 origin {repo_ref} && git checkout --detach FETCH_HEAD"
+                ),
+            ],
+            cwd=None,
+            log_path=output_dir / "groot_policy_server_bootstrap_git_checkout.log",
+            timeout_seconds=600,
+        )
+    else:
+        result = _run_logged(
+            ["git", "clone", "--depth", "1", repo_url, str(root)],
+            cwd=None,
+            log_path=output_dir / "groot_policy_server_bootstrap_git_checkout.log",
+            timeout_seconds=600,
+        )
+    result["repo_root"] = str(root)
+    result["repo_url"] = repo_url
+    result["repo_ref_configured"] = bool(repo_ref)
+    return root, result
+
+
+def _looks_like_hf_repo_id(value: str) -> bool:
+    text = value.strip()
+    if not text or text.startswith(("/", "./", "../")):
+        return False
+    if "://" in text:
+        return False
+    return text.count("/") == 1 and all(part for part in text.split("/"))
+
+
+def _materialize_groot_model_path(
+    *,
+    output_dir: Path,
+    model_path: str,
+    venv_python: Path,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    raw_model_path = model_path.strip()
+    if not raw_model_path:
+        return {
+            "status": "blocked",
+            "blockers": ["blocked_missing_gr00t_model_path"],
+            "raw_model_path": raw_model_path,
+        }
+    candidate = Path(raw_model_path).expanduser()
+    if candidate.exists():
+        return {
+            "status": "completed",
+            "source": "local_path",
+            "raw_model_path": raw_model_path,
+            "resolved_model_path": str(candidate),
+            "snapshot_download_ran": False,
+        }
+    if not _looks_like_hf_repo_id(raw_model_path):
+        return {
+            "status": "completed",
+            "source": "passthrough",
+            "raw_model_path": raw_model_path,
+            "resolved_model_path": raw_model_path,
+            "snapshot_download_ran": False,
+        }
+
+    safe_name = raw_model_path.replace("/", "__")
+    local_dir = output_dir / "groot_runtime" / "model_snapshots" / safe_name
+    script = r"""
+import os
+import sys
+from pathlib import Path
+
+from huggingface_hub import snapshot_download
+
+repo_id = sys.argv[1]
+local_dir = Path(sys.argv[2])
+local_dir.mkdir(parents=True, exist_ok=True)
+snapshot_path = snapshot_download(
+    repo_id=repo_id,
+    local_dir=str(local_dir),
+    allow_patterns=[
+        "config.json",
+        "model.safetensors.index.json",
+        "model-*.safetensors",
+        "processor/*",
+    ],
+    token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
+)
+processor_config = Path(snapshot_path) / "processor" / "processor_config.json"
+if not processor_config.is_file():
+    print("BLUEPRINT_GROOT_MODEL_SNAPSHOT_MISSING_PROCESSOR_CONFIG")
+    raise SystemExit(42)
+print("BLUEPRINT_GROOT_MODEL_SNAPSHOT_READY:" + snapshot_path)
+"""
+    result = _run_logged(
+        [str(venv_python), "-c", script, raw_model_path, str(local_dir)],
+        cwd=None,
+        log_path=output_dir / "groot_policy_server_model_snapshot_download.log",
+        timeout_seconds=float(
+            os.environ.get(
+                "BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_TIMEOUT_SECONDS",
+                "900",
+            )
+        ),
+        env=env,
+    )
+    result.update(
+        {
+            "source": "huggingface_snapshot_download",
+            "raw_model_path": raw_model_path,
+            "resolved_model_path": str(local_dir),
+            "snapshot_download_ran": True,
+            "allow_patterns": [
+                "config.json",
+                "model.safetensors.index.json",
+                "model-*.safetensors",
+                "processor/*",
+            ],
+            "processor_config_present": (local_dir / "processor" / "processor_config.json").is_file(),
+        }
+    )
+    if result.get("status") != "completed" or not result["processor_config_present"]:
+        result.setdefault("blockers", [])
+        result["blockers"] = sorted(
+            set(
+                [*result.get("blockers", []), "blocked_gr00t_model_snapshot_download_failed"]
+            )
+        )
+        result["status"] = "blocked"
+    return result
+
+
+def _bootstrap_gr00t_policy_server(
+    *,
+    output_dir: Path,
+    policy_server_url: str,
+    model_path: str,
+) -> tuple[dict[str, Any], subprocess.Popen[Any] | None]:
+    if not _truthy_env("BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER"):
+        return {"requested": False, "status": "not_requested"}, None
+    parsed = _parse_tcp_url(policy_server_url)
+    if parsed is None:
+        return {
+            "requested": True,
+            "status": "blocked",
+            "blockers": ["blocked_missing_policy_server_url_for_auto_start"],
+        }, None
+    host, port = parsed
+    if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
+        return {
+            "requested": True,
+            "status": "blocked",
+            "blockers": ["blocked_auto_start_only_supports_localhost_policy_server_url"],
+        }, None
+    if _tcp_ready("127.0.0.1" if host == "0.0.0.0" else host, port):
+        return {"requested": True, "status": "completed", "server_already_listening": True}, None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    uv_result = _install_uv(output_dir)
+    if uv_result.get("status") != "completed":
+        return {
+            "requested": True,
+            "status": "blocked",
+            "blockers": ["blocked_gr00t_uv_install_failed"],
+            "uv_install": uv_result,
+        }, None
+    repo_root, checkout = _checkout_groot_repo(output_dir)
+    if checkout.get("status") != "completed":
+        return {
+            "requested": True,
+            "status": "blocked",
+            "blockers": ["blocked_isaac_groot_repo_checkout_failed"],
+            "uv_install": uv_result,
+            "checkout": checkout,
+        }, None
+
+    env = dict(os.environ)
+    env.setdefault("HF_HOME", str(output_dir / "hf_cache"))
+    env.setdefault("HF_HUB_CACHE", str(output_dir / "hf_cache" / "hub"))
+    env.setdefault("UV_PROJECT_ENVIRONMENT", str(output_dir / "groot_runtime" / "venv"))
+    install_timeout = float(
+        os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS", "1800")
+    )
+    sync = _run_logged(
+        ["uv", "sync", "--frozen", "--no-install-project", "--no-cache"],
+        cwd=repo_root,
+        log_path=output_dir / "groot_policy_server_bootstrap_uv_sync.log",
+        timeout_seconds=install_timeout,
+        env=env,
+    )
+    if sync.get("status") != "completed":
+        return {
+            "requested": True,
+            "status": "blocked",
+            "blockers": ["blocked_isaac_groot_uv_sync_failed"],
+            "uv_install": uv_result,
+            "checkout": checkout,
+            "uv_sync": sync,
+        }, None
+
+    venv_python = Path(env["UV_PROJECT_ENVIRONMENT"]) / "bin" / "python"
+    if not venv_python.is_file():
+        return {
+            "requested": True,
+            "status": "blocked",
+            "blockers": ["blocked_isaac_groot_uv_sync_did_not_create_python"],
+            "uv_install": uv_result,
+            "checkout": checkout,
+            "uv_sync": sync,
+            "venv_python": str(venv_python),
+        }, None
+
+    model_resolution = _materialize_groot_model_path(
+        output_dir=output_dir,
+        model_path=model_path,
+        venv_python=venv_python,
+        env=env,
+    )
+    if model_resolution.get("status") != "completed":
+        return {
+            "requested": True,
+            "status": "blocked",
+            "blockers": ["blocked_gr00t_model_snapshot_download_failed"],
+            "uv_install": uv_result,
+            "checkout": checkout,
+            "uv_sync": sync,
+            "venv_python": str(venv_python),
+            "model_resolution": model_resolution,
+        }, None
+    resolved_model_path = str(model_resolution.get("resolved_model_path") or model_path)
+
+    log_path = output_dir / "groot_policy_server.log"
+    log = log_path.open("ab")
+    server_env = dict(env)
+    server_env["PYTHONPATH"] = (
+        str(repo_root)
+        + os.pathsep
+        + server_env.get("PYTHONPATH", "")
+    )
+    server_cmd = [
+        str(venv_python),
+        "gr00t/eval/run_gr00t_server.py",
+        "--model-path",
+        resolved_model_path,
+        "--embodiment-tag",
+        "UNITREE_G1_SONIC",
+        "--device",
+        "cuda:0",
+        "--host",
+        "127.0.0.1" if host == "0.0.0.0" else host,
+        "--port",
+        str(port),
+    ]
+    proc = subprocess.Popen(
+        server_cmd,
+        cwd=str(repo_root),
+        env=server_env,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+    )
+    startup_timeout = float(
+        os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS", "900")
+    )
+    started = time.time()
+    while time.time() - started < startup_timeout:
+        if proc.poll() is not None:
+            return {
+                "requested": True,
+                "status": "blocked",
+                "blockers": ["blocked_gr00t_policy_server_exited_before_listening"],
+                "server_returncode": proc.returncode,
+                "venv_python": str(venv_python),
+                "uv_install": uv_result,
+                "checkout": checkout,
+                "uv_sync": sync,
+                "model_resolution": model_resolution,
+                "server_log_path": str(log_path),
+                "server_log_tail": _tail(log_path),
+            }, proc
+        if _tcp_ready("127.0.0.1" if host == "0.0.0.0" else host, port):
+            return {
+                "requested": True,
+                "status": "completed",
+                "server_started": True,
+                "server_pid": proc.pid,
+                "policy_server_host": host,
+                "policy_server_port": port,
+                "model_path": model_path,
+                "resolved_model_path": resolved_model_path,
+                "venv_python": str(venv_python),
+                "uv_install": uv_result,
+                "checkout": checkout,
+                "uv_sync": sync,
+                "model_resolution": model_resolution,
+                "server_log_path": str(log_path),
+            }, proc
+        time.sleep(5)
+    return {
+        "requested": True,
+        "status": "blocked",
+        "blockers": ["blocked_gr00t_policy_server_startup_timeout"],
+        "server_pid": proc.pid,
+        "venv_python": str(venv_python),
+        "uv_install": uv_result,
+        "checkout": checkout,
+        "uv_sync": sync,
+        "model_resolution": model_resolution,
+        "server_log_path": str(log_path),
+        "server_log_tail": _tail(log_path),
+    }, proc
+
+
 def main() -> int:
     runtime_dir = Path(__file__).resolve().parent
     payload_path = Path(os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_INPUT", runtime_dir / "policy_input.json"))
@@ -106,7 +535,34 @@ def main() -> int:
     sim2sim_command = os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIM2SIM_COMMAND", "")
     try:
         payload = json.loads(payload_path.read_text(encoding="utf-8"))
-        _phase("invoke_unitree_groot_n17_sonic_adapter", command_configured=bool(command), sonic_checkpoint_configured=bool(sonic_checkpoint))
+        _phase("bootstrap_gr00t_policy_server_if_requested", requested=_truthy_env("BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER"))
+        policy_server_bootstrap, policy_server_process = _bootstrap_gr00t_policy_server(
+            output_dir=output_path.parent,
+            policy_server_url=policy_server_url,
+            model_path=n17_checkpoint or "LucaFrat/groot-bs16",
+        )
+        if (
+            policy_server_bootstrap.get("status") == "completed"
+            and "unitree_groot_n17_sonic_policy_server_command" in command
+        ):
+            repo_root = _mapping(policy_server_bootstrap.get("checkout")).get("repo_root")
+            venv_python = policy_server_bootstrap.get("venv_python")
+            if repo_root and venv_python:
+                command = (
+                    f"{shlex.quote(str(venv_python))} "
+                    "-m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+                )
+                os.environ["PYTHONPATH"] = (
+                    str(repo_root)
+                    + os.pathsep
+                    + os.environ.get("PYTHONPATH", "")
+                )
+        _phase(
+            "invoke_unitree_groot_n17_sonic_adapter",
+            command_configured=bool(command),
+            sonic_checkpoint_configured=bool(sonic_checkpoint),
+            policy_server_bootstrap_status=policy_server_bootstrap.get("status"),
+        )
         from blueprint_pipeline.unitree_groot_n17_sonic_policy_command_adapter import run_unitree_groot_n17_sonic_policy
 
         response, exit_code = run_unitree_groot_n17_sonic_policy(
@@ -122,6 +578,9 @@ def main() -> int:
         )
         action = _mapping(response.get("action"))
         completed = exit_code == 0 and response.get("status") == "completed" and bool(action)
+        blockers = [] if completed else list(response.get("blockers", []) or ["unitree_groot_n17_sonic_provider_smoke_blocked"])
+        if policy_server_bootstrap.get("status") == "blocked":
+            blockers.extend(policy_server_bootstrap.get("blockers", []))
         output = {
             "schema_version": OUTPUT_SCHEMA_VERSION,
             "status": "completed" if completed else "blocked",
@@ -131,6 +590,7 @@ def main() -> int:
             "policy_action_model_command_ran": bool(response.get("unitree_groot_n17_sonic_policy_action_command_ran")),
             "action": action or None,
             "adapter_response": response,
+            "policy_server_bootstrap": policy_server_bootstrap,
             "endpoint_closed_loop_policy_proven": False,
             "unitree_g1_dexterous_manipulation_proven": False,
             "physical_robot_readiness_proven": False,
@@ -138,9 +598,11 @@ def main() -> int:
             "safety_validation_proven": False,
             "raw_credentials_written_to_artifacts": False,
             "secret_hashes_written_to_artifacts": False,
-            "blockers": [] if completed else list(response.get("blockers", []) or ["unitree_groot_n17_sonic_provider_smoke_blocked"]),
+            "blockers": sorted(set(blockers)),
         }
         _write_json(output_path, output)
+        if policy_server_process is not None and policy_server_process.poll() is None:
+            policy_server_process.terminate()
         return 0 if completed else 2
     except Exception as exc:
         _write_json(
@@ -208,6 +670,7 @@ def _write_minimal_blueprint_runtime(runtime_dir: Path) -> list[str]:
     for filename in (
         "unitree_groot_n17_sonic_policy_command_adapter.py",
         "unitree_groot_n17_sonic_policy_runtime.py",
+        "unitree_groot_n17_sonic_policy_server_command.py",
     ):
         destination = package_dir / filename
         shutil.copy2(source_dir / filename, destination)
@@ -223,13 +686,27 @@ def _policy_input(
     frame_path: Path,
     task_id: str,
     task_prompt: str,
+    policy_observation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    frame_reference = frame_path.name
+    if policy_observation:
+        observation = dict(policy_observation)
+        observation["task_id"] = observation.get("task_id") or task_id
+        if task_prompt and not any(
+            observation.get(key) for key in ("task_prompt", "prompt", "task_description")
+        ):
+            observation["task_prompt"] = task_prompt
+        visual = _mapping(observation.get("visual_observation"))
+        visual["camera_frame_path"] = frame_reference
+        observation["visual_observation"] = visual
+        observation["camera_frame_path"] = frame_reference
+        return {"observation": observation}
     return {
         "observation": {
             "schema_version": "blueprint_policy_observation.v1",
             "task_id": task_id,
             "task_prompt": task_prompt,
-            "visual_observation": {"camera_frame_path": str(frame_path)},
+            "visual_observation": {"camera_frame_path": frame_reference},
             "object_state": {
                 "object_id": "blueprint_light_object",
                 "position": [0.36, -0.65, 0.27],
@@ -255,6 +732,7 @@ def build_unitree_groot_n17_sonic_policy_provider_bundle(
     wbc_root: str | None = None,
     policy_server_url: str | None = None,
     sim2sim_command: str | None = None,
+    policy_observation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     job = Path(job_dir)
     ensure_dir(job)
@@ -262,7 +740,13 @@ def build_unitree_groot_n17_sonic_policy_provider_bundle(
     ensure_dir(runtime_dir)
     frame_copy = runtime_dir / "input_frame.png"
     _copy_frame(Path(frame_path).expanduser(), frame_copy)
-    payload = _policy_input(frame_path=frame_copy, task_id=task_id, task_prompt=task_prompt)
+    policy_observation = _load_policy_observation(policy_observation_path)
+    payload = _policy_input(
+        frame_path=frame_copy,
+        task_id=task_id,
+        task_prompt=task_prompt,
+        policy_observation=policy_observation,
+    )
     policy_input_path = runtime_dir / "policy_input.json"
     write_json(policy_input_path, payload)
     runner_path = runtime_dir / "unitree_groot_n17_sonic_provider_runner.py"
@@ -286,6 +770,10 @@ def build_unitree_groot_n17_sonic_policy_provider_bundle(
         "runner_path": str(runner_path),
         "policy_input_path": str(policy_input_path),
         "input_frame_path": str(frame_copy),
+        "policy_observation_path": str(Path(policy_observation_path).expanduser())
+        if policy_observation_path
+        else None,
+        "policy_observation_preserved": policy_observation is not None,
         "bundled_blueprint_modules": bundled_blueprint_modules,
         "policy_command_configured": bool(policy_command),
         "n17_checkpoint_configured": bool(n17_checkpoint),
@@ -410,6 +898,8 @@ def run_unitree_groot_n17_sonic_policy_provider_smoke(
     job_dir: str | Path,
     frame_path: str | Path,
     provider_output_zip: str | Path | None = None,
+    task_id: str = DEFAULT_TASK_ID,
+    task_prompt: str = DEFAULT_TASK_PROMPT,
     dry_run: bool = True,
     policy_command: str | None = None,
     n17_checkpoint: str | None = None,
@@ -418,6 +908,7 @@ def run_unitree_groot_n17_sonic_policy_provider_smoke(
     wbc_root: str | None = None,
     policy_server_url: str | None = None,
     sim2sim_command: str | None = None,
+    policy_observation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     job = Path(job_dir)
     ensure_dir(job)
@@ -452,6 +943,8 @@ def run_unitree_groot_n17_sonic_policy_provider_smoke(
     bundle = build_unitree_groot_n17_sonic_policy_provider_bundle(
         job_dir=job,
         frame_path=frame_path,
+        task_id=task_id,
+        task_prompt=task_prompt,
         policy_command=policy_command,
         n17_checkpoint=n17_checkpoint,
         sonic_checkpoint=sonic_checkpoint,
@@ -459,6 +952,7 @@ def run_unitree_groot_n17_sonic_policy_provider_smoke(
         wbc_root=wbc_root,
         policy_server_url=policy_server_url,
         sim2sim_command=sim2sim_command,
+        policy_observation_path=policy_observation_path,
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -494,6 +988,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--job-dir", type=Path, required=True)
     parser.add_argument("--frame-path", type=Path, required=True)
     parser.add_argument("--provider-output-zip", type=Path)
+    parser.add_argument("--task-id", default=DEFAULT_TASK_ID)
+    parser.add_argument("--task-prompt", default=DEFAULT_TASK_PROMPT)
     parser.add_argument("--policy-command")
     parser.add_argument("--n17-checkpoint")
     parser.add_argument("--sonic-checkpoint")
@@ -501,12 +997,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--wbc-root")
     parser.add_argument("--policy-server-url")
     parser.add_argument("--sim2sim-command")
+    parser.add_argument("--policy-observation-path", type=Path)
     parser.add_argument("--dry-run", action="store_true", default=True)
     args = parser.parse_args(argv)
     summary = run_unitree_groot_n17_sonic_policy_provider_smoke(
         job_dir=args.job_dir,
         frame_path=args.frame_path,
         provider_output_zip=args.provider_output_zip,
+        task_id=args.task_id,
+        task_prompt=args.task_prompt,
         dry_run=args.dry_run,
         policy_command=args.policy_command or os.getenv(POLICY_COMMAND_ENV),
         n17_checkpoint=args.n17_checkpoint or os.getenv(N17_CHECKPOINT_ENV),
@@ -515,6 +1014,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         wbc_root=args.wbc_root or os.getenv(WBC_ROOT_ENV),
         policy_server_url=args.policy_server_url or os.getenv(POLICY_SERVER_URL_ENV),
         sim2sim_command=args.sim2sim_command or os.getenv(SIM2SIM_COMMAND_ENV),
+        policy_observation_path=args.policy_observation_path,
     )
     print(json.dumps(summary, sort_keys=True))
     return 0 if summary.get("status") in {"completed", "dry_run_ready"} else 2

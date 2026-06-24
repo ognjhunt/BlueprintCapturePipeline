@@ -78,6 +78,15 @@ must instead set `unitree_g1_hand_policy_output_observed=true`,
 `full_rollout_visually_useful_for_success_review=false` still blocks
 `wam_success_label_from_generated_video` and forward/inverse consistency proof.
 
+The MuJoCo G1 policy/WAM closed-loop helper also has a repo-local default
+OSCAR-style next-observation generator for runs without a configured live WAM
+command. It writes action-conditioned JPEG support frames, short MP4 segments,
+and action, simulated-proprioception, and projected-skeleton conditioning
+metadata, then allows a fresh Unitree policy command to be re-queried on those
+generated observations. Its artifacts must remain labeled as default local
+support output; they do not prove a live learned OSCAR/Cosmos checkpoint,
+physical sensor feedback, success scoring, or deployment readiness.
+
 ## Local Substrates
 
 The substrate registry is written as `evaluation_substrate_registry.json` and

@@ -745,7 +745,80 @@ def test_oscar_wam_provider_bundle_local_materialization_and_failure_edges(
         generated_at="2026-06-21T00:00:00+00:00",
     )
     assert blocked["status"] == "blocked"
-    assert blocked["blockers"] == ["oscar_wam_input_package_materialization_failed:RuntimeError"]
+    assert blocked["blockers"] == [
+        "oscar_wam_input_package_materialization_failed:RuntimeError",
+        "oscar_wam_input_package_materialization_error:cannot render inputs",
+    ]
+    assert blocked["input_package_materialization_error"] == {
+        "type": "RuntimeError",
+        "message": "cannot render inputs",
+        "raw_message_omitted_if_path_like": False,
+    }
+
+
+def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
+    tmp_path: Path,
+) -> None:
+    source_frame = tmp_path / "policy_observation.jpg"
+    _write_review_png(source_frame)
+    step_input = tmp_path / "wam_generation_step_0001_input.json"
+    step_input.write_text(
+        json.dumps(
+            {
+                "schema_version": "wam_generation_step_input.v1",
+                "step_index": 1,
+                "source_policy_observation_frame_path": str(source_frame),
+                "source_policy_action": {
+                    "action_type": "unitree_g1_sonic_latent_action_chunk",
+                    "action_chunk": [0.12, -0.05, 0.18, 0.03],
+                    "unitree_groot_n17_sonic_action_chunk_present": True,
+                },
+                "current_policy_observation": {
+                    "task_id": "turn_on_sink_handle",
+                    "target_object_id": "Sink054_handle",
+                    "visual_observation": {"camera_id": "head_pov"},
+                },
+                "requested_output": {
+                    "next_observation_frame_path": str(tmp_path / "next.jpg"),
+                    "action_conditioned_generation_required": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "step-bundle-job",
+        wam_rollout_input_manifest=step_input,
+        num_frames=8,
+        height=64,
+        width=64,
+        fps=5.0,
+        generated_at="2026-06-21T00:00:00+00:00",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["input_package_source_schema_version"] == "wam_generation_step_input.v1"
+    assert manifest["blockers"] == []
+    bundle_path = Path(str(manifest["bundle_path"]))
+    assert bundle_path.is_file()
+    with zipfile.ZipFile(bundle_path) as archive:
+        names = set(archive.namelist())
+    assert "provider_runtime/oscar_input/first_frame.png" in names
+    assert "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4" in names
+    runtime_manifest = _read_json(
+        tmp_path
+        / "step-bundle-job"
+        / "oscar_wam_provider_bundle"
+        / "provider_runtime"
+        / "wam_provider_runtime_manifest.json"
+    )
+    input_package = runtime_manifest["input_package"]
+    assert input_package["source_action"]["unitree_groot_n17_sonic_action_chunk_present"] is True
+    assert (
+        input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is True
+    )
+    assert input_package["claim_boundary"]["physical_robot_readiness_proven"] is False
 
 
 def test_oscar_wam_provider_bundle_zip_integrity_and_cli_edges(

@@ -29,6 +29,7 @@ from .unitree_groot_n17_sonic_policy_runtime import (
     SONIC_CHECKPOINT_ENV,
     WBC_ROOT_ENV,
     configured_checkpoint_reference,
+    select_unitree_g1_sonic_policy_checkpoint,
 )
 
 
@@ -139,6 +140,13 @@ def _checkpoint_configured(value: str | None) -> bool:
     return configured
 
 
+def _command_uses_policy_server_client(command: str | None) -> bool:
+    text = _string(command)
+    if not text:
+        return False
+    return "unitree_groot_n17_sonic_policy_server_command" in text
+
+
 def _normalize_sequence_action(key: str, value: Any) -> dict[str, Any] | None:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return {
@@ -223,6 +231,10 @@ def _blocked_payload(
     sonic_checkpoint: str | None,
     groot_root: str | None,
     wbc_root: str | None,
+    n17_checkpoint_original_reference_configured: bool | None = None,
+    n17_checkpoint_selection_source: str | None = None,
+    n17_default_experimental_checkpoint_applied: bool | None = None,
+    g1_sonic_checkpoint_required_for_selected_command: bool | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -244,9 +256,21 @@ def _blocked_payload(
         "n17_checkpoint_env": N17_CHECKPOINT_ENV,
         "n17_checkpoint_configured": bool(n17_checkpoint),
         "n17_checkpoint_path": n17_checkpoint,
+        "n17_checkpoint_original_reference_configured": (
+            bool(n17_checkpoint)
+            if n17_checkpoint_original_reference_configured is None
+            else bool(n17_checkpoint_original_reference_configured)
+        ),
+        "n17_checkpoint_selection_source": n17_checkpoint_selection_source,
+        "default_experimental_checkpoint_applied": bool(
+            n17_default_experimental_checkpoint_applied
+        ),
         "g1_sonic_checkpoint_env": SONIC_CHECKPOINT_ENV,
         "g1_sonic_checkpoint_configured": bool(sonic_checkpoint),
         "g1_sonic_checkpoint_path": sonic_checkpoint,
+        "g1_sonic_checkpoint_required_for_selected_command": (
+            g1_sonic_checkpoint_required_for_selected_command
+        ),
         "groot_root_env": GROOT_ROOT_ENV,
         "groot_root_configured": bool(groot_root),
         "groot_root_path": groot_root,
@@ -419,14 +443,30 @@ def run_unitree_groot_n17_sonic_policy(
     if provider_output is not None:
         return _provider_replay_payload(observation=observation, provider_output=provider_output)
 
+    (
+        effective_n17_checkpoint,
+        n17_checkpoint_selection_source,
+        n17_default_experimental_checkpoint_applied,
+    ) = select_unitree_g1_sonic_policy_checkpoint(n17_checkpoint)
+    policy_server_client_command = _command_uses_policy_server_client(command)
+    blocked_checkpoint_metadata = {
+        "n17_checkpoint_original_reference_configured": bool(n17_checkpoint),
+        "n17_checkpoint_selection_source": n17_checkpoint_selection_source,
+        "n17_default_experimental_checkpoint_applied": (
+            n17_default_experimental_checkpoint_applied
+        ),
+        "g1_sonic_checkpoint_required_for_selected_command": (
+            not policy_server_client_command
+        ),
+    }
     blockers: list[str] = []
     if not command:
         blockers.append(f"set_{POLICY_COMMAND_ENV}_to_runnable_unitree_groot_n17_sonic_policy_command")
     elif not _command_available(command):
         blockers.append("make_configured_unitree_groot_n17_sonic_policy_command_executable_or_on_path")
-    if not _checkpoint_configured(n17_checkpoint):
+    if not _checkpoint_configured(effective_n17_checkpoint):
         blockers.append(f"set_{N17_CHECKPOINT_ENV}_to_nvidia_groot_n17_checkpoint_or_repo_id")
-    if not _checkpoint_configured(sonic_checkpoint):
+    if not policy_server_client_command and not _checkpoint_configured(sonic_checkpoint):
         blockers.append(f"set_{SONIC_CHECKPOINT_ENV}_to_finetuned_unitree_g1_sonic_checkpoint_or_repo_id")
     frame = _camera_frame_path(observation)
     if frame is None:
@@ -437,10 +477,11 @@ def run_unitree_groot_n17_sonic_policy(
                 blockers=blockers,
                 observation=observation,
                 command=command,
-                n17_checkpoint=n17_checkpoint,
+                n17_checkpoint=effective_n17_checkpoint,
                 sonic_checkpoint=sonic_checkpoint,
                 groot_root=groot_root,
                 wbc_root=wbc_root,
+                **blocked_checkpoint_metadata,
             ),
             2,
         )
@@ -448,7 +489,7 @@ def run_unitree_groot_n17_sonic_policy(
         runner_payload, meta = _run_runner_command(
             command=command or "",
             payload={"observation": observation},
-            n17_checkpoint=n17_checkpoint or "",
+            n17_checkpoint=effective_n17_checkpoint or "",
             sonic_checkpoint=sonic_checkpoint or "",
             groot_root=groot_root,
             wbc_root=wbc_root,
@@ -467,10 +508,11 @@ def run_unitree_groot_n17_sonic_policy(
                     blockers=blockers,
                     observation=observation,
                     command=command,
-                    n17_checkpoint=n17_checkpoint,
+                    n17_checkpoint=effective_n17_checkpoint,
                     sonic_checkpoint=sonic_checkpoint,
                     groot_root=groot_root,
                     wbc_root=wbc_root,
+                    **blocked_checkpoint_metadata,
                 )
                 | {
                     "runner_metadata": meta,
@@ -488,10 +530,11 @@ def run_unitree_groot_n17_sonic_policy(
                 blockers=[f"blocked_unitree_groot_n17_sonic_policy_command_failed:{type(exc).__name__}"],
                 observation=observation,
                 command=command,
-                n17_checkpoint=n17_checkpoint,
+                n17_checkpoint=effective_n17_checkpoint,
                 sonic_checkpoint=sonic_checkpoint,
                 groot_root=groot_root,
                 wbc_root=wbc_root,
+                **blocked_checkpoint_metadata,
             )
             | {"error_type": type(exc).__name__},
             2,
@@ -512,8 +555,16 @@ def run_unitree_groot_n17_sonic_policy(
             "fresh_unitree_groot_n17_sonic_model_executed_this_invocation": True,
             "task_id": observation.get("task_id"),
             "camera_frame_path": str(frame),
-            "n17_checkpoint_path": n17_checkpoint,
+            "n17_checkpoint_path": effective_n17_checkpoint,
+            "n17_checkpoint_original_reference_configured": bool(n17_checkpoint),
+            "n17_checkpoint_selection_source": n17_checkpoint_selection_source,
+            "default_experimental_checkpoint_applied": (
+                n17_default_experimental_checkpoint_applied
+            ),
             "g1_sonic_checkpoint_path": sonic_checkpoint,
+            "g1_sonic_checkpoint_required_for_selected_command": (
+                not policy_server_client_command
+            ),
             "groot_root_path": groot_root,
             "wbc_root_path": wbc_root,
             "policy_server_url_configured": bool(policy_server_url),

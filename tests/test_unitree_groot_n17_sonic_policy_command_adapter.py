@@ -142,6 +142,55 @@ def test_groot_n17_sonic_adapter_preserves_child_command_blockers(tmp_path: Path
     assert response["unitree_groot_n17_sonic_policy_action_command_ran"] is False
 
 
+def test_groot_n17_sonic_adapter_allows_policy_server_client_without_sonic_deploy_assets(
+    tmp_path: Path,
+) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"existing-policy-frame")
+    runner = tmp_path / "unitree_groot_n17_sonic_policy_server_command_fake.py"
+    runner.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "payload = {",
+                "    'schema_version': 'unitree_groot_n17_sonic_policy_server_command.v1',",
+                "    'status': 'blocked',",
+                "    'blockers': ['set_BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL_to_running_gr00t_policy_server'],",
+                "}",
+                "open(os.environ['BLUEPRINT_POLICY_ACTION_OUTPUT'], 'w').write(json.dumps(payload))",
+                "raise SystemExit(2)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    response, exit_code = adapter.run_unitree_groot_n17_sonic_policy(
+        payload={
+            "observation": {
+                "task_id": "contact_or_push_light_object",
+                "visual_observation": {"camera_frame_path": str(frame)},
+            }
+        },
+        command=f"{sys.executable} {runner}",
+        n17_checkpoint="nvidia/GR00T-N1.7-3B",
+        sonic_checkpoint=str(tmp_path / "mac-local-sonic-assets-not-on-provider"),
+        timeout_seconds=5,
+    )
+
+    assert exit_code == 2
+    assert response["status"] == "blocked"
+    assert (
+        "set_BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT_to_finetuned_unitree_g1_sonic_checkpoint_or_repo_id"
+        not in response["blockers"]
+    )
+    assert response["g1_sonic_checkpoint_required_for_selected_command"] is False
+    assert response["default_experimental_checkpoint_applied"] is True
+    assert (
+        "set_BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL_to_running_gr00t_policy_server"
+        in response["blockers"]
+    )
+
+
 def test_groot_n17_sonic_adapter_provider_replay_does_not_count_as_fresh_command(
     tmp_path: Path,
 ) -> None:

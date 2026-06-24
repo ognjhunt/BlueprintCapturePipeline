@@ -1,5 +1,73 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-06-23
+
+### User-Facing
+
+- Committed MuJoCo-backed initial policy observation rendering for scene/WAM
+  episode packets in `src/blueprint_pipeline/scene_wam_policy_episode_packet.py`.
+  USD scenes can now fall back through a generated visual MJCF with texture
+  export, bbox proxies for oversized meshes, and blank/uniform frame rejection
+  before an observation is treated as useful review evidence. This is visual
+  scene/render support only; it does not validate physics contact, safety, or
+  physical robot readiness.
+- Committed eval-ready task grounding for WAM policy loops through
+  `src/blueprint_pipeline/eval_ready_task_grounding.py` and the
+  `blueprint-build-eval-ready-task-grounding` CLI. The new artifacts identify
+  task targets, camera calibration quality, FK/projected skeleton support, and
+  lightweight handle-state proxies for learned rollout requests while keeping
+  those outputs downstream of raw capture/provenance truth.
+- Extended OSCAR/Cosmos WAM evaluation to consume eval-ready grounding,
+  projected skeleton traces, and optional real-world outcome ledgers, then write
+  `wam_prediction_outcome_correlation_ledger.json`. The correlation ledger is an
+  audit/support artifact; generated rollouts, VLM labels, calibration gates, and
+  handle proxies still do not prove physical contact, torque, task success,
+  deployment approval, or real-world readiness.
+
+### Employee-Facing
+
+- Added README artifact-contract coverage for
+  `eval_ready_task_grounding.json`, `camera_calibration_quality_gate.json`,
+  `robot_fk_projection_manifest.json`,
+  `robot_fk_projected_skeleton_trace.jsonl`, `handle_proxy_state_check.json`,
+  and `wam_prediction_outcome_correlation_ledger.json`.
+- Updated object-index support to derive task-aware detector prompts from
+  customer task text, giving downstream grounding a more direct target selection
+  path without hardwiring the pipeline to one scene or model backend.
+- Added focused tests for the MuJoCo render fallback, USD texture/MJCF export,
+  blank-frame rejection, eval-ready task grounding, object-index prompt
+  derivation, and WAM evaluator grounding/correlation behavior.
+- Uncommitted local June 23 work extends the MuJoCo Unitree policy/WAM loop with
+  a default local OSCAR-style support generator for no-live-provider runs,
+  including action-conditioned next-observation frames, short MP4 segments,
+  projected-skeleton/proprioception conditioning, and fresh Unitree policy
+  re-query attempts. Several related test/runtime files were touched after
+  midnight on June 24, so treat this as local, unmerged state rather than a
+  committed June 23 release.
+
+### Future-Agent-Facing
+
+- Contract changes: `pyproject.toml` now exposes
+  `blueprint-build-eval-ready-task-grounding`; WAM evaluation may copy grounding
+  support artifacts into job directories and include them in substrate,
+  rollout-input, scorecard, claim-boundary, and handoff manifests.
+- Runtime behavior changes: scene/WAM packet rendering now verifies image
+  content before accepting a frame and can render MJCF scenes directly or convert
+  USD visual meshes into MuJoCo-renderable support geometry.
+- Proof boundary: eval-ready grounding, projected skeleton traces, generated
+  visual MJCFs, and prediction/outcome correlation records are support layers.
+  They do not supersede raw capture/provenance evidence and do not prove live
+  provider execution, public readiness, safety validation, physical robot
+  readiness, or real-world manipulation success without separate accepted proof.
+- Uncommitted caveat: local Unitree GR00T/SONIC Vast/provider packaging work
+  touches `src/blueprint_pipeline/vast_provider_adapter.py`,
+  `src/blueprint_pipeline/oscar_wam_provider_bundle.py`,
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_provider_smoke.py`, related
+  tests, docs, and `deploy/docker/robot_eval_worker/unitree_groot_sonic_vast/`.
+  It adds HF token-file handling, optional Docker image-login controls,
+  provider-bundle preflight/runtime output checks, and a CUDA 12.4 runtime image,
+  but remains uncommitted and should not be described as live provider proof.
+
 ## 2026-06-22
 
 ### User-Facing

@@ -1,0 +1,20 @@
+{
+  "schema_version": "oscar_wam_provider_command_adapter.v1",
+  "status": "blocked",
+  "adapter_id": "blueprint_oscar_wam_provider_command_adapter",
+  "mode": "vast-provider",
+  "blockers": [
+    "blocked_missing_BLUEPRINT_WAM_ROLLOUT_INPUT"
+  ],
+  "details": {
+    "work_dir": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/robot_eval_jobs/live_oscar_wam_canary_20260624T000000Z"
+  },
+  "rollouts": [],
+  "fresh_model_run_claimed": false,
+  "fresh_provider_model_run_claimed": false,
+  "fresh_model_command_executed_this_invocation": false,
+  "fresh_provider_launch_attempted": false,
+  "provider_output_replayed": false,
+  "raw_credentials_written_to_artifacts": false,
+  "secret_hashes_written_to_artifacts": false
+}

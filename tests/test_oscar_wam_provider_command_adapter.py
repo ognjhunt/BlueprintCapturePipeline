@@ -10,6 +10,23 @@ import pytest
 from blueprint_pipeline import oscar_wam_provider_command_adapter as adapter
 
 
+_PROVIDER_ENV_VARS = (
+    "BLUEPRINT_WAM_ROLLOUT_INPUT",
+    "BLUEPRINT_WAM_ROLLOUT_OUTPUT",
+    "BLUEPRINT_OSCAR_WAM_CHECKPOINT",
+    "BLUEPRINT_WAM_MODEL_CHECKPOINT",
+    adapter.VAST_WAM_PUBLIC_IMAGE_ENV,
+    adapter.VAST_WAM_MIN_GPU_RAM_MB_ENV,
+    adapter.VAST_WAM_EXCLUDED_MACHINE_ID_ENV,
+    adapter.ALLOW_VAST_PROVIDER_LAUNCH_ENV,
+)
+
+
+def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _PROVIDER_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -91,6 +108,7 @@ def test_provider_command_adapter_blocks_without_required_contract(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _clear_provider_env(monkeypatch)
     output = tmp_path / "out.json"
     monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output))
     monkeypatch.delenv("BLUEPRINT_WAM_ROLLOUT_INPUT", raising=False)
@@ -268,6 +286,7 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _clear_provider_env(monkeypatch)
     rollout_input = tmp_path / "wam_rollout_input_manifest.json"
     _write_json(rollout_input, {"schema_version": "wam_rollout_input_manifest.v1"})
     output = tmp_path / "wam_provider_output.json"
@@ -279,6 +298,10 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     monkeypatch.setenv(adapter.ALLOW_VAST_PROVIDER_LAUNCH_ENV, "true")
     monkeypatch.setenv(
         adapter.OSCAR_WAM_GPU_IMAGE_REF_ENV,
+        "docker.io/nijelhunt/blueprint-oscar-wam:20260621-cu128-shim",
+    )
+    monkeypatch.setenv(
+        adapter.VAST_WAM_PUBLIC_IMAGE_ENV,
         "docker.io/nijelhunt/blueprint-oscar-wam:20260621-cu128-shim",
     )
     monkeypatch.setenv(adapter.VAST_WAM_MIN_GPU_RAM_MB_ENV, "48000")

@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .provider_worker_contract import (
+    build_provider_worker_contract,
+    classify_policy_worker_command,
+)
 
 
 GPU_STARTUP_PIPELINE_PLAN_SCHEMA_VERSION = "robot_eval_gpu_startup_pipeline_plan.v1"
@@ -167,6 +171,90 @@ def _preflight_checks(
     return _dedupe(checks)
 
 
+def _policy_worker_command_from_launch_plan(worker_launch_plan: Mapping[str, Any]) -> str:
+    command = _string(
+        worker_launch_plan.get("policy_command")
+        or worker_launch_plan.get("policy_worker_command")
+        or worker_launch_plan.get("worker_command")
+        or worker_launch_plan.get("entrypoint_command")
+    )
+    if command:
+        return command
+    worker = _mapping(worker_launch_plan.get("worker"))
+    command = _string(
+        worker.get("policy_command")
+        or worker.get("policy_worker_command")
+        or worker.get("entrypoint_command")
+    )
+    if command:
+        return command
+    runtime_contract = _mapping(worker_launch_plan.get("runtime_contract"))
+    return _string(
+        runtime_contract.get("policy_command")
+        or runtime_contract.get("policy_worker_command")
+    )
+
+
+def _provider_worker_session_policy(
+    *,
+    provisioner: str,
+    worker_launch_plan: Mapping[str, Any],
+    generated_at: str,
+) -> dict[str, Any]:
+    worker_role = _string(worker_launch_plan.get("worker_role")) or "robot_eval_worker"
+    policy_command = _policy_worker_command_from_launch_plan(worker_launch_plan)
+    command_classification = classify_policy_worker_command(policy_command)
+    contract = build_provider_worker_contract(
+        generated_at=generated_at,
+        provider=provisioner or "provider_neutral",
+        worker_role=worker_role,
+        policy_command=policy_command,
+    )
+    blockers: list[str] = []
+    if policy_command and not command_classification.get("repeated_policy_loop_allowed"):
+        blockers.extend(_string_list(command_classification.get("blockers")))
+    return {
+        "schema_version": "provider_worker_session_policy.v1",
+        "generated_at": generated_at,
+        "status": "blocked" if blockers else "ready_for_session_orchestration",
+        "provider": provisioner or "provider_neutral",
+        "worker_role": worker_role,
+        "session_scope": "one_ready_worker_per_evaluation_job_or_worker_role",
+        "allocation_lifecycle": {
+            "allocate_provider_worker_once_per_eval_job": True,
+            "load_models_once_before_first_infer": True,
+            "reuse_ready_worker_for_all_policy_steps": True,
+            "provider_allocation_per_inference_allowed": False,
+            "shutdown_after_eval_job_final_artifacts": True,
+        },
+        "http_contract": contract["http_contract"],
+        "readiness_gate": {
+            "readyz_required_before_first_infer": True,
+            "healthz_is_not_model_ready": True,
+            "infer_requires_readyz_success": True,
+            "shutdown_response_requires_provider_teardown_artifact_for_cost_proof": True,
+        },
+        "provider_adapter_responsibilities": contract["worker_lifecycle"][
+            "provider_adapter_responsibilities"
+        ],
+        "policy_loop_responsibilities": contract["worker_lifecycle"][
+            "policy_loop_responsibilities"
+        ],
+        "policy_command_configured": bool(policy_command),
+        "policy_command_classification": command_classification,
+        "blockers": _dedupe(blockers),
+        "claim_boundary": {
+            "session_policy_is_not_provider_execution_proof": True,
+            "worker_readyz_artifact_required_before_customer_eval": True,
+            "remote_provider_shutdown_not_proven_by_plan": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "raw_secret_values_recorded": False,
+        },
+    }
+
+
 def build_gpu_startup_pipeline_plan(
     *,
     request: Mapping[str, Any],
@@ -215,6 +303,12 @@ def build_gpu_startup_pipeline_plan(
     worker_image_policy = _worker_image_policy(worker_launch_plan)
     worker_blockers = _string_list(worker_launch_plan.get("blockers"))
     scheduler_blockers = _string_list(scheduler_decision.get("blockers"))
+    worker_session_policy = _provider_worker_session_policy(
+        provisioner=provisioner,
+        worker_launch_plan=worker_launch_plan,
+        generated_at=generated_at,
+    )
+    worker_session_blockers = _string_list(worker_session_policy.get("blockers"))
     blockers: list[str] = []
     warnings: list[str] = []
 
@@ -232,6 +326,8 @@ def build_gpu_startup_pipeline_plan(
         warnings.append("worker_launch_plan_has_blockers")
     if scheduler_blockers:
         warnings.append("scheduler_decision_has_blockers")
+    if worker_session_blockers:
+        blockers.extend(worker_session_blockers)
 
     status = (
         "blocked_before_customer_gpu_allocation"
@@ -318,6 +414,7 @@ def build_gpu_startup_pipeline_plan(
                 ),
             },
         },
+        "provider_worker_session_policy": worker_session_policy,
         "same_sku_burst_policy": {
             "enabled": bool(live_provider_job),
             "burst_workers_must_use_same_image_ref": True,
