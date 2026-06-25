@@ -87,7 +87,11 @@ def _ready_runpod_request(path: Path) -> Path:
 
 def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv(RUNPOD_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(RUNPOD_API_KEY_FILE_ENV, raising=False)
+    monkeypatch.delenv(RUNPOD_CONFIG_FILE_ENV, raising=False)
     request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
 
     result = run_runpod_provider_adapter(

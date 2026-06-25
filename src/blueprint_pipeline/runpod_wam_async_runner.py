@@ -8,6 +8,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
@@ -40,10 +41,28 @@ RUNPOD_WAM_CREATE_SCHEMA_VERSION = "runpod_wam_async_create_manifest.v1"
 RUNPOD_WAM_POLL_SCHEMA_VERSION = "runpod_wam_async_poll_manifest.v1"
 RUNPOD_WAM_DELETE_SCHEMA_VERSION = "runpod_wam_async_delete_manifest.v1"
 RUNPOD_POD_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH"
-RUNPOD_PROVIDER_BUNDLE_KINDS = ("wam", "unitree_unifolm")
+RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV = (
+    "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
+)
+RUNPOD_UNITREE_GROOT_SONIC_MAX_UNGATED_LOOP_STEPS = 2
+RUNPOD_PROVIDER_BUNDLE_KINDS = ("wam", "unitree_unifolm", "unitree_groot_n17_sonic")
+RUNPOD_TERMINAL_POD_STATUSES = {"not_found", "EXITED", "TERMINATED", "FAILED", "STOPPED"}
+RUNPOD_ACTIVE_POD_STATUSES = {
+    "CREATED",
+    "PENDING",
+    "QUEUED",
+    "STARTING",
+    "INITIALIZING",
+    "PROVISIONING",
+    "RUNNING",
+    "RESTARTING",
+    "pending_api_visibility",
+}
 DEFAULT_GPU_TYPE_IDS = (
-    "NVIDIA GeForce RTX 4090",
-    "NVIDIA GeForce RTX 3090",
+    "NVIDIA L40S",
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA RTX A6000",
+    "NVIDIA A40",
     "NVIDIA RTX A5000",
 )
 DEFAULT_HF_TOKEN_FILES = (
@@ -56,8 +75,41 @@ PROVIDER_RUNTIME_CONFIG_ENV_KEYS = (
     "BLUEPRINT_OSCAR_WAM_ATTEMPT_TRANSFORMER_ENGINE_INSTALL",
     "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL",
     "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY",
+    "BLUEPRINT_OSCAR_WAM_NUM_STEPS",
+    "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE",
+    "BLUEPRINT_OSCAR_WAM_NUM_FRAMES",
+    "BLUEPRINT_OSCAR_WAM_HEIGHT",
+    "BLUEPRINT_OSCAR_WAM_WIDTH",
+    "BLUEPRINT_OSCAR_WAM_FPS",
+    "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS",
+    "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER",
     "BLUEPRINT_WAM_PROVIDER_ALLOW_BREAK_SYSTEM_PACKAGES",
     "BLUEPRINT_WAM_PROVIDER_DISABLE_VENV",
+    "BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS",
+)
+UNITREE_GROOT_SONIC_RUNTIME_CONFIG_ENV_KEYS = (
+    *PROVIDER_RUNTIME_CONFIG_ENV_KEYS,
+    "BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC",
+    "BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT",
+    "BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIM2SIM_COMMAND",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PERSISTENT_INNER_POLICY_COMMAND",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_INSTALL_REQUIREMENTS",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SKIP_SYSTEM_PYTHON_DEPS_INSTALL",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_DEPS_TIMEOUT_SECONDS",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_TIMEOUT_SECONDS",
+    "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS",
+    "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS",
+    "BLUEPRINT_PERSISTENT_SESSION_WAM_STEP_TIMEOUT_SECONDS",
 )
 UNITREE_UNIFOLM_RUNTIME_CONFIG_ENV_KEYS = (
     "BLUEPRINT_UNITREE_UNIFOLM_MODE",
@@ -103,6 +155,17 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(_string(os.getenv(name)) or default)
+    except ValueError:
+        return int(default)
+
+
+def _env_truthy(name: str) -> bool:
+    return _string(os.getenv(name)).lower() in {"1", "true", "yes", "on"}
+
+
 def _redact_provider_url(value: str) -> str:
     parsed = urlparse(value)
     if not parsed.scheme or not parsed.netloc:
@@ -110,6 +173,51 @@ def _redact_provider_url(value: str) -> str:
     query = "REDACTED_QUERY" if parsed.query else ""
     fragment = "REDACTED_FRAGMENT" if parsed.fragment else ""
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, fragment))
+
+
+def _read_unitree_groot_sonic_bundle_input(bundle_path: Path) -> dict[str, Any]:
+    if not bundle_path.is_file() or not zipfile.is_zipfile(bundle_path):
+        return {}
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            input_name = "provider_runtime/persistent_session_input.json"
+            if input_name not in set(archive.namelist()):
+                return {}
+            payload = json.loads(archive.read(input_name).decode("utf-8") or "{}")
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _unitree_groot_sonic_full_loop_create_guard(
+    *,
+    bundle_path: Path,
+    provider_bundle_kind: str,
+) -> dict[str, Any]:
+    payload = _read_unitree_groot_sonic_bundle_input(bundle_path)
+    schema_version = _string(payload.get("schema_version"))
+    is_unitree_groot_sonic_bundle = bool(
+        provider_bundle_kind == "unitree_groot_n17_sonic"
+        or schema_version == "unitree_groot_n17_sonic_wam_persistent_session_input.v1"
+    )
+    if not is_unitree_groot_sonic_bundle:
+        return {"status": "not_applicable", "raw_secret_values_recorded": False}
+    try:
+        loop_step_count = max(1, int(payload.get("loop_step_count") or 1))
+    except (TypeError, ValueError):
+        loop_step_count = 1
+    return {
+        "status": "allowed",
+        "requested_loop_step_count": loop_step_count,
+        "previous_max_loop_step_count_without_override": (
+            RUNPOD_UNITREE_GROOT_SONIC_MAX_UNGATED_LOOP_STEPS
+        ),
+        "override_env": RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV,
+        "provider_bundle_kind": provider_bundle_kind,
+        "bundle_input_schema_version": schema_version,
+        "full_loop_launch_is_default": True,
+        "raw_secret_values_recorded": False,
+    }
 
 
 def _state_path(job_dir: Path) -> Path:
@@ -287,6 +395,16 @@ def _read_model_secret_env() -> tuple[dict[str, str], dict[str, Any]]:
 def _provider_runtime_config_keys(provider_bundle_kind: str) -> tuple[str, ...]:
     if provider_bundle_kind == "unitree_unifolm":
         return UNITREE_UNIFOLM_RUNTIME_CONFIG_ENV_KEYS
+    if provider_bundle_kind == "unitree_groot_n17_sonic":
+        return UNITREE_GROOT_SONIC_RUNTIME_CONFIG_ENV_KEYS
+    if (
+        provider_bundle_kind == "wam"
+        and os.getenv("BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    ):
+        return UNITREE_GROOT_SONIC_RUNTIME_CONFIG_ENV_KEYS
     return PROVIDER_RUNTIME_CONFIG_ENV_KEYS
 
 
@@ -374,6 +492,81 @@ def _redacted_payload_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _provider_shell_script(provider_bundle_kind: str = "wam") -> str:
+    if provider_bundle_kind == "unitree_groot_n17_sonic":
+        return r"""
+set -euo pipefail
+echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_PERSISTENT_PROVIDER_STARTED
+WORK_DIR="${BLUEPRINT_RUNPOD_PROVIDER_WORK_DIR:-/workspace/blueprint_unitree_groot_sonic_persistent_provider}"
+BUNDLE_URL="${BLUEPRINT_EVAL_MANIFEST_URI:-}"
+OUTPUT_PUT_URL="${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-}"
+export WORK_DIR BUNDLE_URL OUTPUT_PUT_URL
+mkdir -p "$WORK_DIR"
+mkdir -p "$WORK_DIR/runtime_output"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR="$WORK_DIR/runtime_output"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT="$WORK_DIR/runtime_output/unitree_groot_n17_sonic_policy_provider_output.json"
+upload_unitree_outer_blocker() {
+  set +e
+  OUTER_RC="${1:-1}" python - <<'PY'
+import json
+import os
+import urllib.request
+import zipfile
+from pathlib import Path
+
+output_dir = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"])
+output_dir.mkdir(parents=True, exist_ok=True)
+out = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"])
+out.write_text(json.dumps({
+    "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+    "status": "blocked",
+    "policy_id": "unitree_groot_n17_sonic_policy",
+    "persistent_provider_session_used": True,
+    "unitree_groot_n17_sonic_model_executed": False,
+    "unitree_groot_n17_sonic_policy_action_command_ran": False,
+    "policy_action_model_command_ran": False,
+    "provider_output_replay_used": False,
+    "blockers": ["runpod_unitree_groot_sonic_outer_bootstrap_failed_before_inner_wrapper_result"],
+    "outer_returncode": int(os.environ.get("OUTER_RC", "1") or 1),
+    "raw_credentials_written_to_artifacts": False,
+    "secret_hashes_written_to_artifacts": False,
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+zip_path = Path(os.environ["WORK_DIR"]) / "unitree_groot_n17_sonic_provider_runtime_output.zip"
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in sorted(output_dir.rglob("*")):
+        if path.is_file():
+            archive.write(path, path.relative_to(output_dir).as_posix())
+print("BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_OUTER_BLOCKER_ZIP_WRITTEN:%d" % zip_path.stat().st_size)
+put_url = os.environ.get("OUTPUT_PUT_URL", "")
+if put_url:
+    request = urllib.request.Request(
+        put_url,
+        data=zip_path.read_bytes(),
+        method="PUT",
+        headers={"Content-Type": "application/zip"},
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        response.read()
+    print("BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_OUTER_BLOCKER_UPLOAD_OK")
+PY
+}
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then upload_unitree_outer_blocker "$rc"; fi; exit "$rc"' EXIT
+if [ -z "$BUNDLE_URL" ]; then echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_BLOCKED:bundle_url_missing; exit 20; fi
+if [ -z "$OUTPUT_PUT_URL" ]; then echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_BLOCKED:output_put_url_missing; exit 21; fi
+python - <<'PY'
+import os
+import urllib.request
+from pathlib import Path
+
+target = Path(os.environ["WORK_DIR"]) / "unitree_groot_n17_sonic_wam_persistent_session_bundle.zip"
+with urllib.request.urlopen(os.environ["BUNDLE_URL"], timeout=300) as response:
+    target.write_bytes(response.read())
+print("BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_BUNDLE_DOWNLOADED:%d" % target.stat().st_size)
+PY
+rm -rf "$WORK_DIR/unitree_groot_n17_sonic_provider_bundle" "$WORK_DIR/unitree_groot_n17_sonic_provider_runtime_output.zip"
+python -m zipfile -e "$WORK_DIR/unitree_groot_n17_sonic_wam_persistent_session_bundle.zip" "$WORK_DIR/unitree_groot_n17_sonic_provider_bundle"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_BUNDLE_DIR="$WORK_DIR/unitree_groot_n17_sonic_provider_bundle"
+bash "$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/run_unitree_groot_n17_sonic_runpod_wrapper.sh"
+"""
     if provider_bundle_kind == "unitree_unifolm":
         return r"""
 set -euo pipefail
@@ -386,9 +579,9 @@ if [ -z "$BUNDLE_URL" ]; then echo BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_BLOCKED:bund
 if [ -z "$OUTPUT_PUT_URL" ]; then echo BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_BLOCKED:output_put_url_missing; exit 21; fi
 mkdir -p "$WORK_DIR"
 if command -v apt-get >/dev/null 2>&1; then
-  if ! command -v git >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1; then
-    apt-get update >/tmp/blueprint_runpod_apt_update.log 2>&1 || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y git ffmpeg ca-certificates >/tmp/blueprint_runpod_apt_install.log 2>&1 || true
+  if ! command -v git >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    timeout 300 apt-get update >/tmp/blueprint_runpod_apt_update.log 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive timeout 600 apt-get install -y git ffmpeg curl ca-certificates >/tmp/blueprint_runpod_apt_install.log 2>&1 || true
   fi
 fi
 python - <<'PY'
@@ -453,13 +646,155 @@ WORK_DIR="${BLUEPRINT_RUNPOD_WAM_WORK_DIR:-/workspace/blueprint_wam_provider}"
 BUNDLE_URL="${BLUEPRINT_EVAL_MANIFEST_URI:-}"
 OUTPUT_PUT_URL="${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-}"
 export WORK_DIR BUNDLE_URL OUTPUT_PUT_URL
+export BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR="${BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR:-$WORK_DIR/runtime_output}"
+upload_wam_outer_blocker() {
+  set +e
+  mkdir -p "$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"
+  OUTER_RC="${1:-1}" python - <<'PY'
+import json
+import os
+import urllib.request
+import zipfile
+from pathlib import Path
+
+output_dir = Path(os.environ["BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"])
+output_dir.mkdir(parents=True, exist_ok=True)
+rc = int(os.environ.get("OUTER_RC", "1") or 1)
+blockers = ["runpod_wam_outer_bootstrap_failed_before_runtime_result"]
+(output_dir / "wam_provider_output.json").write_text(
+    json.dumps(
+        {
+            "schema_version": "wam_provider_output.v1",
+            "status": "blocked",
+            "blockers": blockers,
+            "outer_returncode": rc,
+            "raw_credentials_written_to_artifacts": False,
+        },
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+carrier = os.environ.get("BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC", "").lower()
+if carrier in {"1", "true", "yes", "on"}:
+    (output_dir / "unitree_groot_n17_sonic_policy_provider_output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+                "status": "blocked",
+                "policy_id": "unitree_groot_n17_sonic_policy",
+                "persistent_provider_session_used": True,
+                "unitree_groot_n17_sonic_model_executed": False,
+                "unitree_groot_n17_sonic_policy_action_command_ran": False,
+                "policy_action_model_command_ran": False,
+                "provider_output_replay_used": False,
+                "blockers": blockers,
+                "outer_returncode": rc,
+                "raw_credentials_written_to_artifacts": False,
+                "secret_hashes_written_to_artifacts": False,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+zip_path = Path(os.environ["WORK_DIR"]) / "wam_provider_runtime_output.zip"
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in sorted(output_dir.rglob("*")):
+        if path.is_file():
+            archive.write(path, path.relative_to(output_dir).as_posix())
+put_url = os.environ.get("OUTPUT_PUT_URL", "")
+if put_url:
+    request = urllib.request.Request(
+        put_url,
+        data=zip_path.read_bytes(),
+        method="PUT",
+        headers={"Content-Type": "application/zip"},
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        response.read()
+PY
+}
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then upload_wam_outer_blocker "$rc"; fi; exit "$rc"' EXIT
+upload_wam_running_heartbeat() {
+  set +e
+  phase="${1:-runpod_wam_outer_wrapper_running}"
+  mkdir -p "$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"
+  PHASE="$phase" python - <<'PY'
+import json
+import os
+import time
+import urllib.request
+import zipfile
+from pathlib import Path
+
+output_dir = Path(os.environ["BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"])
+output_dir.mkdir(parents=True, exist_ok=True)
+phase = os.environ.get("PHASE", "runpod_wam_outer_wrapper_running")
+payload = {
+    "schema_version": "wam_provider_output.v1",
+    "status": "running",
+    "runtime_phase": phase,
+    "runtime_phase_details": {
+        "phase": phase,
+        "observed_at_epoch": round(time.time(), 3),
+        "source": "runpod_wam_outer_wrapper",
+        "raw_secret_values_recorded": False,
+    },
+    "blockers": [],
+    "raw_credentials_written_to_artifacts": False,
+}
+(output_dir / "wam_provider_output.json").write_text(
+    json.dumps(payload, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+carrier = os.environ.get("BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC", "").lower()
+if carrier in {"1", "true", "yes", "on"}:
+    unitree_payload = {
+        "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+        "status": "running",
+        "policy_id": "unitree_groot_n17_sonic_policy",
+        "persistent_provider_session_used": True,
+        "runtime_phase": phase,
+        "runtime_phase_details": payload["runtime_phase_details"],
+        "blockers": [],
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+    (output_dir / "unitree_groot_n17_sonic_policy_provider_output.json").write_text(
+        json.dumps(unitree_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+zip_path = Path(os.environ["WORK_DIR"]) / "wam_provider_runtime_output.zip"
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in sorted(output_dir.rglob("*")):
+        if path.is_file():
+            archive.write(path, path.relative_to(output_dir).as_posix())
+put_url = os.environ.get("OUTPUT_PUT_URL", "")
+if put_url:
+    request = urllib.request.Request(
+        put_url,
+        data=zip_path.read_bytes(),
+        method="PUT",
+        headers={"Content-Type": "application/zip"},
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        response.read()
+PY
+  set -e
+}
 if [ -z "$BUNDLE_URL" ]; then echo BLUEPRINT_RUNPOD_WAM_BLOCKED:bundle_url_missing; exit 20; fi
 if [ -z "$OUTPUT_PUT_URL" ]; then echo BLUEPRINT_RUNPOD_WAM_BLOCKED:output_put_url_missing; exit 21; fi
 mkdir -p "$WORK_DIR"
+upload_wam_running_heartbeat runpod_wam_outer_wrapper_started
 if command -v apt-get >/dev/null 2>&1; then
-  if ! command -v git >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1; then
-    apt-get update >/tmp/blueprint_runpod_apt_update.log 2>&1 || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y git ffmpeg ca-certificates >/tmp/blueprint_runpod_apt_install.log 2>&1 || true
+  if ! command -v git >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    upload_wam_running_heartbeat runpod_wam_system_dependency_install_started
+    timeout 300 apt-get update >/tmp/blueprint_runpod_apt_update.log 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive timeout 600 apt-get install -y git ffmpeg curl ca-certificates >/tmp/blueprint_runpod_apt_install.log 2>&1 || true
+    upload_wam_running_heartbeat runpod_wam_system_dependency_install_completed
+  else
+    upload_wam_running_heartbeat runpod_wam_system_dependencies_present
   fi
 fi
 python - <<'PY'
@@ -471,13 +806,62 @@ with urllib.request.urlopen(os.environ["BUNDLE_URL"], timeout=300) as response:
     target.write_bytes(response.read())
 print("BLUEPRINT_RUNPOD_WAM_BUNDLE_DOWNLOADED:%d" % target.stat().st_size)
 PY
+upload_wam_running_heartbeat runpod_wam_bundle_downloaded
 rm -rf "$WORK_DIR/wam_provider_bundle" "$WORK_DIR/runtime_output" "$WORK_DIR/wam_provider_runtime_output.zip"
 python -m zipfile -e "$WORK_DIR/wam_provider_runtime_bundle.zip" "$WORK_DIR/wam_provider_bundle"
 echo BLUEPRINT_RUNPOD_WAM_ENTRYPOINT_STARTED
-export BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR="$WORK_DIR/runtime_output"
+upload_wam_running_heartbeat runpod_wam_entrypoint_starting
 export BLUEPRINT_WAM_PROVIDER_BUNDLE_DIR="$WORK_DIR/wam_provider_bundle"
 export BLUEPRINT_WAM_ROLLOUT_INPUT="$WORK_DIR/wam_provider_bundle/provider_runtime/wam_rollout_input_manifest.json"
-bash "$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh" || true
+mkdir -p "$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"
+WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS="${BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS:-}"
+if [ -z "$WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS" ] && [ -n "${BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS:-}" ]; then
+  WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS=$((BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS + 300))
+fi
+WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS="${WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS:-7200}"
+export WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS
+runtime_log="$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR/runpod_wam_provider_entrypoint.log"
+echo "BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS=$WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS" > "$runtime_log"
+set +e
+if command -v timeout >/dev/null 2>&1; then
+  timeout "$WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS" bash "$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh" >> "$runtime_log" 2>&1
+else
+  bash "$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh" >> "$runtime_log" 2>&1
+fi
+wam_runtime_rc=$?
+export wam_runtime_rc
+set -e
+entrypoint_status="completed"
+entrypoint_timed_out=false
+entrypoint_blockers='[]'
+if [ "$wam_runtime_rc" -ne 0 ]; then
+  entrypoint_status="blocked"
+  entrypoint_blockers='["runpod_wam_provider_entrypoint_nonzero_or_timeout"]'
+  if [ "$wam_runtime_rc" = "124" ] || [ "$wam_runtime_rc" = "137" ]; then
+    entrypoint_timed_out=true
+    entrypoint_blockers='["runpod_wam_provider_entrypoint_nonzero_or_timeout","runpod_wam_provider_entrypoint_timeout"]'
+  fi
+fi
+cat > "$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR/runpod_wam_provider_entrypoint_execution.json" <<EOF
+{"schema_version":"runpod_wam_provider_entrypoint_execution.v1","status":"$entrypoint_status","returncode":$wam_runtime_rc,"timed_out":$entrypoint_timed_out,"timeout_seconds":$WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS,"runtime_stdout_stderr_log_path":"$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR/runpod_wam_provider_entrypoint.log","raw_secret_values_recorded":false}
+EOF
+if [ "$wam_runtime_rc" -ne 0 ]; then
+  generic_output="$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR/wam_provider_output.json"
+  if [ ! -f "$generic_output" ]; then
+    cat > "$generic_output" <<EOF
+{"schema_version":"wam_provider_output.v1","status":"blocked","blockers":$entrypoint_blockers,"runpod_wam_provider_entrypoint_returncode":$wam_runtime_rc,"raw_credentials_written_to_artifacts":false}
+EOF
+  fi
+  carrier_flag="$(printf '%s' "${BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC:-}" | tr '[:upper:]' '[:lower:]')"
+  unitree_output="${BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT:-$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR/unitree_groot_n17_sonic_policy_provider_output.json}"
+  if [ "$carrier_flag" = "true" ] || [ "$carrier_flag" = "1" ] || [ "$carrier_flag" = "yes" ] || [ "$carrier_flag" = "on" ]; then
+    if [ ! -f "$unitree_output" ]; then
+      cat > "$unitree_output" <<EOF
+{"schema_version":"unitree_groot_n17_sonic_wam_persistent_session_output.v1","status":"blocked","policy_id":"unitree_groot_n17_sonic_policy","persistent_provider_session_used":true,"unitree_groot_n17_sonic_model_executed":false,"unitree_groot_n17_sonic_policy_action_command_ran":false,"policy_action_model_command_ran":false,"provider_output_replay_used":false,"blockers":$entrypoint_blockers,"runpod_wam_provider_entrypoint_returncode":$wam_runtime_rc,"raw_credentials_written_to_artifacts":false,"secret_hashes_written_to_artifacts":false}
+EOF
+    fi
+  fi
+fi
 python - <<'PY'
 import json
 import os
@@ -542,6 +926,8 @@ def _pod_payload(
     }
     if provider_bundle_kind == "unitree_unifolm":
         env["WORK_DIR"] = "/workspace/blueprint_unitree_unifolm_provider"
+    elif provider_bundle_kind == "unitree_groot_n17_sonic":
+        env["WORK_DIR"] = "/workspace/blueprint_unitree_groot_sonic_persistent_provider"
     env.update({key: value for key, value in provider_runtime_config_env.items() if _string(value)})
     env.update({key: value for key, value in model_secret_env.items() if _string(value)})
     return {
@@ -648,6 +1034,25 @@ def create_runpod_wam_async_run(
         else Path(DEFAULT_SECRET_ENV_FILE).expanduser().resolve()
     )
     ensure_dir(resolved_job_dir)
+    full_loop_guard = _unitree_groot_sonic_full_loop_create_guard(
+        bundle_path=resolved_bundle,
+        provider_bundle_kind=provider_bundle_kind,
+    )
+    if full_loop_guard.get("status") == "blocked":
+        manifest = {
+            "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "job_dir": str(resolved_job_dir),
+            "provider_bundle_kind": provider_bundle_kind,
+            "bundle_path": str(resolved_bundle),
+            "blockers": list(full_loop_guard.get("blockers") or []),
+            "full_loop_guard": full_loop_guard,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
+        return manifest
+        return manifest
     bundle_url_from_file, bundle_url_file_meta = _read_sensitive_url_file(
         str(provider_bundle_url_file or ""),
         label="provider_bundle_url_file",
@@ -777,9 +1182,14 @@ def create_runpod_wam_async_run(
         blockers.append("runpod_public_base_url_or_explicit_provider_urls_required")
     if not allow_paid_runpod_launch:
         blockers.append("paid_runpod_launch_not_authorized_by_runner_flag")
-    if not os.getenv(RUNPOD_API_GATE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+    if os.getenv(RUNPOD_API_GATE_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
         blockers.append(f"missing_env_{RUNPOD_API_GATE_ENV}")
-    if not os.getenv(RUNPOD_POD_LAUNCH_GATE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+    if os.getenv(RUNPOD_POD_LAUNCH_GATE_ENV, "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         blockers.append(f"missing_env_{RUNPOD_POD_LAUNCH_GATE_ENV}")
     if not api_key:
         blockers.append(f"missing_env_{RUNPOD_API_KEY_ENV}_or_{RUNPOD_API_KEY_FILE_ENV}")
@@ -886,6 +1296,7 @@ def create_runpod_wam_async_run(
         "provider_output_put_url_file": output_url_file_meta,
         "provider_output_get_url_file": output_get_url_file_meta,
         "bundle_path": str(resolved_bundle),
+        "full_loop_guard": full_loop_guard,
         "token_file": str(resolved_token_file),
         "secret_env_file": str(resolved_secret_env_file),
         "image_name": image_name,
@@ -919,6 +1330,7 @@ def create_runpod_wam_async_run(
         "provider_bundle_url_file": bundle_url_file_meta,
         "provider_output_put_url_file": output_url_file_meta,
         "provider_output_get_url_file": output_get_url_file_meta,
+        "full_loop_guard": full_loop_guard,
         "model_secret_env_status": model_secret_env_status,
         "provider_runtime_config_env_status": provider_runtime_config_env_status,
         "runpod_response_keys": sorted(response.keys()),
@@ -995,13 +1407,18 @@ def _download_provider_output_zip(
         with urllib.request.urlopen(request, timeout=60) as response:
             data = response.read()
         output_path.write_bytes(data)
+        valid_zip = bool(data) and zipfile.is_zipfile(output_path)
         manifest.update(
             {
-                "status": "completed",
+                "status": "completed" if valid_zip else "not_available",
                 "downloaded_size_bytes": len(data),
-                "output_present": output_path.is_file(),
+                "output_present": valid_zip,
+                "valid_zip": valid_zip,
+                "empty_download": not bool(data),
             }
         )
+        if not valid_zip:
+            output_path.unlink(missing_ok=True)
     except urllib.error.HTTPError as exc:
         manifest.update(
             {
@@ -1035,6 +1452,11 @@ def poll_runpod_wam_async_run(
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     state = _read_json(_state_path(resolved_job_dir))
     pod_id = _string(state.get("pod_id"))
+    try:
+        created_at_epoch = float(state.get("created_at_epoch") or time.time())
+    except (TypeError, ValueError):
+        created_at_epoch = time.time()
+    not_found_grace_seconds = _env_int("BLUEPRINT_RUNPOD_POD_STATUS_NOT_FOUND_GRACE_SECONDS", 300)
     output_path = Path(_string(state.get("output_path"))).expanduser()
     provider_bundle_kind = _string(state.get("provider_bundle_kind")) or "wam"
     if provider_bundle_kind not in RUNPOD_PROVIDER_BUNDLE_KINDS:
@@ -1057,8 +1479,12 @@ def poll_runpod_wam_async_run(
     status_code: int | None = None
     pod_payload: dict[str, Any] = {}
     pod_status = "unknown"
+    started_monotonic = time.monotonic()
     deadline = time.monotonic() + max(0, max_wait_seconds)
     output_present = output_path.is_file()
+    last_nonterminal_output: dict[str, Any] | None = None
+    transient_not_found_count = 0
+    existing_teardown_completed = False
     while not blockers and time.monotonic() <= deadline:
         output_present = output_path.is_file()
         if not output_present and output_get_url:
@@ -1070,7 +1496,36 @@ def poll_runpod_wam_async_run(
             )
             output_present = output_path.is_file()
             if download_manifest.get("status") == "completed":
-                break
+                downloaded_inspection = _inspect_provider_runtime_output_zip(
+                    output_path,
+                    expected_video_count=0,
+                )
+                runtime_status = _string(downloaded_inspection.get("runtime_result_status"))
+                if runtime_status in {"running", "starting", "in_progress"}:
+                    nonterminal_path = output_path.with_name(
+                        f"{output_path.stem}_nonterminal{output_path.suffix}"
+                    )
+                    output_path.replace(nonterminal_path)
+                    last_nonterminal_output = {
+                        "schema_version": "runpod_wam_nonterminal_output.v1",
+                        "generated_at": generated,
+                        "status": "running",
+                        "runtime_result_status": runtime_status,
+                        "runtime_result": downloaded_inspection.get("runtime_result"),
+                        "nonterminal_zip_path": str(nonterminal_path),
+                        "nonterminal_zip_size_bytes": nonterminal_path.stat().st_size,
+                        "provider_bundle_kind": provider_bundle_kind,
+                        "raw_secret_values_recorded": False,
+                    }
+                    write_json(
+                        resolved_job_dir / "runpod_wam_nonterminal_output_manifest.json",
+                        last_nonterminal_output,
+                    )
+                    output_present = False
+                else:
+                    break
+        if output_present:
+            break
         try:
             status_code, pod_payload = _runpod_request(
                 method="GET",
@@ -1081,7 +1536,31 @@ def poll_runpod_wam_async_run(
             pod_status = _pod_status(pod_payload)
         except urllib.error.HTTPError as exc:
             status_code = exc.code
-            pod_status = "not_found" if exc.code in {404, 410} else "http_error"
+            if exc.code in {404, 410}:
+                try:
+                    existing_delete_manifest = _read_json(
+                        resolved_job_dir / "runpod_wam_async_delete_manifest.json"
+                    )
+                except (OSError, ValueError):
+                    existing_delete_manifest = {}
+                if (
+                    existing_delete_manifest.get("status") == "completed"
+                    and _string(existing_delete_manifest.get("pod_id")) == pod_id
+                ):
+                    existing_teardown_completed = True
+                    pod_status = "not_found"
+                    break
+                elapsed_since_create = max(0.0, time.time() - created_at_epoch)
+                if elapsed_since_create <= not_found_grace_seconds:
+                    transient_not_found_count += 1
+                    pod_status = "pending_api_visibility"
+                    if time.monotonic() + retry_interval_seconds > deadline:
+                        break
+                    time.sleep(max(1, retry_interval_seconds))
+                    continue
+                pod_status = "not_found"
+            else:
+                pod_status = "http_error"
             if exc.code not in {404, 410}:
                 blockers.append("runpod_pod_status_http_error")
             break
@@ -1096,24 +1575,48 @@ def poll_runpod_wam_async_run(
         expected_video_count=0 if provider_bundle_kind == "unitree_unifolm" else 1,
     )
     output_present = output_inspection.get("zip_present") is True
-    should_teardown = teardown or output_present or pod_status in {"not_found", "EXITED", "TERMINATED"}
+    elapsed_wait_seconds = max(0.0, time.monotonic() - started_monotonic)
+    wait_deadline_expired = elapsed_wait_seconds >= max(0, max_wait_seconds)
+    pod_status_is_active = (
+        pod_status in RUNPOD_ACTIVE_POD_STATUSES
+        or pod_status.upper() in RUNPOD_ACTIVE_POD_STATUSES
+    )
+    pod_status_is_terminal = (
+        pod_status in RUNPOD_TERMINAL_POD_STATUSES
+        or pod_status.upper() in RUNPOD_TERMINAL_POD_STATUSES
+    )
+    remote_runtime_running_without_terminal_output = bool(
+        not output_present
+        and pod_status_is_active
+    )
+    nonterminal_running_output = bool(
+        last_nonterminal_output
+        and not output_present
+        and pod_status_is_active
+    )
+    should_teardown = bool(teardown and (output_present or pod_status_is_terminal))
+    teardown_pending = bool(
+        not blockers and should_teardown and pod_id and api_key and pod_status != "not_found"
+    )
     delete_manifest: dict[str, Any] | None = None
-    if not blockers and should_teardown and pod_id and api_key and pod_status != "not_found":
-        delete_manifest = _delete_pod(
-            job_dir=resolved_job_dir,
-            pod_id=pod_id,
-            api_key=api_key,
-            generated_at=generated,
-        )
     continuing_spend = bool(
         pod_id
         and not output_present
-        and (not should_teardown or (delete_manifest or {}).get("status") != "completed")
-        and pod_status not in {"not_found", "TERMINATED", "EXITED"}
+        and (
+            nonterminal_running_output
+            or remote_runtime_running_without_terminal_output
+            or not should_teardown
+            or (delete_manifest or {}).get("status") != "completed"
+        )
+        and not pod_status_is_terminal
     )
-    provider_status = "completed" if output_present else "blocked"
+    provider_status = (
+        "completed"
+        if output_present
+        else ("running" if remote_runtime_running_without_terminal_output else "blocked")
+    )
     provider_blockers: list[str] = []
-    if not output_present:
+    if not output_present and not remote_runtime_running_without_terminal_output:
         provider_blockers.append("runpod_provider_runtime_output_zip_not_received_locally")
     if blockers:
         provider_blockers.extend(blockers)
@@ -1125,20 +1628,60 @@ def poll_runpod_wam_async_run(
         "provider_bundle_kind": provider_bundle_kind,
         "pod_id": pod_id,
         "pod_status": pod_status,
+        "pod_status_is_active": pod_status_is_active,
+        "pod_status_is_terminal": pod_status_is_terminal,
         "pod_status_http_status_code": status_code,
+        "pod_status_not_found_grace_seconds": not_found_grace_seconds,
+        "pod_status_transient_not_found_count": transient_not_found_count,
         "provider_command_status": provider_status,
         "provider_command_blockers": provider_blockers,
         "output_zip_present": output_present,
+        "nonterminal_running_output": nonterminal_running_output,
+        "remote_runtime_running_without_terminal_output": (
+            remote_runtime_running_without_terminal_output
+        ),
+        "elapsed_wait_seconds": round(elapsed_wait_seconds, 6),
+        "max_wait_seconds": max_wait_seconds,
+        "wait_deadline_expired": wait_deadline_expired,
         "provider_runtime_output_zip_path": str(output_path),
+        "runtime_result": output_inspection.get("runtime_result"),
         "runtime_result_status": output_inspection.get("runtime_result_status"),
         "runtime_result_blockers": output_inspection.get("runtime_result_blockers"),
+        "last_nonterminal_output": last_nonterminal_output,
         "mp4_count": output_inspection.get("mp4_count"),
         "teardown_requested": teardown,
-        "teardown_performed": bool(delete_manifest and delete_manifest.get("status") == "completed"),
+        "teardown_pending": teardown_pending,
+        "teardown_performed": existing_teardown_completed,
         "continuing_spend_from_this_run": continuing_spend,
         "api_key_status": api_key_meta,
         "raw_secret_values_recorded": False,
     }
+    if teardown_pending:
+        write_json(
+            resolved_job_dir / "runpod_wam_async_pre_teardown_poll_manifest.json",
+            manifest,
+        )
+        delete_manifest = _delete_pod(
+            job_dir=resolved_job_dir,
+            pod_id=pod_id,
+            api_key=api_key,
+            generated_at=generated,
+        )
+        continuing_spend = bool(
+            pod_id
+            and not output_present
+            and (
+                nonterminal_running_output
+                or remote_runtime_running_without_terminal_output
+                or not should_teardown
+                or (delete_manifest or {}).get("status") != "completed"
+            )
+            and not pod_status_is_terminal
+        )
+        manifest["teardown_performed"] = bool(
+            delete_manifest and delete_manifest.get("status") == "completed"
+        )
+        manifest["continuing_spend_from_this_run"] = continuing_spend
     write_json(resolved_job_dir / "runpod_wam_async_poll_manifest.json", manifest)
     state_update = {
         **state,

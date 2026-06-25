@@ -2443,6 +2443,12 @@ def _probe_env(
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIM2SIM_COMMAND",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_TIMEOUT_SECONDS",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_INSTALL_REQUIREMENTS",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SKIP_SYSTEM_PYTHON_DEPS_INSTALL",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_DEPS_TIMEOUT_SECONDS",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_REF",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REMOTE_ROOT",
@@ -3556,6 +3562,7 @@ def _inspect_provider_runtime_output_zip(
                         "wam_runtime_result.json",
                         "unitree_unifolm_policy_provider_output.json",
                         "unitree_groot_n17_sonic_policy_provider_output.json",
+                        "unitree_groot_n17_sonic_wam_persistent_session_output.json",
                     )
                 ):
                     try:
@@ -3651,6 +3658,18 @@ def _runtime_result_artifact_summary(
         "generated_rollout_video_filename": Path(generated_path).name
         if generated_path
         else None,
+        "repeated_policy_calls_count": runtime_result.get("repeated_policy_calls_count"),
+        "generated_next_observation_count": runtime_result.get("generated_next_observation_count"),
+        "live_wam_generation_success_count": runtime_result.get(
+            "live_wam_generation_success_count"
+        ),
+        "learned_wam_model_success_count": runtime_result.get("learned_wam_model_success_count"),
+        "policy_observes_wam_generated_next_observation": runtime_result.get(
+            "policy_observes_wam_generated_next_observation"
+        ),
+        "provider_instance_reused_for_policy_and_wam_loop": runtime_result.get(
+            "provider_instance_reused_for_policy_and_wam_loop"
+        ),
         "checkpoint_status": _string(checkpoint_detail.get("status")) or None,
         "cuda_probe_status": _string(cuda_probe.get("status")) or None,
         "torch_cuda_available": _mapping(cuda_probe.get("payload")).get(

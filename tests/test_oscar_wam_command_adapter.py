@@ -764,6 +764,36 @@ def test_oscar_wam_runtime_probe_subprocess_and_rollout_edges(
     assert "--rgb-video" in argv
     assert str(rgb_video) in argv
 
+    def fake_timeout(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"], output="partial", stderr="slow")
+
+    monkeypatch.setattr(adapter.subprocess, "run", fake_timeout)
+    timed_out = adapter._run_oscar(
+        python=sys.executable,
+        source_root=source_root,
+        checkpoint=checkpoint,
+        package_manifest={
+            "first_frame": {"path": str(tmp_path / "first.png")},
+            "skeleton_video": {"path": str(tmp_path / "skeleton.mp4")},
+            "rgb_video": {"path": str(rgb_video)},
+            "prompt": "Move.",
+            "num_frames": 2,
+            "height": 64,
+            "width": 64,
+            "fps": 5,
+        },
+        output_video=tmp_path / "timeout_out.mp4",
+        timeout_seconds=1,
+        num_steps=2,
+        guidance=1.5,
+        seed=3,
+    )
+    assert timed_out["status"] == "blocked"
+    assert timed_out["timed_out"] is True
+    assert timed_out["blockers"] == ["oscar_inference_command_timeout"]
+    assert timed_out["stderr_omitted_to_avoid_secret_leakage"] is True
+
+    monkeypatch.setattr(adapter.subprocess, "run", fake_run)
     captured_subprocess.clear()
     projected_failed = adapter._run_oscar(
         python=sys.executable,

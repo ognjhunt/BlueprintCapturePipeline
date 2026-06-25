@@ -53,6 +53,32 @@ def test_groot_n17_sonic_provider_bundle_contains_runtime_contract(tmp_path: Pat
     assert "venv_python" in runner_text
     assert "snapshot_download" in runner_text
     assert '"processor_config.json"' in runner_text
+    assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE" in runner_text
+    assert "system_python_minimal" in runner_text
+    assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT" in runner_text
+    assert "--filter=blob:none --sparse" in runner_text
+    assert "httpx>=0.27.0" in runner_text
+    assert "tokenizers==0.22.1" in runner_text
+    assert "transformers==4.57.3" in runner_text
+    assert "albumentations==1.4.18" in runner_text
+    assert "albucore==0.0.17" in runner_text
+    assert "diffusers==0.35.1" in runner_text
+    assert "dm-tree" in runner_text
+    assert "peft==0.17.1" in runner_text
+    assert "pandas==2.2.3" in runner_text
+    assert "pydantic==2.13.4" in runner_text
+    assert "pydantic-core==2.46.4" in runner_text
+    assert "msgpack-numpy==0.4.8" in runner_text
+    assert "numkong>=0.1.0" in runner_text
+    assert "scipy==1.15.3" in runner_text
+    assert "scikit-image==0.25.2" in runner_text
+    assert "imageio>=2.33.0" in runner_text
+    assert "networkx>=3.0" in runner_text
+    assert "tifffile>=2022.8.12" in runner_text
+    assert "lazy-loader>=0.4" in runner_text
+    assert "tyro==0.9.17" in runner_text
+    assert 'modules=["huggingface_hub", "httpx", "zmq", "transformers"]' in runner_text
+    assert "blocked_system_python_missing_torch" in runner_text
     assert manifest["env_contract"]["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"] == (
         "<configured>"
     )

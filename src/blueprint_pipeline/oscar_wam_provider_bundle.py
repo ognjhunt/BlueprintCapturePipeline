@@ -696,6 +696,7 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import signal
 import textwrap
 import shutil
 import subprocess
@@ -1932,6 +1933,7 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         }
     base_packages = [
         "huggingface_hub",
+        "hf_transfer",
         "opencv-python-headless",
         "imageio",
         "imageio-ffmpeg",
@@ -2052,17 +2054,176 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
     }
 
 
-def _checkpoint(work_dir: Path, python: str) -> tuple[Path | None, dict[str, Any]]:
+def _checkpoint_resolution_timeout_seconds() -> float:
+    raw = os.environ.get("BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS", "1200").strip()
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return 1200.0
+
+
+def _path_inventory(path: Path) -> dict[str, Any]:
+    file_count = 0
+    total_size_bytes = 0
+    largest_file_size_bytes = 0
+    if path.exists():
+        for item in path.rglob("*"):
+            if not item.is_file():
+                continue
+            try:
+                size = item.stat().st_size
+            except OSError:
+                size = 0
+            file_count += 1
+            total_size_bytes += size
+            largest_file_size_bytes = max(largest_file_size_bytes, size)
+    return {
+        "file_count": file_count,
+        "total_size_bytes": total_size_bytes,
+        "largest_file_size_bytes": largest_file_size_bytes,
+    }
+
+
+def _file_tail(path: Path, *, limit: int = 4000) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - limit), os.SEEK_SET)
+            data = handle.read(limit)
+    except OSError:
+        return ""
+    return _redacted_tail(data.decode("utf-8", errors="replace"), limit=limit)
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except Exception:
+        process.terminate()
+    try:
+        process.wait(timeout=20)
+        return
+    except Exception:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except Exception:
+        process.kill()
+    try:
+        process.wait(timeout=20)
+    except Exception:
+        pass
+
+
+def _run_checkpoint_download(
+    argv: list[str],
+    *,
+    env: Mapping[str, str],
+    target: Path,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    stdout_path = target.parent / "snapshot_download.stdout.log"
+    stderr_path = target.parent / "snapshot_download.stderr.log"
+    timeout = max(60.0, float(timeout_seconds))
+    _phase(
+        "checkpoint_download_subprocess_started",
+        argv0=Path(argv[0]).name if argv else "",
+        target=str(target),
+        timeout_seconds=timeout,
+    )
+    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
+        "w",
+        encoding="utf-8",
+    ) as stderr:
+        process = subprocess.Popen(
+            argv,
+            env=dict(env),
+            text=True,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=True,
+        )
+        last_heartbeat = started
+        timed_out = False
+        while True:
+            returncode = process.poll()
+            now = time.monotonic()
+            elapsed = now - started
+            if returncode is not None:
+                break
+            if elapsed >= timeout:
+                timed_out = True
+                inventory = _path_inventory(target)
+                _phase(
+                    "checkpoint_download_timeout_reached",
+                    elapsed_seconds=round(elapsed, 3),
+                    timeout_seconds=timeout,
+                    target=str(target),
+                    **inventory,
+                )
+                _terminate_process_group(process)
+                returncode = process.poll()
+                break
+            if now - last_heartbeat >= 60:
+                inventory = _path_inventory(target)
+                _phase(
+                    "checkpoint_download_waiting",
+                    elapsed_seconds=round(elapsed, 3),
+                    timeout_seconds=timeout,
+                    target=str(target),
+                    **inventory,
+                )
+                last_heartbeat = now
+            time.sleep(5)
+    duration = round(time.monotonic() - started, 6)
+    stdout_size = stdout_path.stat().st_size if stdout_path.is_file() else 0
+    stderr_size = stderr_path.stat().st_size if stderr_path.is_file() else 0
+    detail = {
+        "argv_redacted": [argv[0], "-c", "<huggingface_snapshot_download>"] if argv else [],
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "timeout_seconds": timeout,
+        "duration_seconds": duration,
+        "stdout_size_bytes": stdout_size,
+        "stderr_size_bytes": stderr_size,
+        "stdout_tail_redacted": _file_tail(stdout_path),
+        "stderr_tail_redacted": _file_tail(stderr_path),
+        "stdout_log_path": str(stdout_path),
+        "stderr_log_path": str(stderr_path),
+        "checkpoint_inventory": _path_inventory(target),
+        "raw_secret_values_recorded": False,
+    }
+    _phase(
+        "checkpoint_download_subprocess_completed",
+        returncode=returncode,
+        timed_out=timed_out,
+        duration_seconds=duration,
+        **_mapping(detail.get("checkpoint_inventory")),
+    )
+    return detail
+
+
+def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple[Path | None, dict[str, Any]]:
     configured = os.environ.get("BLUEPRINT_OSCAR_WAM_CHECKPOINT", "").strip()
     if configured and Path(configured).exists():
         return Path(configured).resolve(), {
             "status": "completed",
             "source": "configured_path",
             "path": str(Path(configured).resolve()),
+            "resolution_timeout_seconds": timeout_seconds,
         }
     target = work_dir / "checkpoints" / "oscar_2b"
     if target.exists() and any(target.rglob("*")):
-        return target, {"status": "completed", "source": "existing_cache", "path": str(target)}
+        return target, {
+            "status": "completed",
+            "source": "existing_cache",
+            "path": str(target),
+            "resolution_timeout_seconds": timeout_seconds,
+        }
     code = (
         "from huggingface_hub import snapshot_download\n"
         "import os, sys\n"
@@ -2073,26 +2234,47 @@ def _checkpoint(work_dir: Path, python: str) -> tuple[Path | None, dict[str, Any
     env = os.environ.copy()
     env["BLUEPRINT_OSCAR_WAM_HF_REPO"] = OSCAR_HF_REPO
     env["BLUEPRINT_OSCAR_WAM_CHECKPOINT_TARGET"] = str(target)
+    env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    if os.environ.get("BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
     target.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    completed = subprocess.run(
+    detail = _run_checkpoint_download(
         [python, "-c", code],
         env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=3600,
+        target=target,
+        timeout_seconds=timeout_seconds,
     )
-    detail = {
-        "argv_redacted": [python, "-c", "<huggingface_snapshot_download>"],
-        "returncode": completed.returncode,
-        "duration_seconds": round(time.monotonic() - started, 6),
-        "stdout_size_bytes": len(completed.stdout or ""),
-        "stderr_size_bytes": len(completed.stderr or ""),
-        "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
-    }
+    if detail.get("timed_out"):
+        return None, {
+            "status": "blocked",
+            "source": "huggingface_snapshot_download",
+            "repo_id": OSCAR_HF_REPO,
+            "path": str(target),
+            "resolution_timeout_seconds": timeout_seconds,
+            "hf_token_present": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
+            "raw_hf_token_recorded": False,
+            "blockers": ["oscar_checkpoint_download_timeout"],
+            "retry_command_redacted": [python, "-c", "<huggingface_snapshot_download>"],
+            "retry_env": {
+                "BLUEPRINT_OSCAR_WAM_HF_REPO": OSCAR_HF_REPO,
+                "BLUEPRINT_OSCAR_WAM_CHECKPOINT_TARGET": str(target),
+                "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER": (
+                    "configured"
+                    if os.environ.get("BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER")
+                    else "default_true"
+                ),
+                "HF_TOKEN": "configured" if os.environ.get("HF_TOKEN") else "missing",
+                "HUGGING_FACE_HUB_TOKEN": "configured" if os.environ.get("HUGGING_FACE_HUB_TOKEN") else "missing",
+            },
+            "subprocess": detail,
+        }
     blockers = []
-    if completed.returncode != 0:
+    if detail.get("returncode") != 0:
         blockers.append("oscar_checkpoint_download_failed")
     if not any(target.rglob("*")):
         blockers.append("oscar_checkpoint_directory_empty_after_download")
@@ -2101,9 +2283,22 @@ def _checkpoint(work_dir: Path, python: str) -> tuple[Path | None, dict[str, Any
         "source": "huggingface_snapshot_download",
         "repo_id": OSCAR_HF_REPO,
         "path": str(target),
+        "resolution_timeout_seconds": timeout_seconds,
         "hf_token_present": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
         "raw_hf_token_recorded": False,
         "blockers": blockers,
+        "retry_command_redacted": [python, "-c", "<huggingface_snapshot_download>"],
+            "retry_env": {
+                "BLUEPRINT_OSCAR_WAM_HF_REPO": OSCAR_HF_REPO,
+                "BLUEPRINT_OSCAR_WAM_CHECKPOINT_TARGET": str(target),
+                "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER": (
+                    "configured"
+                    if os.environ.get("BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER")
+                    else "default_true"
+                ),
+                "HF_TOKEN": "configured" if os.environ.get("HF_TOKEN") else "missing",
+                "HUGGING_FACE_HUB_TOKEN": "configured" if os.environ.get("HUGGING_FACE_HUB_TOKEN") else "missing",
+            },
         "subprocess": detail,
     }
 
@@ -2197,8 +2392,19 @@ def main() -> int:
         if cuda.get("status") != "completed":
             blockers.extend(cuda.get("blockers") or [])
     if not blockers:
-        _phase("checkpoint_resolution_started")
-        checkpoint_path, checkpoint_detail = _checkpoint(work_dir, python)
+        checkpoint_timeout_seconds = _checkpoint_resolution_timeout_seconds()
+        _phase(
+            "checkpoint_resolution_started",
+            source="configured_path_or_existing_cache_or_huggingface_snapshot_download",
+            repo_id=OSCAR_HF_REPO,
+            timeout_seconds=checkpoint_timeout_seconds,
+            configured_checkpoint_path_present=bool(os.environ.get("BLUEPRINT_OSCAR_WAM_CHECKPOINT", "").strip()),
+        )
+        checkpoint_path, checkpoint_detail = _checkpoint(
+            work_dir,
+            python,
+            timeout_seconds=checkpoint_timeout_seconds,
+        )
         _phase(
             "checkpoint_resolution_completed",
             status=checkpoint_detail.get("status"),

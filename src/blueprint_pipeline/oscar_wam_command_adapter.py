@@ -14,7 +14,6 @@ import glob
 import json
 import os
 import platform
-import shlex
 import shutil
 import subprocess
 import sys
@@ -1485,19 +1484,39 @@ def _run_oscar(
                 "stale_output_removed_before_launch": False,
                 "blockers": [f"oscar_inference_stale_output_unlink_failed:{type(exc).__name__}"],
             }
-    result = subprocess.run(
-        argv,
-        cwd=str(source_root),
-        env=_runtime_env(source_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout_seconds,
-    )
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=str(source_root),
+            env=_runtime_env(source_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.output or ""
+        stderr = exc.stderr or ""
+        return {
+            "schema_version": "oscar_wam_subprocess_result.v1",
+            "status": "blocked",
+            "returncode": None,
+            "timed_out": True,
+            "timeout_seconds": timeout_seconds,
+            "duration_seconds": round(time.monotonic() - started, 6),
+            "argv_redacted": _redacted_argv(argv, checkpoint),
+            "stdout_size_bytes": len(stdout),
+            "stderr_size_bytes": len(stderr),
+            "stderr_omitted_to_avoid_secret_leakage": bool(stderr),
+            "stale_output_removed_before_launch": stale_output_removed,
+            "blockers": ["oscar_inference_command_timeout"],
+        }
     return {
         "schema_version": "oscar_wam_subprocess_result.v1",
         "status": "completed" if result.returncode == 0 else "blocked",
         "returncode": result.returncode,
+        "timed_out": False,
+        "timeout_seconds": timeout_seconds,
         "duration_seconds": round(time.monotonic() - started, 6),
         "argv_redacted": _redacted_argv(argv, checkpoint),
         "stdout_size_bytes": len(result.stdout or ""),

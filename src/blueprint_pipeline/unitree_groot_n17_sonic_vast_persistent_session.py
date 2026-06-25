@@ -37,6 +37,15 @@ from .vast_provider_adapter import (
 )
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
 from .wam_provider_object_store import stage_wam_provider_bundle_object_store
+from .runpod_wam_async_runner import create_runpod_wam_async_run, poll_runpod_wam_async_run
+from .wam_generated_video_review import (
+    REVIEW_QUALITY_MIN_FPS,
+    REVIEW_QUALITY_MIN_HEIGHT,
+    REVIEW_QUALITY_MIN_NUM_FRAMES,
+    REVIEW_QUALITY_MIN_WIDTH,
+    assess_source_policy_observation_visual_qa,
+    write_persistent_wam_visual_quality_artifacts,
+)
 
 
 SCHEMA_VERSION = "unitree_groot_n17_sonic_vast_persistent_session.v1"
@@ -53,9 +62,45 @@ PERSISTENT_SESSION_USE_LIVE_WAM_ENV = "BLUEPRINT_PERSISTENT_SESSION_USE_LIVE_WAM
 PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV = (
     "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PERSISTENT_INNER_POLICY_COMMAND"
 )
+RUNPOD_FULL_LOOP_OVERRIDE_ENV = "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
+OSCAR_WAM_VISUAL_PROFILE_ENV = "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
+PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV = "BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT"
+PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS_ENV = (
+    "BLUEPRINT_PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS"
+)
 DEFAULT_INNER_POLICY_COMMAND = (
     "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
 )
+RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV = {
+    OSCAR_WAM_VISUAL_PROFILE_ENV: "smoke",
+    "BLUEPRINT_OSCAR_WAM_NUM_STEPS": "2",
+    "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": "9",
+    "BLUEPRINT_OSCAR_WAM_HEIGHT": "128",
+    "BLUEPRINT_OSCAR_WAM_WIDTH": "128",
+    "BLUEPRINT_OSCAR_WAM_FPS": "4",
+    "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS": "1200",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE": "system_python_minimal",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT": "true",
+}
+RUNPOD_WAM_CARRIER_REVIEW_QUALITY_DEFAULT_ENV = {
+    OSCAR_WAM_VISUAL_PROFILE_ENV: "review_quality",
+    "BLUEPRINT_OSCAR_WAM_NUM_STEPS": "2",
+    "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": "24",
+    "BLUEPRINT_OSCAR_WAM_HEIGHT": "480",
+    "BLUEPRINT_OSCAR_WAM_WIDTH": "640",
+    "BLUEPRINT_OSCAR_WAM_FPS": "15",
+    "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS": "1200",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE": "system_python_minimal",
+    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT": "true",
+}
+RUNPOD_WAM_CARRIER_DEFAULT_ENV = RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV
+RUNPOD_WAM_CARRIER_ENV_KEYS = tuple(
+    sorted(
+        set(RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV)
+        | set(RUNPOD_WAM_CARRIER_REVIEW_QUALITY_DEFAULT_ENV)
+    )
+)
+RUNPOD_WAM_CARRIER_MIN_OSCAR_NUM_FRAMES = 5
 
 
 def _string(value: Any) -> str:
@@ -82,6 +127,82 @@ def _int_env(name: str, default: int) -> int:
         return int(_string(os.getenv(name)) or default)
     except ValueError:
         return int(default)
+
+
+def _normalized_wam_visual_profile(value: str | None = None) -> str:
+    profile = _string(value if value is not None else os.getenv(OSCAR_WAM_VISUAL_PROFILE_ENV))
+    return profile if profile in {"smoke", "review_quality"} else "smoke"
+
+
+def _runpod_wam_carrier_defaults_for_profile(profile: str) -> dict[str, str]:
+    return dict(
+        RUNPOD_WAM_CARRIER_REVIEW_QUALITY_DEFAULT_ENV
+        if profile == "review_quality"
+        else RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV
+    )
+
+
+def _current_wam_visual_profile_settings() -> dict[str, Any]:
+    profile = _normalized_wam_visual_profile()
+    defaults = _runpod_wam_carrier_defaults_for_profile(profile)
+    return {
+        "schema_version": "persistent_wam_visual_profile_settings.v1",
+        "visual_profile": profile,
+        "num_steps": _int_env(
+            "BLUEPRINT_OSCAR_WAM_NUM_STEPS",
+            int(defaults["BLUEPRINT_OSCAR_WAM_NUM_STEPS"]),
+        ),
+        "num_frames": _int_env(
+            "BLUEPRINT_OSCAR_WAM_NUM_FRAMES",
+            int(defaults["BLUEPRINT_OSCAR_WAM_NUM_FRAMES"]),
+        ),
+        "height": _int_env(
+            "BLUEPRINT_OSCAR_WAM_HEIGHT",
+            int(defaults["BLUEPRINT_OSCAR_WAM_HEIGHT"]),
+        ),
+        "width": _int_env(
+            "BLUEPRINT_OSCAR_WAM_WIDTH",
+            int(defaults["BLUEPRINT_OSCAR_WAM_WIDTH"]),
+        ),
+        "fps": _float_env(
+            "BLUEPRINT_OSCAR_WAM_FPS",
+            float(defaults["BLUEPRINT_OSCAR_WAM_FPS"]),
+        ),
+        "review_quality_minimum": {
+            "width": REVIEW_QUALITY_MIN_WIDTH,
+            "height": REVIEW_QUALITY_MIN_HEIGHT,
+            "fps": REVIEW_QUALITY_MIN_FPS,
+            "num_frames": REVIEW_QUALITY_MIN_NUM_FRAMES,
+        },
+        "smoke_only": profile != "review_quality",
+    }
+
+
+def _persistent_wam_visual_profile_blockers(
+    *,
+    settings: Mapping[str, Any],
+    source_visual_qa: Mapping[str, Any],
+    loop_step_count: int,
+) -> list[str]:
+    blockers: list[str] = []
+    if settings.get("visual_profile") != "review_quality":
+        return blockers
+    if source_visual_qa.get("status") != "passed_visual_quality_gate":
+        blockers.append("source_policy_observation_visual_qa_failed_for_review_quality")
+    if int(settings.get("width") or 0) < REVIEW_QUALITY_MIN_WIDTH:
+        blockers.append("review_quality_profile_width_below_minimum")
+    if int(settings.get("height") or 0) < REVIEW_QUALITY_MIN_HEIGHT:
+        blockers.append("review_quality_profile_height_below_minimum")
+    if float(settings.get("fps") or 0.0) < REVIEW_QUALITY_MIN_FPS:
+        blockers.append("review_quality_profile_fps_below_minimum")
+    if int(settings.get("num_frames") or 0) < REVIEW_QUALITY_MIN_NUM_FRAMES:
+        blockers.append("review_quality_profile_num_frames_below_minimum")
+    max_ungated_steps = _int_env(PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS_ENV, 3)
+    if loop_step_count > max_ungated_steps and not _truthy(
+        os.getenv(PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV)
+    ):
+        blockers.append("review_quality_long_rollout_requires_passed_short_visual_sanity")
+    return sorted(set(blockers))
 
 
 def _machine_ids_from_env(env_names: Sequence[str]) -> list[int]:
@@ -137,6 +258,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shlex
 import shutil
 import subprocess
@@ -144,6 +266,7 @@ import sys
 import threading
 import time
 import traceback
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
@@ -160,6 +283,10 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 def _string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _command_available(command: str | None) -> bool:
@@ -193,19 +320,99 @@ def _write_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> None:
 
 
 def _phase(name: str, **fields: Any) -> None:
+    payload = {
+        "phase": name,
+        "observed_at_epoch": round(time.time(), 3),
+        "raw_secret_values_recorded": False,
+        **fields,
+    }
     print(
         "BLUEPRINT_PERSISTENT_SESSION_PHASE:"
-        + json.dumps(
-            {
-                "phase": name,
-                "observed_at_epoch": round(time.time(), 3),
-                "raw_secret_values_recorded": False,
-                **fields,
-            },
-            sort_keys=True,
-        ),
+        + json.dumps(payload, sort_keys=True),
         flush=True,
     )
+    _upload_phase_heartbeat(payload)
+
+
+def _upload_phase_heartbeat(phase_payload: Mapping[str, Any]) -> None:
+    upload_enabled = _truthy(
+        os.environ.get("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_UPLOAD_PHASE_HEARTBEATS")
+        or "true"
+    )
+    put_url = _string(os.environ.get("OUTPUT_PUT_URL"))
+    work_dir = _string(os.environ.get("WORK_DIR"))
+    output_dir_text = _string(os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"))
+    if not upload_enabled or not put_url or not work_dir or not output_dir_text:
+        return
+    try:
+        output_dir = Path(output_dir_text).expanduser().resolve()
+        output_path = Path(
+            _string(os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"))
+            or output_dir / "unitree_groot_n17_sonic_policy_provider_output.json"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        heartbeat = {
+            "schema_version": OUTPUT_SCHEMA_VERSION,
+            "status": "running",
+            "policy_id": POLICY_ID,
+            "persistent_provider_session_used": True,
+            "runtime_phase": phase_payload.get("phase"),
+            "runtime_phase_details": dict(phase_payload),
+            "runpod_unitree_groot_sonic_remote_heartbeat": True,
+            "blockers": [],
+            "raw_credentials_written_to_artifacts": False,
+            "secret_hashes_written_to_artifacts": False,
+        }
+        output_path.write_text(
+            json.dumps(heartbeat, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        zip_path = (
+            Path(work_dir).expanduser().resolve()
+            / "unitree_groot_n17_sonic_provider_phase_heartbeat.zip"
+        )
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(output_path, output_path.relative_to(output_dir).as_posix())
+        if not zip_path.stat().st_size or not zipfile.is_zipfile(zip_path):
+            raise RuntimeError("invalid_or_empty_phase_heartbeat_zip")
+        request = urllib_request.Request(
+            put_url,
+            data=zip_path.read_bytes(),
+            method="PUT",
+            headers={"Content-Type": "application/zip"},
+        )
+        timeout_seconds = int(
+            os.environ.get(
+                "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_PHASE_HEARTBEAT_TIMEOUT_SECONDS"
+            )
+            or "20"
+        )
+        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+            response.read()
+        print(
+            "BLUEPRINT_PERSISTENT_SESSION_PHASE_HEARTBEAT_UPLOAD_OK:"
+            + json.dumps(
+                {
+                    "phase": phase_payload.get("phase"),
+                    "raw_secret_values_recorded": False,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            "BLUEPRINT_PERSISTENT_SESSION_PHASE_HEARTBEAT_UPLOAD_BLOCKED:"
+            + json.dumps(
+                {
+                    "phase": phase_payload.get("phase"),
+                    "error_type": type(exc).__name__,
+                    "raw_secret_values_recorded": False,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
 
 
 def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -548,21 +755,104 @@ class WamWorker(BaseHTTPRequestHandler):
                     env["BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"] = str(output_dir)
                     env["BLUEPRINT_WAM_PROVIDER_WORK_DIR"] = str(self.output_dir / "persistent_wam_shared_work")
                     env["BLUEPRINT_WAM_ROLLOUT_INPUT"] = str(bundle_root / "provider_runtime" / "wam_rollout_input_manifest.json")
-                    completed = subprocess.run(
-                        ["bash", str(bundle_root / "provider_runtime" / "run_wam_provider_runtime.sh")],
-                        cwd=str(bundle_root),
-                        env=env,
-                        text=True,
-                        capture_output=True,
-                        check=False,
-                        timeout=self.timeout_seconds,
-                    )
+                    runtime_log_path = step_dir / "persistent_wam_worker_runtime_stdout_stderr.log"
+                    timeout_expired = False
+                    completed_returncode: int | None = None
+                    process_group_terminated = False
+                    process_group_killed = False
+                    process_group_id: int | None = None
+                    with runtime_log_path.open("a", encoding="utf-8") as runtime_log:
+                        runtime_log.write(
+                            json.dumps(
+                                {
+                                    "event": "persistent_wam_worker_oscar_runtime_started",
+                                    "timeout_seconds": self.timeout_seconds,
+                                    "step_index": step_index,
+                                    "raw_secret_values_recorded": False,
+                                },
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        )
+                        runtime_log.flush()
+                        proc: subprocess.Popen[str] | None = None
+                        try:
+                            proc = subprocess.Popen(
+                                [
+                                    "bash",
+                                    str(bundle_root / "provider_runtime" / "run_wam_provider_runtime.sh"),
+                                ],
+                                cwd=str(bundle_root),
+                                env=env,
+                                text=True,
+                                stdout=runtime_log,
+                                stderr=subprocess.STDOUT,
+                                start_new_session=True,
+                            )
+                            process_group_id = os.getpgid(proc.pid)
+                            wait_started = time.monotonic()
+                            timeout_deadline = wait_started + float(self.timeout_seconds)
+                            last_wait_log = wait_started
+                            while True:
+                                completed_returncode = proc.poll()
+                                if completed_returncode is not None:
+                                    break
+                                now = time.monotonic()
+                                if now >= timeout_deadline:
+                                    raise subprocess.TimeoutExpired(proc.args, self.timeout_seconds)
+                                if now - last_wait_log >= 60:
+                                    runtime_log.write(
+                                        json.dumps(
+                                            {
+                                                "event": "persistent_wam_worker_oscar_runtime_waiting",
+                                                "elapsed_seconds": round(now - wait_started, 3),
+                                                "timeout_seconds": self.timeout_seconds,
+                                                "process_group_id": process_group_id,
+                                                "raw_secret_values_recorded": False,
+                                            },
+                                            sort_keys=True,
+                                        )
+                                        + "\n"
+                                    )
+                                    runtime_log.flush()
+                                    last_wait_log = now
+                                time.sleep(min(5.0, max(0.1, timeout_deadline - now)))
+                        except subprocess.TimeoutExpired:
+                            timeout_expired = True
+                            live_blockers.append("persistent_wam_worker_oscar_runtime_timeout")
+                            if proc is not None:
+                                try:
+                                    os.killpg(process_group_id or os.getpgid(proc.pid), signal.SIGTERM)
+                                    process_group_terminated = True
+                                    completed_returncode = proc.wait(timeout=20)
+                                except ProcessLookupError:
+                                    completed_returncode = proc.poll()
+                                except subprocess.TimeoutExpired:
+                                    os.killpg(process_group_id or os.getpgid(proc.pid), signal.SIGKILL)
+                                    process_group_killed = True
+                                    completed_returncode = proc.wait(timeout=20)
+                            runtime_log.write(
+                                json.dumps(
+                                    {
+                                        "event": "persistent_wam_worker_oscar_runtime_timeout",
+                                        "timeout_seconds": self.timeout_seconds,
+                                        "process_group_terminated": process_group_terminated,
+                                        "process_group_killed": process_group_killed,
+                                        "process_group_id": process_group_id,
+                                        "returncode": completed_returncode,
+                                        "raw_secret_values_recorded": False,
+                                    },
+                                    sort_keys=True,
+                                )
+                                + "\n"
+                            )
+                            runtime_log.flush()
                     live_ran = True
                     provider_output_path = output_dir / "wam_provider_output.json"
                     if provider_output_path.is_file():
                         live_payload = json.loads(provider_output_path.read_text(encoding="utf-8"))
                         live_payload = dict(live_payload) if isinstance(live_payload, Mapping) else {}
-                    if completed.returncode != 0:
+                    if completed_returncode not in (0, None):
                         live_blockers.append("persistent_wam_worker_oscar_runtime_nonzero_exit")
                     if not live_payload:
                         live_blockers.append("persistent_wam_worker_missing_oscar_provider_output")
@@ -573,12 +863,20 @@ class WamWorker(BaseHTTPRequestHandler):
                         step_dir / "persistent_wam_worker_command_execution.json",
                         {
                             "schema_version": "persistent_wam_worker_command_execution.v1",
-                            "status": "completed" if completed.returncode == 0 else "blocked",
-                            "returncode": completed.returncode,
-                            "stdout_size_bytes": len(completed.stdout or ""),
-                            "stderr_size_bytes": len(completed.stderr or ""),
-                            "stdout_omitted_to_avoid_secret_leakage": bool(completed.stdout),
-                            "stderr_omitted_to_avoid_secret_leakage": bool(completed.stderr),
+                            "status": "completed"
+                            if completed_returncode == 0 and not timeout_expired
+                            else "blocked",
+                            "returncode": completed_returncode,
+                            "timed_out": timeout_expired,
+                            "timeout_seconds": self.timeout_seconds,
+                            "process_group_id": process_group_id,
+                            "process_group_terminated": process_group_terminated,
+                            "process_group_killed": process_group_killed,
+                            "runtime_stdout_stderr_log_path": str(runtime_log_path),
+                            "runtime_stdout_stderr_log_size_bytes": runtime_log_path.stat().st_size
+                            if runtime_log_path.is_file()
+                            else 0,
+                            "stdout_stderr_streamed_to_log": True,
                             "bundle_manifest": bundle,
                             "raw_secret_values_recorded": False,
                         },
@@ -690,7 +988,7 @@ def main() -> int:
     try:
         session_input = json.loads(session_input_path.read_text(encoding="utf-8"))
         observation = _mapping(session_input.get("initial_observation"))
-        loop_step_count = max(2, int(session_input.get("loop_step_count") or 12))
+        loop_step_count = max(1, int(session_input.get("loop_step_count") or 12))
         policy_port = int(session_input.get("policy_worker_port") or 8765)
         wam_port = int(session_input.get("wam_worker_port") or 8766)
         use_live_wam = bool(session_input.get("use_live_wam") is not False)
@@ -708,16 +1006,19 @@ def main() -> int:
         bootstrap_namespace: dict[str, Any] = {
             "__name__": "blueprint_persistent_session_bootstrap",
             "__file__": str(runtime_dir / "unitree_groot_n17_sonic_provider_runner.py"),
+            "_blueprint_outer_phase_callback": _phase,
         }
         exec(provider_smoke.PROVIDER_RUNNER, bootstrap_namespace)
         _bootstrap_gr00t_policy_server = bootstrap_namespace["_bootstrap_gr00t_policy_server"]
 
+        os.environ.setdefault("BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER", "true")
         policy_server_url = os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL", "tcp://127.0.0.1:5550")
         policy_server_bootstrap, policy_server_process = _bootstrap_gr00t_policy_server(
             output_dir=output_dir,
             policy_server_url=policy_server_url,
             model_path=os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT") or "LucaFrat/groot-bs16",
         )
+        _write_json(output_dir / "groot_policy_server_bootstrap.json", policy_server_bootstrap)
         _phase("bootstrap_policy_server_completed", status=policy_server_bootstrap.get("status"))
         if policy_server_bootstrap.get("status") != "completed":
             raise RuntimeError("persistent_session_policy_server_bootstrap_blocked")
@@ -770,7 +1071,10 @@ def main() -> int:
         WamWorker.output_dir = output_dir
         WamWorker.use_live_wam = use_live_wam
         WamWorker.allow_structural_fallback = allow_structural_fallback
-        WamWorker.timeout_seconds = timeout_seconds
+        WamWorker.timeout_seconds = float(
+            os.environ.get("BLUEPRINT_PERSISTENT_SESSION_WAM_STEP_TIMEOUT_SECONDS")
+            or timeout_seconds
+        )
         policy_server = _start_server(policy_port, PolicyWorker)
         wam_server = _start_server(wam_port, WamWorker)
         _phase("workers_started", policy_port=policy_port, wam_port=wam_port)
@@ -887,11 +1191,17 @@ def main() -> int:
         _write_jsonl(output_dir / "wam_generated_next_observations.jsonl", wam_calls)
         _write_jsonl(output_dir / "robot_policy_wam_side_by_side_trace.jsonl", side_rows)
         _side_by_side_html(output_dir / "robot_policy_wam_side_by_side_trace.html", side_rows)
+        required_wam_transitions = max(0, loop_step_count - 1)
+        policy_only_session = required_wam_transitions == 0
         completed = bool(
-            repeated_policy_calls >= 2
-            and generated_count >= 1
+            repeated_policy_calls >= loop_step_count
+            and generated_count >= required_wam_transitions
             and not blockers
-            and (live_wam_count >= 1 or allow_structural_fallback)
+            and (
+                policy_only_session
+                or live_wam_count >= required_wam_transitions
+                or (allow_structural_fallback and generated_count >= required_wam_transitions)
+            )
         )
         result = {
             "schema_version": OUTPUT_SCHEMA_VERSION,
@@ -904,6 +1214,9 @@ def main() -> int:
             "wam_worker_url_redacted": f"http://127.0.0.1:{wam_port}/infer",
             "policy_server_bootstrap": policy_server_bootstrap,
             "requested_loop_step_count": loop_step_count,
+            "required_policy_call_count": loop_step_count,
+            "required_wam_transition_count": required_wam_transitions,
+            "policy_only_session": policy_only_session,
             "repeated_policy_calls_count": repeated_policy_calls,
             "generated_next_observation_count": generated_count,
             "live_wam_generation_success_count": live_wam_count,
@@ -950,6 +1263,7 @@ def main() -> int:
             "unitree_policy_action_command_ran": False,
             "policy_action_model_command_ran": False,
             "provider_output_replay_used": False,
+            "policy_server_bootstrap": locals().get("policy_server_bootstrap", {}),
             "traceback_tail": traceback.format_exc()[-4000:],
             "blockers": [f"persistent_session_runner_failed:{type(exc).__name__}"],
             "raw_credentials_written_to_artifacts": False,
@@ -983,14 +1297,101 @@ set +e
 cd "$(dirname "$0")"
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 RUNTIME_PY="${RUNTIME_PY:-python3}"
+blueprint_phase_heartbeat() {
+  phase="$1"
+  PHASE="$phase" "$RUNTIME_PY" - <<'PY'
+import json
+import os
+import time
+import urllib.request
+import zipfile
+from pathlib import Path
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+def _string(value: object) -> str:
+    return str(value).strip() if value is not None else ""
+
+if _truthy(os.environ.get("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_UPLOAD_PHASE_HEARTBEATS") or "true"):
+    put_url = _string(os.environ.get("OUTPUT_PUT_URL"))
+    work_dir = _string(os.environ.get("WORK_DIR"))
+    output_dir_text = _string(os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"))
+    if put_url and work_dir and output_dir_text:
+        try:
+            phase = _string(os.environ.get("PHASE")) or "unknown"
+            output_dir = Path(output_dir_text).expanduser().resolve()
+            output_path = Path(
+                _string(os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"))
+                or output_dir / "unitree_groot_n17_sonic_policy_provider_output.json"
+            )
+            output_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+                "status": "running",
+                "policy_id": "unitree_groot_n17_sonic_policy",
+                "persistent_provider_session_used": True,
+                "runtime_phase": phase,
+                "runtime_phase_details": {
+                    "phase": phase,
+                    "observed_at_epoch": round(time.time(), 3),
+                    "source": "runpod_entrypoint_script",
+                    "raw_secret_values_recorded": False,
+                },
+                "runpod_unitree_groot_sonic_remote_heartbeat": True,
+                "blockers": [],
+                "raw_credentials_written_to_artifacts": False,
+                "secret_hashes_written_to_artifacts": False,
+            }
+            output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+            zip_path = Path(work_dir) / "unitree_groot_n17_sonic_provider_phase_heartbeat.zip"
+            tmp_zip_path = zip_path.with_suffix(zip_path.suffix + ".tmp")
+            tmp_zip_path.unlink(missing_ok=True)
+            with zipfile.ZipFile(tmp_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(output_path, output_path.name)
+            if not tmp_zip_path.stat().st_size or not zipfile.is_zipfile(tmp_zip_path):
+                raise RuntimeError("invalid_or_empty_phase_heartbeat_zip")
+            tmp_zip_path.replace(zip_path)
+            request = urllib.request.Request(
+                put_url,
+                data=zip_path.read_bytes(),
+                method="PUT",
+                headers={"Content-Type": "application/zip"},
+            )
+            timeout_seconds = int(
+                os.environ.get("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_PHASE_HEARTBEAT_TIMEOUT_SECONDS")
+                or "20"
+            )
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                response.read()
+            print("BLUEPRINT_RUNPOD_ENTRYPOINT_PHASE_HEARTBEAT_UPLOAD_OK:%s" % phase, flush=True)
+        except Exception as exc:
+            print(
+                "BLUEPRINT_RUNPOD_ENTRYPOINT_PHASE_HEARTBEAT_UPLOAD_BLOCKED:%s:%s"
+                % (_string(os.environ.get("PHASE")) or "unknown", type(exc).__name__),
+                flush=True,
+            )
+PY
+}
+blueprint_phase_heartbeat runpod_entrypoint_dependency_probe_started
 if ! "$RUNTIME_PY" - <<'PY' >/tmp/blueprint_persistent_session_deps_probe.log 2>&1
 import importlib.util
 missing=[m for m in ['numpy','PIL','zmq','msgpack','msgpack_numpy','cv2'] if importlib.util.find_spec(m) is None]
 raise SystemExit(1 if missing else 0)
 PY
 then
+  blueprint_phase_heartbeat runpod_entrypoint_python_dependency_install_started
   "$RUNTIME_PY" -m pip install --quiet --only-binary=:all: --timeout 60 --retries 1 --break-system-packages numpy pillow pyzmq msgpack msgpack-numpy opencv-python-headless >/tmp/blueprint_persistent_session_pip_install.log 2>&1
+  pip_install_rc=$?
+  if [ $pip_install_rc -eq 0 ]; then
+    blueprint_phase_heartbeat runpod_entrypoint_python_dependency_install_completed
+  else
+    blueprint_phase_heartbeat runpod_entrypoint_python_dependency_install_failed
+  fi
+else
+  blueprint_phase_heartbeat runpod_entrypoint_python_dependencies_present
 fi
+blueprint_phase_heartbeat runpod_entrypoint_runner_starting
 "$RUNTIME_PY" unitree_groot_n17_sonic_wam_persistent_session_runner.py
 runner_rc=$?
 if [ $runner_rc -ne 0 ] && [ ! -f "${BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT:-}" ]; then
@@ -1020,6 +1421,494 @@ out.write_text(json.dumps({
 PY
 fi
 exit $runner_rc
+	"""
+
+
+RUNPOD_WAM_CARRIER_SCRIPT = """#!/usr/bin/env bash
+set -euo pipefail
+runtime_dir="$(cd "$(dirname "$0")" && pwd)"
+bundle_dir="$(cd "$runtime_dir/.." && pwd)"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_BUNDLE_DIR="$bundle_dir"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR="${BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR:-${BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR:-$bundle_dir/runtime_output}}"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT="${BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT:-$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR/unitree_groot_n17_sonic_policy_provider_output.json}"
+mkdir -p "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"
+bash "$runtime_dir/run_unitree_groot_n17_sonic_runpod_wrapper.sh"
+"""
+
+
+RUNPOD_WRAPPER_SCRIPT = r"""#!/usr/bin/env bash
+set -euo pipefail
+echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_BUNDLE_WRAPPER_STARTED
+WORK_DIR="${BLUEPRINT_RUNPOD_PROVIDER_WORK_DIR:-${WORK_DIR:-/workspace/blueprint_unitree_groot_sonic_persistent_provider}}"
+PROVIDER_BUNDLE_DIR="${BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_BUNDLE_DIR:-$WORK_DIR/unitree_groot_n17_sonic_provider_bundle}"
+OUTPUT_PUT_URL="${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-${OUTPUT_PUT_URL:-}}"
+export WORK_DIR PROVIDER_BUNDLE_DIR OUTPUT_PUT_URL
+mkdir -p "$WORK_DIR/runtime_output"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR="$WORK_DIR/runtime_output"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT="$WORK_DIR/runtime_output/unitree_groot_n17_sonic_policy_provider_output.json"
+export BLUEPRINT_PERSISTENT_SESSION_INPUT="$PROVIDER_BUNDLE_DIR/provider_runtime/persistent_session_input.json"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER="${BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER:-true}"
+export BLUEPRINT_UNITREE_GROOT_N17_SONIC_REMOTE_ROOT="${BLUEPRINT_UNITREE_GROOT_N17_SONIC_REMOTE_ROOT:-$WORK_DIR/groot_runtime/Isaac-GR00T}"
+if [ -z "${BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT:-}" ] || [ ! -d "${BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT:-}" ]; then
+  export BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT="$BLUEPRINT_UNITREE_GROOT_N17_SONIC_REMOTE_ROOT"
+fi
+export HF_HOME="${HF_HOME:-$WORK_DIR/hf_home}"
+export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-$WORK_DIR/hf_hub_cache}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$WORK_DIR/transformers_cache}"
+WRAPPER_PID="$$"
+ENTRYPOINT_TIMEOUT_SECONDS="${BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS:-7200}"
+WRAPPER_WATCHDOG_SECONDS="${BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS:-}"
+if [ -z "$WRAPPER_WATCHDOG_SECONDS" ]; then
+  WRAPPER_WATCHDOG_SECONDS=$((ENTRYPOINT_TIMEOUT_SECONDS + 300))
+fi
+export WRAPPER_PID ENTRYPOINT_TIMEOUT_SECONDS WRAPPER_WATCHDOG_SECONDS
+wrapper_watchdog_pid=""
+entrypoint_heartbeat_pid=""
+upload_unitree_groot_sonic_output() {
+  shell_rc="${BLUEPRINT_WRAPPER_EXIT_RC:-$?}"
+  set +e
+  mkdir -p "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"
+  if [ ! -f "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT" ]; then
+SHELL_EXIT_RC="$shell_rc" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+out = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"])
+out.parent.mkdir(parents=True, exist_ok=True)
+entrypoint_rc = os.environ.get("entrypoint_rc")
+out.write_text(json.dumps({
+    "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+    "status": "blocked",
+    "policy_id": "unitree_groot_n17_sonic_policy",
+    "persistent_provider_session_used": True,
+    "unitree_groot_n17_sonic_model_executed": False,
+    "unitree_groot_n17_sonic_policy_action_command_ran": False,
+    "policy_action_model_command_ran": False,
+    "provider_output_replay_used": False,
+    "blockers": ["runpod_unitree_groot_sonic_bundle_wrapper_exited_before_runtime_result"],
+    "shell_exit_returncode": int(os.environ.get("SHELL_EXIT_RC", "1") or 1),
+    "entrypoint_returncode": int(entrypoint_rc) if entrypoint_rc else None,
+    "raw_credentials_written_to_artifacts": False,
+    "secret_hashes_written_to_artifacts": False,
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  fi
+  for log in \
+    /tmp/blueprint_runpod_apt_update.log \
+    /tmp/blueprint_runpod_apt_install.log \
+    /tmp/blueprint_persistent_session_deps_probe.log \
+    /tmp/blueprint_persistent_session_pip_install.log
+  do
+    cp "$log" "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR/$(basename "$log")" 2>/dev/null || true
+  done
+  python - <<'PY'
+import json
+import os
+import zipfile
+from pathlib import Path
+
+output_dir = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"])
+zip_path = Path(os.environ["WORK_DIR"]) / "unitree_groot_n17_sonic_provider_runtime_output.zip"
+tmp_zip_path = zip_path.with_suffix(zip_path.suffix + ".tmp")
+excluded_dirs = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    "checkpoints",
+    "groot_runtime",
+    "hf_home",
+    "hf_hub_cache",
+    "transformers_cache",
+}
+max_file_bytes = 8 * 1024 * 1024
+omitted = []
+try:
+    tmp_zip_path.unlink(missing_ok=True)
+    with zipfile.ZipFile(tmp_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        if output_dir.is_dir():
+            for root, dirs, files in os.walk(output_dir):
+                dirs[:] = sorted(item for item in dirs if item not in excluded_dirs)
+                current_root = Path(root)
+                for filename in sorted(files):
+                    path = current_root / filename
+                    relative = path.relative_to(output_dir)
+                    if path.stat().st_size > max_file_bytes:
+                        omitted.append(str(relative))
+                        continue
+                    archive.write(path, relative.as_posix())
+            if omitted:
+                archive.writestr(
+                    "runpod_unitree_groot_sonic_runtime_output_omissions.json",
+                    json.dumps(
+                        {
+                            "schema_version": "runpod_runtime_output_omissions.v1",
+                            "omitted_count": len(omitted),
+                            "omitted_paths_sample": omitted[:200],
+                            "max_file_bytes": max_file_bytes,
+                            "raw_secret_values_recorded": False,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                )
+        else:
+            archive.writestr(
+                "unitree_groot_n17_sonic_wam_persistent_session_output.json",
+                json.dumps({"status": "blocked", "blockers": ["runtime_output_directory_missing"]}, indent=2),
+            )
+    if not tmp_zip_path.stat().st_size or not zipfile.is_zipfile(tmp_zip_path):
+        raise RuntimeError("invalid_or_empty_runtime_output_zip")
+    tmp_zip_path.replace(zip_path)
+except Exception as exc:
+    tmp_zip_path.unlink(missing_ok=True)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_wam_persistent_session_output.json",
+            json.dumps(
+                {
+                    "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+                    "status": "blocked",
+                    "policy_id": "unitree_groot_n17_sonic_policy",
+                    "persistent_provider_session_used": True,
+                    "unitree_groot_n17_sonic_model_executed": False,
+                    "unitree_groot_n17_sonic_policy_action_command_ran": False,
+                    "policy_action_model_command_ran": False,
+                    "provider_output_replay_used": False,
+                    "blockers": ["runpod_runtime_output_zip_creation_failed"],
+                    "zip_creation_error_type": type(exc).__name__,
+                    "zip_creation_error_preview": str(exc)[:400],
+                    "raw_credentials_written_to_artifacts": False,
+                    "secret_hashes_written_to_artifacts": False,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+print("BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_OUTPUT_ZIP_WRITTEN:%d" % zip_path.stat().st_size)
+PY
+  if [ -n "${OUTPUT_PUT_URL:-}" ]; then
+python - <<'PY'
+import json
+import os
+import urllib.request
+import zipfile
+from pathlib import Path
+
+zip_path = Path(os.environ["WORK_DIR"]) / "unitree_groot_n17_sonic_provider_runtime_output.zip"
+timeout_seconds = int(os.environ.get("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_UPLOAD_TIMEOUT_SECONDS", "60") or "60")
+status_path = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"]) / "runpod_unitree_groot_sonic_output_upload_status.json"
+try:
+    if not zip_path.stat().st_size or not zipfile.is_zipfile(zip_path):
+        raise RuntimeError("invalid_or_empty_runtime_output_zip")
+    request = urllib.request.Request(
+        os.environ["OUTPUT_PUT_URL"],
+        data=zip_path.read_bytes(),
+        method="PUT",
+        headers={"Content-Type": "application/zip"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        response.read()
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runpod_unitree_groot_sonic_output_upload_status.v1",
+                "status": "completed",
+                "timeout_seconds": timeout_seconds,
+                "raw_secret_values_recorded": False,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print("BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_OUTPUT_UPLOAD_OK")
+except Exception as exc:
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runpod_unitree_groot_sonic_output_upload_status.v1",
+                "status": "blocked",
+                "timeout_seconds": timeout_seconds,
+                "error_type": type(exc).__name__,
+                "error_preview": str(exc)[:400],
+                "raw_secret_values_recorded": False,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print("BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_OUTPUT_UPLOAD_BLOCKED:%s" % type(exc).__name__)
+PY
+  else
+    echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_OUTPUT_UPLOAD_SKIPPED:output_put_url_missing
+  fi
+	}
+	trap 'BLUEPRINT_WRAPPER_EXIT_RC=$?; if [ -n "${wrapper_watchdog_pid:-}" ]; then kill "$wrapper_watchdog_pid" 2>/dev/null || true; fi; if [ -n "${entrypoint_heartbeat_pid:-}" ]; then kill "$entrypoint_heartbeat_pid" 2>/dev/null || true; fi; upload_unitree_groot_sonic_output; exit "$BLUEPRINT_WRAPPER_EXIT_RC"' EXIT
+	python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+out = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"])
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps({
+    "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+    "status": "running",
+    "policy_id": "unitree_groot_n17_sonic_policy",
+    "persistent_provider_session_used": True,
+    "runtime_phase": "runpod_bundle_wrapper_started",
+    "runpod_unitree_groot_sonic_remote_heartbeat": True,
+    "blockers": [],
+    "raw_credentials_written_to_artifacts": False,
+    "secret_hashes_written_to_artifacts": False,
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+		if [ "${BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_UPLOAD_BOOTSTRAP_HEARTBEAT:-true}" = "true" ]; then
+	  upload_unitree_groot_sonic_output
+	fi
+	rm -f "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"
+	write_unitree_groot_sonic_phase_heartbeat() {
+	  phase="$1"
+	  if [ -f "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT" ]; then
+	    if python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if payload.get("status") == "running" else 1)
+PY
+	    then
+	      if [ "${BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_UPLOAD_PHASE_HEARTBEATS:-true}" = "true" ]; then
+	        upload_unitree_groot_sonic_output
+	      fi
+	    fi
+	    return 0
+	  fi
+PHASE="$phase" python - <<'PY'
+import json
+import os
+import time
+from pathlib import Path
+
+out = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"])
+out.parent.mkdir(parents=True, exist_ok=True)
+phase = os.environ.get("PHASE", "unknown")
+entrypoint_log = out.parent / "runpod_unitree_groot_sonic_entrypoint.log"
+entrypoint_log_tail = None
+if entrypoint_log.is_file():
+    entrypoint_log_tail = entrypoint_log.read_text(encoding="utf-8", errors="replace")[-4000:]
+out.write_text(json.dumps({
+    "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+    "status": "running",
+    "policy_id": "unitree_groot_n17_sonic_policy",
+    "persistent_provider_session_used": True,
+    "runtime_phase": phase,
+    "runtime_phase_details": {
+        "phase": phase,
+        "observed_at_epoch": round(time.time(), 3),
+        "source": "runpod_outer_wrapper",
+        "entrypoint_log_tail": entrypoint_log_tail,
+        "raw_secret_values_recorded": False,
+    },
+    "runpod_unitree_groot_sonic_remote_heartbeat": True,
+    "blockers": [],
+    "raw_credentials_written_to_artifacts": False,
+    "secret_hashes_written_to_artifacts": False,
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+	  if [ "${BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_UPLOAD_PHASE_HEARTBEATS:-true}" = "true" ]; then
+	    upload_unitree_groot_sonic_output
+	  fi
+	  rm -f "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"
+	}
+	set -euo pipefail
+	(
+	  sleep "$WRAPPER_WATCHDOG_SECONDS"
+	  if [ ! -f "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT" ]; then
+WRAPPER_WATCHDOG_SECONDS="$WRAPPER_WATCHDOG_SECONDS" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+out = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"])
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps({
+    "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+    "status": "blocked",
+    "policy_id": "unitree_groot_n17_sonic_policy",
+    "persistent_provider_session_used": True,
+    "unitree_groot_n17_sonic_model_executed": False,
+    "unitree_groot_n17_sonic_policy_action_command_ran": False,
+    "policy_action_model_command_ran": False,
+    "provider_output_replay_used": False,
+    "blockers": ["runpod_unitree_groot_sonic_wrapper_watchdog_timeout_before_runtime_result"],
+    "wrapper_watchdog_timeout_seconds": int(os.environ.get("WRAPPER_WATCHDOG_SECONDS", "0") or 0),
+    "raw_credentials_written_to_artifacts": False,
+    "secret_hashes_written_to_artifacts": False,
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    upload_unitree_groot_sonic_output
+    kill -TERM "$WRAPPER_PID" 2>/dev/null || true
+  fi
+) &
+wrapper_watchdog_pid=$!
+if command -v apt-get >/dev/null 2>&1; then
+  write_unitree_groot_sonic_phase_heartbeat runpod_system_dependency_check_started
+  if ! command -v git >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    write_unitree_groot_sonic_phase_heartbeat runpod_system_dependency_install_started
+    set +e
+    timeout 300 apt-get update >/tmp/blueprint_runpod_apt_update.log 2>&1
+    apt_update_rc=$?
+    DEBIAN_FRONTEND=noninteractive timeout 600 apt-get install -y git ffmpeg curl ca-certificates >/tmp/blueprint_runpod_apt_install.log 2>&1
+    apt_install_rc=$?
+    set -e
+    if [ $apt_update_rc -eq 0 ] && [ $apt_install_rc -eq 0 ]; then
+      write_unitree_groot_sonic_phase_heartbeat runpod_system_dependency_install_completed
+    else
+      write_unitree_groot_sonic_phase_heartbeat runpod_system_dependency_install_failed
+    fi
+  else
+    write_unitree_groot_sonic_phase_heartbeat runpod_system_dependencies_present
+  fi
+fi
+export PYTHONPATH="$PROVIDER_BUNDLE_DIR/provider_runtime:${PYTHONPATH:-}"
+write_unitree_groot_sonic_phase_heartbeat runpod_entrypoint_subprocess_starting
+(
+  while true; do
+    sleep "${BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_HEARTBEAT_SECONDS:-60}"
+    write_unitree_groot_sonic_phase_heartbeat runpod_entrypoint_subprocess_running
+  done
+) &
+entrypoint_heartbeat_pid=$!
+echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_ENTRYPOINT_STARTED
+set +e
+python - <<'PY'
+import json
+import os
+import signal
+import subprocess
+import time
+from pathlib import Path
+
+output_dir = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"])
+output_dir.mkdir(parents=True, exist_ok=True)
+entrypoint = (
+    Path(os.environ["PROVIDER_BUNDLE_DIR"])
+    / "provider_runtime"
+    / "run_unitree_groot_n17_sonic_provider_runtime.sh"
+)
+timeout_seconds = int(
+    os.environ.get("ENTRYPOINT_TIMEOUT_SECONDS")
+    or os.environ.get("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS")
+    or "7200"
+)
+log_path = output_dir / "runpod_unitree_groot_sonic_entrypoint.log"
+execution_path = output_dir / "runpod_unitree_groot_sonic_entrypoint_execution.json"
+started = time.time()
+timed_out = False
+returncode = None
+with log_path.open("ab") as handle:
+    handle.write(
+        (
+            "BLUEPRINT_ENTRYPOINT_STARTED:"
+            + json.dumps(
+                {
+                    "entrypoint": str(entrypoint),
+                    "timeout_seconds": timeout_seconds,
+                    "raw_secret_values_recorded": False,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
+    )
+    handle.flush()
+    proc = subprocess.Popen(
+        ["bash", str(entrypoint)],
+        stdout=handle,
+        stderr=subprocess.STDOUT,
+        env=os.environ.copy(),
+        start_new_session=True,
+    )
+    try:
+        returncode = proc.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            returncode = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            returncode = proc.wait(timeout=20)
+        handle.write(b"\nBLUEPRINT_ENTRYPOINT_TIMED_OUT\n")
+duration = round(time.time() - started, 3)
+execution_path.write_text(
+    json.dumps(
+        {
+            "schema_version": "runpod_unitree_groot_sonic_entrypoint_execution.v1",
+            "status": "timed_out" if timed_out else ("completed" if returncode == 0 else "failed"),
+            "returncode": returncode,
+            "timed_out": timed_out,
+            "timeout_seconds": timeout_seconds,
+            "duration_seconds": duration,
+            "entrypoint_log_path": str(log_path),
+            "raw_secret_values_recorded": False,
+            "secret_hashes_recorded": False,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+raise SystemExit(returncode if returncode is not None else 124)
+PY
+entrypoint_rc=$?
+export entrypoint_rc
+set -e
+if [ ! -f "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT" ]; then
+python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+out = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"])
+out.parent.mkdir(parents=True, exist_ok=True)
+rc = int(os.environ.get("entrypoint_rc", "124") or 124)
+out.write_text(json.dumps({
+    "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+    "status": "blocked",
+    "policy_id": "unitree_groot_n17_sonic_policy",
+    "persistent_provider_session_used": True,
+    "unitree_groot_n17_sonic_model_executed": False,
+    "unitree_groot_n17_sonic_policy_action_command_ran": False,
+    "policy_action_model_command_ran": False,
+    "provider_output_replay_used": False,
+    "blockers": ["persistent_session_entrypoint_exited_without_runtime_result"],
+    "entrypoint_returncode": rc,
+    "raw_credentials_written_to_artifacts": False,
+    "secret_hashes_written_to_artifacts": False,
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+fi
+echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_PROVIDER_COMPLETED_OR_BLOCKED
+kill "$entrypoint_heartbeat_pid" 2>/dev/null || true
+kill "$wrapper_watchdog_pid" 2>/dev/null || true
 """
 
 
@@ -1067,12 +1956,32 @@ def build_persistent_session_provider_bundle(
     if task_prompt and not any(observation.get(key) for key in ("task_prompt", "prompt", "task_description")):
         observation["task_prompt"] = task_prompt
     frame_path = _camera_frame_path(observation)
+    visual_profile_settings = _current_wam_visual_profile_settings()
+    visual_profile = str(visual_profile_settings["visual_profile"])
+    source_visual_qa = assess_source_policy_observation_visual_qa(
+        frame_path,
+        generated_at=generated,
+        target_object_id=_string(observation.get("target_object_id")) or None,
+        task_id=_string(observation.get("task_id")) or None,
+        visual_profile=visual_profile,
+        review_quality_required=visual_profile == "review_quality",
+    )
+    source_visual_qa_path = job / "source_policy_observation_visual_qa.json"
+    write_json(source_visual_qa_path, source_visual_qa)
     blockers: list[str] = []
     if frame_path is None:
         blockers.append("blocked_missing_policy_visual_observation_frame")
     else:
         shutil.copy2(frame_path, runtime_dir / "initial_policy_frame.png")
         shutil.copy2(frame_path, runtime_dir / "input_frame.png")
+        write_json(runtime_dir / "source_policy_observation_visual_qa.json", source_visual_qa)
+    blockers.extend(
+        _persistent_wam_visual_profile_blockers(
+            settings=visual_profile_settings,
+            source_visual_qa=source_visual_qa,
+            loop_step_count=int(loop_step_count),
+        )
+    )
     copied = _copy_blueprint_runtime(runtime_dir)
     _write_executable(
         runtime_dir / "unitree_groot_n17_sonic_wam_persistent_session_runner.py",
@@ -1083,12 +1992,19 @@ def build_persistent_session_provider_bundle(
         PERSISTENT_SESSION_RUNNER,
     )
     _write_executable(runtime_dir / "run_unitree_groot_n17_sonic_provider_runtime.sh", RUN_SCRIPT)
+    _write_executable(runtime_dir / "run_wam_provider_runtime.sh", RUNPOD_WAM_CARRIER_SCRIPT)
+    _write_executable(
+        runtime_dir / "run_unitree_groot_n17_sonic_runpod_wrapper.sh",
+        RUNPOD_WRAPPER_SCRIPT,
+    )
     session_input = {
         "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_input.v1",
         "generated_at": generated,
         "initial_observation": observation,
         "loop_step_count": int(loop_step_count),
         "timeout_seconds": float(timeout_seconds),
+        "visual_profile": visual_profile,
+        "wam_visual_profile_settings": visual_profile_settings,
         "use_live_wam": bool(use_live_wam),
         "allow_structural_wam_fallback": bool(allow_structural_wam_fallback),
         "policy_worker_port": 8765,
@@ -1110,7 +2026,13 @@ def build_persistent_session_provider_bundle(
             "status": "bundle_ready" if not blockers else "blocked",
             "local_bundle_ready_for_remote_staging": not blockers,
             "persistent_session_bundle": True,
+            "visual_profile": visual_profile,
+            "wam_visual_profile_settings": visual_profile_settings,
+            "source_policy_observation_visual_qa_path": str(source_visual_qa_path),
+            "source_policy_observation_visual_qa_status": source_visual_qa.get("status"),
             "runtime_entrypoint": "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh",
+            "runpod_wam_carrier_entrypoint": "provider_runtime/run_wam_provider_runtime.sh",
+            "runpod_runtime_wrapper": "provider_runtime/run_unitree_groot_n17_sonic_runpod_wrapper.sh",
             "runner_path": "provider_runtime/unitree_groot_n17_sonic_wam_persistent_session_runner.py",
             "legacy_runner_path_for_vast_preflight": "provider_runtime/unitree_groot_n17_sonic_provider_runner.py",
             "policy_id": POLICY_ID,
@@ -1147,9 +2069,14 @@ def build_persistent_session_provider_bundle(
         "bundle_present": bundle_path.is_file(),
         "bundle_size_bytes": bundle_path.stat().st_size if bundle_path.is_file() else 0,
         "runtime_entrypoint": "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh",
+        "runpod_runtime_wrapper": "provider_runtime/run_unitree_groot_n17_sonic_runpod_wrapper.sh",
         "runtime_runner": "provider_runtime/unitree_groot_n17_sonic_wam_persistent_session_runner.py",
         "policy_observation_path": str(Path(policy_observation_path).expanduser()),
         "initial_frame_path": str(frame_path) if frame_path else None,
+        "visual_profile": visual_profile,
+        "wam_visual_profile_settings": visual_profile_settings,
+        "source_policy_observation_visual_qa_path": str(source_visual_qa_path),
+        "source_policy_observation_visual_qa_status": source_visual_qa.get("status"),
         "loop_step_count": int(loop_step_count),
         "use_live_wam": bool(use_live_wam),
         "allow_structural_wam_fallback": bool(allow_structural_wam_fallback),
@@ -1213,6 +2140,310 @@ def _blocked_payload(
     }
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _oscar_temporal_tokenizer_failure_detected(
+    *,
+    extraction_dir: Path | None,
+    imported_payload: Mapping[str, Any],
+    wam_calls: Sequence[Mapping[str, Any]],
+) -> bool:
+    payload_text = json.dumps(
+        {
+            "imported": dict(imported_payload),
+            "wam_calls": [dict(row) for row in wam_calls],
+        },
+        sort_keys=True,
+        default=str,
+    ).lower()
+    if (
+        "kernel size can't be greater than actual input size" in payload_text
+        and "worldsim/_src/tokenizers/wan2pt1.py" in payload_text
+    ):
+        return True
+    if extraction_dir is None:
+        return False
+    for path in sorted(extraction_dir.rglob("wam_runtime_result.json")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            continue
+        if (
+            "kernel size can't be greater than actual input size" in text
+            and "worldsim/_src/tokenizers/wan2pt1.py" in text
+        ):
+            return True
+        if (
+            "kernel size can't be greater than actual input size" in text
+            and "calculated padded input size per channel" in text
+        ):
+            return True
+    return False
+
+
+def _runpod_persistent_session_wait_seconds(
+    *,
+    explicit_max_wait_seconds: int | None,
+    timeout_seconds: float,
+    loop_step_count: int,
+) -> int:
+    default_wait = _int_env(
+        "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_MAX_WAIT_SECONDS",
+        max(7200, int(timeout_seconds) * max(1, loop_step_count)),
+    )
+    requested_wait = int(explicit_max_wait_seconds or default_wait)
+    entrypoint_timeout = _int_env(
+        "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS",
+        int(timeout_seconds),
+    )
+    wrapper_watchdog = _int_env(
+        "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS",
+        entrypoint_timeout + 300,
+    )
+    wait_buffer = _int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WAIT_BUFFER_SECONDS", 300)
+    remote_runtime_floor = max(entrypoint_timeout, wrapper_watchdog) + max(0, wait_buffer)
+    return max(requested_wait, remote_runtime_floor)
+
+
+def _write_runpod_live_wam_blocker_classification(
+    *,
+    job: Path,
+    generated_at: str,
+    poll_manifest: Mapping[str, Any],
+    extraction_dir: Path | None = None,
+    imported: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    imported_payload = _mapping(imported)
+    last_nonterminal_output = _mapping(poll_manifest.get("last_nonterminal_output"))
+    last_nonterminal_runtime_result = _mapping(last_nonterminal_output.get("runtime_result"))
+    last_nonterminal_runtime_phase = _string(last_nonterminal_runtime_result.get("runtime_phase"))
+    if not last_nonterminal_runtime_phase:
+        nonterminal_zip = Path(
+            _string(last_nonterminal_output.get("nonterminal_zip_path"))
+        ).expanduser()
+        if nonterminal_zip.is_file() and zipfile.is_zipfile(nonterminal_zip):
+            try:
+                with zipfile.ZipFile(nonterminal_zip) as archive:
+                    output_name = "unitree_groot_n17_sonic_policy_provider_output.json"
+                    if output_name in set(archive.namelist()):
+                        nonterminal_payload = json.loads(
+                            archive.read(output_name).decode("utf-8") or "{}"
+                        )
+                        last_nonterminal_runtime_phase = _string(
+                            _mapping(nonterminal_payload).get("runtime_phase")
+                        )
+            except (OSError, ValueError, zipfile.BadZipFile):
+                last_nonterminal_runtime_phase = ""
+    has_output_zip = bool(
+        poll_manifest.get("output_zip_present")
+        or poll_manifest.get("provider_command_status") == "completed"
+        or imported_payload
+    )
+    policy_calls = (
+        _load_json_rows(sorted((extraction_dir / "policy_calls").glob("policy_call_*.json")))
+        if extraction_dir is not None
+        else []
+    )
+    wam_calls = (
+        _load_json_rows(sorted((extraction_dir / "wam_calls").glob("wam_call_*.json")))
+        if extraction_dir is not None
+        else []
+    )
+    side_rows = (
+        _jsonl_rows(extraction_dir / "robot_policy_wam_side_by_side_trace.jsonl")
+        if extraction_dir is not None
+        else []
+    )
+    generated_frames = (
+        sorted((extraction_dir / "generated_next_observations").glob("*"))
+        if extraction_dir is not None and (extraction_dir / "generated_next_observations").is_dir()
+        else []
+    )
+    requested_policy_calls = _as_int(
+        imported_payload.get("required_policy_call_count")
+        or imported_payload.get("requested_loop_step_count"),
+        default=2,
+    )
+    required_wam_transitions = _as_int(
+        imported_payload.get("required_wam_transition_count"),
+        default=max(0, requested_policy_calls - 1),
+    )
+    repeated_policy_calls = _as_int(imported_payload.get("repeated_policy_calls_count"))
+    generated_next_observations = _as_int(imported_payload.get("generated_next_observation_count"))
+    live_wam_successes = _as_int(imported_payload.get("live_wam_generation_success_count"))
+    learned_wam_successes = _as_int(imported_payload.get("learned_wam_model_success_count"))
+    all_blockers = [
+        str(item)
+        for item in (
+            list(imported_payload.get("blockers") or [])
+            + list(poll_manifest.get("provider_command_blockers") or [])
+            + [
+                blocker
+                for row in wam_calls
+                for blocker in list(_mapping(row).get("blockers") or [])
+            ]
+        )
+        if str(item)
+    ]
+    blocker_text = " ".join(all_blockers).lower()
+    first_policy_blocked = bool(policy_calls and policy_calls[0].get("status") != "completed")
+    blocked_wam_calls = [row for row in wam_calls if row.get("status") != "completed"]
+    materialization_blocked = any(
+        _mapping(row.get("materialization")).get("status") == "blocked" for row in wam_calls
+    ) or any("materializ" in blocker.lower() for blocker in all_blockers)
+    oscar_temporal_tokenizer_blocked = _oscar_temporal_tokenizer_failure_detected(
+        extraction_dir=extraction_dir,
+        imported_payload=imported_payload,
+        wam_calls=wam_calls,
+    )
+    entrypoint_execution = (
+        _read_json(extraction_dir / "runpod_unitree_groot_sonic_entrypoint_execution.json")
+        if extraction_dir is not None
+        and (extraction_dir / "runpod_unitree_groot_sonic_entrypoint_execution.json").is_file()
+        else {}
+    )
+
+    poll_status_running = (
+        poll_manifest.get("status") == "running"
+        or poll_manifest.get("provider_command_status") == "running"
+        or bool(poll_manifest.get("continuing_spend_from_this_run"))
+    )
+    if poll_status_running:
+        classified_blocker = "runpod_persistent_session_still_running"
+    elif not has_output_zip and last_nonterminal_output:
+        if poll_manifest.get("pod_status") == "RUNNING" and poll_manifest.get("teardown_performed"):
+            classified_blocker = "runpod_remote_runtime_still_running_after_heartbeat_until_local_timeout"
+        elif poll_manifest.get("pod_status") == "not_found" and last_nonterminal_runtime_phase:
+            if last_nonterminal_runtime_phase in {
+                "gr00t_model_snapshot_completed",
+                "gr00t_policy_server_process_starting",
+            }:
+                classified_blocker = (
+                    "runpod_pod_disappeared_after_gr00t_model_snapshot_before_policy_server_ready"
+                )
+            elif last_nonterminal_runtime_phase in {
+                "gr00t_policy_server_process_started",
+                "gr00t_policy_server_waiting_for_listen",
+            }:
+                classified_blocker = (
+                    "runpod_pod_disappeared_during_gr00t_policy_server_process_start_after_heartbeat"
+                )
+            elif last_nonterminal_runtime_phase == "gr00t_uv_sync_started":
+                classified_blocker = "runpod_pod_disappeared_during_gr00t_uv_sync_after_heartbeat"
+            elif last_nonterminal_runtime_phase == "gr00t_system_python_minimal_deps_install_started":
+                classified_blocker = (
+                    "runpod_pod_disappeared_during_gr00t_system_python_minimal_deps_install"
+                    "_after_heartbeat"
+                )
+            elif last_nonterminal_runtime_phase.startswith("gr00t_system_python_"):
+                classified_blocker = (
+                    "runpod_pod_disappeared_during_gr00t_system_python_bootstrap_after_heartbeat"
+                )
+            elif last_nonterminal_runtime_phase.startswith(("bootstrap_", "gr00t_")):
+                classified_blocker = "runpod_pod_disappeared_during_policy_server_bootstrap_after_heartbeat"
+            elif last_nonterminal_runtime_phase == "wam_infer_started":
+                classified_blocker = "runpod_pod_disappeared_during_live_wam_after_heartbeat"
+            else:
+                classified_blocker = "runpod_pod_disappeared_after_nonterminal_heartbeat"
+        else:
+            classified_blocker = "runpod_terminal_output_upload_failed_after_remote_heartbeat"
+    elif not has_output_zip or not imported_payload:
+        classified_blocker = "runpod_wrapper_or_upload_watchdog_no_valid_provider_artifact"
+    elif (
+        "persistent_session_entrypoint_exited_without_runtime_result" in all_blockers
+        or entrypoint_execution.get("timed_out") is True
+    ):
+        classified_blocker = "policy_runtime_bootstrap_timeout"
+    elif first_policy_blocked or repeated_policy_calls < 1:
+        classified_blocker = "policy_initial_call_blocked"
+    elif required_wam_transitions and not wam_calls:
+        classified_blocker = "live_wam_runtime_not_invoked_after_policy"
+    elif required_wam_transitions and generated_next_observations < required_wam_transitions:
+        if oscar_temporal_tokenizer_blocked:
+            classified_blocker = "oscar_wam_temporal_window_too_short"
+        elif materialization_blocked:
+            classified_blocker = "wam_frame_materialization_blocked"
+        elif (
+            blocked_wam_calls
+            or live_wam_successes < required_wam_transitions
+            or learned_wam_successes < required_wam_transitions
+            or "oscar" in blocker_text
+            or "live_infer" in blocker_text
+        ):
+            classified_blocker = "live_wam_runtime_blocked"
+        else:
+            classified_blocker = "wam_frame_materialization_blocked"
+    elif repeated_policy_calls < requested_policy_calls:
+        classified_blocker = "policy_requery_blocked"
+    elif imported_payload.get("status") != "completed":
+        classified_blocker = "persistent_session_provider_output_blocked"
+    else:
+        classified_blocker = "none"
+
+    status = "completed" if classified_blocker == "none" else "blocked"
+    classification = {
+        "schema_version": "runpod_live_wam_blocker_classification.v1",
+        "generated_at": generated_at,
+        "status": status,
+        "classified_blocker": classified_blocker,
+        "provider": "runpod",
+        "job_dir": str(job),
+        "runpod_poll_manifest_path": str(
+            job / "runpod_persistent_session_run" / "runpod_wam_async_poll_manifest.json"
+        ),
+        "imported_provider_output_dir": str(extraction_dir) if extraction_dir is not None else None,
+        "evidence": {
+            "output_zip_present": has_output_zip,
+            "runtime_result_status": poll_manifest.get("runtime_result_status"),
+            "entrypoint_execution_status": entrypoint_execution.get("status"),
+            "entrypoint_timed_out": entrypoint_execution.get("timed_out"),
+            "entrypoint_timeout_seconds": entrypoint_execution.get("timeout_seconds"),
+            "last_nonterminal_runtime_result_status": last_nonterminal_output.get(
+                "runtime_result_status"
+            ),
+            "last_nonterminal_runtime_phase": last_nonterminal_runtime_phase or None,
+            "last_nonterminal_zip_path": last_nonterminal_output.get("nonterminal_zip_path"),
+            "provider_command_status": poll_manifest.get("provider_command_status"),
+            "pod_status": poll_manifest.get("pod_status"),
+            "teardown_performed": bool(poll_manifest.get("teardown_performed")),
+            "continuing_spend_from_this_run": bool(
+                poll_manifest.get("continuing_spend_from_this_run")
+            ),
+            "requested_policy_call_count": requested_policy_calls,
+            "required_wam_transition_count": required_wam_transitions,
+            "policy_call_artifact_count": len(policy_calls),
+            "wam_call_artifact_count": len(wam_calls),
+            "side_by_side_trace_row_count": len(side_rows),
+            "generated_frame_artifact_count": len(generated_frames),
+            "repeated_policy_calls_count": repeated_policy_calls,
+            "generated_next_observation_count": generated_next_observations,
+            "live_wam_generation_success_count": live_wam_successes,
+            "learned_wam_model_success_count": learned_wam_successes,
+            "policy_observes_wam_generated_next_observation": bool(
+                imported_payload.get("policy_observes_wam_generated_next_observation")
+            ),
+            "oscar_temporal_tokenizer_blocked": oscar_temporal_tokenizer_blocked,
+            "blockers": sorted(set(all_blockers)),
+        },
+        "claim_boundary": {
+            "classification_is_runtime_diagnostic_not_physical_robot_readiness": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "real_world_manipulation_success_proven": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+    write_json(job / "runpod_live_wam_blocker_classification.json", classification)
+    return classification
+
+
 def _jsonl_rows(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
@@ -1260,21 +2491,49 @@ def _write_review_video(
     extraction_dir: Path,
     generated_at: str,
     fps: float = 2.0,
+    structural_fallback_used: bool = False,
 ) -> dict[str, Any]:
     review_dir = job / "review_video"
     ensure_dir(review_dir)
-    output_path = review_dir / "persistent_policy_wam_review.mp4"
+    live_rollout_videos = sorted(
+        path.resolve()
+        for path in (extraction_dir / "wam_worker_steps").glob(
+            "step_*/oscar_runtime_output/*.mp4"
+        )
+        if path.is_file()
+    )
+    live_rollout_videos.extend(
+        path.resolve()
+        for path in (extraction_dir / "wam_worker_steps").glob(
+            "step_*/oscar_wam_worker_bundle/provider_runtime/*.mp4"
+        )
+        if path.is_file()
+    )
+    live_rollout_videos = sorted(dict.fromkeys(live_rollout_videos))
+    output_path = review_dir / (
+        "persistent_policy_wam_live_rollout_review.mp4"
+        if live_rollout_videos
+        else "persistent_policy_wam_review.mp4"
+    )
     initial_frame = job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
     frames = [initial_frame] if initial_frame.is_file() else []
     frames.extend(sorted((extraction_dir / "generated_next_observations").glob("*.jpg")))
     frames = [path.resolve() for path in frames if path.is_file()]
-    concat_path = review_dir / "persistent_policy_wam_review_frames.ffconcat"
+    concat_path = review_dir / (
+        "persistent_policy_wam_live_rollout_frames.ffconcat"
+        if live_rollout_videos
+        else "persistent_policy_wam_review_frames.ffconcat"
+    )
     status = {
         "schema_version": "persistent_policy_wam_video_review_status.v1",
         "generated_at": generated_at,
         "status": "blocked",
         "review_video_path": str(output_path),
         "frame_count": len(frames),
+        "live_rollout_video_count": len(live_rollout_videos),
+        "review_video_source": "live_wam_generated_rollout_videos"
+        if live_rollout_videos
+        else "still_policy_and_next_observation_frames",
         "fps_requested": fps,
         "ffmpeg_command_ran": False,
         "ffprobe_command_ran": False,
@@ -1282,7 +2541,9 @@ def _write_review_video(
         "blockers": [],
         "claim_boundary": {
             "video_is_review_artifact_not_task_success_proof": True,
-            "structural_fallback_video_is_not_live_wam_model_proof": True,
+            "structural_fallback_video_is_not_live_wam_model_proof": bool(
+                structural_fallback_used or not live_rollout_videos
+            ),
             "physical_robot_readiness_proven": False,
             "deployment_readiness_proven": False,
             "safety_validation_proven": False,
@@ -1291,6 +2552,78 @@ def _write_review_video(
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
     }
+    if live_rollout_videos:
+        with concat_path.open("w", encoding="utf-8") as handle:
+            handle.write("ffconcat version 1.0\n")
+            for video in live_rollout_videos:
+                handle.write(_concat_file_line(video))
+        command = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_path),
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        if shutil.which("ffmpeg") is None:
+            status["blockers"] = ["ffmpeg_not_available_for_review_video"]
+            write_json(job / "video_review_status.json", status)
+            return status
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+        status["ffmpeg_command_ran"] = True
+        status["ffmpeg_returncode"] = completed.returncode
+        status["ffmpeg_stdout_size_bytes"] = len(completed.stdout or "")
+        status["ffmpeg_stderr_size_bytes"] = len(completed.stderr or "")
+        if completed.returncode != 0 or not output_path.is_file():
+            status["blockers"] = ["ffmpeg_live_wam_rollout_review_video_failed"]
+            write_json(job / "video_review_status.json", status)
+            return status
+        if shutil.which("ffprobe") is not None:
+            probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames,duration",
+                    "-show_entries",
+                    "format=duration,size",
+                    "-of",
+                    "json",
+                    str(output_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            status["ffprobe_command_ran"] = True
+            status["ffprobe_returncode"] = probe.returncode
+            if probe.returncode == 0:
+                try:
+                    parsed = json.loads(probe.stdout or "{}")
+                except json.JSONDecodeError:
+                    parsed = {}
+                status["ffprobe_metadata"] = parsed if isinstance(parsed, Mapping) else {}
+        status["status"] = "completed"
+        status["blockers"] = []
+        write_json(job / "video_review_status.json", status)
+        return status
     if len(frames) < 2:
         status["blockers"] = ["not_enough_frames_for_review_video"]
         write_json(job / "video_review_status.json", status)
@@ -1349,7 +2682,7 @@ def _write_review_video(
                 "-show_entries",
                 "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames,duration",
                 "-show_entries",
-                "format=duration",
+                "format=duration,size",
                 "-of",
                 "json",
                 str(output_path),
@@ -1530,6 +2863,23 @@ def _postprocess_imported_persistent_session_artifacts(
         and learned_wam_count > 0
         and imported.get("manipulation_success_evaluator_result") == "success"
     )
+    if success_proven:
+        success_reason = "A live evaluator reported sink-handle success."
+    elif live_wam_count > 0:
+        success_reason = (
+            "The loop completed with live learned WAM generations, but no task-success "
+            "evaluator or physics state proved a sink-handle state transition."
+        )
+    elif structural_wam_count > 0:
+        success_reason = (
+            "The loop completed with structural WAM fallback only; no live learned WAM or "
+            "physics state proved a sink-handle state transition."
+        )
+    else:
+        success_reason = (
+            "The loop did not produce a completed WAM generation or physics state proving a "
+            "sink-handle state transition."
+        )
     judge = {
         "schema_version": "manipulation_success_evaluator_results.v1",
         "generated_at": generated_at,
@@ -1543,21 +2893,53 @@ def _postprocess_imported_persistent_session_artifacts(
         "live_wam_generation_success_count": live_wam_count,
         "learned_wam_model_success_count": learned_wam_count,
         "structural_fallback_used": structural_wam_count > 0,
-        "reason": (
-            "The loop completed with structural WAM fallback only; no live learned WAM or physics "
-            "state proved a sink-handle state transition."
-            if not success_proven
-            else "A live evaluator reported sink-handle success."
-        ),
+        "reason": success_reason,
         "raw_credentials_written_to_artifacts": False,
     }
     write_json(job / "manipulation_success_evaluator_results.json", judge)
+    video_status = _write_review_video(
+        job=job,
+        extraction_dir=extraction_dir,
+        generated_at=generated_at,
+        fps=float(os.getenv("BLUEPRINT_PERSISTENT_SESSION_REVIEW_FPS", "2.0")),
+        structural_fallback_used=structural_wam_count > 0,
+    )
+    try:
+        policy_observation = _load_policy_observation(policy_observation_path)
+    except Exception:
+        policy_observation = {}
+    visual_profile_settings = _current_wam_visual_profile_settings()
+    source_frame = job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
+    generated_frame_paths = sorted((extraction_dir / "generated_next_observations").glob("*.jpg"))
+    visual_quality_report = write_persistent_wam_visual_quality_artifacts(
+        job_dir=job,
+        generated_at=generated_at,
+        source_frame_path=source_frame if source_frame.is_file() else None,
+        generated_frame_paths=generated_frame_paths,
+        review_video_path=_mapping(video_status).get("review_video_path"),
+        video_status=video_status,
+        visual_profile=str(visual_profile_settings["visual_profile"]),
+        requested_settings=visual_profile_settings,
+        provider_status=_string(imported.get("status")) or None,
+        live_wam_generation_success_count=live_wam_count,
+        learned_wam_model_success_count=learned_wam_count,
+        structural_fallback_used=structural_wam_count > 0,
+        target_object_id=_string(policy_observation.get("target_object_id")) or None,
+        task_id=_string(policy_observation.get("task_id")) or None,
+    )
     claim_boundary = {
         "schema_version": "persistent_policy_wam_claim_boundary.v1",
         "generated_at": generated_at,
         "simulator_generated_world_proof_only": True,
         "structural_loop_proof_completed": imported.get("status") == "completed",
         "success_proof_completed": success_proven,
+        "live_wam_generation_success": live_wam_count > 0,
+        "learned_wam_model_success": learned_wam_count > 0,
+        "visually_useful_rollout": bool(visual_quality_report.get("visual_success")),
+        "visual_success": bool(visual_quality_report.get("visual_success")),
+        "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
+        "valid_mp4_or_provider_completed_is_not_visual_success": True,
+        "wam_rollout_visual_quality_report": str(job / "wam_rollout_visual_quality_report.json"),
         "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": structural_wam_count > 0,
         "frame_copy_placeholder_until_live_wam_model_configured": structural_wam_count > 0,
         "wam_evaluator_is_not_robot_policy": True,
@@ -1571,22 +2953,38 @@ def _postprocess_imported_persistent_session_artifacts(
     }
     write_json(job / "claim_boundary.json", claim_boundary)
     if not success_proven:
+        wam_generation_label = (
+            "live_wam_success_not_task_success_proof"
+            if live_wam_count > 0
+            else "structural_wam_fallback_only"
+            if structural_wam_count
+            else "wam_generation_missing"
+        )
+        labels = [
+            "task_success_not_proven",
+            "live_wam_not_run" if live_wam_count == 0 else "live_wam_success_not_judged",
+            wam_generation_label,
+            "physics_contact_not_validated",
+        ]
+        if not visual_quality_report.get("visual_success"):
+            labels.append("wam_rollout_visual_quality_failed")
+        visual_blockers = {str(item) for item in visual_quality_report.get("blockers") or []}
+        if "source_policy_observation_visual_qa_failed_for_review_quality" in visual_blockers or any(
+            item.startswith("source_policy_observation_") for item in visual_blockers
+        ):
+            labels.append("source_policy_observation_visual_qa_failed")
+        if "autoregressive_chain_visual_drift_or_quality_blocked_long_rollout" in visual_blockers:
+            labels.append("autoregressive_chain_visual_drift_or_quality_blocked")
         write_json(
             job / "failure_labels.json",
             {
                 "schema_version": "persistent_policy_wam_failure_labels.v1",
                 "generated_at": generated_at,
                 "status": "completed",
-                "labels": [
-                    "task_success_not_proven",
-                    "live_wam_not_run" if live_wam_count == 0 else "live_wam_success_not_judged",
-                    "structural_wam_fallback_only" if structural_wam_count else "wam_generation_missing",
-                    "physics_contact_not_validated",
-                ],
+                "labels": sorted(set(labels)),
                 "raw_credentials_written_to_artifacts": False,
             },
         )
-    video_status = _write_review_video(job=job, extraction_dir=extraction_dir, generated_at=generated_at)
     return {
         "schema_version": "persistent_session_postprocess_artifacts.v1",
         "generated_at": generated_at,
@@ -1601,6 +2999,15 @@ def _postprocess_imported_persistent_session_artifacts(
         "manipulation_success_evaluator_results": str(job / "manipulation_success_evaluator_results.json"),
         "video_review_status": str(job / "video_review_status.json"),
         "review_video_path": _mapping(video_status).get("review_video_path"),
+        "source_policy_observation_visual_qa": str(
+            job / "source_policy_observation_visual_qa.json"
+        ),
+        "wam_rollout_visual_quality_report": str(job / "wam_rollout_visual_quality_report.json"),
+        "wam_rollout_contact_sheet": str(job / "wam_rollout_contact_sheet.jpg")
+        if (job / "wam_rollout_contact_sheet.jpg").is_file()
+        else None,
+        "wam_rollout_frame_stats": str(job / "wam_rollout_frame_stats.jsonl"),
+        "wam_rollout_visual_success": bool(visual_quality_report.get("visual_success")),
         "claim_boundary": str(job / "claim_boundary.json"),
         "failure_labels": str(job / "failure_labels.json") if (job / "failure_labels.json").is_file() else None,
         "vast_provider_adapter_result_path": str(vast_run_dir / "vast_provider_adapter_result.json"),
@@ -1621,6 +3028,7 @@ def run_persistent_session(
 ) -> tuple[dict[str, Any], int]:
     generated_at = utc_now_iso()
     job = _job_dir(job_dir)
+    requested_loop_step_count = max(1, int(loop_step_count))
     allow_fallback = (
         _truthy(os.getenv(PERSISTENT_SESSION_ALLOW_STRUCTURAL_WAM_FALLBACK_ENV))
         if allow_structural_wam_fallback is None
@@ -1639,7 +3047,7 @@ def run_persistent_session(
         bundle = build_persistent_session_provider_bundle(
             job_dir=job / "provider_bundle",
             policy_observation_path=policy_observation_path,
-            loop_step_count=loop_step_count,
+            loop_step_count=requested_loop_step_count,
             task_prompt=task_prompt,
             timeout_seconds=timeout_seconds,
             use_live_wam=use_live_wam,
@@ -1809,6 +3217,14 @@ def run_persistent_session(
             "postprocess_artifacts": postprocess,
             "review_video_path": postprocess.get("review_video_path"),
             "video_review_status_path": postprocess.get("video_review_status"),
+            "source_policy_observation_visual_qa_path": postprocess.get(
+                "source_policy_observation_visual_qa"
+            ),
+            "wam_rollout_visual_quality_report_path": postprocess.get(
+                "wam_rollout_visual_quality_report"
+            ),
+            "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
+            "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
             "manipulation_success_evaluator_results_path": postprocess.get(
                 "manipulation_success_evaluator_results"
             ),
@@ -1816,6 +3232,9 @@ def run_persistent_session(
             "claim_boundary": {
                 "simulator_generated_world_proof_only": True,
                 "persistent_provider_session_is_runtime_proof_not_task_success": True,
+                "valid_mp4_or_provider_completed_is_not_visual_success": True,
+                "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
+                "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
                 "physical_robot_readiness_proven": False,
                 "deployment_readiness_proven": False,
                 "safety_validation_proven": False,
@@ -1843,17 +3262,364 @@ def run_persistent_session(
             os.environ[INNER_POLICY_COMMAND_ENV] = previous_vast_inner_policy_command
 
 
+def run_persistent_session_runpod(
+    *,
+    policy_observation_path: str | Path,
+    job_dir: str | Path | None = None,
+    loop_step_count: int = 12,
+    task_prompt: str | None = None,
+    timeout_seconds: float = 3600.0,
+    use_live_wam: bool = True,
+    allow_structural_wam_fallback: bool | None = None,
+    max_wait_seconds: int | None = None,
+) -> tuple[dict[str, Any], int]:
+    generated_at = utc_now_iso()
+    job = _job_dir(job_dir)
+    requested_loop_step_count = max(1, int(loop_step_count))
+    allow_fallback = (
+        _truthy(os.getenv(PERSISTENT_SESSION_ALLOW_STRUCTURAL_WAM_FALLBACK_ENV))
+        if allow_structural_wam_fallback is None
+        else bool(allow_structural_wam_fallback)
+    )
+    inner_policy_command = _string(os.getenv(INNER_POLICY_COMMAND_ENV)) or DEFAULT_INNER_POLICY_COMMAND
+    previous_policy_command = os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND")
+    previous_persistent_inner_policy_command = os.environ.get(
+        PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV
+    )
+    previous_vast_inner_policy_command = os.environ.get(INNER_POLICY_COMMAND_ENV)
+    previous_wam_carrier_unitree = os.environ.get(
+        "BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"
+    )
+    previous_wam_default_env = {key: os.environ.get(key) for key in RUNPOD_WAM_CARRIER_ENV_KEYS}
+    os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"] = inner_policy_command
+    os.environ[PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV] = inner_policy_command
+    os.environ[INNER_POLICY_COMMAND_ENV] = inner_policy_command
+    runpod_provider_bundle_kind = (
+        _string(os.getenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_PROVIDER_BUNDLE_KIND"))
+        or "wam"
+    )
+    if runpod_provider_bundle_kind == "wam":
+        os.environ["BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"] = "true"
+        os.environ.setdefault(OSCAR_WAM_VISUAL_PROFILE_ENV, "smoke")
+        visual_profile = _normalized_wam_visual_profile()
+        wam_carrier_defaults = _runpod_wam_carrier_defaults_for_profile(visual_profile)
+        for key, value in wam_carrier_defaults.items():
+            os.environ.setdefault(key, value)
+        if visual_profile == "smoke":
+            os.environ["BLUEPRINT_OSCAR_WAM_NUM_FRAMES"] = str(
+                max(
+                    RUNPOD_WAM_CARRIER_MIN_OSCAR_NUM_FRAMES,
+                    _int_env(
+                        "BLUEPRINT_OSCAR_WAM_NUM_FRAMES",
+                        int(RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV["BLUEPRINT_OSCAR_WAM_NUM_FRAMES"]),
+                    ),
+                )
+            )
+    try:
+        bundle = build_persistent_session_provider_bundle(
+            job_dir=job / "provider_bundle",
+            policy_observation_path=policy_observation_path,
+            loop_step_count=requested_loop_step_count,
+            task_prompt=task_prompt,
+            timeout_seconds=timeout_seconds,
+            use_live_wam=use_live_wam,
+            allow_structural_wam_fallback=allow_fallback,
+            generated_at=generated_at,
+        )
+        if bundle.get("status") != "bundle_ready":
+            output = _blocked_payload(
+                generated_at=generated_at,
+                job_dir=job,
+                blockers=bundle.get("blockers")
+                or ["persistent_session_provider_bundle_blocked"],
+                details={
+                    "bundle_manifest_path": str(
+                        job / "provider_bundle" / "persistent_session_provider_bundle_manifest.json"
+                    ),
+                    "provider": "runpod",
+                },
+            )
+            write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+            return output, 2
+        bundle_path = Path(str(bundle["bundle_path"])).expanduser().resolve()
+        staging = stage_wam_provider_bundle_object_store(
+            job_dir=job / "object_store_staging",
+            bundle_path=bundle_path,
+            key_prefix=_string(os.getenv(OBJECT_STORE_KEY_PREFIX_ENV))
+            or DEFAULT_OBJECT_STORE_KEY_PREFIX,
+            expiration_seconds=_int_env(
+                "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIGNED_URL_SECONDS",
+                21600,
+            ),
+            generated_at=generated_at,
+        )
+        if staging.get("status") != "completed":
+            output = _blocked_payload(
+                generated_at=generated_at,
+                job_dir=job,
+                blockers=staging.get("blockers")
+                or ["persistent_session_object_store_staging_blocked"],
+                details={
+                    "object_store_staging_manifest_path": str(
+                        job / "object_store_staging" / "wam_provider_object_store_staging_manifest.json"
+                    ),
+                    "provider": "runpod",
+                },
+            )
+            write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+            return output, 2
+        staging_dir = job / "object_store_staging"
+        runpod_dir = job / "runpod_persistent_session_run"
+        output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
+        create_manifest = create_runpod_wam_async_run(
+            job_dir=runpod_dir,
+            bundle_path=bundle_path,
+            provider_bundle_url_file=staging_dir / "provider_bundle_url.txt",
+            provider_output_put_url_file=staging_dir / "provider_output_put_url.txt",
+            provider_output_get_url_file=staging_dir / "provider_output_get_url.txt",
+            output_path=output_zip,
+            allow_paid_runpod_launch=True,
+            skip_public_staging_verification=True,
+            image_name=(
+                _string(os.getenv("BLUEPRINT_RUNPOD_WAM_PUBLIC_IMAGE"))
+                or _string(os.getenv(PERSISTENT_SESSION_PUBLIC_IMAGE_ENV))
+                or _string(os.getenv("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_PUBLIC_IMAGE"))
+                or _string(os.getenv("BLUEPRINT_VAST_WAM_PUBLIC_IMAGE"))
+                or DEFAULT_WAM_PUBLIC_IMAGE
+            ),
+            provider_bundle_kind=runpod_provider_bundle_kind,
+            container_disk_gb=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_DISK_GB", 240),
+            volume_gb=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_VOLUME_GB", 120),
+            min_vcpu_per_gpu=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_MIN_VCPU", 8),
+            min_ram_per_gpu=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_MIN_RAM_GB", 40),
+            generated_at=generated_at,
+        )
+        if create_manifest.get("status") != "pod_created":
+            output = _blocked_payload(
+                generated_at=generated_at,
+                job_dir=job,
+                blockers=create_manifest.get("blockers")
+                or ["persistent_session_runpod_create_blocked"],
+                details={
+                    "runpod_create_manifest_path": str(
+                        runpod_dir / "runpod_wam_async_create_manifest.json"
+                    ),
+                    "provider": "runpod",
+                },
+            )
+            write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+            return output, 2
+        wait_seconds = _runpod_persistent_session_wait_seconds(
+            explicit_max_wait_seconds=max_wait_seconds,
+            timeout_seconds=timeout_seconds,
+            loop_step_count=requested_loop_step_count,
+        )
+        poll_manifest = poll_runpod_wam_async_run(
+            job_dir=runpod_dir,
+            max_wait_seconds=wait_seconds,
+            retry_interval_seconds=_int_env(
+                "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_POLL_SECONDS",
+                20,
+            ),
+            teardown=True,
+            generated_at=generated_at,
+        )
+        if poll_manifest.get("status") != "completed" or not output_zip.is_file():
+            poll_manifest_summary = {
+                "status": poll_manifest.get("status"),
+                "provider_command_status": poll_manifest.get("provider_command_status"),
+                "pod_status": poll_manifest.get("pod_status"),
+                "output_zip_present": bool(poll_manifest.get("output_zip_present")),
+                "nonterminal_running_output": bool(
+                    poll_manifest.get("nonterminal_running_output")
+                ),
+                "remote_runtime_running_without_terminal_output": bool(
+                    poll_manifest.get("remote_runtime_running_without_terminal_output")
+                ),
+                "continuing_spend_from_this_run": bool(
+                    poll_manifest.get("continuing_spend_from_this_run")
+                ),
+                "teardown_performed": bool(poll_manifest.get("teardown_performed")),
+            }
+            classification = _write_runpod_live_wam_blocker_classification(
+                job=job,
+                generated_at=generated_at,
+                poll_manifest=poll_manifest,
+            )
+            output = _blocked_payload(
+                generated_at=generated_at,
+                job_dir=job,
+                blockers=poll_manifest.get("provider_command_blockers")
+                or [
+                    "runpod_persistent_session_still_running"
+                    if poll_manifest_summary["status"] == "running"
+                    or poll_manifest_summary["provider_command_status"] == "running"
+                    or poll_manifest_summary["continuing_spend_from_this_run"]
+                    else "persistent_session_runpod_provider_blocked"
+                ],
+                details={
+                    "runpod_create_manifest_path": str(
+                        runpod_dir / "runpod_wam_async_create_manifest.json"
+                    ),
+                    "runpod_poll_manifest_path": str(
+                        runpod_dir / "runpod_wam_async_poll_manifest.json"
+                    ),
+                    "runpod_delete_manifest_path": str(
+                        runpod_dir / "runpod_wam_async_delete_manifest.json"
+                    ),
+                    "provider": "runpod",
+                    "continuing_spend_from_this_run": poll_manifest.get(
+                        "continuing_spend_from_this_run"
+                    ),
+                    "poll_manifest": poll_manifest_summary,
+                    "runpod_live_wam_blocker_classification_path": str(
+                        job / "runpod_live_wam_blocker_classification.json"
+                    ),
+                    "classified_blocker": classification.get("classified_blocker"),
+                },
+            )
+            write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+            return output, 2
+        extraction_dir = job / "imported_persistent_session_output"
+        ensure_dir(extraction_dir)
+        with zipfile.ZipFile(output_zip) as archive:
+            archive.extractall(extraction_dir)
+        imported_path = extraction_dir / "unitree_groot_n17_sonic_wam_persistent_session_output.json"
+        if not imported_path.is_file():
+            imported_path = extraction_dir / "unitree_groot_n17_sonic_policy_provider_output.json"
+        imported = _read_json(imported_path) if imported_path.is_file() else {}
+        postprocess = _postprocess_imported_persistent_session_artifacts(
+            job=job,
+            extraction_dir=extraction_dir,
+            imported=imported,
+            generated_at=generated_at,
+            policy_observation_path=policy_observation_path,
+            vast_result=poll_manifest,
+            vast_run_dir=runpod_dir,
+        )
+        completed = imported.get("status") == "completed"
+        classification = (
+            _write_runpod_live_wam_blocker_classification(
+                job=job,
+                generated_at=generated_at,
+                poll_manifest=poll_manifest,
+                extraction_dir=extraction_dir,
+                imported=imported,
+            )
+            if not completed
+            else {"status": "completed", "classified_blocker": "none"}
+        )
+        output = {
+            "schema_version": SCHEMA_VERSION,
+            "generated_at": generated_at,
+            "status": "completed" if completed else "blocked",
+            "provider": "runpod",
+            "policy_id": POLICY_ID,
+            "selected_candidate_id": POLICY_ID,
+            "job_dir": str(job),
+            "persistent_provider_session_used": bool(imported.get("persistent_provider_session_used")),
+            "provider_instance_reused_for_policy_and_wam_loop": bool(
+                imported.get("provider_instance_reused_for_policy_and_wam_loop")
+            ),
+            "repeated_policy_calls_count": int(imported.get("repeated_policy_calls_count") or 0),
+            "generated_next_observation_count": int(imported.get("generated_next_observation_count") or 0),
+            "live_wam_generation_success_count": int(imported.get("live_wam_generation_success_count") or 0),
+            "learned_wam_model_success_count": int(imported.get("learned_wam_model_success_count") or 0),
+            "unitree_groot_n17_sonic_model_executed": bool(imported.get("unitree_groot_n17_sonic_model_executed")),
+            "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+                imported.get("unitree_groot_n17_sonic_policy_action_command_ran")
+            ),
+            "unitree_policy_action_command_ran": bool(imported.get("unitree_policy_action_command_ran")),
+            "policy_action_model_command_ran": bool(imported.get("policy_action_model_command_ran")),
+            "provider_output_replay_used": bool(imported.get("provider_output_replay_used")),
+            "blockers": [] if completed else imported.get("blockers") or ["persistent_session_provider_output_blocked"],
+            "imported_provider_output_dir": str(extraction_dir),
+            "imported_provider_output_path": str(imported_path) if imported_path.is_file() else None,
+            "runpod_create_manifest_path": str(runpod_dir / "runpod_wam_async_create_manifest.json"),
+            "runpod_poll_manifest_path": str(runpod_dir / "runpod_wam_async_poll_manifest.json"),
+            "runpod_teardown_manifest_path": str(runpod_dir / "runpod_wam_async_delete_manifest.json"),
+            "provider_runtime_output_zip_path": str(output_zip),
+            "runpod_live_wam_blocker_classification_path": str(
+                job / "runpod_live_wam_blocker_classification.json"
+            )
+            if not completed
+            else None,
+            "classified_blocker": classification.get("classified_blocker"),
+            "continuing_spend_from_this_run": bool(
+                poll_manifest.get("continuing_spend_from_this_run")
+            ),
+            "postprocess_artifacts": postprocess,
+            "review_video_path": postprocess.get("review_video_path"),
+            "video_review_status_path": postprocess.get("video_review_status"),
+            "source_policy_observation_visual_qa_path": postprocess.get(
+                "source_policy_observation_visual_qa"
+            ),
+            "wam_rollout_visual_quality_report_path": postprocess.get(
+                "wam_rollout_visual_quality_report"
+            ),
+            "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
+            "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
+            "manipulation_success_evaluator_results_path": postprocess.get(
+                "manipulation_success_evaluator_results"
+            ),
+            "claim_boundary_path": postprocess.get("claim_boundary"),
+            "claim_boundary": {
+                "simulator_generated_world_proof_only": True,
+                "persistent_provider_session_is_runtime_proof_not_task_success": True,
+                "valid_mp4_or_provider_completed_is_not_visual_success": True,
+                "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
+                "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+                "safety_validation_proven": False,
+                "real_world_manipulation_success_proven": False,
+            },
+            "raw_credentials_written_to_artifacts": False,
+            "secret_hashes_written_to_artifacts": False,
+        }
+        write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+        return output, 0 if completed else 2
+    finally:
+        if previous_policy_command is None:
+            os.environ.pop("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND", None)
+        else:
+            os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"] = previous_policy_command
+        if previous_persistent_inner_policy_command is None:
+            os.environ.pop(PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV, None)
+        else:
+            os.environ[PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV] = (
+                previous_persistent_inner_policy_command
+            )
+        if previous_vast_inner_policy_command is None:
+            os.environ.pop(INNER_POLICY_COMMAND_ENV, None)
+        else:
+            os.environ[INNER_POLICY_COMMAND_ENV] = previous_vast_inner_policy_command
+        if previous_wam_carrier_unitree is None:
+            os.environ.pop("BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC", None)
+        else:
+            os.environ[
+                "BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"
+            ] = previous_wam_carrier_unitree
+        for key, previous in previous_wam_default_env.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy-observation", required=True)
     parser.add_argument("--job-dir")
+    parser.add_argument("--provider", choices=("runpod", "vast"), default="runpod")
     parser.add_argument("--loop-step-count", type=int, default=12)
     parser.add_argument("--task-prompt")
     parser.add_argument("--timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--disable-live-wam", action="store_true")
     parser.add_argument("--allow-structural-wam-fallback", action="store_true")
     args = parser.parse_args(argv)
-    result, exit_code = run_persistent_session(
+    runner = run_persistent_session_runpod if args.provider == "runpod" else run_persistent_session
+    result, exit_code = runner(
         policy_observation_path=args.policy_observation,
         job_dir=args.job_dir,
         loop_step_count=args.loop_step_count,

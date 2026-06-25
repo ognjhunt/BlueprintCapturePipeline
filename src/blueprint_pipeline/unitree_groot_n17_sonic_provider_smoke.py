@@ -70,6 +70,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -80,6 +81,75 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 OUTPUT_SCHEMA_VERSION = "unitree_groot_n17_sonic_policy_provider_output.v1"
+DEFAULT_SYSTEM_PYTHON_MINIMAL_REQUIREMENTS = (
+    "filelock>=3.12.0",
+    "fsspec>=2023.5.0",
+    "huggingface_hub==0.36.0",
+    "hf_xet>=1.1.0",
+    "anyio>=4.0.0",
+    "certifi>=2024.0.0",
+    "h11>=0.14.0",
+    "httpcore>=1.0.0",
+    "httpx>=0.27.0",
+    "idna>=3.0",
+    "click==8.1.8",
+    "absl-py>=2.0.0",
+    "albumentations==1.4.18",
+    "albucore==0.0.17",
+    "annotated-types>=0.6.0",
+    "docstring-parser>=0.15",
+    "diffusers==0.35.1",
+    "dm-tree",
+    "numpy==1.26.4",
+    "msgpack==1.1.0",
+    "msgpack-numpy==0.4.8",
+    "numkong>=0.1.0",
+    "omegaconf==2.3.0",
+    "antlr4-python3-runtime==4.9.3",
+    "packaging>=23.0",
+    "pillow>=10.0.0",
+    "protobuf>=4.25.0",
+    "psutil>=5.9.0",
+    "pydantic==2.13.4",
+    "pydantic-core==2.46.4",
+    "pyyaml>=6.0",
+    "regex>=2023.0.0",
+    "requests>=2.31.0",
+    "safetensors>=0.4.3",
+    "scipy==1.15.3",
+    "scikit-image==0.25.2",
+    "imageio>=2.33.0",
+    "networkx>=3.0",
+    "tifffile>=2022.8.12",
+    "lazy-loader>=0.4",
+    "sniffio>=1.3.0",
+    "tokenizers==0.22.1",
+    "transformers==4.57.3",
+    "tqdm>=4.66.0",
+    "typing_extensions>=4.10.0",
+    "pyzmq==27.0.1",
+    "einops==0.8.1",
+    "timm>=1.0.0",
+    "accelerate>=0.30.0",
+    "peft==0.17.1",
+    "opencv-python-headless>=4.5,<4.13",
+    "pandas==2.2.3",
+    "python-dateutil>=2.8.2",
+    "pytz>=2024.1",
+    "rich>=11.1.0",
+    "markdown-it-py>=2.2.0",
+    "mdurl>=0.1.0",
+    "pygments>=2.13.0",
+    "shtab>=1.5.6",
+    "simsimd>=5.9.2",
+    "stringzilla>=3.10.4",
+    "termcolor==3.2.0",
+    "tyro==0.9.17",
+    "typeguard>=4.0.0",
+    "typing-inspection>=0.4.0",
+    "tzdata>=2024.1",
+    "wrapt>=1.14.0",
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -92,23 +162,52 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _phase(name: str, **fields: Any) -> None:
+    payload = {
+        "phase": name,
+        "observed_at_epoch": round(time.time(), 3),
+        "raw_secret_values_recorded": False,
+        **fields,
+    }
     print(
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_PHASE:"
-        + json.dumps(
-            {
-                "phase": name,
-                "observed_at_epoch": round(time.time(), 3),
-                "raw_secret_values_recorded": False,
-                **fields,
-            },
-            sort_keys=True,
-        ),
+        + json.dumps(payload, sort_keys=True),
         flush=True,
     )
+    callback = globals().get("_blueprint_outer_phase_callback")
+    if callable(callback):
+        try:
+            callback(name, **fields)
+        except Exception as exc:
+            print(
+                "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_PHASE_CALLBACK_BLOCKED:"
+                + json.dumps(
+                    {
+                        "phase": name,
+                        "error_type": type(exc).__name__,
+                        "raw_secret_values_recorded": False,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
 
 
 def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalise_bootstrap_mode() -> str:
+    raw = (
+        os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE", "uv_sync")
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    if raw in {"", "uv", "uv_sync", "uvsync"}:
+        return "uv_sync"
+    if raw in {"system_python", "system_python_minimal", "minimal_system_python", "minimal"}:
+        return "system_python_minimal"
+    return raw
 
 
 def _tail(path: Path, limit: int = 4000) -> str:
@@ -156,6 +255,142 @@ def _run_logged(
                 "log_path": str(log_path),
                 "log_tail": _tail(log_path),
             }
+
+
+def _system_python_executable() -> tuple[str | None, dict[str, Any]]:
+    configured = os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON", "").strip()
+    candidates = [configured] if configured else []
+    candidates.extend([sys.executable, "python3", "python"])
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        resolved = candidate if Path(candidate).is_absolute() else shutil.which(candidate)
+        executable = resolved or candidate
+        try:
+            completed = subprocess.run(
+                [executable, "-c", "import sys; print(sys.executable)"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if completed.returncode == 0:
+            return completed.stdout.strip() or executable, {
+                "status": "completed",
+                "configured": bool(configured),
+                "candidate": candidate,
+                "executable": completed.stdout.strip() or executable,
+            }
+    return None, {
+        "status": "blocked",
+        "configured": bool(configured),
+        "blockers": ["blocked_system_python_not_available"],
+    }
+
+
+def _split_system_python_requirements() -> list[str]:
+    configured = os.environ.get(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_INSTALL_REQUIREMENTS",
+        "",
+    ).strip()
+    if configured:
+        return shlex.split(configured)
+    return list(DEFAULT_SYSTEM_PYTHON_MINIMAL_REQUIREMENTS)
+
+
+def _python_import_preflight(
+    *,
+    python_executable: str,
+    output_dir: Path,
+    modules: list[str],
+    log_name: str,
+) -> dict[str, Any]:
+    script = r"""
+import importlib.util
+import json
+import sys
+
+modules = sys.argv[1:]
+missing = [name for name in modules if importlib.util.find_spec(name) is None]
+print("BLUEPRINT_SYSTEM_PYTHON_IMPORT_PREFLIGHT:" + json.dumps({
+    "modules": modules,
+    "missing": missing,
+    "raw_secret_values_recorded": False,
+}, sort_keys=True))
+raise SystemExit(42 if missing else 0)
+"""
+    result = _run_logged(
+        [python_executable, "-c", script, *modules],
+        cwd=None,
+        log_path=output_dir / log_name,
+        timeout_seconds=120,
+    )
+    result["modules"] = modules
+    if result.get("status") != "completed":
+        result.setdefault("blockers", [])
+        result["blockers"] = sorted(
+            set([*result.get("blockers", []), "blocked_system_python_missing_required_imports"])
+        )
+        result["status"] = "blocked"
+    return result
+
+
+def _install_system_python_minimal_deps(
+    *,
+    output_dir: Path,
+    python_executable: str,
+) -> dict[str, Any]:
+    if _truthy_env("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SKIP_SYSTEM_PYTHON_DEPS_INSTALL"):
+        return {
+            "status": "skipped",
+            "skip_requested": True,
+            "requirements_count": 0,
+        }
+    requirements = _split_system_python_requirements()
+    if not requirements:
+        return {
+            "status": "skipped",
+            "skip_requested": False,
+            "requirements_count": 0,
+        }
+    env = dict(os.environ)
+    env.setdefault("PIP_BREAK_SYSTEM_PACKAGES", "1")
+    result = _run_logged(
+        [
+            python_executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-cache-dir",
+            "--ignore-requires-python",
+            "--no-deps",
+            *requirements,
+        ],
+        cwd=None,
+        log_path=output_dir / "groot_policy_server_system_python_minimal_deps_install.log",
+        timeout_seconds=float(
+            os.environ.get(
+                "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_DEPS_TIMEOUT_SECONDS",
+                "900",
+            )
+        ),
+        env=env,
+    )
+    result["requirements_count"] = len(requirements)
+    result["requirements"] = requirements
+    if result.get("status") != "completed":
+        result.setdefault("blockers", [])
+        result["blockers"] = sorted(
+            set([*result.get("blockers", []), "blocked_system_python_minimal_deps_install_failed"])
+        )
+        result["status"] = "blocked"
+    return result
 
 
 def _parse_tcp_url(value: str) -> tuple[str, int] | None:
@@ -206,15 +441,41 @@ def _checkout_groot_repo(output_dir: Path) -> tuple[Path, dict[str, Any]]:
     if (root / "gr00t" / "eval" / "run_gr00t_server.py").is_file():
         return root, {"status": "completed", "repo_already_available": True, "repo_root": str(root)}
     root.parent.mkdir(parents=True, exist_ok=True)
+    sparse_checkout = _truthy_env("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT")
+    quoted_root = shlex.quote(str(root))
+    quoted_repo_url = shlex.quote(repo_url)
     if repo_ref:
+        quoted_repo_ref = shlex.quote(repo_ref)
+        sparse_commands = ""
+        fetch_filter = ""
+        if sparse_checkout:
+            sparse_commands = "git sparse-checkout init --cone && git sparse-checkout set gr00t && "
+            fetch_filter = "--filter=blob:none "
         result = _run_logged(
             [
                 "bash",
                 "-lc",
                 (
-                    f"rm -rf {root!s} && git init {root!s} && cd {root!s} && "
-                    f"git remote add origin {repo_url} && "
-                    f"git fetch --depth 1 origin {repo_ref} && git checkout --detach FETCH_HEAD"
+                    f"rm -rf {quoted_root} && git init {quoted_root} && cd {quoted_root} && "
+                    f"git remote add origin {quoted_repo_url} && "
+                    f"{sparse_commands}"
+                    f"git fetch --depth 1 {fetch_filter}origin {quoted_repo_ref} && "
+                    "git checkout --detach FETCH_HEAD"
+                ),
+            ],
+            cwd=None,
+            log_path=output_dir / "groot_policy_server_bootstrap_git_checkout.log",
+            timeout_seconds=600,
+        )
+    elif sparse_checkout:
+        result = _run_logged(
+            [
+                "bash",
+                "-lc",
+                (
+                    f"rm -rf {quoted_root} && "
+                    f"git clone --depth 1 --filter=blob:none --sparse {quoted_repo_url} {quoted_root} && "
+                    f"cd {quoted_root} && git sparse-checkout set gr00t"
                 ),
             ],
             cwd=None,
@@ -231,6 +492,7 @@ def _checkout_groot_repo(output_dir: Path) -> tuple[Path, dict[str, Any]]:
     result["repo_root"] = str(root)
     result["repo_url"] = repo_url
     result["repo_ref_configured"] = bool(repo_ref)
+    result["sparse_checkout_requested"] = sparse_checkout
     return root, result
 
 
@@ -348,6 +610,12 @@ def _bootstrap_gr00t_policy_server(
     policy_server_url: str,
     model_path: str,
 ) -> tuple[dict[str, Any], subprocess.Popen[Any] | None]:
+    _phase(
+        "gr00t_policy_server_bootstrap_requested",
+        auto_start_requested=_truthy_env("BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER"),
+        policy_server_url_configured=bool(policy_server_url),
+        model_path_configured=bool(model_path),
+    )
     if not _truthy_env("BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER"):
         return {"requested": False, "status": "not_requested"}, None
     parsed = _parse_tcp_url(policy_server_url)
@@ -368,74 +636,211 @@ def _bootstrap_gr00t_policy_server(
         return {"requested": True, "status": "completed", "server_already_listening": True}, None
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    uv_result = _install_uv(output_dir)
-    if uv_result.get("status") != "completed":
-        return {
-            "requested": True,
-            "status": "blocked",
-            "blockers": ["blocked_gr00t_uv_install_failed"],
-            "uv_install": uv_result,
-        }, None
+    bootstrap_mode = _normalise_bootstrap_mode()
+    _phase("gr00t_bootstrap_mode_selected", bootstrap_mode=bootstrap_mode)
+    _phase("gr00t_repo_checkout_started")
     repo_root, checkout = _checkout_groot_repo(output_dir)
+    _phase(
+        "gr00t_repo_checkout_completed",
+        status=checkout.get("status"),
+        repo_already_available=bool(checkout.get("repo_already_available")),
+    )
     if checkout.get("status") != "completed":
         return {
             "requested": True,
             "status": "blocked",
             "blockers": ["blocked_isaac_groot_repo_checkout_failed"],
-            "uv_install": uv_result,
+            "bootstrap_mode": bootstrap_mode,
             "checkout": checkout,
         }, None
 
     env = dict(os.environ)
     env.setdefault("HF_HOME", str(output_dir / "hf_cache"))
     env.setdefault("HF_HUB_CACHE", str(output_dir / "hf_cache" / "hub"))
-    env.setdefault("UV_PROJECT_ENVIRONMENT", str(output_dir / "groot_runtime" / "venv"))
-    install_timeout = float(
-        os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS", "1800")
-    )
-    sync = _run_logged(
-        ["uv", "sync", "--frozen", "--no-install-project", "--no-cache"],
-        cwd=repo_root,
-        log_path=output_dir / "groot_policy_server_bootstrap_uv_sync.log",
-        timeout_seconds=install_timeout,
-        env=env,
-    )
-    if sync.get("status") != "completed":
+    uv_result: dict[str, Any] = {
+        "status": "skipped",
+        "reason": "bootstrap_mode_does_not_use_uv",
+    }
+    sync: dict[str, Any] = {
+        "status": "skipped",
+        "reason": "bootstrap_mode_does_not_use_uv_sync",
+    }
+    system_python: dict[str, Any] = {}
+    system_python_torch_preflight: dict[str, Any] = {}
+    system_python_deps: dict[str, Any] = {}
+    system_python_import_preflight: dict[str, Any] = {}
+
+    if bootstrap_mode == "uv_sync":
+        _phase("gr00t_uv_install_started")
+        uv_result = _install_uv(output_dir)
+        _phase("gr00t_uv_install_completed", status=uv_result.get("status"))
+        if uv_result.get("status") != "completed":
+            return {
+                "requested": True,
+                "status": "blocked",
+                "blockers": ["blocked_gr00t_uv_install_failed"],
+                "bootstrap_mode": bootstrap_mode,
+                "uv_install": uv_result,
+                "checkout": checkout,
+            }, None
+        env.setdefault("UV_PROJECT_ENVIRONMENT", str(output_dir / "groot_runtime" / "venv"))
+        install_timeout = float(
+            os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS", "1800")
+        )
+        _phase("gr00t_uv_sync_started", timeout_seconds=install_timeout)
+        sync = _run_logged(
+            ["uv", "sync", "--frozen", "--no-install-project", "--no-cache"],
+            cwd=repo_root,
+            log_path=output_dir / "groot_policy_server_bootstrap_uv_sync.log",
+            timeout_seconds=install_timeout,
+            env=env,
+        )
+        _phase("gr00t_uv_sync_completed", status=sync.get("status"))
+        if sync.get("status") != "completed":
+            return {
+                "requested": True,
+                "status": "blocked",
+                "blockers": ["blocked_isaac_groot_uv_sync_failed"],
+                "bootstrap_mode": bootstrap_mode,
+                "uv_install": uv_result,
+                "checkout": checkout,
+                "uv_sync": sync,
+            }, None
+
+        venv_python = Path(env["UV_PROJECT_ENVIRONMENT"]) / "bin" / "python"
+        if not venv_python.is_file():
+            return {
+                "requested": True,
+                "status": "blocked",
+                "blockers": ["blocked_isaac_groot_uv_sync_did_not_create_python"],
+                "bootstrap_mode": bootstrap_mode,
+                "uv_install": uv_result,
+                "checkout": checkout,
+                "uv_sync": sync,
+                "venv_python": str(venv_python),
+            }, None
+    elif bootstrap_mode == "system_python_minimal":
+        python_executable, system_python = _system_python_executable()
+        _phase(
+            "gr00t_system_python_selected",
+            status=system_python.get("status"),
+            configured=bool(system_python.get("configured")),
+        )
+        if not python_executable:
+            return {
+                "requested": True,
+                "status": "blocked",
+                "blockers": ["blocked_system_python_not_available"],
+                "bootstrap_mode": bootstrap_mode,
+                "checkout": checkout,
+                "system_python": system_python,
+            }, None
+        _phase("gr00t_system_python_torch_preflight_started")
+        system_python_torch_preflight = _python_import_preflight(
+            python_executable=python_executable,
+            output_dir=output_dir,
+            modules=["torch"],
+            log_name="groot_policy_server_system_python_torch_preflight.log",
+        )
+        _phase(
+            "gr00t_system_python_torch_preflight_completed",
+            status=system_python_torch_preflight.get("status"),
+        )
+        if system_python_torch_preflight.get("status") != "completed":
+            return {
+                "requested": True,
+                "status": "blocked",
+                "blockers": ["blocked_system_python_missing_torch"],
+                "bootstrap_mode": bootstrap_mode,
+                "checkout": checkout,
+                "system_python": system_python,
+                "system_python_torch_preflight": system_python_torch_preflight,
+            }, None
+        _phase("gr00t_system_python_minimal_deps_install_started")
+        system_python_deps = _install_system_python_minimal_deps(
+            output_dir=output_dir,
+            python_executable=python_executable,
+        )
+        _phase(
+            "gr00t_system_python_minimal_deps_install_completed",
+            status=system_python_deps.get("status"),
+            requirements_count=system_python_deps.get("requirements_count"),
+        )
+        if system_python_deps.get("status") == "blocked":
+            return {
+                "requested": True,
+                "status": "blocked",
+                "blockers": ["blocked_system_python_minimal_deps_install_failed"],
+                "bootstrap_mode": bootstrap_mode,
+                "checkout": checkout,
+                "system_python": system_python,
+                "system_python_torch_preflight": system_python_torch_preflight,
+                "system_python_deps": system_python_deps,
+            }, None
+        _phase("gr00t_system_python_import_preflight_started")
+        system_python_import_preflight = _python_import_preflight(
+            python_executable=python_executable,
+            output_dir=output_dir,
+            modules=["huggingface_hub", "httpx", "zmq", "transformers"],
+            log_name="groot_policy_server_system_python_import_preflight.log",
+        )
+        _phase(
+            "gr00t_system_python_import_preflight_completed",
+            status=system_python_import_preflight.get("status"),
+        )
+        if system_python_import_preflight.get("status") != "completed":
+            return {
+                "requested": True,
+                "status": "blocked",
+                "blockers": ["blocked_system_python_missing_required_imports"],
+                "bootstrap_mode": bootstrap_mode,
+                "checkout": checkout,
+                "system_python": system_python,
+                "system_python_torch_preflight": system_python_torch_preflight,
+                "system_python_deps": system_python_deps,
+                "system_python_import_preflight": system_python_import_preflight,
+            }, None
+        venv_python = Path(python_executable)
+    else:
         return {
             "requested": True,
             "status": "blocked",
-            "blockers": ["blocked_isaac_groot_uv_sync_failed"],
-            "uv_install": uv_result,
+            "blockers": ["blocked_unsupported_gr00t_bootstrap_mode"],
+            "bootstrap_mode": bootstrap_mode,
+            "configured_bootstrap_mode": os.environ.get(
+                "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE",
+                "",
+            ),
             "checkout": checkout,
-            "uv_sync": sync,
         }, None
 
-    venv_python = Path(env["UV_PROJECT_ENVIRONMENT"]) / "bin" / "python"
-    if not venv_python.is_file():
-        return {
-            "requested": True,
-            "status": "blocked",
-            "blockers": ["blocked_isaac_groot_uv_sync_did_not_create_python"],
-            "uv_install": uv_result,
-            "checkout": checkout,
-            "uv_sync": sync,
-            "venv_python": str(venv_python),
-        }, None
-
+    _phase("gr00t_model_snapshot_started")
     model_resolution = _materialize_groot_model_path(
         output_dir=output_dir,
         model_path=model_path,
         venv_python=venv_python,
         env=env,
     )
+    _phase(
+        "gr00t_model_snapshot_completed",
+        status=model_resolution.get("status"),
+        source=model_resolution.get("source"),
+        snapshot_download_ran=bool(model_resolution.get("snapshot_download_ran")),
+        processor_config_present=bool(model_resolution.get("processor_config_present")),
+    )
     if model_resolution.get("status") != "completed":
         return {
             "requested": True,
             "status": "blocked",
             "blockers": ["blocked_gr00t_model_snapshot_download_failed"],
+            "bootstrap_mode": bootstrap_mode,
             "uv_install": uv_result,
             "checkout": checkout,
             "uv_sync": sync,
+            "system_python": system_python,
+            "system_python_torch_preflight": system_python_torch_preflight,
+            "system_python_deps": system_python_deps,
+            "system_python_import_preflight": system_python_import_preflight,
             "venv_python": str(venv_python),
             "model_resolution": model_resolution,
         }, None
@@ -463,6 +868,11 @@ def _bootstrap_gr00t_policy_server(
         "--port",
         str(port),
     ]
+    _phase(
+        "gr00t_policy_server_process_starting",
+        policy_server_host="127.0.0.1" if host == "0.0.0.0" else host,
+        policy_server_port=port,
+    )
     proc = subprocess.Popen(
         server_cmd,
         cwd=str(repo_root),
@@ -470,26 +880,39 @@ def _bootstrap_gr00t_policy_server(
         stdout=log,
         stderr=subprocess.STDOUT,
     )
+    _phase("gr00t_policy_server_process_started", server_pid=proc.pid)
     startup_timeout = float(
         os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS", "900")
     )
     started = time.time()
+    last_wait_phase = started
     while time.time() - started < startup_timeout:
         if proc.poll() is not None:
+            _phase(
+                "gr00t_policy_server_process_exited_before_listen",
+                server_returncode=proc.returncode,
+                server_log_size_bytes=log_path.stat().st_size if log_path.is_file() else 0,
+            )
             return {
                 "requested": True,
                 "status": "blocked",
                 "blockers": ["blocked_gr00t_policy_server_exited_before_listening"],
                 "server_returncode": proc.returncode,
                 "venv_python": str(venv_python),
+                "bootstrap_mode": bootstrap_mode,
                 "uv_install": uv_result,
                 "checkout": checkout,
                 "uv_sync": sync,
+                "system_python": system_python,
+                "system_python_torch_preflight": system_python_torch_preflight,
+                "system_python_deps": system_python_deps,
+                "system_python_import_preflight": system_python_import_preflight,
                 "model_resolution": model_resolution,
                 "server_log_path": str(log_path),
                 "server_log_tail": _tail(log_path),
             }, proc
         if _tcp_ready("127.0.0.1" if host == "0.0.0.0" else host, port):
+            _phase("gr00t_policy_server_listening", server_pid=proc.pid)
             return {
                 "requested": True,
                 "status": "completed",
@@ -500,22 +923,47 @@ def _bootstrap_gr00t_policy_server(
                 "model_path": model_path,
                 "resolved_model_path": resolved_model_path,
                 "venv_python": str(venv_python),
+                "bootstrap_mode": bootstrap_mode,
                 "uv_install": uv_result,
                 "checkout": checkout,
                 "uv_sync": sync,
+                "system_python": system_python,
+                "system_python_torch_preflight": system_python_torch_preflight,
+                "system_python_deps": system_python_deps,
+                "system_python_import_preflight": system_python_import_preflight,
                 "model_resolution": model_resolution,
                 "server_log_path": str(log_path),
             }, proc
+        now = time.time()
+        if now - last_wait_phase >= 30:
+            _phase(
+                "gr00t_policy_server_waiting_for_listen",
+                elapsed_seconds=round(now - started, 3),
+                server_pid=proc.pid,
+                server_log_size_bytes=log_path.stat().st_size if log_path.is_file() else 0,
+            )
+            last_wait_phase = now
         time.sleep(5)
+    _phase(
+        "gr00t_policy_server_startup_timeout",
+        server_pid=proc.pid,
+        timeout_seconds=startup_timeout,
+        server_log_size_bytes=log_path.stat().st_size if log_path.is_file() else 0,
+    )
     return {
         "requested": True,
         "status": "blocked",
         "blockers": ["blocked_gr00t_policy_server_startup_timeout"],
         "server_pid": proc.pid,
         "venv_python": str(venv_python),
+        "bootstrap_mode": bootstrap_mode,
         "uv_install": uv_result,
         "checkout": checkout,
         "uv_sync": sync,
+        "system_python": system_python,
+        "system_python_torch_preflight": system_python_torch_preflight,
+        "system_python_deps": system_python_deps,
+        "system_python_import_preflight": system_python_import_preflight,
         "model_resolution": model_resolution,
         "server_log_path": str(log_path),
         "server_log_tail": _tail(log_path),

@@ -3557,6 +3557,10 @@ def test_vast_adapter_small_provider_helper_edges(
     ) == "public"
     for env_name in (
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON",
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_INSTALL_REQUIREMENTS",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_REF",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS",
@@ -3593,6 +3597,13 @@ def test_vast_adapter_small_provider_helper_edges(
         "tcp://127.0.0.1:5550",
     )
     monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER", "true")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE", "system_python_minimal")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT", "true")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON", "/opt/conda/bin/python")
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_INSTALL_REQUIREMENTS",
+        "huggingface_hub pyzmq",
+    )
     monkeypatch.setenv(
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL",
         "https://github.com/NVIDIA/Isaac-GR00T.git",
@@ -3617,6 +3628,16 @@ def test_vast_adapter_small_provider_helper_edges(
         == "tcp://127.0.0.1:5550"
     )
     assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER"] == "true"
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE"] == (
+        "system_python_minimal"
+    )
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT"] == "true"
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON"] == (
+        "/opt/conda/bin/python"
+    )
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_INSTALL_REQUIREMENTS"] == (
+        "huggingface_hub pyzmq"
+    )
     assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_URL"].endswith(
         "/NVIDIA/Isaac-GR00T.git"
     )

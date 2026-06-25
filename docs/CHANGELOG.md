@@ -1,5 +1,71 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-06-24
+
+### User-Facing
+
+- Committed provider-worker session contracts for robot-eval jobs through
+  `src/blueprint_pipeline/provider_worker_contract.py`,
+  `src/blueprint_pipeline/provider_worker_endpoint_manifest.py`,
+  `src/blueprint_pipeline/provider_worker_policy_command_adapter.py`, and
+  `src/blueprint_pipeline/provider_worker_session_runner.py`. Repeated policy
+  calls can now target one ready provider worker with `/readyz`, `/infer`, and
+  optional `/shutdown` semantics instead of treating every inference as a fresh
+  provider launch.
+- Committed a Unitree GR00T N1.7 + SONIC Vast lane with
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_vast_image_canary.py`,
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py`,
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_vast_policy_command.py`, and
+  `deploy/docker/robot_eval_worker/unitree_groot_sonic_vast/Dockerfile`. These
+  are provider/runtime scaffolds for Task Evaluation Run support, not physical
+  robot readiness, safety validation, deployment approval, or public claim proof.
+- Extended the MuJoCo Unitree policy/WAM loop with a local OSCAR-style support
+  backend for no-live-provider runs. The generated next-observation frames,
+  short MP4 segments, and Unitree re-query attempts are loop/debug evidence only
+  and explicitly do not prove a learned OSCAR/Cosmos checkpoint or physical
+  robot sensor loop ran.
+
+### Employee-Facing
+
+- Added CLI entrypoints in `pyproject.toml` for provider-worker contracts,
+  endpoint manifests, policy-command adapters, provider-worker sessions, and
+  Unitree GR00T/SONIC Vast image canary, persistent session, and policy-command
+  flows.
+- Updated RunPod/Vast startup planning so provider endpoint discovery can be
+  recorded as `provider_worker_endpoint_manifest.json`, with cost/teardown proof
+  kept separate from endpoint discovery and readiness checks.
+- Hardened Vast/OSCAR provider-bundle support for Unitree GR00T/SONIC runtime
+  packaging, including provider-kind routing, HF token-file handling, runtime
+  output/import checks, and tests across the provider adapters and bundle
+  builders.
+- Uncommitted local June 24 edits in
+  `src/blueprint_pipeline/oscar_wam_command_adapter.py`,
+  `tests/test_oscar_wam_command_adapter.py`,
+  `src/blueprint_pipeline/runpod_provider_adapter.py`, and
+  `tests/test_runpod_provider_adapter.py` add OSCAR subprocess timeout blocking
+  and a configurable RunPod REST API base. Related provider-session edits
+  continued after midnight on June 25 and are not summarized here as June 24
+  material.
+
+### Future-Agent-Facing
+
+- Contract changes: provider-worker manifests now distinguish endpoint
+  discovery from allocation, runtime readiness, teardown, cost control,
+  simulator execution, safety, deployment, and robot-readiness proof.
+- Runtime behavior changes: repeated WAM/policy loops should use the
+  provider-worker adapter/session path when a ready worker URL is available;
+  one-shot provider launchers remain inappropriate for repeated inference loops.
+- Launch/readiness gate changes: Vast/RunPod provider adapters still require
+  explicit live API gates, artifact-output/finalizer destinations, and
+  provider-native runtime evidence before any simulator or provider proof is
+  upgraded.
+- Proof boundary: Unitree GR00T/SONIC Vast canary, bundle, persistent-session,
+  and policy-command artifacts are startup/runtime support artifacts unless they
+  are paired with accepted provider execution outputs and downstream eval
+  evidence. They do not supersede raw capture/provenance evidence and do not
+  prove physical robot readiness, deployment readiness, safety validation, or
+  real-world manipulation success.
+
 ## 2026-06-23
 
 ### User-Facing
